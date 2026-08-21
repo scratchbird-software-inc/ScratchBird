@@ -4027,6 +4027,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==254&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDatabaseDeserializeLogicalSnapshotRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDatabaseDeserializeLogicalSnapshot(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==256&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateMacroRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateMacro(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==258&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropMacroRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropMacro(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==260&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAdminRegisterExternalRelationResolverRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAdminRegisterExternalRelationResolver(session_registry,engine_state,frame)));return true;}
   if (frame.header.message_type == 44 &&
       frame.header.payload_schema_id ==
           sbps::kSchemaFinalizeParameterBindingRequestV1) {
