@@ -703,10 +703,15 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
   std::vector<std::uint32_t> output_descriptor_ids =
       input_node->output_descriptor_ids;
   output_descriptor_ids.push_back(request.row_number_column.descriptor_id);
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.row_number_column.descriptor, "type_uuid");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.row_number_column.descriptor_id == 0 ||
       request.row_number_column.nullable ||
-      request.row_number_column.descriptor.canonical_type_name != "int64") {
+      request.row_number_column.descriptor.canonical_type_name != "int64" ||
+      !result_type_uuid.has_value() || canonical_int64_type_uuid.empty() ||
+      *result_type_uuid != canonical_int64_type_uuid) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "ROW_NUMBER output descriptor is not bound int64"));
   }
