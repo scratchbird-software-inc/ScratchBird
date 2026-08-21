@@ -12670,6 +12670,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
           }
           return step;
         }
+        if (join_result.selected_plan_uuid !=
+                key_request.physical_dag.selected_plan_uuid ||
+            join_result.executed_physical_node_id != node.physical_node_id ||
+            join_result.causal_counter_id != node.causal_counter_id ||
+            !exec::PhysicalMgaStatementContextEqual(
+                join_result.mga_statement_context,
+                key_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-EXECUTION-V1";
+          step.diagnostic.detail = operation_name +
+                                   " execution receipt changed";
+          return step;
+        }
         if (poll_cancellation("after canonical join execution")) return step;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count =
