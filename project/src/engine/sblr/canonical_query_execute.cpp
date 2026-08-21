@@ -1992,6 +1992,7 @@ struct PreparedRecursiveCteRoot {
   std::size_t maximum_working_row_count{0};
   std::size_t maximum_term_output_row_count{0};
   std::size_t maximum_result_row_count{0};
+  std::size_t maximum_value_comparison_count{0};
   std::size_t rows_examined{0};
   std::size_t planned_peak_payload_bytes{0};
   std::size_t planned_resident_structural_bytes{0};
@@ -9952,6 +9953,7 @@ bool BindPreparedRecursiveCteCardinality(
   prepared->maximum_term_output_row_count =
       static_cast<std::size_t>(maximum_term_output_rows);
   prepared->maximum_result_row_count = result_row_bound;
+  prepared->maximum_value_comparison_count = 1;
   prepared->rows_examined = static_cast<std::size_t>(rows_examined);
   return true;
 }
@@ -15019,6 +15021,9 @@ MakeLiveRecursiveCteRegistration(
                   1, prepared.maximum_term_output_row_count);
           recursive.maximum_result_row_count =
               std::max<std::size_t>(1, prepared.maximum_result_row_count);
+          recursive.maximum_value_comparison_count =
+              std::max<std::size_t>(
+                  1, prepared.maximum_value_comparison_count);
           recursive.enforce_payload_memory_grant = true;
           recursive.memory_state = recursive_memory_state;
           recursive.retained_input_payload_bytes =
@@ -15085,6 +15090,9 @@ MakeLiveRecursiveCteRegistration(
         } else {
           exec::CanonicalRecursiveCteUnionRequest recursive;
           recursive.union_mode = prepared.profile.union_mode;
+          recursive.maximum_value_comparison_count =
+              std::max<std::size_t>(
+                  1, prepared.maximum_value_comparison_count);
           auto& working = recursive.working_request;
           working.selected_physical_node_id = node.physical_node_id;
           working.anchor_batch = *inputs[0].materialized_output_batch;
@@ -16298,6 +16306,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::size_t maximum_working = working.rows.size();
     std::size_t maximum_term_output = 0;
     std::uint64_t recursive_work = 0;
+    std::uint64_t recursive_value_comparison_count =
+        anchor.batch.rows.size();
     std::vector<exec::CanonicalResultColumnBinding>
         recursive_generated_bindings;
     exec::ExecutorColumnDescriptor search_sequence_column;
@@ -16337,7 +16347,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       if (!CheckedAdd(recursive_work, working.rows.size(),
                       &recursive_work) ||
           !CheckedAdd(recursive_work, generated.rows.size(),
-                      &recursive_work)) {
+                      &recursive_work) ||
+          !CheckedAdd(recursive_value_comparison_count,
+                      generated.rows.size(),
+                      &recursive_value_comparison_count)) {
         return refuse(
             "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
             "recursive CTE work overflowed");
@@ -16403,6 +16416,33 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       } else {
         working = std::move(generated);
       }
+    }
+    if (recursive_cte_profile.search_cycle) {
+      std::uint64_t adjacent = 0;
+      std::uint64_t triangular = 0;
+      if (!CheckedAdd(upper_bound, 1, &adjacent) ||
+          ((upper_bound & 1U) == 0
+               ? !CheckedMultiply(upper_bound / 2, adjacent, &triangular)
+               : !CheckedMultiply(upper_bound, adjacent / 2, &triangular)) ||
+          !CheckedAdd(triangular, 2,
+                      &recursive_value_comparison_count)) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "recursive SEARCH/CYCLE comparison work overflowed");
+      }
+    } else if (recursive_cte_profile.union_mode !=
+               exec::CanonicalRecursiveCteUnionMode::kDistinct) {
+      recursive_value_comparison_count = 1;
+    }
+    if (recursive_value_comparison_count == 0 ||
+        recursive_value_comparison_count >
+            std::numeric_limits<std::size_t>::max() ||
+        !CheckedAdd(recursive_work, recursive_value_comparison_count,
+                    &recursive_work) ||
+        recursive_work > std::numeric_limits<std::size_t>::max()) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "recursive CTE comparison work exceeds its native bound");
     }
     if (recursive_cte_profile.search_cycle) {
       const auto core_manifest =
@@ -16609,6 +16649,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         std::max<std::size_t>(1, maximum_term_output);
     prepared.maximum_result_row_count =
         std::max<std::size_t>(1, accumulated.rows.size());
+    prepared.maximum_value_comparison_count =
+        static_cast<std::size_t>(recursive_value_comparison_count);
     prepared.rows_examined = static_cast<std::size_t>(recursive_work);
     if (!BindPreparedRecursiveCtePeakMemory(
             &prepared,
