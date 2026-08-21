@@ -964,6 +964,17 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         "NTILE output and positive int64 bucket operand are not exact"));
   }
+  const auto& order_descriptor_uuid =
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor.descriptor_uuid.canonical;
+  if (order_descriptor_uuid ==
+          request.ntile_column.descriptor.descriptor_uuid.canonical ||
+      order_descriptor_uuid ==
+          request.bucket_count_operand.descriptor.descriptor_uuid.canonical) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "NTILE order descriptor identity is not independent"));
+  }
   const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
       request.order_term,
       execution_ordered_input_batch.columns[request.order_term.column]);
