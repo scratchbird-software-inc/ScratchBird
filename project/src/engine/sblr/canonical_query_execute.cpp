@@ -14270,13 +14270,32 @@ MakeLiveGroupedCountSumRegistration(
               return step;
             }
           }
-          if (std::ranges::find(grouping_sets_observed, false) !=
-              grouping_sets_observed.end()) {
+          std::size_t empty_grouping_set_count = 0;
+          for (std::size_t set_ordinal = 0;
+               set_ordinal < prepared.grouping_sets.size(); ++set_ordinal) {
+            const bool empty_grouping_set =
+                prepared.grouping_sets[set_ordinal]
+                    .key_term_ordinals.empty();
+            const bool expected_observed =
+                !input_batch.rows.empty() || empty_grouping_set;
+            if (empty_grouping_set) ++empty_grouping_set_count;
+            if (grouping_sets_observed[set_ordinal] !=
+                expected_observed) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "composed grouped runtime grouping-set cardinality drifted";
+              return step;
+            }
+          }
+          if (input_batch.rows.empty() &&
+              grouped.groups.size() != empty_grouping_set_count) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
             step.diagnostic.detail =
-                "composed grouped runtime omitted a grouping set";
+                "composed empty-input grouping-set cardinality drifted";
             return step;
           }
         }
@@ -27380,13 +27399,34 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
               return step;
             }
           }
-          if (std::ranges::find(grouping_sets_observed, false) !=
-              grouping_sets_observed.end()) {
+          std::size_t empty_grouping_set_count = 0;
+          for (std::size_t set_ordinal = 0;
+               set_ordinal < prepared_root.grouping_sets.size();
+               ++set_ordinal) {
+            const bool empty_grouping_set =
+                prepared_root.grouping_sets[set_ordinal]
+                    .key_term_ordinals.empty();
+            const bool expected_observed =
+                !input_batch.rows.empty() || empty_grouping_set;
+            if (empty_grouping_set) ++empty_grouping_set_count;
+            if (grouping_sets_observed[set_ordinal] !=
+                expected_observed) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "grouped COUNT/SUM grouping-set cardinality drifted";
+              return step;
+            }
+          }
+          if (input_batch.rows.empty() &&
+              aggregate_result.groups.size() !=
+                  empty_grouping_set_count) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
             step.diagnostic.detail =
-                "grouped COUNT/SUM runtime omitted a grouping-set identity";
+                "empty-input grouped COUNT/SUM cardinality drifted";
             return step;
           }
         }
