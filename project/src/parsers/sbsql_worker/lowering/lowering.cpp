@@ -37161,6 +37161,23 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
   }
   if (limit_relation != nullptr) {
+    std::uint64_t expected_parameter_occurrence = 1;
+    if (catalog_filter_relation != nullptr &&
+        catalog_filter_relation->predicate_expression_ids.size() == 1) {
+      const auto predicate = expressions_by_id.find(
+          catalog_filter_relation->predicate_expression_ids.front());
+      if (predicate != expressions_by_id.end() &&
+          predicate->second->child_expression_ids.size() == 2) {
+        const auto filter_operand = expressions_by_id.find(
+            predicate->second->child_expression_ids[1]);
+        if (filter_operand != expressions_by_id.end() &&
+            filter_operand->second->expression_kind ==
+                NativeExpressionAstKind::kParameter &&
+            filter_operand->second->structural_parameter_occurrence_id == 1) {
+          expected_parameter_occurrence = 2;
+        }
+      }
+    }
     std::unordered_set<std::uint32_t> bound_ids;
     for (const auto expression_id : limit_relation->limit_expression_ids) {
       const auto expression = expressions_by_id.find(expression_id);
@@ -37185,7 +37202,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            expression->second->structural_variable_occurrence_id == 0) ||
           (parameter_value &&
            expression->second->structural_literal_occurrence_id == 0 &&
-           expression->second->structural_parameter_occurrence_id == 1 &&
+           expression->second->structural_parameter_occurrence_id ==
+               expected_parameter_occurrence &&
            expression->second->structural_variable_occurrence_id == 0);
       if (expression == expressions_by_id.end() ||
           !bound_ids.insert(expression_id).second ||
@@ -37266,8 +37284,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeExpressionAstKind::kLiteral &&
         limit_value->second->literal_kind == NativeLiteralAstKind::kNumeric &&
         limit_value->second->structural_literal_occurrence_id == 1;
+    const bool parameter_filter_parameter_limit =
+        filter_value != nullptr && limit_value != expressions_by_id.end() &&
+        filter_value->expression_kind ==
+            NativeExpressionAstKind::kParameter &&
+        filter_value->structural_parameter_occurrence_id == 1 &&
+        limit_value->second->expression_kind ==
+            NativeExpressionAstKind::kParameter &&
+        limit_value->second->structural_parameter_occurrence_id == 2;
     if (!literal_filter_parameter_limit &&
-        !parameter_filter_literal_limit) {
+        !parameter_filter_literal_limit &&
+        !parameter_filter_parameter_limit) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed JOIN FILTER and LIMIT operands are not composable");

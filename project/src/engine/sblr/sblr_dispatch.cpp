@@ -1814,7 +1814,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       }
       const auto& value =
           dispatch_request.parameter_value_set->records[reference.slot_ordinal];
-      const auto descriptor_uuid = uuid_text(node->datatype_descriptor_uuid);
+      const auto descriptor_uuid = uuid_text(value.slot_uuid);
       const auto limit_binding_count = std::ranges::count_if(
           decoded.request.relational_dag.nodes,
           [&](const auto& candidate) {
@@ -1823,6 +1823,43 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
                        std::vector<std::uint32_t>{expression_id};
           });
       const bool exact_limit_binding = limit_binding_count == 1;
+      std::uint32_t exact_filter_descriptor_id = 0;
+      const auto filter_binding_count = std::ranges::count_if(
+          decoded.request.relational_dag.nodes,
+          [&](const auto& candidate) {
+            if (candidate.node_kind !=
+                    api::RelationalDagNodeKind::kFilter ||
+                candidate.bound_expression_ids.size() != 1) {
+              return false;
+            }
+            const auto predicate = std::ranges::find_if(
+                decoded.request.relational_dag.expressions,
+                [&](const auto& expression) {
+                  return expression.expression_id ==
+                         candidate.bound_expression_ids.front();
+                });
+            if (predicate == decoded.request.relational_dag.expressions.end() ||
+                predicate->expression_kind !=
+                    api::RelationalExpressionKind::kBinary ||
+                predicate->child_expression_ids.size() != 2 ||
+                predicate->child_expression_ids[1] != expression_id) {
+              return false;
+            }
+            exact_filter_descriptor_id = predicate->expression_id;
+            return true;
+          });
+      const auto exact_filter_descriptor_count =
+          filter_binding_count == 1
+              ? std::ranges::count_if(
+                    decoded.request.relational_dag.descriptors,
+                    [&](const auto& candidate) {
+                      return candidate.descriptor_id ==
+                                 exact_filter_descriptor_id &&
+                             candidate.descriptor_uuid == descriptor_uuid;
+                    })
+              : std::size_t{0};
+      const bool exact_filter_binding =
+          filter_binding_count == 1 && exact_filter_descriptor_count == 1;
       const auto exact_limit_descriptor_count = std::ranges::count_if(
           decoded.request.relational_dag.descriptors,
           [&](const auto& candidate) {
@@ -1834,7 +1871,9 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           [&](const auto& candidate) {
             return candidate.descriptor_uuid == descriptor_uuid &&
                    (!exact_limit_binding ||
-                    candidate.descriptor_id == expression_id);
+                    candidate.descriptor_id == expression_id) &&
+                   (!exact_filter_binding ||
+                    candidate.descriptor_id == exact_filter_descriptor_id);
           });
       const auto value_sha = scratchbird::core::hash::ComputeSha256Digest(
           value.canonical_value_bytes);
@@ -1852,7 +1891,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       expression.result_descriptor_id = descriptor->descriptor_id;
       api::RelationalExpressionRecord::ParameterTypedValueV1 typed;
       typed.descriptor_uuid = descriptor_uuid;
-      typed.descriptor_generation = value.datatype_descriptor_generation;
+      typed.descriptor_generation = node->parameter_set_generation;
       typed.value_state =
           value.state == SblrParameterValueStateV1::null_value ? "null" : "value";
       typed.canonical_value_bytes = value.canonical_value_bytes;
@@ -1872,7 +1911,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           {"slot_uuid", uuid_text(value.slot_uuid)},
           {"descriptor_uuid", descriptor_uuid},
           {"descriptor_generation",
-           std::to_string(value.datatype_descriptor_generation)},
+           std::to_string(node->parameter_set_generation)},
           {"value_state", value.state == SblrParameterValueStateV1::null_value
                               ? "null" : "value"},
           {"canonical_value_sha256",
