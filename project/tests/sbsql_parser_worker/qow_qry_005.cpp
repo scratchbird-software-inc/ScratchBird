@@ -34,6 +34,11 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::string_view kCanonicalBooleanTypeUuid =
+    "01000000-626f-7f6c-a561-6e0000000000";
+constexpr std::string_view kCanonicalInt64TypeUuid =
+    "019d0000-0000-7000-8000-00000000d711";
+
 #if defined(__GNUC__) && !defined(__clang__)
 #define SB_QOW_TEST_NOINLINE __attribute__((noinline, noipa))
 #elif defined(__clang__)
@@ -136,10 +141,10 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
        std::nullopt,
        {}}};
   context.expressions = {
-      {1, 1, std::nullopt},
-      {2, 2, std::nullopt},
-      {3, 1, std::nullopt},
-      {4, 2, std::nullopt},
+      {1, 1, std::nullopt, std::nullopt, 1},
+      {2, 2, std::nullopt, std::nullopt, 2},
+      {3, 1, std::nullopt, std::nullopt, 3},
+      {4, 2, std::nullopt, std::nullopt, 4},
   };
   context.outputs = {
       {1, 1, "column_1", 1, true, 0},
@@ -571,18 +576,18 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
   }();
   context.descriptors = {
       {1, "019f0000-0000-7200-8000-0000000005a3",
-       "019f0000-0000-7300-8000-0000000005a4",
+       std::string(kCanonicalInt64TypeUuid),
        sbsql::BoundNullability::kNullable, std::nullopt, std::nullopt, {}},
       {2, "019f0000-0000-7200-8000-0000000005a5",
-       "019f0000-0000-7300-8000-0000000005a6",
+       std::string(kCanonicalInt64TypeUuid),
        sbsql::BoundNullability::kNullable, std::nullopt, std::nullopt, {}},
       {3, "019f0000-0000-7200-8000-0000000005a7",
-       "019f0000-0000-7300-8000-0000000005a8",
+       std::string(kCanonicalInt64TypeUuid),
        one_key_grouping ? sbsql::BoundNullability::kNonNull
                         : sbsql::BoundNullability::kNullable,
        std::nullopt, std::nullopt, {}},
       {4, "019f0000-0000-7200-8000-0000000005a9",
-       "019f0000-0000-7300-8000-0000000005aa",
+       std::string(kCanonicalInt64TypeUuid),
        one_key_grouping ? sbsql::BoundNullability::kNullable
                         : sbsql::BoundNullability::kNonNull,
        std::nullopt, std::nullopt, {}},
@@ -590,17 +595,17 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
   if (!one_key_grouping) {
     context.descriptors.push_back(
         {5, "019f0000-0000-7200-8000-0000000005ab",
-         "019f0000-0000-7300-8000-0000000005ac",
+         std::string(kCanonicalInt64TypeUuid),
          sbsql::BoundNullability::kNullable, std::nullopt, std::nullopt, {}});
   }
   if (has_having_filter) {
     context.descriptors.insert(
         context.descriptors.end(),
         {{9, "019f0000-0000-7200-8000-0000000005b6",
-          "019f0000-0000-7300-8000-0000000005a6",
+          std::string(kCanonicalInt64TypeUuid),
           sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {}},
          {10, "019f0000-0000-7200-8000-0000000005b7",
-          "019f0000-0000-7300-8000-0000000005b8",
+          std::string(kCanonicalBooleanTypeUuid),
           sbsql::BoundNullability::kNullable, std::nullopt, std::nullopt, {}}});
   }
   const bool projects_grouping_metadata =
@@ -611,13 +616,13 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
     context.descriptors.insert(
         context.descriptors.end(),
         {{6, "019f0000-0000-7200-8000-0000000005b0",
-          "019f0000-0000-7300-8000-0000000005b1",
+          std::string(kCanonicalInt64TypeUuid),
           sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {}},
          {7, "019f0000-0000-7200-8000-0000000005b2",
-          "019f0000-0000-7300-8000-0000000005b3",
+          std::string(kCanonicalInt64TypeUuid),
           sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {}},
          {8, "019f0000-0000-7200-8000-0000000005b4",
-          "019f0000-0000-7300-8000-0000000005b5",
+          std::string(kCanonicalInt64TypeUuid),
           sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {}}});
   }
 
@@ -686,9 +691,12 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
                expression.operator_name == "NOT") {
       descriptor_id = 10;
     }
-    context.expressions.push_back({expression.expression_id, descriptor_id,
-                                   std::move(function_uuid),
-                                   std::move(bound_name_uuid)});
+    context.expressions.push_back(
+        {expression.expression_id, descriptor_id, std::move(function_uuid),
+         std::move(bound_name_uuid),
+         expression.structural_literal_occurrence_id,
+         expression.structural_parameter_occurrence_id,
+         expression.structural_variable_occurrence_id});
     descriptor_by_expression[expression.expression_id] = descriptor_id;
   }
 

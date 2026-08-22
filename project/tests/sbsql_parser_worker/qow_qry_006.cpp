@@ -117,6 +117,12 @@ sbsql::NativeRelationalBindingContext ScalarBindingContext() {
     context.expressions.push_back(
         {expression_id, descriptor_id, std::nullopt, std::nullopt});
   }
+  context.expressions[0].structural_literal_occurrence_id = 1;
+  context.expressions[1].structural_literal_occurrence_id = 2;
+  context.expressions[3].structural_literal_occurrence_id = 3;
+  context.expressions[5].structural_parameter_occurrence_id = 1;
+  context.expressions[6].structural_literal_occurrence_id = 4;
+  context.expressions[8].structural_literal_occurrence_id = 5;
   context.expressions[4].function_uuid =
       "019f0000-0000-7500-8000-000000000608";
   context.outputs = {

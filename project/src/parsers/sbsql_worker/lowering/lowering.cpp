@@ -36385,9 +36385,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             expression.bound_name_uuid.has_value() ||
         (operator_expression || functionless_model_operation) !=
             expression.canonical_operator_name.has_value() ||
-        literal != expression.literal_or_parameter_ref.has_value() ||
-        ((parameter || variable) &&
-         expression.literal_or_parameter_ref.has_value())) {
+        (literal || parameter) !=
+            expression.literal_or_parameter_ref.has_value() ||
+        (variable && expression.literal_or_parameter_ref.has_value())) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed scalar expression fields are incomplete or contradictory");
