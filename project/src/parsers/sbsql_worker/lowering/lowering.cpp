@@ -37163,41 +37163,68 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     std::unordered_set<std::uint32_t> bound_ids;
     for (const auto expression_id : limit_relation->limit_expression_ids) {
       const auto expression = expressions_by_id.find(expression_id);
+      const bool numeric_literal =
+          expression != expressions_by_id.end() &&
+          expression->second->expression_kind ==
+              NativeExpressionAstKind::kLiteral &&
+          expression->second->literal_kind == NativeLiteralAstKind::kNumeric &&
+          expression->second->literal_or_parameter_ref.has_value();
+      const bool parameter_value =
+          catalog_join_relation != nullptr &&
+          expression != expressions_by_id.end() &&
+          expression->second->expression_kind ==
+              NativeExpressionAstKind::kParameter &&
+          !expression->second->literal_kind.has_value() &&
+          !expression->second->literal_or_parameter_ref.has_value();
+      const bool exact_occurrence =
+          catalog_join_relation == nullptr ||
+          (numeric_literal &&
+           expression->second->structural_literal_occurrence_id != 0 &&
+           expression->second->structural_parameter_occurrence_id == 0 &&
+           expression->second->structural_variable_occurrence_id == 0) ||
+          (parameter_value &&
+           expression->second->structural_literal_occurrence_id == 0 &&
+           expression->second->structural_parameter_occurrence_id == 1 &&
+           expression->second->structural_variable_occurrence_id == 0);
       if (expression == expressions_by_id.end() ||
           !bound_ids.insert(expression_id).second ||
-          expression->second->expression_kind !=
-              NativeExpressionAstKind::kLiteral ||
-          expression->second->literal_kind != NativeLiteralAstKind::kNumeric ||
+          (!numeric_literal && !parameter_value) ||
           !expression->second->child_expression_ids.empty() ||
           expression->second->bound_function_uuid.has_value() ||
           expression->second->bound_name_uuid.has_value() ||
           expression->second->canonical_operator_name.has_value() ||
-          !expression->second->literal_or_parameter_ref.has_value() ||
-          (catalog_join_relation != nullptr &&
-           (expression->second->structural_literal_occurrence_id == 0 ||
-            expression->second->structural_parameter_occurrence_id != 0 ||
-            expression->second->structural_variable_occurrence_id != 0))) {
+          !exact_occurrence) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed LIMIT binding contains a malformed row-bound expression");
         return envelope;
       }
-      const auto& encoded = *expression->second->literal_or_parameter_ref;
+      const auto& encoded = numeric_literal
+                                ? *expression->second->literal_or_parameter_ref
+                                : std::string{};
       std::uint64_t parsed = 0;
-      const auto [end, error] =
-          std::from_chars(encoded.data(), encoded.data() + encoded.size(), parsed);
+      const auto converted =
+          numeric_literal
+              ? std::from_chars(encoded.data(),
+                                encoded.data() + encoded.size(), parsed)
+              : std::from_chars_result{};
       const auto descriptor = std::ranges::find_if(
           native.descriptors, [&](const auto& candidate) {
             return candidate.descriptor_id ==
                    expression->second->result_descriptor_id;
           });
-      if (encoded.empty() || (encoded.size() > 1 && encoded.front() == '0') ||
-          error != std::errc{} || end != encoded.data() + encoded.size() ||
-          (catalog_join_relation != nullptr &&
-           parsed > static_cast<std::uint64_t>(
-                        std::numeric_limits<std::int64_t>::max())) ||
+      if ((numeric_literal &&
+           (encoded.empty() ||
+            (encoded.size() > 1 && encoded.front() == '0') ||
+            converted.ec != std::errc{} ||
+            converted.ptr != encoded.data() + encoded.size() ||
+            (catalog_join_relation != nullptr &&
+             parsed > static_cast<std::uint64_t>(
+                          std::numeric_limits<std::int64_t>::max())))) ||
           descriptor == native.descriptors.end() ||
           descriptor->nullability != BoundNullability::kNonNull ||
+          (catalog_join_relation != nullptr &&
+           descriptor->canonical_type_name != "int64") ||
           descriptor->collation_uuid.has_value() ||
           descriptor->timezone_profile_id.has_value() ||
           descriptor->width_precision_scale.width.has_value() ||

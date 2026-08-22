@@ -5710,38 +5710,51 @@ BuildEngineProjectedNativeBindingContext(
         return fail("catalog_join_project_expression_inventory_invalid");
       }
     }
-    const NativeExpressionAstNode* limit_literal = nullptr;
+    const NativeExpressionAstNode* limit_value = nullptr;
     if (limit_relation != nullptr) {
-      const auto literal = std::ranges::find_if(
+      const auto value = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
             return candidate.expression_id ==
                    limit_relation->limit_expression_ids.front();
           });
+      const bool numeric_literal =
+          value != ast.expressions.end() &&
+          value->expression_kind == NativeExpressionAstKind::kLiteral &&
+          value->literal_kind == NativeLiteralAstKind::kNumeric;
+      const bool parameter_value =
+          value != ast.expressions.end() &&
+          value->expression_kind == NativeExpressionAstKind::kParameter &&
+          !value->literal_kind.has_value();
       std::uint64_t parsed_limit = 0;
       const auto converted =
-          literal == ast.expressions.end()
+          !numeric_literal
               ? std::from_chars_result{}
-              : std::from_chars(literal->spelling.data(),
-                                literal->spelling.data() +
-                                    literal->spelling.size(),
+              : std::from_chars(value->spelling.data(),
+                                value->spelling.data() +
+                                    value->spelling.size(),
                                 parsed_limit);
-      if (literal == ast.expressions.end() ||
-          literal->expression_kind != NativeExpressionAstKind::kLiteral ||
-          literal->literal_kind != NativeLiteralAstKind::kNumeric ||
-          !literal->qualified_identifier.empty() ||
-          !literal->child_expression_ids.empty() ||
-          !literal->operator_name.empty() || literal->spelling.empty() ||
-          (literal->spelling.size() > 1 && literal->spelling.front() == '0') ||
-          literal->structural_literal_occurrence_id == 0 ||
-          literal->structural_parameter_occurrence_id != 0 ||
-          literal->structural_variable_occurrence_id != 0 ||
-          converted.ec != std::errc{} ||
-          converted.ptr != literal->spelling.data() + literal->spelling.size() ||
-          parsed_limit > static_cast<std::uint64_t>(
-                             std::numeric_limits<std::int64_t>::max())) {
-        return fail("catalog_join_limit_literal_invalid");
+      const bool exact_occurrence =
+          (numeric_literal && value->structural_literal_occurrence_id != 0 &&
+           value->structural_parameter_occurrence_id == 0 &&
+           value->structural_variable_occurrence_id == 0) ||
+          (parameter_value && value->structural_literal_occurrence_id == 0 &&
+           value->structural_parameter_occurrence_id == 1 &&
+           value->structural_variable_occurrence_id == 0);
+      if (value == ast.expressions.end() ||
+          (!numeric_literal && !parameter_value) ||
+          !value->qualified_identifier.empty() ||
+          !value->child_expression_ids.empty() ||
+          !value->operator_name.empty() || value->spelling.empty() ||
+          !exact_occurrence ||
+          (numeric_literal &&
+           ((value->spelling.size() > 1 && value->spelling.front() == '0') ||
+            converted.ec != std::errc{} ||
+            converted.ptr != value->spelling.data() + value->spelling.size() ||
+            parsed_limit > static_cast<std::uint64_t>(
+                               std::numeric_limits<std::int64_t>::max())))) {
+        return fail("catalog_join_limit_value_invalid");
       }
-      limit_literal = &*literal;
+      limit_value = &*value;
       std::unordered_set<std::uint32_t> admitted_expression_ids;
       std::unordered_set<std::uint32_t> active_expression_ids;
       const auto find_expression = [&](const std::uint32_t expression_id) {
@@ -5767,7 +5780,7 @@ BuildEngineProjectedNativeBindingContext(
         return true;
       };
       bool exact_expression_inventory =
-          admit_expression(admit_expression, limit_literal->expression_id, 1);
+          admit_expression(admit_expression, limit_value->expression_id, 1);
       for (const auto* source_relation : source_relations) {
         for (const auto expression_id : source_relation->output_expression_ids) {
           exact_expression_inventory =
@@ -5803,7 +5816,7 @@ BuildEngineProjectedNativeBindingContext(
       bool exact_source_expression_inventory =
           ast.expressions.size() ==
           source_count + project_identifiers.size() + filter_expression_count +
-              static_cast<std::size_t>(limit_literal != nullptr);
+              static_cast<std::size_t>(limit_value != nullptr);
       for (const auto* source_relation : source_relations) {
         if (!exact_source_expression_inventory ||
             source_relation->output_expression_ids.size() != 1) {
@@ -5853,10 +5866,10 @@ BuildEngineProjectedNativeBindingContext(
                 filter_predicate->expression_id &&
             filter_value->expression_id != filter_predicate->expression_id;
       }
-      if (limit_literal != nullptr) {
+      if (limit_value != nullptr) {
         exact_source_expression_inventory =
             exact_source_expression_inventory &&
-            !source_wildcard_ids.contains(limit_literal->expression_id);
+            !source_wildcard_ids.contains(limit_value->expression_id);
       }
       if (!exact_source_expression_inventory) {
         return fail("catalog_multi_cross_join_expression_inventory_invalid");
@@ -6593,26 +6606,30 @@ BuildEngineProjectedNativeBindingContext(
           statement_context.descriptor_profiles, [](const auto& candidate) {
             return candidate.profile_kind == 1 && candidate.slot == 0;
           });
-      if (limit_literal == nullptr ||
+      if (limit_value == nullptr ||
           numeric_profile == statement_context.descriptor_profiles.end() ||
           numeric_profile->nullable ||
           !CanonicalUuidBytes(numeric_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(numeric_profile->type_uuid).has_value()) {
         return fail("catalog_join_limit_numeric_descriptor_unavailable");
       }
-      NativeDescriptorBindingInput descriptor;
-      descriptor.descriptor_id =
-          static_cast<std::uint32_t>(context.descriptors.size() + 1);
-      descriptor.descriptor_uuid = numeric_profile->descriptor_uuid;
-      descriptor.type_uuid = numeric_profile->type_uuid;
-      descriptor.nullability = BoundNullability::kNonNull;
-      const auto limit_binding_id = descriptor.descriptor_id;
-      context.descriptors.push_back(std::move(descriptor));
-      context.expressions.push_back(
-          {limit_binding_id, limit_binding_id, std::nullopt, std::nullopt,
-           limit_literal->structural_literal_occurrence_id,
-           limit_literal->structural_parameter_occurrence_id,
-           limit_literal->structural_variable_occurrence_id});
+      if (limit_value->expression_kind ==
+          NativeExpressionAstKind::kLiteral) {
+        NativeDescriptorBindingInput descriptor;
+        descriptor.descriptor_id =
+            static_cast<std::uint32_t>(context.descriptors.size() + 1);
+        descriptor.descriptor_uuid = numeric_profile->descriptor_uuid;
+        descriptor.type_uuid = numeric_profile->type_uuid;
+        descriptor.nullability = BoundNullability::kNonNull;
+        descriptor.canonical_type_name = "int64";
+        const auto limit_binding_id = descriptor.descriptor_id;
+        context.descriptors.push_back(std::move(descriptor));
+        context.expressions.push_back(
+            {limit_binding_id, limit_binding_id, std::nullopt, std::nullopt,
+             limit_value->structural_literal_occurrence_id,
+             limit_value->structural_parameter_occurrence_id,
+             limit_value->structural_variable_occurrence_id});
+      }
       std::vector<NativeOutputBindingInput> predecessor_outputs;
       for (const auto& output : context.outputs) {
         if (output.relation_id == limit_predecessor_relation_id) {
@@ -16835,14 +16852,24 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         const bool exact_native_join_occurrence_operand_route =
             exact_native_join_filter_operand_route ||
             exact_native_join_limit_operand_route;
-        const auto reserved_join_filter_operand_expression_id = [&]()
+        const auto reserved_join_occurrence_operand_expression_id = [&]()
             -> std::optional<std::uint32_t> {
-          if (!exact_native_join_filter_operand_route ||
-              native_binding_context->descriptors.empty()) {
+          if (!exact_native_join_occurrence_operand_route) {
             return std::nullopt;
           }
-          const auto reserved_id =
-              native_binding_context->descriptors.back().descriptor_id;
+          const auto reserved_id = exact_native_join_filter_operand_route
+                                       ? (native_binding_context->descriptors.empty()
+                                              ? 0
+                                              : native_binding_context
+                                                    ->descriptors.back()
+                                                    .descriptor_id)
+                                       : (native_binding_context->descriptors.size() >=
+                                                  std::numeric_limits<std::uint32_t>::max()
+                                              ? 0
+                                              : static_cast<std::uint32_t>(
+                                                    native_binding_context
+                                                        ->descriptors.size() +
+                                                    1));
           if (reserved_id == 0 ||
               std::ranges::any_of(
                   native_binding_context->expressions,
@@ -16880,7 +16907,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             } else {
               const auto reserved_expression_id =
                   exact_native_join_filter_operand_route
-                      ? reserved_join_filter_operand_expression_id()
+                      ? reserved_join_occurrence_operand_expression_id()
                       : exact_native_join_limit_operand_route
                       ? std::optional<std::uint32_t>{}
                       : std::optional<std::uint32_t>{
@@ -16962,14 +16989,33 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             if (ast_parameter != ast.native_relational.expressions.end() &&
                 bound_input == native_binding_context->expressions.end()) {
               const auto reserved_expression_id =
-                  exact_native_join_filter_operand_route
-                      ? reserved_join_filter_operand_expression_id()
+                  exact_native_join_occurrence_operand_route
+                      ? reserved_join_occurrence_operand_expression_id()
                       : std::optional<std::uint32_t>{
                             ast_parameter->expression_id};
               if (!reserved_expression_id.has_value()) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
                     "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
                     "The JOIN filter parameter could not receive a fresh bound expression identity.",
+                    "sbp_sbsql.wire"));
+                break;
+              }
+              const auto limit_numeric_profile =
+                  std::ranges::find_if(
+                      native_statement_context->descriptor_profiles,
+                      [](const auto& candidate) {
+                        return candidate.profile_kind == 1 &&
+                               candidate.slot == 0;
+                      });
+              if (exact_native_join_limit_operand_route &&
+                  (limit_numeric_profile ==
+                       native_statement_context->descriptor_profiles.end() ||
+                   limit_numeric_profile->nullable || mapping.nullable != 0 ||
+                   mapping.datatype_descriptor_generation == 0 ||
+                   type_uuid != limit_numeric_profile->type_uuid)) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "The JOIN LIMIT parameter is not an exact non-null int64 mapping.",
                     "sbp_sbsql.wire"));
                 break;
               }
@@ -16981,6 +17027,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               parameter_descriptor.nullability = mapping.nullable != 0
                                                      ? BoundNullability::kNullable
                                                      : BoundNullability::kNonNull;
+              if (exact_native_join_limit_operand_route) {
+                parameter_descriptor.canonical_type_name = "int64";
+              }
               const auto descriptor_id = parameter_descriptor.descriptor_id;
               native_binding_context->descriptors.push_back(
                   std::move(parameter_descriptor));
@@ -17053,7 +17102,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             const auto descriptor_id = descriptor.descriptor_id;
             const auto reserved_expression_id =
                 exact_native_join_filter_operand_route
-                    ? reserved_join_filter_operand_expression_id()
+                    ? reserved_join_occurrence_operand_expression_id()
                     : std::optional<std::uint32_t>{
                           ast_variable->expression_id};
             if (!reserved_expression_id.has_value()) {

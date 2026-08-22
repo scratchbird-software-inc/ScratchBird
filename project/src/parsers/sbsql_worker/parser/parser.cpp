@@ -4742,36 +4742,44 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       Consume();
-      if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+      if (AtEnd() ||
+          (Current().kind != TokenKind::kNumericLiteral &&
+           Current().kind != TokenKind::kParameter)) {
         Refuse("catalog_join_limit_bound_required",
-               "bounded catalog JOIN LIMIT requires one unsigned int64 literal");
+               "bounded catalog JOIN LIMIT requires one unsigned int64 "
+               "literal or structural parameter");
         return FinishRefusal();
       }
-      const Token& literal_token = Consume();
-      std::uint64_t parsed_limit = 0;
-      const auto converted = std::from_chars(
-          literal_token.text.data(),
-          literal_token.text.data() + literal_token.text.size(), parsed_limit);
-      if (literal_token.text.empty() ||
-          (literal_token.text.size() > 1 && literal_token.text.front() == '0') ||
-          converted.ec != std::errc{} ||
-          converted.ptr !=
-              literal_token.text.data() + literal_token.text.size() ||
-          parsed_limit > static_cast<std::uint64_t>(
-                             std::numeric_limits<std::int64_t>::max())) {
-        Refuse("catalog_join_limit_bound_invalid",
-               "bounded catalog JOIN LIMIT requires one canonical nonnegative int64 literal");
-        return FinishRefusal();
+      const Token& bound_token = Consume();
+      NativeExpressionAstNode bound;
+      bound.expression_id = NextExpressionId();
+      bound.spelling = bound_token.text;
+      bound.range = TokenSourceRange(bound_token);
+      if (bound_token.kind == TokenKind::kNumericLiteral) {
+        std::uint64_t parsed_limit = 0;
+        const auto converted = std::from_chars(
+            bound_token.text.data(),
+            bound_token.text.data() + bound_token.text.size(), parsed_limit);
+        if (bound_token.text.empty() ||
+            (bound_token.text.size() > 1 && bound_token.text.front() == '0') ||
+            converted.ec != std::errc{} ||
+            converted.ptr !=
+                bound_token.text.data() + bound_token.text.size() ||
+            parsed_limit > static_cast<std::uint64_t>(
+                               std::numeric_limits<std::int64_t>::max())) {
+          Refuse("catalog_join_limit_bound_invalid",
+                 "bounded catalog JOIN LIMIT requires one canonical "
+                 "nonnegative int64 literal");
+          return FinishRefusal();
+        }
+        bound.expression_kind = NativeExpressionAstKind::kLiteral;
+        bound.literal_kind = NativeLiteralAstKind::kNumeric;
+      } else {
+        bound.expression_kind = NativeExpressionAstKind::kParameter;
       }
-      NativeExpressionAstNode literal;
-      literal.expression_id = NextExpressionId();
-      literal.expression_kind = NativeExpressionAstKind::kLiteral;
-      literal.literal_kind = NativeLiteralAstKind::kNumeric;
-      literal.spelling = literal_token.text;
-      literal.range = TokenSourceRange(literal_token);
-      join_limit_expression_id = literal.expression_id;
-      document_.expressions.push_back(std::move(literal));
-      query_end = &literal_token;
+      join_limit_expression_id = bound.expression_id;
+      document_.expressions.push_back(std::move(bound));
+      query_end = &bound_token;
     }
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {

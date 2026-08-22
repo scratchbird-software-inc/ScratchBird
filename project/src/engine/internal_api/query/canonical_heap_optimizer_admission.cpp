@@ -10,6 +10,7 @@
 
 #include "datatype_catalog_manifest.hpp"
 #include "engine/executor/canonical_aggregate_registry.hpp"
+#include "hash_digest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "security/security_model.hpp"
@@ -744,10 +745,24 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         expression == expressions_by_id.end()
             ? descriptors_by_id.end()
             : descriptors_by_id.find(expression->second->result_descriptor_id);
+    const bool numeric_literal =
+        expression != expressions_by_id.end() &&
+        expression->second->expression_kind ==
+            RelationalExpressionKind::kLiteral &&
+        expression->second->literal_kind == RelationalLiteralKind::kNumeric &&
+        expression->second->literal_or_parameter_ref.has_value() &&
+        !expression->second->parameter_typed_value_v1.has_value();
+    const bool parameter_value =
+        expression != expressions_by_id.end() &&
+        expression->second->expression_kind ==
+            RelationalExpressionKind::kParameter &&
+        !expression->second->literal_kind.has_value() &&
+        !expression->second->literal_or_parameter_ref.has_value() &&
+        !expression->second->literal_typed_value_v1.has_value() &&
+        expression->second->parameter_typed_value_v1.has_value();
     std::uint64_t parsed = 0;
     const auto* encoded =
-        expression != expressions_by_id.end() &&
-                expression->second->literal_or_parameter_ref.has_value()
+        numeric_literal
             ? &*expression->second->literal_or_parameter_ref
             : nullptr;
     const auto converted =
@@ -755,21 +770,35 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
             ? std::from_chars_result{}
             : std::from_chars(encoded->data(),
                               encoded->data() + encoded->size(), parsed);
+    bool exact_parameter = parameter_value;
+    if (exact_parameter) {
+      const auto& typed = *expression->second->parameter_typed_value_v1;
+      const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+          typed.canonical_value_bytes);
+      exact_parameter =
+          typed.descriptor_generation != 0 && typed.value_state == "value" &&
+          typed.canonical_value_bytes.size() == 8 &&
+          (typed.canonical_value_bytes.back() & 0x80U) == 0 && digest.ok() &&
+          digest.digest == typed.canonical_value_sha256 &&
+          descriptor != descriptors_by_id.end() &&
+          typed.descriptor_uuid == descriptor->second->descriptor_uuid;
+    }
     if (expression == expressions_by_id.end() ||
-        expression->second->expression_kind !=
-            RelationalExpressionKind::kLiteral ||
-        expression->second->literal_kind != RelationalLiteralKind::kNumeric ||
+        (!numeric_literal && !exact_parameter) ||
         !expression->second->child_expression_ids.empty() ||
         expression->second->function_uuid.has_value() ||
         expression->second->bound_name_uuid.has_value() ||
-        expression->second->operator_name.has_value() || encoded == nullptr ||
-        encoded->empty() || (encoded->size() > 1 && encoded->front() == '0') ||
-        converted.ec != std::errc{} ||
-        converted.ptr != encoded->data() + encoded->size() ||
-        parsed > static_cast<std::uint64_t>(
-                     std::numeric_limits<std::int64_t>::max()) ||
+        expression->second->operator_name.has_value() ||
+        (numeric_literal &&
+         (encoded == nullptr || encoded->empty() ||
+          (encoded->size() > 1 && encoded->front() == '0') ||
+          converted.ec != std::errc{} ||
+          converted.ptr != encoded->data() + encoded->size() ||
+          parsed > static_cast<std::uint64_t>(
+                       std::numeric_limits<std::int64_t>::max()))) ||
         descriptor == descriptors_by_id.end() ||
         descriptor->second->nullability != RelationalNullability::kNonNull ||
+        descriptor->second->type_uuid != CanonicalCoreDatatypeUuid("int64") ||
         descriptor->second->collation_uuid.has_value() ||
         descriptor->second->timezone_profile_id.has_value() ||
         descriptor->second->width.has_value() ||

@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -10654,19 +10655,36 @@ bool EvaluateNonNegativeRowBound(
           refusal_detail)) {
     return false;
   }
+  const bool textual = !value.encoded_value.empty();
+  const bool binary = !value.binary_value.empty();
   if (value.state != api::EngineValueState::value || value.is_null ||
-      value.descriptor.canonical_type_name != "int64" ||
-      value.encoded_value.empty()) {
+      value.descriptor.canonical_type_name != "int64" || textual == binary) {
     *refusal_detail = "row bound is not a non-NULL canonical int64 value";
     return false;
   }
   std::int64_t decoded = 0;
-  const auto [end, error] = std::from_chars(
-      value.encoded_value.data(),
-      value.encoded_value.data() + value.encoded_value.size(), decoded);
-  if (error != std::errc{} ||
-      end != value.encoded_value.data() + value.encoded_value.size() ||
-      decoded < 0) {
+  if (textual) {
+    const auto [end, error] = std::from_chars(
+        value.encoded_value.data(),
+        value.encoded_value.data() + value.encoded_value.size(), decoded);
+    if (error != std::errc{} ||
+        end != value.encoded_value.data() + value.encoded_value.size()) {
+      *refusal_detail = "row bound is outside exact int64 admission";
+      return false;
+    }
+  } else {
+    if (value.binary_value.size() != sizeof(std::int64_t)) {
+      *refusal_detail = "row bound binary int64 payload is malformed";
+      return false;
+    }
+    std::uint64_t encoded = 0;
+    for (std::size_t index = 0; index < sizeof(encoded); ++index) {
+      encoded |= static_cast<std::uint64_t>(value.binary_value[index])
+                 << (index * 8);
+    }
+    decoded = std::bit_cast<std::int64_t>(encoded);
+  }
+  if (decoded < 0) {
     *refusal_detail = "row bound is negative or outside exact int64 admission";
     return false;
   }

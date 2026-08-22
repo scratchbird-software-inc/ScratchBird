@@ -1815,14 +1815,32 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       const auto& value =
           dispatch_request.parameter_value_set->records[reference.slot_ordinal];
       const auto descriptor_uuid = uuid_text(node->datatype_descriptor_uuid);
+      const auto limit_binding_count = std::ranges::count_if(
+          decoded.request.relational_dag.nodes,
+          [&](const auto& candidate) {
+            return candidate.node_kind == api::RelationalDagNodeKind::kLimit &&
+                   candidate.bound_expression_ids ==
+                       std::vector<std::uint32_t>{expression_id};
+          });
+      const bool exact_limit_binding = limit_binding_count == 1;
+      const auto exact_limit_descriptor_count = std::ranges::count_if(
+          decoded.request.relational_dag.descriptors,
+          [&](const auto& candidate) {
+            return candidate.descriptor_id == expression_id &&
+                   candidate.descriptor_uuid == descriptor_uuid;
+          });
       const auto descriptor = std::ranges::find_if(
           decoded.request.relational_dag.descriptors,
           [&](const auto& candidate) {
-            return candidate.descriptor_uuid == descriptor_uuid;
+            return candidate.descriptor_uuid == descriptor_uuid &&
+                   (!exact_limit_binding ||
+                    candidate.descriptor_id == expression_id);
           });
       const auto value_sha = scratchbird::core::hash::ComputeSha256Digest(
           value.canonical_value_bytes);
-      if (descriptor == decoded.request.relational_dag.descriptors.end() ||
+      if (limit_binding_count > 1 ||
+          (exact_limit_binding && exact_limit_descriptor_count != 1) ||
+          descriptor == decoded.request.relational_dag.descriptors.end() ||
           value.slot_ordinal != reference.slot_ordinal || !value_sha.ok()) {
         decoded.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
         decoded.detail = "parameter descriptor or canonical value is invalid";
