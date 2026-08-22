@@ -17824,6 +17824,10 @@ MakeLivePredicateSubqueryRegistration(
   return registration;
 }
 
+struct LiveNonrecursiveCteRuntimeNodeConfiguration {
+  std::uint32_t relational_node_id{0};
+};
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
     std::string implementation_id,
     std::string capability_uuid,
@@ -17831,13 +17835,26 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
     api::EngineRequestContext mga_context,
     const api::EngineRequestContext* borrowed_mga_context = nullptr,
     const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
-        nullptr) {
+        nullptr,
+    std::vector<LiveNonrecursiveCteRuntimeNodeConfiguration>
+        runtime_node_configurations = {}) {
   const bool strict_dispatcher_memory =
       borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
-  const std::uint64_t registration_retained_bytes =
+  std::uint64_t registration_retained_bytes =
       strict_dispatcher_memory
-          ? sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512
+          ? sizeof(api::EngineRequestContext) +
+                sizeof(std::vector<LiveNonrecursiveCteRuntimeNodeConfiguration>) +
+                8 * sizeof(void*) + 512
           : 0;
+  std::uint64_t configuration_bytes = 0;
+  if (!strict_dispatcher_memory ||
+      !CheckedMultiply(runtime_node_configurations.capacity(),
+                       sizeof(LiveNonrecursiveCteRuntimeNodeConfiguration),
+                       &configuration_bytes) ||
+      !CheckedAdd(registration_retained_bytes, configuration_bytes,
+                  &registration_retained_bytes)) {
+    registration_retained_bytes = 0;
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   const bool inline_cte =
       implementation_id == "cte.bound.inline.typed.v1";
@@ -17855,13 +17872,37 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
   registration.execute =
       [inline_cte, materialized_cte, maximum_input_row_count,
        mga_context = std::move(mga_context), borrowed_mga_authority,
-       strict_dispatcher_memory](
+       strict_dispatcher_memory,
+       runtime_node_configurations = std::move(runtime_node_configurations)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
+        const LiveNonrecursiveCteRuntimeNodeConfiguration*
+            runtime_node_configuration = nullptr;
+        for (const auto& candidate : runtime_node_configurations) {
+          if (candidate.relational_node_id != node.relational_node_id) continue;
+          if (runtime_node_configuration != nullptr) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-CTE-INPUT-V1";
+            step.diagnostic.detail =
+                "nonrecursive CTE has duplicate logical-node configuration";
+            return step;
+          }
+          runtime_node_configuration = &candidate;
+        }
+        if (!runtime_node_configurations.empty() &&
+            runtime_node_configuration == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-CTE-INPUT-V1";
+          step.diagnostic.detail =
+              "nonrecursive CTE logical-node configuration is absent";
+          return step;
+        }
         if (inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -33912,7 +33953,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   std::vector<const api::RelationalDagNode*> joins;
   std::vector<const api::RelationalDagNode*> filters;
   std::vector<const api::RelationalDagNode*> projects;
-  const api::RelationalDagNode* cte = nullptr;
+  std::vector<const api::RelationalDagNode*> ctes;
   bool duplicate_or_unsupported_node = false;
   for (const auto& node : dag.nodes) {
     if (node.node_kind == api::RelationalDagNodeKind::kScan) {
@@ -33923,9 +33964,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       filters.push_back(&node);
     } else if (node.node_kind == api::RelationalDagNodeKind::kProject) {
       projects.push_back(&node);
-    } else if (node.node_kind == api::RelationalDagNodeKind::kCte &&
-               cte == nullptr) {
-      cte = &node;
+    } else if (node.node_kind == api::RelationalDagNodeKind::kCte) {
+      ctes.push_back(&node);
     } else {
       duplicate_or_unsupported_node = true;
     }
@@ -33947,10 +33987,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     return join != nullptr;
   };
   bool exact_terminal_chain = !duplicate_or_unsupported_node;
-  if (cte != nullptr) {
+  const api::RelationalDagNode* terminal_cte = nullptr;
+  if (join != nullptr && join->node_kind == api::RelationalDagNodeKind::kCte) {
+    terminal_cte = join;
     exact_terminal_chain =
         exact_terminal_chain &&
-        consume_terminal(api::RelationalDagNodeKind::kCte, cte);
+        consume_terminal(api::RelationalDagNodeKind::kCte, terminal_cte);
+  }
+  std::vector<const api::RelationalDagNode*> local_ctes;
+  local_ctes.reserve(ctes.size());
+  for (const auto* candidate : ctes) {
+    if (candidate != terminal_cte) local_ctes.push_back(candidate);
   }
   const api::RelationalDagNode* terminal_project = nullptr;
   if (join != nullptr &&
@@ -34032,13 +34079,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   if (dag.wire_version != 2 || scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 || join == nullptr ||
       filters.size() > scans.size() + 1 ||
-      projects.size() > scans.size() + 1 || dag.nodes.size() > 38 ||
+      projects.size() > scans.size() + 1 ||
+      ctes.size() > scans.size() + 1 || dag.nodes.size() > 47 ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
       dag.nodes.size() !=
           scans.size() + joins.size() + filters.size() +
-              projects.size() +
-              static_cast<std::size_t>(cte != nullptr) ||
+              projects.size() + ctes.size() ||
       !accepted_join ||
       join->bound_expression_ids.size() !=
           static_cast<std::size_t>(predicate_join)) {
@@ -34082,6 +34129,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     const api::RelationalDagNode* node{nullptr};
     std::vector<std::size_t> projected_columns;
   };
+  struct BoundHeapCteNode {
+    const api::RelationalDagNode* node{nullptr};
+  };
   const auto unary_empty = [](const api::RelationalDagNode& node) {
     return node.required_object_uuids.empty() && node.values_row_ids.empty() &&
            node.required_property_uuids.empty() &&
@@ -34100,6 +34150,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   std::vector<BoundHeapJoinNode> bound_joins;
   std::vector<BoundHeapFilterNode> bound_filters;
   std::vector<BoundHeapProjectNode> bound_projects;
+  std::vector<BoundHeapCteNode> bound_ctes;
   std::unordered_set<std::uint32_t> bound_filter_predicate_expression_ids;
   const auto bind_project_lineage =
       [&](const api::RelationalDagNode& project,
@@ -34307,6 +34358,49 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           completed_join_nodes.insert(node_id);
           return true;
         }
+        if (node.node_kind == api::RelationalDagNodeKind::kCte) {
+          const auto input_node =
+              node.input_node_ids.size() == 1
+                  ? nodes_by_id.find(node.input_node_ids.front())
+                  : nodes_by_id.end();
+          const bool exact_input =
+              input_node != nodes_by_id.end() &&
+              (input_node->second->node_kind ==
+                   api::RelationalDagNodeKind::kScan ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kFilter &&
+                std::ranges::find(local_filters, input_node->second) !=
+                    local_filters.end()) ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kProject &&
+                std::ranges::find(local_projects, input_node->second) !=
+                    local_projects.end()));
+          const bool outputless =
+              std::ranges::none_of(dag.outputs, [&](const auto& output) {
+                return output.relation_node_id == node.node_id;
+              });
+          if (std::ranges::find(local_ctes, &node) == local_ctes.end() ||
+              !exact_input || node.input_node_ids.front() == node.node_id ||
+              node.semantic_variant_id != "cte.bound.v1" ||
+              node.output_descriptor_ids !=
+                  input_node->second->output_descriptor_ids ||
+              !node.bound_expression_ids.empty() || !unary_empty(node) ||
+              !outputless || completed_join_nodes.contains(node_id) ||
+              !visiting_join_nodes.insert(node_id).second ||
+              !bind_tree(node.input_node_ids.front(), detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail =
+                  "join leaf CTE is not one exact nonrecursive carrier";
+            }
+            return false;
+          }
+          nullable_by_node.emplace(
+              node_id, nullable_by_node.at(input_node->second->node_id));
+          bound_ctes.push_back({&node});
+          visiting_join_nodes.erase(node_id);
+          completed_join_nodes.insert(node_id);
+          return true;
+        }
         if (node.node_kind != api::RelationalDagNodeKind::kJoin ||
             node.input_node_ids.size() != 2 ||
             node.input_node_ids[0] == node.input_node_ids[1] ||
@@ -34401,10 +34495,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   if (!bind_tree(join->node_id, &join_tree_detail) ||
       completed_join_nodes.size() !=
           scans.size() + joins.size() +
-              local_filters.size() + local_projects.size() ||
+              local_filters.size() + local_projects.size() +
+              local_ctes.size() ||
       bound_joins.size() != joins.size() ||
       bound_filters.size() != local_filters.size() ||
-      bound_projects.size() != local_projects.size()) {
+      bound_projects.size() != local_projects.size() ||
+      bound_ctes.size() != local_ctes.size()) {
     return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
                   join_tree_detail.empty()
                       ? "object-backed join tree is disconnected"
@@ -34471,25 +34567,37 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       terminal_project != nullptr
           ? terminal_project
           : (terminal_filter != nullptr ? terminal_filter : join);
-  if (cte != nullptr) {
-    if (cte->semantic_variant_id != "cte.bound.v1" ||
-        cte->input_node_ids !=
+  if (terminal_cte != nullptr) {
+    const bool outputless =
+        std::ranges::none_of(dag.outputs, [&](const auto& output) {
+          return output.relation_node_id == terminal_cte->node_id;
+        });
+    if (terminal_cte->semantic_variant_id != "cte.bound.v1" ||
+        terminal_cte->input_node_ids !=
             std::vector<std::uint32_t>{cte_input->node_id} ||
-        cte->output_descriptor_ids != cte_input->output_descriptor_ids ||
-        !cte->bound_expression_ids.empty() || !unary_empty(*cte)) {
+        terminal_cte->output_descriptor_ids !=
+            cte_input->output_descriptor_ids ||
+        !terminal_cte->bound_expression_ids.empty() ||
+        !unary_empty(*terminal_cte) || !outputless) {
       return refuse(
           "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-CTE-V1",
           "object-backed join nonrecursive CTE tail binding is not exact");
     }
-    nullable_by_node.emplace(cte->node_id,
+    nullable_by_node.emplace(terminal_cte->node_id,
                              nullable_by_node.at(cte_input->node_id));
+    bound_ctes.push_back({terminal_cte});
+  }
+  if (bound_ctes.size() != ctes.size()) {
+    return refuse(
+        "QOW-DIAG-RELATIONAL-LIVE-CTE-INPUT-V1",
+        "object-backed join CTE configuration coverage is incomplete");
   }
   const auto* final_output_node =
-      cte != nullptr ? cte : (terminal_project != nullptr
-                                  ? terminal_project
-                                  : (terminal_filter != nullptr
-                                         ? terminal_filter
-                                         : join));
+      terminal_cte != nullptr
+          ? terminal_cte
+          : (terminal_project != nullptr
+                 ? terminal_project
+                 : (terminal_filter != nullptr ? terminal_filter : join));
   // CTE is schema preserving and owns no public output records.
   const auto* publication_node =
       terminal_project != nullptr
@@ -34609,23 +34717,37 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       profiles.back().runtime_peak_from_callback_batches = true;
     }
   }
-  std::string cte_implementation_id;
-  std::string cte_capability_uuid;
-  if (cte != nullptr) {
-    cte_implementation_id = cte->shareable
-                                ? "cte.bound.materialize.typed.v1"
-                                : "cte.bound.inline.typed.v1";
-    cte_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-join-tail-cte.capability");
-    profiles.push_back(
-        {cte->node_id, cte_implementation_id, cte_capability_uuid,
-         plan::CanonicalLogicalRelationalNodeKind::kCte,
-         exec::PhysicalNodeKind::kCte,
-         cte->shareable ? "canonical.heap.join-tail.cte.materialize.v1"
-                        : "canonical.heap.join-tail.cte.inline.v1",
-         1, join_memory_grant, 1, 1});
-    profiles.back().runtime_peak_from_callback_batches = true;
-    profiles.back().runtime_auxiliary_from_first_input_batch = cte->shareable;
+  std::string inline_cte_capability_uuid;
+  std::string materialized_cte_capability_uuid;
+  if (!ctes.empty()) {
+    inline_cte_capability_uuid = DerivedCanonicalUuid(
+        identity_scope, "heap-join-cte-inline.capability");
+    materialized_cte_capability_uuid = DerivedCanonicalUuid(
+        identity_scope, "heap-join-cte-materialized.capability");
+    for (const auto* cte : ctes) {
+      const auto implementation_id =
+          cte->shareable ? "cte.bound.materialize.typed.v1"
+                         : "cte.bound.inline.typed.v1";
+      const auto& capability_uuid = cte->shareable
+                                        ? materialized_cte_capability_uuid
+                                        : inline_cte_capability_uuid;
+      const bool terminal = cte == terminal_cte;
+      profiles.push_back(
+          {cte->node_id, implementation_id, capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kCte,
+           exec::PhysicalNodeKind::kCte,
+           terminal
+               ? (cte->shareable
+                      ? "canonical.heap.join-tail.cte.materialize.v1"
+                      : "canonical.heap.join-tail.cte.inline.v1")
+               : (cte->shareable
+                      ? "canonical.heap.join-input.cte.materialize.v1"
+                      : "canonical.heap.join-input.cte.inline.v1"),
+           1, join_memory_grant, 1, 1});
+      profiles.back().runtime_peak_from_callback_batches = true;
+      profiles.back().runtime_auxiliary_from_first_input_batch =
+          cte->shareable;
+    }
   }
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
@@ -34633,15 +34755,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   }
   const auto physical = PlanAndPublishLivePhysicalDag(
       planning_request, profiles,
-      cte != nullptr
+      terminal_cte != nullptr
           ? "heap-join-tail-cte.selected-plan"
           : (terminal_project != nullptr
                  ? "heap-join-tail-project.selected-plan"
                  : (terminal_filter != nullptr
                         ? "heap-join-tail-filter.selected-plan"
-                        : (!local_filters.empty()
-                               ? "heap-join-input-filter.selected-plan"
-                               : "heap-join-tree.selected-plan"))),
+                        : (!local_ctes.empty()
+                               ? "heap-join-input-cte.selected-plan"
+                               : (!local_projects.empty()
+                                      ? "heap-join-input-project.selected-plan"
+                                      : (!local_filters.empty()
+                                             ? "heap-join-input-filter.selected-plan"
+                                             : "heap-join-tree.selected-plan"))))),
       "object-backed heap join tree with unary tail");
   if (!physical.ok) {
     return refuse(
@@ -34856,12 +34982,31 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             selected.borrowed_mga_authority,
             std::move(project_node_configurations)));
   }
-  if (cte != nullptr) {
+  std::vector<LiveNonrecursiveCteRuntimeNodeConfiguration>
+      inline_cte_node_configurations;
+  std::vector<LiveNonrecursiveCteRuntimeNodeConfiguration>
+      materialized_cte_node_configurations;
+  for (const auto& bound_cte : bound_ctes) {
+    auto& configurations = bound_cte.node->shareable
+                               ? materialized_cte_node_configurations
+                               : inline_cte_node_configurations;
+    configurations.push_back({bound_cte.node->node_id});
+  }
+  if (!inline_cte_node_configurations.empty()) {
     selected.available_executors.push_back(
         MakeLiveNonrecursiveCteRegistration(
-            cte_implementation_id, cte_capability_uuid,
+            "cte.bound.inline.typed.v1", inline_cte_capability_uuid,
             maximum_output_rows, {}, &input.context,
-            selected.borrowed_mga_authority));
+            selected.borrowed_mga_authority,
+            std::move(inline_cte_node_configurations)));
+  }
+  if (!materialized_cte_node_configurations.empty()) {
+    selected.available_executors.push_back(
+        MakeLiveNonrecursiveCteRegistration(
+            "cte.bound.materialize.typed.v1",
+            materialized_cte_capability_uuid, maximum_output_rows, {},
+            &input.context, selected.borrowed_mga_authority,
+            std::move(materialized_cte_node_configurations)));
   }
   std::uint64_t executor_registration_live_bytes =
       sizeof(selected.available_executors);
