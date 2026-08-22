@@ -189,6 +189,8 @@ api::EngineApiRequest NestedOptionRequest(const std::size_t depth) {
   std::string prefix = "projection_0_";
   for (std::size_t level = 1; level < depth; ++level) {
     request.option_envelopes.push_back(prefix + "expr_kind:function");
+    request.option_envelopes.push_back(prefix + "type:int64");
+    request.option_envelopes.push_back(prefix + "function_id:identity");
     request.option_envelopes.push_back(prefix + "function_arg_count:1");
     prefix += "arg_0_";
   }
@@ -300,6 +302,8 @@ bool ValidateOptionTreeRefusals() {
     api::EngineApiRequest request;
     request.option_envelopes = {
         "projection_0_expr_kind:function",
+        "projection_0_type:int64",
+        "projection_0_function_id:fanout",
         "projection_0_function_arg_count:1025"};
     std::vector<api::EngineProjectionExpression> expressions(1);
     std::size_t node_count = 999;
@@ -316,6 +320,8 @@ bool ValidateOptionTreeRefusals() {
     api::EngineApiRequest request;
     request.option_envelopes = {
         "projection_0_expr_kind:function",
+        "projection_0_type:int64",
+        "projection_0_function_id:fanout",
         "projection_0_function_arg_count:1x"};
     std::vector<api::EngineProjectionExpression> expressions(1);
     std::size_t node_count = 999;
