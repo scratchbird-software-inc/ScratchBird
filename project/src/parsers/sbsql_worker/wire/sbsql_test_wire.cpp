@@ -5061,6 +5061,7 @@ BuildEngineProjectedNativeBindingContext(
     std::vector<const NativeRelationAstNode*> source_relations;
     std::vector<const NativeRelationAstNode*> join_relations;
     const NativeRelationAstNode* filter_relation = nullptr;
+    const NativeRelationAstNode* project_relation = nullptr;
     for (const auto& relation : ast.relations) {
       if (relation.relation_kind == NativeRelationAstKind::kCatalogSource) {
         source_relations.push_back(&relation);
@@ -5069,6 +5070,9 @@ BuildEngineProjectedNativeBindingContext(
       } else if (relation.relation_kind == NativeRelationAstKind::kFilter &&
                  filter_relation == nullptr) {
         filter_relation = &relation;
+      } else if (relation.relation_kind == NativeRelationAstKind::kProject &&
+                 project_relation == nullptr) {
+        project_relation = &relation;
       }
     }
     std::ranges::sort(source_relations, {},
@@ -5089,7 +5093,8 @@ BuildEngineProjectedNativeBindingContext(
         join_relations.size() + 1 == source_count &&
         ast.relations.size() ==
             source_relations.size() + join_relations.size() +
-                static_cast<std::size_t>(filter_relation != nullptr);
+                static_cast<std::size_t>(filter_relation != nullptr) +
+                static_cast<std::size_t>(project_relation != nullptr);
     std::uint32_t expected_left_relation_id =
         source_relations.empty() ? 0 : source_relations.front()->relation_id;
     for (std::size_t ordinal = 1; exact_join_graph && ordinal < source_count;
@@ -5130,9 +5135,37 @@ BuildEngineProjectedNativeBindingContext(
     exact_join_graph =
         exact_join_graph &&
         (filter_relation == nullptr || exact_filter_tail);
+    const auto project_predecessor_relation_id =
+        filter_relation != nullptr
+            ? filter_relation->relation_id
+            : (join_relations.empty() ? 0 : join_relations.back()->relation_id);
+    const bool exact_project_tail =
+        project_relation != nullptr && ordinary_relational_sources &&
+        project_relation->relation_id == project_predecessor_relation_id + 1 &&
+        project_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{project_predecessor_relation_id} &&
+        !project_relation->output_expression_ids.empty() &&
+        project_relation->relation_source_ids.empty() &&
+        project_relation->values_row_ids.empty() &&
+        project_relation->window_invocation_ids.empty() &&
+        project_relation->grouping_key_expression_ids.empty() &&
+        project_relation->aggregate_expression_ids.empty() &&
+        project_relation->predicate_expression_ids.empty() &&
+        project_relation->limit_expression_ids.empty() &&
+        project_relation->ordering_terms.empty() &&
+        project_relation->join_kind == NativeJoinAstKind::kNone &&
+        project_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kNone &&
+        project_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kNone;
+    exact_join_graph =
+        exact_join_graph &&
+        (project_relation == nullptr || exact_project_tail);
     const auto expected_root_relation_id =
-        filter_relation != nullptr ? filter_relation->relation_id
-                                   : expected_left_relation_id;
+        project_relation != nullptr
+            ? project_relation->relation_id
+            : (filter_relation != nullptr ? filter_relation->relation_id
+                                          : expected_left_relation_id);
     const auto expected_resolution_count = source_count +
         std::ranges::count_if(ast.catalog_relation_sources,
                               [](const auto& source) {
@@ -5261,6 +5294,39 @@ BuildEngineProjectedNativeBindingContext(
       }
     }
 
+    std::vector<const NativeExpressionAstNode*> project_identifiers;
+    if (project_relation != nullptr) {
+      std::unordered_set<std::uint32_t> project_expression_ids;
+      std::unordered_set<std::string> project_names;
+      for (const auto expression_id : project_relation->output_expression_ids) {
+        const auto expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        if (expression == ast.expressions.end() ||
+            expression->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            expression->qualified_identifier.size() != 1 ||
+            expression->qualified_identifier.front().spelling !=
+                expression->spelling ||
+            expression->spelling.empty() ||
+            !expression->child_expression_ids.empty() ||
+            expression->literal_kind.has_value() ||
+            !expression->operator_name.empty() ||
+            expression->structural_literal_occurrence_id != 0 ||
+            expression->structural_parameter_occurrence_id != 0 ||
+            expression->structural_variable_occurrence_id != 0 ||
+            !project_expression_ids.insert(expression_id).second ||
+            !project_names
+                 .insert(CanonicalColumnLookupKey(
+                     expression->qualified_identifier.front()))
+                 .second) {
+          return fail("catalog_join_project_identifier_invalid");
+        }
+        project_identifiers.push_back(&*expression);
+      }
+    }
+
     const NativeExpressionAstNode* filter_predicate = nullptr;
     const NativeExpressionAstNode* filter_identifier = nullptr;
     const NativeExpressionAstNode* filter_value = nullptr;
@@ -5374,10 +5440,71 @@ BuildEngineProjectedNativeBindingContext(
       exact_expression_inventory =
           exact_expression_inventory &&
           admit_expression(admit_expression,
-                           filter_predicate->expression_id, 1) &&
+                           filter_predicate->expression_id, 1);
+      if (project_relation != nullptr) {
+        for (const auto expression_id :
+             project_relation->output_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
+      exact_expression_inventory =
+          exact_expression_inventory &&
           admitted_expression_ids.size() == ast.expressions.size();
       if (!exact_expression_inventory) {
         return fail("catalog_join_filter_expression_inventory_invalid");
+      }
+    }
+    if (filter_relation == nullptr && project_relation != nullptr) {
+      const auto find_expression = [&](const std::uint32_t expression_id) {
+        const auto found = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        return found == ast.expressions.end() ? nullptr : &*found;
+      };
+      std::unordered_set<std::uint32_t> admitted_expression_ids;
+      std::unordered_set<std::uint32_t> active_expression_ids;
+      const auto admit_expression =
+          [&](auto&& self, const std::uint32_t expression_id,
+              const std::size_t depth) -> bool {
+        if (expression_id == 0 || depth > 32) return false;
+        if (admitted_expression_ids.contains(expression_id)) return true;
+        if (!active_expression_ids.insert(expression_id).second) return false;
+        const auto* expression = find_expression(expression_id);
+        if (expression == nullptr) return false;
+        for (const auto child_id : expression->child_expression_ids) {
+          if (!self(self, child_id, depth + 1)) return false;
+        }
+        active_expression_ids.erase(expression_id);
+        admitted_expression_ids.insert(expression_id);
+        return true;
+      };
+      bool exact_expression_inventory = true;
+      for (const auto* source_relation : source_relations) {
+        for (const auto expression_id : source_relation->output_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
+      for (const auto* join_relation : join_relations) {
+        for (const auto expression_id :
+             join_relation->predicate_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
+      for (const auto expression_id : project_relation->output_expression_ids) {
+        exact_expression_inventory =
+            exact_expression_inventory &&
+            admit_expression(admit_expression, expression_id, 1);
+      }
+      if (!exact_expression_inventory ||
+          admitted_expression_ids.size() != ast.expressions.size()) {
+        return fail("catalog_join_project_expression_inventory_invalid");
       }
     }
 
@@ -5879,11 +6006,15 @@ BuildEngineProjectedNativeBindingContext(
             find_expression(comparison->child_expression_ids[1]);
         const auto left_column = std::ranges::find_if(
             context.catalog_relations[0].columns, [&](const auto& column) {
-              return column.canonical_name_key == left_key->spelling;
+              return left_key->qualified_identifier.size() == 1 &&
+                     column.canonical_name_key == CanonicalColumnLookupKey(
+                         left_key->qualified_identifier.front());
             });
         const auto right_column = std::ranges::find_if(
             context.catalog_relations[1].columns, [&](const auto& column) {
-              return column.canonical_name_key == right_key->spelling;
+              return right_key->qualified_identifier.size() == 1 &&
+                     column.canonical_name_key == CanonicalColumnLookupKey(
+                         right_key->qualified_identifier.front());
             });
         if (left_column == context.catalog_relations[0].columns.end() ||
             right_column == context.catalog_relations[1].columns.end() ||
@@ -5960,7 +6091,8 @@ BuildEngineProjectedNativeBindingContext(
       std::ranges::sort(join_outputs, {}, &NativeOutputBindingInput::ordinal);
       const auto matching_filter_columns = std::ranges::count_if(
           join_outputs, [&](const auto& output) {
-            return output.output_name_utf8 == filter_identifier->spelling;
+            return output.output_name_utf8 == CanonicalColumnLookupKey(
+                filter_identifier->qualified_identifier.front());
           });
       if (join_outputs.empty() || matching_filter_columns != 1) {
         return fail("catalog_join_filter_column_unresolved_or_ambiguous");
@@ -5991,6 +6123,46 @@ BuildEngineProjectedNativeBindingContext(
              source_output.descriptor_id, true,
              static_cast<std::uint32_t>(ordinal),
              filter_relation->relation_id});
+      }
+    }
+    if (project_relation != nullptr) {
+      std::vector<NativeOutputBindingInput> predecessor_outputs;
+      for (const auto& output : context.outputs) {
+        if (output.relation_id == project_predecessor_relation_id) {
+          predecessor_outputs.push_back(output);
+        }
+      }
+      std::ranges::sort(predecessor_outputs, {},
+                        &NativeOutputBindingInput::ordinal);
+      if (project_identifiers.empty() || predecessor_outputs.empty() ||
+          project_identifiers.size() >= predecessor_outputs.size()) {
+        return fail("catalog_join_project_width_not_strict_subset");
+      }
+      std::unordered_set<std::uint32_t> selected_predecessor_output_ids;
+      for (std::size_t ordinal = 0; ordinal < project_identifiers.size();
+           ++ordinal) {
+        const auto* identifier = project_identifiers[ordinal];
+        const auto identifier_key = CanonicalColumnLookupKey(
+            identifier->qualified_identifier.front());
+        const auto matching_count = std::ranges::count_if(
+            predecessor_outputs, [&](const auto& output) {
+              return output.output_name_utf8 == identifier_key;
+            });
+        const auto selected = std::ranges::find_if(
+            predecessor_outputs, [&](const auto& output) {
+              return output.output_name_utf8 == identifier_key;
+            });
+        if (matching_count != 1 || selected == predecessor_outputs.end() ||
+            !selected_predecessor_output_ids.insert(selected->output_id)
+                 .second) {
+          return fail("catalog_join_project_column_unresolved_or_ambiguous");
+        }
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(context.outputs.size() + 1),
+             selected->expression_id, selected->output_name_utf8,
+             selected->descriptor_id, true,
+             static_cast<std::uint32_t>(ordinal),
+             project_relation->relation_id});
       }
     }
     return context;
@@ -16133,6 +16305,20 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             ast.native_relational.relations, [](const auto& relation) {
               return relation.relation_kind == NativeRelationAstKind::kFilter;
             });
+        const auto native_join_project_relation = std::ranges::find_if(
+            ast.native_relational.relations, [](const auto& relation) {
+              return relation.relation_kind == NativeRelationAstKind::kProject;
+            });
+        const bool exact_native_join_project_after_filter =
+            native_join_filter_relation !=
+                ast.native_relational.relations.end() &&
+            native_join_project_relation !=
+                ast.native_relational.relations.end() &&
+            native_join_project_relation->input_relation_ids ==
+                std::vector<std::uint32_t>{
+                    native_join_filter_relation->relation_id} &&
+            ast.native_relational.root_relation_id ==
+                native_join_project_relation->relation_id;
         const bool exact_native_join_filter_operand_route =
             native_binding_context.has_value() &&
             ast.native_relational.catalog_relation_sources.size() == 2 &&
@@ -16142,8 +16328,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 }) == 1 &&
             native_join_filter_relation !=
                 ast.native_relational.relations.end() &&
-            ast.native_relational.root_relation_id ==
-                native_join_filter_relation->relation_id;
+            (ast.native_relational.root_relation_id ==
+                 native_join_filter_relation->relation_id ||
+             exact_native_join_project_after_filter);
         const auto reserved_join_filter_operand_expression_id = [&]()
             -> std::optional<std::uint32_t> {
           if (!exact_native_join_filter_operand_route ||

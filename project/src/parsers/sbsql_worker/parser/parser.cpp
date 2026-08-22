@@ -3807,11 +3807,32 @@ class NativeRelationalParser final {
   }
 
   bool LooksLikeBoundedCatalogJoinSelect() const {
-    if (tokens_.size() < 8 || tokens_[1]->text != "*" ||
-        !IsWord(*tokens_[2], "FROM")) {
+    if (tokens_.size() < 7) return false;
+    std::size_t from_index = 1;
+    if (tokens_[from_index]->text == "*") {
+      ++from_index;
+    } else {
+      bool expect_identifier = true;
+      while (from_index < tokens_.size()) {
+        if (expect_identifier) {
+          if (tokens_[from_index]->kind != TokenKind::kIdentifier) return false;
+          ++from_index;
+          expect_identifier = false;
+        } else if (tokens_[from_index]->text == ",") {
+          ++from_index;
+          expect_identifier = true;
+        } else {
+          break;
+        }
+      }
+      if (expect_identifier) return false;
+    }
+    if (from_index >= tokens_.size() ||
+        !IsWord(*tokens_[from_index], "FROM")) {
       return false;
     }
-    for (std::size_t index = 3; index + 1 < tokens_.size(); ++index) {
+    for (std::size_t index = from_index + 1;
+         index + 1 < tokens_.size(); ++index) {
       const bool accepted_kind =
           IsWord(*tokens_[index], "CROSS") ||
           IsWord(*tokens_[index], "INNER") ||
@@ -3849,9 +3870,49 @@ class NativeRelationalParser final {
     }
 
     const Token& select_token = Consume();
-    if (!RequireSymbol("*", "catalog_cross_join_wildcard_required",
-                       "bounded catalog CROSS JOIN requires SELECT *") ||
-        !RequireWord("FROM", "catalog_cross_join_from_required",
+    bool wildcard_projection = false;
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      Consume();
+      wildcard_projection = true;
+    } else {
+      std::unordered_set<std::string> projection_names;
+      while (true) {
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_join_projection_identifier_required",
+                 "bounded catalog JOIN projection requires an unqualified "
+                 "column identifier");
+          return FinishRefusal();
+        }
+        const Token& identifier_token = Consume();
+        auto projection_key = identifier_token.text;
+        if (!identifier_token.quoted) {
+          for (auto& ch : projection_key) {
+            if (ch >= 'A' && ch <= 'Z') {
+              ch = static_cast<char>(ch - 'A' + 'a');
+            }
+          }
+        }
+        if (!projection_names.insert(std::move(projection_key)).second) {
+          Refuse("catalog_join_projection_identifier_duplicate",
+                 "bounded catalog JOIN projection identifiers must be unique");
+          return FinishRefusal();
+        }
+        NativeExpressionAstNode identifier;
+        identifier.expression_id = NextExpressionId();
+        identifier.expression_kind = NativeExpressionAstKind::kIdentifier;
+        identifier.qualified_identifier.push_back(NativeIdentifierAstNode{
+            identifier_token.text, identifier_token.quoted,
+            TokenSourceRange(identifier_token)});
+        identifier.spelling = identifier_token.text;
+        identifier.range = TokenSourceRange(identifier_token);
+        projection_expression_ids.push_back(identifier.expression_id);
+        document_.expressions.push_back(std::move(identifier));
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "catalog_cross_join_from_required",
                      "bounded catalog CROSS JOIN requires FROM")) {
       return FinishRefusal();
     }
@@ -4467,6 +4528,12 @@ class NativeRelationalParser final {
           return source.source_kind ==
                  NativeRelationSourceAstKind::kCatalogRelation;
         });
+    if (!wildcard_projection && !ordinary_two_source_join) {
+      Refuse("catalog_join_projection_profile_unsupported",
+             "bounded catalog JOIN identifier projection requires exactly "
+             "two ordinary catalog relation sources");
+      return FinishRefusal();
+    }
     if (ordinary_two_source_join && !AtEnd() && IsWord(Current(), "WHERE")) {
       Consume();
       join_filter_predicate_id = ParseExpression(0, 0);
@@ -4578,6 +4645,9 @@ class NativeRelationalParser final {
             NativeExpressionAstNode left_key;
             left_key.expression_id = NextExpressionId();
             left_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+            left_key.qualified_identifier.push_back(NativeIdentifierAstNode{
+                parsed.left_key->text, parsed.left_key->quoted,
+                TokenSourceRange(*parsed.left_key)});
             left_key.spelling = parsed.left_key->text;
             left_key.range = TokenSourceRange(*parsed.left_key);
             const auto left_key_id = left_key.expression_id;
@@ -4586,6 +4656,9 @@ class NativeRelationalParser final {
             NativeExpressionAstNode right_key;
             right_key.expression_id = NextExpressionId();
             right_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+            right_key.qualified_identifier.push_back(NativeIdentifierAstNode{
+                parsed.right_key->text, parsed.right_key->quoted,
+                TokenSourceRange(*parsed.right_key)});
             right_key.spelling = parsed.right_key->text;
             right_key.range = TokenSourceRange(*parsed.right_key);
             const auto right_key_id = right_key.expression_id;
@@ -4629,6 +4702,16 @@ class NativeRelationalParser final {
       filter.predicate_expression_ids = {*join_filter_predicate_id};
       filter.range = Span(select_token, *query_end);
       document_.relations.push_back(std::move(filter));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    }
+    if (!wildcard_projection) {
+      NativeRelationAstNode project;
+      project.relation_id = document_.root_relation_id + 1;
+      project.relation_kind = NativeRelationAstKind::kProject;
+      project.input_relation_ids = {document_.root_relation_id};
+      project.output_expression_ids = projection_expression_ids;
+      project.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(project));
       document_.root_relation_id = document_.relations.back().relation_id;
     }
     document_.status = NativeRelationalParseStatus::kAccepted;
