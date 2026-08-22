@@ -491,6 +491,9 @@ api::EngineBoundSearchReadRequestV1 SearchRequest(
   api::EngineBoundSearchReadRequestV1 request;
   request.context = fixture.reader;
   request.collection_uuid = std::string(kCollection);
+  request.expected_descriptor_uuid = fixture.storage.descriptor_uuid.canonical;
+  request.expected_descriptor_generation =
+      fixture.storage.descriptor_generation;
   request.selected_alternative_uuid = TestUuid(0x720);
   request.selected_provider_uuid = TestUuid(0x721);
   request.selected_capability_uuid = TestUuid(0x722);

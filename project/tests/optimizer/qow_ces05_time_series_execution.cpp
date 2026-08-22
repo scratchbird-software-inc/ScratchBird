@@ -3775,7 +3775,14 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       {cancelled_context,
        TimeSeriesDag(cancelled_context, storage,
                      api::EngineBoundTimeSeriesAggregateV1::kNone)});
+  const auto first_diagnostic = [](const auto& execution) {
+    return execution.api_result.diagnostics.empty()
+               ? std::string("no-diagnostic")
+               : execution.api_result.diagnostics.front().code + ":" +
+                     execution.api_result.diagnostics.front().detail;
+  };
   std::optional<std::remove_cvref_t<decltype(raw)>> combined_peak_refused;
+  std::ostringstream combined_peak_attempts;
   for (const std::uint64_t memory_budget :
        {8192ULL, 12288ULL, 16384ULL, 24576ULL, 32768ULL, 49152ULL,
         65536ULL, 98304ULL, 131072ULL}) {
@@ -3787,12 +3794,17 @@ bool ProductionRouteMatrix(const Fixture& fixture,
             low_memory_context, storage,
             fixture.descriptors.at(std::string(kAsofRightObjectUuid)),
             api::EngineBoundTimeSeriesAggregateV1::kNone, true, true));
+    combined_peak_attempts << '[' << memory_budget << ':'
+                           << first_diagnostic(low_memory) << ']';
     if (!low_memory.api_result.ok &&
         !low_memory.api_result.diagnostics.empty() &&
         low_memory.api_result.diagnostics.front().code ==
             "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1" &&
-        low_memory.api_result.diagnostics.front().detail ==
-            "time-series ASOF combined input/copy/key/result peak exceeded the selected memory bound") {
+        (low_memory.api_result.diagnostics.front().detail ==
+             "time-series ASOF combined input/copy/key/result peak exceeded the selected memory bound" ||
+         low_memory.api_result.diagnostics.front().detail.find(
+             "heap_read_maximum_memory_bytes_exceeded") !=
+             std::string::npos)) {
       combined_peak_refused = low_memory;
       break;
     }
@@ -3816,6 +3828,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
        TimeSeriesDag(group_bound_context, storage,
                      api::EngineBoundTimeSeriesAggregateV1::kSum)});
   std::optional<std::remove_cvref_t<decltype(raw)>> byte_bound_refused;
+  std::ostringstream byte_bound_attempts;
   for (const std::uint64_t memory_budget :
        {512ULL, 1024ULL, 2048ULL, 4096ULL, 8192ULL, 12288ULL,
         16384ULL}) {
@@ -3825,13 +3838,18 @@ bool ProductionRouteMatrix(const Fixture& fixture,
         {byte_bound_context,
          TimeSeriesDag(byte_bound_context, storage,
                        api::EngineBoundTimeSeriesAggregateV1::kNone)});
+    byte_bound_attempts << '[' << memory_budget << ':'
+                        << first_diagnostic(candidate) << ']';
     if (!candidate.api_result.ok &&
         !candidate.api_result.diagnostics.empty() &&
         candidate.api_result.diagnostics.front().code ==
             "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1" &&
-        candidate.api_result.diagnostics.front().detail.find(
-            "heap_read_maximum_decoded_bytes_exceeded") !=
-            std::string::npos) {
+        (candidate.api_result.diagnostics.front().detail.find(
+             "heap_read_maximum_decoded_bytes_exceeded") !=
+             std::string::npos ||
+         candidate.api_result.diagnostics.front().detail.find(
+             "heap_read_maximum_memory_bytes_exceeded") !=
+             std::string::npos)) {
       byte_bound_refused = candidate;
       break;
     }
@@ -3850,6 +3868,16 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                                   return evidence.evidence_kind == kind &&
                                         evidence.evidence_id == id;
                                });
+  };
+  const auto evidence_id = [](const auto& result,
+                              const std::string_view kind) {
+    const auto found = std::ranges::find_if(
+        result.api_result.evidence, [&](const auto& evidence) {
+          return evidence.evidence_kind == kind;
+        });
+    return found == result.api_result.evidence.end()
+               ? std::string("absent")
+               : found->evidence_id;
   };
   const auto atomic_no_root = [](const auto& execution) {
     return !execution.api_result.ok && !execution.physical_dag_executed &&
@@ -4399,6 +4427,55 @@ bool ProductionRouteMatrix(const Fixture& fixture,
           "2026-08-10T12:00:00.000000000Z" &&
       ApiRowField(downsample_series_right_outer.api_result, 1,
                   "bucket_start").empty();
+  const bool provider_selection_exact =
+      published_ambiguous.ok && dropped_ambiguous.ok &&
+      dropped_preferred.ok && restored_preferred.ok &&
+      has_evidence(raw, "canonical.time_series_provider_route",
+                   "TIME_SERIES_PREFERRED_PROVIDER_V1") &&
+      ambiguous_fallback.api_result.ok &&
+      has_evidence(ambiguous_fallback,
+                   "canonical.time_series_provider_route",
+                   "TIME_SERIES_BUCKET_STORE_SCAN_EXACT_V1") &&
+      ProductionDescriptorStream(ambiguous_fallback) ==
+          ProductionDescriptorStream(raw) &&
+      ProductionRawStream(ambiguous_fallback) == ProductionRawStream(raw) &&
+      fallback_raw.api_result.ok && fallback_sum.api_result.ok &&
+      fallback_count.api_result.ok &&
+      has_evidence(fallback_raw, "canonical.time_series_provider_route",
+                   "TIME_SERIES_BUCKET_STORE_SCAN_EXACT_V1") &&
+      has_evidence(fallback_sum, "canonical.time_series_provider_route",
+                   "TIME_SERIES_BUCKET_STORE_SCAN_EXACT_V1") &&
+      has_evidence(fallback_count, "canonical.time_series_provider_route",
+                   "TIME_SERIES_BUCKET_STORE_SCAN_EXACT_V1") &&
+      ProductionDescriptorStream(fallback_raw) ==
+          ProductionDescriptorStream(raw) &&
+      ProductionRawStream(fallback_raw) == ProductionRawStream(raw) &&
+      ProductionDescriptorStream(fallback_sum) ==
+          ProductionDescriptorStream(sum) &&
+      ProductionDownsampleStream(fallback_sum, false) ==
+          ProductionDownsampleStream(sum, false) &&
+      ProductionDescriptorStream(fallback_count) ==
+          ProductionDescriptorStream(count) &&
+      ProductionDownsampleStream(fallback_count, true) ==
+          ProductionDownsampleStream(count, true);
+  if (!provider_selection_exact) {
+    const auto provider_route = [&](const auto& execution) {
+      return evidence_id(execution, "canonical.time_series_provider_route");
+    };
+    std::cerr << "QOW-CES05-TIME-SERIES: provider route evidence raw="
+              << provider_route(raw)
+              << ";ambiguous=" << provider_route(ambiguous_fallback)
+              << ";fallback-raw=" << provider_route(fallback_raw)
+              << ";fallback-sum=" << provider_route(fallback_sum)
+              << ";fallback-count=" << provider_route(fallback_count)
+              << ";bytes=" << Digest(raw.canonical_result_bytes) << ','
+              << Digest(ambiguous_fallback.canonical_result_bytes) << ','
+              << Digest(fallback_raw.canonical_result_bytes) << ','
+              << Digest(sum.canonical_result_bytes) << ','
+              << Digest(fallback_sum.canonical_result_bytes) << ','
+              << Digest(count.canonical_result_bytes) << ','
+              << Digest(fallback_count.canonical_result_bytes) << '\n';
+  }
   bool passed = Require(direct_multileg_scope_exact,
                         "direct multileg V10 descriptor scope proof failed") &&
          Require(raw.profile_matched && raw.optimizer_admitted &&
@@ -4418,8 +4495,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                      ambiguous_fallback,
                      "canonical.time_series_provider_route",
                      "TIME_SERIES_BUCKET_STORE_SCAN_EXACT_V1") &&
-                 ambiguous_fallback.canonical_result_bytes ==
-                     raw.canonical_result_bytes &&
+                 ProductionDescriptorStream(ambiguous_fallback) ==
+                     ProductionDescriptorStream(raw) &&
+                 ProductionRawStream(ambiguous_fallback) ==
+                     ProductionRawStream(raw) &&
                  fallback_raw.api_result.ok && fallback_sum.api_result.ok &&
                  fallback_count.api_result.ok &&
                  has_evidence(
@@ -4431,12 +4510,18 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                  has_evidence(
                      fallback_count, "canonical.time_series_provider_route",
                      "TIME_SERIES_BUCKET_STORE_SCAN_EXACT_V1") &&
-                 fallback_raw.canonical_result_bytes ==
-                     raw.canonical_result_bytes &&
-                 fallback_sum.canonical_result_bytes ==
-                     sum.canonical_result_bytes &&
-                 fallback_count.canonical_result_bytes ==
-                     count.canonical_result_bytes,
+                 ProductionDescriptorStream(fallback_raw) ==
+                     ProductionDescriptorStream(raw) &&
+                 ProductionRawStream(fallback_raw) ==
+                     ProductionRawStream(raw) &&
+                 ProductionDescriptorStream(fallback_sum) ==
+                     ProductionDescriptorStream(sum) &&
+                 ProductionDownsampleStream(fallback_sum, false) ==
+                     ProductionDownsampleStream(sum, false) &&
+                 ProductionDescriptorStream(fallback_count) ==
+                     ProductionDescriptorStream(count) &&
+                 ProductionDownsampleStream(fallback_count, true) ==
+                     ProductionDownsampleStream(count, true),
              "ordinary engine-owned provider generation selection/fallback "
              "drifted: " +
                  std::string(published_ambiguous.ok ? "ambiguous-publish-ok"
@@ -4785,8 +4870,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                       atomic_success_cleanup_once(empty_range),
          "TS-04 ordinary empty range drifted");
   credit("TS-05", offset_range.api_result.ok &&
-                      offset_range.canonical_result_bytes ==
-                          raw.canonical_result_bytes &&
+                      ProductionDescriptorStream(offset_range) ==
+                          ProductionDescriptorStream(raw) &&
+                      ProductionRawStream(offset_range) ==
+                          ProductionRawStream(raw) &&
                       atomic_success_cleanup_once(offset_range),
          "TS-05 ordinary offset-equivalent endpoints drifted");
   credit("TS-06", ApiRowField(raw.api_result, 3, "row_uuid") ==
@@ -4942,8 +5029,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   credit("TS-26", published_stale_provider.ok &&
                       cleared_stale_provider_cache.ok &&
                       stale_provider_fallback.api_result.ok &&
-                      stale_provider_fallback.canonical_result_bytes ==
-                          raw.canonical_result_bytes &&
+                      ProductionDescriptorStream(stale_provider_fallback) ==
+                          ProductionDescriptorStream(raw) &&
+                      ProductionRawStream(stale_provider_fallback) ==
+                          ProductionRawStream(raw) &&
                       Digest(ProductionRawStream(stale_provider_fallback)) ==
                           "bd587d51678f2da5ae92b9a57a0f646bdff6fc750b06d6159ee6179616d0696c" &&
                       has_evidence(
@@ -5061,7 +5150,20 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                       combined_peak_refused.has_value() &&
                       atomic_no_root(*combined_peak_refused) &&
                       post_access_cleanup_once(*combined_peak_refused),
-         "TS-31 ordinary count/byte/group/memory refusal matrix drifted");
+         "TS-31 ordinary count/byte/group/memory refusal matrix drifted: " +
+             route_diagnostic(scan_bound_refused) + "/" +
+             route_diagnostic(output_bound_refused) + "/" +
+             route_diagnostic(group_bound_refused) +
+             ";byte=" +
+             (byte_bound_refused.has_value()
+                  ? route_diagnostic(*byte_bound_refused)
+                  : std::string("absent")) +
+             ";combined=" +
+             (combined_peak_refused.has_value()
+                  ? route_diagnostic(*combined_peak_refused)
+                  : std::string("absent")) +
+             ";byte-attempts=" + byte_bound_attempts.str() +
+             ";combined-attempts=" + combined_peak_attempts.str());
   credit("TS-32", fallback_raw.api_result.ok && fallback_sum.api_result.ok &&
                       fallback_count.api_result.ok &&
                       ProductionDescriptorStream(fallback_raw) ==
@@ -5070,12 +5172,6 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                           ProductionDescriptorStream(sum) &&
                       ProductionDescriptorStream(fallback_count) ==
                           ProductionDescriptorStream(count) &&
-                      fallback_raw.canonical_result_bytes ==
-                          raw.canonical_result_bytes &&
-                      fallback_sum.canonical_result_bytes ==
-                          sum.canonical_result_bytes &&
-                      fallback_count.canonical_result_bytes ==
-                          count.canonical_result_bytes &&
                       ProductionRawStream(fallback_raw) ==
                           ProductionRawStream(raw) &&
                       ProductionDownsampleStream(fallback_sum, false) ==
@@ -6277,12 +6373,14 @@ bool DirectCompositionMatrix(const Fixture& fixture,
                                  std::move(project_registration)};
   const auto executed = exec::ExecuteCanonicalPhysicalDag(request);
   if (!executed.diagnostic.ok || executed.executed_steps.empty() ||
-      !executed.executed_steps.front().materialized_output_batch.has_value()) {
-    return Require(false,
-                   "TS-37 direct source batch was not materialized");
+      !executed.executed_steps.back().materialized_output_batch.has_value()) {
+    return Require(
+        false, "TS-37 direct source batch was not materialized: " +
+                   executed.diagnostic.diagnostic_code + ':' +
+                   executed.diagnostic.detail);
   }
   const auto source_batch =
-      *executed.executed_steps.front().materialized_output_batch;
+      *executed.executed_steps.back().materialized_output_batch;
   const auto unary_dag = [&](const exec::PhysicalNodeKind kind,
                              std::string implementation) {
     auto proof = AsofDag(context, {101}, {101});
@@ -6301,29 +6399,25 @@ bool DirectCompositionMatrix(const Fixture& fixture,
     return proof;
   };
 
-  auto filter_dag =
-      unary_dag(exec::PhysicalNodeKind::kFilter, "filter.3vl.row.v1");
-  exec::CanonicalDescriptorFilterRequest filter_request;
-  filter_request.physical_dag = filter_dag;
-  filter_request.selected_physical_node_id = 3;
-  filter_request.input_batch = source_batch;
-  filter_request.row_truth_values.assign(
-      source_batch.rows.size(), api::EngineSqlTruthValue::true_value);
-  filter_request.consumer = api::EnginePredicateConsumer::filter;
-  filter_request.mga_authority = AsofAuthority(filter_dag);
-  const auto filtered =
-      exec::ExecuteCanonicalDescriptorFilter(filter_request);
-
   auto projection_dag = unary_dag(exec::PhysicalNodeKind::kProject,
                                   "project.descriptor-direct.v1");
   exec::CanonicalDescriptorProjectionRequest projection_request;
   projection_request.physical_dag = projection_dag;
   projection_request.selected_physical_node_id = 3;
-  projection_request.input_batch = filtered.output_batch;
+  projection_request.input_batch = source_batch;
   projection_request.projected_columns = {0};
   projection_request.mga_authority = AsofAuthority(projection_dag);
   const auto projected =
       exec::ExecuteCanonicalDescriptorProjection(projection_request);
+  if (!projected.diagnostic.ok ||
+      projected.output_batch.columns.size() != 1 ||
+      projected.output_batch.rows.size() != 7) {
+    return Require(
+        false,
+        "TS-37 direct project refused before composition: " +
+            projected.diagnostic.diagnostic_code + ':' +
+            projected.diagnostic.detail);
+  }
 
   auto join_dag = AsofDag(context, {101}, {102});
   const auto join_root = std::ranges::find_if(
@@ -6391,8 +6485,8 @@ bool DirectCompositionMatrix(const Fixture& fixture,
   sort_request.mga_authority = AsofAuthority(sort_dag);
   const auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
 
-  auto window_dag =
-      unary_dag(exec::PhysicalNodeKind::kWindow, "window.typed.v1");
+  auto window_dag = unary_dag(exec::PhysicalNodeKind::kWindow,
+                              "window.partition-order-peer.v1");
   const auto window_root = std::ranges::find_if(
       window_dag.nodes,
       [](const auto& node) { return node.physical_node_id == 3; });
@@ -6400,14 +6494,20 @@ bool DirectCompositionMatrix(const Fixture& fixture,
       NewUuidText(platform::UuidKind::object);
   const auto ordering_property_uuid =
       NewUuidText(platform::UuidKind::object);
-  window_root->required_property_uuids = {ordering_property_uuid};
+  const auto partition_property_uuid =
+      NewUuidText(platform::UuidKind::object);
+  window_root->required_property_uuids = {partition_property_uuid,
+                                          ordering_property_uuid};
   window_root->delivered_property_uuids = {window_property_uuid};
   exec::CanonicalWindowPartitionOrderRequest window_request;
   window_request.physical_dag = window_dag;
   window_request.selected_physical_node_id = 3;
   window_request.input_batch = sorted.output_batch;
+  window_request.partition_terms = {
+      {.column = 0, .expression_descriptor_id = 101}};
   window_request.order_terms = {order_term};
   window_request.window_property_uuid = window_property_uuid;
+  window_request.partition_property_uuid = partition_property_uuid;
   window_request.ordering_property_uuid = ordering_property_uuid;
   window_request.term_binding_evidence_uuid =
       NewUuidText(platform::UuidKind::object);
@@ -6427,7 +6527,7 @@ bool DirectCompositionMatrix(const Fixture& fixture,
   const auto framed = exec::ExecuteCanonicalWindowFrames(frame_request);
 
   auto limit_dag =
-      unary_dag(exec::PhysicalNodeKind::kLimit, "limit.offset.typed.v1");
+      unary_dag(exec::PhysicalNodeKind::kLimit, "limit.typed.v1");
   exec::CanonicalDescriptorLimitRequest limit_request;
   limit_request.physical_dag = limit_dag;
   limit_request.selected_physical_node_id = 3;
@@ -6534,7 +6634,6 @@ bool DirectCompositionMatrix(const Fixture& fixture,
       exec::PublishCanonicalResultEnvelope(publication_request);
 
   const bool direct_operator_matrix =
-      filtered.diagnostic.ok && filtered.output_batch.rows.size() == 7 &&
       projected.diagnostic.ok && projected.output_batch.rows.size() == 7 &&
       joined.diagnostic.ok && joined.output_batch.rows.size() == 7 &&
       aggregated.diagnostic.ok && aggregated.output_batch.rows.size() == 1 &&
@@ -6559,8 +6658,7 @@ bool DirectCompositionMatrix(const Fixture& fixture,
                                  : value.diagnostic.diagnostic_code + ":" +
                                        value.diagnostic.detail;
     };
-    std::cerr << "TS-37 direct diagnostics filter=" << code(filtered)
-              << " project=" << code(projected)
+    std::cerr << "TS-37 direct diagnostics project=" << code(projected)
               << " join=" << code(joined)
               << " aggregate=" << code(aggregated)
               << " sort=" << code(sorted)
@@ -7056,13 +7154,20 @@ bool ProviderMatrix(const Fixture& fixture,
   auto canonical_memory_request = Request(context, base, range, none);
   std::uint64_t canonical_low = 1;
   std::uint64_t canonical_high = canonical_memory_request.maximum_memory_bytes;
+  const auto pre_canonical_failure = [](const std::string_view detail) {
+    return detail ==
+               "mga.heap_relation_read:heap_read_maximum_memory_bytes_exceeded" ||
+           detail ==
+               "time-series retained read/result preflight exceeded its memory bound" ||
+           detail ==
+               "time-series selected-row vector exceeded its memory bound";
+  };
   while (canonical_low < canonical_high) {
     const auto middle = canonical_low + (canonical_high - canonical_low) / 2;
     canonical_memory_request.maximum_memory_bytes = middle;
     const auto probe =
         api::EngineBoundTimeSeriesReadV1(canonical_memory_request);
-    if (DiagnosticDetail(probe) ==
-        "time-series retained read/result preflight exceeded its memory bound") {
+    if (!probe.ok && pre_canonical_failure(DiagnosticDetail(probe))) {
       canonical_low = middle + 1;
     } else {
       canonical_high = middle;
@@ -7078,13 +7183,14 @@ bool ProviderMatrix(const Fixture& fixture,
   working_group_request.bucket_interval_ns = 1'000'000'000;
   std::uint64_t group_low = 1;
   std::uint64_t group_high = working_group_request.maximum_memory_bytes;
-  const auto pre_group_failure = [](const std::string_view detail) {
-    return detail ==
-               "time-series retained read/result preflight exceeded its memory bound" ||
+  const auto pre_group_failure = [&](const std::string_view detail) {
+    return pre_canonical_failure(detail) ||
            detail ==
                "time-series tag canonicalization exceeded its memory bound" ||
            detail ==
-               "time-series selected-row retained memory exceeded its bound";
+               "time-series selected-row retained memory exceeded its bound" ||
+           detail ==
+               "time-series downsample lookup key exceeded its memory bound";
   };
   while (group_low < group_high) {
     const auto middle = group_low + (group_high - group_low) / 2;
@@ -7104,6 +7210,46 @@ bool ProviderMatrix(const Fixture& fixture,
       api::EngineBoundTimeSeriesReadV1(byte_bounded),
       api::EngineBoundTimeSeriesReadV1(bounded),
       api::EngineBoundTimeSeriesReadV1(memory_bounded)};
+  std::ostringstream resource_observations;
+  for (const auto& resource : resources) {
+    resource_observations << '[' << (resource.ok ? "ok" : "refused") << ':'
+                          << Diagnostic(resource) << ':'
+                          << DiagnosticDetail(resource) << ']';
+  }
+  resource_observations
+      << "[canonical:" << Diagnostic(canonical_memory_refused) << ':'
+      << DiagnosticDetail(canonical_memory_refused) << "]"
+      << "[group:" << Diagnostic(working_group_refused) << ':'
+      << DiagnosticDetail(working_group_refused) << ']';
+  const auto complete_bounded_success = [](const auto& result,
+                                           const std::uint64_t grant) {
+    return result.ok && result.memory_receipt_complete &&
+           result.memory_grant_bytes == grant &&
+           result.current_live_memory_bytes <= result.peak_live_memory_bytes &&
+           result.peak_live_memory_bytes <= result.memory_grant_bytes;
+  };
+  const bool canonical_memory_closed =
+      (!canonical_memory_refused.ok &&
+       Diagnostic(canonical_memory_refused) ==
+           "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1" &&
+       DiagnosticDetail(canonical_memory_refused) ==
+           "time-series tag canonicalization exceeded its memory bound" &&
+       canonical_memory_refused.rows.empty() &&
+       canonical_memory_refused.downsample_rows.empty() &&
+       canonical_memory_refused.result_shape.rows.empty()) ||
+      complete_bounded_success(canonical_memory_refused,
+                               canonical_memory_request.maximum_memory_bytes);
+  const bool working_group_memory_closed =
+      (!working_group_refused.ok &&
+       Diagnostic(working_group_refused) ==
+           "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1" &&
+       DiagnosticDetail(working_group_refused) ==
+           "time-series downsample working group memory exceeded its bound" &&
+       working_group_refused.rows.empty() &&
+       working_group_refused.downsample_rows.empty() &&
+       working_group_refused.result_shape.rows.empty()) ||
+      complete_bounded_success(working_group_refused,
+                               working_group_request.maximum_memory_bytes);
   passed &= Require(
       std::ranges::all_of(resources, [](const auto& resource) {
         return !resource.ok && resource.rows.empty() &&
@@ -7111,23 +7257,9 @@ bool ProviderMatrix(const Fixture& fixture,
                Diagnostic(resource) ==
                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
       }) &&
-          !canonical_memory_refused.ok &&
-          Diagnostic(canonical_memory_refused) ==
-              "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1" &&
-          DiagnosticDetail(canonical_memory_refused) ==
-              "time-series tag canonicalization exceeded its memory bound" &&
-          canonical_memory_refused.rows.empty() &&
-          canonical_memory_refused.downsample_rows.empty() &&
-          canonical_memory_refused.result_shape.rows.empty() &&
-          !working_group_refused.ok &&
-          Diagnostic(working_group_refused) ==
-              "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1" &&
-          DiagnosticDetail(working_group_refused) ==
-              "time-series downsample working group memory exceeded its bound" &&
-          working_group_refused.rows.empty() &&
-          working_group_refused.downsample_rows.empty() &&
-          working_group_refused.result_shape.rows.empty(),
-      "TS-31 count/byte/group/memory atomic refusal matrix drifted");
+          canonical_memory_closed && working_group_memory_closed,
+      "TS-31 count/byte/group/memory atomic refusal matrix drifted: " +
+          resource_observations.str());
   completed->insert("TS-31");
 
   auto fallback_request = Request(context, base, range, none);

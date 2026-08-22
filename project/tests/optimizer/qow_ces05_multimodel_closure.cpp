@@ -56,6 +56,8 @@ const std::array<std::string, 9> kOperations = {
     "TIME_SERIES_BUCKET", "VECTOR_EXACT_SEARCH", "SEARCH_RANKED_QUERY",
     "SPATIAL_SOURCE", "COLUMNAR_SOURCE"};
 const std::array<std::size_t, 9> kWidths = {1, 1, 1, 3, 1, 3, 5, 3, 1};
+constexpr std::string_view kCanonicalInt64TypeUuid =
+    "019d0000-0000-7000-8000-00000000d711";
 
 optimizer::ModelFamilyDependencyCoordinatorRequestV1 FullNineAdmission() {
   optimizer::ModelFamilyDependencyCoordinatorRequestV1 request;
@@ -194,6 +196,9 @@ executor::DescriptorBatch FamilyBatch(
     schema = {{"document_uuid", "uuid"}, {"analyzer_uuid", "uuid"},
               {"analyzer_generation", "uint64"}, {"score", "real64"},
               {"rank", "uint64"}};
+  } else if (leg.family_id == "spatial") {
+    schema = {{"row_uuid", "uuid"}, {"spatial_value", "geometry"},
+              {"crs_uuid", "uuid"}};
   } else {
     for (std::size_t column = 0; column < leg.output_descriptor_ids.size(); ++column)
       schema.emplace_back("c" + std::to_string(column), "uuid");
@@ -218,6 +223,8 @@ executor::DescriptorBatch FamilyBatch(
     values = {Uuid(9001), "1", "0.5"};
   } else if (leg.family_id == "search") {
     values = {Uuid(9002), Uuid(9003), "1", "1", "1"};
+  } else if (leg.family_id == "spatial") {
+    values = {Uuid(9004), {}, Uuid(8202)};
   } else {
     for (std::size_t column = 0; column < schema.size(); ++column)
       values.push_back(Uuid(9100 + leg.lexical_source_ordinal * 10 + column));
@@ -226,6 +233,9 @@ executor::DescriptorBatch FamilyBatch(
   for (std::size_t column = 0; column < values.size(); ++column) {
     row.values.push_back(executor::MakeExecutorValue(
         batch.columns[column].descriptor, values[column]));
+  }
+  if (leg.family_id == "spatial") {
+    row.values[1].binary_value = {1};
   }
   batch.rows.push_back(std::move(row));
   return batch;
@@ -272,8 +282,9 @@ executor::ModelFamilyExecutionRequestV1 FullNineExecution(
   request.input.multimodel_composition_arity = 9;
   request.input.multimodel_common_statement_context = true;
   if (leg.family_id == "spatial") {
-    request.input.spatial_geometry_descriptor_uuid = Uuid(8200);
-    request.input.spatial_geometry_type_uuid = Uuid(8201);
+    request.input.spatial_geometry_descriptor_uuid =
+        leg.output_descriptor_uuids[1];
+    request.input.spatial_geometry_type_uuid = Uuid(8001);
     request.input.spatial_crs_uuid = Uuid(8202);
     request.input.spatial_crs_generation = 1;
   }
@@ -459,8 +470,18 @@ executor::TypedPhysicalNodeDag Rcp080ContinuationDagV1(
       static_cast<std::uint32_t>(dag.root_physical_node_id);
   root.node_kind = root_kind;
   root.implementation_id =
-      root_kind == executor::PhysicalNodeKind::kSubquery
-          ? "subquery.table.typed.v1"
+      root_kind == executor::PhysicalNodeKind::kProject
+          ? "project.descriptor-direct.v1"
+      : root_kind == executor::PhysicalNodeKind::kSubquery
+          ? "subquery.table.materialize.typed.v1"
+      : root_kind == executor::PhysicalNodeKind::kAggregate
+          ? "aggregate.registry-core.v1"
+      : root_kind == executor::PhysicalNodeKind::kSort
+          ? "sort.typed.terms.v1"
+      : root_kind == executor::PhysicalNodeKind::kWindow
+          ? "window.partition-order-peer.v1"
+      : root_kind == executor::PhysicalNodeKind::kLimit
+          ? "limit.typed.v1"
       : root_kind == executor::PhysicalNodeKind::kRecursiveCte
           ? "cte.recursive.working.typed.v1"
           : "canonical.multimodel-consumer.typed.v1";
@@ -710,7 +731,8 @@ bool ExecuteRcp080RelationalContinuationV1(
        count_entry->builtin_id, count_entry->function_uuid, true};
   aggregate_request.input_batch = recursive.output_batch;
   auto count_descriptor = executor::MakeExecutorDescriptor(
-      "int64", "canonical=int64;type_uuid=" + Uuid(10'300) +
+      "int64", "canonical=int64;type_uuid=" +
+                   std::string(kCanonicalInt64TypeUuid) +
                    ";nullable=false");
   count_descriptor.descriptor_uuid.canonical = Uuid(10'301);
   count_descriptor.descriptor_kind = "scalar";
@@ -849,7 +871,7 @@ bool ExecuteRcp080RelationalContinuationV1(
   published_column.name_utf8 = fetched.output_batch.columns.front().stable_name;
   published_column.descriptor_uuid = fetched.output_batch.columns.front()
                                          .descriptor.descriptor_uuid.canonical;
-  published_column.type_uuid = Uuid(10'300);
+  published_column.type_uuid = kCanonicalInt64TypeUuid;
   published_column.nullability =
       executor::CanonicalResultNullability::kNonNull;
   publication.column_bindings.push_back(
@@ -1361,6 +1383,9 @@ sbsql::NativeRelationalBindingContext ProductionBindingContextV1(
              column.nullable ? sbsql::BoundNullability::kNullable
                              : sbsql::BoundNullability::kNonNull,
              std::nullopt, std::nullopt, {}, canonical_type});
+        if (vector_source && column_ordinal == 0) {
+          context.descriptors.back().width_precision_scale.width = 3;
+        }
         source.columns.push_back(
             {static_cast<std::uint32_t>(column_ordinal),
              column.column_uuid.canonical, descriptor_id,

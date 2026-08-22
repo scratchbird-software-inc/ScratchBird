@@ -11478,7 +11478,59 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
     std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches,
     std::string capability_uuid,
     std::string diagnostic_id,
-    std::string operation_name) {
+    std::string operation_name,
+    const bool strict_dispatcher_memory = false) {
+  std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory
+          ? sizeof(std::unordered_map<std::uint64_t,
+                                      exec::DescriptorBatch>) +
+                sizeof(std::unordered_map<std::uint64_t, std::uint64_t>) +
+                sizeof(std::string) * 2 + 8 * sizeof(void*) + 512
+          : 0;
+  const auto account_bytes = [&](const std::uint64_t bytes) {
+    return CheckedAdd(registration_retained_bytes, bytes,
+                      &registration_retained_bytes);
+  };
+  std::unordered_map<std::uint64_t, std::uint64_t> batch_memory_bytes;
+  if (strict_dispatcher_memory) {
+    std::uint64_t map_storage_bytes = 0;
+    if (!CheckedMultiply(
+            batches.size(),
+            sizeof(std::pair<const std::uint64_t, exec::DescriptorBatch>),
+            &map_storage_bytes) ||
+        !account_bytes(map_storage_bytes) ||
+        !CheckedMultiply(batches.bucket_count(), sizeof(void*),
+                         &map_storage_bytes) ||
+        !account_bytes(map_storage_bytes) ||
+        !account_bytes(diagnostic_id.capacity() + 1) ||
+        !account_bytes(operation_name.capacity() + 1)) {
+      registration_retained_bytes = 0;
+    }
+    for (const auto& [node_id, batch] : batches) {
+      std::uint64_t bytes = 0;
+      if (registration_retained_bytes == 0 ||
+          !RuntimeMaterializedBatchMemoryBytes(batch, &bytes) || bytes == 0 ||
+          !account_bytes(bytes) ||
+          !batch_memory_bytes.emplace(node_id, bytes).second) {
+        registration_retained_bytes = 0;
+        batch_memory_bytes.clear();
+        break;
+      }
+    }
+    if (registration_retained_bytes != 0) {
+      if (!CheckedMultiply(
+              batch_memory_bytes.size(),
+              sizeof(std::pair<const std::uint64_t, std::uint64_t>),
+              &map_storage_bytes) ||
+          !account_bytes(map_storage_bytes) ||
+          !CheckedMultiply(batch_memory_bytes.bucket_count(), sizeof(void*),
+                           &map_storage_bytes) ||
+          !account_bytes(map_storage_bytes)) {
+        registration_retained_bytes = 0;
+        batch_memory_bytes.clear();
+      }
+    }
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kValues;
   registration.implementation_id = std::string(kValuesImplementationId);
@@ -11486,9 +11538,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 = registration_retained_bytes;
   registration.execute =
       [batches = std::move(batches), diagnostic_id = std::move(diagnostic_id),
-       operation_name = std::move(operation_name)](
+       operation_name = std::move(operation_name), strict_dispatcher_memory,
+       batch_memory_bytes = std::move(batch_memory_bytes)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -11500,12 +11555,27 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         const auto batch = batches.find(node.relational_node_id);
+        const auto batch_memory =
+            batch_memory_bytes.find(node.relational_node_id);
         if (!node.input_physical_node_ids.empty() || !inputs.empty() ||
-            batch == batches.end()) {
+            batch == batches.end() ||
+            (strict_dispatcher_memory &&
+             (batch_memory == batch_memory_bytes.end() ||
+              batch_memory->second == 0 ||
+              batch_memory->second >
+                  node.dispatcher_callback_memory_limit_bytes))) {
           step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = diagnostic_id;
-          step.diagnostic.detail = operation_name +
-                                   " VALUES executor input or payload identity differs";
+          step.diagnostic.diagnostic_code =
+              strict_dispatcher_memory && batch != batches.end()
+                  ? "SBLR.PLAN_TREE.RESOURCE_LIMIT"
+                  : diagnostic_id;
+          step.diagnostic.detail =
+              strict_dispatcher_memory && batch != batches.end()
+                  ? operation_name +
+                        " VALUES output exceeds the dispatcher callback "
+                        "allowance"
+                  : operation_name +
+                        " VALUES executor input or payload identity differs";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -12112,7 +12182,69 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     api::TypedRelationalDag relational_dag,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context,
-    const bool input_row_count_is_upper_bound = false) {
+    const bool input_row_count_is_upper_bound = false,
+    const api::TypedRelationalDag* borrowed_relational_dag = nullptr,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr) {
+  const bool strict_dispatcher_memory =
+      borrowed_relational_dag != nullptr && borrowed_mga_context != nullptr &&
+      borrowed_mga_authority != nullptr;
+  std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory
+          ? sizeof(std::vector<std::size_t>) +
+                sizeof(std::vector<PreparedProjectExpression>) +
+                sizeof(std::vector<exec::ExecutorColumnDescriptor>) +
+                sizeof(CanonicalRelationalExpressionRuntimeServices) +
+                sizeof(api::EngineRequestContext) + 12 * sizeof(void*) + 1024
+          : 0;
+  const auto account_array = [&](const std::size_t count,
+                                 const std::size_t width) {
+    std::uint64_t bytes = 0;
+    return CheckedMultiply(count, width, &bytes) &&
+           CheckedAdd(registration_retained_bytes, bytes,
+                      &registration_retained_bytes);
+  };
+  const auto account_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
+           CheckedAdd(registration_retained_bytes,
+                      static_cast<std::uint64_t>(value.capacity()) + 1,
+                      &registration_retained_bytes);
+  };
+  if (!strict_dispatcher_memory ||
+      !account_array(prepared_root.projected_columns.capacity(),
+                     sizeof(std::size_t)) ||
+      !account_array(prepared_root.expressions.capacity(),
+                     sizeof(PreparedProjectExpression)) ||
+      !account_array(prepared_root.expression_output_batch.columns.capacity(),
+                     sizeof(exec::ExecutorColumnDescriptor))) {
+    registration_retained_bytes = 0;
+  }
+  for (const auto& expression : prepared_root.expressions) {
+    if (registration_retained_bytes == 0 ||
+        !account_string(expression.expected_type) ||
+        !account_array(expression.row_binding.row_descriptor_ids.capacity(),
+                       sizeof(std::uint32_t)) ||
+        !account_array(
+            (expression.row_binding.row_nullable.capacity() + 63) / 64,
+            sizeof(std::uint64_t)) ||
+        !account_array(expression.row_binding.slots.capacity(),
+                       sizeof(CanonicalRelationalExpressionRowSlotBinding))) {
+      registration_retained_bytes = 0;
+      break;
+    }
+  }
+  for (const auto& column : prepared_root.expression_output_batch.columns) {
+    if (registration_retained_bytes == 0 ||
+        !account_string(column.stable_name) ||
+        !account_string(column.descriptor.descriptor_uuid.canonical) ||
+        !account_string(column.descriptor.descriptor_kind) ||
+        !account_string(column.descriptor.canonical_type_name) ||
+        !account_string(column.descriptor.encoded_descriptor)) {
+      registration_retained_bytes = 0;
+      break;
+    }
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kProject;
   registration.implementation_id = std::move(implementation_id);
@@ -12120,16 +12252,21 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 = registration_retained_bytes;
   registration.execute =
       [projected_columns = prepared_root.projected_columns,
        expression_projection = prepared_root.expression_projection,
        expressions = prepared_root.expressions,
        expression_output_columns =
            prepared_root.expression_output_batch.columns,
-       relational_dag = std::move(relational_dag),
+       relational_dag = strict_dispatcher_memory
+                            ? api::TypedRelationalDag{}
+                            : std::move(relational_dag),
        expression_services = std::move(expression_services),
        expected_input_row_count, input_row_count_is_upper_bound,
-       mga_context = std::move(mga_context)](
+       mga_context = std::move(mga_context), borrowed_relational_dag,
+       borrowed_mga_authority, strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -12160,7 +12297,23 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
         const auto& input_batch = *inputs.front().materialized_output_batch;
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 1, 64 * 1024,
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "expression PROJECT " + std::move(scope_detail);
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -12174,6 +12327,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
           }
           execution_dag = &*scoped_execution_dag;
         }
+        const auto& active_relational_dag =
+            strict_dispatcher_memory ? *borrowed_relational_dag
+                                     : relational_dag;
         if (expression_projection) {
           const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
               input_batch, inputs.front().output_descriptor_ids);
@@ -12182,8 +12338,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
             return step;
           }
           const auto mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context,
-                                                   *execution_dag);
+              strict_dispatcher_memory
+                  ? *borrowed_mga_authority
+                  : BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                         *execution_dag);
           const auto before =
               exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
                                                               *execution_dag);
@@ -12191,16 +12349,21 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
             step.diagnostic = before;
             return step;
           }
+          const auto execution_node = std::ranges::find_if(
+              execution_dag->nodes, [&](const auto& candidate) {
+                return candidate.physical_node_id == node.physical_node_id;
+              });
           std::uint64_t input_memory_bytes = 0;
           if (!RuntimeMaterializedBatchMemoryBytes(
                   input_batch, &input_memory_bytes) ||
-              node.memory_bytes_required == 0 ||
-              node.memory_bytes_required >
+              execution_node == execution_dag->nodes.end() ||
+              execution_node->memory_bytes_required == 0 ||
+              execution_node->memory_bytes_required >
                   execution_dag->memory_budget_bytes ||
-              node.memory_bytes_required >
+              execution_node->memory_bytes_required >
                   static_cast<std::uint64_t>(
                       std::numeric_limits<std::size_t>::max()) ||
-              input_memory_bytes >= node.memory_bytes_required) {
+              input_memory_bytes >= execution_node->memory_bytes_required) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "SBLR.PLAN_TREE.RESOURCE_LIMIT";
@@ -12210,13 +12373,14 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
             return step;
           }
           const auto maximum_output_bytes =
-              node.memory_bytes_required - input_memory_bytes;
+              execution_node->memory_bytes_required - input_memory_bytes;
           exec::DescriptorBatch output_batch;
           std::string expression_detail;
           std::uint64_t actual_output_bytes = 0;
           bool expression_resource_refused = false;
           if (!MaterializeExpressionProjectBatch(
-                  relational_dag, expressions, expression_output_columns,
+                  active_relational_dag, expressions,
+                  expression_output_columns,
                   input_batch, expression_services, &output_batch,
                   &expression_detail, maximum_output_bytes,
                   &actual_output_bytes, &expression_resource_refused)) {
@@ -12262,17 +12426,26 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
         }
         exec::CanonicalDescriptorProjectionRequest project_request;
         project_request.selected_physical_node_id = node.physical_node_id;
-        project_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        if (strict_dispatcher_memory) {
+          project_request.borrowed_mga_authority = borrowed_mga_authority;
+        } else {
+          project_request.mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                   *execution_dag);
+        }
         auto project_result = exec::ExecuteCanonicalDescriptorProjection(
             project_request, *execution_dag, input_batch, projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
           return step;
         }
+        const auto& active_mga_authority =
+            project_request.borrowed_mga_authority == nullptr
+                ? project_request.mga_authority
+                : *project_request.borrowed_mga_authority;
         if (!CanonicalOperatorExecutionReceiptMatches(
                 project_result, *execution_dag, node,
-                project_request.mga_authority.statement_context)) {
+                active_mga_authority.statement_context)) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-PROJECT-EXECUTION-V1";
@@ -12869,7 +13042,34 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
     std::string deterministic_order_evidence_uuid,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory
+          ? sizeof(exec::ExecutorColumnDescriptor) + sizeof(std::string) +
+                sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512
+          : 0;
+  const auto account_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
+           CheckedAdd(registration_retained_bytes,
+                      static_cast<std::uint64_t>(value.capacity()) + 1,
+                      &registration_retained_bytes);
+  };
+  if (!strict_dispatcher_memory ||
+      !account_string(row_number_column.stable_name) ||
+      !account_string(
+          row_number_column.descriptor.descriptor_uuid.canonical) ||
+      !account_string(row_number_column.descriptor.descriptor_kind) ||
+      !account_string(
+          row_number_column.descriptor.canonical_type_name) ||
+      !account_string(row_number_column.descriptor.encoded_descriptor) ||
+      !account_string(deterministic_order_evidence_uuid)) {
+    registration_retained_bytes = 0;
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kWindow;
   registration.implementation_id = "window.row-number.v1";
@@ -12877,11 +13077,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
   registration.execute =
       [row_number_column = std::move(row_number_column),
        deterministic_order_evidence_uuid =
            std::move(deterministic_order_evidence_uuid),
-       maximum_input_row_count, mga_context = std::move(mga_context)](
+       maximum_input_row_count, mga_context = std::move(mga_context),
+       borrowed_mga_authority, strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -12909,7 +13113,33 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
         const auto& input_batch = *inputs.front().materialized_output_batch;
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          std::uint64_t row_number_memory_bytes = 0;
+          if (!CheckedMultiply(input_batch.rows.size(),
+                               sizeof(std::uint64_t),
+                               &row_number_memory_bytes)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "ROW_NUMBER result workspace overflows";
+            return step;
+          }
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 2, row_number_memory_bytes,
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail = "ROW_NUMBER " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -12929,8 +13159,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
         request.row_number_column = row_number_column;
         request.deterministic_order_evidence_uuid =
             deterministic_order_evidence_uuid;
-        request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        request.mga_authority = strict_dispatcher_memory
+                                    ? *borrowed_mga_authority
+                                    : BuildCanonicalExecutionMgaAuthority(
+                                          mga_context, *execution_dag);
         auto window = exec::ExecuteCanonicalDescriptorRowNumber(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
@@ -15553,7 +15785,37 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
     std::string capability_uuid,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context,
-    const bool runtime_bounded_inputs = false) {
+    const bool runtime_bounded_inputs = false,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  std::uint64_t registration_retained_bytes = 0;
+  if (strict_dispatcher_memory) {
+    registration_retained_bytes =
+        sizeof(PreparedCorrelatedSubqueryRoot) +
+        sizeof(LiveLateralSubqueryProfile) +
+        sizeof(CanonicalRelationalExpressionRuntimeServices) +
+        sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 64 * 1024;
+    if (!CheckedAdd(registration_retained_bytes,
+                    prepared.implementation_id.capacity() + 1,
+                    &registration_retained_bytes) ||
+        !CheckedAdd(registration_retained_bytes,
+                    prepared.transformation_id.capacity() + 1,
+                    &registration_retained_bytes) ||
+        !CheckedAdd(registration_retained_bytes,
+                    profile.required_operand_type.capacity() + 1,
+                    &registration_retained_bytes) ||
+        !CheckedAdd(registration_retained_bytes,
+                    profile.implementation_id.capacity() + 1,
+                    &registration_retained_bytes) ||
+        !CheckedAdd(registration_retained_bytes,
+                    profile.transformation_id.capacity() + 1,
+                    &registration_retained_bytes)) {
+      registration_retained_bytes = 0;
+    }
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kJoin;
   registration.implementation_id = profile.implementation_id;
@@ -15561,11 +15823,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 =
+      strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
   registration.execute =
       [prepared, profile,
        expression_services = std::move(expression_services),
-       mga_context = std::move(mga_context),
-       runtime_bounded_inputs](
+       mga_context = std::move(mga_context), runtime_bounded_inputs,
+       borrowed_mga_context, borrowed_mga_authority,
+       strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -15598,14 +15865,28 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
               "LATERAL/APPLY did not receive its exact two inputs";
           return step;
         }
+        const auto& active_mga_context =
+            borrowed_mga_context == nullptr ? mga_context
+                                            : *borrowed_mga_context;
         exec::TypedPhysicalNodeDag operator_dag;
+        std::size_t callback_memory_bound = 0;
         std::string detail;
-        if (!BuildOperatorLocalPhysicalDag(
-                dag, node.physical_node_id, &operator_dag, &detail)) {
+        const bool operator_dag_ready =
+            strict_dispatcher_memory
+                ? BuildStrictBinaryOperatorLocalPhysicalDag(
+                      dag, node,
+                      *inputs[0].materialized_output_batch,
+                      *inputs[1].materialized_output_batch,
+                      prepared.comparison_authority_memory_bytes,
+                      &operator_dag, &callback_memory_bound, &detail)
+                : BuildOperatorLocalPhysicalDag(
+                      dag, node.physical_node_id, &operator_dag, &detail);
+        if (!operator_dag_ready) {
           step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
-          step.diagnostic.detail = std::move(detail);
+          step.diagnostic.diagnostic_code = strict_dispatcher_memory
+                                                ? "SBLR.PLAN_TREE.RESOURCE_LIMIT"
+                                                : "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail = "LATERAL/APPLY " + std::move(detail);
           return step;
         }
         const auto cancellation_policy = std::ranges::find_if(
@@ -15633,8 +15914,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
         const auto cancellation_evidence_uuid =
             cancellation_policy->evidence_uuid;
         const auto cancellation_requested =
-            mga_context.query_cancellation_requested
-                ? mga_context.query_cancellation_requested
+            active_mga_context.query_cancellation_requested
+                ? active_mga_context.query_cancellation_requested
                 : std::function<bool()>([] { return false; });
         const auto selected = std::ranges::find_if(
             operator_dag.nodes, [&](const auto& candidate) {
@@ -15677,39 +15958,52 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
               inputs[0].materialized_output_batch->columns;
           const auto& inner_columns =
               inputs[1].materialized_output_batch->columns;
+          const auto required_column = [&](const auto& columns) {
+            std::optional<std::size_t> selected;
+            for (std::size_t ordinal = 0; ordinal < columns.size();
+                 ++ordinal) {
+              if (!profile.required_operand_type.empty() &&
+                  columns[ordinal].descriptor.canonical_type_name !=
+                      profile.required_operand_type) {
+                continue;
+              }
+              if (selected.has_value()) return std::optional<std::size_t>{};
+              selected = ordinal;
+              if (profile.required_operand_type.empty()) break;
+            }
+            return selected;
+          };
+          const auto outer_column = required_column(outer_columns);
+          const auto inner_column = required_column(inner_columns);
           const auto outer_type =
-              outer_columns.empty()
+              !outer_column.has_value()
                   ? dt::CanonicalTypeId::unknown
                   : dt::CanonicalTypeIdFromStableName(
-                        outer_columns.front()
+                        outer_columns[*outer_column]
                             .descriptor.canonical_type_name);
           const auto inner_type =
-              inner_columns.empty()
+              !inner_column.has_value()
                   ? dt::CanonicalTypeId::unknown
                   : dt::CanonicalTypeIdFromStableName(
-                        inner_columns.front()
+                        inner_columns[*inner_column]
                             .descriptor.canonical_type_name);
           if (outer_type == dt::CanonicalTypeId::unknown ||
               outer_type != inner_type ||
-              (!profile.required_operand_type.empty() &&
-               (outer_columns.front()
-                        .descriptor.canonical_type_name !=
-                    profile.required_operand_type ||
-                inner_columns.front()
-                        .descriptor.canonical_type_name !=
-                    profile.required_operand_type))) {
+              !outer_column.has_value() || !inner_column.has_value()) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
             step.diagnostic.detail =
-                "LATERAL/APPLY lacks an exact type-compatible first-column "
+                "LATERAL/APPLY lacks one exact type-compatible "
                 "correlation handle";
             return step;
           }
-          outer_binding_column = 0;
-          inner_reference_column = 0;
-          outer_binding_descriptor_id = outer_columns.front().descriptor_id;
-          inner_reference_descriptor_id = inner_columns.front().descriptor_id;
+          outer_binding_column = *outer_column;
+          inner_reference_column = *inner_column;
+          outer_binding_descriptor_id =
+              outer_columns[*outer_column].descriptor_id;
+          inner_reference_descriptor_id =
+              inner_columns[*inner_column].descriptor_id;
         }
 
         auto comparison_authority =
@@ -15720,7 +16014,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
                 *inputs[1].materialized_output_batch,
                 inputs[1].output_descriptor_ids,
                 inner_reference_column,
-                prepared.pair_count, node.memory_bytes_required,
+                prepared.pair_count,
+                strict_dispatcher_memory ? callback_memory_bound
+                                         : node.memory_bytes_required,
                 expression_services, cancellation_requested);
         if (!comparison_authority.ok) {
           step.diagnostic.ok = false;
@@ -15809,8 +16105,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
         correlated_request.cancellation_evidence_uuid =
             cancellation_evidence_uuid;
         correlated_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(
-                mga_context, correlated_request.physical_dag);
+            strict_dispatcher_memory
+                ? *borrowed_mga_authority
+                : BuildCanonicalExecutionMgaAuthority(
+                      active_mga_context,
+                      correlated_request.physical_dag);
 
         exec::CanonicalLateralSubqueryRequest lateral_request;
         lateral_request.correlated_request =
@@ -15824,8 +16123,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
         lateral_request.cancellation_evidence_uuid =
             cancellation_evidence_uuid;
         lateral_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(
-                mga_context, lateral_request.physical_dag);
+            strict_dispatcher_memory
+                ? *borrowed_mga_authority
+                : BuildCanonicalExecutionMgaAuthority(
+                      active_mga_context, lateral_request.physical_dag);
         auto lateral =
             exec::ExecuteCanonicalLateralSubquery(lateral_request);
         if (!lateral.diagnostic.ok) {
@@ -16145,7 +16446,31 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
     exec::ExecutorColumnDescriptor result_column,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory
+          ? sizeof(exec::ExecutorColumnDescriptor) +
+                sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512
+          : 0;
+  const auto account_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
+           CheckedAdd(registration_retained_bytes,
+                      static_cast<std::uint64_t>(value.capacity()) + 1,
+                      &registration_retained_bytes);
+  };
+  if (!strict_dispatcher_memory ||
+      !account_string(result_column.stable_name) ||
+      !account_string(result_column.descriptor.descriptor_uuid.canonical) ||
+      !account_string(result_column.descriptor.descriptor_kind) ||
+      !account_string(result_column.descriptor.canonical_type_name) ||
+      !account_string(result_column.descriptor.encoded_descriptor)) {
+    registration_retained_bytes = 0;
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kAggregate;
   registration.implementation_id = "aggregate.count-star.v1";
@@ -16154,9 +16479,14 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.publishes_runtime_observation_v1 = true;
+  registration.honors_dispatcher_memory_limit_v1 =
+      strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
   registration.execute =
       [result_column = std::move(result_column), maximum_input_row_count,
-       mga_context = std::move(mga_context)](
+       mga_context = std::move(mga_context), borrowed_mga_authority,
+       strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -16184,8 +16514,23 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
         const auto& input_batch = *inputs.front().materialized_output_batch;
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        std::size_t callback_memory_bound = 0;
         exec::CanonicalDescriptorCountRequest aggregate_request;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        if (strict_dispatcher_memory) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 1, sizeof(std::int64_t),
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail = "COUNT(*) " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -16202,8 +16547,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
         }
         aggregate_request.selected_physical_node_id = node.physical_node_id;
         aggregate_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(
-                mga_context, *execution_dag);
+            strict_dispatcher_memory
+                ? *borrowed_mga_authority
+                : BuildCanonicalExecutionMgaAuthority(
+                      mga_context, *execution_dag);
         auto aggregate_result = exec::ExecuteCanonicalDescriptorCountStar(
             aggregate_request, *execution_dag, input_batch, result_column);
         if (!aggregate_result.diagnostic.ok) {
@@ -17060,7 +17407,62 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_pair_comparisons,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory
+          ? sizeof(std::vector<exec::CanonicalDescriptorOrderTerm>) +
+                sizeof(std::string) + sizeof(api::EngineRequestContext) +
+                8 * sizeof(void*) + 512
+          : 0;
+  const auto account_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
+           CheckedAdd(registration_retained_bytes,
+                      static_cast<std::uint64_t>(value.capacity()) + 1,
+                      &registration_retained_bytes);
+  };
+  std::uint64_t order_term_bytes = 0;
+  if (!strict_dispatcher_memory ||
+      !CheckedMultiply(order_terms.capacity(),
+                       sizeof(exec::CanonicalDescriptorOrderTerm),
+                       &order_term_bytes) ||
+      !CheckedAdd(registration_retained_bytes, order_term_bytes,
+                  &registration_retained_bytes) ||
+      !account_string(deterministic_tie_evidence_uuid)) {
+    registration_retained_bytes = 0;
+  }
+  for (const auto& term : order_terms) {
+    if (registration_retained_bytes == 0 ||
+        !account_string(term.collation_uuid) ||
+        !account_string(term.text_seed.seed_pack_name) ||
+        !account_string(term.text_seed.seed_pack_version) ||
+        !account_string(term.text_seed.charset_name) ||
+        !account_string(term.text_seed.collation_name) ||
+        !account_string(term.timezone_seed.seed_pack_name) ||
+        !account_string(term.timezone_seed.seed_pack_version) ||
+        !account_string(term.timezone_seed.content_hash)) {
+      registration_retained_bytes = 0;
+      break;
+    }
+    std::uint64_t timezone_name_slots = 0;
+    if (!CheckedMultiply(term.timezone_seed.timezone_names.capacity(),
+                         sizeof(std::string), &timezone_name_slots) ||
+        !CheckedAdd(registration_retained_bytes, timezone_name_slots,
+                    &registration_retained_bytes)) {
+      registration_retained_bytes = 0;
+      break;
+    }
+    for (const auto& name : term.timezone_seed.timezone_names) {
+      if (!account_string(name)) {
+        registration_retained_bytes = 0;
+        break;
+      }
+    }
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kSort;
   registration.implementation_id = "sort.typed.terms.v1";
@@ -17068,12 +17470,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
   registration.execute =
       [order_terms = std::move(order_terms),
        deterministic_tie_evidence_uuid =
            std::move(deterministic_tie_evidence_uuid),
        maximum_input_row_count, maximum_pair_comparisons,
-       mga_context = std::move(mga_context)](
+       mga_context = std::move(mga_context), borrowed_mga_context,
+       borrowed_mga_authority, strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -17086,9 +17492,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         step.authority.engine_mga_snapshot_bound = true;
         const auto* cancellation_policy =
             FindLiveCancellationPolicy(dag);
+        const auto& active_mga_context =
+            borrowed_mga_context == nullptr ? mga_context
+                                            : *borrowed_mga_context;
         const void* cancellation_context =
-            mga_context.query_cancellation_requested
-                ? &mga_context.query_cancellation_requested
+            active_mga_context.query_cancellation_requested
+                ? &active_mga_context.query_cancellation_requested
                 : nullptr;
         const exec::DescriptorCancellationProbe cancellation_probe =
             cancellation_context == nullptr
@@ -17119,7 +17528,44 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         const auto& input_batch = *inputs.front().materialized_output_batch;
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          std::uint64_t order_memory_bytes = 0;
+          std::uint64_t pair_memory_bytes = 0;
+          std::uint64_t actual_pair_bound = 0;
+          if (!CheckedMultiply(input_batch.rows.size(),
+                               sizeof(std::size_t),
+                               &order_memory_bytes) ||
+              !CheckedMultiply(input_batch.rows.size(),
+                               input_batch.rows.size(),
+                               &actual_pair_bound) ||
+              actual_pair_bound > maximum_pair_comparisons ||
+              !CheckedMultiply(actual_pair_bound,
+                               sizeof(std::uint8_t),
+                               &pair_memory_bytes) ||
+              !CheckedAdd(order_memory_bytes, pair_memory_bytes,
+                          &order_memory_bytes)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "SORT retained order workspace overflows";
+            return step;
+          }
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 1, order_memory_bytes,
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail = "SORT " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -17136,8 +17582,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         exec::CanonicalDescriptorSortRequest sort_request;
         sort_request.selected_physical_node_id = node.physical_node_id;
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
-        sort_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        sort_request.mga_authority = strict_dispatcher_memory
+                                         ? *borrowed_mga_authority
+                                         : BuildCanonicalExecutionMgaAuthority(
+                                               mga_context, *execution_dag);
         auto sort_result = exec::ExecuteCanonicalDescriptorSort(
             sort_request, *execution_dag, input_batch, order_terms,
             deterministic_tie_evidence_uuid, cancellation_probe,
@@ -36092,6 +36540,34 @@ MakeRcp079CapturedModelLegRegistration(
   exec::CanonicalPhysicalExecutorRegistration registration;
   if (captured_legs.empty()) return registration;
   const auto& representative = captured_legs.front();
+  const bool strict_dispatcher_memory =
+      std::ranges::all_of(captured_legs, [](const auto& leg) {
+        return leg.columnar_runtime_memory_receipt != nullptr &&
+               leg.columnar_runtime_memory_receipt->complete &&
+               leg.columnar_runtime_memory_receipt
+                       ->provider_logical_memory_bytes != 0;
+      });
+  std::uint64_t registration_retained_bytes =
+      sizeof(std::vector<Rcp079CapturedModelLegV1>) + 512;
+  std::uint64_t captured_leg_bytes = 0;
+  if (!strict_dispatcher_memory ||
+      !CheckedMultiply(captured_legs.capacity(),
+                       sizeof(Rcp079CapturedModelLegV1),
+                       &captured_leg_bytes) ||
+      !CheckedAdd(registration_retained_bytes, captured_leg_bytes,
+                  &registration_retained_bytes)) {
+    registration_retained_bytes = 0;
+  }
+  for (const auto& leg : captured_legs) {
+    if (registration_retained_bytes == 0 ||
+        !CheckedAdd(registration_retained_bytes,
+                    leg.columnar_runtime_memory_receipt
+                        ->provider_logical_memory_bytes,
+                    &registration_retained_bytes)) {
+      registration_retained_bytes = 0;
+      break;
+    }
+  }
   registration.node_kind = representative.physical_node_kind;
   registration.implementation_id = representative.implementation_id;
   registration.executor_capability_uuid = representative.capability_uuid;
@@ -36099,11 +36575,14 @@ MakeRcp079CapturedModelLegRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.publishes_runtime_observation_v1 =
-      std::ranges::all_of(captured_legs, [](const auto& leg) {
-        return leg.columnar_runtime_memory_receipt != nullptr;
-      });
+      strict_dispatcher_memory;
+  registration.honors_dispatcher_memory_limit_v1 =
+      strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
   registration.execute =
-      [captured_legs](const exec::TypedPhysicalNodeDag& selected_dag,
+      [captured_legs, strict_dispatcher_memory](
+                 const exec::TypedPhysicalNodeDag& selected_dag,
                  const exec::PhysicalNodeRecord& selected_node,
                  const std::vector<exec::CanonicalPhysicalDispatchInput>&
                      inputs) mutable {
@@ -36140,6 +36619,22 @@ MakeRcp079CapturedModelLegRegistration(
           step.diagnostic.detail =
               "selected model-family composition leg was substituted";
           return step;
+        }
+        if (strict_dispatcher_memory) {
+          const auto callback_memory_bound =
+              SelectedNodeAggregateMemoryBound(selected_dag, selected_node);
+          if (!callback_memory_bound.has_value() ||
+              captured->columnar_runtime_memory_receipt == nullptr ||
+              captured->columnar_runtime_memory_receipt
+                      ->peak_live_memory_bytes > *callback_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "captured model-family leg exceeds the dispatcher callback "
+                "memory allowance";
+            return step;
+          }
         }
         auto request = captured->execution_request;
         request.input.physical_node_id = selected_node.physical_node_id;
@@ -36277,7 +36772,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
     const std::int64_t tolerance_ns, const bool left_outer,
     const std::size_t maximum_output_rows,
     const std::uint64_t maximum_comparisons,
-    api::EngineRequestContext execution_context) {
+    api::EngineRequestContext execution_context,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kJoin;
   registration.implementation_id = std::move(implementation_id);
@@ -36285,10 +36785,18 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 =
+      strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      strict_dispatcher_memory
+          ? sizeof(exec::CanonicalTimeSeriesAsofInputBindingV1) * 2 +
+                sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512
+          : 0;
   registration.execute =
       [left_binding, right_binding, tolerance_ns, left_outer,
        maximum_output_rows, maximum_comparisons,
-       execution_context = std::move(execution_context)](
+       execution_context = std::move(execution_context),
+       borrowed_mga_authority, strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& selected_dag,
           const exec::PhysicalNodeRecord& selected_node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -36358,6 +36866,48 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
               "captured model-family ASOF was cancelled before binding");
           return step;
         }
+        if (strict_dispatcher_memory) {
+          std::uint64_t auxiliary_memory_bytes =
+              sizeof(exec::CanonicalTimeSeriesAsofJoinRequestV1);
+          std::uint64_t component_bytes = 0;
+          if (!CheckedMultiply(
+                  inputs[0].materialized_output_batch->rows.size(),
+                  sizeof(exec::CanonicalTimeSeriesAsofKeyV1) +
+                      sizeof(std::int64_t),
+                  &component_bytes) ||
+              !CheckedAdd(auxiliary_memory_bytes, component_bytes,
+                          &auxiliary_memory_bytes) ||
+              !CheckedMultiply(
+                  inputs[1].materialized_output_batch->rows.size(),
+                  sizeof(exec::CanonicalTimeSeriesAsofKeyV1) +
+                      sizeof(std::string),
+                  &component_bytes) ||
+              !CheckedAdd(auxiliary_memory_bytes, component_bytes,
+                          &auxiliary_memory_bytes)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "captured model-family ASOF workspace bound overflowed";
+            return step;
+          }
+          exec::TypedPhysicalNodeDag operator_dag;
+          std::size_t callback_memory_bound = 0;
+          std::string callback_memory_detail;
+          if (!BuildStrictBinaryOperatorLocalPhysicalDag(
+                  selected_dag, selected_node,
+                  *inputs[0].materialized_output_batch,
+                  *inputs[1].materialized_output_batch,
+                  auxiliary_memory_bytes, &operator_dag,
+                  &callback_memory_bound, &callback_memory_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "captured model-family ASOF " + callback_memory_detail;
+            return step;
+          }
+        }
         exec::CanonicalTimeSeriesAsofJoinRequestV1 request;
         request.physical_dag = selected_dag;
         request.selected_physical_node_id = selected_node.physical_node_id;
@@ -36371,8 +36921,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
         request.maximum_output_rows = maximum_output_rows;
         request.maximum_comparisons = maximum_comparisons;
         request.maximum_memory_bytes = selected_dag.memory_budget_bytes;
-        request.mga_authority = BuildCanonicalExecutionMgaAuthority(
-            execution_context, selected_dag);
+        request.mga_authority =
+            strict_dispatcher_memory
+                ? *borrowed_mga_authority
+                : BuildCanonicalExecutionMgaAuthority(
+                      execution_context, selected_dag);
         request.cancellation_requested = cancellation_requested;
         const auto append_keys =
             [&](const exec::DescriptorBatch& batch,
@@ -38237,16 +38790,48 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                         prepared.detail);
         }
+        std::unordered_set<std::size_t> selected_source_ordinals;
+        prepared.projected_columns.reserve(prepared.expressions.size());
+        for (std::size_t ordinal = 0;
+             ordinal < prepared.expressions.size(); ++ordinal) {
+          const auto& selected = prepared.expressions[ordinal];
+          const auto expression = std::ranges::find_if(
+              dag.expressions, [&](const auto& candidate) {
+                return candidate.expression_id == selected.expression_id;
+              });
+          if (expression == dag.expressions.end() ||
+              expression->expression_kind !=
+                  api::RelationalExpressionKind::kIdentifier ||
+              selected.row_binding.slots.size() != 1 ||
+              selected.row_binding.slots.front().row_ordinal >=
+                  previous_logical->output_descriptor_ids.size() ||
+              selected.row_binding.slots.front().descriptor_id !=
+                  consumer->output_descriptor_ids[ordinal] ||
+              previous_logical->output_descriptor_ids
+                      [selected.row_binding.slots.front().row_ordinal] !=
+                  consumer->output_descriptor_ids[ordinal] ||
+              !selected_source_ordinals
+                   .insert(selected.row_binding.slots.front().row_ordinal)
+                   .second) {
+            return refuse(
+                "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                "time-series PROJECT is not an exact descriptor-direct "
+                "identifier selection");
+          }
+          prepared.projected_columns.push_back(
+              selected.row_binding.slots.front().row_ordinal);
+        }
+        prepared.expression_projection = false;
         composition_state.batch = prepared.expression_output_batch;
         composition_state.result_bindings = prepared.result_bindings;
         composition_project = std::move(prepared);
         composition_project_capability_uuid = DerivedCanonicalUuid(
             identity_scope, "time-series.project.capability");
-        profile.implementation_id = "project.typed.expression-row.v1";
+        profile.implementation_id = "project.descriptor-direct.v1";
         profile.capability_uuid = composition_project_capability_uuid;
         profile.physical_node_kind = exec::PhysicalNodeKind::kProject;
         profile.transformation_rule_id =
-            "canonical.time-series.project.expression-row.v1";
+            "canonical.time-series.project.descriptor-direct.v1";
         profile.memory_bytes_required = planning.memory_budget_bytes;
       } else if (consumer->node_kind ==
                  api::RelationalDagNodeKind::kSort) {
@@ -40221,6 +40806,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "time-series JOIN heap node identity changed";
               return step;
             }
+            heap_node->dispatcher_callback_memory_limit_bytes =
+                selected_node.dispatcher_callback_memory_limit_bytes;
             auto step = execute_heap(heap_dag, *heap_node, inputs);
             if (step.diagnostic.ok) {
               step.mga_statement_context = selected_dag.mga_statement_context;
@@ -40281,7 +40868,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
               ? 0
               : mixed_join->bound_expression_ids.front(),
           composition_mixed_join_predicate_binding, dag,
-          composition_planning_request->expression_services));
+          composition_planning_request->expression_services, {},
+          std::nullopt, &dag, &input.context,
+          &selected.mga_authority));
     }
     if (asof_join != nullptr) {
       selected.available_executors.push_back(
@@ -40295,6 +40884,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       asof_registration.executor_capability_abi_version = 1;
       asof_registration.engine_owned = true;
       asof_registration.accepts_optimizer_publication_v2 = true;
+      asof_registration.honors_dispatcher_memory_limit_v1 = true;
+      asof_registration.retained_live_memory_bytes_v1 =
+          sizeof(exec::CanonicalTimeSeriesAsofInputBindingV1) * 2 +
+          sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512;
       asof_registration.execute =
           [left_binding = composition_asof_left_binding,
            right_binding = composition_asof_right_binding,
@@ -40302,7 +40895,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
            maximum_comparisons = composition_asof_maximum_comparisons,
            maximum_output_rows = composition_asof_maximum_output_rows,
            left_outer = composition_asof_left_outer,
-           execution_context = input.context](
+           execution_context = input.context,
+           borrowed_mga_authority = &selected.mga_authority](
               const exec::TypedPhysicalNodeDag& selected_dag,
               const exec::PhysicalNodeRecord& selected_node,
               const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -40331,6 +40925,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "selected time-series ASOF input identity changed";
               return step;
             }
+            const auto& left_input_batch =
+                *inputs[0].materialized_output_batch;
+            const auto& right_input_batch =
+                *inputs[1].materialized_output_batch;
             const auto* cancellation_policy =
                 FindLiveCancellationPolicy(selected_dag);
             if (cancellation_policy == nullptr) {
@@ -40376,13 +40974,59 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "time-series ASOF bridge was cancelled before preflight");
               return step;
             }
+            std::uint64_t asof_auxiliary_memory_bytes =
+                sizeof(exec::CanonicalTimeSeriesAsofJoinRequestV1);
+            std::uint64_t asof_auxiliary_component_bytes = 0;
+            if (!CheckedMultiply(
+                    left_input_batch.rows.size(),
+                    sizeof(exec::CanonicalTimeSeriesAsofKeyV1),
+                    &asof_auxiliary_component_bytes) ||
+                !CheckedAdd(asof_auxiliary_memory_bytes,
+                            asof_auxiliary_component_bytes,
+                            &asof_auxiliary_memory_bytes) ||
+                !CheckedMultiply(
+                    right_input_batch.rows.size(),
+                    sizeof(exec::CanonicalTimeSeriesAsofKeyV1) +
+                        sizeof(std::string),
+                    &asof_auxiliary_component_bytes) ||
+                !CheckedAdd(asof_auxiliary_memory_bytes,
+                            asof_auxiliary_component_bytes,
+                            &asof_auxiliary_memory_bytes) ||
+                !CheckedMultiply(left_input_batch.rows.size(),
+                                 sizeof(std::int64_t),
+                                 &asof_auxiliary_component_bytes) ||
+                !CheckedAdd(asof_auxiliary_memory_bytes,
+                            asof_auxiliary_component_bytes,
+                            &asof_auxiliary_memory_bytes)) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+              step.diagnostic.detail =
+                  "time-series ASOF bridge workspace bound overflowed";
+              return step;
+            }
+            exec::TypedPhysicalNodeDag scoped_execution_dag;
+            std::size_t callback_memory_bound = 0;
+            std::string callback_memory_detail;
+            if (!BuildStrictBinaryOperatorLocalPhysicalDag(
+                    selected_dag, selected_node, left_input_batch,
+                    right_input_batch, asof_auxiliary_memory_bytes,
+                    &scoped_execution_dag, &callback_memory_bound,
+                    &callback_memory_detail)) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+              step.diagnostic.detail =
+                  "time-series ASOF bridge " + callback_memory_detail;
+              return step;
+            }
             std::uint64_t bridge_peak_bytes =
                 sizeof(exec::CanonicalTimeSeriesAsofJoinRequestV1);
             const auto account = [&](const std::uint64_t bytes) {
               return bytes <= std::numeric_limits<std::uint64_t>::max() -
                                   bridge_peak_bytes &&
                      (bridge_peak_bytes += bytes) <=
-                         selected_dag.memory_budget_bytes;
+                         callback_memory_bound;
             };
             const auto account_string = [&](const std::string_view value) {
               return value.size() <
@@ -40562,10 +41206,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                                   sizeof(std::uint32_t), &dag_vector_bytes) &&
                   account(dag_vector_bytes);
             }
-            const auto& left_input_batch =
-                *inputs[0].materialized_output_batch;
-            const auto& right_input_batch =
-                *inputs[1].materialized_output_batch;
             const auto account_output_peak = [&]() {
               std::uint64_t bytes = 0;
               const auto output_width = left_input_batch.columns.size() +
@@ -40678,7 +41318,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
               return ok;
             };
             const bool bridge_preflight_ok =
-                selected_dag.memory_budget_bytes != 0 && dag_copy_ok &&
+                callback_memory_bound != 0 && dag_copy_ok &&
                 // Dispatcher inputs remain live while request-owned copies,
                 // ASOF keys, and the maximum result coexist.
                 account_batch_copy(left_input_batch) &&
@@ -40718,8 +41358,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
               request.maximum_output_rows = maximum_output_rows;
               request.maximum_comparisons = maximum_comparisons;
               request.maximum_memory_bytes = selected_dag.memory_budget_bytes;
-              request.mga_authority = BuildCanonicalExecutionMgaAuthority(
-                  execution_context, selected_dag);
+              request.mga_authority = *borrowed_mga_authority;
               request.cancellation_requested = cancellation_requested;
             const auto append_keys =
                 [&](const exec::DescriptorBatch& batch,
@@ -40840,14 +41479,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
               composition_filter->predicate_row_binding, dag,
               composition_planning_request->expression_services,
               composition_filter_capability_uuid, source_input.maximum_rows,
-              input.context));
+              input.context,
+              api::EngineCanonicalExpressionConsumer::filter,
+              api::EnginePredicateConsumer::filter, &dag, &input.context,
+              &selected.mga_authority));
     }
     if (composition_project.has_value()) {
-      selected.available_executors.push_back(MakeLiveProjectRegistration(
-          *composition_project, "project.typed.expression-row.v1",
-          composition_project_capability_uuid, source_input.maximum_rows, dag,
-          composition_planning_request->expression_services, input.context,
-          true));
+      selected.available_executors.push_back(
+          MakeLiveHeapProjectRegistration(
+              composition_project->projected_columns,
+              composition_project_capability_uuid,
+              source_input.maximum_rows, {}, &input.context,
+              &selected.mga_authority));
     }
     if (composition_sort.has_value()) {
       std::uint64_t comparison_bound = 0;
@@ -40865,26 +41508,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           composition_sort_capability_uuid, source_input.maximum_rows,
           std::max<std::size_t>(
               1, static_cast<std::size_t>(comparison_bound)),
-          input.context));
+          {}, &input.context, &selected.mga_authority));
     }
     if (composition_row_number.has_value()) {
       selected.available_executors.push_back(MakeLiveRowNumberRegistration(
           *composition_row_number, composition_window_order_evidence_uuid,
           composition_window_capability_uuid, source_input.maximum_rows,
-          input.context));
+          {}, &input.context, &selected.mga_authority));
     }
     if (composition_nonrecursive_cte) {
       selected.available_executors.push_back(
           MakeLiveNonrecursiveCteRegistration(
               composition_cte_implementation_id,
               composition_cte_capability_uuid, source_input.maximum_rows,
-              input.context));
+              {}, &input.context, &selected.mga_authority));
     }
     if (composition_count_star.has_value()) {
       selected.available_executors.push_back(MakeLiveCountStarRegistration(
           composition_count_star->result_column,
           composition_aggregate_capability_uuid, source_input.maximum_rows,
-          input.context));
+          input.context, &input.context, &selected.mga_authority));
     }
     if (composition_recursive_cte.has_value()) {
       selected.available_executors.push_back(
@@ -40901,7 +41544,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           composition_limit_implementation_id,
           composition_limit_capability_uuid, composition_limit_count,
           composition_limit_offset, composition_fetch_first_rows_only,
-          source_input.maximum_rows, input.context));
+          source_input.maximum_rows, {}, &input.context,
+          &selected.mga_authority));
     }
     selected.engine_execution_authorized = true;
     selected.result_publication_request.statement_uuid =
@@ -43155,17 +43799,54 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       prepared.detail);
       }
+      std::unordered_set<std::size_t> selected_source_ordinals;
+      prepared.projected_columns.reserve(prepared.expressions.size());
+      bool descriptor_direct_projection = true;
+      for (std::size_t ordinal = 0;
+           ordinal < prepared.expressions.size(); ++ordinal) {
+        const auto& selected_expression = prepared.expressions[ordinal];
+        const auto expression = std::ranges::find_if(
+            dag.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     selected_expression.expression_id;
+            });
+        if (expression == dag.expressions.end() ||
+            expression->expression_kind !=
+                api::RelationalExpressionKind::kIdentifier ||
+            selected_expression.row_binding.slots.size() != 1 ||
+            selected_expression.row_binding.slots.front().row_ordinal >=
+                previous_logical->output_descriptor_ids.size() ||
+            selected_expression.row_binding.slots.front().descriptor_id !=
+                consumer->output_descriptor_ids[ordinal] ||
+            previous_logical->output_descriptor_ids
+                    [selected_expression.row_binding.slots.front().row_ordinal] !=
+                consumer->output_descriptor_ids[ordinal] ||
+            !selected_source_ordinals
+                 .insert(selected_expression.row_binding.slots.front()
+                             .row_ordinal)
+                 .second) {
+          descriptor_direct_projection = false;
+          prepared.projected_columns.clear();
+          break;
+        }
+        prepared.projected_columns.push_back(
+            selected_expression.row_binding.slots.front().row_ordinal);
+      }
+      prepared.expression_projection = !descriptor_direct_projection;
       composition_state.batch = prepared.expression_output_batch;
       composition_state.result_bindings = prepared.result_bindings;
       prepared_project = std::move(prepared);
       project_capability_uuid =
           DerivedCanonicalUuid(identity_scope, "search.project.capability");
       consumer_profile.implementation_id =
-          "project.typed.expression-row.v1";
+          descriptor_direct_projection ? "project.descriptor-direct.v1"
+                                       : "project.typed.expression-row.v1";
       consumer_profile.capability_uuid = project_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kProject;
       consumer_profile.transformation_rule_id =
-          "canonical.search.project.expression-row.v1";
+          descriptor_direct_projection
+              ? "canonical.search.project.descriptor-direct.v1"
+              : "canonical.search.project.expression-row.v1";
       consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kSort) {
       if (consumer->semantic_variant_id != "sort.required-order.v1") {
@@ -43307,7 +43988,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
             1, sizeof(api::EngineBoundSearchRowV1) +
                    5 * sizeof(api::EngineTypedValue));
         const auto grouped_input_row_bound = std::min<std::uint64_t>(
-            {65'536, input.context.optimizer_maximum_candidate_count,
+            {static_cast<std::uint64_t>(top_k_value),
+             input.context.optimizer_maximum_candidate_count,
              (planning.memory_budget_bytes / 2) /
                  grouped_per_row_bytes});
         if (!BindPreparedGroupedComparisonCeilings(
@@ -43328,7 +44010,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         prepared_grouped_aggregate = std::move(prepared);
         grouped_aggregate_capability_uuid = DerivedCanonicalUuid(
             identity_scope, "search.grouped-count-sum.capability");
-        grouped_aggregate_output_row_bound = 65536;
+        grouped_aggregate_output_row_bound = grouped_input_row_bound;
         consumer_profile.implementation_id =
             "aggregate.registry-grouping-sets.v1";
         consumer_profile.capability_uuid =
@@ -44287,6 +44969,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                 "search mixed JOIN heap node identity changed";
             return step;
           }
+          heap_node->dispatcher_callback_memory_limit_bytes =
+              selected_node.dispatcher_callback_memory_limit_bytes;
           auto step = execute_heap(heap_dag, *heap_node, inputs);
           if (step.diagnostic.ok) {
             step.mga_statement_context = selected_dag.mga_statement_context;
@@ -44321,7 +45005,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     selected.available_executors.push_back(MakeLiveValuesRegistration(
         std::move(values_batches), set_values_capability_uuid,
         "QOW-DIAG-RELATIONAL-LIVE-SET-VALUES-V1",
-        "search UNION ALL"));
+        "search UNION ALL", true));
     std::unordered_map<std::uint64_t, PreparedLiveSetNode>
         prepared_set_nodes;
     prepared_set_nodes.emplace(set_root->node_id, *prepared_search_set);
@@ -44340,21 +45024,32 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         "search mixed " + mixed_join_operation, input.context, true,
         mixed_join->bound_expression_ids.front(),
         mixed_join_predicate_binding, dag,
-        canonical_planning_request.expression_services));
+        canonical_planning_request.expression_services, {}, std::nullopt,
+        &dag, &input.context, &selected.mga_authority));
   }
   if (prepared_filter.has_value()) {
     selected.available_executors.push_back(MakeLiveHeapFilterRegistration(
         prepared_filter->predicate_expression_id,
         prepared_filter->predicate_row_binding, dag,
         canonical_planning_request.expression_services,
-        filter_capability_uuid, source_input.maximum_rows, input.context));
+        filter_capability_uuid, source_input.maximum_rows, input.context,
+        api::EngineCanonicalExpressionConsumer::filter,
+        api::EnginePredicateConsumer::filter, &dag, &input.context,
+        &selected.mga_authority));
   }
   if (prepared_project.has_value()) {
-    selected.available_executors.push_back(MakeLiveProjectRegistration(
-        *prepared_project, "project.typed.expression-row.v1",
-        project_capability_uuid, source_input.maximum_rows, dag,
-        canonical_planning_request.expression_services, input.context,
-        true));
+    if (prepared_project->expression_projection) {
+      selected.available_executors.push_back(MakeLiveProjectRegistration(
+          *prepared_project, "project.typed.expression-row.v1",
+          project_capability_uuid, source_input.maximum_rows, dag,
+          canonical_planning_request.expression_services, input.context,
+          true, &dag, &input.context, &selected.mga_authority));
+    } else {
+      selected.available_executors.push_back(MakeLiveHeapProjectRegistration(
+          prepared_project->projected_columns, project_capability_uuid,
+          source_input.maximum_rows, input.context, &input.context,
+          &selected.mga_authority));
+    }
   }
   if (prepared_sort.has_value()) {
     std::uint64_t comparison_bound = 0;
@@ -44382,24 +45077,27 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           source_input.maximum_rows,
           std::max<std::size_t>(
               1, static_cast<std::size_t>(comparison_bound)),
-          input.context));
+          input.context, &input.context, &selected.mga_authority));
     }
   }
   if (prepared_row_number.has_value()) {
     selected.available_executors.push_back(MakeLiveRowNumberRegistration(
         *prepared_row_number, window_order_evidence_uuid,
-        window_capability_uuid, source_input.maximum_rows, input.context));
+        window_capability_uuid, source_input.maximum_rows, input.context,
+        &input.context, &selected.mga_authority));
   }
   if (prepared_nonrecursive_cte) {
     selected.available_executors.push_back(
         MakeLiveNonrecursiveCteRegistration(
             cte_implementation_id, cte_capability_uuid,
-            source_input.maximum_rows, input.context));
+            source_input.maximum_rows, input.context, &input.context,
+            &selected.mga_authority));
   }
   if (prepared_count_star.has_value()) {
     selected.available_executors.push_back(MakeLiveCountStarRegistration(
         prepared_count_star->result_column, aggregate_capability_uuid,
-        source_input.maximum_rows, input.context));
+        source_input.maximum_rows, input.context, &input.context,
+        &selected.mga_authority));
   }
   if (prepared_grouped_aggregate.has_value()) {
     selected.available_executors.push_back(
@@ -44423,7 +45121,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     selected.available_executors.push_back(MakeLiveLimitRegistration(
         limit_implementation_id, limit_capability_uuid, limit_count,
         limit_offset, fetch_first_rows_only, source_input.maximum_rows,
-        input.context));
+        input.context, &input.context, &selected.mga_authority));
   }
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
@@ -46583,6 +47281,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
                 "key/value mixed JOIN heap node identity changed";
             return step;
           }
+          heap_node->dispatcher_callback_memory_limit_bytes =
+              selected_node.dispatcher_callback_memory_limit_bytes;
           auto step = execute_heap(heap_dag, *heap_node, inputs);
           if (step.diagnostic.ok) {
             step.mga_statement_context = selected_dag.mga_statement_context;
@@ -56837,6 +57537,8 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
           heap_dag.mga_statement_context.statement_timestamp.clear();
           heap_dag.nodes.front().mga_statement_context.statement_timestamp
               .clear();
+          heap_dag.nodes.front().dispatcher_callback_memory_limit_bytes =
+              selected_node.dispatcher_callback_memory_limit_bytes;
           auto step = execute_heap(heap_dag, heap_dag.nodes.front(), inputs);
           if (step.diagnostic.ok) {
             step.mga_statement_context = selected_dag.mga_statement_context;
@@ -56896,7 +57598,8 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                         : "join.asof.inner.typed.v1",
         join_capability_uuid, asof_left_binding, asof_right_binding,
         asof_tolerance_ns, asof_left_outer, maximum_rows,
-        asof_maximum_comparisons, input.context);
+        asof_maximum_comparisons, input.context, &input.context,
+        &selected.mga_authority);
   } else if (lateral_join) {
     PreparedCorrelatedSubqueryRoot prepared;
     prepared.outer_row_count = maximum_rows;
@@ -56916,7 +57619,8 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
         };
     join_registration = MakeLiveLateralSubqueryRegistration(
         prepared, lateral_profile, join_capability_uuid,
-        std::move(lateral_services), input.context, true);
+        std::move(lateral_services), input.context, true, &input.context,
+        &selected.mga_authority);
   } else {
     CanonicalRelationalExpressionRuntimeServices predicate_services;
     predicate_services.comparison_evaluator =
@@ -57308,8 +58012,11 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
   }
   static const auto datatype_manifest =
       dt::LoadCurrentCoreDatatypeCatalogManifest();
-  const auto canonical_type_id = dt::CanonicalTypeIdFromStableName(
-      persisted.value_descriptor.canonical_type_name);
+  const auto canonical_type_id =
+      persisted.value_descriptor.canonical_type_name == "timestamp_tz"
+          ? dt::CanonicalTypeId::timestamp
+          : dt::CanonicalTypeIdFromStableName(
+                persisted.value_descriptor.canonical_type_name);
   const auto canonical_type =
       datatype_manifest.ok()
           ? dt::LookupDatatypeCatalogRow(datatype_manifest.manifest,
@@ -57447,8 +58154,11 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
   const auto type_uuid = field("type_uuid");
   static const auto datatype_manifest =
       dt::LoadCurrentCoreDatatypeCatalogManifest();
-  const auto canonical_type_id = dt::CanonicalTypeIdFromStableName(
-      persisted.value_descriptor.canonical_type_name);
+  const auto canonical_type_id =
+      persisted.value_descriptor.canonical_type_name == "timestamp_tz"
+          ? dt::CanonicalTypeId::timestamp
+          : dt::CanonicalTypeIdFromStableName(
+                persisted.value_descriptor.canonical_type_name);
   const auto canonical_type =
       datatype_manifest.ok()
           ? dt::LookupDatatypeCatalogRow(datatype_manifest.manifest,
@@ -59896,6 +60606,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       }
       engine_descriptor = column.value_descriptor;
       engine_descriptor.descriptor_kind = "scalar";
+      engine_descriptor.encoded_descriptor =
+          "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
     } else if (persisted_column != nullptr && !spatial) {
       if (outputs[ordinal]->output_name_utf8 !=
               persisted_column->canonical_name_key ||

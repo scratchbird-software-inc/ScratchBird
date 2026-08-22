@@ -34,6 +34,9 @@ namespace datatypes = scratchbird::core::datatypes;
 
 namespace {
 
+constexpr std::string_view kCanonicalInt64TypeUuid =
+    "019d0000-0000-7000-8000-00000000d711";
+
 std::string Uuid(const std::uint64_t value) {
   char buffer[37];
   std::snprintf(buffer, sizeof(buffer), "019f0000-0000-7000-8000-%012llx",
@@ -149,9 +152,19 @@ executor::TypedPhysicalNodeDag DirectDag(
   root.implementation_id =
       root_kind == executor::PhysicalNodeKind::kJoin
           ? "join.nested-loop.inner.typed.v1"
+          : root_kind == executor::PhysicalNodeKind::kProject
+                ? "project.descriptor-direct.v1"
           : root_kind == executor::PhysicalNodeKind::kSubquery
-                ? "subquery.table.typed.v1"
-                : root_kind == executor::PhysicalNodeKind::kRecursiveCte
+                ? "subquery.table.materialize.typed.v1"
+          : root_kind == executor::PhysicalNodeKind::kAggregate
+                ? "aggregate.registry-core.v1"
+          : root_kind == executor::PhysicalNodeKind::kSort
+                ? "sort.typed.terms.v1"
+          : root_kind == executor::PhysicalNodeKind::kWindow
+                ? "window.partition-order-peer.v1"
+          : root_kind == executor::PhysicalNodeKind::kLimit
+                ? "limit.typed.v1"
+          : root_kind == executor::PhysicalNodeKind::kRecursiveCte
                       ? "cte.recursive.working.typed.v1"
                       : "canonical.consumer.typed.v1";
   root.input_physical_node_ids = right_descriptors.empty()
@@ -269,6 +282,8 @@ DirectLegExecution ExecuteDirectLeg(const std::size_t ordinal,
                         "POINT(0 0)"),
              descriptor("crs_uuid", "uuid", first_descriptor_id + 2,
                         Uuid(12'000 + ordinal))};
+    cells[1].second.encoded_value.clear();
+    cells[1].second.binary_value = {1};
   } else {
     cells = {descriptor("family_" + std::string(family), "uuid",
                         first_descriptor_id, Uuid(11'000 + ordinal))};
@@ -583,6 +598,10 @@ bool DirectConsumerSpine(const executor::DescriptorBatch& root,
       executor::ExecuteCanonicalDescriptorProjection(projection_request);
   if (!selected.diagnostic.ok ||
       selected.output_batch.rows.size() != root.rows.size()) {
+    if (!selected.diagnostic.ok) {
+      std::cerr << selected.diagnostic.diagnostic_code << ':'
+                << selected.diagnostic.detail << '\n';
+    }
     return fail("select");
   }
 
@@ -725,7 +744,8 @@ bool DirectConsumerSpine(const executor::DescriptorBatch& root,
       count_entry->builtin_id, count_entry->function_uuid, true};
   aggregate_request.input_batch = recursive.output_batch;
   auto aggregate_descriptor = executor::MakeExecutorDescriptor(
-      "int64", "canonical=int64;type_uuid=" + Uuid(6401) +
+      "int64", "canonical=int64;type_uuid=" +
+                   std::string(kCanonicalInt64TypeUuid) +
                    ";nullable=false");
   aggregate_descriptor.descriptor_uuid.canonical = Uuid(6700 + receipt_salt);
   aggregate_descriptor.descriptor_kind = "scalar";
@@ -737,6 +757,10 @@ bool DirectConsumerSpine(const executor::DescriptorBatch& root,
   if (!aggregate.diagnostic.ok || aggregate.output_batch.rows.size() != 1 ||
       aggregate.output_batch.rows.front().values.front().encoded_value !=
           std::to_string(root.rows.size())) {
+    if (!aggregate.diagnostic.ok) {
+      std::cerr << aggregate.diagnostic.diagnostic_code << ':'
+                << aggregate.diagnostic.detail << '\n';
+    }
     return fail("aggregate");
   }
 
@@ -2007,6 +2031,16 @@ SemanticJoinReceipt ExecuteRegularSemanticVector(
   } else {
     request.join_kind = executor::CanonicalAcceptedJoinKind::kCross;
   }
+  dag.nodes.back().implementation_id =
+      form == "INNER" ? "join.inner.3vl.nested.v1"
+      : form == "LEFT" ? "join.left-outer.3vl.nested.v1"
+      : form == "RIGHT" ? "join.right-outer.3vl.nested.v1"
+      : form == "FULL" ? "join.full-outer.3vl.nested.v1"
+      : form == "SEMI" ? "join.left-semi.3vl.nested.v1"
+      : form == "ANTI" ? "join.left-anti.3vl.nested.v1"
+                         : "join.cross.3vl.nested.v1";
+  request.residual_request.key_request.physical_dag = dag;
+  request.residual_request.key_request.mga_authority = Authority(dag);
   const auto result = executor::ExecuteCanonicalJoinKind(request);
   SemanticJoinReceipt receipt;
   receipt.accepted = result.diagnostic.ok;

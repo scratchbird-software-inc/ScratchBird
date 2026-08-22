@@ -1423,6 +1423,7 @@ api::TypedRelationalDag ProductionSpatialDag(
     constexpr std::array<std::uint8_t, 5> kKinds{14, 22, 14, 20, 18};
     constexpr std::array<std::uint16_t, 5> kFieldSlots{0, 0, 1, 0, 0};
     for (std::size_t ordinal = 0; ordinal < kKinds.size(); ++ordinal) {
+      if (ordinal < storage.columns.size()) continue;
       const auto slot = static_cast<std::uint16_t>(
           kKinds[ordinal] == 14
               ? lexical_source_ordinal * 2 + kFieldSlots[ordinal]
@@ -2100,7 +2101,31 @@ bool ProductionSpatialRoute() {
           "0" &&
       execution.api_result.result_shape.rows[1].fields[4].second.encoded_value ==
           "0";
-  const auto profiles = ProductionMultilegProfiles(fixture.salt + 80'000);
+  auto profiles = ProductionMultilegProfiles(fixture.salt + 80'000);
+  const auto bind_persisted_profile =
+      [&](const std::uint8_t kind, const std::uint16_t slot,
+          const api::MgaRelationColumnStorageDescriptor& column) {
+        const auto found = std::ranges::find_if(
+            profiles, [&](const auto& candidate) {
+              return candidate.profile_kind == kind &&
+                     candidate.slot == slot;
+            });
+        if (found == profiles.end()) return false;
+        found->descriptor_uuid =
+            column.value_descriptor.descriptor_uuid.canonical;
+        found->type_uuid = DescriptorTypeUuid(column.value_descriptor);
+        return !found->descriptor_uuid.empty() && !found->type_uuid.empty();
+      };
+  if (!Require(
+          bind_persisted_profile(14, 0, storage.columns[0]) &&
+              bind_persisted_profile(22, 0, storage.columns[1]) &&
+              bind_persisted_profile(14, 1, storage.columns[2]) &&
+              bind_persisted_profile(14, 2, right_storage.columns[0]) &&
+              bind_persisted_profile(22, 1, right_storage.columns[1]) &&
+              bind_persisted_profile(14, 3, right_storage.columns[2]),
+          "spatial multileg base descriptors were not persisted-exact")) {
+    return false;
+  }
   const auto profile = [&](const std::uint8_t kind,
                            const std::uint16_t slot) -> const auto* {
     const auto found = std::ranges::find_if(
@@ -2127,9 +2152,23 @@ bool ProductionSpatialRoute() {
                 ? source_ordinal * 2 + kUuidFieldSlots[field_ordinal]
                 : source_ordinal);
         const auto* expected = profile(kKinds[field_ordinal], slot);
-        if (descriptor == dag.descriptors.end() || expected == nullptr ||
-            descriptor->descriptor_uuid != expected->descriptor_uuid ||
-            descriptor->type_uuid != expected->type_uuid ||
+        const auto& persisted =
+            source_ordinal == 0 ? storage : right_storage;
+        const auto expected_descriptor_uuid =
+            field_ordinal < persisted.columns.size()
+                ? persisted.columns[field_ordinal]
+                      .value_descriptor.descriptor_uuid.canonical
+                : expected == nullptr ? std::string{}
+                                      : expected->descriptor_uuid;
+        const auto expected_type_uuid =
+            field_ordinal < persisted.columns.size()
+                ? DescriptorTypeUuid(
+                      persisted.columns[field_ordinal].value_descriptor)
+                : expected == nullptr ? std::string{} : expected->type_uuid;
+        if (descriptor == dag.descriptors.end() ||
+            expected_descriptor_uuid.empty() || expected_type_uuid.empty() ||
+            descriptor->descriptor_uuid != expected_descriptor_uuid ||
+            descriptor->type_uuid != expected_type_uuid ||
             descriptor->nullability !=
                 api::RelationalNullability::kNonNull) {
           return false;
@@ -2254,9 +2293,23 @@ bool ProductionSpatialRoute() {
                 return candidate.descriptor_id == descriptor_id;
               });
           const auto* expected = profile(kKinds[ordinal], kSlots[ordinal]);
-          if (descriptor == dag.descriptors.end() || expected == nullptr ||
-              descriptor->descriptor_uuid != expected->descriptor_uuid ||
-              descriptor->type_uuid != expected->type_uuid ||
+          const auto spatial_base = ordinal < storage.columns.size();
+          const auto expected_descriptor_uuid =
+              spatial_base
+                  ? storage.columns[ordinal]
+                        .value_descriptor.descriptor_uuid.canonical
+                  : expected == nullptr ? std::string{}
+                                        : expected->descriptor_uuid;
+          const auto expected_type_uuid =
+              spatial_base
+                  ? DescriptorTypeUuid(
+                        storage.columns[ordinal].value_descriptor)
+                  : expected == nullptr ? std::string{} : expected->type_uuid;
+          if (descriptor == dag.descriptors.end() ||
+              expected_descriptor_uuid.empty() ||
+              expected_type_uuid.empty() ||
+              descriptor->descriptor_uuid != expected_descriptor_uuid ||
+              descriptor->type_uuid != expected_type_uuid ||
               descriptor->nullability !=
                   api::RelationalNullability::kNonNull) {
             return false;
@@ -2777,6 +2830,17 @@ bool ProductionColumnarRoute() {
     }
     return accepted;
   };
+  const auto common_join_refused = [&](const auto& candidate,
+                                       const std::string_view code) {
+    return candidate.profile_matched && !candidate.optimizer_selected &&
+           !candidate.physical_dag_published &&
+           !candidate.physical_dag_executed &&
+           !candidate.runtime_actuals_attached &&
+           !candidate.canonical_result_published &&
+           !candidate.api_result.ok &&
+           !candidate.api_result.diagnostics.empty() &&
+           candidate.api_result.diagnostics.front().code == code;
+  };
   const bool all_regular_common_forms =
       common_join_exact(left_common, 6, 3, "LEFT", "ON",
                         "canonical.relational.on-typed-predicate.v1") &&
@@ -2790,10 +2854,10 @@ bool ProductionColumnarRoute() {
                         "canonical.relational.on-typed-predicate.v1") &&
       common_join_exact(cross_common, 6, 9, "CROSS", "NONE",
                         "canonical.relational.cross-no-condition.v1") &&
-      common_join_exact(using_common, 6, 2, "INNER", "USING",
-                        "canonical.relational.using-descriptor-equality.v1") &&
-      common_join_exact(natural_common, 6, 2, "INNER", "NATURAL",
-                        "canonical.relational.natural-to-using.v1");
+      common_join_refused(using_common,
+                          "SB_MODEL_JOIN_USING_BINDING_REFUSED_V1") &&
+      common_join_refused(natural_common,
+                          "SB_MODEL_JOIN_NATURAL_BINDING_REFUSED_V1");
   reader.current_monotonic_ns = std::to_string(ProductionNowMillis() + 2);
   const auto relational_joined = sblr::ExecuteCanonicalCurrentHeapQuery(
       {reader, ProductionColumnarJoinDag(
