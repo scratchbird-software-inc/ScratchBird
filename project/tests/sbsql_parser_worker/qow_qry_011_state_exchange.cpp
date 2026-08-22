@@ -91,6 +91,7 @@ bool ValidateAllRegistryStateExchangeProfiles() {
           api::EngineSqlTruthValue::true_value,
           api::EngineSqlTruthValue::true_value,
           api::EngineSqlTruthValue::unknown};
+  BindEqualityAuthority(&modifiers.aggregate_request);
   const auto modifier_baseline =
       LocalCombineBaseline(modifiers.aggregate_request);
   const auto modified =
