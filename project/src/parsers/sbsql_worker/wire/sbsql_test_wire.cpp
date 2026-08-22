@@ -5060,11 +5060,15 @@ BuildEngineProjectedNativeBindingContext(
   if (catalog_join != ast.relations.end()) {
     std::vector<const NativeRelationAstNode*> source_relations;
     std::vector<const NativeRelationAstNode*> join_relations;
+    const NativeRelationAstNode* filter_relation = nullptr;
     for (const auto& relation : ast.relations) {
       if (relation.relation_kind == NativeRelationAstKind::kCatalogSource) {
         source_relations.push_back(&relation);
       } else if (relation.relation_kind == NativeRelationAstKind::kJoin) {
         join_relations.push_back(&relation);
+      } else if (relation.relation_kind == NativeRelationAstKind::kFilter &&
+                 filter_relation == nullptr) {
+        filter_relation = &relation;
       }
     }
     std::ranges::sort(source_relations, {},
@@ -5073,10 +5077,19 @@ BuildEngineProjectedNativeBindingContext(
                       [](const auto* relation) { return relation->relation_id; });
     const auto source_count = ast.catalog_relation_sources.size();
     const bool bounded_multimodel_join = source_count >= 3 && source_count <= 9;
+    const bool ordinary_relational_sources =
+        source_count == 2 &&
+        std::ranges::all_of(ast.catalog_relation_sources,
+                            [](const auto& source) {
+                              return source.source_kind ==
+                                     NativeRelationSourceAstKind::kCatalogRelation;
+                            });
     bool exact_join_graph =
         source_relations.size() == source_count &&
         join_relations.size() + 1 == source_count &&
-        ast.relations.size() == source_relations.size() + join_relations.size();
+        ast.relations.size() ==
+            source_relations.size() + join_relations.size() +
+                static_cast<std::size_t>(filter_relation != nullptr);
     std::uint32_t expected_left_relation_id =
         source_relations.empty() ? 0 : source_relations.front()->relation_id;
     for (std::size_t ordinal = 1; exact_join_graph && ordinal < source_count;
@@ -5093,13 +5106,40 @@ BuildEngineProjectedNativeBindingContext(
             join->predicate_expression_ids.empty()));
       expected_left_relation_id = join->relation_id;
     }
+    const bool exact_filter_tail =
+        filter_relation != nullptr && ordinary_relational_sources &&
+        !join_relations.empty() &&
+        filter_relation->relation_id == join_relations.back()->relation_id + 1 &&
+        filter_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{join_relations.back()->relation_id} &&
+        filter_relation->output_expression_ids ==
+            join_relations.back()->output_expression_ids &&
+        filter_relation->predicate_expression_ids.size() == 1 &&
+        filter_relation->relation_source_ids.empty() &&
+        filter_relation->values_row_ids.empty() &&
+        filter_relation->window_invocation_ids.empty() &&
+        filter_relation->grouping_key_expression_ids.empty() &&
+        filter_relation->aggregate_expression_ids.empty() &&
+        filter_relation->limit_expression_ids.empty() &&
+        filter_relation->ordering_terms.empty() &&
+        filter_relation->join_kind == NativeJoinAstKind::kNone &&
+        filter_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kNone &&
+        filter_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kNone;
+    exact_join_graph =
+        exact_join_graph &&
+        (filter_relation == nullptr || exact_filter_tail);
+    const auto expected_root_relation_id =
+        filter_relation != nullptr ? filter_relation->relation_id
+                                   : expected_left_relation_id;
     const auto expected_resolution_count = source_count +
         std::ranges::count_if(ast.catalog_relation_sources,
                               [](const auto& source) {
           return source.source_kind == NativeRelationSourceAstKind::kSearch;
         });
     if (source_count < 2 || !exact_join_graph ||
-        ast.root_relation_id != expected_left_relation_id ||
+        ast.root_relation_id != expected_root_relation_id ||
         (!bounded_multimodel_join && source_count != 2) ||
         resolved_object_reference_seeds.size() != expected_resolution_count) {
       return fail("catalog_join_shape_invalid:sources=" +
@@ -5218,6 +5258,126 @@ BuildEngineProjectedNativeBindingContext(
             !right_key->child_expression_ids.empty()) {
           return fail("catalog_inner_join_key_invalid");
         }
+      }
+    }
+
+    const NativeExpressionAstNode* filter_predicate = nullptr;
+    const NativeExpressionAstNode* filter_identifier = nullptr;
+    const NativeExpressionAstNode* filter_value = nullptr;
+    if (filter_relation != nullptr) {
+      const auto find_expression = [&](const std::uint32_t expression_id) {
+        const auto found = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        return found == ast.expressions.end() ? nullptr : &*found;
+      };
+      filter_predicate =
+          find_expression(filter_relation->predicate_expression_ids.front());
+      if (filter_predicate != nullptr &&
+          filter_predicate->child_expression_ids.size() == 2) {
+        filter_identifier =
+            find_expression(filter_predicate->child_expression_ids[0]);
+        filter_value =
+            find_expression(filter_predicate->child_expression_ids[1]);
+      }
+      const bool accepted_operator =
+          filter_predicate != nullptr &&
+          (filter_predicate->operator_name == "=" ||
+           filter_predicate->operator_name == "<>" ||
+           filter_predicate->operator_name == "!=" ||
+           filter_predicate->operator_name == "<" ||
+           filter_predicate->operator_name == "<=" ||
+           filter_predicate->operator_name == ">" ||
+           filter_predicate->operator_name == ">=");
+      const bool numeric_literal =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+          filter_value->literal_kind == NativeLiteralAstKind::kNumeric;
+      std::uint64_t parsed_numeric = 0;
+      const auto parsed =
+          numeric_literal
+              ? std::from_chars(filter_value->spelling.data(),
+                                filter_value->spelling.data() +
+                                    filter_value->spelling.size(),
+                                parsed_numeric)
+              : std::from_chars_result{};
+      if (!accepted_operator || filter_identifier == nullptr ||
+          filter_value == nullptr ||
+          filter_predicate->expression_kind !=
+              NativeExpressionAstKind::kBinary ||
+          filter_identifier->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          filter_identifier->qualified_identifier.size() != 1 ||
+          filter_identifier->spelling.empty() ||
+          !filter_identifier->child_expression_ids.empty() ||
+          !filter_identifier->operator_name.empty() ||
+          !filter_value->child_expression_ids.empty() ||
+          !filter_value->operator_name.empty() ||
+          (!numeric_literal &&
+           filter_value->expression_kind !=
+               NativeExpressionAstKind::kParameter &&
+           filter_value->expression_kind != NativeExpressionAstKind::kVariable) ||
+          ((filter_value->expression_kind ==
+                NativeExpressionAstKind::kParameter ||
+            filter_value->expression_kind == NativeExpressionAstKind::kVariable) &&
+           filter_value->literal_kind.has_value()) ||
+          (numeric_literal &&
+           (filter_value->spelling.empty() ||
+            (filter_value->spelling.size() > 1 &&
+             filter_value->spelling.front() == '0') ||
+            parsed.ec != std::errc{} ||
+            parsed.ptr != filter_value->spelling.data() +
+                              filter_value->spelling.size())) ||
+          (filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+           filter_value->structural_literal_occurrence_id == 0) ||
+          (filter_value->expression_kind ==
+               NativeExpressionAstKind::kParameter &&
+           filter_value->structural_parameter_occurrence_id == 0) ||
+          (filter_value->expression_kind == NativeExpressionAstKind::kVariable &&
+           filter_value->structural_variable_occurrence_id == 0)) {
+        return fail("catalog_join_filter_predicate_invalid");
+      }
+      std::unordered_set<std::uint32_t> admitted_expression_ids;
+      std::unordered_set<std::uint32_t> active_expression_ids;
+      const auto admit_expression =
+          [&](auto&& self, const std::uint32_t expression_id,
+              const std::size_t depth) -> bool {
+        if (expression_id == 0 || depth > 32) return false;
+        if (admitted_expression_ids.contains(expression_id)) return true;
+        if (!active_expression_ids.insert(expression_id).second) return false;
+        const auto* expression = find_expression(expression_id);
+        if (expression == nullptr) return false;
+        for (const auto child_id : expression->child_expression_ids) {
+          if (!self(self, child_id, depth + 1)) return false;
+        }
+        active_expression_ids.erase(expression_id);
+        admitted_expression_ids.insert(expression_id);
+        return true;
+      };
+      bool exact_expression_inventory = true;
+      for (const auto* source_relation : source_relations) {
+        for (const auto expression_id : source_relation->output_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
+      for (const auto* join_relation : join_relations) {
+        for (const auto expression_id :
+             join_relation->predicate_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
+      exact_expression_inventory =
+          exact_expression_inventory &&
+          admit_expression(admit_expression,
+                           filter_predicate->expression_id, 1) &&
+          admitted_expression_ids.size() == ast.expressions.size();
+      if (!exact_expression_inventory) {
+        return fail("catalog_join_filter_expression_inventory_invalid");
       }
     }
 
@@ -5789,6 +5949,49 @@ BuildEngineProjectedNativeBindingContext(
       }
       context.relations.push_back(
           {join_relations[join_ordinal]->relation_id, join_semantic});
+    }
+    if (filter_relation != nullptr) {
+      std::vector<NativeOutputBindingInput> join_outputs;
+      for (const auto& output : context.outputs) {
+        if (output.relation_id == join_relations.back()->relation_id) {
+          join_outputs.push_back(output);
+        }
+      }
+      std::ranges::sort(join_outputs, {}, &NativeOutputBindingInput::ordinal);
+      const auto matching_filter_columns = std::ranges::count_if(
+          join_outputs, [&](const auto& output) {
+            return output.output_name_utf8 == filter_identifier->spelling;
+          });
+      if (join_outputs.empty() || matching_filter_columns != 1) {
+        return fail("catalog_join_filter_column_unresolved_or_ambiguous");
+      }
+      const auto boolean_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == 6 &&
+                   candidate.slot == predicate_nodes.size();
+          });
+      if (boolean_profile == statement_context.descriptor_profiles.end() ||
+          !boolean_profile->nullable ||
+          !CanonicalUuidBytes(boolean_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(boolean_profile->type_uuid).has_value()) {
+        return fail("catalog_join_filter_boolean_descriptor_profile_unavailable");
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = boolean_profile->descriptor_uuid;
+      descriptor.type_uuid = boolean_profile->type_uuid;
+      descriptor.nullability = BoundNullability::kNullable;
+      context.descriptors.push_back(std::move(descriptor));
+      for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
+        const auto& source_output = join_outputs[ordinal];
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(context.outputs.size() + 1),
+             source_output.expression_id, source_output.output_name_utf8,
+             source_output.descriptor_id, true,
+             static_cast<std::uint32_t>(ordinal),
+             filter_relation->relation_id});
+      }
     }
     return context;
   }
@@ -15926,6 +16129,39 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               resolved_object_reference_seeds,
               &result.messages);
         }
+        const auto native_join_filter_relation = std::ranges::find_if(
+            ast.native_relational.relations, [](const auto& relation) {
+              return relation.relation_kind == NativeRelationAstKind::kFilter;
+            });
+        const bool exact_native_join_filter_operand_route =
+            native_binding_context.has_value() &&
+            ast.native_relational.catalog_relation_sources.size() == 2 &&
+            std::ranges::count_if(
+                ast.native_relational.relations, [](const auto& relation) {
+                  return relation.relation_kind == NativeRelationAstKind::kJoin;
+                }) == 1 &&
+            native_join_filter_relation !=
+                ast.native_relational.relations.end() &&
+            ast.native_relational.root_relation_id ==
+                native_join_filter_relation->relation_id;
+        const auto reserved_join_filter_operand_expression_id = [&]()
+            -> std::optional<std::uint32_t> {
+          if (!exact_native_join_filter_operand_route ||
+              native_binding_context->descriptors.empty()) {
+            return std::nullopt;
+          }
+          const auto reserved_id =
+              native_binding_context->descriptors.back().descriptor_id;
+          if (reserved_id == 0 ||
+              std::ranges::any_of(
+                  native_binding_context->expressions,
+                  [&](const auto& expression) {
+                    return expression.expression_id >= reserved_id;
+                  })) {
+            return std::nullopt;
+          }
+          return reserved_id;
+        };
         if (native_binding_context.has_value() &&
             literal_prebind_state.has_value() &&
             native_statement_context->literal_statement_descriptor_profiles.size()==1) {
@@ -15938,9 +16174,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               ? native_binding_context->expressions.end()
               : std::ranges::find_if(native_binding_context->expressions,
                     [&](const auto& item) {
-                      return item.expression_id == ast_literal->expression_id &&
-                             item.structural_literal_occurrence_id ==
-                                 literal_prebind_state->occurrence_id;
+                      return item.structural_literal_occurrence_id ==
+                                 literal_prebind_state->occurrence_id &&
+                             (exact_native_join_filter_operand_route ||
+                              item.expression_id == ast_literal->expression_id);
                     });
           if(expression==native_binding_context->expressions.end()) {
             if (ast_literal == ast.native_relational.expressions.end()) {
@@ -15949,22 +16186,35 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                   "The negotiated literal occurrence was absent from the typed AST.",
                   "sbp_sbsql.wire"));
             } else {
-              const auto& profile =
-                  native_statement_context->literal_statement_descriptor_profiles.front();
-              NativeDescriptorBindingInput literal_descriptor;
-              literal_descriptor.descriptor_id = static_cast<std::uint32_t>(
-                  native_binding_context->descriptors.size() + 1);
-              literal_descriptor.descriptor_uuid = profile.descriptor_uuid;
-              literal_descriptor.type_uuid = profile.type_uuid;
-              literal_descriptor.nullability = BoundNullability::kNonNull;
-              const auto literal_descriptor_id = literal_descriptor.descriptor_id;
-              native_binding_context->descriptors.push_back(
-                  std::move(literal_descriptor));
-              native_binding_context->expressions.push_back(
-                  {ast_literal->expression_id, literal_descriptor_id,
-                   std::nullopt, std::nullopt,
-                   ast_literal->structural_literal_occurrence_id,
-                   ast_literal->structural_parameter_occurrence_id});
+              const auto reserved_expression_id =
+                  exact_native_join_filter_operand_route
+                      ? reserved_join_filter_operand_expression_id()
+                      : std::optional<std::uint32_t>{
+                            ast_literal->expression_id};
+              if (!reserved_expression_id.has_value()) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "The JOIN filter operand could not receive a fresh bound expression identity.",
+                    "sbp_sbsql.wire"));
+              } else {
+                const auto& profile =
+                    native_statement_context->literal_statement_descriptor_profiles.front();
+                NativeDescriptorBindingInput literal_descriptor;
+                literal_descriptor.descriptor_id = static_cast<std::uint32_t>(
+                    native_binding_context->descriptors.size() + 1);
+                literal_descriptor.descriptor_uuid = profile.descriptor_uuid;
+                literal_descriptor.type_uuid = profile.type_uuid;
+                literal_descriptor.nullability = BoundNullability::kNonNull;
+                const auto literal_descriptor_id =
+                    literal_descriptor.descriptor_id;
+                native_binding_context->descriptors.push_back(
+                    std::move(literal_descriptor));
+                native_binding_context->expressions.push_back(
+                    {*reserved_expression_id, literal_descriptor_id,
+                     std::nullopt, std::nullopt,
+                     ast_literal->structural_literal_occurrence_id,
+                     ast_literal->structural_parameter_occurrence_id});
+              }
             }
           } else {
             const auto descriptor=std::ranges::find_if(
@@ -16001,10 +16251,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                     : std::ranges::find_if(
                           native_binding_context->expressions,
                           [&](const auto& item) {
-                            return item.expression_id ==
-                                       ast_parameter->expression_id &&
-                                   item.structural_parameter_occurrence_id ==
-                                   mapping.occurrence_id;
+                            return item.structural_parameter_occurrence_id ==
+                                       mapping.occurrence_id &&
+                                   (exact_native_join_filter_operand_route ||
+                                    item.expression_id ==
+                                        ast_parameter->expression_id);
                           });
             CanonicalBytes descriptor_uuid_bytes(
                 mapping.datatype_descriptor_uuid.begin(),
@@ -16016,6 +16267,18 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             const auto type_uuid = LiteralReadUuid(type_uuid_bytes, 0);
             if (ast_parameter != ast.native_relational.expressions.end() &&
                 bound_input == native_binding_context->expressions.end()) {
+              const auto reserved_expression_id =
+                  exact_native_join_filter_operand_route
+                      ? reserved_join_filter_operand_expression_id()
+                      : std::optional<std::uint32_t>{
+                            ast_parameter->expression_id};
+              if (!reserved_expression_id.has_value()) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "The JOIN filter parameter could not receive a fresh bound expression identity.",
+                    "sbp_sbsql.wire"));
+                break;
+              }
               NativeDescriptorBindingInput parameter_descriptor;
               parameter_descriptor.descriptor_id = static_cast<std::uint32_t>(
                   native_binding_context->descriptors.size() + 1);
@@ -16028,7 +16291,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               native_binding_context->descriptors.push_back(
                   std::move(parameter_descriptor));
               native_binding_context->expressions.push_back(
-                  {ast_parameter->expression_id, descriptor_id, std::nullopt,
+                  {*reserved_expression_id, descriptor_id, std::nullopt,
                    std::nullopt, ast_parameter->structural_literal_occurrence_id,
                    ast_parameter->structural_parameter_occurrence_id});
               bound_input = std::prev(native_binding_context->expressions.end());
@@ -16094,9 +16357,21 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             descriptor.nullability = mapping.nullable != 0
                 ? BoundNullability::kNullable : BoundNullability::kNonNull;
             const auto descriptor_id = descriptor.descriptor_id;
+            const auto reserved_expression_id =
+                exact_native_join_filter_operand_route
+                    ? reserved_join_filter_operand_expression_id()
+                    : std::optional<std::uint32_t>{
+                          ast_variable->expression_id};
+            if (!reserved_expression_id.has_value()) {
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "The JOIN filter variable could not receive a fresh bound expression identity.",
+                  "sbp_sbsql.wire"));
+              break;
+            }
             native_binding_context->descriptors.push_back(std::move(descriptor));
             NativeExpressionBindingInput expression;
-            expression.expression_id = ast_variable->expression_id;
+            expression.expression_id = *reserved_expression_id;
             expression.descriptor_id = descriptor_id;
             expression.structural_variable_occurrence_id =
                 ast_variable->structural_variable_occurrence_id;

@@ -4459,6 +4459,50 @@ class NativeRelationalParser final {
         }
       }
     }
+    const Token* join_end = query_end;
+    std::optional<std::uint32_t> join_filter_predicate_id;
+    const bool ordinary_two_source_join =
+        parsed_sources.size() == 2 &&
+        std::ranges::all_of(parsed_sources, [](const auto& source) {
+          return source.source_kind ==
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    if (ordinary_two_source_join && !AtEnd() && IsWord(Current(), "WHERE")) {
+      Consume();
+      join_filter_predicate_id = ParseExpression(0, 0);
+      if (!join_filter_predicate_id.has_value()) return FinishRefusal();
+      const auto& predicate =
+          document_.expressions[*join_filter_predicate_id - 1];
+      const NativeExpressionAstNode* identifier = nullptr;
+      const NativeExpressionAstNode* value = nullptr;
+      if (predicate.expression_kind == NativeExpressionAstKind::kBinary &&
+          predicate.child_expression_ids.size() == 2) {
+        identifier =
+            &document_.expressions[predicate.child_expression_ids[0] - 1];
+        value = &document_.expressions[predicate.child_expression_ids[1] - 1];
+      }
+      const bool accepted_operator =
+          predicate.operator_name == "=" || predicate.operator_name == "<>" ||
+          predicate.operator_name == "!=" || predicate.operator_name == "<" ||
+          predicate.operator_name == "<=" || predicate.operator_name == ">" ||
+          predicate.operator_name == ">=";
+      if (identifier == nullptr || value == nullptr || !accepted_operator ||
+          identifier->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          identifier->qualified_identifier.size() != 1 ||
+          !identifier->child_expression_ids.empty() ||
+          !((value->expression_kind == NativeExpressionAstKind::kLiteral &&
+             value->literal_kind == NativeLiteralAstKind::kNumeric) ||
+            value->expression_kind == NativeExpressionAstKind::kParameter ||
+            value->expression_kind == NativeExpressionAstKind::kVariable) ||
+          !value->child_expression_ids.empty()) {
+        Refuse("catalog_join_where_profile_unsupported",
+               "bounded catalog JOIN WHERE requires one unqualified column "
+               "comparison to an unsigned numeric literal, structural "
+               "parameter occurrence, or structural variable occurrence");
+        return FinishRefusal();
+      }
+      query_end = &TokenForRangeEnd(predicate.range);
+    }
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("catalog_cross_join_clause_unsupported",
@@ -4522,7 +4566,7 @@ class NativeRelationalParser final {
         joined_wildcard_ids.push_back(source_wildcard_ids[source_ordinal]);
         join.output_expression_ids = joined_wildcard_ids;
       }
-      join.range = Span(select_token, *query_end);
+      join.range = Span(select_token, *join_end);
       if (source_ordinal + 1 == parsed_sources.size() &&
           join_kind != NativeJoinAstKind::kCross) {
         std::vector<std::uint32_t> predicate_expression_ids(
@@ -4576,6 +4620,17 @@ class NativeRelationalParser final {
     }
     document_.catalog_relation_sources = std::move(parsed_sources);
     document_.root_relation_id = prior_relation_id;
+    if (join_filter_predicate_id.has_value()) {
+      NativeRelationAstNode filter;
+      filter.relation_id = prior_relation_id + 1;
+      filter.relation_kind = NativeRelationAstKind::kFilter;
+      filter.input_relation_ids = {prior_relation_id};
+      filter.output_expression_ids = joined_wildcard_ids;
+      filter.predicate_expression_ids = {*join_filter_predicate_id};
+      filter.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(filter));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    }
     document_.status = NativeRelationalParseStatus::kAccepted;
     return std::move(document_);
   }

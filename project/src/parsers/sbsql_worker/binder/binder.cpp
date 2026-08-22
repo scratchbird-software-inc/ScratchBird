@@ -5759,9 +5759,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       });
   if (catalog_join != ast.relations.end()) {
     std::vector<const NativeRelationAstNode*> source_relations;
+    const NativeRelationAstNode* filter_relation = nullptr;
     for (const auto& relation : ast.relations) {
       if (relation.relation_kind == NativeRelationAstKind::kCatalogSource) {
         source_relations.push_back(&relation);
+      } else if (relation.relation_kind == NativeRelationAstKind::kFilter &&
+                 filter_relation == nullptr) {
+        filter_relation = &relation;
       }
     }
     const bool spatial_columnar_join =
@@ -5775,8 +5779,30 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                 return source.source_kind ==
                                        NativeRelationSourceAstKind::kSpatial;
                               }) == 1;
+    const bool filter_composition =
+        filter_relation != nullptr &&
+        filter_relation->relation_id == catalog_join->relation_id + 1 &&
+        filter_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{catalog_join->relation_id} &&
+        filter_relation->output_expression_ids ==
+            catalog_join->output_expression_ids &&
+        filter_relation->predicate_expression_ids.size() == 1 &&
+        filter_relation->relation_source_ids.empty() &&
+        filter_relation->values_row_ids.empty() &&
+        filter_relation->window_invocation_ids.empty() &&
+        filter_relation->grouping_key_expression_ids.empty() &&
+        filter_relation->aggregate_expression_ids.empty() &&
+        filter_relation->limit_expression_ids.empty() &&
+        filter_relation->ordering_terms.empty() &&
+        filter_relation->join_kind == NativeJoinAstKind::kNone &&
+        filter_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kNone &&
+        filter_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kNone;
     if (ast.catalog_relation_sources.size() != 2 ||
-        source_relations.size() != 2 || ast.relations.size() != 3 ||
+        source_relations.size() != 2 ||
+        ast.relations.size() !=
+            3 + static_cast<std::size_t>(filter_composition) ||
         context.catalog_relations.size() != 2 ||
         context.relations.size() != 1 ||
         context.relations.front().relation_id != catalog_join->relation_id ||
@@ -5792,11 +5818,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
              "join.left-semi.v1" &&
          context.relations.front().semantic_variant_id !=
              "join.left-anti.v1") ||
-        ast.root_relation_id != catalog_join->relation_id ||
+        ast.root_relation_id !=
+            (filter_composition ? filter_relation->relation_id
+                                : catalog_join->relation_id) ||
         catalog_join->input_relation_ids !=
             std::vector<std::uint32_t>{source_relations[0]->relation_id,
                                        source_relations[1]->relation_id} ||
-        catalog_join->predicate_expression_ids.size() > 1) {
+        catalog_join->predicate_expression_ids.size() > 1 ||
+        (filter_composition &&
+         std::ranges::any_of(
+             ast.catalog_relation_sources, [](const auto& source) {
+               return source.source_kind !=
+                      NativeRelationSourceAstKind::kCatalogRelation;
+             })) ||
+        (filter_relation != nullptr && !filter_composition)) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "catalog JOIN binding shape is incomplete");
       return RefusedBoundAst(std::move(bound));
@@ -5860,6 +5895,118 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return RefusedBoundAst(std::move(bound));
       }
     }
+    const NativeExpressionAstNode* filter_predicate = nullptr;
+    const NativeExpressionAstNode* filter_identifier = nullptr;
+    const NativeExpressionAstNode* filter_value = nullptr;
+    if (filter_composition) {
+      const auto find_expression = [&](const std::uint32_t expression_id) {
+        const auto found = std::ranges::find_if(
+            ast.expressions, [&](const auto& expression) {
+              return expression.expression_id == expression_id;
+            });
+        return found == ast.expressions.end() ? nullptr : &*found;
+      };
+      filter_predicate =
+          find_expression(filter_relation->predicate_expression_ids.front());
+      if (filter_predicate != nullptr &&
+          filter_predicate->child_expression_ids.size() == 2) {
+        filter_identifier =
+            find_expression(filter_predicate->child_expression_ids[0]);
+        filter_value =
+            find_expression(filter_predicate->child_expression_ids[1]);
+      }
+      const bool accepted_operator =
+          filter_predicate != nullptr &&
+          (filter_predicate->operator_name == "=" ||
+           filter_predicate->operator_name == "<>" ||
+           filter_predicate->operator_name == "!=" ||
+           filter_predicate->operator_name == "<" ||
+           filter_predicate->operator_name == "<=" ||
+           filter_predicate->operator_name == ">" ||
+           filter_predicate->operator_name == ">=");
+      const bool numeric_literal =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+          filter_value->literal_kind == NativeLiteralAstKind::kNumeric;
+      std::uint64_t parsed_numeric = 0;
+      const auto parsed =
+          numeric_literal
+              ? std::from_chars(filter_value->spelling.data(),
+                                filter_value->spelling.data() +
+                                    filter_value->spelling.size(),
+                                parsed_numeric)
+              : std::from_chars_result{};
+      if (!accepted_operator || filter_identifier == nullptr ||
+          filter_value == nullptr ||
+          filter_predicate->expression_kind !=
+              NativeExpressionAstKind::kBinary ||
+          filter_identifier->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          filter_identifier->qualified_identifier.size() != 1 ||
+          !filter_identifier->child_expression_ids.empty() ||
+          !filter_identifier->operator_name.empty() ||
+          !filter_value->child_expression_ids.empty() ||
+          !filter_value->operator_name.empty() ||
+          (!numeric_literal &&
+           filter_value->expression_kind !=
+               NativeExpressionAstKind::kParameter &&
+           filter_value->expression_kind != NativeExpressionAstKind::kVariable) ||
+          ((filter_value->expression_kind ==
+                NativeExpressionAstKind::kParameter ||
+            filter_value->expression_kind == NativeExpressionAstKind::kVariable) &&
+           filter_value->literal_kind.has_value()) ||
+          (numeric_literal &&
+           (filter_value->spelling.empty() ||
+            (filter_value->spelling.size() > 1 &&
+             filter_value->spelling.front() == '0') ||
+            parsed.ec != std::errc{} ||
+            parsed.ptr != filter_value->spelling.data() +
+                              filter_value->spelling.size()))) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "catalog JOIN filter predicate is not exact");
+        return RefusedBoundAst(std::move(bound));
+      }
+      std::unordered_set<std::uint32_t> admitted_expression_ids;
+      std::unordered_set<std::uint32_t> active_expression_ids;
+      const auto admit_expression =
+          [&](auto&& self, const std::uint32_t expression_id,
+              const std::size_t depth) -> bool {
+        if (expression_id == 0 || depth > 32) return false;
+        if (admitted_expression_ids.contains(expression_id)) return true;
+        if (!active_expression_ids.insert(expression_id).second) return false;
+        const auto* expression = find_expression(expression_id);
+        if (expression == nullptr) return false;
+        for (const auto child_id : expression->child_expression_ids) {
+          if (!self(self, child_id, depth + 1)) return false;
+        }
+        active_expression_ids.erase(expression_id);
+        admitted_expression_ids.insert(expression_id);
+        return true;
+      };
+      bool exact_expression_inventory = true;
+      for (const auto* source_relation : source_relations) {
+        for (const auto expression_id : source_relation->output_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
+      for (const auto expression_id : catalog_join->predicate_expression_ids) {
+        exact_expression_inventory =
+            exact_expression_inventory &&
+            admit_expression(admit_expression, expression_id, 1);
+      }
+      exact_expression_inventory =
+          exact_expression_inventory &&
+          admit_expression(admit_expression,
+                           filter_predicate->expression_id, 1) &&
+          admitted_expression_ids.size() == ast.expressions.size();
+      if (!exact_expression_inventory) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "catalog JOIN filter expression inventory is not closed");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
     const auto predicate_node_count = predicate_nodes.size();
     const auto source_projection_count = std::accumulate(
         context.catalog_relations.begin(), context.catalog_relations.end(),
@@ -5872,12 +6019,16 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (catalog_join->predicate_expression_ids.size() !=
             static_cast<std::size_t>(predicate_join) ||
         context.descriptors.size() !=
-            source_projection_count + predicate_node_count ||
-        context.outputs.size() != source_projection_count + join_output_count ||
+            source_projection_count + predicate_node_count +
+                (filter_composition ? std::size_t{2} : std::size_t{0}) ||
+        context.outputs.size() !=
+            source_projection_count + join_output_count +
+                (filter_composition ? join_output_count : std::size_t{0}) ||
         context.expressions.size() !=
             source_projection_count +
                 (spatial_columnar_join ? ast.catalog_relation_sources.size()
-                                       : std::size_t{0})) {
+                                       : std::size_t{0}) +
+                (filter_composition ? std::size_t{1} : std::size_t{0})) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "catalog JOIN predicate binding is incomplete");
       return RefusedBoundAst(std::move(bound));
@@ -6071,6 +6222,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     std::vector<std::uint32_t> joined_output_ids;
+    std::optional<std::uint32_t> bound_join_predicate_id;
     if (predicate_join) {
       std::unordered_map<std::uint32_t, std::uint32_t>
           bound_predicate_expression_ids;
@@ -6148,6 +6300,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                                predicate.expression_id);
         bound.expressions.push_back(std::move(predicate));
       }
+      const auto bound_root = bound_predicate_expression_ids.find(
+          catalog_join->predicate_expression_ids.front());
+      if (bound_root == bound_predicate_expression_ids.end()) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "catalog JOIN predicate root binding is absent");
+        return RefusedBoundAst(std::move(bound));
+      }
+      bound_join_predicate_id = bound_root->second;
     }
 
     for (std::size_t ordinal = 0; ordinal < joined_expression_ids.size();
@@ -6175,20 +6335,218 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       joined_output_ids.push_back(output.output_id);
     }
 
+    std::optional<std::uint32_t> bound_filter_predicate_id;
+    std::vector<std::uint32_t> terminal_output_ids = joined_output_ids;
+    if (filter_composition) {
+      const BoundCatalogColumnAstRecord* selected_column = nullptr;
+      std::uint32_t selected_expression_id = 0;
+      std::size_t matching_column_count = 0;
+      const auto visible_source_count = left_only_join ? std::size_t{1}
+                                                       : std::size_t{2};
+      for (std::size_t source_ordinal = 0;
+           source_ordinal < visible_source_count; ++source_ordinal) {
+        const auto& source = bound.catalog_relation_sources[source_ordinal];
+        const auto& source_relation = bound.relations[source_ordinal];
+        for (std::size_t ordinal = 0; ordinal < source.columns.size();
+             ++ordinal) {
+          if (source.columns[ordinal].canonical_name_key !=
+              filter_identifier->spelling) {
+            continue;
+          }
+          ++matching_column_count;
+          selected_column = &source.columns[ordinal];
+          selected_expression_id =
+              source_relation.output_expression_ids[ordinal];
+        }
+      }
+      const auto boolean_descriptor_index =
+          source_projection_count + predicate_node_count;
+      const auto* boolean_descriptor =
+          boolean_descriptor_index < context.descriptors.size()
+              ? &context.descriptors[boolean_descriptor_index]
+              : nullptr;
+      const bool literal_value =
+          filter_value->expression_kind == NativeExpressionAstKind::kLiteral;
+      const bool parameter_value =
+          filter_value->expression_kind == NativeExpressionAstKind::kParameter;
+      const auto matching_operand_count = std::ranges::count_if(
+          context.expressions, [&](const auto& expression) {
+            return literal_value
+                       ? expression.structural_literal_occurrence_id ==
+                             filter_value->structural_literal_occurrence_id
+                   : parameter_value
+                       ? expression.structural_parameter_occurrence_id ==
+                             filter_value->structural_parameter_occurrence_id
+                       : expression.structural_variable_occurrence_id ==
+                             filter_value->structural_variable_occurrence_id;
+          });
+      const auto operand_binding = std::ranges::find_if(
+          context.expressions, [&](const auto& expression) {
+            return literal_value
+                       ? expression.structural_literal_occurrence_id ==
+                             filter_value->structural_literal_occurrence_id
+                   : parameter_value
+                       ? expression.structural_parameter_occurrence_id ==
+                             filter_value->structural_parameter_occurrence_id
+                       : expression.structural_variable_occurrence_id ==
+                             filter_value->structural_variable_occurrence_id;
+          });
+      const auto operand_descriptor =
+          operand_binding == context.expressions.end()
+              ? descriptor_by_id.end()
+              : descriptor_by_id.find(operand_binding->descriptor_id);
+      const auto selected_descriptor =
+          selected_column == nullptr
+              ? descriptor_by_id.end()
+              : descriptor_by_id.find(selected_column->descriptor_id);
+      const auto expected_operand_expression_id =
+          static_cast<std::uint64_t>(bound.expressions.size()) + 1;
+      const bool exact_operand_occurrence =
+          literal_value
+              ? filter_value->structural_literal_occurrence_id != 0 &&
+                    filter_value->structural_parameter_occurrence_id == 0 &&
+                    filter_value->structural_variable_occurrence_id == 0 &&
+                    operand_binding != context.expressions.end() &&
+                    operand_binding->structural_literal_occurrence_id ==
+                        filter_value->structural_literal_occurrence_id &&
+                    operand_binding->structural_parameter_occurrence_id == 0 &&
+                    operand_binding->structural_variable_occurrence_id == 0
+          : parameter_value
+              ? filter_value->structural_literal_occurrence_id == 0 &&
+                    filter_value->structural_parameter_occurrence_id != 0 &&
+                    filter_value->structural_variable_occurrence_id == 0 &&
+                    operand_binding != context.expressions.end() &&
+                    operand_binding->structural_literal_occurrence_id == 0 &&
+                    operand_binding->structural_parameter_occurrence_id ==
+                        filter_value->structural_parameter_occurrence_id &&
+                    operand_binding->structural_variable_occurrence_id == 0
+              : filter_value->structural_literal_occurrence_id == 0 &&
+                    filter_value->structural_parameter_occurrence_id == 0 &&
+                    filter_value->structural_variable_occurrence_id != 0 &&
+                    operand_binding != context.expressions.end() &&
+                    operand_binding->structural_literal_occurrence_id == 0 &&
+                    operand_binding->structural_parameter_occurrence_id == 0 &&
+                    operand_binding->structural_variable_occurrence_id ==
+                        filter_value->structural_variable_occurrence_id;
+      if (matching_column_count != 1 || selected_column == nullptr ||
+          selected_expression_id == 0 || boolean_descriptor == nullptr ||
+          boolean_descriptor->descriptor_id !=
+              boolean_descriptor_index + 1 ||
+          boolean_descriptor->nullability != BoundNullability::kNullable ||
+          boolean_descriptor->collation_uuid.has_value() ||
+          boolean_descriptor->timezone_profile_id.has_value() ||
+          matching_operand_count != 1 ||
+          !exact_operand_occurrence ||
+          operand_binding == context.expressions.end() ||
+          operand_binding->function_uuid.has_value() ||
+          operand_binding->bound_name_uuid.has_value() ||
+          operand_descriptor == descriptor_by_id.end() ||
+          operand_descriptor->first != boolean_descriptor->descriptor_id + 1 ||
+          selected_descriptor == descriptor_by_id.end() ||
+          operand_descriptor->second->type_uuid !=
+              selected_descriptor->second->type_uuid ||
+          operand_descriptor->second->collation_uuid.has_value() ||
+          operand_descriptor->second->timezone_profile_id.has_value() ||
+          selected_descriptor->second->collation_uuid.has_value() ||
+          selected_descriptor->second->timezone_profile_id.has_value() ||
+          expected_operand_expression_id >
+              std::numeric_limits<std::uint32_t>::max() ||
+          operand_binding->expression_id != expected_operand_expression_id) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+            "catalog JOIN filter value or persisted column binding is incomplete");
+        return RefusedBoundAst(std::move(bound));
+      }
+
+      BoundExpressionAstRecord operand;
+      operand.expression_id = operand_binding->expression_id;
+      operand.expression_kind = filter_value->expression_kind;
+      operand.literal_kind = filter_value->literal_kind;
+      operand.result_descriptor_id = operand_binding->descriptor_id;
+      if (literal_value) operand.literal_or_parameter_ref = filter_value->spelling;
+      operand.structural_literal_occurrence_id =
+          filter_value->structural_literal_occurrence_id;
+      operand.structural_parameter_occurrence_id =
+          filter_value->structural_parameter_occurrence_id;
+      operand.structural_variable_occurrence_id =
+          filter_value->structural_variable_occurrence_id;
+      const auto operand_expression_id = operand.expression_id;
+      bound.expressions.push_back(std::move(operand));
+      if (bound.expressions.size() >=
+          std::numeric_limits<std::uint32_t>::max()) {
+        AddBoundAstDiagnostic(&bound, "RESOURCE.BUDGET_EXCEEDED",
+                              "catalog JOIN filter expression identity overflowed");
+        return RefusedBoundAst(std::move(bound));
+      }
+      BoundExpressionAstRecord predicate;
+      predicate.expression_id =
+          static_cast<std::uint32_t>(bound.expressions.size() + 1);
+      predicate.expression_kind = NativeExpressionAstKind::kBinary;
+      predicate.result_descriptor_id = boolean_descriptor->descriptor_id;
+      predicate.child_expression_ids = {selected_expression_id,
+                                        operand_expression_id};
+      predicate.canonical_operator_name = filter_predicate->operator_name;
+      bound_filter_predicate_id = predicate.expression_id;
+      bound.expressions.push_back(std::move(predicate));
+
+      terminal_output_ids.clear();
+      const auto filter_output_offset =
+          source_projection_count + join_output_count;
+      for (std::size_t ordinal = 0; ordinal < join_output_count; ++ordinal) {
+        const auto& join_output =
+            context.outputs[source_projection_count + ordinal];
+        const auto& output = context.outputs[filter_output_offset + ordinal];
+        const auto expected_output_id =
+            static_cast<std::uint32_t>(filter_output_offset + ordinal + 1);
+        if (output.output_id != expected_output_id ||
+            output.relation_id != filter_relation->relation_id ||
+            output.expression_id != join_output.expression_id ||
+            output.output_name_utf8 != join_output.output_name_utf8 ||
+            output.descriptor_id != join_output.descriptor_id ||
+            !output.visible || output.ordinal != ordinal) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "catalog JOIN filter output does not preserve JOIN lineage");
+          return RefusedBoundAst(std::move(bound));
+        }
+        BoundOutputAstRecord bound_output;
+        bound_output.output_id = output.output_id;
+        bound_output.relation_id = output.relation_id;
+        bound_output.expression_id = output.expression_id;
+        bound_output.output_name_utf8 = output.output_name_utf8;
+        bound_output.descriptor_id = output.descriptor_id;
+        bound_output.visible = output.visible;
+        bound_output.ordinal = output.ordinal;
+        bound.outputs.push_back(std::move(bound_output));
+        terminal_output_ids.push_back(output.output_id);
+      }
+    }
+
     BoundRelationAstRecord bound_join;
     bound_join.relation_id = catalog_join->relation_id;
     bound_join.relation_kind = NativeRelationAstKind::kJoin;
     bound_join.input_relation_ids = catalog_join->input_relation_ids;
     bound_join.output_expression_ids = joined_expression_ids;
     if (predicate_join) {
-      bound_join.predicate_expression_ids = {
-          bound.expressions.back().expression_id};
+      bound_join.predicate_expression_ids = {*bound_join_predicate_id};
       bound_join.bound_expression_ids =
           bound_join.predicate_expression_ids;
     }
     bound_join.semantic_variant_id =
         context.relations.front().semantic_variant_id;
     bound.relations.push_back(std::move(bound_join));
+    if (filter_composition) {
+      BoundRelationAstRecord bound_filter;
+      bound_filter.relation_id = filter_relation->relation_id;
+      bound_filter.relation_kind = NativeRelationAstKind::kFilter;
+      bound_filter.input_relation_ids = {catalog_join->relation_id};
+      bound_filter.output_expression_ids = joined_expression_ids;
+      bound_filter.predicate_expression_ids = {*bound_filter_predicate_id};
+      bound_filter.bound_expression_ids = bound_filter.predicate_expression_ids;
+      bound_filter.semantic_variant_id =
+          "filter.catalog-column-numeric-comparison.v1";
+      bound.relations.push_back(std::move(bound_filter));
+    }
 
     bound.descriptors.reserve(context.descriptors.size());
     for (const auto& descriptor : context.descriptors) {
@@ -6203,7 +6561,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     BoundScopeAstRecord scope;
     scope.scope_id = 1;
     scope.visible_relation_ids = {ast.root_relation_id};
-    scope.visible_projection_ids = std::move(joined_output_ids);
+    scope.visible_projection_ids = std::move(terminal_output_ids);
     scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
     bound.scopes.push_back(std::move(scope));
     bound.bound_ast_uuid = context.bound_ast_uuid;
