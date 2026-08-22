@@ -5800,8 +5800,15 @@ BuildEngineProjectedNativeBindingContext(
                       offset->spelling.data(),
                       offset->spelling.data() + offset->spelling.size(),
                       parsed_offset);
-        if ((!numeric_literal || !numeric_offset) &&
-            (!parameter_value || !parameter_offset) ||
+        const bool literal_count_literal_offset =
+            numeric_literal && numeric_offset;
+        const bool literal_count_parameter_offset =
+            numeric_literal && parameter_offset;
+        const bool parameter_count_parameter_offset =
+            parameter_value && parameter_offset;
+        if ((!literal_count_literal_offset &&
+             !literal_count_parameter_offset &&
+             !parameter_count_parameter_offset) ||
             (numeric_literal &&
              value->structural_literal_occurrence_id != 1) ||
             (parameter_value &&
@@ -5818,7 +5825,8 @@ BuildEngineProjectedNativeBindingContext(
               offset->structural_parameter_occurrence_id != 0)) ||
             (parameter_offset &&
              (offset->structural_literal_occurrence_id != 0 ||
-              offset->structural_parameter_occurrence_id != 2)) ||
+              offset->structural_parameter_occurrence_id !=
+                  (parameter_value ? 2 : 1))) ||
             offset->structural_variable_occurrence_id != 0 ||
             (numeric_offset &&
              (converted_offset.ec != std::errc{} ||
@@ -17208,6 +17216,36 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           }
           return reserved_id;
         };
+        const bool exact_native_join_literal_parameter_offset = [&]() {
+          if (!exact_native_join_limit_operand_route ||
+              native_join_filter_relation !=
+                  ast.native_relational.relations.end() ||
+              native_join_limit_relation->limit_expression_ids.size() != 2) {
+            return false;
+          }
+          const auto count = std::ranges::find_if(
+              ast.native_relational.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       native_join_limit_relation->limit_expression_ids[0];
+              });
+          const auto offset = std::ranges::find_if(
+              ast.native_relational.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       native_join_limit_relation->limit_expression_ids[1];
+              });
+          return count != ast.native_relational.expressions.end() &&
+                 count->expression_kind ==
+                     NativeExpressionAstKind::kLiteral &&
+                 count->literal_kind == NativeLiteralAstKind::kNumeric &&
+                 count->structural_literal_occurrence_id == 1 &&
+                 count->structural_parameter_occurrence_id == 0 &&
+                 offset != ast.native_relational.expressions.end() &&
+                 offset->expression_kind ==
+                     NativeExpressionAstKind::kParameter &&
+                 !offset->literal_kind.has_value() &&
+                 offset->structural_literal_occurrence_id == 0 &&
+                 offset->structural_parameter_occurrence_id == 1;
+        }();
         const bool exact_native_join_dual_parameter_tail = [&]() {
           if (!exact_native_join_limit_after_filter ||
               native_join_filter_relation->predicate_expression_ids.size() !=
@@ -17255,6 +17293,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               "SBLR.OPERAND_INVALID", "ERROR",
               "Prepared execution admits only the exact two-parameter JOIN "
               "FILTER and LIMIT tail; literal-mixed tails remain direct-only.",
+              "sbp_sbsql.wire"));
+        }
+        if (parameter_prepare_only &&
+            exact_native_join_literal_parameter_offset) {
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBLR.OPERAND_INVALID", "ERROR",
+              "Prepared execution does not admit a literal LIMIT with a "
+              "parameter OFFSET; use direct execution.",
               "sbp_sbsql.wire"));
         }
         if (native_binding_context.has_value() &&

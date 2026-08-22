@@ -1004,9 +1004,30 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                    NativeExpressionAstKind::kParameter &&
                operand->second->structural_parameter_occurrence_id == 1;
       }();
-      const auto expected_parameter_occurrence =
-          filter_parameter_precedes_limit ? std::uint64_t{2}
-                                          : std::uint64_t{1};
+      const bool filter_literal_precedes_limit = [&]() {
+        if (filter_relation == nullptr ||
+            filter_relation->predicate_expression_ids.size() != 1) {
+          return false;
+        }
+        const auto predicate = ast_expression_by_id.find(
+            filter_relation->predicate_expression_ids.front());
+        if (predicate == ast_expression_by_id.end() ||
+            predicate->second->child_expression_ids.size() != 2) {
+          return false;
+        }
+        const auto operand = ast_expression_by_id.find(
+            predicate->second->child_expression_ids[1]);
+        return operand != ast_expression_by_id.end() &&
+               operand->second->expression_kind ==
+                   NativeExpressionAstKind::kLiteral &&
+               operand->second->literal_kind ==
+                   NativeLiteralAstKind::kNumeric &&
+               operand->second->structural_literal_occurrence_id == 1;
+      }();
+      std::uint64_t next_literal_occurrence =
+          filter_literal_precedes_limit ? 2 : 1;
+      std::uint64_t next_parameter_occurrence =
+          filter_parameter_precedes_limit ? 2 : 1;
       for (std::size_t index = 0;
            index < limit_relation->limit_expression_ids.size(); ++index) {
         const auto expression = ast_expression_by_id.find(
@@ -1022,6 +1043,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             expression->second->expression_kind ==
                 NativeExpressionAstKind::kParameter &&
             !expression->second->literal_kind.has_value();
+        const auto expected_literal_occurrence = next_literal_occurrence;
+        const auto expected_parameter_occurrence = next_parameter_occurrence;
+        if (numeric_literal) ++next_literal_occurrence;
+        if (parameter_value) ++next_parameter_occurrence;
         std::uint64_t parsed_limit = 0;
         const auto converted =
             !numeric_literal
@@ -1033,17 +1058,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         const bool exact_occurrence =
             (numeric_literal &&
              expression->second->structural_literal_occurrence_id ==
-                 (limit_relation->limit_expression_ids.size() == 2
-                      ? index + 1
-                      : 1) &&
+                 expected_literal_occurrence &&
              expression->second->structural_parameter_occurrence_id == 0 &&
              expression->second->structural_variable_occurrence_id == 0) ||
             (parameter_value &&
              expression->second->structural_literal_occurrence_id == 0 &&
              expression->second->structural_parameter_occurrence_id ==
-                 (limit_relation->limit_expression_ids.size() == 2
-                      ? index + 1
-                      : expected_parameter_occurrence) &&
+                 expected_parameter_occurrence &&
              expression->second->structural_variable_occurrence_id == 0);
         if (expression == ast_expression_by_id.end() ||
             (!numeric_literal && !parameter_value) ||
@@ -1082,7 +1103,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                          NativeExpressionAstKind::kParameter &&
                      !expression->literal_kind.has_value();
             });
-        if (!both_literals && !both_parameters) {
+        const bool literal_then_parameter =
+            limit_values[0]->expression_kind ==
+                NativeExpressionAstKind::kLiteral &&
+            limit_values[0]->literal_kind ==
+                NativeLiteralAstKind::kNumeric &&
+            limit_values[1]->expression_kind ==
+                NativeExpressionAstKind::kParameter &&
+            !limit_values[1]->literal_kind.has_value();
+        if (!both_literals && !both_parameters && !literal_then_parameter) {
           AddBoundAstDiagnostic(
               &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
               "ordinary multi-source LIMIT and OFFSET operand kinds differ");
@@ -7132,9 +7161,35 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                    NativeExpressionAstKind::kParameter &&
                operand->structural_parameter_occurrence_id == 1;
       }();
-      const auto expected_parameter_occurrence =
-          filter_parameter_precedes_limit ? std::uint64_t{2}
-                                          : std::uint64_t{1};
+      const bool filter_literal_precedes_limit = [&]() {
+        if (filter_relation == nullptr ||
+            filter_relation->predicate_expression_ids.size() != 1) {
+          return false;
+        }
+        const auto predicate = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     filter_relation->predicate_expression_ids.front();
+            });
+        if (predicate == ast.expressions.end() ||
+            predicate->child_expression_ids.size() != 2) {
+          return false;
+        }
+        const auto operand = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     predicate->child_expression_ids[1];
+            });
+        return operand != ast.expressions.end() &&
+               operand->expression_kind ==
+                   NativeExpressionAstKind::kLiteral &&
+               operand->literal_kind == NativeLiteralAstKind::kNumeric &&
+               operand->structural_literal_occurrence_id == 1;
+      }();
+      std::uint64_t next_literal_occurrence =
+          filter_literal_precedes_limit ? 2 : 1;
+      std::uint64_t next_parameter_occurrence =
+          filter_parameter_precedes_limit ? 2 : 1;
       std::unordered_set<std::uint32_t> exact_limit_expression_ids;
       for (std::size_t index = 0;
            index < limit_relation->limit_expression_ids.size(); ++index) {
@@ -7152,6 +7207,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             expression->expression_kind ==
                 NativeExpressionAstKind::kParameter &&
             !expression->literal_kind.has_value();
+        const auto expected_literal_occurrence = next_literal_occurrence;
+        const auto expected_parameter_occurrence = next_parameter_occurrence;
+        if (numeric_literal) ++next_literal_occurrence;
+        if (parameter_value) ++next_parameter_occurrence;
         std::uint64_t parsed_limit = 0;
         const auto converted =
             !numeric_literal
@@ -7163,17 +7222,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         const bool exact_occurrence =
             (numeric_literal &&
              expression->structural_literal_occurrence_id ==
-                 (limit_relation->limit_expression_ids.size() == 2
-                      ? index + 1
-                      : 1) &&
+                 expected_literal_occurrence &&
              expression->structural_parameter_occurrence_id == 0 &&
              expression->structural_variable_occurrence_id == 0) ||
             (parameter_value &&
              expression->structural_literal_occurrence_id == 0 &&
              expression->structural_parameter_occurrence_id ==
-                 (limit_relation->limit_expression_ids.size() == 2
-                      ? index + 1
-                      : expected_parameter_occurrence) &&
+                 expected_parameter_occurrence &&
              expression->structural_variable_occurrence_id == 0);
         if (expression == ast.expressions.end() ||
             (!numeric_literal && !parameter_value) ||
@@ -7211,7 +7266,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                          NativeExpressionAstKind::kParameter &&
                      !expression->literal_kind.has_value();
             });
-        if (!both_literals && !both_parameters) {
+        const bool literal_then_parameter =
+            limit_values[0]->expression_kind ==
+                NativeExpressionAstKind::kLiteral &&
+            limit_values[0]->literal_kind ==
+                NativeLiteralAstKind::kNumeric &&
+            limit_values[1]->expression_kind ==
+                NativeExpressionAstKind::kParameter &&
+            !limit_values[1]->literal_kind.has_value();
+        if (!both_literals && !both_parameters && !literal_then_parameter) {
           AddBoundAstDiagnostic(
               &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
               "catalog JOIN LIMIT and OFFSET operand kinds differ");

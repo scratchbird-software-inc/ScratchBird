@@ -4824,11 +4824,15 @@ class NativeRelationalParser final {
           !AtEnd() &&
           IsWord(Current(), "OFFSET")) {
         Consume();
-        const auto expected_offset_kind = bound_token.kind;
-        if (AtEnd() || Current().kind != expected_offset_kind) {
+        const bool accepted_offset_kind =
+            !AtEnd() &&
+            (Current().kind == bound_token.kind ||
+             (bound_token.kind == TokenKind::kNumericLiteral &&
+              Current().kind == TokenKind::kParameter));
+        if (!accepted_offset_kind) {
           Refuse("catalog_join_limit_offset_required",
                  "bounded catalog JOIN OFFSET requires a second unsigned "
-                 "int64 literal or structural parameter matching LIMIT");
+                 "int64 literal or an admitted structural parameter");
           return FinishRefusal();
         }
         const Token& offset_token = Consume();

@@ -37166,6 +37166,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
   if (limit_relation != nullptr) {
     std::uint64_t expected_parameter_occurrence = 1;
+    std::uint64_t expected_literal_occurrence = 1;
     if (catalog_filter_relation != nullptr &&
         catalog_filter_relation->predicate_expression_ids.size() == 1) {
       const auto predicate = expressions_by_id.find(
@@ -37180,11 +37181,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             filter_operand->second->structural_parameter_occurrence_id == 1) {
           expected_parameter_occurrence = 2;
         }
+        if (filter_operand != expressions_by_id.end() &&
+            filter_operand->second->expression_kind ==
+                NativeExpressionAstKind::kLiteral &&
+            filter_operand->second->literal_kind ==
+                NativeLiteralAstKind::kNumeric &&
+            filter_operand->second->structural_literal_occurrence_id == 1) {
+          expected_literal_occurrence = 2;
+        }
       }
     }
     std::unordered_set<std::uint32_t> bound_ids;
     bool all_join_limit_literals = true;
     bool all_join_limit_parameters = true;
+    bool first_join_limit_literal = false;
+    bool second_join_limit_parameter = false;
     for (std::size_t bound_ordinal = 0;
          bound_ordinal < limit_relation->limit_expression_ids.size();
          ++bound_ordinal) {
@@ -37207,21 +37218,26 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       all_join_limit_literals = all_join_limit_literals && numeric_literal;
       all_join_limit_parameters =
           all_join_limit_parameters && parameter_value;
+      first_join_limit_literal =
+          first_join_limit_literal || (bound_ordinal == 0 && numeric_literal);
+      second_join_limit_parameter =
+          second_join_limit_parameter ||
+          (bound_ordinal == 1 && parameter_value);
+      const auto current_literal_occurrence = expected_literal_occurrence;
+      const auto current_parameter_occurrence = expected_parameter_occurrence;
+      if (numeric_literal) ++expected_literal_occurrence;
+      if (parameter_value) ++expected_parameter_occurrence;
       const bool exact_occurrence =
           catalog_join_relation == nullptr ||
           (numeric_literal &&
            expression->second->structural_literal_occurrence_id ==
-               (limit_relation->limit_expression_ids.size() == 2
-                    ? bound_ordinal + 1
-                    : 1) &&
+               current_literal_occurrence &&
            expression->second->structural_parameter_occurrence_id == 0 &&
            expression->second->structural_variable_occurrence_id == 0) ||
           (parameter_value &&
            expression->second->structural_literal_occurrence_id == 0 &&
            expression->second->structural_parameter_occurrence_id ==
-               (limit_relation->limit_expression_ids.size() == 2
-                    ? bound_ordinal + 1
-                    : expected_parameter_occurrence) &&
+               current_parameter_occurrence &&
            expression->second->structural_variable_occurrence_id == 0);
       if (expression == expressions_by_id.end() ||
           !bound_ids.insert(expression_id).second ||
@@ -37275,7 +37291,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
     if (catalog_join_relation != nullptr &&
         limit_relation->limit_expression_ids.size() == 2 &&
-        !all_join_limit_literals && !all_join_limit_parameters) {
+        !all_join_limit_literals && !all_join_limit_parameters &&
+        !(first_join_limit_literal && second_join_limit_parameter)) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed JOIN LIMIT and OFFSET operand kinds differ");
