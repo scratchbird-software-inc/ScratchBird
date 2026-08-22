@@ -5080,14 +5080,25 @@ BuildEngineProjectedNativeBindingContext(
     std::ranges::sort(join_relations, {},
                       [](const auto* relation) { return relation->relation_id; });
     const auto source_count = ast.catalog_relation_sources.size();
-    const bool bounded_multimodel_join = source_count >= 3 && source_count <= 9;
-    const bool ordinary_relational_sources =
-        source_count == 2 &&
+    const auto model_source_count = std::ranges::count_if(
+        ast.catalog_relation_sources, [](const auto& source) {
+          return source.source_kind !=
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    const bool all_catalog_sources =
         std::ranges::all_of(ast.catalog_relation_sources,
                             [](const auto& source) {
-                              return source.source_kind ==
-                                     NativeRelationSourceAstKind::kCatalogRelation;
+                              return IsExactOrdinaryCatalogSourceProfile(source);
                             });
+    const bool ordinary_relational_sources =
+        source_count == 2 && all_catalog_sources;
+    const bool ordinary_multi_catalog_cross_join =
+        source_count >= 3 && source_count <= 9 && all_catalog_sources &&
+        ast.model_object_resolution_requests.empty();
+    const bool bounded_multimodel_join =
+        source_count >= 3 && source_count <= 9 && model_source_count >= 2;
+    const bool bounded_multi_source_join =
+        ordinary_multi_catalog_cross_join || bounded_multimodel_join;
     bool exact_join_graph =
         source_relations.size() == source_count &&
         join_relations.size() + 1 == source_count &&
@@ -5095,20 +5106,68 @@ BuildEngineProjectedNativeBindingContext(
             source_relations.size() + join_relations.size() +
                 static_cast<std::size_t>(filter_relation != nullptr) +
                 static_cast<std::size_t>(project_relation != nullptr);
+    if (ordinary_multi_catalog_cross_join) {
+      for (std::size_t ordinal = 0;
+           exact_join_graph && ordinal < source_relations.size(); ++ordinal) {
+        const auto* source_relation = source_relations[ordinal];
+        exact_join_graph =
+            source_relation->relation_id == ordinal + 1 &&
+            source_relation->input_relation_ids.empty() &&
+            source_relation->relation_source_ids ==
+                std::vector<std::uint32_t>{
+                    static_cast<std::uint32_t>(ordinal + 1)} &&
+            source_relation->values_row_ids.empty() &&
+            source_relation->output_expression_ids.size() == 1 &&
+            source_relation->grouping_key_expression_ids.empty() &&
+            source_relation->aggregate_expression_ids.empty() &&
+            source_relation->predicate_expression_ids.empty() &&
+            source_relation->limit_expression_ids.empty() &&
+            source_relation->window_invocation_ids.empty() &&
+            source_relation->ordering_terms.empty() &&
+            source_relation->join_kind == NativeJoinAstKind::kNone &&
+            source_relation->aggregate_grouping_form ==
+                NativeAggregateGroupingForm::kNone &&
+            source_relation->aggregate_projection_form ==
+                NativeAggregateProjectionForm::kNone;
+      }
+    }
     std::uint32_t expected_left_relation_id =
         source_relations.empty() ? 0 : source_relations.front()->relation_id;
+    std::vector<std::uint32_t> expected_join_output_expression_ids;
+    if (!source_relations.empty()) {
+      expected_join_output_expression_ids =
+          source_relations.front()->output_expression_ids;
+    }
     for (std::size_t ordinal = 1; exact_join_graph && ordinal < source_count;
          ++ordinal) {
       const auto* join = join_relations[ordinal - 1];
+      expected_join_output_expression_ids.insert(
+          expected_join_output_expression_ids.end(),
+          source_relations[ordinal]->output_expression_ids.begin(),
+          source_relations[ordinal]->output_expression_ids.end());
       exact_join_graph =
           join->relation_id == source_count + ordinal &&
           join->input_relation_ids ==
               std::vector<std::uint32_t>{
                   expected_left_relation_id,
                   source_relations[ordinal]->relation_id} &&
-          (!bounded_multimodel_join ||
+          (!bounded_multi_source_join ||
            (join->join_kind == NativeJoinAstKind::kCross &&
-            join->predicate_expression_ids.empty()));
+            join->predicate_expression_ids.empty())) &&
+          (!bounded_multi_source_join ||
+           (join->relation_source_ids.empty() &&
+            join->values_row_ids.empty() &&
+            join->output_expression_ids ==
+                expected_join_output_expression_ids &&
+            join->grouping_key_expression_ids.empty() &&
+            join->aggregate_expression_ids.empty() &&
+            join->limit_expression_ids.empty() &&
+            join->window_invocation_ids.empty() &&
+            join->ordering_terms.empty() &&
+            join->aggregate_grouping_form ==
+                NativeAggregateGroupingForm::kNone &&
+            join->aggregate_projection_form ==
+                NativeAggregateProjectionForm::kNone));
       expected_left_relation_id = join->relation_id;
     }
     const bool exact_filter_tail =
@@ -5173,7 +5232,7 @@ BuildEngineProjectedNativeBindingContext(
         });
     if (source_count < 2 || !exact_join_graph ||
         ast.root_relation_id != expected_root_relation_id ||
-        (!bounded_multimodel_join && source_count != 2) ||
+        (!bounded_multi_source_join && source_count != 2) ||
         resolved_object_reference_seeds.size() != expected_resolution_count) {
       return fail("catalog_join_shape_invalid:sources=" +
                   std::to_string(ast.catalog_relation_sources.size()) +
@@ -5505,6 +5564,42 @@ BuildEngineProjectedNativeBindingContext(
       if (!exact_expression_inventory ||
           admitted_expression_ids.size() != ast.expressions.size()) {
         return fail("catalog_join_project_expression_inventory_invalid");
+      }
+    }
+    if (ordinary_multi_catalog_cross_join && filter_relation == nullptr &&
+        project_relation == nullptr) {
+      std::unordered_set<std::uint32_t> source_wildcard_ids;
+      bool exact_source_expression_inventory =
+          ast.expressions.size() == source_count;
+      for (const auto* source_relation : source_relations) {
+        if (!exact_source_expression_inventory ||
+            source_relation->output_expression_ids.size() != 1) {
+          exact_source_expression_inventory = false;
+          break;
+        }
+        const auto expression_id =
+            source_relation->output_expression_ids.front();
+        const auto expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        if (expression == ast.expressions.end() ||
+            !source_wildcard_ids.insert(expression_id).second ||
+            expression->expression_kind != NativeExpressionAstKind::kWildcard ||
+            expression->spelling != "*" ||
+            !expression->qualified_identifier.empty() ||
+            !expression->child_expression_ids.empty() ||
+            expression->literal_kind.has_value() ||
+            !expression->operator_name.empty() ||
+            expression->structural_literal_occurrence_id != 0 ||
+            expression->structural_parameter_occurrence_id != 0 ||
+            expression->structural_variable_occurrence_id != 0) {
+          exact_source_expression_inventory = false;
+          break;
+        }
+      }
+      if (!exact_source_expression_inventory) {
+        return fail("catalog_multi_cross_join_expression_inventory_invalid");
       }
     }
 

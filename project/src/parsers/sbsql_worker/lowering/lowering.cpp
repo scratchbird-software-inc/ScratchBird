@@ -35550,9 +35550,26 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   std::vector<const BoundRelationAstRecord*> catalog_relations;
   const BoundRelationAstRecord* catalog_join_relation = nullptr;
   std::vector<const BoundRelationAstRecord*> catalog_join_relations;
+  const auto bounded_model_source_count = std::ranges::count_if(
+      native.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind !=
+               NativeRelationSourceAstKind::kCatalogRelation;
+      });
+  const bool bounded_ordinary_catalog_cross_join_candidate =
+      native.catalog_relation_sources.size() >= 3 &&
+      native.catalog_relation_sources.size() <= 9 &&
+      bounded_model_source_count == 0 &&
+      std::ranges::all_of(native.catalog_relation_sources,
+                          [](const auto& source) {
+                            return IsExactOrdinaryCatalogSourceProfile(source);
+                          });
   const bool bounded_multimodel_join_candidate =
       native.catalog_relation_sources.size() >= 3 &&
-      native.catalog_relation_sources.size() <= 9;
+      native.catalog_relation_sources.size() <= 9 &&
+      bounded_model_source_count >= 2;
+  const bool bounded_multi_source_join_candidate =
+      bounded_ordinary_catalog_cross_join_candidate ||
+      bounded_multimodel_join_candidate;
   const BoundRelationAstRecord* catalog_project_relation = nullptr;
   const BoundRelationAstRecord* catalog_project_input_relation = nullptr;
   const BoundRelationAstRecord* catalog_sort_relation = nullptr;
@@ -35920,8 +35937,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.semantic_variant_id == "sblr.model-source.spatial.v1" ||
           relation.semantic_variant_id == "sblr.model-source.columnar.v1";
       if (catalog_relations.size() >=
-              (bounded_multimodel_join_candidate ? std::size_t{9}
-                                                 : std::size_t{2}) ||
+              (bounded_multi_source_join_candidate ? std::size_t{9}
+                                                   : std::size_t{2}) ||
           !relation.input_relation_ids.empty() ||
           !relation.values_row_ids.empty() ||
           relation.aggregate_grouping_form !=
@@ -35930,9 +35947,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty() ||
-          ((!bounded_multimodel_join_candidate &&
+          !relation.window_invocation_ids.empty() ||
+          ((!bounded_multi_source_join_candidate &&
             !relation.predicate_expression_ids.empty()) ||
-           (bounded_multimodel_join_candidate &&
+           (bounded_ordinary_catalog_cross_join_candidate &&
+            !relation.predicate_expression_ids.empty()) ||
+           (bounded_multi_source_join_candidate &&
             relation.predicate_expression_ids.size() > 1)) ||
           !relation.limit_expression_ids.empty() ||
           !relation.ordering_terms.empty() ||
@@ -35969,7 +35989,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               ? catalog_relations[multimodel_join_ordinal]
               : nullptr;
       const bool multimodel_join_shape =
-          bounded_multimodel_join_candidate &&
+          bounded_multi_source_join_candidate &&
           expected_multimodel_left != nullptr &&
           expected_multimodel_right != nullptr &&
           relation.semantic_variant_id == "join.cross.v1" &&
@@ -35977,7 +35997,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               std::vector<std::uint32_t>{expected_multimodel_left->relation_id,
                                          expected_multimodel_right->relation_id};
       const bool legacy_join_shape =
-          !bounded_multimodel_join_candidate &&
+          !bounded_multi_source_join_candidate &&
           catalog_join_relation == nullptr && catalog_relations.size() == 2 &&
           relation.input_relation_ids ==
               std::vector<std::uint32_t>{catalog_relations[0]->relation_id,
@@ -35990,6 +36010,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty() ||
+          !relation.window_invocation_ids.empty() ||
           relation.predicate_expression_ids.size() !=
               static_cast<std::size_t>(predicate_join) ||
           !relation.limit_expression_ids.empty() ||
@@ -36004,17 +36025,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       std::vector<std::uint32_t> expected_outputs;
-      expected_outputs = bounded_multimodel_join_candidate
+      expected_outputs = bounded_multi_source_join_candidate
                              ? expected_multimodel_left->output_expression_ids
                              : catalog_relations.front()->output_expression_ids;
       if (!left_only_join) {
         expected_outputs.insert(
             expected_outputs.end(),
-            (bounded_multimodel_join_candidate
+            (bounded_multi_source_join_candidate
                  ? expected_multimodel_right
                  : catalog_relations.back())
                 ->output_expression_ids.begin(),
-            (bounded_multimodel_join_candidate
+            (bounded_multi_source_join_candidate
                  ? expected_multimodel_right
                  : catalog_relations.back())
                 ->output_expression_ids.end());
@@ -36194,13 +36215,16 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const bool catalog_cross_join_graph_is_exact =
       ((catalog_relations.size() == 2 &&
         catalog_join_relations.size() == 1) ||
-       (bounded_multimodel_join_candidate &&
+       (bounded_multi_source_join_candidate &&
         catalog_join_relations.size() + 1 == catalog_relations.size())) &&
       catalog_join_relation != nullptr &&
       values_relation == nullptr && aggregate_relation == nullptr &&
       filter_relation == nullptr && catalog_sort_relation == nullptr &&
       limit_relation == nullptr && window_relation == nullptr &&
       qualify_relation == nullptr &&
+      (!bounded_ordinary_catalog_cross_join_candidate ||
+       (catalog_filter_relation == nullptr &&
+        catalog_project_relation == nullptr)) &&
       ((catalog_filter_relation == nullptr &&
         catalog_project_relation == nullptr) ||
        catalog_join_tail_sources_are_relational) &&
@@ -37261,9 +37285,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
 
   if (catalog_cross_join_graph_is_exact) {
-    const bool bounded_multimodel_join =
-        native.catalog_relation_sources.size() >= 3 &&
-        native.catalog_relation_sources.size() <= 9;
+    const auto model_operation_expression_count = bounded_model_source_count;
+    const bool ordinary_multi_catalog_cross_join =
+        bounded_ordinary_catalog_cross_join_candidate;
+    const bool bounded_multimodel_join = bounded_multimodel_join_candidate;
     const bool spatial_columnar_join =
         native.catalog_relation_sources.size() == 2 &&
         std::ranges::all_of(native.catalog_relation_sources,
@@ -37278,12 +37303,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                 return source.source_kind ==
                                        NativeRelationSourceAstKind::kSpatial;
                               }) == 1;
-    const auto model_operation_expression_count = std::ranges::count_if(
-        native.catalog_relation_sources, [](const auto& source) {
-          return source.source_kind !=
-                 NativeRelationSourceAstKind::kCatalogRelation;
-        });
     if ((!bounded_multimodel_join &&
+         !ordinary_multi_catalog_cross_join &&
          native.catalog_relation_sources.size() != 2) ||
         model_operation_expression_count <
             (bounded_multimodel_join ? std::size_t{2} :
@@ -43811,26 +43832,31 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       root_node->input_ids ==
           std::vector<std::uint32_t>{model_source_nodes[0]->id,
                                      model_source_nodes[1]->id};
-  const bool bounded_multimodel_join_graph = [&] {
-    if (model_source_nodes.size() < 2 || model_source_nodes.size() > 8 ||
-        root_node == graph.nodes.end() || root_node->kind != 4) {
+  std::vector<const ParsedRelationalNode*> bounded_multi_source_nodes;
+  std::vector<const ParsedRelationalNode*> bounded_multi_join_nodes;
+  bool bounded_multi_source_join_only_candidate = true;
+  for (const auto& node : graph.nodes) {
+    if (node.kind == 1) {
+      bounded_multi_source_nodes.push_back(&node);
+    } else if (node.kind == 4) {
+      bounded_multi_join_nodes.push_back(&node);
+    } else {
+      bounded_multi_source_join_only_candidate = false;
+    }
+  }
+  bounded_multi_source_join_only_candidate =
+      bounded_multi_source_join_only_candidate &&
+      bounded_multi_source_nodes.size() >= 3 &&
+      bounded_multi_source_nodes.size() <= 9;
+  const bool bounded_multi_source_join_graph = [&] {
+    if (!bounded_multi_source_join_only_candidate ||
+        root_node == graph.nodes.end() || root_node->kind != 4 ||
+        bounded_multi_join_nodes.size() + 1 !=
+            bounded_multi_source_nodes.size()) {
       return false;
     }
-    std::vector<const ParsedRelationalNode*> source_nodes;
-    std::vector<const ParsedRelationalNode*> join_nodes;
-    for (const auto& node : graph.nodes) {
-      if (node.kind == 1) {
-        source_nodes.push_back(&node);
-      } else if (node.kind == 4) {
-        join_nodes.push_back(&node);
-      } else {
-        return false;
-      }
-    }
-    if (source_nodes.size() < 3 || source_nodes.size() > 9 ||
-        join_nodes.size() + 1 != source_nodes.size()) {
-      return false;
-    }
+    auto source_nodes = bounded_multi_source_nodes;
+    auto join_nodes = bounded_multi_join_nodes;
     std::ranges::sort(source_nodes, {},
                       [](const auto* node) { return node->id; });
     std::ranges::sort(join_nodes, {},
@@ -43853,6 +43879,30 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     }
     return left_id == graph.root_node_id;
   }();
+  const bool bounded_ordinary_catalog_cross_join_graph =
+      bounded_multi_source_join_graph && model_source_nodes.empty() &&
+      std::ranges::all_of(
+          bounded_multi_source_nodes, [](const auto* node) {
+            return node->binding_present &&
+                   node->semantic_variant_id == "relation.source.v1";
+          });
+  const bool bounded_multimodel_join_graph =
+      bounded_multi_source_join_graph && model_source_nodes.size() >= 2 &&
+      model_source_nodes.size() <= 8 &&
+      std::ranges::all_of(
+          bounded_multi_source_nodes, [](const auto* node) {
+            return node->binding_present &&
+                   (node->semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
+                    node->semantic_variant_id == "relation.source.v1");
+          });
+  if (bounded_multi_source_join_only_candidate &&
+      !bounded_ordinary_catalog_cross_join_graph &&
+      !bounded_multimodel_join_graph) {
+    return RefuseRelationalGraph(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "multi-source JOIN requires one exact ordinary or multimodel graph",
+        "bounded_multi_source_join_graph");
+  }
   const auto bounded_attached_model_operation =
       [&](const ParsedRelationalExpression& expression) {
         if (!bounded_multimodel_join_graph || expression.kind != 4 ||

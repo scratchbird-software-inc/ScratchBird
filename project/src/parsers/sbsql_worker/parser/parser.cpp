@@ -4263,7 +4263,7 @@ class NativeRelationalParser final {
             parsed_sources.size() == 9) {
           if (parsed_sources.size() == 9) {
             RefuseExact("SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1",
-                        "bounded multimodel JOIN admits at most nine sources");
+                        "bounded multi-source JOIN admits at most nine sources");
           }
           return FinishRefusal();
         }
@@ -4582,12 +4582,23 @@ class NativeRelationalParser final {
           return source.source_kind !=
                  NativeRelationSourceAstKind::kCatalogRelation;
         });
+    const bool ordinary_multi_catalog_cross_join =
+        parsed_sources.size() >= 3 && parsed_sources.size() <= 9 &&
+        wildcard_projection &&
+        join_kind == NativeJoinAstKind::kCross &&
+        parsed_model_source_count == 0 &&
+        std::ranges::all_of(parsed_sources, [](const auto& source) {
+          return source.source_kind ==
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    const bool bounded_multimodel_join =
+        parsed_sources.size() >= 3 && parsed_sources.size() <= 9 &&
+        parsed_model_source_count >= 2;
     if (parsed_sources.size() > 2 &&
-        (parsed_sources.size() < 3 || parsed_sources.size() > 9 ||
-         parsed_model_source_count < 2)) {
+        !ordinary_multi_catalog_cross_join && !bounded_multimodel_join) {
       RefuseExact("SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1",
-                  "multimodel JOIN requires three to nine sources and at "
-                  "least two model-family legs");
+                  "multi-source JOIN requires either three to nine ordinary "
+                  "catalog CROSS JOIN legs or at least two model-family legs");
       return FinishRefusal();
     }
     std::vector<std::uint32_t> source_wildcard_ids;
