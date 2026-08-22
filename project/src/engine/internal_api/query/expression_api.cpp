@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -39,6 +40,31 @@
 
 namespace scratchbird::engine::internal_api {
 namespace {
+
+bool QowCanonicalComparableEncodingV1(
+    const EngineTypedValue& value,
+    const scratchbird::core::datatypes::CanonicalTypeId type_id,
+    std::string* encoded_value) {
+  namespace dt = scratchbird::core::datatypes;
+  if (encoded_value == nullptr) return false;
+  encoded_value->clear();
+  if (value.binary_value.empty()) {
+    if (value.encoded_value.empty()) return false;
+    *encoded_value = value.encoded_value;
+    return true;
+  }
+  if (!value.encoded_value.empty() || type_id != dt::CanonicalTypeId::int64 ||
+      value.binary_value.size() != 8) {
+    return false;
+  }
+  std::uint64_t raw = 0;
+  for (std::size_t index = 0; index < value.binary_value.size(); ++index) {
+    raw |= static_cast<std::uint64_t>(value.binary_value[index]) <<
+           (index * 8);
+  }
+  *encoded_value = std::to_string(std::bit_cast<std::int64_t>(raw));
+  return true;
+}
 
 template <typename Real>
 bool QowApplyCanonicalBoundedRealV1(
@@ -1142,7 +1168,10 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
   const auto validate = [type_id](const EngineTypedValue& value) {
     dt::DatatypeCastRequest request;
     request.value.type_id = type_id;
-    request.value.encoded_value = value.encoded_value;
+    if (!QowCanonicalComparableEncodingV1(
+            value, type_id, &request.value.encoded_value)) {
+      return dt::DatatypeCastResult{};
+    }
     request.target_type_id = type_id;
     request.explicit_cast = true;
     return dt::CastDatatypeValue(request);

@@ -384,6 +384,14 @@ api::EngineLocalizedName PrimaryName(std::string name) {
 }
 
 std::string CoreTypeUuid(const std::string_view stable_name) {
+  if (stable_name == "int64") {
+    const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+        "019d0000-0000-7000-8000-00000000d701", 1, 1,
+        "019d0000-0000-7000-8000-00000000d711", 1);
+    Require(identity.ok && !identity.row.type_uuid.empty(),
+            "int64 type-codec identity is unavailable");
+    return identity.row.type_uuid;
+  }
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   Require(manifest.ok(), "core datatype catalog manifest is unavailable");
   const auto found = std::ranges::find_if(
@@ -502,6 +510,15 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_auxiliary_column.descriptor.encoded_descriptor = "type=integer";
   join_auxiliary_column.nullable = false;
   join_table.table_columns.push_back(std::move(join_auxiliary_column));
+  api::EngineColumnDefinition join_limit_column;
+  join_limit_column.ordinal = 2;
+  join_limit_column.names.push_back(
+      PrimaryName("join_limit_value"));
+  join_limit_column.descriptor.descriptor_kind = "scalar";
+  join_limit_column.descriptor.canonical_type_name = "int64";
+  join_limit_column.descriptor.encoded_descriptor = "type=int64";
+  join_limit_column.nullable = false;
+  join_table.table_columns.push_back(std::move(join_limit_column));
   RequireEngineOk(api::EngineCreateTable(join_table),
                   "object-backed join fixture table create failed");
 
@@ -648,10 +665,17 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     auxiliary_typed.descriptor.encoded_descriptor = "type=integer";
     auxiliary_typed.encoded_value =
         value == 2 ? "999" : (value == 3 ? "103" : "101");
+    api::EngineTypedValue limit_typed;
+    limit_typed.descriptor.descriptor_kind = "scalar";
+    limit_typed.descriptor.canonical_type_name = "int64";
+    limit_typed.descriptor.encoded_descriptor = "type=int64";
+    limit_typed.encoded_value = std::to_string(value);
     api::EngineRowValue row;
     row.fields.push_back({"join_value", std::move(typed)});
     row.fields.push_back(
         {"join_auxiliary_value", std::move(auxiliary_typed)});
+    row.fields.push_back(
+        {"join_limit_value", std::move(limit_typed)});
     join_insert.input_rows.push_back(std::move(row));
   }
   join_insert.estimated_row_count = join_insert.input_rows.size();
@@ -791,7 +815,8 @@ void PrintMessages(const sbsql::MessageVectorSet& messages) {
   }
 }
 
-void VerifyFullParserServerRoute(const Fixture& fixture) {
+void VerifyFullParserServerRoute(const Fixture& fixture,
+                                 const bool join_tail_proof_only) {
   constexpr std::string_view kSourceFreeNativeSelect =
       "SELECT key_a,COUNT(*),SUM(amount) FROM (VALUES (1,5), (1,7)) "
       "AS input(key_a,amount) GROUP BY key_a;";
@@ -864,46 +889,144 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                 !parser.session().transaction_uuid.empty(),
             "full parser-server route authentication/attach failed");
 
-    auto source_free = parser.RunPipeline(kSourceFreeNativeSelect, true);
-    if (!source_free.accepted) PrintMessages(source_free.messages);
-    if (!source_free.accepted ||
-        source_free.server_operation_id != "query.execute" ||
-        !source_free.server_cursor_uuid.empty()) {
-      std::cerr << "source-free route accepted=" << source_free.accepted
-                << " operation=" << source_free.server_operation_id
-                << " cursor=" << source_free.server_cursor_uuid
-                << " rows=" << source_free.server_row_count << '\n';
+    if (!join_tail_proof_only) {
+      auto source_free = parser.RunPipeline(kSourceFreeNativeSelect, true);
+      if (!source_free.accepted) PrintMessages(source_free.messages);
+      Require(source_free.accepted &&
+                  source_free.server_operation_id == "query.execute" &&
+                  source_free.server_cursor_uuid.empty(),
+              "source-free native SELECT did not complete the full live route");
+
+      auto object_backed = parser.RunPipeline(
+          "SELECT * FROM qow_packet7.qow_packet7_relation;", true);
+      if (!object_backed.accepted) PrintMessages(object_backed.messages);
+      Require(
+          object_backed.accepted &&
+              object_backed.server_operation_id == "query.execute" &&
+              object_backed.server_cursor_uuid.empty() &&
+              object_backed.server_row_count == 3,
+          "object-backed native SELECT did not complete the full live route");
+
+      auto object_backed_cross_join = parser.RunPipeline(
+          "SELECT * FROM qow_packet7.qow_packet7_relation CROSS JOIN "
+          "qow_packet7.qow_packet7_join_relation;",
+          true);
+      if (!object_backed_cross_join.accepted) {
+        PrintMessages(object_backed_cross_join.messages);
+      }
+      Require(
+          object_backed_cross_join.accepted &&
+              object_backed_cross_join.server_operation_id ==
+                  "query.execute" &&
+              object_backed_cross_join.server_cursor_uuid.empty() &&
+              object_backed_cross_join.server_row_count == 9 &&
+              object_backed_cross_join.server_result_payload.find(
+                  "join_value") != std::string::npos,
+          "object-backed native CROSS JOIN did not complete the canonical "
+          "two-heap-scan route");
     }
-    Require(source_free.accepted &&
-                source_free.server_operation_id == "query.execute" &&
-                source_free.server_cursor_uuid.empty(),
-            "source-free native SELECT did not complete the full live route");
 
-    auto object_backed = parser.RunPipeline(
-        "SELECT * FROM qow_packet7.qow_packet7_relation;", true);
-    if (!object_backed.accepted) PrintMessages(object_backed.messages);
-    Require(object_backed.accepted &&
-                object_backed.server_operation_id == "query.execute" &&
-                object_backed.server_cursor_uuid.empty() &&
-                object_backed.server_row_count == 3,
-            "object-backed native SELECT did not complete the full live route");
+    const auto text_parameter = [](const std::string_view text) {
+      sbsql::PreparedParameterWireValue value;
+      value.encoding =
+          sbsql::PreparedParameterPayloadEncoding::utf8_text;
+      value.raw_bytes.assign(text.begin(), text.end());
+      return value;
+    };
+    const auto run_direct_parameterized =
+        [&](const std::string_view sql,
+            const std::vector<sbsql::PreparedParameterWireValue>& values) {
+          return parser.RunDirectParameterizedForWire(sql, values);
+        };
 
-    auto object_backed_cross_join = parser.RunPipeline(
-        "SELECT * FROM qow_packet7.qow_packet7_relation CROSS JOIN "
-        "qow_packet7.qow_packet7_join_relation;",
+    auto joined_literal_parameter_tail = run_direct_parameterized(
+        "SELECT l.integer_value FROM "
+        "qow_packet7.qow_packet7_relation AS l CROSS JOIN "
+        "qow_packet7.qow_packet7_join_relation AS r WHERE "
+        "r.join_limit_value >= 3 LIMIT ?;",
+        {text_parameter("1")});
+    if (!joined_literal_parameter_tail.accepted) {
+      PrintMessages(joined_literal_parameter_tail.messages);
+    }
+    Require(
+        joined_literal_parameter_tail.accepted &&
+            joined_literal_parameter_tail.server_operation_id ==
+                "query.execute" &&
+            joined_literal_parameter_tail.server_cursor_uuid.empty() &&
+            joined_literal_parameter_tail.server_row_count == 1 &&
+            joined_literal_parameter_tail.server_result_payload.find(
+                "integer_value") != std::string::npos &&
+            joined_literal_parameter_tail.server_result_payload.find(
+                "join_limit_value") == std::string::npos,
+        "joined literal FILTER/PROJECT/parameter LIMIT did not cross the "
+        "combined SBEL/SBPE/SBPV transport");
+
+    auto joined_unprojected_literal_parameter_tail =
+        run_direct_parameterized(
+            "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS "
+            "JOIN qow_packet7.qow_packet7_join_relation AS r WHERE "
+            "r.join_limit_value >= 3 LIMIT ?;",
+            {text_parameter("1")});
+    if (!joined_unprojected_literal_parameter_tail.accepted) {
+      PrintMessages(joined_unprojected_literal_parameter_tail.messages);
+    }
+    Require(
+        joined_unprojected_literal_parameter_tail.accepted &&
+            joined_unprojected_literal_parameter_tail.server_operation_id ==
+                "query.execute" &&
+            joined_unprojected_literal_parameter_tail.server_cursor_uuid
+                .empty() &&
+            joined_unprojected_literal_parameter_tail.server_row_count == 1 &&
+            joined_unprojected_literal_parameter_tail.server_result_payload
+                    .find("join_limit_value") != std::string::npos,
+        "joined literal FILTER/parameter LIMIT did not preserve its full "
+        "immediate-input publication");
+
+    auto three_way_literal_parameter_tail = run_direct_parameterized(
+        "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS JOIN "
+        "qow_packet7.qow_packet7_join_relation AS r CROSS JOIN "
+        "qow_packet7.qow_packet7_columnar_relation AS c WHERE "
+        "r.join_limit_value >= 3 LIMIT ?;",
+        {text_parameter("1")});
+    if (!three_way_literal_parameter_tail.accepted) {
+      PrintMessages(three_way_literal_parameter_tail.messages);
+    }
+    Require(
+        three_way_literal_parameter_tail.accepted &&
+            three_way_literal_parameter_tail.server_operation_id ==
+                "query.execute" &&
+            three_way_literal_parameter_tail.server_cursor_uuid.empty() &&
+            three_way_literal_parameter_tail.server_row_count == 1 &&
+            three_way_literal_parameter_tail.server_result_payload.find(
+                "join_limit_value") != std::string::npos,
+        "three-way literal FILTER/parameter LIMIT did not complete the "
+        "bounded multi-source route");
+
+    auto unsupported_literal_pair = parser.RunPipeline(
+        "SELECT l.integer_value FROM "
+        "qow_packet7.qow_packet7_relation AS l CROSS JOIN "
+        "qow_packet7.qow_packet7_join_relation AS r WHERE "
+        "r.join_limit_value >= 3 LIMIT 1;",
         true);
-    if (!object_backed_cross_join.accepted) {
-      PrintMessages(object_backed_cross_join.messages);
+    Require(!unsupported_literal_pair.accepted,
+            "joined two-literal FILTER/LIMIT exceeded the bounded mixed-tail "
+            "profile");
+
+    if (!join_tail_proof_only) {
+    auto three_way_join_limit = parser.RunPipeline(
+        "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS JOIN "
+        "qow_packet7.qow_packet7_join_relation AS r CROSS JOIN "
+        "qow_packet7.qow_packet7_columnar_relation AS c LIMIT 1;",
+        true);
+    if (!three_way_join_limit.accepted) {
+      PrintMessages(three_way_join_limit.messages);
     }
-    Require(object_backed_cross_join.accepted &&
-                object_backed_cross_join.server_operation_id ==
-                    "query.execute" &&
-                object_backed_cross_join.server_cursor_uuid.empty() &&
-                object_backed_cross_join.server_row_count == 9 &&
-                object_backed_cross_join.server_result_payload.find(
-                    "join_value") != std::string::npos,
-            "object-backed native CROSS JOIN did not complete the canonical "
-            "two-heap-scan route");
+    Require(three_way_join_limit.accepted &&
+                three_way_join_limit.server_operation_id == "query.execute" &&
+                three_way_join_limit.server_cursor_uuid.empty() &&
+                three_way_join_limit.server_row_count == 1,
+            "three-way ordinary CROSS JOIN/LIMIT did not complete the "
+            "bounded multi-source live route");
 
     auto object_backed_inner_join = parser.RunPipeline(
         "SELECT * FROM qow_packet7.qow_packet7_relation INNER JOIN "
@@ -1756,6 +1879,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "canonical cursor cancellation failed");
     Require(!parser.CancelCursorOnRoute(cancelled.server_cursor_uuid).accepted,
             "canonical cursor allowed double cancellation cleanup");
+    }
   }
 
   server::RequestParserServerStop();
@@ -3010,7 +3134,21 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  const bool join_tail_proof_only =
+      argc == 2 &&
+      std::string_view(argv[1]) == "--join-tail-proof-only";
+  Require(argc == 1 || join_tail_proof_only,
+          "unsupported qow live statement-context regression argument");
+  if (join_tail_proof_only) {
+    auto bootstrap_fixture = CreateFixture();
+    auto full_route_fixture = CreateFixture(true);
+    CreateObjectBackedRelation(&full_route_fixture);
+    VerifyFullParserServerRoute(full_route_fixture, true);
+    std::cout << "qow_join_tail_literal_filter_parameter_limit=passed\n";
+    return EXIT_SUCCESS;
+  }
+
   auto fixture = CreateFixture();
   auto transaction = BeginTransaction(fixture);
   Require(transaction.snapshot_visible_through_local_transaction_id == 0,
@@ -3111,7 +3249,7 @@ int main() {
   Rollback(transaction);
   auto full_route_fixture = CreateFixture(true);
   CreateObjectBackedRelation(&full_route_fixture);
-  VerifyFullParserServerRoute(full_route_fixture);
+  VerifyFullParserServerRoute(full_route_fixture, false);
   std::cout << "qow_live_server_statement_context=passed\n";
   return EXIT_SUCCESS;
 }

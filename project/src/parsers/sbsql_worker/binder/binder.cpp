@@ -1246,32 +1246,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         filter_value->structural_literal_occurrence_id == 1 &&
         limit_value->expression_kind == NativeExpressionAstKind::kParameter &&
         limit_value->structural_parameter_occurrence_id == 1;
-    const bool parameter_filter_literal_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        filter_value->structural_parameter_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        limit_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        limit_value->structural_literal_occurrence_id == 1;
-    const bool parameter_filter_parameter_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        filter_value->structural_parameter_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        limit_value->structural_parameter_occurrence_id == 2;
-    const bool literal_filter_literal_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        filter_value->structural_literal_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        limit_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        limit_value->structural_literal_occurrence_id == 2;
     if (filter_composition && limit_composition &&
-        !literal_filter_parameter_limit &&
-        !parameter_filter_literal_limit &&
-        !parameter_filter_parameter_limit &&
-        !literal_filter_literal_limit) {
+        !literal_filter_parameter_limit) {
       AddBoundAstDiagnostic(
           &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
           "ordinary multi-source FILTER and LIMIT operands are not composable");
@@ -7438,32 +7414,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         filter_value->structural_literal_occurrence_id == 1 &&
         limit_value->expression_kind == NativeExpressionAstKind::kParameter &&
         limit_value->structural_parameter_occurrence_id == 1;
-    const bool parameter_filter_literal_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        filter_value->structural_parameter_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        limit_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        limit_value->structural_literal_occurrence_id == 1;
-    const bool parameter_filter_parameter_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        filter_value->structural_parameter_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        limit_value->structural_parameter_occurrence_id == 2;
-    const bool literal_filter_literal_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        filter_value->structural_literal_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        limit_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        limit_value->structural_literal_occurrence_id == 2;
     if (filter_composition && limit_composition &&
-        !literal_filter_parameter_limit &&
-        !parameter_filter_literal_limit &&
-        !parameter_filter_parameter_limit &&
-        !literal_filter_literal_limit) {
+        !literal_filter_parameter_limit) {
       AddBoundAstDiagnostic(
           &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
           "catalog JOIN FILTER and LIMIT operands are not composable");
@@ -8177,7 +8129,37 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           operand_binding->expression_id != expected_operand_expression_id) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-            "catalog JOIN filter value or persisted column binding is incomplete");
+            "catalog JOIN filter value or persisted column binding is incomplete:"
+            "selected=" + std::string(exact_selected_column ? "1" : "0") +
+            ":boolean=" +
+            std::to_string(boolean_descriptor == nullptr
+                               ? 0
+                               : boolean_descriptor->descriptor_id) +
+            ":operand_matches=" + std::to_string(matching_operand_count) +
+            ":occurrence=" +
+            std::string(exact_operand_occurrence ? "1" : "0") +
+            ":operand_descriptor=" +
+            std::to_string(operand_descriptor == descriptor_by_id.end()
+                               ? 0
+                               : operand_descriptor->first) +
+            ":selected_descriptor=" +
+            std::to_string(selected_descriptor == descriptor_by_id.end()
+                               ? 0
+                               : selected_descriptor->first) +
+            ":operand_type=" +
+            (operand_descriptor == descriptor_by_id.end()
+                 ? std::string{}
+                 : operand_descriptor->second->type_uuid) +
+            ":selected_type=" +
+            (selected_descriptor == descriptor_by_id.end()
+                 ? std::string{}
+                 : selected_descriptor->second->type_uuid) +
+            ":expected_expression=" +
+            std::to_string(expected_operand_expression_id) +
+            ":operand_expression=" +
+            std::to_string(operand_binding == context.expressions.end()
+                               ? 0
+                               : operand_binding->expression_id));
         return RefusedBoundAst(std::move(bound));
       }
 
@@ -8254,12 +8236,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool parameter_limit =
           limit_value != nullptr &&
           limit_value->expression_kind == NativeExpressionAstKind::kParameter;
-      const auto expected_limit_parameter_occurrence =
-          parameter_filter_parameter_limit ? std::uint64_t{2}
-                                           : std::uint64_t{1};
-      const auto expected_limit_literal_occurrence =
-          literal_filter_literal_limit ? std::uint64_t{2}
-                                       : std::uint64_t{1};
+      constexpr std::uint64_t expected_limit_parameter_occurrence = 1;
+      constexpr std::uint64_t expected_limit_literal_occurrence = 1;
       const auto occurrence_matches = [&](const auto& expression) {
         return literal_limit
                    ? expression.structural_literal_occurrence_id ==

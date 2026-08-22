@@ -35511,21 +35511,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
-  const bool bounded_multimodel_preflight =
-      native.catalog_relation_sources.size() >= 3 &&
+  const bool bounded_catalog_join_preflight =
+      native.catalog_relation_sources.size() >= 2 &&
       native.catalog_relation_sources.size() <= 9 &&
       native.relations.size() >=
           (2 * native.catalog_relation_sources.size()) - 1 &&
       native.relations.size() <=
-          (2 * native.catalog_relation_sources.size()) + 1;
+          (2 * native.catalog_relation_sources.size()) + 2;
   const bool catalog_source_candidate =
-      (native.relations.size() <= 5 || bounded_multimodel_preflight) &&
+      (native.relations.size() <= 5 || bounded_catalog_join_preflight) &&
       std::ranges::any_of(native.relations, [](const auto& relation) {
         return relation.relation_kind ==
                NativeRelationAstKind::kCatalogSource;
       });
   if (native.root_relation_id == 0 || native.relations.empty() ||
-      (native.relations.size() > 5 && !bounded_multimodel_preflight) ||
+      (native.relations.size() > 5 && !bounded_catalog_join_preflight) ||
       native.descriptors.empty() || native.expressions.empty() ||
       native.outputs.empty() ||
       (!catalog_source_candidate && native.values_rows.empty()) ||
@@ -37327,36 +37327,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         limit_value->second->expression_kind ==
             NativeExpressionAstKind::kParameter &&
         limit_value->second->structural_parameter_occurrence_id == 1;
-    const bool parameter_filter_literal_limit =
-        filter_value != nullptr && limit_value != expressions_by_id.end() &&
-        filter_value->expression_kind ==
-            NativeExpressionAstKind::kParameter &&
-        filter_value->structural_parameter_occurrence_id == 1 &&
-        limit_value->second->expression_kind ==
-            NativeExpressionAstKind::kLiteral &&
-        limit_value->second->literal_kind == NativeLiteralAstKind::kNumeric &&
-        limit_value->second->structural_literal_occurrence_id == 1;
-    const bool parameter_filter_parameter_limit =
-        filter_value != nullptr && limit_value != expressions_by_id.end() &&
-        filter_value->expression_kind ==
-            NativeExpressionAstKind::kParameter &&
-        filter_value->structural_parameter_occurrence_id == 1 &&
-        limit_value->second->expression_kind ==
-            NativeExpressionAstKind::kParameter &&
-        limit_value->second->structural_parameter_occurrence_id == 2;
-    const bool literal_filter_literal_limit =
-        filter_value != nullptr && limit_value != expressions_by_id.end() &&
-        filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        filter_value->structural_literal_occurrence_id == 1 &&
-        limit_value->second->expression_kind ==
-            NativeExpressionAstKind::kLiteral &&
-        limit_value->second->literal_kind == NativeLiteralAstKind::kNumeric &&
-        limit_value->second->structural_literal_occurrence_id == 2;
-    if (!literal_filter_parameter_limit &&
-        !parameter_filter_literal_limit &&
-        !parameter_filter_parameter_limit &&
-        !literal_filter_literal_limit) {
+    if (!literal_filter_parameter_limit) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed JOIN FILTER and LIMIT operands are not composable");

@@ -61,6 +61,15 @@ std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
                    found->descriptor_uuid.value);
 }
 
+std::string CanonicalInt64TypeUuid() {
+  const auto descriptor_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          "019d0000-0000-7000-8000-00000000d701", 1, 1,
+          descriptor_uuid, 1);
+  return identity.ok ? identity.row.type_uuid : std::string{};
+}
+
 bool ParsePositiveU64(const std::string_view text, std::uint64_t* value) {
   if (value == nullptr || text.empty()) return false;
   std::uint64_t parsed = 0;
@@ -759,13 +768,23 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
               ? descriptors_by_id.end()
               : descriptors_by_id.find(
                     expression->second->result_descriptor_id);
-      const bool numeric_literal =
+      const bool textual_numeric_literal =
           expression != expressions_by_id.end() &&
           expression->second->expression_kind ==
               RelationalExpressionKind::kLiteral &&
           expression->second->literal_kind ==
               RelationalLiteralKind::kNumeric &&
           expression->second->literal_or_parameter_ref.has_value() &&
+          !expression->second->literal_typed_value_v1.has_value() &&
+          !expression->second->parameter_typed_value_v1.has_value();
+      const bool typed_numeric_literal =
+          expression != expressions_by_id.end() &&
+          expression->second->expression_kind ==
+              RelationalExpressionKind::kLiteral &&
+          expression->second->literal_kind ==
+              RelationalLiteralKind::kNumeric &&
+          !expression->second->literal_or_parameter_ref.has_value() &&
+          expression->second->literal_typed_value_v1.has_value() &&
           !expression->second->parameter_typed_value_v1.has_value();
       const bool parameter_value =
           expression != expressions_by_id.end() &&
@@ -777,7 +796,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           expression->second->parameter_typed_value_v1.has_value();
       std::uint64_t parsed = 0;
       const auto* encoded =
-          numeric_literal
+          textual_numeric_literal
               ? &*expression->second->literal_or_parameter_ref
               : nullptr;
       const auto converted =
@@ -785,12 +804,10 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
               ? std::from_chars_result{}
               : std::from_chars(encoded->data(),
                                 encoded->data() + encoded->size(), parsed);
-      bool exact_parameter = parameter_value;
-      if (exact_parameter) {
-        const auto& typed = *expression->second->parameter_typed_value_v1;
+      const auto exact_typed_value = [&](const auto& typed) {
         const auto digest = scratchbird::core::hash::ComputeSha256Digest(
             typed.canonical_value_bytes);
-        exact_parameter =
+        return
             typed.descriptor_generation != 0 &&
             typed.value_state == "value" &&
             typed.canonical_value_bytes.size() == 8 &&
@@ -798,15 +815,22 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
             digest.ok() && digest.digest == typed.canonical_value_sha256 &&
             descriptor != descriptors_by_id.end() &&
             typed.descriptor_uuid == descriptor->second->descriptor_uuid;
-      }
+      };
+      const bool exact_literal =
+          textual_numeric_literal ||
+          (typed_numeric_literal && exact_typed_value(
+               *expression->second->literal_typed_value_v1));
+      const bool exact_parameter =
+          parameter_value && exact_typed_value(
+              *expression->second->parameter_typed_value_v1);
       if (expression == expressions_by_id.end() ||
           !limit_expression_ids.insert(expression_id).second ||
-          (!numeric_literal && !exact_parameter) ||
+          (!exact_literal && !exact_parameter) ||
           !expression->second->child_expression_ids.empty() ||
           expression->second->function_uuid.has_value() ||
           expression->second->bound_name_uuid.has_value() ||
           expression->second->operator_name.has_value() ||
-          (numeric_literal &&
+          (textual_numeric_literal &&
            (encoded == nullptr || encoded->empty() ||
             (encoded->size() > 1 && encoded->front() == '0') ||
             converted.ec != std::errc{} ||
@@ -817,8 +841,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           !limit_descriptor_ids.insert(descriptor->first).second ||
           descriptor->second->nullability !=
               RelationalNullability::kNonNull ||
-          descriptor->second->type_uuid !=
-              CanonicalCoreDatatypeUuid("int64") ||
+          descriptor->second->type_uuid != CanonicalInt64TypeUuid() ||
           descriptor->second->collation_uuid.has_value() ||
           descriptor->second->timezone_profile_id.has_value() ||
           descriptor->second->width.has_value() ||
@@ -888,19 +911,12 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         !filter_value->literal_kind.has_value() &&
         !filter_value->literal_typed_value_v1.has_value() &&
         filter_value->parameter_typed_value_v1.has_value();
-    const bool literal_limit_value =
-        limit_value != expressions_by_id.end() &&
-        limit_value->second->expression_kind ==
-            RelationalExpressionKind::kLiteral;
     const bool parameter_limit_value =
         limit_value != expressions_by_id.end() &&
         limit_value->second->expression_kind ==
             RelationalExpressionKind::kParameter;
     const bool exact_operand_pair =
-        (literal_filter_value && parameter_limit_value) ||
-        (parameter_filter_value && literal_limit_value) ||
-        (parameter_filter_value && parameter_limit_value) ||
-        (literal_filter_value && literal_limit_value);
+        literal_filter_value && parameter_limit_value;
     bool exact_filter_value = literal_filter_value || parameter_filter_value;
     if (exact_filter_value) {
       const auto& typed_bytes =
@@ -996,9 +1012,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         literal_descriptor == descriptors_by_id.end() ||
         predicate_descriptor == descriptors_by_id.end() ||
         identifier_descriptor->second->type_uuid !=
-            CanonicalCoreDatatypeUuid("int64") ||
-        literal_descriptor->second->type_uuid !=
-            CanonicalCoreDatatypeUuid("int64") ||
+            CanonicalInt64TypeUuid() ||
+        literal_descriptor->second->type_uuid != CanonicalInt64TypeUuid() ||
         identifier_descriptor->second->type_uuid !=
             literal_descriptor->second->type_uuid ||
         literal_descriptor->second->nullability !=

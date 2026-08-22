@@ -5947,32 +5947,8 @@ BuildEngineProjectedNativeBindingContext(
         filter_value->structural_literal_occurrence_id == 1 &&
         limit_value->expression_kind == NativeExpressionAstKind::kParameter &&
         limit_value->structural_parameter_occurrence_id == 1;
-    const bool parameter_filter_literal_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        filter_value->structural_parameter_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        limit_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        limit_value->structural_literal_occurrence_id == 1;
-    const bool parameter_filter_parameter_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        filter_value->structural_parameter_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kParameter &&
-        limit_value->structural_parameter_occurrence_id == 2;
-    const bool literal_filter_literal_limit =
-        filter_value != nullptr && limit_value != nullptr &&
-        filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        filter_value->structural_literal_occurrence_id == 1 &&
-        limit_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-        limit_value->literal_kind == NativeLiteralAstKind::kNumeric &&
-        limit_value->structural_literal_occurrence_id == 2;
     if (filter_relation != nullptr && limit_relation != nullptr &&
-        !literal_filter_parameter_limit &&
-        !parameter_filter_literal_limit &&
-        !parameter_filter_parameter_limit &&
-        !literal_filter_literal_limit) {
+        !literal_filter_parameter_limit) {
       return fail("catalog_join_filter_limit_operand_profile_invalid");
     }
     if (ordinary_multi_catalog_cross_join) {
@@ -6089,6 +6065,14 @@ BuildEngineProjectedNativeBindingContext(
                                         : resolved.object_class == expected_object_class;
       const auto presented_name =
           EncodeQualifiedPresentedName(source.qualified_name);
+      const bool ordinary_object_identity_unique =
+          !all_catalog_sources || resolved.object_uuid.empty() ||
+          ordinary_relation_object_uuids.insert(resolved.object_uuid).second;
+      const bool relation_descriptor_identity_unique =
+          projection.descriptor_uuid.empty() ||
+          lexical_relation_descriptor_uuids
+              .insert(projection.descriptor_uuid)
+              .second;
       if (relation.relation_source_ids !=
               std::vector<std::uint32_t>{source.source_id} ||
           relation.output_expression_ids.size() != 1 ||
@@ -6097,22 +6081,37 @@ BuildEngineProjectedNativeBindingContext(
           resolved_seed.ref.presented_name != *presented_name ||
           resolved_seed.ref.object_class !=
               (expected_object_class.empty()
-                   ? std::string_view{resolved.object_class}
+                   ? std::string_view{"relation"}
                    : expected_object_class) ||
           !exact_object_class || resolved.object_uuid.empty() ||
-          (all_catalog_sources &&
-           !ordinary_relation_object_uuids.insert(resolved.object_uuid)
-                .second) ||
+          !ordinary_object_identity_unique ||
           projection.relation_uuid != resolved.object_uuid ||
           projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
-          !lexical_relation_descriptor_uuids
-               .insert(projection.descriptor_uuid)
-               .second ||
+          !relation_descriptor_identity_unique ||
           projection.descriptor_generation == 0 ||
           projection.validated_resource_epoch == 0 ||
           resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
           projection.columns.empty()) {
-        return fail("catalog_cross_join_projection_authority_incomplete");
+        return fail(
+            "catalog_cross_join_projection_authority_incomplete:source=" +
+            std::to_string(source_ordinal) +
+            ":resolved=" + (resolved.resolved ? "1" : "0") +
+            ":object_class=" + resolved.object_class +
+            ":object_uuid=" + resolved.object_uuid +
+            ":object_unique=" +
+            (ordinary_object_identity_unique ? "1" : "0") +
+            ":relation_uuid=" + projection.relation_uuid +
+            ":descriptor_uuid=" + projection.descriptor_uuid +
+            ":descriptor_unique=" +
+            (relation_descriptor_identity_unique ? "1" : "0") +
+            ":schema_uuid=" + projection.schema_uuid +
+            ":descriptor_generation=" +
+            std::to_string(projection.descriptor_generation) +
+            ":resource_epoch=" +
+            std::to_string(projection.validated_resource_epoch) +
+            ":catalog_epoch=" + std::to_string(resolved.catalog_epoch) +
+            ":security_epoch=" + std::to_string(resolved.security_epoch) +
+            ":columns=" + std::to_string(projection.columns.size()));
       }
 
       NativeCatalogRelationBindingInput catalog_relation;
@@ -8178,7 +8177,8 @@ EncodeParameterPrebindRequest(const NativeRelationalAstDocument& ast,
   const auto receipt = CanonicalUuidBytes(context.preliminary_receipt_uuid);
   const auto mga = CanonicalUuidBytes(context.preliminary_mga_snapshot_uuid);
   if (!receipt || !mga || context.preliminary_catalog_generation == 0 ||
-      context.preliminary_extension_version != 3 ||
+      context.preliminary_extension_version < 3 ||
+      context.preliminary_extension_version > 26 ||
       context.preliminary_security_epoch == 0 ||
       context.preliminary_resource_epoch == 0) {
     return std::nullopt;
@@ -8366,7 +8366,7 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
       LiteralReadU64(response,64)!=context->literal_resource_epoch ||
       !std::equal(mga->begin(), mga->end(), response.begin() + 72) ||
       !std::equal(state->demand_sha256.begin(), state->demand_sha256.end(),
-                  response.begin() + 96))
+                  response.begin() + 88))
     return false;
   std::copy_n(response.begin()+128,32,state->ordered_profiles_sha256.begin());
   context->literal_statement_descriptor_profiles.clear();
@@ -9387,9 +9387,7 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
       : EncodeVariableExpressionNodeTable(bound, *variable_prebind);
   if (!value_type_uuid.has_value() ||
       (parameter_prebind != nullptr && !parameter_nodes.has_value()) ||
-      (variable_prebind != nullptr && !variable_nodes.has_value()) ||
-      (!expression_nodes.has_value() && !parameter_nodes.has_value() &&
-       !variable_nodes.has_value())) {
+      (variable_prebind != nullptr && !variable_nodes.has_value())) {
     return std::nullopt;
   }
 
@@ -17227,9 +17225,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               return expression.expression_kind ==
                      NativeExpressionAstKind::kParameter;
             });
-        if ((parameter_count == 0) != (parameter_coordination == nullptr) ||
+        if ((parameter_count == 0 && parameter_coordination != nullptr) ||
             (parameter_prepare_only &&
-             (parameter_coordination == nullptr ||
+             (parameter_count == 0 || parameter_coordination == nullptr ||
               parameter_coordination->mode !=
                   ipc::ParameterExecutionMode::kPrepared ||
               prepared_parameter_output == nullptr))) {
@@ -18306,6 +18304,25 @@ SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
   result.accepted = true;
   result.prepared = std::move(prepared);
   return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDirectParameterizedForWire(
+    std::string_view sql,
+    const std::vector<PreparedParameterWireValue>& parameter_values,
+    const bool cursor_requested) {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.AUTH.REQUIRED", "ERROR",
+        "Direct parameter coordination requires an authenticated server route.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  // Direct execution deliberately has no prepared-coordination handle. The
+  // ordinary statement-context acquisition carries the engine-owned direct
+  // parameter selector; SBPN/SBPV finalization remains bound to that receipt.
+  return RunPipeline(sql, true, cursor_requested, 0, false,
+                     parameter_values);
 }
 
 PipelineResult SbsqlTestWireSession::RunVariableForWire(

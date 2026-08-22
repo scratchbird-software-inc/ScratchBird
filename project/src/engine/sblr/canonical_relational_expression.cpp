@@ -1898,6 +1898,24 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
       *canonical_type_name = row->stable_name;
       return true;
     }
+    // int64 has separate current descriptor and value-type identities. Resolve
+    // the type UUID only through the exact current type/codec registry row;
+    // never treat an arbitrary UUID as an alias for the core datatype.
+    const auto int64_row = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows, [](const auto& candidate) {
+          return candidate.stable_name == "int64";
+        });
+    if (int64_row != core_manifest.manifest.descriptor_rows.end()) {
+      const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+          "019d0000-0000-7000-8000-00000000d701",
+          core_manifest.manifest.catalog_epoch, 1,
+          TypedUuidText(int64_row->descriptor_uuid),
+          int64_row->descriptor_epoch);
+      if (identity.ok && identity.row.type_uuid == descriptor.type_uuid) {
+        *canonical_type_name = int64_row->stable_name;
+        return true;
+      }
+    }
   }
   if (services_.descriptor_type_resolver) {
     std::string diagnostic_id;

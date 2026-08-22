@@ -230,6 +230,10 @@ class SbsqlTestWireSession {
   PipelineResult RunRolledBackDescendantForWire();
   ipc::ServerPreparedParameterFinalizeResult PrepareParameterizedForWire(
       std::string_view sql);
+  PipelineResult RunDirectParameterizedForWire(
+      std::string_view sql,
+      const std::vector<PreparedParameterWireValue>& parameter_values,
+      bool cursor_requested = false);
   PipelineResult RunPreparedParameterizedForWire(
       std::string_view sql,
       std::string_view prepared_statement_uuid,

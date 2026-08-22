@@ -2078,8 +2078,21 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   result.admitted = true;
   result.requires_public_abi_dispatch =
       opcode_stream || operation.envelope.operation_id == "query.execute";
-  result.operation_family = opcode->family;
-  result.operation_id = opcode->operation_id;
+  const auto& published_operation =
+      opcode_stream ? decoded_stream.stream.operations[1]
+                    : operation.envelope;
+  const auto* published_opcode =
+      scratchbird::engine::sblr::LookupSblrOpcodeCode(
+          published_operation.opcode_code);
+  if (published_opcode == nullptr ||
+      published_opcode->operation_id != published_operation.operation_id ||
+      published_opcode->opcode != published_operation.opcode) {
+    return Reject("SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
+                  "The published operation must bind the contained root registry row.",
+                  "published_root_opcode_registry_identity_mismatch");
+  }
+  result.operation_family = published_opcode->family;
+  result.operation_id = published_opcode->operation_id;
   result.admission_token = std::move(token);
   return result;
 }

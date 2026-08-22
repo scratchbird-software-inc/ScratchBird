@@ -493,6 +493,136 @@ bool ValidateCatalogProjectionComposition() {
   return passed;
 }
 
+bool ValidateCatalogJoinTailComposition() {
+  constexpr std::string_view mixed_sql =
+      "SELECT l.integer_value FROM app.left_relation AS l CROSS JOIN "
+      "app.right_relation AS r WHERE r.join_value >= 2 LIMIT ?;";
+  const auto mixed =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(mixed_sql));
+  bool passed = true;
+  passed &= Require(mixed.accepted(),
+                    "catalog JOIN literal-filter/parameter-LIMIT was refused");
+  passed &= Require(mixed.root_relation_id == 6 &&
+                        mixed.relations.size() == 6 &&
+                        mixed.expressions.size() == 7,
+                    "catalog JOIN mixed tail graph cardinality differs");
+  if (mixed.relations.size() == 6) {
+    const auto& join = mixed.relations[2];
+    const auto& filter = mixed.relations[3];
+    const auto& project = mixed.relations[4];
+    const auto& limit = mixed.relations[5];
+    passed &= Require(
+        join.relation_kind == sbsql::NativeRelationAstKind::kJoin &&
+            join.join_kind == sbsql::NativeJoinAstKind::kCross &&
+            join.input_relation_ids == std::vector<std::uint32_t>({1, 2}) &&
+            join.output_expression_ids ==
+                std::vector<std::uint32_t>({6, 7}) &&
+            filter.relation_kind == sbsql::NativeRelationAstKind::kFilter &&
+            filter.input_relation_ids == std::vector<std::uint32_t>({3}) &&
+            filter.output_expression_ids == join.output_expression_ids &&
+            filter.predicate_expression_ids ==
+                std::vector<std::uint32_t>({4}) &&
+            project.relation_kind ==
+                sbsql::NativeRelationAstKind::kProject &&
+            project.input_relation_ids == std::vector<std::uint32_t>({4}) &&
+            project.output_expression_ids ==
+                std::vector<std::uint32_t>({1}) &&
+            limit.relation_kind == sbsql::NativeRelationAstKind::kLimit &&
+            limit.input_relation_ids == std::vector<std::uint32_t>({5}) &&
+            limit.output_expression_ids == project.output_expression_ids &&
+            limit.limit_expression_ids ==
+                std::vector<std::uint32_t>({5}),
+        "catalog JOIN FILTER/PROJECT/LIMIT topology or lineage differs");
+  }
+  if (mixed.expressions.size() == 7) {
+    const auto& projection = mixed.expressions[0];
+    const auto& filter_identifier = mixed.expressions[1];
+    const auto& filter_literal = mixed.expressions[2];
+    const auto& predicate = mixed.expressions[3];
+    const auto& limit_parameter = mixed.expressions[4];
+    passed &= Require(
+        projection.expression_kind ==
+                sbsql::NativeExpressionAstKind::kIdentifier &&
+            projection.qualified_identifier.size() == 2 &&
+            projection.qualified_identifier[0].spelling == "l" &&
+            projection.qualified_identifier[1].spelling == "integer_value" &&
+            filter_identifier.expression_kind ==
+                sbsql::NativeExpressionAstKind::kIdentifier &&
+            filter_identifier.qualified_identifier.size() == 2 &&
+            filter_identifier.qualified_identifier[0].spelling == "r" &&
+            filter_identifier.qualified_identifier[1].spelling ==
+                "join_value" &&
+            filter_literal.expression_kind ==
+                sbsql::NativeExpressionAstKind::kLiteral &&
+            filter_literal.literal_kind ==
+                sbsql::NativeLiteralAstKind::kNumeric &&
+            filter_literal.structural_literal_occurrence_id == 1 &&
+            filter_literal.structural_parameter_occurrence_id == 0 &&
+            predicate.expression_kind ==
+                sbsql::NativeExpressionAstKind::kBinary &&
+            predicate.operator_name == ">=" &&
+            predicate.child_expression_ids ==
+                std::vector<std::uint32_t>({2, 3}) &&
+            limit_parameter.expression_kind ==
+                sbsql::NativeExpressionAstKind::kParameter &&
+            limit_parameter.structural_literal_occurrence_id == 0 &&
+            limit_parameter.structural_parameter_occurrence_id == 1 &&
+            limit_parameter.structural_variable_occurrence_id == 0,
+        "catalog JOIN mixed tail expression or occurrence identity differs");
+  }
+
+  constexpr std::string_view unsupported_pairings[] = {
+      "SELECT * FROM app.a AS a CROSS JOIN app.b AS b WHERE a.value >= 2 "
+      "LIMIT 1;",
+      "SELECT * FROM app.a AS a CROSS JOIN app.b AS b WHERE a.value >= ? "
+      "LIMIT 1;",
+      "SELECT * FROM app.a AS a CROSS JOIN app.b AS b WHERE a.value >= ? "
+      "LIMIT ?;",
+  };
+  for (const auto sql : unsupported_pairings) {
+    const auto parsed =
+        sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+    passed &= Require(!parsed.accepted() && parsed.root_relation_id == 0 &&
+                          parsed.relations.empty(),
+                      "unsupported catalog JOIN FILTER/LIMIT pairing was "
+                      "admitted");
+  }
+
+  constexpr std::string_view three_way_sql =
+      "SELECT * FROM app.a AS a CROSS JOIN app.b AS b CROSS JOIN app.c AS c "
+      "WHERE c.value >= 2 LIMIT ?;";
+  const auto three_way =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(three_way_sql));
+  passed &= Require(three_way.accepted() &&
+                        three_way.root_relation_id == 7 &&
+                        three_way.relations.size() == 7 &&
+                        three_way.relations[3].input_relation_ids ==
+                            std::vector<std::uint32_t>({1, 2}) &&
+                        three_way.relations[4].input_relation_ids ==
+                            std::vector<std::uint32_t>({4, 3}) &&
+                        three_way.relations[5].input_relation_ids ==
+                            std::vector<std::uint32_t>({5}) &&
+                        three_way.relations[6].input_relation_ids ==
+                            std::vector<std::uint32_t>({6}),
+                    "three-way catalog CROSS JOIN FILTER/LIMIT topology differs");
+
+  constexpr std::string_view refused[] = {
+      "SELECT * FROM app.a AS a CROSS JOIN app.b AS b WHERE a.value >= @v "
+      "LIMIT ?;",
+      "SELECT * FROM app.a AS a CROSS JOIN app.b AS b LIMIT @v;",
+      "SELECT * FROM app.a AS a CROSS JOIN app.b AS b LIMIT 01;",
+      "SELECT * FROM app.a AS a CROSS JOIN app.b AS b LIMIT "
+      "9223372036854775808;",
+  };
+  for (const auto sql : refused) {
+    const auto parsed = sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+    passed &= Require(!parsed.accepted() && parsed.root_relation_id == 0 &&
+                          parsed.relations.empty(),
+                      "catalog JOIN tail refusal retained an executable graph");
+  }
+  return passed;
+}
+
 bool ValidateCatalogOrderingComposition() {
   constexpr std::string_view sql =
       "SELECT amount FROM app.orders WHERE order_id >= 10 "
@@ -900,6 +1030,7 @@ int main() {
   passed &= ValidateCatalogLimitComposition();
   passed &= ValidateCatalogFilterComposition();
   passed &= ValidateCatalogProjectionComposition();
+  passed &= ValidateCatalogJoinTailComposition();
   passed &= ValidateCatalogOrderingComposition();
   passed &= ValidateCatalogRelationRefusal();
   passed &= ValidateFamilyBoundary();

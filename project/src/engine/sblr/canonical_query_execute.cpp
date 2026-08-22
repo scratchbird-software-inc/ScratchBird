@@ -17,6 +17,7 @@
 #include "engine/executor/model_family_executor.hpp"
 #include "engine/optimizer/model_family_coordinator.hpp"
 #include "engine/optimizer/optimizer_contract.hpp"
+#include "hash_digest.hpp"
 #include "uuid.hpp"
 #if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -2399,6 +2400,7 @@ struct PreparedGlobalAggregateRoot {
 
 std::string ExactCanonicalCoreDatatypeUuidV1(
     std::string_view stable_name);
+std::string ExactCanonicalInt64TypeUuidV1();
 
 std::optional<std::string> Rcp079DescriptorField(
     const std::string_view encoded, const std::string_view key) {
@@ -7426,6 +7428,14 @@ std::string ExactCanonicalCoreDatatypeUuidV1(
              ? scratchbird::core::uuid::UuidToString(
                    found->descriptor_uuid.value)
              : std::string{};
+}
+
+std::string ExactCanonicalInt64TypeUuidV1() {
+  const auto descriptor_uuid = ExactCanonicalCoreDatatypeUuidV1("int64");
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701", 1, 1,
+      descriptor_uuid, 1);
+  return identity.ok ? identity.row.type_uuid : std::string{};
 }
 
 bool ExactCanonicalScalarWindowOperandV1(
@@ -34995,19 +35005,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           !filter_value->literal_kind.has_value() &&
           !filter_value->literal_typed_value_v1.has_value() &&
           filter_value->parameter_typed_value_v1.has_value();
-      const bool literal_limit_value =
-          limit_value != dag.expressions.end() &&
-          limit_value->expression_kind ==
-              api::RelationalExpressionKind::kLiteral;
       const bool parameter_limit_value =
           limit_value != dag.expressions.end() &&
           limit_value->expression_kind ==
               api::RelationalExpressionKind::kParameter;
       const bool exact_operand_pair =
-          (literal_filter_value && parameter_limit_value) ||
-          (parameter_filter_value && literal_limit_value) ||
-          (parameter_filter_value && parameter_limit_value) ||
-          (literal_filter_value && literal_limit_value);
+          literal_filter_value && parameter_limit_value;
       bool exact_filter_value = literal_filter_value || parameter_filter_value;
       if (exact_filter_value) {
         const auto& typed_bytes =
@@ -35109,9 +35112,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           literal_descriptor == dag.descriptors.end() ||
           predicate_descriptor == dag.descriptors.end() ||
           identifier_descriptor->type_uuid !=
-              ExactCanonicalCoreDatatypeUuidV1("int64") ||
+              ExactCanonicalInt64TypeUuidV1() ||
           literal_descriptor->type_uuid !=
-              ExactCanonicalCoreDatatypeUuidV1("int64") ||
+              ExactCanonicalInt64TypeUuidV1() ||
           identifier_descriptor->type_uuid != literal_descriptor->type_uuid ||
           literal_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
@@ -35195,7 +35198,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           limit_descriptor_ids.insert(descriptor->descriptor_id).second &&
           descriptor->nullability ==
               api::RelationalNullability::kNonNull &&
-          descriptor->type_uuid == ExactCanonicalCoreDatatypeUuidV1("int64") &&
+          descriptor->type_uuid == ExactCanonicalInt64TypeUuidV1() &&
           !descriptor->collation_uuid.has_value() &&
           !descriptor->timezone_profile_id.has_value() &&
           !descriptor->width.has_value() && !descriptor->precision.has_value() &&
@@ -35667,13 +35670,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               *context, left, right, comparison, diagnostic_id,
               refusal_detail);
         };
+    const auto default_join_kind =
+        group.node_configurations.front().join_kind;
+    const auto default_operation_name =
+        group.node_configurations.front().operation_name;
+    auto node_configurations = std::move(group.node_configurations);
     selected.available_executors.push_back(MakeLiveJoinRegistration(
         group.implementation_id, group.capability_uuid, {},
         maximum_pair_count, maximum_output_rows,
-        group.node_configurations.front().join_kind,
-        group.node_configurations.front().operation_name, {}, true,
+        default_join_kind, default_operation_name, {}, true,
         0, {}, {}, std::move(predicate_services),
-        std::move(group.node_configurations), std::nullopt,
+        std::move(node_configurations), std::nullopt,
         &input.relational_dag, &input.context,
         selected.borrowed_mga_authority));
   }
