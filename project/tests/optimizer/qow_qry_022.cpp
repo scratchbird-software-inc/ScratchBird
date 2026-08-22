@@ -316,9 +316,10 @@ bool ValidateIdentityBridge() {
       "runtime_observation_resource_bounds",
       "dispatcher accepted operator wait greater than elapsed time");
   passed &= expect_runtime_refusal(
-      [observed](auto& step) {
-        step.runtime_observation.current_memory_bytes = observed(21);
-        step.runtime_observation.peak_memory_bytes = observed(20);
+      [observed, budget = prepare_request.selected_physical_dag
+                              .memory_budget_bytes](auto& step) {
+        step.runtime_observation.current_memory_bytes = observed(budget);
+        step.runtime_observation.peak_memory_bytes = observed(0);
       },
       "runtime_observation_resource_bounds",
       "dispatcher accepted current memory greater than peak memory");

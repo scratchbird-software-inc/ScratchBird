@@ -41,6 +41,31 @@ exec::CanonicalExecutionMgaAuthority EngineInventoryAuthority(
   return authority;
 }
 
+exec::TypedPhysicalNodeDag OperatorLocalDag008(
+    const exec::TypedPhysicalNodeDag& dag,
+    const std::uint64_t root_physical_node_id) {
+  auto local = dag;
+  local.root_physical_node_id = root_physical_node_id;
+  std::vector<std::uint64_t> retained{root_physical_node_id};
+  for (std::size_t index = 0; index < retained.size(); ++index) {
+    const auto node = std::ranges::find_if(
+        dag.nodes, [&](const auto& candidate) {
+          return candidate.physical_node_id == retained[index];
+        });
+    if (node == dag.nodes.end()) continue;
+    for (const auto input_id : node->input_physical_node_ids) {
+      if (std::ranges::find(retained, input_id) == retained.end()) {
+        retained.push_back(input_id);
+      }
+    }
+  }
+  std::erase_if(local.nodes, [&](const auto& node) {
+    return std::ranges::find(retained, node.physical_node_id) ==
+           retained.end();
+  });
+  return local;
+}
+
 struct StaleResolutionState008 {
   exec::PhysicalMgaStatementContext current;
   std::size_t resolution_count = 0;
@@ -240,7 +265,8 @@ api::CanonicalOptimizerSelectedExecutionRequest SelectedExecutionRequest(
           return result;
         }
         exec::CanonicalScanAccessRequest scan_request;
-        scan_request.physical_dag = dag;
+        scan_request.physical_dag =
+            OperatorLocalDag008(dag, node.physical_node_id);
         scan_request.selected_physical_node_id = node.physical_node_id;
         scan_request.available_implementation_id = node.implementation_id;
         scan_request.relation_uuid = Uuid(9);
@@ -308,13 +334,21 @@ bool ValidateExactSelectedExecution() {
   std::vector<std::uint64_t> invocation_order;
   const auto request = SelectedExecutionRequest(&invocation_order);
   const auto result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+  if (!result.accepted || !result.exact_selected_nodes_executed ||
+      !result.canonical_result_published || !result.issues.empty()) {
+    const auto issue = result.issues.empty()
+                           ? std::string("missing_issue")
+                           : result.issues.front().diagnostic_id + "/" +
+                                 result.issues.front().field_id;
+    return Require008(false,
+                      std::string("ABI-v2 selected physical DAG did not execute canonically: ") +
+                          issue);
+  }
   bool passed = true;
-  passed &= Require008(
-      result.accepted && result.exact_selected_nodes_executed &&
-          result.causal_counters_attached &&
-          result.canonical_result_published && result.data_access_observed &&
-          !result.replan_required && result.issues.empty(),
-      "ABI-v2 selected physical DAG did not execute canonically");
+  passed &= Require008(result.causal_counters_attached &&
+                           result.data_access_observed &&
+                           !result.replan_required,
+                       "selected execution evidence was incomplete");
   passed &= Require008(
       invocation_order == std::vector<std::uint64_t>({1, 2, 3, 4}) &&
           result.dispatch.executed_steps.size() == 4 &&

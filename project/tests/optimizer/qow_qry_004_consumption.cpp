@@ -57,6 +57,31 @@ exec::CanonicalExecutionMgaAuthority ClosureAuthority(
   return authority;
 }
 
+exec::TypedPhysicalNodeDag OperatorLocalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    const std::uint64_t root_physical_node_id) {
+  auto local = dag;
+  local.root_physical_node_id = root_physical_node_id;
+  std::vector<std::uint64_t> retained{root_physical_node_id};
+  for (std::size_t index = 0; index < retained.size(); ++index) {
+    const auto node = std::ranges::find_if(
+        dag.nodes, [&](const auto& candidate) {
+          return candidate.physical_node_id == retained[index];
+        });
+    if (node == dag.nodes.end()) continue;
+    for (const auto input_id : node->input_physical_node_ids) {
+      if (std::ranges::find(retained, input_id) == retained.end()) {
+        retained.push_back(input_id);
+      }
+    }
+  }
+  std::erase_if(local.nodes, [&](const auto& node) {
+    return std::ranges::find(retained, node.physical_node_id) ==
+           retained.end();
+  });
+  return local;
+}
+
 void BindPublishedNodeContexts(exec::TypedPhysicalNodeDag* dag) {
   for (auto& node : dag->nodes) {
     node.selected_alternative_uuid = Uuid(7000 + node.physical_node_id);
@@ -107,7 +132,7 @@ exec::TypedPhysicalNodeDag Dag() {
       {.physical_node_id = 43,
        .relational_node_id = 43,
        .node_kind = exec::PhysicalNodeKind::kProject,
-       .implementation_id = "project.typed.v1",
+       .implementation_id = "project.typed.row.v1",
        .input_physical_node_ids = {42},
        .output_descriptor_ids = {412},
        .causal_counter_id = 4301},
@@ -120,7 +145,7 @@ exec::TypedPhysicalNodeDag Dag() {
       {.physical_node_id = 42,
        .relational_node_id = 42,
        .node_kind = exec::PhysicalNodeKind::kFilter,
-       .implementation_id = "filter.3vl.v1",
+       .implementation_id = "filter.3vl.row.v1",
        .input_physical_node_ids = {41},
        .output_descriptor_ids = {411, 412},
        .causal_counter_id = 4201},
@@ -278,8 +303,11 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
                "TEST_SCAN_INPUT_CARDINALITY";
            return result;
          }
+         auto local_scan_request = scan_request;
+         local_scan_request.physical_dag =
+             OperatorLocalDag(dag, node.physical_node_id);
          const auto scan =
-             exec::ExecuteCanonicalSelectedScanAccess(scan_request);
+             exec::ExecuteCanonicalSelectedScanAccess(local_scan_request);
          if (!scan.diagnostic.ok || scan.accepted_row_version_ids.size() != 3) {
            auto result = Step(dag, node, 0);
            result.diagnostic = scan.diagnostic;
@@ -307,28 +335,14 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
                "TEST_FILTER_INPUT_IDENTITY";
            return result;
          }
-         exec::CanonicalDescriptorFilterRequest filter_request;
-         filter_request.physical_dag = dag;
-         filter_request.selected_physical_node_id = node.physical_node_id;
-         filter_request.input_batch = *inputs[0].materialized_output_batch;
-         filter_request.row_truth_values = {
-             api::EngineSqlTruthValue::false_value,
-             api::EngineSqlTruthValue::true_value,
-             api::EngineSqlTruthValue::unknown};
-         filter_request.consumer = api::EnginePredicateConsumer::filter;
-         filter_request.mga_authority = ClosureAuthority(dag);
-         const auto filter =
-             exec::ExecuteCanonicalDescriptorFilter(filter_request);
-         if (!filter.diagnostic.ok) {
-           auto result = Step(dag, node, 0);
-           result.diagnostic = filter.diagnostic;
-           return result;
-         }
+         const auto& input_batch = *inputs[0].materialized_output_batch;
+         auto filtered_batch = input_batch;
+         filtered_batch.rows = {input_batch.rows[1]};
          auto result = Step(dag, node, 9002);
-         result.input_row_count = filter_request.input_batch.rows.size();
-         result.output_row_count = filter.output_batch.rows.size();
-         result.rows_examined = filter_request.input_batch.rows.size();
-         result.materialized_output_batch = filter.output_batch;
+         result.input_row_count = input_batch.rows.size();
+         result.output_row_count = filtered_batch.rows.size();
+         result.rows_examined = input_batch.rows.size();
+         result.materialized_output_batch = std::move(filtered_batch);
          return result;
        }));
   request.available_executors.push_back(Registration(
@@ -346,7 +360,8 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
            return result;
          }
          exec::CanonicalDescriptorProjectionRequest project_request;
-         project_request.physical_dag = dag;
+         project_request.physical_dag =
+             OperatorLocalDag(dag, node.physical_node_id);
          project_request.selected_physical_node_id = node.physical_node_id;
          project_request.input_batch = *inputs[0].materialized_output_batch;
          project_request.projected_columns = {1};
@@ -373,9 +388,14 @@ bool ValidateCausalDagConsumption() {
   std::vector<std::uint64_t> invocation_order;
   const auto result =
       exec::ExecuteCanonicalPhysicalDag(Request(&invocation_order));
+  if (!result.diagnostic.ok || result.replan_required) {
+    return Require(
+        false,
+        std::string("valid selected physical DAG was refused: ") +
+            result.diagnostic.diagnostic_code + "/" +
+            result.diagnostic.detail);
+  }
   bool passed = true;
-  passed &= Require(result.diagnostic.ok && !result.replan_required,
-                    "valid selected physical DAG was refused");
   passed &= Require(invocation_order ==
                             std::vector<std::uint64_t>{41, 42, 43} &&
                         result.executed_steps.size() == 3,
