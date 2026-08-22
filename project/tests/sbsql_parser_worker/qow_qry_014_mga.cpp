@@ -44,7 +44,7 @@ api::EngineDescriptor Descriptor() {
   descriptor.canonical_type_name = "int64";
   descriptor.encoded_descriptor =
       "type_uuid=019f0000-0000-7300-8000-000000003702;"
-      "nullability=not-null";
+      "nullability=non_null";
   return descriptor;
 }
 
@@ -112,7 +112,7 @@ void BindPhysicalAbiV2(exec::TypedPhysicalNodeDag* dag,
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = 32ULL * 1024ULL * 1024ULL;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -126,7 +126,7 @@ void BindPhysicalAbiV2(exec::TypedPhysicalNodeDag* dag,
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000f706";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
 }
@@ -417,6 +417,7 @@ bool ValidateRecursiveCteMgaBoundary() {
 
   request = Request();
   request.working_request.anchor_batch.rows.clear();
+  request.working_request.anchor_batch.rows.shrink_to_fit();
   request.iteration_evidence.resize(1);
   result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
   passed &= Require(result.working_result.diagnostic.ok &&
