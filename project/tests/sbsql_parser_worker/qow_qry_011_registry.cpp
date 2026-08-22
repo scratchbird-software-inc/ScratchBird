@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -20,9 +22,13 @@
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
+namespace uuid = scratchbird::core::uuid;
 
 namespace {
 
+constexpr std::string_view kCollationUuid =
+    "019f0000-0000-7400-8000-000000002101";
 constexpr std::uint64_t kOwnerLocalTransactionId =
     0xffff'ffff'ffff'ff00ULL;
 constexpr std::uint64_t kOldestActiveLocalTransactionId =
@@ -33,6 +39,7 @@ constexpr std::uint64_t kInDoubtLocalTransactionId =
     0xffff'ffff'ffff'fef0ULL;
 constexpr std::uint64_t kInventoryNextLocalTransactionId =
     0xffff'ffff'ffff'fff0ULL;
+constexpr std::size_t kAggregateMemoryGrantBytes = 32u * 1024u * 1024u;
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
@@ -90,7 +97,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = kAggregateMemoryGrantBytes + 1;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -105,7 +112,10 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000f606";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required =
+        node.node_kind == exec::PhysicalNodeKind::kAggregate
+            ? kAggregateMemoryGrantBytes
+            : 1;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -121,13 +131,85 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
                                  const std::string& type_uuid,
-                                 const std::string& type_name) {
+                                 const std::string& type_name,
+                                 const bool nullable = true) {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_uuid.canonical = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = type_name;
   descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=nullable";
+      "type_uuid=" + type_uuid +
+      ";nullability=" + (nullable ? "nullable" : "non_null");
+  return descriptor;
+}
+
+void SetResultNullability(exec::CanonicalAggregateRuntimeRequest* request,
+                          const bool nullable) {
+  request->result_column.nullable = nullable;
+  const auto marker = request->result_column.descriptor.encoded_descriptor.find(
+      ";nullability=");
+  if (marker == std::string::npos) std::abort();
+  request->result_column.descriptor.encoded_descriptor.resize(marker);
+  request->result_column.descriptor.encoded_descriptor +=
+      ";nullability=" + std::string(nullable ? "nullable" : "non_null");
+}
+
+dt::DatatypeTextSeedAuthority CollationSeed() {
+  dt::DatatypeTextSeedAuthority seed;
+  seed.active = true;
+  seed.seed_pack_name = "qow.seed";
+  seed.seed_pack_version = "1";
+  seed.charset_name = "utf8";
+  seed.collation_name = "qow_ci";
+  seed.collation_case_insensitive = true;
+  return seed;
+}
+
+void BindEqualityAuthority(exec::CanonicalAggregateRuntimeRequest* request) {
+  request->aggregate_equality_terms.clear();
+  for (std::size_t index = 0; index < request->value_columns.size(); ++index) {
+    exec::CanonicalDescriptorOrderTerm term{
+        .column = request->value_columns[index],
+        .expression_descriptor_id =
+            request->value_expression_descriptor_ids[index]};
+    const auto& descriptor = request->input_batch
+                                 .columns[request->value_columns[index]]
+                                 .descriptor;
+    if (dt::CanonicalTypeIdFromStableName(
+            descriptor.canonical_type_name) ==
+        dt::CanonicalTypeId::character) {
+      term.collation_uuid = kCollationUuid;
+      term.resource_epoch = 41;
+      term.collation_epoch = 42;
+      term.text_seed = CollationSeed();
+    }
+    request->aggregate_equality_terms.push_back(std::move(term));
+  }
+  const auto diagnostic = exec::BindCanonicalAggregateEqualityAuthorityProfile(
+      request, request->input_batch);
+  if (!diagnostic.ok) std::abort();
+}
+
+std::string CoreDescriptorUuid(const std::string_view stable_name,
+                               const std::string_view fallback) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) std::abort();
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return found == manifest.manifest.descriptor_rows.end()
+             ? std::string(fallback)
+             : uuid::UuidToString(found->descriptor_uuid.value);
+}
+
+api::EngineDescriptor TextDescriptor(const std::string& descriptor_uuid) {
+  auto descriptor = Descriptor(
+      descriptor_uuid,
+      CoreDescriptorUuid("text",
+                         "019f0000-0000-7300-8000-000000002105"),
+      "text");
+  descriptor.encoded_descriptor +=
+      ";collation_uuid=" + std::string(kCollationUuid);
   return descriptor;
 }
 
@@ -163,19 +245,29 @@ exec::CanonicalAggregateRuntimeRequest Request(
     const bool count_star = false) {
   const auto int_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000002101",
-      "019f0000-0000-7300-8000-000000002101", "int64");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000002101"),
+      "int64");
   const auto real_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000002102",
-      "019f0000-0000-7300-8000-000000002102", "real64");
+      CoreDescriptorUuid("real64",
+                         "019f0000-0000-7300-8000-000000002102"),
+      "real64");
   const auto bool_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000002103",
-      "019f0000-0000-7300-8000-000000002103", "boolean");
+      CoreDescriptorUuid("boolean",
+                         "019f0000-0000-7300-8000-000000002103"),
+      "boolean");
   const auto key_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000002104",
-      "019f0000-0000-7300-8000-000000002104", "int64");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000002104"),
+      "int64");
   const auto result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000002199",
-      "019f0000-0000-7300-8000-000000002199", result_type);
+      CoreDescriptorUuid(result_type,
+                         "019f0000-0000-7300-8000-000000002199"),
+      result_type, function != exec::CanonicalAggregateFunction::count);
 
   exec::CanonicalAggregateRuntimeRequest request;
   request.physical_dag.selected_plan_uuid =
@@ -277,8 +369,8 @@ exec::CanonicalAggregateRuntimeRequest PairStatisticalRequest(
                              : "real64");
   request.value_columns = {0, 3};
   request.value_expression_descriptor_ids = {2101, 2104};
-  request.result_column.nullable =
-      function != exec::CanonicalAggregateFunction::regr_count;
+  SetResultNullability(
+      &request, function != exec::CanonicalAggregateFunction::regr_count);
   const auto y_descriptor = request.input_batch.columns[0].descriptor;
   const auto x_descriptor = request.input_batch.columns[3].descriptor;
   request.input_batch.rows[0].values[0] = Value(y_descriptor, "2");
@@ -302,9 +394,8 @@ exec::CanonicalAggregateRuntimeRequest CollectionRequest(
                  ? "text"
                  : "json");
   auto request = Request(function, 0, 2101, result_type);
-  const auto text_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000002101",
-      "019f0000-0000-7300-8000-000000002105", "text");
+  const auto text_descriptor =
+      TextDescriptor("019f0000-0000-7200-8000-000000002101");
   request.input_batch.columns[0].descriptor = text_descriptor;
   request.input_batch.rows[0].values[0] = Value(text_descriptor, "a");
   request.input_batch.rows[1].values[0] = Value(text_descriptor, "b");
@@ -339,7 +430,7 @@ exec::CanonicalAggregateRuntimeRequest OrderedNumericRequest(
   request.input_batch.rows[3].values[0] = Value(descriptor, "40");
   request.aggregate_order_terms = {{.column = 0,
                                     .expression_descriptor_id = 2101}};
-  request.result_column.nullable = nullable_result;
+  SetResultNullability(&request, nullable_result);
   return request;
 }
 
@@ -369,7 +460,7 @@ exec::CanonicalAggregateRuntimeRequest TopKRequest() {
   request.descriptor = {entry.abi_version, entry.function, entry.builtin_id,
                         entry.function_uuid, false};
   request.result_column.descriptor.canonical_type_name = "json";
-  request.result_column.nullable = true;
+  SetResultNullability(&request, true);
   request.aggregate_order_terms.clear();
   request.aggregate_separator = ",";
   const auto text_descriptor = request.input_batch.columns[0].descriptor;
@@ -857,6 +948,7 @@ bool ValidateCanonicalAggregateRegistry() {
   mode.input_batch.rows[1].values[0] = Value(mode_descriptor, "4");
   mode.input_batch.rows[2].values[0] = Value(mode_descriptor, "5");
   mode.input_batch.rows[3].values[0] = Value(mode_descriptor, "4");
+  BindEqualityAuthority(&mode);
   auto ordered = exec::ExecuteCanonicalAggregateRuntime(mode);
   mode.forced_strategy =
       exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
@@ -870,7 +962,8 @@ bool ValidateCanonicalAggregateRegistry() {
   auto approximate_distinct = Request(
       exec::CanonicalAggregateFunction::approx_count_distinct, 0, 2101,
       "int64");
-  approximate_distinct.result_column.nullable = false;
+  SetResultNullability(&approximate_distinct, false);
+  BindEqualityAuthority(&approximate_distinct);
   auto approximate =
       exec::ExecuteCanonicalAggregateRuntime(approximate_distinct);
   approximate_distinct.forced_strategy =
@@ -884,6 +977,7 @@ bool ValidateCanonicalAggregateRegistry() {
                     "approximate distinct state or merge parity failed");
 
   auto top_k = TopKRequest();
+  BindEqualityAuthority(&top_k);
   approximate = exec::ExecuteCanonicalAggregateRuntime(top_k);
   top_k.forced_strategy =
       exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
@@ -933,6 +1027,7 @@ bool ValidateCanonicalAggregateRegistry() {
        .direction = exec::CanonicalDescriptorOrderDirection::ascending,
        .null_placement = exec::CanonicalDescriptorNullPlacement::last},
   };
+  BindEqualityAuthority(&sum_request);
   auto sum = exec::ExecuteCanonicalAggregateRuntime(sum_request);
   passed &= Require(sum.diagnostic.ok && sum.modifier_pipeline_validated &&
                         sum.modifier_count == 3 &&
@@ -962,6 +1057,7 @@ bool ValidateCanonicalAggregateRegistry() {
   empty_distinct.input_batch.rows.clear();
   empty_distinct.distinct = true;
   empty_distinct.maximum_distinct_value_count = 0;
+  BindEqualityAuthority(&empty_distinct);
   auto modifier_refusal =
       exec::ExecuteCanonicalAggregateRuntime(empty_distinct);
   passed &= Require(!modifier_refusal.diagnostic.ok &&
@@ -984,28 +1080,34 @@ bool ValidateCanonicalAggregateRegistry() {
                         modifier_refusal.output_batch.rows.empty(),
                     "empty aggregate bypassed its ORDER BY term-count bound");
 
-  auto binary_safe_distinct = Request(
-      exec::CanonicalAggregateFunction::count, 0, 2101, "int64");
-  const auto collision_text_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000002181",
-      "019f0000-0000-7300-8000-000000002182", "text");
+  auto binary_safe_distinct =
+      CollectionRequest(exec::CanonicalAggregateFunction::json_object_agg);
+  const auto collision_key_descriptor =
+      TextDescriptor("019f0000-0000-7200-8000-000000002181");
+  const auto collision_value_descriptor =
+      TextDescriptor("019f0000-0000-7200-8000-000000002182");
   binary_safe_distinct.input_batch.columns[0].descriptor =
-      collision_text_descriptor;
+      collision_key_descriptor;
+  binary_safe_distinct.input_batch.columns[1].descriptor =
+      collision_value_descriptor;
   binary_safe_distinct.input_batch.rows.resize(2);
   binary_safe_distinct.input_batch.rows[0].values[0] =
-      Value(collision_text_descriptor, "a");
-  binary_safe_distinct.input_batch.rows[0].values[0].binary_value = {'b'};
+      Value(collision_key_descriptor, "a");
+  binary_safe_distinct.input_batch.rows[0].values[1] =
+      Value(collision_value_descriptor, "b");
   binary_safe_distinct.input_batch.rows[1].values[0] =
-      Value(collision_text_descriptor, "ab");
+      Value(collision_key_descriptor, "ab");
+  binary_safe_distinct.input_batch.rows[1].values[1] =
+      Value(collision_value_descriptor, "");
   binary_safe_distinct.distinct = true;
+  BindEqualityAuthority(&binary_safe_distinct);
   const auto binary_safe =
       exec::ExecuteCanonicalAggregateRuntime(binary_safe_distinct);
   passed &= Require(binary_safe.diagnostic.ok &&
                         binary_safe.distinct_tuple_count == 2 &&
                         binary_safe.transition_count == 2 &&
-                        binary_safe.output_batch.rows[0].values[0]
-                                .encoded_value == "2",
-                    "length-ambiguous text/binary payloads collided in aggregate DISTINCT identity");
+                        binary_safe.output_batch.rows.size() == 1,
+                    "length-ambiguous text tuple fields collided in aggregate DISTINCT identity");
 
   auto empty_sum = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
                            "int64");
