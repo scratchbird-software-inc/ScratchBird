@@ -75,6 +75,9 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   target_include_directories(sb_qow_typed_parameter_contract PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
   )
+  target_link_libraries(sb_qow_typed_parameter_contract PRIVATE
+    sb_core_datatypes
+  )
   # QOW-CMAKE-QRY-025-V1
   add_executable(qow_qry_025_test_v1
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_parser_worker/qow_qry_025.cpp

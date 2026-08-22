@@ -160,7 +160,19 @@ struct TypedPlanOperationDecodeResult {
 
 void WriteSblrLiteralEvidenceTrace(
     const std::vector<api::EngineEvidenceReference>& evidence,
-    std::size_t begin);
+    const std::size_t begin) {
+  const char* trace_path =
+      std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') return;
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) return;
+  out << "layer=literal_executor";
+  for (std::size_t index = begin; index < evidence.size(); ++index) {
+    out << '\t' << evidence[index].evidence_kind << '='
+        << evidence[index].evidence_id;
+  }
+  out << "\tparent_success_barrier=passed\n";
+}
 
 enum class BoundedModelFamilyV1 : std::uint8_t {
   kNone = 0,
@@ -2802,22 +2814,6 @@ void WriteSblrDispatchPhaseTrace(
     out << '\t' << phase << "_us=" << micros;
   }
   out << "\ttotal_us=" << total << '\n';
-}
-
-void WriteSblrLiteralEvidenceTrace(
-    const std::vector<api::EngineEvidenceReference>& evidence,
-    const std::size_t begin) {
-  const char* trace_path =
-      std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
-  if (trace_path == nullptr || *trace_path == '\0') return;
-  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
-  if (!out) return;
-  out << "layer=literal_executor";
-  for (std::size_t index = begin; index < evidence.size(); ++index) {
-    out << '\t' << evidence[index].evidence_kind << '='
-        << evidence[index].evidence_id;
-  }
-  out << "\tparent_success_barrier=passed\n";
 }
 
 std::string LowerAscii(std::string value) {

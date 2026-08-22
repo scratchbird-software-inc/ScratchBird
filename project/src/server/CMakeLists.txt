@@ -16,6 +16,8 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-CMAKE-SBLR-CANONICAL-ADMISSION-V1
   add_library(sb_qow_sblr_admission_contract STATIC
     sblr_admission.cpp
+    sblr_local_gateway.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../engine/sblr/sblr_local_metrics_read.cpp
   )
   target_compile_features(sb_qow_sblr_admission_contract PUBLIC cxx_std_20)
   target_include_directories(sb_qow_sblr_admission_contract PUBLIC
@@ -27,6 +29,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   )
   target_link_libraries(sb_qow_sblr_admission_contract PUBLIC
     sb_qow_sblr_query_route_contract
+    sb_sblr_operation_wire_codec
     sb_core_hash
   )
   set(SB_QOW_SBLR_ADMISSION_TESTS_ENROLLED TRUE PARENT_SCOPE)

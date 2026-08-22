@@ -6,42 +6,10 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-if(SB_BUILD_QOW_CLOSURE_TESTS)
-  if(NOT TARGET sb_qow_optimizer_admission)
-    add_subdirectory(
-      ${CMAKE_CURRENT_SOURCE_DIR}/../optimizer
-      ${CMAKE_CURRENT_BINARY_DIR}/qow_engine_optimizer
-    )
-  endif()
-  # QOW-CMAKE-QRY-003-V1
-  # QOW-ROUTE-STAGE-QRY-003-V1
-  add_library(sb_qow_sblr_query_route_contract STATIC
-    canonical_relational_expression.cpp
-    canonical_query_execute.cpp
-    sblr_dispatch.cpp
-    sblr_engine_envelope.cpp
-    sblr_opcode_registry.cpp
-  )
-  target_compile_features(sb_qow_sblr_query_route_contract PUBLIC cxx_std_20)
-  target_compile_definitions(sb_qow_sblr_query_route_contract PRIVATE
-    SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY=1
-  )
-  target_include_directories(sb_qow_sblr_query_route_contract PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/src
-  )
-  target_link_libraries(sb_qow_sblr_query_route_contract PUBLIC
-    sb_qow_relational_dag_contract
-    sb_qow_typed_scalar_descriptor_contract
-    sb_qow_optimizer_admission
-  )
-  set(SB_QOW_SBLR_TESTS_ENROLLED TRUE PARENT_SCOPE)
-  return()
-endif()
-
 # Pure canonical parameter wire codecs shared by parser producers and by the
 # server/engine's independent revalidation path. This target contains no
 # catalog, MGA, admission, executor, or optimizer authority.
+if(NOT TARGET sb_sblr_parameter_wire_codec)
 add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_parameter_runtime.cpp
   sblr_variable_runtime.cpp
@@ -102,6 +70,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_kv_structured_stream_read_runtime.cpp
   sblr_kv_structured_stream_append_runtime.cpp
   sblr_kv_structured_timeseries_runtime.cpp
+  sblr_catalog_introspect_runtime.cpp
   sblr_system_config_set_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp
   sblr_ddl_create_schema_runtime.cpp
@@ -173,10 +142,12 @@ target_include_directories(sb_sblr_parameter_wire_codec PUBLIC
   ${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(sb_sblr_parameter_wire_codec PUBLIC sb_core_hash)
+endif()
 
 # Pure canonical SBOP producer/decoder shared with parser producers.  It owns
 # wire validation only and carries no admission, catalog, MGA, or executor
 # authority.
+if(NOT TARGET sb_sblr_operation_wire_codec)
 add_library(sb_sblr_operation_wire_codec STATIC
   sblr_engine_envelope.cpp
   sblr_literal_runtime.cpp
@@ -191,6 +162,39 @@ target_include_directories(sb_sblr_operation_wire_codec PUBLIC
 )
 target_link_libraries(sb_sblr_operation_wire_codec PUBLIC
   sb_sblr_parameter_wire_codec sb_core_hash)
+endif()
+
+if(SB_BUILD_QOW_CLOSURE_TESTS)
+  if(NOT TARGET sb_qow_optimizer_admission)
+    add_subdirectory(
+      ${CMAKE_CURRENT_SOURCE_DIR}/../optimizer
+      ${CMAKE_CURRENT_BINARY_DIR}/qow_engine_optimizer
+    )
+  endif()
+  # QOW-CMAKE-QRY-003-V1
+  # QOW-ROUTE-STAGE-QRY-003-V1
+  add_library(sb_qow_sblr_query_route_contract STATIC
+    canonical_relational_expression.cpp
+    canonical_query_execute.cpp
+    sblr_dispatch.cpp
+  )
+  target_compile_features(sb_qow_sblr_query_route_contract PUBLIC cxx_std_20)
+  target_compile_definitions(sb_qow_sblr_query_route_contract PRIVATE
+    SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY=1
+  )
+  target_include_directories(sb_qow_sblr_query_route_contract PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(sb_qow_sblr_query_route_contract PUBLIC
+    sb_qow_relational_dag_contract
+    sb_qow_typed_scalar_descriptor_contract
+    sb_qow_optimizer_admission
+    sb_sblr_operation_wire_codec
+  )
+  set(SB_QOW_SBLR_TESTS_ENROLLED TRUE PARENT_SCOPE)
+  return()
+endif()
 
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp

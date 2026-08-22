@@ -259,21 +259,21 @@ std::vector<api::EngineTypedValue> NullGroupKeyRow(
 }
 
 sblr::CanonicalRelationalExpressionRowBinding BooleanBinding() {
-  return {{1, 2, 5, 6}, {{1, 1, 0}, {2, 2, 1}}};
+  return {{1, 2, 5, 6}, {}, {{1, 1, 0}, {2, 2, 1}}};
 }
 
 sblr::CanonicalRelationalExpressionRowBinding SumBinding() {
-  return {{1, 2, 5, 6}, {{2, 2, 1}}};
+  return {{1, 2, 5, 6}, {}, {{2, 2, 1}}};
 }
 
 sblr::CanonicalRelationalExpressionRowBinding GroupingKeyBinding() {
-  return {{1, 2, 5, 6},
+  return {{1, 2, 5, 6}, {},
           {{11, 6, 3,
             sblr::CanonicalRelationalExpressionRowSlotKind::grouping_key}}};
 }
 
 sblr::CanonicalRelationalExpressionRowBinding GroupedHavingBinding() {
-  return {{1, 2, 5, 6},
+  return {{1, 2, 5, 6}, {},
           {{2, 2, 1},
            {11, 6, 3,
             sblr::CanonicalRelationalExpressionRowSlotKind::grouping_key}}};
@@ -420,7 +420,7 @@ bool ValidateBindingRefusals() {
   binding.slots.push_back({13, 5, 2});
   passed &= Refuses(dag, 6, binding, row, "unreachable extra slot was admitted");
 
-  binding = {{1, 2, 5, 6}, {}};
+  binding = {{1, 2, 5, 6}, {}, {}};
   passed &= Refuses(dag, 11, binding, row,
                     "unbound reachable identifier was admitted");
   passed &= Refuses(dag, 12, binding, row,
@@ -430,7 +430,7 @@ bool ValidateBindingRefusals() {
   binding.slots.push_back({11, 1, 0});
   passed &= Refuses(dag, 11, binding, row,
                     "identifier was admitted as a materialized function slot");
-  binding = {{1, 2, 5, 6},
+  binding = {{1, 2, 5, 6}, {},
              {{1, 1, 0,
                sblr::CanonicalRelationalExpressionRowSlotKind::grouping_key}}};
   passed &= Refuses(dag, 1, binding, row,

@@ -2725,6 +2725,18 @@ if(NOT TARGET sb_engine_shared)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
   )
+  target_include_directories(sb_engine_shared PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/sblr>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/internal_api>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/core/agents>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/core/resources>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/storage/database>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/native_compile>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/optimizer>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/planner>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/udr/runtime>
+  )
   target_compile_definitions(sb_engine_shared PRIVATE SCRATCHBIRD_ENGINE_BUILDING_SHARED=1)
   set_target_properties(sb_engine_shared PROPERTIES
     OUTPUT_NAME SBcore
@@ -2772,6 +2784,18 @@ if(NOT TARGET sb_engine_shared)
   target_include_directories(sb_engine_shared PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+  )
+  target_include_directories(sb_engine_shared PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/sblr>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/internal_api>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/core/agents>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/core/resources>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/storage/database>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/native_compile>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/optimizer>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/engine/planner>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/udr/runtime>
   )
   target_compile_definitions(sb_engine_shared PRIVATE SCRATCHBIRD_ENGINE_BUILDING_SHARED=1)
   set_target_properties(sb_engine_shared PROPERTIES
@@ -3987,8 +4011,36 @@ if(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE AND
   unset(_sb_llvm_release_forbidden_path)
   unset(_sb_llvm_release_forbidden_paths)
 endif()
-if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
+set(SB_PUBLIC_STANDALONE_OUTPUT_TARGETS_READY TRUE)
+foreach(sb_public_standalone_required_target IN ITEMS
+    sb_engine
+    sb_engine_shared
+    sb_listener
+    sb_server
+    sbmn_manager
+    sbp_sbsql
+    sbu_sbsql_parser_support
+    sb_isql
+    sb_admin
+    sb_backup
+    sb_security
+    sb_verify
+    sbdriver_conformance)
+  if(NOT TARGET ${sb_public_standalone_required_target})
+    set(SB_PUBLIC_STANDALONE_OUTPUT_TARGETS_READY FALSE)
+  endif()
+endforeach()
+if(APPLE AND NOT TARGET sb_macos_service_launcher)
+  set(SB_PUBLIC_STANDALONE_OUTPUT_TARGETS_READY FALSE)
+endif()
+unset(sb_public_standalone_required_target)
+
+if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT AND
+   SB_PUBLIC_STANDALONE_OUTPUT_TARGETS_READY)
   sb_public_configure_output_stage("${CMAKE_CURRENT_SOURCE_DIR}" "${Python3_EXECUTABLE}")
+elseif(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
+  message(STATUS
+    "Public standalone output stage not enrolled because required product targets are disabled")
 endif()
 set(SB_PUBLIC_BRANDING_GATE_SCRIPT
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/public_branding_gate.py")
@@ -4004,7 +4056,7 @@ if(EXISTS "${SB_PUBLIC_BRANDING_GATE_SCRIPT}")
   )
 endif()
 unset(SB_PUBLIC_BRANDING_GATE_SCRIPT)
-if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
+if(TARGET scratchbird_public_output_stage)
   add_test(
     NAME public_output_stage_gate
     COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target scratchbird_public_output_stage
@@ -4013,3 +4065,4 @@ if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
     LABELS "public_release;standalone_output"
   )
 endif()
+unset(SB_PUBLIC_STANDALONE_OUTPUT_TARGETS_READY)
