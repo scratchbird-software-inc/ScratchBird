@@ -34858,6 +34858,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   }
 
   std::uint64_t row_limit = 0;
+  std::uint64_t row_offset = 0;
   CanonicalRelationalExpressionRowBinding terminal_filter_row_binding;
   const auto* filter_input = join;
   if (terminal_filter != nullptr) {
@@ -35143,18 +35144,82 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     CanonicalRelationalExpressionRuntime expression_runtime(
         input.relational_dag, {});
     std::string detail;
+    const auto terminal_limit_arity =
+        terminal_limit->semantic_variant_id == "limit.bound-count.v1"
+            ? std::size_t{1}
+            : terminal_limit->semantic_variant_id ==
+                      "limit.bound-count-offset.v1"
+                  ? std::size_t{2}
+                  : std::size_t{0};
+    std::unordered_set<std::uint32_t> limit_expression_ids;
+    std::unordered_set<std::uint32_t> limit_descriptor_ids;
+    bool exact_limit_values = terminal_limit_arity != 0;
+    for (const auto expression_id : terminal_limit->bound_expression_ids) {
+      const auto expression = std::ranges::find_if(
+          dag.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == expression_id;
+          });
+      const auto descriptor =
+          expression == dag.expressions.end()
+              ? dag.descriptors.end()
+              : std::ranges::find_if(
+                    dag.descriptors, [&](const auto& candidate) {
+                      return candidate.descriptor_id ==
+                             expression->result_descriptor_id;
+                    });
+      const bool literal_value =
+          expression != dag.expressions.end() &&
+          expression->expression_kind ==
+              api::RelationalExpressionKind::kLiteral &&
+          expression->literal_kind == api::RelationalLiteralKind::kNumeric &&
+          !expression->parameter_typed_value_v1.has_value() &&
+          (expression->literal_or_parameter_ref.has_value() ||
+           expression->literal_typed_value_v1.has_value());
+      const bool parameter_value =
+          expression != dag.expressions.end() &&
+          expression->expression_kind ==
+              api::RelationalExpressionKind::kParameter &&
+          !expression->literal_kind.has_value() &&
+          !expression->literal_or_parameter_ref.has_value() &&
+          !expression->literal_typed_value_v1.has_value() &&
+          expression->parameter_typed_value_v1.has_value();
+      exact_limit_values =
+          exact_limit_values && expression != dag.expressions.end() &&
+          limit_expression_ids.insert(expression_id).second &&
+          (literal_value || parameter_value) &&
+          expression->child_expression_ids.empty() &&
+          !expression->function_uuid.has_value() &&
+          !expression->bound_name_uuid.has_value() &&
+          !expression->operator_name.has_value() &&
+          descriptor != dag.descriptors.end() &&
+          limit_descriptor_ids.insert(descriptor->descriptor_id).second &&
+          descriptor->nullability ==
+              api::RelationalNullability::kNonNull &&
+          descriptor->type_uuid == ExactCanonicalCoreDatatypeUuidV1("int64") &&
+          !descriptor->collation_uuid.has_value() &&
+          !descriptor->timezone_profile_id.has_value() &&
+          !descriptor->width.has_value() && !descriptor->precision.has_value() &&
+          !descriptor->scale.has_value();
+    }
     if (terminal_limit->shareable ||
-        terminal_limit->semantic_variant_id != "limit.bound-count.v1" ||
+        terminal_limit_arity == 0 ||
+        !exact_limit_values ||
+        (terminal_limit_arity == 2 && terminal_filter != nullptr) ||
         terminal_limit->input_node_ids !=
             std::vector<std::uint32_t>{limit_input->node_id} ||
-        terminal_limit->bound_expression_ids.size() != 1 ||
+        terminal_limit->bound_expression_ids.size() != terminal_limit_arity ||
         terminal_limit->output_descriptor_ids !=
             limit_input->output_descriptor_ids ||
         !unary_empty(*terminal_limit) ||
         !EvaluateNonNegativeRowBound(
             &expression_runtime,
             terminal_limit->bound_expression_ids.front(), &row_limit,
-            &detail)) {
+            &detail) ||
+        (terminal_limit_arity == 2 &&
+         !EvaluateNonNegativeRowBound(
+             &expression_runtime,
+             terminal_limit->bound_expression_ids[1], &row_offset,
+             &detail))) {
       return refuse(
           "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
           detail.empty()
@@ -35416,7 +35481,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         {terminal_limit->node_id, "limit.typed.v1", limit_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kLimit,
          exec::PhysicalNodeKind::kLimit,
-         "canonical.heap.join-tail.limit.bound-count.v1", 1,
+         terminal_limit->semantic_variant_id == "limit.bound-count.v1"
+             ? "canonical.heap.join-tail.limit.bound-count.v1"
+             : "canonical.heap.join-tail.limit.bound-count-offset.v1",
+         1,
          join_memory_grant, 1, 1});
     profiles.back().runtime_peak_from_callback_batches = true;
   }
@@ -35683,7 +35751,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   }
   if (terminal_limit != nullptr) {
     selected.available_executors.push_back(MakeLiveLimitRegistration(
-        "limit.typed.v1", limit_capability_uuid, row_limit, 0, false,
+        "limit.typed.v1", limit_capability_uuid, row_limit, row_offset, false,
         maximum_output_rows, {}, &input.context,
         selected.borrowed_mga_authority));
   }

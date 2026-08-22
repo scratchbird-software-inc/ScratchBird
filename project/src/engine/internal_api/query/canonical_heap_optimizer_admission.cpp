@@ -337,15 +337,26 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       terminal_project != nullptr
           ? terminal_project
           : (terminal_filter != nullptr ? terminal_filter : join_root);
+  const auto terminal_limit_arity = terminal_limit == nullptr
+                                        ? std::size_t{0}
+                                        : terminal_limit->semantic_variant_id ==
+                                                  "limit.bound-count.v1"
+                                              ? std::size_t{1}
+                                              : terminal_limit
+                                                            ->semantic_variant_id ==
+                                                        "limit.bound-count-offset.v1"
+                                                    ? std::size_t{2}
+                                                    : std::size_t{0};
   if ((limit == nullptr) != (terminal_limit == nullptr) ||
       (terminal_limit != nullptr &&
        (!local_filters.empty() || !local_projects.empty() || !ctes.empty())) ||
       (terminal_limit != nullptr &&
        (terminal_limit->shareable ||
-        terminal_limit->semantic_variant_id != "limit.bound-count.v1" ||
+        terminal_limit_arity == 0 ||
+        (terminal_limit_arity == 2 && terminal_filter != nullptr) ||
         terminal_limit->input_node_ids !=
             std::vector<std::uint32_t>{limit_input->node_id} ||
-        terminal_limit->bound_expression_ids.size() != 1 ||
+        terminal_limit->bound_expression_ids.size() != terminal_limit_arity ||
         terminal_limit->output_descriptor_ids !=
             limit_input->output_descriptor_ids ||
         !unary_empty(*terminal_limit)))) {
@@ -739,73 +750,83 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor);
   }
   if (terminal_limit != nullptr) {
-    const auto expression =
-        expressions_by_id.find(terminal_limit->bound_expression_ids.front());
-    const auto descriptor =
-        expression == expressions_by_id.end()
-            ? descriptors_by_id.end()
-            : descriptors_by_id.find(expression->second->result_descriptor_id);
-    const bool numeric_literal =
-        expression != expressions_by_id.end() &&
-        expression->second->expression_kind ==
-            RelationalExpressionKind::kLiteral &&
-        expression->second->literal_kind == RelationalLiteralKind::kNumeric &&
-        expression->second->literal_or_parameter_ref.has_value() &&
-        !expression->second->parameter_typed_value_v1.has_value();
-    const bool parameter_value =
-        expression != expressions_by_id.end() &&
-        expression->second->expression_kind ==
-            RelationalExpressionKind::kParameter &&
-        !expression->second->literal_kind.has_value() &&
-        !expression->second->literal_or_parameter_ref.has_value() &&
-        !expression->second->literal_typed_value_v1.has_value() &&
-        expression->second->parameter_typed_value_v1.has_value();
-    std::uint64_t parsed = 0;
-    const auto* encoded =
-        numeric_literal
-            ? &*expression->second->literal_or_parameter_ref
-            : nullptr;
-    const auto converted =
-        encoded == nullptr
-            ? std::from_chars_result{}
-            : std::from_chars(encoded->data(),
-                              encoded->data() + encoded->size(), parsed);
-    bool exact_parameter = parameter_value;
-    if (exact_parameter) {
-      const auto& typed = *expression->second->parameter_typed_value_v1;
-      const auto digest = scratchbird::core::hash::ComputeSha256Digest(
-          typed.canonical_value_bytes);
-      exact_parameter =
-          typed.descriptor_generation != 0 && typed.value_state == "value" &&
-          typed.canonical_value_bytes.size() == 8 &&
-          (typed.canonical_value_bytes.back() & 0x80U) == 0 && digest.ok() &&
-          digest.digest == typed.canonical_value_sha256 &&
-          descriptor != descriptors_by_id.end() &&
-          typed.descriptor_uuid == descriptor->second->descriptor_uuid;
-    }
-    if (expression == expressions_by_id.end() ||
-        (!numeric_literal && !exact_parameter) ||
-        !expression->second->child_expression_ids.empty() ||
-        expression->second->function_uuid.has_value() ||
-        expression->second->bound_name_uuid.has_value() ||
-        expression->second->operator_name.has_value() ||
-        (numeric_literal &&
-         (encoded == nullptr || encoded->empty() ||
-          (encoded->size() > 1 && encoded->front() == '0') ||
-          converted.ec != std::errc{} ||
-          converted.ptr != encoded->data() + encoded->size() ||
-          parsed > static_cast<std::uint64_t>(
-                       std::numeric_limits<std::int64_t>::max()))) ||
-        descriptor == descriptors_by_id.end() ||
-        descriptor->second->nullability != RelationalNullability::kNonNull ||
-        descriptor->second->type_uuid != CanonicalCoreDatatypeUuid("int64") ||
-        descriptor->second->collation_uuid.has_value() ||
-        descriptor->second->timezone_profile_id.has_value() ||
-        descriptor->second->width.has_value() ||
-        descriptor->second->precision.has_value() ||
-        descriptor->second->scale.has_value()) {
-      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                    "exact_terminal_limit_literal_binding");
+    std::unordered_set<std::uint32_t> limit_expression_ids;
+    std::unordered_set<std::uint32_t> limit_descriptor_ids;
+    for (const auto expression_id : terminal_limit->bound_expression_ids) {
+      const auto expression = expressions_by_id.find(expression_id);
+      const auto descriptor =
+          expression == expressions_by_id.end()
+              ? descriptors_by_id.end()
+              : descriptors_by_id.find(
+                    expression->second->result_descriptor_id);
+      const bool numeric_literal =
+          expression != expressions_by_id.end() &&
+          expression->second->expression_kind ==
+              RelationalExpressionKind::kLiteral &&
+          expression->second->literal_kind ==
+              RelationalLiteralKind::kNumeric &&
+          expression->second->literal_or_parameter_ref.has_value() &&
+          !expression->second->parameter_typed_value_v1.has_value();
+      const bool parameter_value =
+          expression != expressions_by_id.end() &&
+          expression->second->expression_kind ==
+              RelationalExpressionKind::kParameter &&
+          !expression->second->literal_kind.has_value() &&
+          !expression->second->literal_or_parameter_ref.has_value() &&
+          !expression->second->literal_typed_value_v1.has_value() &&
+          expression->second->parameter_typed_value_v1.has_value();
+      std::uint64_t parsed = 0;
+      const auto* encoded =
+          numeric_literal
+              ? &*expression->second->literal_or_parameter_ref
+              : nullptr;
+      const auto converted =
+          encoded == nullptr
+              ? std::from_chars_result{}
+              : std::from_chars(encoded->data(),
+                                encoded->data() + encoded->size(), parsed);
+      bool exact_parameter = parameter_value;
+      if (exact_parameter) {
+        const auto& typed = *expression->second->parameter_typed_value_v1;
+        const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+            typed.canonical_value_bytes);
+        exact_parameter =
+            typed.descriptor_generation != 0 &&
+            typed.value_state == "value" &&
+            typed.canonical_value_bytes.size() == 8 &&
+            (typed.canonical_value_bytes.back() & 0x80U) == 0 &&
+            digest.ok() && digest.digest == typed.canonical_value_sha256 &&
+            descriptor != descriptors_by_id.end() &&
+            typed.descriptor_uuid == descriptor->second->descriptor_uuid;
+      }
+      if (expression == expressions_by_id.end() ||
+          !limit_expression_ids.insert(expression_id).second ||
+          (!numeric_literal && !exact_parameter) ||
+          !expression->second->child_expression_ids.empty() ||
+          expression->second->function_uuid.has_value() ||
+          expression->second->bound_name_uuid.has_value() ||
+          expression->second->operator_name.has_value() ||
+          (numeric_literal &&
+           (encoded == nullptr || encoded->empty() ||
+            (encoded->size() > 1 && encoded->front() == '0') ||
+            converted.ec != std::errc{} ||
+            converted.ptr != encoded->data() + encoded->size() ||
+            parsed > static_cast<std::uint64_t>(
+                         std::numeric_limits<std::int64_t>::max()))) ||
+          descriptor == descriptors_by_id.end() ||
+          !limit_descriptor_ids.insert(descriptor->first).second ||
+          descriptor->second->nullability !=
+              RelationalNullability::kNonNull ||
+          descriptor->second->type_uuid !=
+              CanonicalCoreDatatypeUuid("int64") ||
+          descriptor->second->collation_uuid.has_value() ||
+          descriptor->second->timezone_profile_id.has_value() ||
+          descriptor->second->width.has_value() ||
+          descriptor->second->precision.has_value() ||
+          descriptor->second->scale.has_value()) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                      "exact_terminal_limit_literal_binding");
+      }
     }
   }
   if (terminal_limit != nullptr && terminal_filter != nullptr) {
