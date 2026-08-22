@@ -17142,11 +17142,53 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           }
           return reserved_id;
         };
-        if (exact_native_join_limit_after_filter && parameter_prepare_only) {
+        const bool exact_native_join_dual_parameter_tail = [&]() {
+          if (!exact_native_join_limit_after_filter ||
+              native_join_filter_relation->predicate_expression_ids.size() !=
+                  1 ||
+              native_join_limit_relation->limit_expression_ids.size() != 1) {
+            return false;
+          }
+          const auto predicate = std::ranges::find_if(
+              ast.native_relational.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       native_join_filter_relation
+                           ->predicate_expression_ids.front();
+              });
+          const auto limit_value = std::ranges::find_if(
+              ast.native_relational.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       native_join_limit_relation
+                           ->limit_expression_ids.front();
+              });
+          if (predicate == ast.native_relational.expressions.end() ||
+              predicate->child_expression_ids.size() != 2 ||
+              limit_value == ast.native_relational.expressions.end()) {
+            return false;
+          }
+          const auto filter_value = std::ranges::find_if(
+              ast.native_relational.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       predicate->child_expression_ids[1];
+              });
+          return filter_value != ast.native_relational.expressions.end() &&
+                 filter_value->expression_kind ==
+                     NativeExpressionAstKind::kParameter &&
+                 filter_value->structural_parameter_occurrence_id == 1 &&
+                 filter_value->structural_literal_occurrence_id == 0 &&
+                 filter_value->structural_variable_occurrence_id == 0 &&
+                 limit_value->expression_kind ==
+                     NativeExpressionAstKind::kParameter &&
+                 limit_value->structural_parameter_occurrence_id == 2 &&
+                 limit_value->structural_literal_occurrence_id == 0 &&
+                 limit_value->structural_variable_occurrence_id == 0;
+        }();
+        if (exact_native_join_limit_after_filter && parameter_prepare_only &&
+            !exact_native_join_dual_parameter_tail) {
           result.messages.diagnostics.push_back(MakeDiagnostic(
               "SBLR.OPERAND_INVALID", "ERROR",
-              "Prepared execution does not admit a JOIN tail that composes "
-              "multiple negotiated scalar operands.",
+              "Prepared execution admits only the exact two-parameter JOIN "
+              "FILTER and LIMIT tail; literal-mixed tails remain direct-only.",
               "sbp_sbsql.wire"));
         }
         if (native_binding_context.has_value() &&
