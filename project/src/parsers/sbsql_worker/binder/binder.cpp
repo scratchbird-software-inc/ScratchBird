@@ -691,7 +691,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         static_cast<std::uint32_t>((2 * source_count) - 1);
     const bool filter_composition =
         ordinary_multi_catalog_cross_join && filter_relation != nullptr &&
-        project_relation == nullptr && !join_relations.empty() &&
+        !join_relations.empty() &&
         filter_relation->relation_id == final_join_relation_id + 1 &&
         filter_relation->input_relation_ids ==
             std::vector<std::uint32_t>{final_join_relation_id} &&
@@ -710,12 +710,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             NativeAggregateGroupingForm::kNone &&
         filter_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kNone;
+    const auto project_predecessor_relation_id =
+        filter_composition ? filter_relation->relation_id
+                           : final_join_relation_id;
     const bool project_composition =
         ordinary_multi_catalog_cross_join && project_relation != nullptr &&
-        filter_relation == nullptr &&
-        project_relation->relation_id == final_join_relation_id + 1 &&
+        project_relation->relation_id ==
+            project_predecessor_relation_id + 1 &&
         project_relation->input_relation_ids ==
-            std::vector<std::uint32_t>{final_join_relation_id} &&
+            std::vector<std::uint32_t>{project_predecessor_relation_id} &&
         !project_relation->output_expression_ids.empty() &&
         project_relation->relation_source_ids.empty() &&
         project_relation->values_row_ids.empty() &&
@@ -1836,7 +1839,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (project_composition) {
       std::vector<const NativeOutputBindingInput*> predecessor_outputs;
       for (const auto& output : context.outputs) {
-        if (output.relation_id == final_join_relation_id) {
+        if (output.relation_id == project_predecessor_relation_id) {
           predecessor_outputs.push_back(&output);
         }
       }
@@ -1905,7 +1908,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       BoundRelationAstRecord bound_project;
       bound_project.relation_id = project_relation->relation_id;
       bound_project.relation_kind = NativeRelationAstKind::kProject;
-      bound_project.input_relation_ids = {final_join_relation_id};
+      bound_project.input_relation_ids = {project_predecessor_relation_id};
       bound_project.output_expression_ids = projected_expression_ids;
       bound_project.bound_expression_ids = projected_expression_ids;
       bound_project.semantic_variant_id =

@@ -5098,8 +5098,7 @@ BuildEngineProjectedNativeBindingContext(
     const bool ordinary_project_sources =
         ordinary_relational_sources || ordinary_multi_catalog_cross_join;
     const bool ordinary_filter_sources =
-        ordinary_relational_sources ||
-        (ordinary_multi_catalog_cross_join && project_relation == nullptr);
+        ordinary_relational_sources || ordinary_multi_catalog_cross_join;
     const bool bounded_multimodel_join =
         source_count >= 3 && source_count <= 9 && model_source_count >= 2;
     const bool bounded_multi_source_join =

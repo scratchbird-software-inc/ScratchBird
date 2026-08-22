@@ -4546,7 +4546,7 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
     const bool ordinary_multi_catalog_filter =
-        ordinary_multi_catalog_cross_join && wildcard_projection;
+        ordinary_multi_catalog_cross_join;
     if ((ordinary_two_source_join || ordinary_multi_catalog_filter) &&
         !AtEnd() && IsWord(Current(), "WHERE")) {
       Consume();
