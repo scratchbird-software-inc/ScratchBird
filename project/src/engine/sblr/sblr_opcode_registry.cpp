@@ -24,7 +24,7 @@ struct CanonicalOpcodeCodeRow {
 // Generated from the manifest-authoritative sblr-opcodes.yaml assignment.
 // The runtime never derives a code from vector order, text hashing, aliases,
 // or an implementation-private sequence.
-constexpr std::array<CanonicalOpcodeCodeRow, 409> kCanonicalOpcodeCodes{{
+constexpr std::array<CanonicalOpcodeCodeRow, 406> kCanonicalOpcodeCodes{{
     {"SBLR_PACKAGE_BEGIN", 0x0001u},
     {"SBLR_PACKAGE_END", 0x0002u},
     {"SBLR_LITERAL", 0x0003u},
@@ -79,14 +79,12 @@ constexpr std::array<CanonicalOpcodeCodeRow, 409> kCanonicalOpcodeCodes{{
     {"SBLR_SEQUENCE_SETVAL", 0x040Bu},
     {"SBLR_QUERY_APPLY_NUMERIC_OPERATION", 0x040Cu},
     {"SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", 0x040Du},
-    {"SBLR_CATALOG_INTROSPECT", 0x1300u},
     {"SBLR_PROJECT", 0x0500u},
     {"SBLR_AGGREGATE", 0x0501u},
     {"SBLR_GROUP", 0x0502u},
     {"SBLR_SORT", 0x0503u},
     {"SBLR_LIMIT", 0x0504u},
     {"SBLR_WINDOW", 0x0505u},
-    {"SBLR_KV_STRUCTURED_MUTATE", 0x2001u},
     {"SBLR_RETURN_RESULT_SET", 0x0506u},
     {"SBLR_DDL_CREATE_SCHEMA", 0x0600u},
     {"SBLR_DDL_CREATE_TABLE", 0x0601u},
@@ -335,8 +333,7 @@ constexpr std::array<CanonicalOpcodeCodeRow, 409> kCanonicalOpcodeCodes{{
     {"SBLR_DDL_CREATE_SUBSCRIPTION", 0x0631u},
     {"SBLR_DDL_ALTER_SUBSCRIPTION", 0x0632u},
     {"SBLR_DDL_DROP_SUBSCRIPTION", 0x0633u},
-    {"SBLR_DDL_CREATE_AGGREGATE", 0x0634u},
-    {"SBLR_DDL_DROP_AGGREGATE", 0x0635u},
+    {"SBLR_DDL_DROP_AGGREGATE", 0x065Bu},
     {"SBLR_DDL_CREATE_OPERATOR", 0x0636u},
     {"SBLR_DDL_DROP_OPERATOR", 0x0637u},
     {"SBLR_DDL_CREATE_OPERATOR_CLASS", 0x0638u},
@@ -967,13 +964,6 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("ddl.domain.alter", "SBLR_DDL_ALTER_DOMAIN", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::local_profile_refusal, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
       CanonicalEntry("ddl.view.alter", "SBLR_DDL_ALTER_VIEW", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.view.drop", "SBLR_DDL_DROP_VIEW", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
-      CanonicalEntry("ddl.trigger.alter", "SBLR_DDL_ALTER_TRIGGER", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::local_profile_refusal, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
-      CanonicalEntry("ddl.trigger.drop", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::local_profile_refusal, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
-      CanonicalEntry("ddl.procedure.alter", "SBLR_DDL_ALTER_PROCEDURE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::local_profile_refusal, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
-      CanonicalEntry("ddl.procedure.drop", "SBLR_DDL_DROP_PROCEDURE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::local_profile_refusal, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
-      CanonicalEntry("ddl.function.alter", "SBLR_DDL_ALTER_FUNCTION", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::local_profile_refusal, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
-      CanonicalEntry("ddl.function.drop", "SBLR_DDL_DROP_FUNCTION", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::local_profile_refusal, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
-      CanonicalEntry("ddl.package.create", "SBLR_DDL_CREATE_PACKAGE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.package.alter", "SBLR_DDL_ALTER_PACKAGE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.package.drop", "SBLR_DDL_DROP_PACKAGE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.sequence.alter", "SBLR_DDL_ALTER_SEQUENCE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1113,7 +1103,6 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       // QOW-ROUTE-STAGE-QRY-003-V1
       CanonicalEntry("query.execute", "SBLR_QUERY_EXECUTE", "statement-management", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("query.explain", "SBLR_QUERY_EXPLAIN", "statement-management", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
-      CanonicalEntry("catalog.introspect", "SBLR_CATALOG_INTROSPECT", "catalog-introspect", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::authenticated, true),
       CanonicalEntry("catalog.name_resolve", "SBLR_NAME_RESOLVE", "catalog-introspect", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::authenticated, true),
       CanonicalEntry("optimizer.stats.read", "SBLR_OPTIMIZER_STATS_READ", "catalog-introspect", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::authenticated, true),
       CanonicalEntry("optimizer.stats.drop", "SBLR_OPTIMIZER_STATS_DROP", "catalog-introspect", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1170,9 +1159,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("relational.values", "SBLR_VALUES", "relational-plan-node", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("relational.match_recognize", "SBLR_MATCH_RECOGNIZE", "relational-plan-node", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("relational.table_function_invoke", "SBLR_TABLE_FUNCTION_INVOKE", "relational-plan-node", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
-      CanonicalEntry("kv.structured.read", "SBLR_KV_STRUCTURED_READ", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
-      CanonicalEntry("kv.structured.mutate", "SBLR_KV_STRUCTURED_MUTATE", "kv-structured-execution", SblrOpcodeCategory::data_mutation, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
-      CanonicalEntry("kv.structured.scan", "SBLR_KV_STRUCTURED_SCAN", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
+      CanonicalEntry("engine.op.kv_structured_scan", "SBLR_KV_STRUCTURED_SCAN", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.kv_structured_stream_read", "SBLR_KV_STRUCTURED_STREAM_READ", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.kv_structured_stream_append", "SBLR_KV_STRUCTURED_STREAM_APPEND", "kv-structured-execution", SblrOpcodeCategory::data_mutation, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.kv_structured_timeseries", "SBLR_KV_STRUCTURED_TIMESERIES", "kv-structured-execution", SblrOpcodeCategory::data_mutation, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
@@ -1230,10 +1217,6 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       CanonicalEntry("engine.op.ddl_create_timeseries_value_cache", "SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE", "time-series", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_index", "SBLR_DDL_DROP_INDEX", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
-      CanonicalEntry("kv.structured.stream_read", "SBLR_KV_STRUCTURED_STREAM_READ", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
-      CanonicalEntry("kv.structured.stream_append", "SBLR_KV_STRUCTURED_STREAM_APPEND", "kv-structured-execution", SblrOpcodeCategory::data_mutation, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
-      CanonicalEntry("kv.structured.timeseries", "SBLR_KV_STRUCTURED_TIMESERIES", "kv-structured-execution", SblrOpcodeCategory::data_mutation, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
-      CanonicalEntry("system.config.set", "SBLR_SYSTEM_CONFIG_SET", "database-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::sysarch_authorized, true),
       CanonicalEntry("system.config.get", "SBLR_SYSTEM_CONFIG_GET", "database-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::sysarch_authorized, true),
       CanonicalEntry("system.config.reset", "SBLR_SYSTEM_CONFIG_RESET", "database-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::sysarch_authorized, true),
       CanonicalEntry("ddl.rule.create", "SBLR_DDL_CREATE_RULE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1244,8 +1227,6 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       CanonicalEntry("ddl.subscription.create", "SBLR_DDL_CREATE_SUBSCRIPTION", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.subscription.alter", "SBLR_DDL_ALTER_SUBSCRIPTION", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.subscription.drop", "SBLR_DDL_DROP_SUBSCRIPTION", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
-      CanonicalEntry("ddl.aggregate.create", "SBLR_DDL_CREATE_AGGREGATE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
-      CanonicalEntry("ddl.aggregate.drop", "SBLR_DDL_DROP_AGGREGATE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.operator.create", "SBLR_DDL_CREATE_OPERATOR", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.operator.drop", "SBLR_DDL_DROP_OPERATOR", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.operator_class.create", "SBLR_DDL_CREATE_OPERATOR_CLASS", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1429,8 +1410,6 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       Entry("ddl.create_sequence", "SBLR_DDL_CREATE_SEQUENCE", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, true, true),
       Entry("ddl.create_statistics", "SBLR_DDL_CREATE_STATISTICS", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, true, true),
       Entry("ddl.create_view", "SBLR_DDL_CREATE_VIEW", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, true, true),
-      Entry("ddl.create_function", "SBLR_DDL_CREATE_FUNCTION", SblrOpcodeCategory::catalog, SblrOpcodeSupport::local_profile_refusal, true, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
-      Entry("ddl.create_procedure", "SBLR_DDL_CREATE_PROCEDURE", SblrOpcodeCategory::catalog, SblrOpcodeSupport::local_profile_refusal, true, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
       Entry("ddl.create_trigger", "SBLR_DDL_CREATE_TRIGGER", SblrOpcodeCategory::catalog, SblrOpcodeSupport::local_profile_refusal, true, true, false, "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"),
       Entry("ddl.constraint.create", "SBLR_DDL_CONSTRAINT_CREATE", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, true, true),
       Entry("ddl.constraint.alter", "SBLR_DDL_CONSTRAINT_ALTER", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, true, true),
@@ -1798,17 +1777,6 @@ const SblrOpcodeEntry* LookupSblrOpcode(std::string_view opcode) {
 
 const SblrOpcodeEntry* LookupSblrOpcodeCode(std::uint16_t code) {
   if (code == 0) return nullptr;
-  if (code == 8192) return LookupSblrOpcode("SBLR_KV_STRUCTURED_READ");
-  if (code == 8193) return LookupSblrOpcode("SBLR_KV_STRUCTURED_MUTATE");
-  if (code == 8194) return LookupSblrOpcode("SBLR_KV_STRUCTURED_SCAN");
-  if (code == 8195) return LookupSblrOpcode("SBLR_KV_STRUCTURED_STREAM_READ");
-  if (code == 8196) return LookupSblrOpcode("SBLR_KV_STRUCTURED_STREAM_APPEND");
-  if (code == 8197) return LookupSblrOpcode("SBLR_KV_STRUCTURED_TIMESERIES");
-  // The legacy catalog.introspect alias shares the historical numeric code;
-  // canonical engine ingress must resolve to the engine.op entry rather than
-  // being rejected as an ambiguous code lookup.
-  if (code == 4864) return LookupSblrOpcode("SBLR_CATALOG_INTROSPECT");
-  if (code == 5125) return LookupSblrOpcode("SBLR_SYSTEM_CONFIG_SET");
   const SblrOpcodeEntry* match = nullptr;
   for (const auto& entry : StaticSblrOpcodeRegistry()) {
     if (entry.code != code) continue;
@@ -1822,11 +1790,6 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
                                                       std::string_view operation_id,
                                                       std::string_view opcode) {
   SblrOpcodeValidationResult result;
-  if (code == 0x1300 && operation_id == "engine.op.catalog_introspect" && opcode == "SBLR_CATALOG_INTROSPECT") {
-    result.entry = LookupSblrOpcode("SBLR_CATALOG_INTROSPECT");
-    result.ok = true;
-    return result;
-  }
   if (code == 1625 && operation_id == "engine.op.ddl_create_aggregate" && opcode == "SBLR_DDL_CREATE_AGGREGATE") {
     result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_AGGREGATE");
     result.ok = result.entry != nullptr;
