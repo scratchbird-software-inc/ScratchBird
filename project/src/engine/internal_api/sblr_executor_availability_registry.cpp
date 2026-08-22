@@ -313,6 +313,17 @@ bool ExactAdminRegisterExternalRelationResolverIdentity(const SblrExecutorAvaila
 bool ExactAdminUnregisterExternalRelationResolverIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrAdminUnregisterExternalRelationResolverExecutorId&&r.opcode_code==1636&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrAdminUnregisterExternalRelationResolverOperandDescriptorId&&r.result_descriptor_id==kSblrAdminUnregisterExternalRelationResolverResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateDictionaryIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateDictionaryExecutorId&&r.opcode_code==1637&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateDictionaryOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateDictionaryResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropDictionaryIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropDictionaryExecutorId&&r.opcode_code==1638&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropDictionaryOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropDictionaryResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlAlterDictionaryIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterDictionaryExecutorId&&r.opcode_code==1639&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterDictionaryOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterDictionaryResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateContinuousViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateContinuousViewExecutorId&&r.opcode_code==1640&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateContinuousViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateContinuousViewResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlAlterContinuousViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterContinuousViewExecutorId&&r.opcode_code==1641&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterContinuousViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterContinuousViewResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropContinuousViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropContinuousViewExecutorId&&r.opcode_code==1642&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropContinuousViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropContinuousViewResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDmlAsyncInsertSubmitIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDmlAsyncInsertSubmitExecutorId&&r.opcode_code==1643&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDmlAsyncInsertSubmitOperandDescriptorId&&r.result_descriptor_id==kSblrDmlAsyncInsertSubmitResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDmlAsyncInsertStatusIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDmlAsyncInsertStatusExecutorId&&r.opcode_code==1644&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDmlAsyncInsertStatusOperandDescriptorId&&r.result_descriptor_id==kSblrDmlAsyncInsertStatusResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDmlAsyncInsertCancelIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDmlAsyncInsertCancelExecutorId&&r.opcode_code==1645&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDmlAsyncInsertCancelOperandDescriptorId&&r.result_descriptor_id==kSblrDmlAsyncInsertCancelResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDmlConditionalMutateIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDmlConditionalMutateExecutorId&&r.opcode_code==1646&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDmlConditionalMutateOperandDescriptorId&&r.result_descriptor_id==kSblrDmlConditionalMutateResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDmlCounterAddIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDmlCounterAddExecutorId&&r.opcode_code==1647&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDmlCounterAddOperandDescriptorId&&r.result_descriptor_id==kSblrDmlCounterAddResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlTimeseriesSeriesCardinalityPolicyIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyExecutorId&&r.opcode_code==1649&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyOperandDescriptorId&&r.result_descriptor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateTimeseriesValueCacheIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateTimeseriesValueCacheExecutorId&&r.opcode_code==1650&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateTimeseriesValueCacheOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateTimeseriesValueCacheResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropViewExecutorId&&r.opcode_code==1550&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropViewResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactAdmittedIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
   if (ExactDatabaseSerializeLogicalSnapshotIdentity(row)) return true;
@@ -323,6 +334,17 @@ bool ExactAdmittedIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
   if (ExactAdminUnregisterExternalRelationResolverIdentity(row)) return true;
   if (ExactDdlCreateDictionaryIdentity(row)) return true;
   if (ExactDdlDropDictionaryIdentity(row)) return true;
+  if (ExactDdlAlterDictionaryIdentity(row)) return true;
+  if (ExactDdlCreateContinuousViewIdentity(row)) return true;
+  if (ExactDdlAlterContinuousViewIdentity(row)) return true;
+  if (ExactDdlDropContinuousViewIdentity(row)) return true;
+  if (ExactDmlAsyncInsertSubmitIdentity(row)) return true;
+  if (ExactDmlAsyncInsertStatusIdentity(row)) return true;
+  if (ExactDmlAsyncInsertCancelIdentity(row)) return true;
+  if (ExactDmlConditionalMutateIdentity(row)) return true;
+  if (ExactDmlCounterAddIdentity(row)) return true;
+  if (ExactDdlTimeseriesSeriesCardinalityPolicyIdentity(row)) return true;
+  if (ExactDdlCreateTimeseriesValueCacheIdentity(row)) return true;
   return ExactLiteralIdentity(row) || ExactParameterIdentity(row) ||
          ExactVariableIdentity(row) || ExactSourceMapIdentity(row) ||
          ExactErrorVectorIdentity(row) || ExactDdlCreateProcedureIdentity(row) || ExactDdlDropProcedureIdentity(row) || ExactSequenceSetvalIdentity(row) || ExactQueryNumericIdentity(row) || ExactAdvancedDatatypeFamilyIdentity(row) || ExactProjectIdentity(row) || ExactAggregateIdentity(row) || ExactGroupIdentity(row) || ExactSortIdentity(row) || ExactLimitIdentity(row) || ExactWindowIdentity(row) || ExactReturnResultSetIdentity(row) || ExactKvStructuredReadIdentity(row) || ExactKvStructuredMutateIdentity(row) || ExactKvStructuredScanIdentity(row) || ExactKvStructuredStreamReadIdentity(row) || ExactKvStructuredStreamAppendIdentity(row) || ExactKvStructuredTimeseriesIdentity(row) || ExactSystemConfigSetIdentity(row) || ExactDdlCreateDomainIdentity(row) || ExactDdlCreateSchemaIdentity(row) || ExactDdlCreateTableIdentity(row) || ExactDdlCreateIndexIdentity(row) || ExactDdlAlterDomainIdentity(row) || ExactDdlCreateViewIdentity(row) || ExactDdlAlterViewIdentity(row) || ExactDdlDropViewIdentity(row) || ExactDdlCreateTriggerIdentity(row) || ExactDdlAlterTriggerIdentity(row) || ExactDdlDropTriggerIdentity(row) || ExactDdlDropIndexIdentity(row) || ExactTxnBeginIdentity(row) ||
@@ -560,8 +582,16 @@ SblrExecutorAvailabilityLoadResult BootstrapLocked(
                          ? "bootstrap.admitted_statement_batch.v1"
                      : ExactBulkImportStreamIdentity(identity)
                          ? "bootstrap.admitted_bulk_import_stream.v1"
-                         : ExactTableAnalyzeIdentity(identity)
+                     : ExactTableAnalyzeIdentity(identity)
                          ? "bootstrap.admitted_table_analyze.v1"
+                     : ExactDmlConditionalMutateIdentity(identity)
+                         ? "bootstrap.admitted_dml_conditional_mutate.v1"
+                     : ExactDmlCounterAddIdentity(identity)
+                         ? "bootstrap.admitted_dml_counter_add.v1"
+                     : ExactDdlTimeseriesSeriesCardinalityPolicyIdentity(identity)
+                         ? "bootstrap.admitted_timeseries_series_cardinality_policy.v1"
+                     : ExactDdlCreateTimeseriesValueCacheIdentity(identity)
+                         ? "bootstrap.admitted_timeseries_value_cache.v1"
                          : ExactParameterIdentity(identity)
                          ? "bootstrap.admitted_parameter.v1"
                          : ExactVariableIdentity(identity)

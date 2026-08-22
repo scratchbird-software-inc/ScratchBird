@@ -1,0 +1,4 @@
+#include "engine/sblr/sblr_ddl_create_continuous_view_runtime.hpp"
+#include <cassert>
+#include <cstdint>
+int main(){using namespace scratchbird::engine::sblr; SblrDdlCreateContinuousViewRequestV1 q;q.occurrence=1;q.view_occurrence=2;auto qb=EncodeSblrDdlCreateContinuousViewRequestV1(q);SblrDdlCreateContinuousViewRequestV1 q2;std::string d;assert(DecodeSblrDdlCreateContinuousViewRequestV1(qb.data(),qb.size(),&q2,&d));SblrDdlCreateContinuousViewDescriptorV1 x;x.availability=1;x.body[16]=7;auto b=EncodeSblrDdlCreateContinuousViewDescriptorV1(x,false);auto o=EncodeSblrDdlCreateContinuousViewDescriptorV1(x,true);SblrDdlCreateContinuousViewDescriptorV1 y;assert(DecodeSblrDdlCreateContinuousViewDescriptorV1(b.data(),b.size(),&y,&d,false));assert(DecodeSblrDdlCreateContinuousViewDescriptorV1(o.data(),o.size(),&y,&d,true));o[20]^=1;assert(!DecodeSblrDdlCreateContinuousViewDescriptorV1(o.data(),o.size(),&y,&d,true));return 0;}

@@ -116,6 +116,18 @@ enum class SblrValueKind : std::uint16_t {
   external_relation_resolver_unregistration_descriptor = 125,
   external_dictionary_descriptor = 126,
   external_dictionary_drop_descriptor = 127,
+  external_dictionary_alter_descriptor = 130,
+  continuous_view_descriptor = 131,
+  continuous_view_alter_descriptor = 132,
+  continuous_view_drop_descriptor = 133,
+  async_insert_submission_descriptor = 134,
+  async_insert_status_descriptor = 135,
+  async_insert_cancel_descriptor = 136,
+  conditional_mutation_descriptor = 137,
+  counter_delta_descriptor = 138,
+  timeseries_schema_write_descriptor = 139,
+  timeseries_series_cardinality_policy_descriptor = 140,
+  timeseries_value_cache_descriptor = 141,
   sequence_setval_descriptor = 65,
   numeric_operation_descriptor = 66,
   advanced_datatype_family_descriptor = 67,
@@ -158,6 +170,8 @@ enum class SblrValueKind : std::uint16_t {
   rewrite_rule_alter_descriptor = 107,
   rewrite_rule_drop_descriptor = 108,
   constraint_validation_descriptor = 109,
+  observability_show_version_descriptor = 128,
+  catalog_introspect_descriptor = 129,
 };
 
 struct SblrOperand {

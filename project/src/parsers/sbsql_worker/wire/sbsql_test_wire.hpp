@@ -109,6 +109,8 @@ class SbsqlTestWireSession {
   PipelineResult RunAutonomousFrameForWire();
   PipelineResult RunReservationReleaseForWire();
   PipelineResult RunTemporaryInstanceCleanupForWire();
+  PipelineResult RunShowVersionForWire();
+  PipelineResult RunShowWaitEventsForWire();
   PipelineResult RunCursorOpenForWire();
   PipelineResult RunCursorFetchForWire();
   PipelineResult RunCursorCloseForWire();
@@ -147,6 +149,7 @@ class SbsqlTestWireSession {
   PipelineResult RunQueryNumericForWire();
   PipelineResult RunQueryEvaluateAdvancedDatatypeFamilyForWire();
   PipelineResult RunProjectForWire();
+  PipelineResult RunShowObjectDetailForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
@@ -199,6 +202,17 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlCreateMacroForWire();
   PipelineResult RunDdlCreateDictionaryForWire();
   PipelineResult RunDdlDropDictionaryForWire();
+  PipelineResult RunDdlAlterDictionaryForWire();
+  PipelineResult RunDdlCreateContinuousViewForWire();
+  PipelineResult RunDdlAlterContinuousViewForWire();
+  PipelineResult RunDdlDropContinuousViewForWire();
+  PipelineResult RunDmlAsyncInsertSubmitForWire();
+  PipelineResult RunDmlAsyncInsertStatusForWire();
+  PipelineResult RunDmlCounterAddForWire();
+  PipelineResult RunDmlTimeseriesSchemaWriteForWire();
+  PipelineResult RunDdlTimeseriesSeriesCardinalityPolicyForWire();
+  PipelineResult RunDdlCreateTimeseriesValueCacheForWire();
+  PipelineResult RunDmlAsyncInsertCancelForWire();
   PipelineResult RunDdlDropMacroForWire();
   PipelineResult RunAdminRegisterExternalRelationResolverForWire();
   PipelineResult RunAdminUnregisterExternalRelationResolverForWire();

@@ -30,7 +30,11 @@ int main(int argc, char** argv) {
     return 3;
   }
   const std::string operation = argv[5];
-  auto result = operation == "error-vector"
+  auto result = operation == "show-version"
+                    ? session.RunShowVersionForWire()
+                    : operation == "show-wait-events"
+                    ? session.RunShowWaitEventsForWire()
+                    : operation == "error-vector"
                     ? session.RunErrorVectorForWire()
                     : operation == "txn-commit"
                           ? [&session] {
@@ -227,6 +231,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunQueryEvaluateAdvancedDatatypeFamilyForWire():begun; }()
                     : operation == "project"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunProjectForWire():begun; }()
+                    : operation == "show-object-detail"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunShowObjectDetailForWire():begun; }()
                     : operation == "aggregate"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunAggregateForWire():begun; }()
                     : operation == "group"
@@ -311,6 +317,28 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDictionaryForWire():begun; }()
                     : operation == "ddl-drop-dictionary"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropDictionaryForWire():begun; }()
+                    : operation == "ddl-alter-dictionary"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterDictionaryForWire():begun; }()
+                    : operation == "ddl-create-continuous-view"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateContinuousViewForWire():begun; }()
+                    : operation == "ddl-alter-continuous-view"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterContinuousViewForWire():begun; }()
+                    : operation == "ddl-drop-continuous-view"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropContinuousViewForWire():begun; }()
+                    : operation == "dml-async-insert-submit"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDmlAsyncInsertSubmitForWire():begun; }()
+                    : operation == "dml-async-insert-status"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDmlAsyncInsertStatusForWire():begun; }()
+                    : operation == "dml-counter-add"
+                          ? session.RunDmlCounterAddForWire()
+                    : operation == "dml-timeseries-schema-write"
+                          ? session.RunDmlTimeseriesSchemaWriteForWire()
+                    : operation == "ddl-timeseries-series-cardinality-policy"
+                          ? session.RunDdlTimeseriesSeriesCardinalityPolicyForWire()
+                    : operation == "ddl-create-timeseries-value-cache"
+                          ? session.RunDdlCreateTimeseriesValueCacheForWire()
+                    : operation == "dml-async-insert-cancel"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDmlAsyncInsertCancelForWire():begun; }()
                     : operation == "ddl-drop-macro"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropMacroForWire():begun; }()
                     : operation == "admin-register-external-relation-resolver"

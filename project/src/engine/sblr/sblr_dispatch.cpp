@@ -2471,6 +2471,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
   if (request.envelope.operation_id == "engine.op.ddl_create_dictionary" && request.envelope.opcode == "SBLR_DDL_CREATE_DICTIONARY") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
+  if (request.envelope.operation_id == "engine.op.ddl_alter_dictionary" && request.envelope.opcode == "SBLR_DDL_ALTER_DICTIONARY" && request.envelope.opcode_code == 1639) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
+  if (request.envelope.operation_id == "engine.op.ddl_create_continuous_view" && request.envelope.opcode == "SBLR_DDL_CREATE_CONTINUOUS_VIEW" && request.envelope.opcode_code == 1640) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   const auto envelope_validation = ValidateSblrEnvelope(request.envelope);
   result.envelope_validated = envelope_validation.ok;
   if (!envelope_validation.ok) {
@@ -2525,6 +2527,15 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.ok = true;
     result.api_result.operation_id = request.envelope.operation_id;
     result.api_result.result_shape.result_kind = "ddl_result";
+    result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
+    return result;
+  }
+  if (request.envelope.operation_id == "engine.op.catalog_introspect") {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.ok = true;
+    result.api_result.operation_id = request.envelope.operation_id;
+    result.api_result.result_shape.result_kind = "catalog_introspect_result";
     result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
     return result;
   }
@@ -9565,6 +9576,17 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_alter_aggregate = request.envelope.operation_id=="engine.op.ddl_alter_aggregate"&&request.envelope.opcode=="SBLR_DDL_ALTER_AGGREGATE"&&request.envelope.opcode_code==1626;
   const bool exact_ddl_drop_aggregate = request.envelope.operation_id=="engine.op.ddl_drop_aggregate"&&request.envelope.opcode=="SBLR_DDL_DROP_AGGREGATE"&&request.envelope.opcode_code==1627;
   const bool exact_ddl_drop_dictionary = request.envelope.operation_id=="engine.op.ddl_drop_dictionary"&&request.envelope.opcode=="SBLR_DDL_DROP_DICTIONARY"&&request.envelope.opcode_code==1638;
+  const bool exact_ddl_alter_dictionary = request.envelope.operation_id=="engine.op.ddl_alter_dictionary"&&request.envelope.opcode=="SBLR_DDL_ALTER_DICTIONARY"&&request.envelope.opcode_code==1639;
+  const bool exact_ddl_create_continuous_view = request.envelope.operation_id=="engine.op.ddl_create_continuous_view"&&request.envelope.opcode=="SBLR_DDL_CREATE_CONTINUOUS_VIEW"&&request.envelope.opcode_code==1640;
+  const bool exact_ddl_alter_continuous_view = request.envelope.operation_id=="engine.op.ddl_alter_continuous_view"&&request.envelope.opcode=="SBLR_DDL_ALTER_CONTINUOUS_VIEW"&&request.envelope.opcode_code==1641;
+  const bool exact_ddl_drop_continuous_view = request.envelope.operation_id=="engine.op.ddl_drop_continuous_view"&&request.envelope.opcode=="SBLR_DDL_DROP_CONTINUOUS_VIEW";
+  const bool exact_dml_async_insert_submit = request.envelope.operation_id=="engine.op.dml_async_insert_submit"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_SUBMIT";
+  const bool exact_dml_async_insert_status = request.envelope.operation_id=="engine.op.dml_async_insert_status"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_STATUS";
+  const bool exact_dml_counter_add = request.envelope.operation_id=="engine.op.dml_counter_add"&&request.envelope.opcode=="SBLR_DML_COUNTER_ADD";
+  const bool exact_dml_timeseries_schema_write = request.envelope.operation_id=="engine.op.dml_timeseries_schema_write";
+  const bool exact_ddl_timeseries_series_cardinality_policy = request.envelope.operation_id=="engine.op.ddl_set_timeseries_series_cardinality_policy";
+  const bool exact_ddl_create_timeseries_value_cache = request.envelope.operation_id=="engine.op.ddl_create_timeseries_value_cache";
+  const bool exact_dml_async_insert_cancel = request.envelope.operation_id=="engine.op.dml_async_insert_cancel"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_CANCEL";
   const bool exact_ddl_purge_system_history = request.envelope.operation_id=="engine.op.ddl_purge_system_history"&&request.envelope.opcode=="SBLR_DDL_PURGE_SYSTEM_HISTORY"&&request.envelope.opcode_code==1628;
   const bool exact_ddl_set_index_optimizer_eligibility = request.envelope.operation_id=="engine.op.ddl_set_index_optimizer_eligibility"&&request.envelope.opcode=="SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY"&&request.envelope.opcode_code==1629;
   const bool exact_ddl_set_table_type_enforcement = (request.envelope.operation_id=="engine.op.ddl_set_table_type_enforcement"&&request.envelope.opcode=="SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT"&&request.envelope.opcode_code==1630) || (request.envelope.operation_id=="engine.op.database_serialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1631);
@@ -9609,9 +9631,10 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_rename_object_vector = request.envelope.operation_id=="engine.op.ddl_rename_object_vector"&&request.envelope.opcode=="SBLR_DDL_RENAME_OBJECT_VECTOR"&&request.envelope.opcode_code==1563;
   const bool exact_ddl_create_or_replace_srs = request.envelope.operation_id=="engine.op.ddl_create_or_replace_srs"&&request.envelope.opcode=="SBLR_DDL_CREATE_OR_REPLACE_SRS"&&request.envelope.opcode_code==1615;
   const bool exact_ddl_drop_srs = request.envelope.operation_id=="engine.op.ddl_drop_srs"&&request.envelope.opcode=="SBLR_DDL_DROP_SRS"&&request.envelope.opcode_code==1616;
+  const bool exact_ddl_create_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_create_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_CREATE_REWRITE_RULE"&&request.envelope.opcode_code==1617;
   const bool exact_ddl_alter_procedure = request.envelope.operation_id=="engine.op.ddl_alter_procedure"&&request.envelope.opcode=="SBLR_DDL_ALTER_PROCEDURE"&&request.envelope.opcode_code==1555;
   const bool exact_ddl_create_trigger = (request.envelope.operation_id=="engine.op.ddl_create_trigger"&&request.envelope.opcode=="SBLR_DDL_CREATE_TRIGGER"&&request.envelope.opcode_code==1551) || (request.envelope.operation_id=="engine.op.ddl_alter_trigger"&&request.envelope.opcode=="SBLR_DDL_ALTER_TRIGGER"&&request.envelope.opcode_code==1552) || exact_ddl_drop_trigger;
-  const bool exact_window = (request.envelope.operation_id=="engine.op.window"&&request.envelope.opcode=="SBLR_WINDOW"&&request.envelope.opcode_code==1285) || exact_return_result_set || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs;
+  const bool exact_window = (request.envelope.operation_id=="engine.op.window"&&request.envelope.opcode=="SBLR_WINDOW"&&request.envelope.opcode_code==1285) || exact_return_result_set || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule;
   const bool exact_management_envelope =
       (request.envelope.operation_id == "engine.op.mgmt_operation" &&
        request.envelope.opcode == "SBLR_MGMT_OPERATION" &&
@@ -9631,10 +9654,18 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       (request.envelope.operation_id == "engine.op.mgmt_metric_snapshot_ref" &&
        request.envelope.opcode == "SBLR_MGMT_METRIC_SNAPSHOT_REF" &&
        request.envelope.opcode_code == 0x0D05);
+  const bool exact_show_version =
+      request.envelope.operation_id == "observability.show_version" &&
+      request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_VERSION" &&
+      request.envelope.opcode_code == 0x0D06;
   const bool exact_local_metrics_read =
       request.envelope.operation_id == "engine.op.read_metrics" &&
       request.envelope.opcode == "SBLR_READ_METRICS" &&
       request.envelope.opcode_code == 0x0C01;
+  const bool exact_catalog_introspect =
+      request.envelope.operation_id == "engine.op.catalog_introspect" &&
+      request.envelope.opcode == "SBLR_CATALOG_INTROSPECT" &&
+      request.envelope.opcode_code == 0x1300;
   const bool exact_event_notification =
       IsSblrEventNotificationOperation(request.envelope.operation_id) &&
       request.envelope.opcode_code >= 0x0F00 &&
@@ -9647,11 +9678,18 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   if (exact_admin_register_external_relation_resolver) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_admin_unregister_external_relation_resolver) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_ddl_create_dictionary) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map &&
+  if (exact_ddl_alter_dictionary) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_ddl_create_continuous_view) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_ddl_alter_continuous_view) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_ddl_drop_continuous_view) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_dml_async_insert_submit) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_dml_async_insert_status || exact_dml_counter_add || exact_dml_timeseries_schema_write || exact_ddl_timeseries_series_cardinality_policy || exact_ddl_create_timeseries_value_cache) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_dml_async_insert_cancel) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_drop_dictionary && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_deserialize_logical_snapshot && !exact_txn_begin && !exact_txn_commit &&
       !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_procedure && !exact_ddl_alter_procedure && !exact_ddl_drop_procedure && !exact_ddl_create_function && !exact_ddl_alter_function && !exact_ddl_drop_function && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
-      !exact_security_drop_privilege_template && !exact_local_metrics_read && !exact_event_notification && !exact_local_backup_archive && !exact_ddl_create_dictionary) {
+      !exact_security_drop_privilege_template && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_ddl_create_dictionary) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
     return result;
@@ -9666,9 +9704,14 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
         : envelope_validation.diagnostics.front().message;
     return result;
   }
+  if (exact_ddl_alter_dictionary) {
+    result.ok=true;
+    result.materialized_envelope=request.envelope;
+    return result;
+  }
   if (exact_source_map || exact_error_vector || exact_txn_begin ||
       exact_txn_commit || exact_txn_rollback || exact_txn_savepoint || exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_advanced_datatype_family || exact_management_envelope ||
-      exact_project || exact_security_create_privilege_template || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
+      exact_project || exact_security_create_privilege_template || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_show_version || exact_catalog_introspect || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
     if (exact_management_envelope &&
         !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
       result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
@@ -9930,7 +9973,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
   const bool exact_ddl_drop_macro_dispatch = request.envelope.operation_id=="engine.op.ddl_drop_macro" && request.envelope.opcode=="SBLR_DDL_DROP_MACRO" && request.envelope.opcode_code==1634;
   const bool exact_ddl_drop_dictionary_dispatch = request.envelope.operation_id=="engine.op.ddl_drop_dictionary" && request.envelope.opcode=="SBLR_DDL_DROP_DICTIONARY" && request.envelope.opcode_code==1638;
+  const bool exact_ddl_alter_dictionary_dispatch = request.envelope.operation_id=="engine.op.ddl_alter_dictionary" && request.envelope.opcode=="SBLR_DDL_ALTER_DICTIONARY" && request.envelope.opcode_code==1639;
   if (exact_ddl_drop_dictionary_dispatch) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
+  if (exact_ddl_alter_dictionary_dispatch) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (exact_ddl_drop_macro_dispatch) {
     result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true;
     result.api_result.operation_id=request.envelope.operation_id;
@@ -10373,6 +10418,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if(op=="engine.op.update"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.update.cancelled_before_lookup","update cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.update","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
   else if(op=="engine.op.delete"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.delete.cancelled_before_lookup","delete cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.delete","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
   else if(op=="engine.op.merge"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.merge.cancelled_before_lookup","merge cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.merge","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.ddl_set_timeseries_series_cardinality_policy"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_timeseries_series_cardinality_policy.cancelled_before_lookup","Series-cardinality policy cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_timeseries_value_cache"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_timeseries_value_cache.cancelled_before_lookup","Value-cache creation cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.table_truncate"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.table_truncate.cancelled_before_lookup","truncate cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.table_analyze"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.table_analyze.cancelled_before_lookup","analyze cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.bulk_import_stream"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.bulk_import_stream.cancelled_before_lookup","bulk import cancelled before lookup");}else result.api_result.ok=true;}
@@ -10397,6 +10444,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if(op=="engine.op.query_apply_numeric_operation"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.query_numeric.cancelled_before_lookup","Query numeric cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.query_evaluate_advanced_datatype_family"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.advanced_datatype_family.cancelled_before_lookup","Advanced datatype family evaluation cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.project"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.project.cancelled_before_lookup","Project cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.catalog_introspect"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.catalog_introspect.cancelled_before_lookup","Catalog introspection cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.aggregate"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.aggregate.cancelled_before_lookup","Aggregate cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.group"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.group.cancelled_before_lookup","Group cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.sort"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.sort.cancelled_before_lookup","Sort cancelled before lookup");}else result.api_result.ok=true;}
@@ -10416,6 +10464,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if(op=="engine.op.ddl_drop_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_procedure.cancelled_before_lookup","DDL drop procedure cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_create_function"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_function.cancelled_before_lookup","DDL create function cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_create_package"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_package.cancelled_before_lookup","DDL create package cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_rewrite_rule"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_rewrite_rule.cancelled_before_lookup","DDL create rewrite rule cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_create_temporary_table"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_temporary_table.cancelled_before_lookup","DDL create temporary table cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_drop_temporary_table"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_temporary_table.cancelled_before_lookup","DDL drop temporary table cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_rename_object_vector"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_rename_object_vector.cancelled_before_lookup","DDL rename object vector cancelled before lookup");}else result.api_result.ok=true;}
@@ -10523,6 +10572,10 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           result.api_result.evidence.push_back(
               {"result_sha256",
                scratchbird::core::hash::HexLower(result_digest.digest)});
+          // Preserve the metrics executor proof in the independent dispatch
+          // trace.  This is evidence only; it does not broaden the local
+          // metrics authority or bypass the typed result path.
+          WriteSblrLiteralEvidenceTrace(result.api_result.evidence, 0);
         }
       }
     }
@@ -10600,6 +10653,15 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "observability.show_database") result.api_result = api::EngineShowDatabase(TypedRequest<api::EngineShowDatabaseRequest>(request));
   else if (op == "observability.show_system") result.api_result = api::EngineShowSystem(TypedRequest<api::EngineShowSystemRequest>(request));
   else if (op == "observability.show_catalog") result.api_result = api::EngineShowCatalog(TypedRequest<api::EngineShowCatalogRequest>(request));
+  else if (op == "engine.op.catalog_introspect") {
+    result.api_result.operation_id = op;
+    if (request.context.query_cancellation_requested && request.context.query_cancellation_requested()) {
+      result.api_result.ok = false;
+      result.api_result = FailureResult(request.context, op, "PROCESS.CANCELLED", "sblr.catalog_introspect.cancelled_before_lookup", "Catalog introspection cancelled before lookup");
+    } else {
+      result.api_result.ok = true;
+    }
+  }
   else if (op == "observability.show_sessions") result.api_result = api::EngineShowSessions(TypedRequest<api::EngineShowSessionsRequest>(request));
   else if (op == "observability.show_transactions") result.api_result = api::EngineShowTransactions(TypedRequest<api::EngineShowTransactionsRequest>(request));
   else if (op == "observability.show_locks") result.api_result = api::EngineShowLocks(TypedRequest<api::EngineShowLocksRequest>(request));
@@ -10970,6 +11032,14 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "extensibility.inspect_udr_packages") result.api_result = api::EngineInspectUdrPackages(TypedRequest<api::EngineInspectUdrPackageRequest>(request));
   else if (op == "extensibility.invoke_udr_package") result.api_result = api::EngineInvokeUdrPackage(TypedRequest<api::EngineInvokeUdrPackageRequest>(request));
   else if (op == "extensibility.register_parser_package") result.api_result = api::EngineRegisterParserPackage(TypedRequest<api::EngineRegisterParserPackageRequest>(request));
+  else if (op == "engine.op.catalog_introspect") {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.operation_id = op;
+    result.api_result.ok = true;
+    result.api_result.result_shape.result_kind = "catalog_introspect_result";
+    result.api_result.evidence.push_back({op, "executor_dispatch_admitted"});
+  }
   else {
     result.accepted = false;
     result.dispatched_to_api = false;

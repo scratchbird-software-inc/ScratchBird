@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_dml_async_insert_submit_runtime.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::sblr; SblrDmlAsyncInsertSubmitRequestV1 q;q.occurrence=1;q.submission_occurrence=1;auto b=EncodeSblrDmlAsyncInsertSubmitRequestV1(q);SblrDmlAsyncInsertSubmitRequestV1 d;assert(DecodeSblrDmlAsyncInsertSubmitRequestV1(b.data(),b.size(),&d,nullptr));b[16]^=1;assert(!DecodeSblrDmlAsyncInsertSubmitRequestV1(b.data(),b.size(),&d,nullptr));SblrDmlAsyncInsertSubmitDescriptorV1 x;x.availability=1;auto e=EncodeSblrDmlAsyncInsertSubmitDescriptorV1(x,true);assert(e.size()==488);assert(DecodeSblrDmlAsyncInsertSubmitDescriptorV1(e.data(),e.size(),&x,nullptr,true));return 0;}

@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_dml_async_insert_status_runtime.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::sblr; SblrDmlAsyncInsertStatusRequestV1 q;q.occurrence=1;q.status_occurrence=1;auto b=EncodeSblrDmlAsyncInsertStatusRequestV1(q);SblrDmlAsyncInsertStatusRequestV1 d;assert(DecodeSblrDmlAsyncInsertStatusRequestV1(b.data(),b.size(),&d,nullptr));b[16]^=1;assert(!DecodeSblrDmlAsyncInsertStatusRequestV1(b.data(),b.size(),&d,nullptr));SblrDmlAsyncInsertStatusDescriptorV1 x;x.availability=1;auto e=EncodeSblrDmlAsyncInsertStatusDescriptorV1(x,true);assert(DecodeSblrDmlAsyncInsertStatusDescriptorV1(e.data(),e.size(),&x,nullptr,true));return 0;}

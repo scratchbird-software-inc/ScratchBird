@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_dml_timeseries_schema_write_runtime.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::sblr; SblrDmlTimeseriesSchemaWriteRequestV1 q;q.occurrence=1;q.write_occurrence=1;auto b=EncodeSblrDmlTimeseriesSchemaWriteRequestV1(q);SblrDmlTimeseriesSchemaWriteRequestV1 z{};std::string d;assert(DecodeSblrDmlTimeseriesSchemaWriteRequestV1(b.data(),b.size(),&z,&d));SblrDmlTimeseriesSchemaWriteDescriptorV1 x;x.availability=1;auto db=EncodeSblrDmlTimeseriesSchemaWriteDescriptorV1(x,true);assert(DecodeSblrDmlTimeseriesSchemaWriteDescriptorV1(db.data(),db.size(),&x,&d,true));db[448]=1;assert(!DecodeSblrDmlTimeseriesSchemaWriteDescriptorV1(db.data(),db.size(),&x,&d,true));return 0;}

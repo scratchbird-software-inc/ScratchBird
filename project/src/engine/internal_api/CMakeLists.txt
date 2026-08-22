@@ -422,6 +422,7 @@ add_library(sb_engine_internal_api
   sblr_query_numeric_coordinator.cpp
   sblr_advanced_datatype_family_coordinator.cpp
   sblr_project_coordinator.cpp
+  sblr_catalog_introspect_coordinator.cpp
   sblr_kv_structured_read_coordinator.cpp
   sblr_kv_structured_mutate_coordinator.cpp
   sblr_kv_structured_scan_coordinator.cpp
@@ -445,7 +446,6 @@ add_library(sb_engine_internal_api
   sblr_ddl_drop_procedure_coordinator.cpp
   sblr_ddl_create_function_coordinator.cpp
   sblr_ddl_alter_function_coordinator.cpp
-  sblr_ddl_drop_function_coordinator.cpp
   sblr_ddl_create_package_coordinator.cpp
   sblr_ddl_create_temporary_table_coordinator.cpp
   sblr_ddl_drop_temporary_table_coordinator.cpp
@@ -462,6 +462,7 @@ add_library(sb_engine_internal_api
   sblr_ddl_create_aggregate_coordinator.cpp
   sblr_ddl_alter_aggregate_coordinator.cpp
   sblr_ddl_drop_aggregate_coordinator.cpp
+  sblr_ddl_drop_function_coordinator.cpp
   sblr_ddl_purge_system_history_coordinator.cpp
   sblr_ddl_set_index_optimizer_eligibility_coordinator.cpp
   sblr_ddl_set_table_type_enforcement_coordinator.cpp
@@ -473,6 +474,18 @@ add_library(sb_engine_internal_api
   sblr_admin_unregister_external_relation_resolver_coordinator.cpp
   sblr_ddl_create_dictionary_coordinator.cpp
   sblr_ddl_drop_dictionary_coordinator.cpp
+  sblr_ddl_alter_dictionary_coordinator.cpp
+  sblr_ddl_create_continuous_view_coordinator.cpp
+  sblr_ddl_alter_continuous_view_coordinator.cpp
+  sblr_ddl_drop_continuous_view_coordinator.cpp
+  sblr_dml_async_insert_submit_coordinator.cpp
+  sblr_dml_async_insert_status_coordinator.cpp
+  sblr_dml_async_insert_cancel_coordinator.cpp
+  sblr_dml_conditional_mutate_coordinator.cpp
+  sblr_dml_counter_add_coordinator.cpp
+  sblr_ddl_timeseries_series_cardinality_policy_coordinator.cpp
+  sblr_ddl_create_timeseries_value_cache_coordinator.cpp
+  sblr_dml_timeseries_schema_write_coordinator.cpp
   sblr_ddl_alter_rewrite_rule_coordinator.cpp
   sblr_ddl_drop_trigger_coordinator.cpp
   sblr_aggregate_coordinator.cpp

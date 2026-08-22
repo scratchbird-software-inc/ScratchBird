@@ -1,0 +1,4 @@
+#include "engine/internal_api/sblr_ddl_alter_dictionary_coordinator.hpp"
+#include <cassert>
+using namespace scratchbird::engine::internal_api;
+int main(){EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="dictionary-alter";c.trace_tags={"private_ddl_alter_dictionary_binder"};auto m=CompileSblrDdlAlterDictionaryDescriptor(c,"dictionary-alter",1,1,1);assert(m.ok);auto u=c;u.trace_tags={"private_ddl_alter_dictionary"};auto cancel=u;cancel.query_cancellation_requested=[](){return true;};auto r=ConsumeSblrDdlAlterDictionaryDescriptor(cancel,m.descriptor);assert(!r.ok&&r.diagnostic.code=="PROCESS.CANCELLED");assert(ConsumeSblrDdlAlterDictionaryDescriptor(u,m.descriptor).ok);auto replay=ConsumeSblrDdlAlterDictionaryDescriptor(u,m.descriptor);assert(!replay.ok&&replay.diagnostic.code=="MGA.TRANSACTION.STALE");return 0;}

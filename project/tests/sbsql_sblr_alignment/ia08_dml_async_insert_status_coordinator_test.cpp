@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_dml_async_insert_status_coordinator.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::internal_api;EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="r";c.trace_tags.push_back("private_dml_async_insert_status_binder");auto q=CompileSblrDmlAsyncInsertStatusDescriptor(c,"r",1,1,1);assert(q.ok);c.trace_tags.clear();c.trace_tags.push_back("private_dml_async_insert_status");auto x=ConsumeSblrDmlAsyncInsertStatusDescriptor(c,q.descriptor);assert(x.ok);auto y=ConsumeSblrDmlAsyncInsertStatusDescriptor(c,q.descriptor);assert(!y.ok&&y.diagnostic.code=="MGA.TRANSACTION.STALE");return 0;}

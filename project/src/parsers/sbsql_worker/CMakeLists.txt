@@ -57,6 +57,11 @@ set(SBSQL_PARSER_WORKER_CORE_SOURCES
   runtime/parser_runtime.cpp
   wire/sbsql_sbwp_wire.cpp
   wire/sbsql_test_wire.cpp
+  # The parser's canonical SHOW WAIT EVENTS fixture uses the frozen metrics
+  # request codec to produce the exact operand bytes before SBPS handoff.  The
+  # codec is transport-only and does not grant parser engine authority.
+  ${PROJECT_SOURCE_DIR}/src/engine/sblr/sblr_local_metrics_read.cpp
+  ${PROJECT_SOURCE_DIR}/src/engine/sblr/sblr_catalog_introspect_runtime.cpp
 )
 
 function(sbsql_configure_parser_worker_core target_name)

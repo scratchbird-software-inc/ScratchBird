@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_ddl_drop_continuous_view_coordinator.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::internal_api;EngineRequestContext c{};c.security_context_present=true;c.statement_uuid.canonical="r";c.statement_metadata_snapshot_engine_owned=true;c.trace_tags={"private_ddl_drop_continuous_view_binder"};auto x=CompileSblrDdlDropContinuousViewDescriptor(c,"r",1,1,1);assert(x.ok);EngineRequestContext e=c;e.trace_tags={"private_ddl_drop_continuous_view"};auto y=ConsumeSblrDdlDropContinuousViewDescriptor(e,x.descriptor);assert(y.ok);auto z=ConsumeSblrDdlDropContinuousViewDescriptor(e,x.descriptor);assert(!z.ok&&z.diagnostic.code=="MGA.TRANSACTION.STALE");return 0;}

@@ -3382,6 +3382,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateQueryNumericRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateAdvancedDatatypeFamilyRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateProjectRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateCatalogIntrospectRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateAggregateRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateGroupRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSortRequest) ||
@@ -3439,6 +3440,18 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropMacroRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateDictionaryRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropDictionaryRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterDictionaryRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateContinuousViewRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterContinuousViewRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropContinuousViewRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlAsyncInsertSubmitRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlAsyncInsertStatusRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlAsyncInsertCancelRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlCounterAddRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlTimeseriesSchemaWriteRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlTimeseriesSeriesCardinalityPolicyRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTimeseriesValueCacheRequest) ||
+      frame.header.message_type == 276 ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateAdminRegisterExternalRelationResolverRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateAdminUnregisterExternalRelationResolverRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice) ||
@@ -3975,6 +3988,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==144&&frame.header.payload_schema_id==sbps::kSchemaCoordinateQueryNumericRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateQueryNumeric(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==146&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAdvancedDatatypeFamilyRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAdvancedDatatypeFamily(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==148&&frame.header.payload_schema_id==sbps::kSchemaCoordinateProjectRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateProject(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==268&&frame.header.payload_schema_id==sbps::kSchemaCoordinateCatalogIntrospectRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateCatalogIntrospect(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==150&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAggregateRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAggregate(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==152&&frame.header.payload_schema_id==sbps::kSchemaCoordinateGroupRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateGroup(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==154&&frame.header.payload_schema_id==sbps::kSchemaCoordinateSortRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSort(session_registry,engine_state,frame)));return true;}
@@ -4032,6 +4046,17 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==258&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropMacroRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropMacro(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==264&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateDictionaryRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateDictionary(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==266&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropDictionaryRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropDictionary(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==270&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterDictionaryRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterDictionary(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==272&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateContinuousViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateContinuousView(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==274&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterContinuousViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterContinuousView(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==276&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropContinuousViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropContinuousView(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==278&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlAsyncInsertSubmitRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlAsyncInsertSubmit(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==280&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlAsyncInsertStatusRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlAsyncInsertStatus(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==286&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlCounterAddRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlCounterAdd(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==288&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlTimeseriesSchemaWriteRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlTimeseriesSchemaWrite(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==290&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlTimeseriesSeriesCardinalityPolicyRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlTimeseriesSeriesCardinalityPolicy(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==292&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateTimeseriesValueCacheRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateTimeseriesValueCache(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==282&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlAsyncInsertCancelRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlAsyncInsertCancel(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==260&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAdminRegisterExternalRelationResolverRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAdminRegisterExternalRelationResolver(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==262&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAdminUnregisterExternalRelationResolverRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAdminUnregisterExternalRelationResolver(session_registry,engine_state,frame)));return true;}
   if (frame.header.message_type == 44 &&

@@ -119,7 +119,6 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_drop_procedure_runtime.cpp
   sblr_ddl_create_function_runtime.cpp
   sblr_ddl_alter_function_runtime.cpp
-  sblr_ddl_drop_function_runtime.cpp
   sblr_ddl_create_package_runtime.cpp
   sblr_ddl_create_temporary_table_runtime.cpp
   sblr_ddl_drop_temporary_table_runtime.cpp
@@ -137,6 +136,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_create_aggregate_runtime.cpp
   sblr_ddl_alter_aggregate_runtime.cpp
   sblr_ddl_drop_aggregate_runtime.cpp
+  sblr_ddl_drop_function_runtime.cpp
   sblr_ddl_purge_system_history_runtime.cpp
   sblr_ddl_set_index_optimizer_eligibility_runtime.cpp
   sblr_ddl_set_table_type_enforcement_runtime.cpp
@@ -147,6 +147,18 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_admin_unregister_external_relation_resolver_runtime.cpp
   sblr_ddl_create_dictionary_runtime.cpp
   sblr_ddl_drop_dictionary_runtime.cpp
+  sblr_ddl_alter_dictionary_runtime.cpp
+  sblr_ddl_create_continuous_view_runtime.cpp
+  sblr_ddl_alter_continuous_view_runtime.cpp
+  sblr_ddl_drop_continuous_view_runtime.cpp
+  sblr_dml_async_insert_submit_runtime.cpp
+  sblr_dml_async_insert_status_runtime.cpp
+  sblr_dml_async_insert_cancel_runtime.cpp
+  sblr_dml_conditional_mutate_runtime.cpp
+  sblr_dml_counter_add_runtime.cpp
+  sblr_dml_timeseries_schema_write_runtime.cpp
+  sblr_ddl_timeseries_series_cardinality_policy_runtime.cpp
+  sblr_ddl_create_timeseries_value_cache_runtime.cpp
   sblr_database_deserialize_logical_snapshot_runtime.cpp
   sblr_database_serialize_logical_snapshot_runtime.cpp
   sblr_ddl_drop_trigger_runtime.cpp
@@ -211,6 +223,7 @@ add_library(sb_engine_sblr
   sblr_llvm_seam.cpp
   sblr_literal_runtime.cpp
   sblr_local_metrics_read.cpp
+  sblr_catalog_introspect_runtime.cpp
   sblr_local_backup_archive.cpp
   sblr_management_envelope.cpp
   sblr_native_specialization.cpp

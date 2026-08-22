@@ -125,7 +125,7 @@ SblrLocalMetricsReadDispatchResult DispatchSblrLocalMetricsRead(const SblrOperat
   if (!context.security_context_present) return DispatchFailure("SB_DIAG_SBLR_SECURITY_CONTEXT_REQUIRED", "engine.op.read_metrics");
   if (context.query_cancellation_requested && context.query_cancellation_requested()) return DispatchFailure("PROCESS.CANCELLED", "cancelled_before_local_metrics_projection");
   SblrLocalMetricsReadDispatchResult result; result.accepted = true; result.request = decoded.request;
-  result.evidence = {{"executor_id", "engine.op.read_metrics"}, {"opcode_code", "0x0C01"}, {"opcode_version", "1.0"}, {"request_uuid", Hex16(decoded.request.request_uuid)}, {"registry_epoch", std::to_string(decoded.request.registry_epoch)}, {"request_sha256", decoded.sha256_hex}, {"next_cursor_present", "false"}};
+  result.evidence = {{"executor_id", "engine.op.read_metrics"}, {"opcode_code", "3073"}, {"opcode_version", "1.0"}, {"request_uuid", Hex16(decoded.request.request_uuid)}, {"registry_epoch", std::to_string(decoded.request.registry_epoch)}, {"request_sha256", decoded.sha256_hex}, {"next_cursor_present", "false"}};
   return result;
 }
 

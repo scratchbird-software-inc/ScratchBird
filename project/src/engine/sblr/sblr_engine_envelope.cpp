@@ -61,6 +61,18 @@
 #include "sblr_admin_unregister_external_relation_resolver_runtime.hpp"
 #include "sblr_ddl_create_dictionary_runtime.hpp"
 #include "sblr_ddl_drop_dictionary_runtime.hpp"
+#include "sblr_ddl_alter_dictionary_runtime.hpp"
+#include "sblr_ddl_create_continuous_view_runtime.hpp"
+#include "sblr_ddl_alter_continuous_view_runtime.hpp"
+#include "sblr_ddl_drop_continuous_view_runtime.hpp"
+#include "sblr_dml_async_insert_submit_runtime.hpp"
+#include "sblr_dml_async_insert_status_runtime.hpp"
+#include "sblr_dml_async_insert_cancel_runtime.hpp"
+#include "sblr_dml_conditional_mutate_runtime.hpp"
+#include "sblr_dml_counter_add_runtime.hpp"
+#include "sblr_dml_timeseries_schema_write_runtime.hpp"
+#include "sblr_ddl_timeseries_series_cardinality_policy_runtime.hpp"
+#include "sblr_ddl_create_timeseries_value_cache_runtime.hpp"
 #include "sblr_ddl_create_function_runtime.hpp"
 #include "sblr_ddl_alter_function_runtime.hpp"
 #include "sblr_ddl_drop_function_runtime.hpp"
@@ -87,6 +99,7 @@
 #include "sblr_query_numeric_runtime.hpp"
 #include "sblr_advanced_datatype_family_runtime.hpp"
 #include "sblr_project_runtime.hpp"
+#include "sblr_catalog_introspect_runtime.hpp"
 #include "sblr_aggregate_runtime.hpp"
 #include "sblr_group_runtime.hpp"
 #include "sblr_sort_runtime.hpp"
@@ -630,10 +643,36 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::external_relation_resolver_unregistration_descriptor: { SblrAdminUnregisterExternalRelationResolverDescriptorV1 operand; std::string detail; return DecodeSblrAdminUnregisterExternalRelationResolverDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::external_dictionary_descriptor: { SblrDdlCreateDictionaryDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateDictionaryDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::external_dictionary_drop_descriptor: { SblrDdlDropDictionaryDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropDictionaryDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::external_dictionary_alter_descriptor: { SblrDdlAlterDictionaryDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterDictionaryDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::continuous_view_descriptor: { SblrDdlCreateContinuousViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateContinuousViewDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::continuous_view_alter_descriptor: { SblrDdlAlterContinuousViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterContinuousViewDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::continuous_view_drop_descriptor: { SblrDdlDropContinuousViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropContinuousViewDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::async_insert_submission_descriptor: { SblrDmlAsyncInsertSubmitDescriptorV1 operand; std::string detail; return DecodeSblrDmlAsyncInsertSubmitDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::async_insert_status_descriptor: { SblrDmlAsyncInsertStatusDescriptorV1 operand; std::string detail; return DecodeSblrDmlAsyncInsertStatusDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::async_insert_cancel_descriptor: { SblrDmlAsyncInsertCancelDescriptorV1 operand; std::string detail; return DecodeSblrDmlAsyncInsertCancelDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::conditional_mutation_descriptor: { SblrDmlConditionalMutateDescriptorV1 operand; std::string detail; return DecodeSblrDmlConditionalMutateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::counter_delta_descriptor: { SblrDmlCounterAddDescriptorV1 operand; std::string detail; return DecodeSblrDmlCounterAddDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::timeseries_schema_write_descriptor: { SblrDmlTimeseriesSchemaWriteDescriptorV1 operand; std::string detail; return DecodeSblrDmlTimeseriesSchemaWriteDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::timeseries_series_cardinality_policy_descriptor: { SblrDdlTimeseriesSeriesCardinalityPolicyDescriptorV1 operand; std::string detail; return DecodeSblrDdlTimeseriesSeriesCardinalityPolicyDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::timeseries_value_cache_descriptor: { SblrDdlCreateTimeseriesValueCacheDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateTimeseriesValueCacheDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::group_descriptor: { SblrGroupDescriptorV1 operand; std::string detail; return DecodeSblrGroupDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::window_descriptor: { SblrWindowDescriptorV1 operand; std::string detail; return DecodeSblrWindowDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::observability_show_version_descriptor:
+      // SVDO v1 is a fixed, engine-issued identity descriptor.  The
+      // canonical route carries no SQL text; bytes 0..3 are the SVDO magic,
+      // bytes 4..5 are version 1, and the remaining bytes are reserved zero.
+      return size == 64 && data[0] == 'S' && data[1] == 'V' &&
+             data[2] == 'D' && data[3] == 'O' && data[4] == 1 &&
+             data[5] == 0 && std::all_of(data + 6, data + size,
+                                          [](std::uint8_t byte) {
+                                            return byte == 0;
+                                          });
+    case SblrValueKind::catalog_introspect_descriptor: {
+      SblrCatalogIntrospectDescriptorV1 operand; std::string detail;
+      return DecodeSblrCatalogIntrospectDescriptorV1(data, size, &operand, &detail, true);
+    }
     case SblrValueKind::result_set_return_descriptor: { SblrReturnResultSetDescriptorV1 operand; std::string detail; return DecodeSblrReturnResultSetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::kv_structured_read_descriptor: { SblrKvStructuredReadDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredReadDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::kv_structured_mutate_descriptor: { SblrKvStructuredMutateDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredMutateDescriptorV1(data,size,&operand,&detail,true); }

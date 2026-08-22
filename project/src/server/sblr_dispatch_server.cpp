@@ -8455,10 +8455,16 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
       (void)sb_engine_result_release(engine_result);
     }
   }
-  if (!dispatch_result.ok && dispatch_result.diagnostic_code.empty()) {
-    dispatch_result.diagnostic_code =
-        "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
-    dispatch_result.diagnostic_detail = sb_engine_status_name(status);
+  if (!dispatch_result.ok) {
+    if (dispatch_result.diagnostic_code.empty()) {
+      dispatch_result.diagnostic_code =
+          "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
+    }
+    if (dispatch_result.diagnostic_detail.empty()) {
+      dispatch_result.diagnostic_detail =
+          std::string("status=") + sb_engine_status_name(status) +
+          ";engine_result_missing";
+    }
   }
   return dispatch_result;
 }

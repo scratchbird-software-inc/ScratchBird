@@ -19,14 +19,18 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
     parser.add_argument("--client", required=True)
-    parser.add_argument("--operation", choices=("source-map", "error-vector", "txn-begin", "txn-commit", "txn-rollback", "txn-savepoint", "txn-release-savepoint", "psql-autonomous-frame", "transaction-reservation-release", "temporary-instance-cleanup", "cursor-open", "cursor-fetch", "cursor-close", "read-by-key", "read-range", "read-stream", "result-set-pass", "access-cursor-open", "access-cursor-fetch", "access-cursor-close", "insert", "update", "delete", "merge", "table-truncate", "table-analyze", "bulk-import-stream", "bulk-export-stream", "statement-batch", "atomic-cas", "atomic-rmw", "advisory-lock", "advisory-lock-release", "function-call", "operator-call", "cast", "compare", "domain-operation", "udr-invoke", "procedure-invoke", "function-invoke", "aggregate-invoke", "sequence-nextval", "sequence-currval", "sequence-setval", "query-numeric", "advanced-datatype-family", "project", "aggregate", "group", "sort", "limit", "window", "return-result-set", "kv-structured-read", "kv-structured-mutate", "kv-structured-scan", "kv-structured-stream-read", "kv-structured-stream-append", "kv-structured-timeseries", "system-config-set", "ddl-create-domain", "ddl-alter-domain", "ddl-create-view", "ddl-alter-view", "ddl-drop-view", "ddl-create-trigger", "ddl-create-schema", "ddl-create-table", "ddl-create-index", "ddl-drop-index"),
+    parser.add_argument("--operation", choices=("show-version", "show-wait-events", "show-object-detail", "source-map", "error-vector", "txn-begin", "txn-commit", "txn-rollback", "txn-savepoint", "txn-release-savepoint", "psql-autonomous-frame", "transaction-reservation-release", "temporary-instance-cleanup", "cursor-open", "cursor-fetch", "cursor-close", "read-by-key", "read-range", "read-stream", "result-set-pass", "access-cursor-open", "access-cursor-fetch", "access-cursor-close", "insert", "update", "delete", "merge", "table-truncate", "table-analyze", "bulk-import-stream", "bulk-export-stream", "statement-batch", "atomic-cas", "atomic-rmw", "advisory-lock", "advisory-lock-release", "function-call", "operator-call", "cast", "compare", "domain-operation", "udr-invoke", "procedure-invoke", "function-invoke", "aggregate-invoke", "sequence-nextval", "sequence-currval", "sequence-setval", "query-numeric", "advanced-datatype-family", "project", "aggregate", "group", "sort", "limit", "window", "return-result-set", "kv-structured-read", "kv-structured-mutate", "kv-structured-scan", "kv-structured-stream-read", "kv-structured-stream-append", "kv-structured-timeseries", "system-config-set", "ddl-create-domain", "ddl-alter-domain", "ddl-create-view", "ddl-alter-view", "ddl-drop-view", "ddl-create-trigger", "ddl-create-schema", "ddl-create-table", "ddl-create-index", "ddl-drop-index"),
                         default="source-map")
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-trigger"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-counter-add"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-timeseries-schema-write"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-timeseries-series-cardinality-policy"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-timeseries-value-cache"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-procedure"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule", "ddl-alter-rewrite-rule", "ddl-drop-rewrite-rule", "ddl-validate-constraint", "security-create-privilege-template", "security-alter-privilege-template", "security-drop-privilege-template", "database-create-template-clone", "ddl-create-aggregate", "ddl-alter-aggregate", "ddl-drop-aggregate", "ddl-purge-system-history", "ddl-set-index-optimizer-eligibility", "ddl-set-table-type-enforcement", "database-serialize-logical-snapshot"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "database-deserialize-logical-snapshot"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-macro", "ddl-create-dictionary", "ddl-drop-dictionary", "ddl-drop-macro", "admin-register-external-relation-resolver", "admin-unregister-external-relation-resolver"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-macro", "ddl-create-dictionary", "ddl-drop-dictionary", "ddl-alter-dictionary", "ddl-create-continuous-view", "ddl-alter-continuous-view", "ddl-drop-continuous-view", "dml-async-insert-submit", "dml-async-insert-status", "dml-async-insert-cancel", "dml-counter-add", "ddl-drop-macro", "admin-register-external-relation-resolver", "admin-unregister-external-relation-resolver"))
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args()
     work = allocate_work(Path(args.work_dir))
@@ -58,7 +62,16 @@ def main() -> int:
                        work / "sc" / "sb_server.audit.jsonl")
         audit = "\n".join(p.read_text(encoding="utf-8", errors="replace")
                           for p in audit_paths if p.exists())
-        if args.operation == "source-map":
+        if args.operation == "show-version":
+            expected = ("operation_id=observability.show_version",
+                        "opcode=SBLR_OBSERVABILITY_SHOW_VERSION",
+                        "opcode_code=3334")
+        elif args.operation == "show-wait-events":
+            expected = ("executor_id=engine.op.read_metrics", "opcode=SBLR_READ_METRICS",
+                        "opcode_code=3073", "request_sha256=")
+        elif args.operation == "show-object-detail":
+            expected = ("operation_id=engine.op.catalog_introspect", "opcode=SBLR_CATALOG_INTROSPECT", "opcode_code=4864")
+        elif args.operation == "source-map":
             expected = ("executor_id=engine.op.source_map", "opcode=SBLR_SOURCE_MAP",
                         "opcode_code=6")
         elif args.operation == "error-vector":
@@ -207,6 +220,26 @@ def main() -> int:
         elif args.operation == "ddl-create-dictionary":
             expected = ()
         elif args.operation == "ddl-drop-dictionary":
+            expected = ()
+        elif args.operation == "ddl-alter-dictionary":
+            expected = ()
+        elif args.operation == "ddl-create-continuous-view":
+            expected = ()
+        elif args.operation == "ddl-alter-continuous-view":
+            expected = ()
+        elif args.operation == "ddl-drop-continuous-view":
+            expected = ()
+        elif args.operation == "dml-async-insert-submit":
+            expected = ()
+        elif args.operation in ("dml-async-insert-status", "dml-async-insert-cancel"):
+            expected = ()
+        elif args.operation == "dml-counter-add":
+            expected = ()
+        elif args.operation == "dml-timeseries-schema-write":
+            expected = ()
+        elif args.operation == "ddl-timeseries-series-cardinality-policy":
+            expected = ()
+        elif args.operation == "ddl-create-timeseries-value-cache":
             expected = ()
         elif args.operation == "ddl-drop-macro":
             expected = ()

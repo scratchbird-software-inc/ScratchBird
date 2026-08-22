@@ -19,6 +19,8 @@
 #include "engine/sblr/sblr_read_by_key_runtime.hpp"
 #include "engine/sblr/sblr_read_range_runtime.hpp"
 #include "engine/sblr/sblr_read_stream_runtime.hpp"
+#include "engine/sblr/sblr_local_metrics_read.hpp"
+#include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
 #include "engine/sblr/sblr_kv_structured_stream_append_runtime.hpp"
 #include "engine/sblr/sblr_kv_structured_timeseries_runtime.hpp"
 #include "engine/sblr/sblr_system_config_set_runtime.hpp"
@@ -57,6 +59,17 @@
 #include "engine/sblr/sblr_ddl_alter_aggregate_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_aggregate_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_dictionary_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_dictionary_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_continuous_view_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_continuous_view_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_continuous_view_runtime.hpp"
+#include "engine/sblr/sblr_dml_async_insert_submit_runtime.hpp"
+#include "engine/sblr/sblr_dml_async_insert_status_runtime.hpp"
+#include "engine/sblr/sblr_dml_async_insert_cancel_runtime.hpp"
+#include "engine/sblr/sblr_dml_counter_add_runtime.hpp"
+#include "engine/sblr/sblr_dml_timeseries_schema_write_runtime.hpp"
+#include "engine/sblr/sblr_ddl_timeseries_series_cardinality_policy_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_timeseries_value_cache_runtime.hpp"
 #include "engine/sblr/sblr_ddl_purge_system_history_runtime.hpp"
 #include "engine/sblr/sblr_ddl_set_index_optimizer_eligibility_runtime.hpp"
 #include "engine/sblr/sblr_ddl_set_table_type_enforcement_runtime.hpp"
@@ -163,6 +176,73 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
       request.root_opcode == "SBLR_QUERY_EXECUTE" &&
       request.root_operation_id == "query.execute";
   const bool exact_window = request.root_opcode_code == 1285 && request.root_opcode == "SBLR_WINDOW" && request.root_operation_id == "engine.op.window";
+  const bool exact_show_version = request.root_opcode_code == 3334 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_VERSION" &&
+      request.root_operation_id == "observability.show_version";
+  bool exact_local_show_version = false;
+  if (stream.ok && stream.stream.operations.size() == 3 && exact_show_version &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "observability_show_version_descriptor" &&
+        member.operands.front().name == "show_version" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::observability_show_version_descriptor) {
+      const auto& body = member.operands.front().value_body;
+      exact_local_show_version = body.size() == 64 && body[0] == 'S' &&
+          body[1] == 'V' && body[2] == 'D' && body[3] == 'O' &&
+          body[4] == 1 && body[5] == 0 &&
+          std::all_of(body.begin() + 6, body.end(),
+                      [](std::uint8_t byte) { return byte == 0; });
+    }
+  }
+  if (exact_show_version && !exact_local_show_version)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_metrics_read = request.root_opcode_code == 0x0C01 &&
+      request.root_opcode == "SBLR_READ_METRICS" &&
+      request.root_operation_id == "engine.op.read_metrics";
+  bool exact_local_metrics_read = false;
+  if (stream.ok && stream.stream.operations.size() == 3 && exact_metrics_read &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "metrics.read_request.v1" &&
+        member.operands.front().name == "request" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::literal_typed) {
+      scratchbird::engine::sblr::SblrOperationEnvelope envelope;
+      envelope.operation_id = request.root_operation_id;
+      envelope.opcode = request.root_opcode;
+      envelope.opcode_code = request.root_opcode_code;
+      envelope.operands = member.operands;
+      exact_local_metrics_read =
+          scratchbird::engine::sblr::DecodeSblrLocalMetricsReadOperand(envelope).ok;
+    }
+  }
+  if (exact_metrics_read && !exact_local_metrics_read)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_catalog_introspect = request.root_opcode_code == 0x1300 &&
+      request.root_opcode == "SBLR_CATALOG_INTROSPECT" &&
+      request.root_operation_id == "engine.op.catalog_introspect";
+  bool exact_local_catalog_introspect = false;
+  if (stream.ok && stream.stream.operations.size() == 3 && exact_catalog_introspect &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 && member.operands.front().type == "catalog_introspect_descriptor" &&
+        member.operands.front().name == "object_detail" &&
+        member.operands.front().value_kind == scratchbird::engine::sblr::SblrValueKind::catalog_introspect_descriptor) {
+      scratchbird::engine::sblr::SblrCatalogIntrospectDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_catalog_introspect = scratchbird::engine::sblr::DecodeSblrCatalogIntrospectDescriptorV1(
+          member.operands.front().value_body.data(), member.operands.front().value_body.size(),
+          &descriptor, &detail, true);
+    }
+  }
+  if (exact_catalog_introspect && !exact_local_catalog_introspect)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
   bool exact_local_window = false;
   if (stream.ok && stream.stream.operations.size() == 3 && exact_window && !request.cluster_context_active && !request.cluster_transaction_active && !request.route_fence_present) {
     const auto& member = stream.stream.operations[1];
@@ -380,8 +460,30 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   const bool exact_ddl_alter_aggregate=request.root_opcode_code==1626&&request.root_opcode=="SBLR_DDL_ALTER_AGGREGATE"&&request.root_operation_id=="engine.op.ddl_alter_aggregate"; bool exact_local_ddl_alter_aggregate=false;
   const bool exact_ddl_drop_aggregate=request.root_opcode_code==1627&&request.root_opcode=="SBLR_DDL_DROP_AGGREGATE"&&request.root_operation_id=="engine.op.ddl_drop_aggregate"; bool exact_local_ddl_drop_aggregate=false;
   const bool exact_ddl_drop_dictionary=request.root_opcode_code==1638&&request.root_opcode=="SBLR_DDL_DROP_DICTIONARY"&&request.root_operation_id=="engine.op.ddl_drop_dictionary"; bool exact_local_ddl_drop_dictionary=false;
+  const bool exact_ddl_alter_dictionary=request.root_opcode_code==1639&&request.root_opcode=="SBLR_DDL_ALTER_DICTIONARY"&&request.root_operation_id=="engine.op.ddl_alter_dictionary"; bool exact_local_ddl_alter_dictionary=false;
+  const bool exact_ddl_create_continuous_view=request.root_opcode_code==1640&&request.root_opcode=="SBLR_DDL_CREATE_CONTINUOUS_VIEW"&&request.root_operation_id=="engine.op.ddl_create_continuous_view"; bool exact_local_ddl_create_continuous_view=false;
+  const bool exact_ddl_alter_continuous_view=request.root_opcode_code==1641&&request.root_opcode=="SBLR_DDL_ALTER_CONTINUOUS_VIEW"&&request.root_operation_id=="engine.op.ddl_alter_continuous_view"; bool exact_local_ddl_alter_continuous_view=false;
+  const bool exact_ddl_drop_continuous_view=request.root_opcode_code==1642&&request.root_opcode=="SBLR_DDL_DROP_CONTINUOUS_VIEW"&&request.root_operation_id=="engine.op.ddl_drop_continuous_view"; bool exact_local_ddl_drop_continuous_view=false;
+  const bool exact_dml_async_insert_submit=request.root_opcode_code==1643&&request.root_opcode=="SBLR_DML_ASYNC_INSERT_SUBMIT"&&request.root_operation_id=="engine.op.dml_async_insert_submit"; bool exact_local_dml_async_insert_submit=false;
+  const bool exact_dml_async_insert_status=request.root_opcode_code==1644&&request.root_opcode=="SBLR_DML_ASYNC_INSERT_STATUS"&&request.root_operation_id=="engine.op.dml_async_insert_status"; bool exact_local_dml_async_insert_status=false;
+  const bool exact_dml_async_insert_cancel=request.root_opcode_code==1645&&request.root_opcode=="SBLR_DML_ASYNC_INSERT_CANCEL"&&request.root_operation_id=="engine.op.dml_async_insert_cancel"; bool exact_local_dml_async_insert_cancel=false;
+  const bool exact_dml_counter_add=request.root_opcode_code==1647&&request.root_opcode=="SBLR_DML_COUNTER_ADD"&&request.root_operation_id=="engine.op.dml_counter_add"; bool exact_local_dml_counter_add=false;
+  const bool exact_dml_timeseries_schema_write=request.root_opcode_code==1648&&request.root_opcode=="SBLR_DML_TIMESERIES_SCHEMA_WRITE"&&request.root_operation_id=="engine.op.dml_timeseries_schema_write"; bool exact_local_dml_timeseries_schema_write=false;
+  const bool exact_ddl_timeseries_series_cardinality_policy=request.root_opcode_code==1649&&request.root_opcode=="SBLR_DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY"&&request.root_operation_id=="engine.op.ddl_set_timeseries_series_cardinality_policy"; bool exact_local_ddl_timeseries_series_cardinality_policy=false;
+  const bool exact_ddl_create_timeseries_value_cache=request.root_opcode_code==1650&&request.root_opcode=="SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE"&&request.root_operation_id=="engine.op.ddl_create_timeseries_value_cache"; bool exact_local_ddl_create_timeseries_value_cache=false;
   const bool exact_ddl_purge_system_history=request.root_opcode_code==1628&&request.root_opcode=="SBLR_DDL_PURGE_SYSTEM_HISTORY"&&request.root_operation_id=="engine.op.ddl_purge_system_history"; bool exact_local_ddl_purge_system_history=false;
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_package&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_package_descriptor"&&member.operands.front().name=="package"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_package_descriptor){scratchbird::engine::sblr::SblrDdlCreatePackageDescriptorV1 operand;std::string detail;exact_local_ddl_create_package=scratchbird::engine::sblr::DecodeSblrDdlCreatePackageDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_dictionary&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="external_dictionary_alter_descriptor"&&member.operands.front().name=="dictionary"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::external_dictionary_alter_descriptor){scratchbird::engine::sblr::SblrDdlAlterDictionaryDescriptorV1 operand;std::string detail;exact_local_ddl_alter_dictionary=scratchbird::engine::sblr::DecodeSblrDdlAlterDictionaryDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_continuous_view&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="continuous_view_descriptor"&&member.operands.front().name=="view"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::continuous_view_descriptor){scratchbird::engine::sblr::SblrDdlCreateContinuousViewDescriptorV1 operand;std::string detail;exact_local_ddl_create_continuous_view=scratchbird::engine::sblr::DecodeSblrDdlCreateContinuousViewDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_continuous_view&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="continuous_view_alter_descriptor"&&member.operands.front().name=="view"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::continuous_view_alter_descriptor){scratchbird::engine::sblr::SblrDdlAlterContinuousViewDescriptorV1 operand;std::string detail;exact_local_ddl_alter_continuous_view=scratchbird::engine::sblr::DecodeSblrDdlAlterContinuousViewDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_continuous_view&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="continuous_view_drop_descriptor"&&member.operands.front().name=="view"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::continuous_view_drop_descriptor){scratchbird::engine::sblr::SblrDdlDropContinuousViewDescriptorV1 operand;std::string detail;exact_local_ddl_drop_continuous_view=scratchbird::engine::sblr::DecodeSblrDdlDropContinuousViewDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_dml_async_insert_submit&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="async_insert_submission_descriptor"&&member.operands.front().name=="submission"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::async_insert_submission_descriptor){scratchbird::engine::sblr::SblrDmlAsyncInsertSubmitDescriptorV1 operand;std::string detail;exact_local_dml_async_insert_submit=scratchbird::engine::sblr::DecodeSblrDmlAsyncInsertSubmitDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_dml_async_insert_status&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="async_insert_status_descriptor"&&member.operands.front().name=="status"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::async_insert_status_descriptor){scratchbird::engine::sblr::SblrDmlAsyncInsertStatusDescriptorV1 operand;std::string detail;exact_local_dml_async_insert_status=scratchbird::engine::sblr::DecodeSblrDmlAsyncInsertStatusDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_dml_async_insert_cancel&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="async_insert_cancel_descriptor"&&member.operands.front().name=="cancel"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::async_insert_cancel_descriptor){scratchbird::engine::sblr::SblrDmlAsyncInsertCancelDescriptorV1 operand;std::string detail;exact_local_dml_async_insert_cancel=scratchbird::engine::sblr::DecodeSblrDmlAsyncInsertCancelDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_dml_counter_add&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="counter_delta_descriptor"&&member.operands.front().name=="delta"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::counter_delta_descriptor){scratchbird::engine::sblr::SblrDmlCounterAddDescriptorV1 operand;std::string detail;exact_local_dml_counter_add=scratchbird::engine::sblr::DecodeSblrDmlCounterAddDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_dml_timeseries_schema_write&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="timeseries_schema_write_descriptor"&&member.operands.front().name=="write"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::timeseries_schema_write_descriptor){scratchbird::engine::sblr::SblrDmlTimeseriesSchemaWriteDescriptorV1 operand;std::string detail;exact_local_dml_timeseries_schema_write=scratchbird::engine::sblr::DecodeSblrDmlTimeseriesSchemaWriteDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_timeseries_series_cardinality_policy&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="timeseries_series_cardinality_policy_descriptor"&&member.operands.front().name=="policy"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::timeseries_series_cardinality_policy_descriptor){scratchbird::engine::sblr::SblrDdlTimeseriesSeriesCardinalityPolicyDescriptorV1 operand;std::string detail;exact_local_ddl_timeseries_series_cardinality_policy=scratchbird::engine::sblr::DecodeSblrDdlTimeseriesSeriesCardinalityPolicyDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_timeseries_value_cache&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="timeseries_value_cache_descriptor"&&member.operands.front().name=="cache"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::timeseries_value_cache_descriptor){scratchbird::engine::sblr::SblrDdlCreateTimeseriesValueCacheDescriptorV1 operand;std::string detail;exact_local_ddl_create_timeseries_value_cache=scratchbird::engine::sblr::DecodeSblrDdlCreateTimeseriesValueCacheDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_temporary_table&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_temporary_table_descriptor"&&member.operands.front().name=="temporary_table"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_temporary_table_descriptor){scratchbird::engine::sblr::SblrDdlCreateTemporaryTableDescriptorV1 operand;std::string detail;exact_local_ddl_create_temporary_table=scratchbird::engine::sblr::DecodeSblrDdlCreateTemporaryTableDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_temporary_table&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="drop_temporary_table_descriptor"&&member.operands.front().name=="temporary_table"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::drop_temporary_table_descriptor){scratchbird::engine::sblr::SblrDdlDropTemporaryTableDescriptorV1 operand;std::string detail;exact_local_ddl_drop_temporary_table=scratchbird::engine::sblr::DecodeSblrDdlDropTemporaryTableDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_rename_object_vector&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="object_rename_vector_descriptor"&&member.operands.front().name=="rename_vector"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::object_rename_vector_descriptor){scratchbird::engine::sblr::SblrDdlRenameObjectVectorDescriptorV1 operand;std::string detail;exact_local_ddl_rename_object_vector=scratchbird::engine::sblr::DecodeSblrDdlRenameObjectVectorDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
@@ -431,6 +533,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_local_ddl_alter_aggregate) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_aggregate) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_dictionary) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_alter_dictionary) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_purge_system_history) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_set_table_type_enforcement) exact_local_ddl_create_schema = true;
   if (exact_local_database_serialize_logical_snapshot) exact_local_ddl_create_schema = true;
@@ -440,6 +543,16 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_local_admin_register_external_relation_resolver) exact_local_ddl_create_schema = true;
   if (exact_local_admin_unregister_external_relation_resolver) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_dictionary) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_create_continuous_view) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_alter_continuous_view) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_drop_continuous_view) exact_local_ddl_create_schema = true;
+  if (exact_local_dml_async_insert_submit) exact_local_ddl_create_schema = true;
+  if (exact_local_dml_async_insert_status) exact_local_ddl_create_schema = true;
+  if (exact_local_dml_async_insert_cancel) exact_local_ddl_create_schema = true;
+  if (exact_local_dml_counter_add) exact_local_ddl_create_schema = true;
+  if (exact_local_dml_timeseries_schema_write) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_timeseries_series_cardinality_policy) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_create_timeseries_value_cache) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_set_index_optimizer_eligibility) exact_local_ddl_create_schema = true;
   if (exact_kv_structured_mutate && !exact_local_kv_structured_mutate) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_kv_structured_stream_append && !exact_local_kv_structured_stream_append) return Refuse(request,"SBLR.OPERAND.INVALID");
@@ -477,6 +590,18 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_ddl_alter_aggregate && !exact_local_ddl_alter_aggregate) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_aggregate && !exact_local_ddl_drop_aggregate) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_dictionary && !exact_local_ddl_drop_dictionary) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_alter_dictionary && !exact_local_ddl_alter_dictionary) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_create_continuous_view && !exact_local_ddl_create_continuous_view) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_alter_continuous_view && !exact_local_ddl_alter_continuous_view) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_drop_continuous_view && !exact_local_ddl_drop_continuous_view) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_dml_async_insert_submit && !exact_local_dml_async_insert_submit) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_dml_async_insert_status && !exact_local_dml_async_insert_status)
+  if (exact_dml_async_insert_cancel && !exact_local_dml_async_insert_cancel) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_dml_counter_add && !exact_local_dml_counter_add) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_dml_timeseries_schema_write && !exact_local_dml_timeseries_schema_write) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_timeseries_series_cardinality_policy && !exact_local_ddl_timeseries_series_cardinality_policy) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_create_timeseries_value_cache && !exact_local_ddl_create_timeseries_value_cache) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_timeseries_series_cardinality_policy && !exact_local_ddl_timeseries_series_cardinality_policy) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_purge_system_history && !exact_local_ddl_purge_system_history) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_set_index_optimizer_eligibility && !exact_local_ddl_set_index_optimizer_eligibility) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_set_table_type_enforcement && !exact_local_ddl_set_table_type_enforcement) return Refuse(request,"SBLR.OPERAND.INVALID");
@@ -494,7 +619,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_return_result_set && !exact_local_return_result_set) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (!stream.ok || stream.stream.operations.size() != 3 ||
       (!exact_query && !exact_source_map && !exact_error_vector &&
-       !exact_cluster_root &&
+       !exact_local_show_version && !exact_local_metrics_read && !exact_local_catalog_introspect && !exact_cluster_root &&
        !exact_local_txn_begin && !exact_local_txn_commit &&
        !exact_local_txn_rollback && !exact_local_txn_savepoint &&
        !exact_local_txn_release_savepoint && !exact_local_txn_rollback_to_savepoint &&
