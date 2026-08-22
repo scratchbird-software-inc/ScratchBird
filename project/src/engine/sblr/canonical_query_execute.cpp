@@ -34080,7 +34080,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       joins.size() != scans.size() - 1 || join == nullptr ||
       filters.size() > scans.size() + 2 ||
       projects.size() > scans.size() + 2 ||
-      ctes.size() > scans.size() + 1 || dag.nodes.size() > 49 ||
+      ctes.size() > scans.size() + 2 || dag.nodes.size() > 50 ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
       dag.nodes.size() !=
@@ -34199,6 +34199,37 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                       "join subtree admits at most one local PROJECT");
       }
       join_subtree_project_node_ids.insert(project->node_id);
+    }
+  }
+  std::unordered_set<std::uint32_t> join_subtree_cte_node_ids;
+  for (const auto* cte : local_ctes) {
+    const auto input_node =
+        cte->input_node_ids.size() == 1
+            ? nodes_by_id.find(cte->input_node_ids.front())
+            : nodes_by_id.end();
+    if (input_node == nodes_by_id.end()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CTE-INPUT-V1",
+                    "join CTE input node is absent");
+    }
+    const bool direct_join_subtree =
+        input_node->second->node_kind ==
+            api::RelationalDagNodeKind::kJoin &&
+        input_node->second != join;
+    const bool filtered_join_subtree =
+        input_node->second->node_kind ==
+            api::RelationalDagNodeKind::kFilter &&
+        join_subtree_filter_node_ids.contains(input_node->second->node_id);
+    const bool projected_join_subtree =
+        input_node->second->node_kind ==
+            api::RelationalDagNodeKind::kProject &&
+        join_subtree_project_node_ids.contains(input_node->second->node_id);
+    if (direct_join_subtree || filtered_join_subtree ||
+        projected_join_subtree) {
+      if (!join_subtree_cte_node_ids.empty()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CTE-INPUT-V1",
+                      "join subtree admits at most one local CTE");
+      }
+      join_subtree_cte_node_ids.insert(cte->node_id);
     }
   }
   const auto lineage_output_node_for =
@@ -34551,6 +34582,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               node.input_node_ids.size() == 1
                   ? nodes_by_id.find(node.input_node_ids.front())
                   : nodes_by_id.end();
+          const bool join_subtree_cte =
+              join_subtree_cte_node_ids.contains(node.node_id);
           const bool exact_input =
               input_node != nodes_by_id.end() &&
               (input_node->second->node_kind ==
@@ -34558,13 +34591,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                (input_node->second->node_kind ==
                     api::RelationalDagNodeKind::kFilter &&
                 std::ranges::find(local_filters, input_node->second) !=
-                    local_filters.end()) ||
+                    local_filters.end() &&
+                (!join_subtree_filter_node_ids.contains(
+                     input_node->second->node_id) ||
+                 join_subtree_cte)) ||
                (input_node->second->node_kind ==
                     api::RelationalDagNodeKind::kProject &&
                 std::ranges::find(local_projects, input_node->second) !=
                     local_projects.end() &&
-                !join_subtree_project_node_ids.contains(
-                    input_node->second->node_id)));
+                (!join_subtree_project_node_ids.contains(
+                     input_node->second->node_id) ||
+                 join_subtree_cte)) ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kJoin &&
+                input_node->second != join && join_subtree_cte));
           const bool outputless =
               std::ranges::none_of(dag.outputs, [&](const auto& output) {
                 return output.relation_node_id == node.node_id;
@@ -34926,6 +34966,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                                         ? materialized_cte_capability_uuid
                                         : inline_cte_capability_uuid;
       const bool terminal = cte == terminal_cte;
+      const bool join_subtree =
+          join_subtree_cte_node_ids.contains(cte->node_id);
       profiles.push_back(
           {cte->node_id, implementation_id, capability_uuid,
            plan::CanonicalLogicalRelationalNodeKind::kCte,
@@ -34934,9 +34976,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                ? (cte->shareable
                       ? "canonical.heap.join-tail.cte.materialize.v1"
                       : "canonical.heap.join-tail.cte.inline.v1")
-               : (cte->shareable
-                      ? "canonical.heap.join-input.cte.materialize.v1"
-                      : "canonical.heap.join-input.cte.inline.v1"),
+               : (join_subtree
+                      ? (cte->shareable
+                             ? "canonical.heap.join-subtree.cte.materialize.v1"
+                             : "canonical.heap.join-subtree.cte.inline.v1")
+                      : (cte->shareable
+                             ? "canonical.heap.join-input.cte.materialize.v1"
+                             : "canonical.heap.join-input.cte.inline.v1")),
            1, join_memory_grant, 1, 1});
       profiles.back().runtime_peak_from_callback_batches = true;
       profiles.back().runtime_auxiliary_from_first_input_batch =
