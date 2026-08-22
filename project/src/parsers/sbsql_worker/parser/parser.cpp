@@ -4120,7 +4120,8 @@ class NativeRelationalParser final {
             !IsWord(Current(), "FULL") && !IsWord(Current(), "JOIN") &&
             !IsWord(Current(), "OUTER") && !IsWord(Current(), "SEMI") &&
             !IsWord(Current(), "ANTI") && !IsWord(Current(), "ON") &&
-            !IsWord(Current(), "WHERE") && !IsWord(Current(), "AND")))) {
+            !IsWord(Current(), "WHERE") && !IsWord(Current(), "LIMIT") &&
+            !IsWord(Current(), "AND")))) {
         const Token& alias = Consume();
         source.alias = NativeIdentifierAstNode{
             alias.text, alias.quoted, TokenSourceRange(alias)};
@@ -4600,6 +4601,7 @@ class NativeRelationalParser final {
     }
     const Token* join_end = query_end;
     std::optional<std::uint32_t> join_filter_predicate_id;
+    std::optional<std::uint32_t> join_limit_expression_id;
     const auto parsed_model_source_count = std::ranges::count_if(
         parsed_sources, [](const auto& source) {
           return source.source_kind !=
@@ -4730,6 +4732,46 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       query_end = &TokenForRangeEnd(predicate.range);
+    }
+    if (!AtEnd() && IsWord(Current(), "LIMIT")) {
+      if (!wildcard_projection || join_filter_predicate_id.has_value() ||
+          !all_ordinary_catalog_sources) {
+        Refuse("catalog_join_limit_profile_unsupported",
+               "bounded catalog JOIN LIMIT requires an all-catalog wildcard "
+               "query without WHERE");
+        return FinishRefusal();
+      }
+      Consume();
+      if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+        Refuse("catalog_join_limit_bound_required",
+               "bounded catalog JOIN LIMIT requires one unsigned int64 literal");
+        return FinishRefusal();
+      }
+      const Token& literal_token = Consume();
+      std::uint64_t parsed_limit = 0;
+      const auto converted = std::from_chars(
+          literal_token.text.data(),
+          literal_token.text.data() + literal_token.text.size(), parsed_limit);
+      if (literal_token.text.empty() ||
+          (literal_token.text.size() > 1 && literal_token.text.front() == '0') ||
+          converted.ec != std::errc{} ||
+          converted.ptr !=
+              literal_token.text.data() + literal_token.text.size() ||
+          parsed_limit > static_cast<std::uint64_t>(
+                             std::numeric_limits<std::int64_t>::max())) {
+        Refuse("catalog_join_limit_bound_invalid",
+               "bounded catalog JOIN LIMIT requires one canonical nonnegative int64 literal");
+        return FinishRefusal();
+      }
+      NativeExpressionAstNode literal;
+      literal.expression_id = NextExpressionId();
+      literal.expression_kind = NativeExpressionAstKind::kLiteral;
+      literal.literal_kind = NativeLiteralAstKind::kNumeric;
+      literal.spelling = literal_token.text;
+      literal.range = TokenSourceRange(literal_token);
+      join_limit_expression_id = literal.expression_id;
+      document_.expressions.push_back(std::move(literal));
+      query_end = &literal_token;
     }
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
@@ -4870,6 +4912,17 @@ class NativeRelationalParser final {
       project.output_expression_ids = projection_expression_ids;
       project.range = Span(select_token, *query_end);
       document_.relations.push_back(std::move(project));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    }
+    if (join_limit_expression_id.has_value()) {
+      NativeRelationAstNode limit;
+      limit.relation_id = document_.root_relation_id + 1;
+      limit.relation_kind = NativeRelationAstKind::kLimit;
+      limit.input_relation_ids = {document_.root_relation_id};
+      limit.output_expression_ids = joined_wildcard_ids;
+      limit.limit_expression_ids = {*join_limit_expression_id};
+      limit.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(limit));
       document_.root_relation_id = document_.relations.back().relation_id;
     }
     document_.status = NativeRelationalParseStatus::kAccepted;

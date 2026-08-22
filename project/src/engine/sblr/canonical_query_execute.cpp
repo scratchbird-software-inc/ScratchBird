@@ -18043,7 +18043,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
     const std::uint64_t row_offset,
     const bool fetch_first_rows_only,
     const std::size_t maximum_input_row_count,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  const std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory
+          ? sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512
+          : 0;
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kLimit;
   registration.implementation_id = std::move(implementation_id);
@@ -18051,9 +18060,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 = registration_retained_bytes;
   registration.execute =
       [row_limit, row_offset, fetch_first_rows_only,
-       maximum_input_row_count, mga_context = std::move(mga_context)](
+       maximum_input_row_count, mga_context = std::move(mga_context),
+       borrowed_mga_authority, strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -18081,7 +18093,22 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
         const auto& input_batch = *inputs.front().materialized_output_batch;
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 1, 64 * 1024,
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail = "object-backed LIMIT " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -18107,9 +18134,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           fetch_request.row_count = row_limit;
           fetch_request.offset = row_offset;
           fetch_request.row_count_is_bound = true;
-          fetch_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context,
-                                                   *execution_dag);
+          fetch_request.mga_authority = strict_dispatcher_memory
+                                            ? *borrowed_mga_authority
+                                            : BuildCanonicalExecutionMgaAuthority(
+                                                  mga_context, *execution_dag);
           auto fetched = exec::ExecuteCanonicalDescriptorFetchProfile(
               fetch_request, *execution_dag, input_batch);
           limited.diagnostic = std::move(fetched.diagnostic);
@@ -18126,9 +18154,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           limit_request.selected_physical_node_id = node.physical_node_id;
           limit_request.limit = row_limit;
           limit_request.offset = row_offset;
-          limit_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context,
-                                                   *execution_dag);
+          limit_request.mga_authority = strict_dispatcher_memory
+                                            ? *borrowed_mga_authority
+                                            : BuildCanonicalExecutionMgaAuthority(
+                                                  mga_context, *execution_dag);
           limited = exec::ExecuteCanonicalDescriptorLimit(
               limit_request, *execution_dag, input_batch);
         }
@@ -18136,12 +18165,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           step.diagnostic = std::move(limited.diagnostic);
           return step;
         }
-        if (limited.selected_plan_uuid != execution_dag->selected_plan_uuid ||
-            limited.executed_physical_node_id != node.physical_node_id ||
-            limited.causal_counter_id != node.causal_counter_id ||
-            !exec::PhysicalMgaStatementContextEqual(
-                limited.mga_statement_context,
-                execution_dag->mga_statement_context)) {
+        const auto& expected_statement_context =
+            strict_dispatcher_memory
+                ? borrowed_mga_authority->statement_context
+                : execution_dag->mga_statement_context;
+        const auto maximum_output_row_count =
+            row_offset >= input_batch.rows.size()
+                ? std::size_t{0}
+                : std::min<std::uint64_t>(
+                      row_limit,
+                      static_cast<std::uint64_t>(input_batch.rows.size()) -
+                          row_offset);
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                limited, *execution_dag, node, expected_statement_context) ||
+            limited.output_batch.rows.size() > maximum_output_row_count) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-LIMIT-EXECUTION-V1";
@@ -33954,6 +33991,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   std::vector<const api::RelationalDagNode*> filters;
   std::vector<const api::RelationalDagNode*> projects;
   std::vector<const api::RelationalDagNode*> ctes;
+  const api::RelationalDagNode* limit = nullptr;
   bool duplicate_or_unsupported_node = false;
   for (const auto& node : dag.nodes) {
     if (node.node_kind == api::RelationalDagNodeKind::kScan) {
@@ -33966,6 +34004,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       projects.push_back(&node);
     } else if (node.node_kind == api::RelationalDagNodeKind::kCte) {
       ctes.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kLimit &&
+               limit == nullptr) {
+      limit = &node;
     } else {
       duplicate_or_unsupported_node = true;
     }
@@ -33998,6 +34039,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   local_ctes.reserve(ctes.size());
   for (const auto* candidate : ctes) {
     if (candidate != terminal_cte) local_ctes.push_back(candidate);
+  }
+  const api::RelationalDagNode* terminal_limit = nullptr;
+  if (join != nullptr &&
+      join->node_kind == api::RelationalDagNodeKind::kLimit) {
+    terminal_limit = join;
+    exact_terminal_chain =
+        exact_terminal_chain &&
+        consume_terminal(api::RelationalDagNodeKind::kLimit, terminal_limit);
   }
   const api::RelationalDagNode* terminal_project = nullptr;
   if (join != nullptr &&
@@ -34082,11 +34131,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       projects.size() > scans.size() + joins.size() ||
       ctes.size() > scans.size() + joins.size() ||
       dag.nodes.size() > 68 ||
+      (terminal_limit != nullptr &&
+       (!filters.empty() || !projects.empty() || !ctes.empty())) ||
+      (limit == nullptr) != (terminal_limit == nullptr) ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
       dag.nodes.size() !=
           scans.size() + joins.size() + filters.size() +
-              projects.size() + ctes.size() ||
+              projects.size() + ctes.size() +
+              static_cast<std::size_t>(limit != nullptr) ||
       !accepted_join ||
       join->bound_expression_ids.size() !=
           static_cast<std::size_t>(predicate_join)) {
@@ -34786,6 +34839,75 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                       : join_tree_detail);
   }
 
+  std::uint64_t row_limit = 0;
+  if (terminal_limit != nullptr) {
+    CanonicalRelationalExpressionRuntime expression_runtime(
+        input.relational_dag, {});
+    std::string detail;
+    if (terminal_limit->shareable ||
+        terminal_limit->semantic_variant_id != "limit.bound-count.v1" ||
+        terminal_limit->input_node_ids !=
+            std::vector<std::uint32_t>{join->node_id} ||
+        terminal_limit->bound_expression_ids.size() != 1 ||
+        terminal_limit->output_descriptor_ids != join->output_descriptor_ids ||
+        !unary_empty(*terminal_limit) ||
+        !EvaluateNonNegativeRowBound(
+            &expression_runtime,
+            terminal_limit->bound_expression_ids.front(), &row_limit,
+            &detail)) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
+          detail.empty()
+              ? "object-backed join LIMIT tail binding is not exact"
+              : detail);
+    }
+    std::vector<const api::RelationalOutputRecord*> join_outputs;
+    std::vector<const api::RelationalOutputRecord*> limit_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == join->node_id) {
+        join_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == terminal_limit->node_id) {
+        limit_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(join_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    std::ranges::sort(limit_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    bool exact_limit_outputs =
+        join_outputs.size() == join->output_descriptor_ids.size() &&
+        limit_outputs.size() ==
+            terminal_limit->output_descriptor_ids.size() &&
+        join_outputs.size() == limit_outputs.size();
+    std::unordered_set<std::uint32_t> limit_output_ids;
+    for (std::size_t ordinal = 0;
+         exact_limit_outputs && ordinal < limit_outputs.size(); ++ordinal) {
+      exact_limit_outputs =
+          join_outputs[ordinal]->visible &&
+          join_outputs[ordinal]->ordinal == ordinal &&
+          limit_outputs[ordinal]->visible &&
+          limit_outputs[ordinal]->ordinal == ordinal &&
+          limit_outputs[ordinal]->output_id != 0 &&
+          limit_output_ids.insert(limit_outputs[ordinal]->output_id).second &&
+          limit_outputs[ordinal]->descriptor_id ==
+              terminal_limit->output_descriptor_ids[ordinal] &&
+          limit_outputs[ordinal]->descriptor_id ==
+              join_outputs[ordinal]->descriptor_id &&
+          limit_outputs[ordinal]->expression_id ==
+              join_outputs[ordinal]->expression_id &&
+          limit_outputs[ordinal]->output_name_utf8 ==
+              join_outputs[ordinal]->output_name_utf8;
+    }
+    if (!exact_limit_outputs) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
+          "object-backed join LIMIT output lineage is not exact");
+    }
+    nullable_by_node.emplace(terminal_limit->node_id,
+                             nullable_by_node.at(join->node_id));
+  }
+
   CanonicalRelationalExpressionRowBinding terminal_filter_row_binding;
   const auto* filter_input = join;
   if (terminal_filter != nullptr) {
@@ -34872,14 +34994,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         "object-backed join CTE configuration coverage is incomplete");
   }
   const auto* final_output_node =
-      terminal_cte != nullptr
+      terminal_limit != nullptr
+          ? terminal_limit
+          : terminal_cte != nullptr
           ? terminal_cte
           : (terminal_project != nullptr
                  ? terminal_project
                  : (terminal_filter != nullptr ? terminal_filter : join));
   // CTE is schema preserving and owns no public output records.
   const auto* publication_node =
-      terminal_project != nullptr
+      terminal_limit != nullptr
+          ? terminal_limit
+          : terminal_project != nullptr
           ? terminal_project
           : (terminal_filter != nullptr ? terminal_filter : join);
 
@@ -35038,13 +35164,27 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           cte->shareable;
     }
   }
+  std::string limit_capability_uuid;
+  if (terminal_limit != nullptr) {
+    limit_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-join-limit.capability");
+    profiles.push_back(
+        {terminal_limit->node_id, "limit.typed.v1", limit_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kLimit,
+         exec::PhysicalNodeKind::kLimit,
+         "canonical.heap.join-tail.limit.bound-count.v1", 1,
+         join_memory_grant, 1, 1});
+    profiles.back().runtime_peak_from_callback_batches = true;
+  }
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "heap JOIN-tail runtime memory receipts are incomplete");
   }
   const auto physical = PlanAndPublishLivePhysicalDag(
       planning_request, profiles,
-      terminal_cte != nullptr
+      terminal_limit != nullptr
+          ? "heap-join-tail-limit.selected-plan"
+          : terminal_cte != nullptr
           ? "heap-join-tail-cte.selected-plan"
           : (terminal_project != nullptr
                  ? "heap-join-tail-project.selected-plan"
@@ -35297,6 +35437,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             &input.context, selected.borrowed_mga_authority,
             std::move(materialized_cte_node_configurations)));
   }
+  if (terminal_limit != nullptr) {
+    selected.available_executors.push_back(MakeLiveLimitRegistration(
+        "limit.typed.v1", limit_capability_uuid, row_limit, 0, false,
+        maximum_output_rows, {}, &input.context,
+        selected.borrowed_mga_authority));
+  }
   std::uint64_t executor_registration_live_bytes =
       sizeof(selected.available_executors);
   std::uint64_t executor_registration_slots_bytes = 0;
@@ -35377,7 +35523,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     selected.result_publication_request.column_bindings.push_back(
         {ordinal, true, std::move(published)});
   }
-  selected.result_publication_request.maximum_row_count = maximum_output_rows;
+  selected.result_publication_request.maximum_row_count =
+      terminal_limit == nullptr
+          ? maximum_output_rows
+          : std::max<std::size_t>(
+                1, std::min<std::size_t>(
+                       maximum_output_rows,
+                       static_cast<std::size_t>(std::min<std::uint64_t>(
+                           row_limit,
+                           std::numeric_limits<std::size_t>::max()))));
   const auto execution = ExecuteSelectedWithMgaGuard(
       input.context, selected, physical.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
