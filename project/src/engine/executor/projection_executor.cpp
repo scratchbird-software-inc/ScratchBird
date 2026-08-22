@@ -42,6 +42,37 @@ bool ProjectionColumnCarrierIsExactDefault(
          projected_columns.capacity() == empty.capacity();
 }
 
+bool CanonicalExecutionMgaAuthorityCarrierIsExactDefault(
+    const CanonicalExecutionMgaAuthority& authority) {
+  const CanonicalExecutionMgaAuthority empty;
+  const auto exact_empty_string = [](const std::string& value,
+                                     const std::string& baseline) {
+    return value.empty() && value.capacity() == baseline.capacity();
+  };
+  const auto& context = authority.statement_context;
+  const auto& empty_context = empty.statement_context;
+  return authority.origin == empty.origin && !authority.resolve_current &&
+         PhysicalMgaStatementContextEqual(context, empty_context) &&
+         exact_empty_string(context.statement_uuid,
+                            empty_context.statement_uuid) &&
+         exact_empty_string(context.owning_transaction_uuid,
+                            empty_context.owning_transaction_uuid) &&
+         exact_empty_string(context.statement_snapshot_uuid,
+                            empty_context.statement_snapshot_uuid) &&
+         exact_empty_string(context.statement_metadata_snapshot_uuid,
+                            empty_context.statement_metadata_snapshot_uuid) &&
+         exact_empty_string(context.snapshot_kind,
+                            empty_context.snapshot_kind) &&
+         exact_empty_string(context.statement_timestamp,
+                            empty_context.statement_timestamp) &&
+         context.active_excluded_local_transaction_ids.empty() &&
+         context.active_excluded_local_transaction_ids.capacity() ==
+             empty_context.active_excluded_local_transaction_ids.capacity() &&
+         context.in_doubt_excluded_local_transaction_ids.empty() &&
+         context.in_doubt_excluded_local_transaction_ids.capacity() ==
+             empty_context.in_doubt_excluded_local_transaction_ids.capacity();
+}
+
 bool IsCanonicalDescriptorProjectionImplementation(
     const std::string_view implementation_id) {
   return implementation_id == "project.typed.row.v1" ||
@@ -125,9 +156,20 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjectionBound(
         "descriptor projection request carries conflicting owned execution "
         "carriers"));
   }
+  if (request.borrowed_mga_authority != nullptr &&
+      !CanonicalExecutionMgaAuthorityCarrierIsExactDefault(
+          request.mga_authority)) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-029-CANONICAL-PHYSICAL-ROUTE-V1",
+        "descriptor projection carries conflicting MGA authority"));
+  }
+  const auto& active_mga_authority =
+      request.borrowed_mga_authority == nullptr
+          ? request.mga_authority
+          : *request.borrowed_mga_authority;
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, execution_dag);
+      active_mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
@@ -249,13 +291,13 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjectionBound(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, execution_dag);
+      active_mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
   result.diagnostic = {};
   result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
-  result.mga_statement_context = request.mga_authority.statement_context;
+  result.mga_statement_context = active_mga_authority.statement_context;
   return result;
 }
 }  // namespace

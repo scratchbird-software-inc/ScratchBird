@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -752,20 +753,18 @@ void PublishOrdinaryRuntimeObservations(
     return metric::CanonicalObservedUint64{
         metric::CanonicalRuntimeMetricState::kNotApplicable, 0};
   };
+  const auto* borrowed_memory_receipts = &memory_receipts;
   for (auto& registration : *registrations) {
     if (!registration.engine_owned || !registration.execute ||
         registration.implementation_id.starts_with("scan.heap") ||
-        registration.publishes_runtime_observation_v1) {
-      continue;
-    }
-    // Memory-limited live joins perform complete conservative admission in
-    // their callback, but do not yet carry an allocator-observed exact peak.
-    // Do not relabel a reconstructed batch/pair estimate as an exact producer
-    // receipt; runtime feedback remains unavailable for this node instead.
-    if (registration.node_kind == exec::PhysicalNodeKind::kJoin &&
+        registration.publishes_runtime_observation_v1 ||
         registration.honors_dispatcher_memory_limit_v1) {
       continue;
     }
+    // Memory-limited live callbacks perform complete conservative admission
+    // internally, but do not carry an allocator-observed exact peak.
+    // Do not relabel a reconstructed batch/pair estimate as an exact producer
+    // receipt; runtime feedback remains unavailable for this node instead.
     const bool has_producer_receipt = std::ranges::any_of(
         memory_receipts, [&](const auto& item) {
           return item.second.implementation_id ==
@@ -776,14 +775,15 @@ void PublishOrdinaryRuntimeObservations(
     auto execute = std::move(registration.execute);
     registration.execute =
         [execute = std::move(execute), observed, not_applicable,
-         memory_receipts](
+         borrowed_memory_receipts](
             const exec::TypedPhysicalNodeDag& dag,
             const exec::PhysicalNodeRecord& node,
             const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
           auto step = execute(dag, node, inputs);
           if (!step.diagnostic.ok) return step;
-          const auto memory = memory_receipts.find(node.physical_node_id);
-          if (memory == memory_receipts.end() ||
+          const auto memory =
+              borrowed_memory_receipts->find(node.physical_node_id);
+          if (memory == borrowed_memory_receipts->end() ||
               memory->second.implementation_id != node.implementation_id ||
               memory->second.physical_node_id != node.physical_node_id ||
               !memory->second.producer_peak_memory_exact ||
@@ -1043,6 +1043,16 @@ void PublishOrdinaryRuntimeObservations(
           }
           return step;
         };
+    if (registration.retained_live_memory_bytes_v1 != 0) {
+      constexpr std::uint64_t kObservationWrapperRetainedBytes =
+          sizeof(exec::CanonicalPhysicalNodeExecutor) + 8 * sizeof(void*) +
+          256;
+      if (!CheckedAdd(registration.retained_live_memory_bytes_v1,
+                      kObservationWrapperRetainedBytes,
+                      &registration.retained_live_memory_bytes_v1)) {
+        registration.retained_live_memory_bytes_v1 = 0;
+      }
+    }
     registration.publishes_runtime_observation_v1 = true;
   }
 }
@@ -1055,8 +1065,7 @@ bool HasOrdinaryRuntimeObservationWrapperTarget(
     if (!registration.engine_owned || !registration.execute ||
         registration.implementation_id.starts_with("scan.heap") ||
         registration.publishes_runtime_observation_v1 ||
-        (registration.node_kind == exec::PhysicalNodeKind::kJoin &&
-         registration.honors_dispatcher_memory_limit_v1)) {
+        registration.honors_dispatcher_memory_limit_v1) {
       return false;
     }
     return std::ranges::any_of(memory_receipts, [&](const auto& item) {
@@ -9909,13 +9918,14 @@ class CanonicalDescriptorFilterPredicateReceiptIssuer {
       const std::uint64_t selected_physical_node_id,
       const std::uint64_t scoped_root_physical_node_id,
       const std::size_t maximum_input_row_count,
-      const exec::CanonicalExecutionMgaAuthority& mga_authority) {
+      const exec::CanonicalExecutionMgaAuthority& mga_authority,
+      const bool borrow_mga_authority = false) {
     auto issued = IssueBound(
         relational_dag, predicate_expression_id, predicate_row_binding,
         input_batch, expression_services, expression_consumer,
         predicate_consumer, physical_dag, selected_physical_node_id,
         scoped_root_physical_node_id, maximum_input_row_count, mga_authority,
-        true);
+        true, borrow_mga_authority);
     if (!issued.diagnostic.ok || !issued.receipt) {
       exec::CanonicalDescriptorFilterResult result;
       result.diagnostic = std::move(issued.diagnostic);
@@ -9941,7 +9951,8 @@ class CanonicalDescriptorFilterPredicateReceiptIssuer {
       const std::uint64_t scoped_root_physical_node_id,
       const std::size_t maximum_input_row_count,
       const exec::CanonicalExecutionMgaAuthority& mga_authority,
-      const bool borrowed_execution_carriers) {
+      const bool borrowed_execution_carriers,
+      const bool borrow_mga_authority = false) {
     FilterPredicateReceiptIssueResult result;
     const auto refuse = [&](std::string detail) {
       result.diagnostic.ok = false;
@@ -10116,7 +10127,11 @@ class CanonicalDescriptorFilterPredicateReceiptIssuer {
           row_slot_expression_ids.begin(), row_slot_expression_ids.end());
       std::ranges::sort(receipt->row_slot_expression_ids_);
       receipt->maximum_input_row_count_ = maximum_input_row_count;
-      receipt->mga_authority_ = mga_authority;
+      if (borrow_mga_authority) {
+        receipt->borrowed_mga_authority_ = &mga_authority;
+      } else {
+        receipt->mga_authority_ = mga_authority;
+      }
       receipt->exact_current_revalidated_before_issue_ = true;
       receipt->borrowed_execution_carriers_ =
           borrowed_execution_carriers;
@@ -10640,19 +10655,36 @@ bool EvaluateNonNegativeRowBound(
           refusal_detail)) {
     return false;
   }
+  const bool textual = !value.encoded_value.empty();
+  const bool binary = !value.binary_value.empty();
   if (value.state != api::EngineValueState::value || value.is_null ||
-      value.descriptor.canonical_type_name != "int64" ||
-      value.encoded_value.empty()) {
+      value.descriptor.canonical_type_name != "int64" || textual == binary) {
     *refusal_detail = "row bound is not a non-NULL canonical int64 value";
     return false;
   }
   std::int64_t decoded = 0;
-  const auto [end, error] = std::from_chars(
-      value.encoded_value.data(),
-      value.encoded_value.data() + value.encoded_value.size(), decoded);
-  if (error != std::errc{} ||
-      end != value.encoded_value.data() + value.encoded_value.size() ||
-      decoded < 0) {
+  if (textual) {
+    const auto [end, error] = std::from_chars(
+        value.encoded_value.data(),
+        value.encoded_value.data() + value.encoded_value.size(), decoded);
+    if (error != std::errc{} ||
+        end != value.encoded_value.data() + value.encoded_value.size()) {
+      *refusal_detail = "row bound is outside exact int64 admission";
+      return false;
+    }
+  } else {
+    if (value.binary_value.size() != sizeof(std::int64_t)) {
+      *refusal_detail = "row bound binary int64 payload is malformed";
+      return false;
+    }
+    std::uint64_t encoded = 0;
+    for (std::size_t index = 0; index < sizeof(encoded); ++index) {
+      encoded |= static_cast<std::uint64_t>(value.binary_value[index])
+                 << (index * 8);
+    }
+    decoded = std::bit_cast<std::int64_t>(encoded);
+  }
+  if (decoded < 0) {
     *refusal_detail = "row bound is negative or outside exact int64 admission";
     return false;
   }
@@ -11395,6 +11427,16 @@ bool BuildOperatorLocalPhysicalDag(
     const exec::TypedPhysicalNodeDag& dag,
     std::uint64_t root_physical_node_id,
     exec::TypedPhysicalNodeDag* operator_dag,
+    std::string* detail);
+
+bool BuildStrictUnaryOperatorLocalPhysicalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    const exec::PhysicalNodeRecord& node,
+    const exec::DescriptorBatch& input_batch,
+    std::uint64_t maximum_additional_batch_copies,
+    std::uint64_t auxiliary_memory_bytes,
+    exec::TypedPhysicalNodeDag* operator_dag,
+    std::size_t* callback_memory_bound,
     std::string* detail);
 
 template <typename ExecutionReceipt>
@@ -12251,11 +12293,56 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
   return registration;
 }
 
+struct LiveProjectRuntimeNodeConfiguration {
+  std::uint32_t relational_node_id{0};
+  std::vector<std::size_t> projected_columns;
+};
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
     std::vector<std::size_t> projected_columns,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr,
+    std::vector<LiveProjectRuntimeNodeConfiguration>
+        runtime_node_configurations = {}) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  std::uint64_t registration_retained_bytes =
+      sizeof(std::vector<std::size_t>) +
+      sizeof(api::EngineRequestContext) +
+      sizeof(std::vector<LiveProjectRuntimeNodeConfiguration>) +
+      8 * sizeof(void*) + 512;
+  std::uint64_t projected_column_bytes = 0;
+  if (!strict_dispatcher_memory ||
+      !CheckedMultiply(projected_columns.capacity(), sizeof(std::size_t),
+                       &projected_column_bytes) ||
+      !CheckedAdd(registration_retained_bytes, projected_column_bytes,
+                  &registration_retained_bytes)) {
+    registration_retained_bytes = 0;
+  }
+  std::uint64_t configuration_bytes = 0;
+  if (registration_retained_bytes == 0 ||
+      !CheckedMultiply(runtime_node_configurations.capacity(),
+                       sizeof(LiveProjectRuntimeNodeConfiguration),
+                       &configuration_bytes) ||
+      !CheckedAdd(registration_retained_bytes, configuration_bytes,
+                  &registration_retained_bytes)) {
+    registration_retained_bytes = 0;
+  }
+  for (const auto& configuration : runtime_node_configurations) {
+    std::uint64_t nested_bytes = 0;
+    if (registration_retained_bytes == 0 ||
+        !CheckedMultiply(configuration.projected_columns.capacity(),
+                         sizeof(std::size_t), &nested_bytes) ||
+        !CheckedAdd(registration_retained_bytes, nested_bytes,
+                    &registration_retained_bytes)) {
+      registration_retained_bytes = 0;
+      break;
+    }
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kProject;
   registration.implementation_id = "project.descriptor-direct.v1";
@@ -12263,19 +12350,47 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
   registration.execute =
       [projected_columns = std::move(projected_columns),
-       maximum_input_row_count, mga_context = std::move(mga_context)](
+       maximum_input_row_count, mga_context = std::move(mga_context),
+       borrowed_mga_authority, strict_dispatcher_memory,
+       runtime_node_configurations = std::move(runtime_node_configurations)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
-        step.selected_plan_uuid = dag.selected_plan_uuid;
-        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
-        step.output_descriptor_ids = node.output_descriptor_ids;
-        step.authority.engine_mga_snapshot_bound = true;
+        const LiveProjectRuntimeNodeConfiguration* runtime_node_configuration =
+            nullptr;
+        for (const auto& candidate : runtime_node_configurations) {
+          if (candidate.relational_node_id != node.relational_node_id) continue;
+          if (runtime_node_configuration != nullptr) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1";
+            step.diagnostic.detail =
+                "object-backed PROJECT has duplicate logical-node configuration";
+            return step;
+          }
+          runtime_node_configuration = &candidate;
+        }
+        if (!runtime_node_configurations.empty() &&
+            runtime_node_configuration == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1";
+          step.diagnostic.detail =
+              "object-backed PROJECT logical-node configuration is absent";
+          return step;
+        }
+        const auto& active_projected_columns =
+            runtime_node_configuration == nullptr
+                ? projected_columns
+                : runtime_node_configuration->projected_columns;
         if (inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -12292,15 +12407,25 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
         }
         const auto& input_batch =
             *inputs.front().materialized_output_batch;
-        const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
-            input_batch, inputs.front().output_descriptor_ids);
-        if (!input_validation.ok) {
-          step.diagnostic = input_validation;
-          return step;
-        }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 1, 64 * 1024,
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "object-backed PROJECT " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -12315,19 +12440,35 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
           }
           execution_dag = &*scoped_execution_dag;
         }
+        const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, inputs.front().output_descriptor_ids);
+        if (!input_validation.ok) {
+          step.diagnostic = input_validation;
+          return step;
+        }
         exec::CanonicalDescriptorProjectionRequest project_request;
         project_request.selected_physical_node_id = node.physical_node_id;
-        project_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        if (strict_dispatcher_memory) {
+          project_request.borrowed_mga_authority = borrowed_mga_authority;
+        } else {
+          project_request.mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                  *execution_dag);
+        }
         auto project_result = exec::ExecuteCanonicalDescriptorProjection(
-            project_request, *execution_dag, input_batch, projected_columns);
+            project_request, *execution_dag, input_batch,
+            active_projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
           return step;
         }
+        const auto& active_mga_authority =
+            project_request.borrowed_mga_authority == nullptr
+                ? project_request.mga_authority
+                : *project_request.borrowed_mga_authority;
         if (!CanonicalOperatorExecutionReceiptMatches(
                 project_result, *execution_dag, node,
-                project_request.mga_authority.statement_context)) {
+                active_mga_authority.statement_context)) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-EXECUTION-V1";
@@ -12335,6 +12476,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
               "object-backed PROJECT execution receipt changed";
           return step;
         }
+        step.selected_plan_uuid =
+            std::move(project_result.selected_plan_uuid);
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -12348,6 +12493,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
   return registration;
 }
 
+struct LiveFilterRuntimeNodeConfiguration {
+  std::uint32_t relational_node_id{0};
+  std::uint32_t predicate_expression_id{0};
+  CanonicalRelationalExpressionRowBinding predicate_row_binding;
+};
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
     const std::uint32_t predicate_expression_id,
     CanonicalRelationalExpressionRowBinding predicate_row_binding,
@@ -12359,7 +12510,61 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
     const api::EngineCanonicalExpressionConsumer expression_consumer =
         api::EngineCanonicalExpressionConsumer::filter,
     const api::EnginePredicateConsumer predicate_consumer =
-        api::EnginePredicateConsumer::filter) {
+        api::EnginePredicateConsumer::filter,
+    const api::TypedRelationalDag* borrowed_relational_dag = nullptr,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr,
+    std::vector<LiveFilterRuntimeNodeConfiguration>
+        runtime_node_configurations = {}) {
+  const bool strict_dispatcher_memory =
+      borrowed_relational_dag != nullptr &&
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  std::uint64_t registration_retained_bytes =
+      sizeof(CanonicalRelationalExpressionRowBinding) +
+      sizeof(api::TypedRelationalDag) +
+      sizeof(CanonicalRelationalExpressionRuntimeServices) +
+      sizeof(api::EngineRequestContext) +
+      sizeof(std::vector<LiveFilterRuntimeNodeConfiguration>) +
+      12 * sizeof(void*) + 1024;
+  const auto account_registration_array =
+      [&](const std::size_t count, const std::size_t width) {
+        std::uint64_t bytes = 0;
+        return CheckedMultiply(count, width, &bytes) &&
+               CheckedAdd(registration_retained_bytes, bytes,
+                          &registration_retained_bytes);
+      };
+  if (!strict_dispatcher_memory ||
+      !account_registration_array(
+          predicate_row_binding.row_descriptor_ids.capacity(),
+          sizeof(std::uint32_t)) ||
+      !account_registration_array(
+          (predicate_row_binding.row_nullable.capacity() + 63) / 64,
+          sizeof(std::uint64_t)) ||
+      !account_registration_array(
+          predicate_row_binding.slots.capacity(),
+          sizeof(CanonicalRelationalExpressionRowSlotBinding)) ||
+      !account_registration_array(
+          runtime_node_configurations.capacity(),
+          sizeof(LiveFilterRuntimeNodeConfiguration))) {
+    registration_retained_bytes = 0;
+  }
+  for (const auto& configuration : runtime_node_configurations) {
+    if (registration_retained_bytes == 0 ||
+        !account_registration_array(
+            configuration.predicate_row_binding.row_descriptor_ids.capacity(),
+            sizeof(std::uint32_t)) ||
+        !account_registration_array(
+            (configuration.predicate_row_binding.row_nullable.capacity() + 63) /
+                64,
+            sizeof(std::uint64_t)) ||
+        !account_registration_array(
+            configuration.predicate_row_binding.slots.capacity(),
+            sizeof(CanonicalRelationalExpressionRowSlotBinding))) {
+      registration_retained_bytes = 0;
+      break;
+    }
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kFilter;
   registration.implementation_id = "filter.3vl.row.v1";
@@ -12367,23 +12572,55 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
   registration.execute =
       [predicate_expression_id,
        predicate_row_binding = std::move(predicate_row_binding),
        relational_dag = std::move(relational_dag),
        expression_services = std::move(expression_services),
        maximum_input_row_count, mga_context = std::move(mga_context),
-       expression_consumer, predicate_consumer](
+       expression_consumer, predicate_consumer, borrowed_relational_dag,
+       borrowed_mga_authority, strict_dispatcher_memory,
+       runtime_node_configurations = std::move(runtime_node_configurations)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
-        step.selected_plan_uuid = dag.selected_plan_uuid;
-        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
-        step.output_descriptor_ids = node.output_descriptor_ids;
-        step.authority.engine_mga_snapshot_bound = true;
+        const LiveFilterRuntimeNodeConfiguration* runtime_node_configuration =
+            nullptr;
+        for (const auto& candidate : runtime_node_configurations) {
+          if (candidate.relational_node_id != node.relational_node_id) continue;
+          if (runtime_node_configuration != nullptr) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1";
+            step.diagnostic.detail =
+                "object-backed FILTER has duplicate logical-node configuration";
+            return step;
+          }
+          runtime_node_configuration = &candidate;
+        }
+        if (!runtime_node_configurations.empty() &&
+            runtime_node_configuration == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1";
+          step.diagnostic.detail =
+              "object-backed FILTER logical-node configuration is absent";
+          return step;
+        }
+        const auto active_predicate_expression_id =
+            runtime_node_configuration == nullptr
+                ? predicate_expression_id
+                : runtime_node_configuration->predicate_expression_id;
+        const auto& active_predicate_row_binding =
+            runtime_node_configuration == nullptr
+                ? predicate_row_binding
+                : runtime_node_configuration->predicate_row_binding;
         if (node.input_physical_node_ids.size() != 1 ||
             inputs.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -12399,15 +12636,61 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
-        const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
-            input_batch, inputs.front().output_descriptor_ids);
-        if (!input_validation.ok) {
-          step.diagnostic = input_validation;
-          return step;
-        }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          std::uint64_t input_live_bytes = 0;
+          std::uint64_t truth_bytes = 0;
+          std::uint64_t auxiliary_bytes = 64 * 1024;
+          if (!BoundDescriptorBatchLiveMemoryBytes(input_batch,
+                                                   &input_live_bytes) ||
+              !CheckedMultiply(input_batch.rows.size(),
+                               sizeof(api::EngineSqlTruthValue),
+                               &truth_bytes) ||
+              !CheckedAdd(auxiliary_bytes, truth_bytes,
+                          &auxiliary_bytes)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "object-backed FILTER predicate accounting overflowed";
+            return step;
+          }
+          const auto& active_relational_dag = *borrowed_relational_dag;
+          const auto predicate_scratch = BoundLiveJoinPredicateScratchBytes(
+              active_relational_dag, active_predicate_expression_id,
+              active_predicate_row_binding, input_live_bytes,
+              [] { return false; });
+          if (!predicate_scratch.ok ||
+              !CheckedAdd(auxiliary_bytes,
+                          predicate_scratch.maximum_payload_bytes,
+                          &auxiliary_bytes) ||
+              !CheckedAdd(auxiliary_bytes,
+                          predicate_scratch.maximum_structural_bytes,
+                          &auxiliary_bytes)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "object-backed FILTER predicate scratch is unbounded";
+            return step;
+          }
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 1, auxiliary_bytes,
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "object-backed FILTER " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -12422,22 +12705,38 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
           }
           execution_dag = &*scoped_execution_dag;
         }
-        const auto mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, inputs.front().output_descriptor_ids);
+        if (!input_validation.ok) {
+          step.diagnostic = input_validation;
+          return step;
+        }
+        std::optional<exec::CanonicalExecutionMgaAuthority> owned_authority;
+        const exec::CanonicalExecutionMgaAuthority* active_authority =
+            borrowed_mga_authority;
+        if (!strict_dispatcher_memory) {
+          owned_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                  *execution_dag);
+          active_authority = &*owned_authority;
+        }
         auto filtered = CanonicalDescriptorFilterPredicateReceiptIssuer::
             IssueAndExecuteBorrowed(
-                relational_dag, predicate_expression_id,
-                predicate_row_binding, input_batch, expression_services,
+                strict_dispatcher_memory ? *borrowed_relational_dag
+                                         : relational_dag,
+                active_predicate_expression_id,
+                active_predicate_row_binding, input_batch, expression_services,
                 expression_consumer, predicate_consumer, *execution_dag,
                 node.physical_node_id, node.physical_node_id,
-                maximum_input_row_count, mga_authority);
+                maximum_input_row_count, *active_authority,
+                strict_dispatcher_memory);
         if (!filtered.diagnostic.ok) {
           step.diagnostic = std::move(filtered.diagnostic);
           return step;
         }
         if (!CanonicalOperatorExecutionReceiptMatches(
                 filtered, *execution_dag, node,
-                mga_authority.statement_context)) {
+                active_authority->statement_context)) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1";
@@ -12445,6 +12744,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
               "object-backed FILTER execution receipt changed";
           return step;
         }
+        step.selected_plan_uuid =
+            std::move(filtered.selected_plan_uuid);
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -13258,6 +13561,155 @@ std::optional<std::uint64_t> BoundOperatorLocalPhysicalDagCopyMemoryBytes(
     }
   }
   return bytes;
+}
+
+bool BuildStrictUnaryOperatorLocalPhysicalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    const exec::PhysicalNodeRecord& node,
+    const exec::DescriptorBatch& input_batch,
+    const std::uint64_t maximum_additional_batch_copies,
+    const std::uint64_t auxiliary_memory_bytes,
+    exec::TypedPhysicalNodeDag* operator_dag,
+    std::size_t* callback_memory_bound,
+    std::string* detail) {
+  if (operator_dag == nullptr || callback_memory_bound == nullptr ||
+      detail == nullptr || maximum_additional_batch_copies == 0) {
+    if (detail != nullptr) {
+      *detail = "strict unary preflight request is incomplete";
+    }
+    return false;
+  }
+  const auto selected_bound = SelectedNodeAggregateMemoryBound(dag, node);
+  const auto dag_copy_bound =
+      BoundOperatorLocalPhysicalDagCopyMemoryBytes(dag);
+  std::uint64_t dag_validation_scratch_bytes = 0;
+  std::uint64_t input_live_bytes = 0;
+  bool cancellation_observed = false;
+  bool cancellation_probe_failed = false;
+  const auto validation_scratch =
+      exec::BoundDescriptorBatchValidationScratchMemoryBytes(
+          input_batch, {}, &cancellation_observed,
+          &cancellation_probe_failed);
+  std::uint64_t additional_batch_bytes = 0;
+  std::uint64_t callback_carrier_bytes =
+      sizeof(exec::CanonicalPhysicalDispatchStepResult) + 64 * 1024;
+  const auto add_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
+           CheckedAdd(callback_carrier_bytes,
+                      static_cast<std::uint64_t>(value.capacity()) + 1,
+                      &callback_carrier_bytes);
+  };
+  std::uint64_t context_array_bytes = 0;
+  const auto add_context_array = [&](const std::size_t count,
+                                     const std::size_t width) {
+    return CheckedMultiply(count, width, &context_array_bytes) &&
+           CheckedAdd(callback_carrier_bytes, context_array_bytes,
+                      &callback_carrier_bytes);
+  };
+  const auto& context = dag.mga_statement_context;
+  const bool callback_carriers_bounded =
+      add_string(dag.selected_plan_uuid) &&
+      add_string(dag.selected_plan_uuid) &&
+      add_string(context.statement_uuid) &&
+      add_string(context.owning_transaction_uuid) &&
+      add_string(context.statement_snapshot_uuid) &&
+      add_string(context.statement_metadata_snapshot_uuid) &&
+      add_context_array(
+          context.active_excluded_local_transaction_ids.capacity(),
+          sizeof(std::uint64_t)) &&
+      add_context_array(
+          context.in_doubt_excluded_local_transaction_ids.capacity(),
+          sizeof(std::uint64_t)) &&
+      add_string(context.snapshot_kind) &&
+      add_string(context.statement_timestamp) &&
+      add_string(context.statement_uuid) &&
+      add_string(context.owning_transaction_uuid) &&
+      add_string(context.statement_snapshot_uuid) &&
+      add_string(context.statement_metadata_snapshot_uuid) &&
+      add_context_array(
+          context.active_excluded_local_transaction_ids.capacity(),
+          sizeof(std::uint64_t)) &&
+      add_context_array(
+          context.in_doubt_excluded_local_transaction_ids.capacity(),
+          sizeof(std::uint64_t)) &&
+      add_string(context.snapshot_kind) &&
+      add_string(context.statement_timestamp) &&
+      add_context_array(node.output_descriptor_ids.size(),
+                        sizeof(std::uint32_t));
+  std::uint64_t coexistence_bytes = 0;
+  const bool preflight_ok =
+      selected_bound.has_value() && dag_copy_bound.has_value() &&
+      validation_scratch.has_value() && !cancellation_observed &&
+      !cancellation_probe_failed && callback_carriers_bounded &&
+      // Revalidation builds node/property/descriptor hash domains and a
+      // canonical-node vector.  Thirty-two copies of the complete DAG carrier
+      // dominate their entries, buckets, allocator headers, and copied UUID
+      // strings; the fixed callback allowance covers the container objects.
+      CheckedMultiply(*dag_copy_bound, 32,
+                      &dag_validation_scratch_bytes) &&
+      BoundDescriptorBatchLiveMemoryBytes(input_batch, &input_live_bytes) &&
+      CheckedMultiply(input_live_bytes, maximum_additional_batch_copies,
+                      &additional_batch_bytes) &&
+      CheckedAdd(input_live_bytes, additional_batch_bytes,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, *dag_copy_bound,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, dag_validation_scratch_bytes,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, *validation_scratch,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, auxiliary_memory_bytes,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, callback_carrier_bytes,
+                 &coexistence_bytes) &&
+      coexistence_bytes <= *selected_bound;
+  if (!preflight_ok) {
+    *operator_dag = {};
+    *callback_memory_bound = 0;
+    *detail =
+        "retained input, output, validation, or operator-local state exceeds "
+        "the dispatcher callback memory allowance";
+    return false;
+  }
+  if (!BuildOperatorLocalPhysicalDag(
+          dag, node.physical_node_id, operator_dag, detail)) {
+    *callback_memory_bound = 0;
+    return false;
+  }
+  const auto root = std::ranges::find_if(
+      operator_dag->nodes, [&](const auto& candidate) {
+        return candidate.physical_node_id == node.physical_node_id;
+      });
+  if (root == operator_dag->nodes.end()) {
+    *operator_dag = {};
+    *callback_memory_bound = 0;
+    *detail = "operator-local unary root is absent";
+    return false;
+  }
+  if (root->memory_bytes_required < *selected_bound) {
+    *operator_dag = {};
+    *callback_memory_bound = 0;
+    *detail = "dispatcher callback memory exceeds the published unary grant";
+    return false;
+  }
+  const auto memory_delta =
+      root->memory_bytes_required - *selected_bound;
+  if (root->retained_cost.memory_bytes_required !=
+          root->memory_bytes_required ||
+      root->retained_cost.scalar_score < memory_delta ||
+      operator_dag->selected_scalar_score < memory_delta) {
+    *operator_dag = {};
+    *callback_memory_bound = 0;
+    *detail = "operator-local unary retained cost cannot be rebound";
+    return false;
+  }
+  root->memory_bytes_required = *selected_bound;
+  root->retained_cost.memory_bytes_required = *selected_bound;
+  root->retained_cost.scalar_score -= memory_delta;
+  operator_dag->selected_scalar_score -= memory_delta;
+  *callback_memory_bound = *selected_bound;
+  detail->clear();
+  return true;
 }
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
@@ -17390,11 +17842,37 @@ MakeLivePredicateSubqueryRegistration(
   return registration;
 }
 
+struct LiveNonrecursiveCteRuntimeNodeConfiguration {
+  std::uint32_t relational_node_id{0};
+};
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
     std::string implementation_id,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr,
+    std::vector<LiveNonrecursiveCteRuntimeNodeConfiguration>
+        runtime_node_configurations = {}) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory
+          ? sizeof(api::EngineRequestContext) +
+                sizeof(std::vector<LiveNonrecursiveCteRuntimeNodeConfiguration>) +
+                8 * sizeof(void*) + 512
+          : 0;
+  std::uint64_t configuration_bytes = 0;
+  if (!strict_dispatcher_memory ||
+      !CheckedMultiply(runtime_node_configurations.capacity(),
+                       sizeof(LiveNonrecursiveCteRuntimeNodeConfiguration),
+                       &configuration_bytes) ||
+      !CheckedAdd(registration_retained_bytes, configuration_bytes,
+                  &registration_retained_bytes)) {
+    registration_retained_bytes = 0;
+  }
   exec::CanonicalPhysicalExecutorRegistration registration;
   const bool inline_cte =
       implementation_id == "cte.bound.inline.typed.v1";
@@ -17406,19 +17884,43 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
   registration.execute =
       [inline_cte, materialized_cte, maximum_input_row_count,
-       mga_context = std::move(mga_context)](
+       mga_context = std::move(mga_context), borrowed_mga_authority,
+       strict_dispatcher_memory,
+       runtime_node_configurations = std::move(runtime_node_configurations)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
-        step.selected_plan_uuid = dag.selected_plan_uuid;
-        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
-        step.output_descriptor_ids = node.output_descriptor_ids;
-        step.authority.engine_mga_snapshot_bound = true;
+        const LiveNonrecursiveCteRuntimeNodeConfiguration*
+            runtime_node_configuration = nullptr;
+        for (const auto& candidate : runtime_node_configurations) {
+          if (candidate.relational_node_id != node.relational_node_id) continue;
+          if (runtime_node_configuration != nullptr) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-CTE-INPUT-V1";
+            step.diagnostic.detail =
+                "nonrecursive CTE has duplicate logical-node configuration";
+            return step;
+          }
+          runtime_node_configuration = &candidate;
+        }
+        if (!runtime_node_configurations.empty() &&
+            runtime_node_configuration == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-CTE-INPUT-V1";
+          step.diagnostic.detail =
+              "nonrecursive CTE logical-node configuration is absent";
+          return step;
+        }
         if (inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -17434,9 +17936,27 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
               "nonrecursive CTE did not receive its exact typed input";
           return step;
         }
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, materialized_cte ? 2 : 1,
+                  64 * 1024, &*scoped_execution_dag,
+                  &callback_memory_bound, &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "nonrecursive CTE " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -17451,15 +17971,19 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
           }
           execution_dag = &*scoped_execution_dag;
         }
-        const auto& input_batch =
-            *inputs.front().materialized_output_batch;
+        const auto execution_node = std::ranges::find_if(
+            execution_dag->nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
         std::uint64_t input_memory_bytes = 0;
         if ((!inline_cte && !materialized_cte) ||
+            execution_node == execution_dag->nodes.end() ||
             !RuntimeMaterializedBatchMemoryBytes(
                 input_batch, &input_memory_bytes) ||
-            node.memory_bytes_required == 0 ||
-            node.memory_bytes_required > execution_dag->memory_budget_bytes ||
-            node.memory_bytes_required >
+            execution_node->memory_bytes_required == 0 ||
+            execution_node->memory_bytes_required >
+                execution_dag->memory_budget_bytes ||
+            execution_node->memory_bytes_required >
                 static_cast<std::uint64_t>(
                     std::numeric_limits<std::size_t>::max())) {
           step.diagnostic.ok = false;
@@ -17470,7 +17994,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
               "is invalid";
           return step;
         }
-        auto remaining_memory_bytes = node.memory_bytes_required;
+        auto remaining_memory_bytes = execution_node->memory_bytes_required;
         const auto charge = [&](const std::uint64_t bytes) {
           if (bytes > remaining_memory_bytes) return false;
           remaining_memory_bytes -= bytes;
@@ -17486,11 +18010,18 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
               "memory grant";
           return step;
         }
-        const auto authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        std::optional<exec::CanonicalExecutionMgaAuthority> owned_authority;
+        const exec::CanonicalExecutionMgaAuthority* active_authority =
+            borrowed_mga_authority;
+        if (!strict_dispatcher_memory) {
+          owned_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                  *execution_dag);
+          active_authority = &*owned_authority;
+        }
         const auto before =
             exec::RevalidateCanonicalExecutionMgaAuthority(
-                authority, *execution_dag);
+                *active_authority, *execution_dag);
         if (!before.ok) {
           step.diagnostic = before;
           return step;
@@ -17504,17 +18035,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
         }
         const auto after =
             exec::RevalidateCanonicalExecutionMgaAuthority(
-                authority, *execution_dag);
+                *active_authority, *execution_dag);
         if (!after.ok) {
           step.diagnostic = after;
           return step;
         }
+        step.selected_plan_uuid = execution_dag->selected_plan_uuid;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = output.rows.size();
         step.rows_examined = output.rows.size();
         step.output_row_count = output.rows.size();
         step.materialized_output_batch = std::move(output);
-        step.mga_statement_context = authority.statement_context;
+        step.mga_statement_context = active_authority->statement_context;
         return step;
       };
   return registration;
@@ -17527,7 +18061,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
     const std::uint64_t row_offset,
     const bool fetch_first_rows_only,
     const std::size_t maximum_input_row_count,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  const std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory
+          ? sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512
+          : 0;
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kLimit;
   registration.implementation_id = std::move(implementation_id);
@@ -17535,9 +18078,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 = registration_retained_bytes;
   registration.execute =
       [row_limit, row_offset, fetch_first_rows_only,
-       maximum_input_row_count, mga_context = std::move(mga_context)](
+       maximum_input_row_count, mga_context = std::move(mga_context),
+       borrowed_mga_authority, strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -17565,7 +18111,22 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
         const auto& input_batch = *inputs.front().materialized_output_batch;
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 1, 64 * 1024,
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail = "object-backed LIMIT " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
@@ -17591,9 +18152,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           fetch_request.row_count = row_limit;
           fetch_request.offset = row_offset;
           fetch_request.row_count_is_bound = true;
-          fetch_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context,
-                                                   *execution_dag);
+          fetch_request.mga_authority = strict_dispatcher_memory
+                                            ? *borrowed_mga_authority
+                                            : BuildCanonicalExecutionMgaAuthority(
+                                                  mga_context, *execution_dag);
           auto fetched = exec::ExecuteCanonicalDescriptorFetchProfile(
               fetch_request, *execution_dag, input_batch);
           limited.diagnostic = std::move(fetched.diagnostic);
@@ -17610,9 +18172,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           limit_request.selected_physical_node_id = node.physical_node_id;
           limit_request.limit = row_limit;
           limit_request.offset = row_offset;
-          limit_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context,
-                                                   *execution_dag);
+          limit_request.mga_authority = strict_dispatcher_memory
+                                            ? *borrowed_mga_authority
+                                            : BuildCanonicalExecutionMgaAuthority(
+                                                  mga_context, *execution_dag);
           limited = exec::ExecuteCanonicalDescriptorLimit(
               limit_request, *execution_dag, input_batch);
         }
@@ -17620,12 +18183,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           step.diagnostic = std::move(limited.diagnostic);
           return step;
         }
-        if (limited.selected_plan_uuid != execution_dag->selected_plan_uuid ||
-            limited.executed_physical_node_id != node.physical_node_id ||
-            limited.causal_counter_id != node.causal_counter_id ||
-            !exec::PhysicalMgaStatementContextEqual(
-                limited.mga_statement_context,
-                execution_dag->mga_statement_context)) {
+        const auto& expected_statement_context =
+            strict_dispatcher_memory
+                ? borrowed_mga_authority->statement_context
+                : execution_dag->mga_statement_context;
+        const auto maximum_output_row_count =
+            row_offset >= input_batch.rows.size()
+                ? std::size_t{0}
+                : std::min<std::uint64_t>(
+                      row_limit,
+                      static_cast<std::uint64_t>(input_batch.rows.size()) -
+                          row_offset);
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                limited, *execution_dag, node, expected_statement_context) ||
+            limited.output_batch.rows.size() > maximum_output_row_count) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-LIMIT-EXECUTION-V1";
@@ -33435,18 +34006,94 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   const auto& dag = input.relational_dag;
   std::vector<const api::RelationalDagNode*> scans;
   std::vector<const api::RelationalDagNode*> joins;
+  std::vector<const api::RelationalDagNode*> filters;
+  std::vector<const api::RelationalDagNode*> projects;
+  std::vector<const api::RelationalDagNode*> ctes;
+  const api::RelationalDagNode* limit = nullptr;
+  bool duplicate_or_unsupported_node = false;
   for (const auto& node : dag.nodes) {
     if (node.node_kind == api::RelationalDagNodeKind::kScan) {
       scans.push_back(&node);
     } else if (node.node_kind == api::RelationalDagNodeKind::kJoin) {
       joins.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kFilter) {
+      filters.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kProject) {
+      projects.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kCte) {
+      ctes.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kLimit &&
+               limit == nullptr) {
+      limit = &node;
+    } else {
+      duplicate_or_unsupported_node = true;
     }
   }
-  const auto root_join = std::ranges::find_if(joins, [&](const auto* node) {
-    return node->node_id == dag.root_node_id;
-  });
-  const api::RelationalDagNode* join =
-      root_join == joins.end() ? nullptr : *root_join;
+  const auto node_for = [&](const std::uint32_t node_id) {
+    const auto found = std::ranges::find_if(
+        dag.nodes, [&](const auto& node) { return node.node_id == node_id; });
+    return found == dag.nodes.end() ? nullptr : &*found;
+  };
+  const auto* terminal = node_for(dag.root_node_id);
+  const auto* join = terminal;
+  const auto consume_terminal = [&](const api::RelationalDagNodeKind kind,
+                                    const api::RelationalDagNode* expected) {
+    if (join == nullptr || join->node_kind != kind || join != expected ||
+        join->input_node_ids.size() != 1) {
+      return false;
+    }
+    join = node_for(join->input_node_ids.front());
+    return join != nullptr;
+  };
+  bool exact_terminal_chain = !duplicate_or_unsupported_node;
+  const api::RelationalDagNode* terminal_cte = nullptr;
+  if (join != nullptr && join->node_kind == api::RelationalDagNodeKind::kCte) {
+    terminal_cte = join;
+    exact_terminal_chain =
+        exact_terminal_chain &&
+        consume_terminal(api::RelationalDagNodeKind::kCte, terminal_cte);
+  }
+  std::vector<const api::RelationalDagNode*> local_ctes;
+  local_ctes.reserve(ctes.size());
+  for (const auto* candidate : ctes) {
+    if (candidate != terminal_cte) local_ctes.push_back(candidate);
+  }
+  const api::RelationalDagNode* terminal_limit = nullptr;
+  if (join != nullptr &&
+      join->node_kind == api::RelationalDagNodeKind::kLimit) {
+    terminal_limit = join;
+    exact_terminal_chain =
+        exact_terminal_chain &&
+        consume_terminal(api::RelationalDagNodeKind::kLimit, terminal_limit);
+  }
+  const api::RelationalDagNode* terminal_project = nullptr;
+  if (join != nullptr &&
+      join->node_kind == api::RelationalDagNodeKind::kProject) {
+    terminal_project = join;
+    exact_terminal_chain =
+        exact_terminal_chain &&
+        consume_terminal(api::RelationalDagNodeKind::kProject,
+                         terminal_project);
+  }
+  std::vector<const api::RelationalDagNode*> local_projects;
+  local_projects.reserve(projects.size());
+  for (const auto* candidate : projects) {
+    if (candidate != terminal_project) local_projects.push_back(candidate);
+  }
+  const api::RelationalDagNode* terminal_filter = nullptr;
+  if (join != nullptr &&
+      join->node_kind == api::RelationalDagNodeKind::kFilter) {
+    terminal_filter = join;
+    exact_terminal_chain =
+        exact_terminal_chain &&
+        consume_terminal(api::RelationalDagNodeKind::kFilter,
+                         terminal_filter);
+  }
+  std::vector<const api::RelationalDagNode*> local_filters;
+  local_filters.reserve(filters.size());
+  for (const auto* candidate : filters) {
+    if (candidate != terminal_filter) local_filters.push_back(candidate);
+  }
   const auto bind_join_identity =
       [](const api::RelationalDagNode& node,
          exec::CanonicalAcceptedJoinKind* kind, std::string* component,
@@ -33498,7 +34145,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       accepted_join && join_kind != exec::CanonicalAcceptedJoinKind::kCross;
   if (dag.wire_version != 2 || scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 || join == nullptr ||
-      dag.nodes.size() != scans.size() + joins.size() || !accepted_join ||
+      filters.size() > scans.size() + joins.size() ||
+      projects.size() > scans.size() + joins.size() ||
+      ctes.size() > scans.size() + joins.size() ||
+      dag.nodes.size() > 68 ||
+      (terminal_limit != nullptr &&
+       (!local_filters.empty() || !local_projects.empty() || !ctes.empty())) ||
+      (limit == nullptr) != (terminal_limit == nullptr) ||
+      !exact_terminal_chain ||
+      std::ranges::find(joins, join) == joins.end() ||
+      dag.nodes.size() !=
+          scans.size() + joins.size() + filters.size() +
+              projects.size() + ctes.size() +
+              static_cast<std::size_t>(limit != nullptr) ||
+      !accepted_join ||
       join->bound_expression_ids.size() !=
           static_cast<std::size_t>(predicate_join)) {
     return result;
@@ -33533,6 +34193,22 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     std::string capability_uuid;
     CanonicalRelationalExpressionRowBinding predicate_row_binding;
   };
+  struct BoundHeapFilterNode {
+    const api::RelationalDagNode* node{nullptr};
+    CanonicalRelationalExpressionRowBinding predicate_row_binding;
+  };
+  struct BoundHeapProjectNode {
+    const api::RelationalDagNode* node{nullptr};
+    std::vector<std::size_t> projected_columns;
+  };
+  struct BoundHeapCteNode {
+    const api::RelationalDagNode* node{nullptr};
+  };
+  const auto unary_empty = [](const api::RelationalDagNode& node) {
+    return node.required_object_uuids.empty() && node.values_row_ids.empty() &&
+           node.required_property_uuids.empty() &&
+           node.delivered_property_uuids.empty();
+  };
   std::unordered_map<std::uint32_t, const api::RelationalDagNode*> nodes_by_id;
   for (const auto& node : dag.nodes) {
     if (node.node_id == 0 || !nodes_by_id.emplace(node.node_id, &node).second) {
@@ -33540,10 +34216,354 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                     "object-backed join tree has a missing or duplicate node identity");
     }
   }
+  std::unordered_set<std::uint32_t> local_filter_scan_input_node_ids;
+  std::unordered_set<std::uint32_t> join_subtree_filter_node_ids;
+  std::unordered_set<std::uint32_t> join_subtree_filter_base_node_ids;
+  for (const auto* filter : local_filters) {
+    const auto input_node =
+        filter->input_node_ids.size() == 1
+            ? nodes_by_id.find(filter->input_node_ids.front())
+            : nodes_by_id.end();
+    if (input_node == nodes_by_id.end()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
+                    "join FILTER input node is absent");
+    }
+    if (input_node->second->node_kind ==
+        api::RelationalDagNodeKind::kScan) {
+      if (!local_filter_scan_input_node_ids
+               .insert(input_node->second->node_id)
+               .second) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
+                      "join scan has more than one local FILTER");
+      }
+      continue;
+    }
+    if (input_node->second != join &&
+        input_node->second->node_kind ==
+            api::RelationalDagNodeKind::kJoin &&
+        join_subtree_filter_base_node_ids
+            .insert(input_node->second->node_id)
+            .second) {
+      join_subtree_filter_node_ids.insert(filter->node_id);
+      continue;
+    }
+    return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
+                  "join subtree base admits at most one direct local FILTER");
+  }
+  const auto join_base_for_subtree_filter =
+      [&](const api::RelationalDagNode* candidate)
+      -> std::optional<std::uint32_t> {
+    if (candidate == nullptr ||
+        !join_subtree_filter_node_ids.contains(candidate->node_id) ||
+        candidate->input_node_ids.size() != 1) {
+      return std::nullopt;
+    }
+    const auto input = nodes_by_id.find(candidate->input_node_ids.front());
+    if (input == nodes_by_id.end() || input->second == join ||
+        input->second->node_kind != api::RelationalDagNodeKind::kJoin ||
+        !join_subtree_filter_base_node_ids.contains(input->second->node_id)) {
+      return std::nullopt;
+    }
+    return input->second->node_id;
+  };
+  std::unordered_set<std::uint32_t> join_subtree_project_node_ids;
+  std::unordered_set<std::uint32_t> join_subtree_project_base_node_ids;
+  for (const auto* project : local_projects) {
+    const auto input_node =
+        project->input_node_ids.size() == 1
+            ? nodes_by_id.find(project->input_node_ids.front())
+            : nodes_by_id.end();
+    if (input_node == nodes_by_id.end()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
+                    "join PROJECT input node is absent");
+    }
+    std::optional<std::uint32_t> join_base_node_id;
+    if (input_node->second->node_kind ==
+            api::RelationalDagNodeKind::kJoin &&
+        input_node->second != join) {
+      join_base_node_id = input_node->second->node_id;
+    } else if (input_node->second->node_kind ==
+               api::RelationalDagNodeKind::kFilter) {
+      join_base_node_id = join_base_for_subtree_filter(input_node->second);
+    }
+    if (join_base_node_id.has_value()) {
+      if (!join_subtree_project_base_node_ids
+               .insert(*join_base_node_id)
+               .second) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
+                      "join subtree base admits at most one local PROJECT");
+      }
+      join_subtree_project_node_ids.insert(project->node_id);
+    }
+  }
+  const auto join_base_for_subtree_project =
+      [&](const api::RelationalDagNode* candidate)
+      -> std::optional<std::uint32_t> {
+    if (candidate == nullptr ||
+        !join_subtree_project_node_ids.contains(candidate->node_id) ||
+        candidate->input_node_ids.size() != 1) {
+      return std::nullopt;
+    }
+    const auto input = nodes_by_id.find(candidate->input_node_ids.front());
+    if (input == nodes_by_id.end()) return std::nullopt;
+    if (input->second != join &&
+        input->second->node_kind == api::RelationalDagNodeKind::kJoin) {
+      return join_subtree_project_base_node_ids.contains(input->second->node_id)
+                 ? std::optional<std::uint32_t>{input->second->node_id}
+                 : std::nullopt;
+    }
+    if (input->second->node_kind == api::RelationalDagNodeKind::kFilter) {
+      const auto base = join_base_for_subtree_filter(input->second);
+      return base.has_value() &&
+                     join_subtree_project_base_node_ids.contains(*base)
+                 ? base
+                 : std::nullopt;
+    }
+    return std::nullopt;
+  };
+  std::unordered_set<std::uint32_t> join_subtree_cte_node_ids;
+  std::unordered_set<std::uint32_t> join_subtree_cte_base_node_ids;
+  for (const auto* cte : local_ctes) {
+    const auto input_node =
+        cte->input_node_ids.size() == 1
+            ? nodes_by_id.find(cte->input_node_ids.front())
+            : nodes_by_id.end();
+    if (input_node == nodes_by_id.end()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CTE-INPUT-V1",
+                    "join CTE input node is absent");
+    }
+    std::optional<std::uint32_t> join_base_node_id;
+    if (input_node->second->node_kind ==
+            api::RelationalDagNodeKind::kJoin &&
+        input_node->second != join) {
+      join_base_node_id = input_node->second->node_id;
+    } else if (input_node->second->node_kind ==
+               api::RelationalDagNodeKind::kFilter) {
+      join_base_node_id = join_base_for_subtree_filter(input_node->second);
+    } else if (input_node->second->node_kind ==
+               api::RelationalDagNodeKind::kProject) {
+      join_base_node_id = join_base_for_subtree_project(input_node->second);
+    }
+    if (join_base_node_id.has_value()) {
+      if (!join_subtree_cte_base_node_ids.insert(*join_base_node_id).second) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CTE-INPUT-V1",
+                      "join subtree base admits at most one local CTE");
+      }
+      join_subtree_cte_node_ids.insert(cte->node_id);
+    }
+  }
+  const auto lineage_output_node_for =
+      [&](const api::RelationalDagNode* candidate) {
+        for (std::size_t depth = 0;
+             candidate != nullptr &&
+                 candidate->node_kind == api::RelationalDagNodeKind::kCte &&
+                 depth <= ctes.size();
+             ++depth) {
+          const auto input_node =
+              candidate->input_node_ids.size() == 1
+                  ? nodes_by_id.find(candidate->input_node_ids.front())
+                  : nodes_by_id.end();
+          candidate = input_node == nodes_by_id.end() ? nullptr
+                                                       : input_node->second;
+        }
+        return candidate != nullptr &&
+                       candidate->node_kind != api::RelationalDagNodeKind::kCte
+                   ? candidate
+                   : nullptr;
+      };
+  const auto exact_join_output_lineage =
+      [&](const api::RelationalDagNode& join_node) {
+        if (join_node.input_node_ids.size() != 2) return false;
+        const auto left = nodes_by_id.find(join_node.input_node_ids[0]);
+        const auto right = nodes_by_id.find(join_node.input_node_ids[1]);
+        if (left == nodes_by_id.end() || right == nodes_by_id.end()) {
+          return false;
+        }
+        const auto* left_output_node = lineage_output_node_for(left->second);
+        const auto* right_output_node = lineage_output_node_for(right->second);
+        if (left_output_node == nullptr || right_output_node == nullptr ||
+            left_output_node->output_descriptor_ids !=
+                left->second->output_descriptor_ids ||
+            right_output_node->output_descriptor_ids !=
+                right->second->output_descriptor_ids) {
+          return false;
+        }
+        std::vector<const api::RelationalOutputRecord*> left_outputs;
+        std::vector<const api::RelationalOutputRecord*> right_outputs;
+        std::vector<const api::RelationalOutputRecord*> join_outputs;
+        for (const auto& output : dag.outputs) {
+          if (output.relation_node_id == left_output_node->node_id) {
+            left_outputs.push_back(&output);
+          }
+          if (output.relation_node_id == right_output_node->node_id) {
+            right_outputs.push_back(&output);
+          }
+          if (output.relation_node_id == join_node.node_id) {
+            join_outputs.push_back(&output);
+          }
+        }
+        std::ranges::sort(left_outputs, {},
+                          &api::RelationalOutputRecord::ordinal);
+        std::ranges::sort(right_outputs, {},
+                          &api::RelationalOutputRecord::ordinal);
+        std::ranges::sort(join_outputs, {},
+                          &api::RelationalOutputRecord::ordinal);
+        if (left_outputs.size() !=
+                left->second->output_descriptor_ids.size() ||
+            right_outputs.size() !=
+                right->second->output_descriptor_ids.size()) {
+          return false;
+        }
+        for (std::size_t ordinal = 0; ordinal < left_outputs.size();
+             ++ordinal) {
+          if (!left_outputs[ordinal]->visible ||
+              left_outputs[ordinal]->ordinal != ordinal ||
+              left_outputs[ordinal]->descriptor_id !=
+                  left->second->output_descriptor_ids[ordinal]) {
+            return false;
+          }
+        }
+        for (std::size_t ordinal = 0; ordinal < right_outputs.size();
+             ++ordinal) {
+          if (!right_outputs[ordinal]->visible ||
+              right_outputs[ordinal]->ordinal != ordinal ||
+              right_outputs[ordinal]->descriptor_id !=
+                  right->second->output_descriptor_ids[ordinal]) {
+            return false;
+          }
+        }
+        const bool left_only =
+            join_node.semantic_variant_id == "join.left-semi.v1" ||
+            join_node.semantic_variant_id == "join.left-anti.v1";
+        std::vector<const api::RelationalOutputRecord*> expected_outputs =
+            left_outputs;
+        if (!left_only) {
+          expected_outputs.insert(expected_outputs.end(), right_outputs.begin(),
+                                  right_outputs.end());
+        }
+        if (join_outputs.size() != expected_outputs.size() ||
+            join_outputs.size() != join_node.output_descriptor_ids.size()) {
+          return false;
+        }
+        std::unordered_set<std::uint32_t> join_output_ids;
+        for (std::size_t ordinal = 0; ordinal < join_outputs.size();
+             ++ordinal) {
+          const auto& output = *join_outputs[ordinal];
+          const auto& expected = *expected_outputs[ordinal];
+          if (!output.visible || output.ordinal != ordinal ||
+              output.output_id == 0 ||
+              !join_output_ids.insert(output.output_id).second ||
+              output.descriptor_id != join_node.output_descriptor_ids[ordinal] ||
+              output.descriptor_id != expected.descriptor_id ||
+              output.expression_id != expected.expression_id ||
+              output.output_name_utf8 != expected.output_name_utf8) {
+            return false;
+          }
+        }
+        return true;
+      };
+  if (std::ranges::any_of(joins, [&](const auto* join_node) {
+        return !exact_join_output_lineage(*join_node);
+      })) {
+    return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-LINEAGE-V1",
+                  "join output records do not preserve exact child lineage");
+  }
   std::unordered_set<std::uint32_t> visiting_join_nodes;
   std::unordered_set<std::uint32_t> completed_join_nodes;
   std::unordered_map<std::uint32_t, std::vector<bool>> nullable_by_node;
   std::vector<BoundHeapJoinNode> bound_joins;
+  std::vector<BoundHeapFilterNode> bound_filters;
+  std::vector<BoundHeapProjectNode> bound_projects;
+  std::vector<BoundHeapCteNode> bound_ctes;
+  std::unordered_set<std::uint32_t> bound_filter_predicate_expression_ids;
+  const auto bind_project_lineage =
+      [&](const api::RelationalDagNode& project,
+          const api::RelationalDagNode& project_input,
+          std::string* detail) {
+        std::vector<const api::RelationalOutputRecord*> project_outputs;
+        std::vector<const api::RelationalOutputRecord*> input_outputs;
+        for (const auto& output : dag.outputs) {
+          if (output.relation_node_id == project.node_id) {
+            project_outputs.push_back(&output);
+          }
+          if (output.relation_node_id == project_input.node_id) {
+            input_outputs.push_back(&output);
+          }
+        }
+        std::ranges::sort(project_outputs, {},
+                          &api::RelationalOutputRecord::ordinal);
+        std::ranges::sort(input_outputs, {},
+                          &api::RelationalOutputRecord::ordinal);
+        bool exact_project =
+            project.semantic_variant_id ==
+                "project.catalog-visible-columns.v1" &&
+            project.input_node_ids ==
+                std::vector<std::uint32_t>{project_input.node_id} &&
+            !project.bound_expression_ids.empty() &&
+            project.bound_expression_ids.size() ==
+                project.output_descriptor_ids.size() &&
+            project_outputs.size() == project.output_descriptor_ids.size() &&
+            input_outputs.size() == project_input.output_descriptor_ids.size() &&
+            project.output_descriptor_ids.size() <
+                project_input.output_descriptor_ids.size() &&
+            unary_empty(project);
+        for (std::size_t ordinal = 0;
+             exact_project && ordinal < input_outputs.size(); ++ordinal) {
+          exact_project = input_outputs[ordinal]->ordinal == ordinal &&
+                          input_outputs[ordinal]->descriptor_id ==
+                              project_input.output_descriptor_ids[ordinal];
+        }
+        std::unordered_set<std::size_t> selected_input_ordinals;
+        auto project_nullable = std::vector<bool>{};
+        project_nullable.reserve(project_outputs.size());
+        BoundHeapProjectNode bound_project;
+        bound_project.node = &project;
+        bound_project.projected_columns.reserve(project_outputs.size());
+        for (std::size_t ordinal = 0;
+             exact_project && ordinal < project_outputs.size(); ++ordinal) {
+          const auto& output = *project_outputs[ordinal];
+          const auto expression = std::ranges::find_if(
+              dag.expressions, [&](const auto& candidate) {
+                return candidate.expression_id ==
+                       project.bound_expression_ids[ordinal];
+              });
+          const auto source = std::ranges::find_if(
+              input_outputs, [&](const auto* candidate) {
+                return candidate->expression_id ==
+                           project.bound_expression_ids[ordinal] &&
+                       candidate->descriptor_id == output.descriptor_id;
+              });
+          if (expression == dag.expressions.end() ||
+              source == input_outputs.end() || !output.visible ||
+              output.ordinal != ordinal ||
+              output.expression_id != project.bound_expression_ids[ordinal] ||
+              output.descriptor_id != project.output_descriptor_ids[ordinal] ||
+              output.output_name_utf8 != (*source)->output_name_utf8 ||
+              expression->result_descriptor_id != output.descriptor_id) {
+            exact_project = false;
+            break;
+          }
+          const auto source_ordinal = static_cast<std::size_t>(
+              std::distance(input_outputs.begin(), source));
+          if (!selected_input_ordinals.insert(source_ordinal).second) {
+            exact_project = false;
+            break;
+          }
+          bound_project.projected_columns.push_back(source_ordinal);
+          project_nullable.push_back(
+              nullable_by_node.at(project_input.node_id)[source_ordinal]);
+        }
+        if (!exact_project ||
+            !nullable_by_node.emplace(project.node_id,
+                                      std::move(project_nullable)).second) {
+          if (detail != nullptr && detail->empty()) {
+            *detail = "object-backed join PROJECT lineage is not exact";
+          }
+          return false;
+        }
+        bound_projects.push_back(std::move(bound_project));
+        return true;
+      };
   std::function<bool(std::uint32_t, std::string*)> bind_tree =
       [&](const std::uint32_t node_id, std::string* detail) {
         const auto found = nodes_by_id.find(node_id);
@@ -33584,6 +34604,151 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             nullable.push_back(
                 descriptor->nullability == api::RelationalNullability::kNullable);
           }
+          return true;
+        }
+        if (node.node_kind == api::RelationalDagNodeKind::kFilter) {
+          const auto input_node =
+              node.input_node_ids.size() == 1
+                  ? nodes_by_id.find(node.input_node_ids.front())
+                  : nodes_by_id.end();
+          const bool scan_input =
+              input_node != nodes_by_id.end() &&
+              input_node->second->node_kind ==
+                  api::RelationalDagNodeKind::kScan;
+          const bool join_subtree_input =
+              input_node != nodes_by_id.end() &&
+              join_subtree_filter_node_ids.contains(node.node_id) &&
+              input_node->second->node_kind ==
+                  api::RelationalDagNodeKind::kJoin;
+          if (std::ranges::find(local_filters, &node) == local_filters.end() ||
+              input_node == nodes_by_id.end() ||
+              (!scan_input && !join_subtree_input) ||
+              node.semantic_variant_id !=
+                  "filter.catalog-column-numeric-comparison.v1" ||
+              node.input_node_ids.front() == node.node_id || node.shareable ||
+              node.bound_expression_ids.size() != 1 ||
+              node.output_descriptor_ids !=
+                  input_node->second->output_descriptor_ids ||
+              !bound_filter_predicate_expression_ids
+                   .insert(node.bound_expression_ids.front())
+                   .second ||
+              !unary_empty(node) || completed_join_nodes.contains(node_id) ||
+              !visiting_join_nodes.insert(node_id).second ||
+              !bind_tree(node.input_node_ids.front(), detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail =
+                  "join input FILTER is not one exact schema-preserving predicate";
+            }
+            return false;
+          }
+          BoundHeapFilterNode bound_filter;
+          bound_filter.node = &node;
+          if (!PrepareInputRowBinding(
+                  dag, node.bound_expression_ids.front(),
+                  input_node->second->output_descriptor_ids,
+                  &bound_filter.predicate_row_binding, detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail = "join leaf FILTER predicate binding is not exact";
+            }
+            return false;
+          }
+          bound_filter.predicate_row_binding.row_nullable =
+              nullable_by_node.at(input_node->second->node_id);
+          nullable_by_node.emplace(
+              node_id, nullable_by_node.at(input_node->second->node_id));
+          bound_filters.push_back(std::move(bound_filter));
+          visiting_join_nodes.erase(node_id);
+          completed_join_nodes.insert(node_id);
+          return true;
+        }
+        if (node.node_kind == api::RelationalDagNodeKind::kProject) {
+          const auto input_node =
+              node.input_node_ids.size() == 1
+                  ? nodes_by_id.find(node.input_node_ids.front())
+                  : nodes_by_id.end();
+          const bool exact_input =
+              input_node != nodes_by_id.end() &&
+              (input_node->second->node_kind ==
+                   api::RelationalDagNodeKind::kScan ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kFilter &&
+                std::ranges::find(local_filters, input_node->second) !=
+                    local_filters.end() &&
+                (!join_subtree_filter_node_ids.contains(
+                     input_node->second->node_id) ||
+                 join_subtree_project_node_ids.contains(node.node_id))) ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kJoin &&
+                join_subtree_project_node_ids.contains(node.node_id)));
+          if (std::ranges::find(local_projects, &node) ==
+                  local_projects.end() ||
+              !exact_input || node.input_node_ids.front() == node.node_id ||
+              node.shareable || completed_join_nodes.contains(node_id) ||
+              !visiting_join_nodes.insert(node_id).second ||
+              !bind_tree(node.input_node_ids.front(), detail) ||
+              !bind_project_lineage(node, *input_node->second, detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail =
+                  "join input PROJECT is not one exact descriptor projection";
+            }
+            return false;
+          }
+          visiting_join_nodes.erase(node_id);
+          completed_join_nodes.insert(node_id);
+          return true;
+        }
+        if (node.node_kind == api::RelationalDagNodeKind::kCte) {
+          const auto input_node =
+              node.input_node_ids.size() == 1
+                  ? nodes_by_id.find(node.input_node_ids.front())
+                  : nodes_by_id.end();
+          const bool join_subtree_cte =
+              join_subtree_cte_node_ids.contains(node.node_id);
+          const bool exact_input =
+              input_node != nodes_by_id.end() &&
+              (input_node->second->node_kind ==
+                   api::RelationalDagNodeKind::kScan ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kFilter &&
+                std::ranges::find(local_filters, input_node->second) !=
+                    local_filters.end() &&
+                (!join_subtree_filter_node_ids.contains(
+                     input_node->second->node_id) ||
+                 join_subtree_cte)) ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kProject &&
+                std::ranges::find(local_projects, input_node->second) !=
+                    local_projects.end() &&
+                (!join_subtree_project_node_ids.contains(
+                     input_node->second->node_id) ||
+                 join_subtree_cte)) ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kJoin &&
+                input_node->second != join && join_subtree_cte));
+          const bool outputless =
+              std::ranges::none_of(dag.outputs, [&](const auto& output) {
+                return output.relation_node_id == node.node_id;
+              });
+          if (std::ranges::find(local_ctes, &node) == local_ctes.end() ||
+              !exact_input || node.input_node_ids.front() == node.node_id ||
+              node.semantic_variant_id != "cte.bound.v1" ||
+              node.output_descriptor_ids !=
+                  input_node->second->output_descriptor_ids ||
+              !node.bound_expression_ids.empty() || !unary_empty(node) ||
+              !outputless || completed_join_nodes.contains(node_id) ||
+              !visiting_join_nodes.insert(node_id).second ||
+              !bind_tree(node.input_node_ids.front(), detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail =
+                  "join leaf CTE is not one exact nonrecursive carrier";
+            }
+            return false;
+          }
+          nullable_by_node.emplace(
+              node_id, nullable_by_node.at(input_node->second->node_id));
+          bound_ctes.push_back({&node});
+          visiting_join_nodes.erase(node_id);
+          completed_join_nodes.insert(node_id);
           return true;
         }
         if (node.node_kind != api::RelationalDagNodeKind::kJoin ||
@@ -33678,13 +34843,480 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       };
   std::string join_tree_detail;
   if (!bind_tree(join->node_id, &join_tree_detail) ||
-      completed_join_nodes.size() != dag.nodes.size() ||
-      bound_joins.size() != joins.size()) {
+      completed_join_nodes.size() !=
+          scans.size() + joins.size() +
+              local_filters.size() + local_projects.size() +
+              local_ctes.size() ||
+      bound_joins.size() != joins.size() ||
+      bound_filters.size() != local_filters.size() ||
+      bound_projects.size() != local_projects.size() ||
+      bound_ctes.size() != local_ctes.size()) {
     return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
                   join_tree_detail.empty()
                       ? "object-backed join tree is disconnected"
                       : join_tree_detail);
   }
+
+  std::uint64_t row_limit = 0;
+  std::uint64_t row_offset = 0;
+  CanonicalRelationalExpressionRowBinding terminal_filter_row_binding;
+  const auto* filter_input = join;
+  if (terminal_filter != nullptr) {
+    std::string detail;
+    if (terminal_filter->semantic_variant_id !=
+            "filter.catalog-column-numeric-comparison.v1" ||
+        terminal_filter->input_node_ids !=
+            std::vector<std::uint32_t>{filter_input->node_id} ||
+        terminal_filter->bound_expression_ids.size() != 1 ||
+        !bound_filter_predicate_expression_ids
+             .insert(terminal_filter->bound_expression_ids.front())
+             .second ||
+        terminal_filter->output_descriptor_ids !=
+            filter_input->output_descriptor_ids ||
+        !unary_empty(*terminal_filter) ||
+        !PrepareInputRowBinding(
+            dag, terminal_filter->bound_expression_ids.front(),
+            filter_input->output_descriptor_ids,
+            &terminal_filter_row_binding,
+            &detail)) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-FILTER-V1",
+          detail.empty()
+              ? "object-backed join FILTER tail binding is not exact"
+              : detail);
+    }
+    terminal_filter_row_binding.row_nullable = nullable_by_node.at(join->node_id);
+    nullable_by_node.emplace(terminal_filter->node_id,
+                             nullable_by_node.at(join->node_id));
+    bound_filters.push_back(
+        {terminal_filter, std::move(terminal_filter_row_binding)});
+  }
+  if (bound_filters.size() != filters.size()) {
+    return refuse(
+        "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
+        "object-backed join FILTER configuration coverage is incomplete");
+  }
+
+  const auto* project_input =
+      terminal_filter != nullptr ? terminal_filter : join;
+  if (terminal_project != nullptr) {
+    std::string detail;
+    if (!bind_project_lineage(*terminal_project, *project_input, &detail)) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-PROJECT-V1",
+          detail.empty()
+              ? "object-backed join PROJECT tail lineage is not exact"
+              : detail);
+    }
+  }
+  if (bound_projects.size() != projects.size()) {
+    return refuse(
+        "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
+        "object-backed join PROJECT configuration coverage is incomplete");
+  }
+
+  const auto* limit_input =
+      terminal_project != nullptr
+          ? terminal_project
+          : (terminal_filter != nullptr ? terminal_filter : join);
+  if (terminal_limit != nullptr) {
+    if (terminal_filter != nullptr) {
+      const auto predicate = std::ranges::find_if(
+          dag.expressions, [&](const auto& expression) {
+            return terminal_filter->bound_expression_ids.size() == 1 &&
+                   expression.expression_id ==
+                       terminal_filter->bound_expression_ids.front();
+          });
+      const api::RelationalExpressionRecord* filter_identifier = nullptr;
+      const api::RelationalExpressionRecord* filter_value = nullptr;
+      if (predicate != dag.expressions.end() &&
+          predicate->child_expression_ids.size() == 2) {
+        const auto identifier = std::ranges::find_if(
+            dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     predicate->child_expression_ids[0];
+            });
+        const auto value = std::ranges::find_if(
+            dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     predicate->child_expression_ids[1];
+            });
+        if (identifier != dag.expressions.end()) {
+          filter_identifier = &*identifier;
+        }
+        if (value != dag.expressions.end()) filter_value = &*value;
+      }
+      const auto limit_value = std::ranges::find_if(
+          dag.expressions, [&](const auto& expression) {
+            return terminal_limit->bound_expression_ids.size() == 1 &&
+                   expression.expression_id ==
+                       terminal_limit->bound_expression_ids.front();
+          });
+      const auto descriptor_for = [&](const auto* expression) {
+        return expression == nullptr
+                   ? dag.descriptors.end()
+                   : std::ranges::find_if(
+                         dag.descriptors, [&](const auto& descriptor) {
+                           return descriptor.descriptor_id ==
+                                  expression->result_descriptor_id;
+                         });
+      };
+      const auto identifier_descriptor = descriptor_for(filter_identifier);
+      const auto literal_descriptor = descriptor_for(filter_value);
+      const auto predicate_descriptor =
+          predicate == dag.expressions.end()
+              ? dag.descriptors.end()
+              : descriptor_for(&*predicate);
+      const auto limit_descriptor =
+          limit_value == dag.expressions.end()
+              ? dag.descriptors.end()
+              : descriptor_for(&*limit_value);
+      const bool accepted_operator =
+          predicate != dag.expressions.end() &&
+          predicate->operator_name.has_value() &&
+          (*predicate->operator_name == "=" ||
+           *predicate->operator_name == "<>" ||
+           *predicate->operator_name == "!=" ||
+           *predicate->operator_name == "<" ||
+           *predicate->operator_name == "<=" ||
+           *predicate->operator_name == ">" ||
+           *predicate->operator_name == ">=");
+      const bool literal_filter_value =
+          filter_value != nullptr &&
+          filter_value->expression_kind ==
+              api::RelationalExpressionKind::kLiteral &&
+          filter_value->literal_kind == api::RelationalLiteralKind::kNumeric &&
+          filter_value->literal_typed_value_v1.has_value() &&
+          !filter_value->parameter_typed_value_v1.has_value();
+      const bool parameter_filter_value =
+          filter_value != nullptr &&
+          filter_value->expression_kind ==
+              api::RelationalExpressionKind::kParameter &&
+          !filter_value->literal_kind.has_value() &&
+          !filter_value->literal_typed_value_v1.has_value() &&
+          filter_value->parameter_typed_value_v1.has_value();
+      const bool literal_limit_value =
+          limit_value != dag.expressions.end() &&
+          limit_value->expression_kind ==
+              api::RelationalExpressionKind::kLiteral;
+      const bool parameter_limit_value =
+          limit_value != dag.expressions.end() &&
+          limit_value->expression_kind ==
+              api::RelationalExpressionKind::kParameter;
+      const bool exact_operand_pair =
+          (literal_filter_value && parameter_limit_value) ||
+          (parameter_filter_value && literal_limit_value) ||
+          (parameter_filter_value && parameter_limit_value) ||
+          (literal_filter_value && literal_limit_value);
+      bool exact_filter_value = literal_filter_value || parameter_filter_value;
+      if (exact_filter_value) {
+        const auto& typed_bytes =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->canonical_value_bytes
+                : filter_value->parameter_typed_value_v1->canonical_value_bytes;
+        const auto& typed_descriptor_uuid =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->descriptor_uuid
+                : filter_value->parameter_typed_value_v1->descriptor_uuid;
+        const auto typed_descriptor_generation =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->descriptor_generation
+                : filter_value->parameter_typed_value_v1->descriptor_generation;
+        const auto& typed_value_state =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->value_state
+                : filter_value->parameter_typed_value_v1->value_state;
+        const auto& typed_sha =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->canonical_value_sha256
+                : filter_value->parameter_typed_value_v1->canonical_value_sha256;
+        const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+            typed_bytes);
+        exact_filter_value =
+            typed_descriptor_generation != 0 &&
+            typed_value_state == "value" && typed_bytes.size() == 8 &&
+            (typed_bytes.back() & 0x80U) == 0 && digest.ok() &&
+            digest.digest == typed_sha &&
+            literal_descriptor != dag.descriptors.end() &&
+            typed_descriptor_uuid == literal_descriptor->descriptor_uuid;
+      }
+      const auto identifier_source_count =
+          filter_identifier == nullptr
+              ? 0
+              : std::ranges::count_if(dag.outputs, [&](const auto& output) {
+                  return output.relation_node_id == join->node_id &&
+                         output.visible &&
+                         output.expression_id ==
+                             filter_identifier->expression_id &&
+                         output.descriptor_id ==
+                             filter_identifier->result_descriptor_id;
+                });
+      const bool distinct_expression_ids =
+          predicate != dag.expressions.end() &&
+          filter_identifier != nullptr && filter_value != nullptr &&
+          limit_value != dag.expressions.end() &&
+          predicate->expression_id != filter_identifier->expression_id &&
+          predicate->expression_id != filter_value->expression_id &&
+          predicate->expression_id != limit_value->expression_id &&
+          filter_identifier->expression_id != filter_value->expression_id &&
+          filter_identifier->expression_id != limit_value->expression_id &&
+          filter_value->expression_id != limit_value->expression_id;
+      const bool distinct_descriptor_ids =
+          identifier_descriptor != dag.descriptors.end() &&
+          literal_descriptor != dag.descriptors.end() &&
+          predicate_descriptor != dag.descriptors.end() &&
+          limit_descriptor != dag.descriptors.end() &&
+          identifier_descriptor->descriptor_id !=
+              literal_descriptor->descriptor_id &&
+          identifier_descriptor->descriptor_id !=
+              predicate_descriptor->descriptor_id &&
+          identifier_descriptor->descriptor_id !=
+              limit_descriptor->descriptor_id &&
+          literal_descriptor->descriptor_id !=
+              predicate_descriptor->descriptor_id &&
+          literal_descriptor->descriptor_id !=
+              limit_descriptor->descriptor_id &&
+          predicate_descriptor->descriptor_id !=
+              limit_descriptor->descriptor_id;
+      if (!accepted_operator || filter_identifier == nullptr ||
+          filter_identifier->expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          !filter_identifier->child_expression_ids.empty() ||
+          filter_identifier->function_uuid.has_value() ||
+          !filter_identifier->bound_name_uuid.has_value() ||
+          filter_identifier->literal_kind.has_value() ||
+          filter_identifier->operator_name.has_value() ||
+          filter_identifier->literal_or_parameter_ref.has_value() ||
+          filter_identifier->literal_typed_value_v1.has_value() ||
+          filter_identifier->parameter_typed_value_v1.has_value() ||
+          predicate == dag.expressions.end() ||
+          predicate->expression_kind !=
+              api::RelationalExpressionKind::kBinary ||
+          predicate->function_uuid.has_value() ||
+          predicate->bound_name_uuid.has_value() ||
+          predicate->literal_kind.has_value() ||
+          predicate->literal_or_parameter_ref.has_value() ||
+          predicate->literal_typed_value_v1.has_value() ||
+          predicate->parameter_typed_value_v1.has_value() ||
+          filter_value == nullptr || !exact_operand_pair ||
+          !filter_value->child_expression_ids.empty() ||
+          filter_value->function_uuid.has_value() ||
+          filter_value->bound_name_uuid.has_value() ||
+          filter_value->operator_name.has_value() ||
+          filter_value->literal_or_parameter_ref.has_value() ||
+          !exact_filter_value || identifier_source_count != 1 ||
+          identifier_descriptor == dag.descriptors.end() ||
+          literal_descriptor == dag.descriptors.end() ||
+          predicate_descriptor == dag.descriptors.end() ||
+          identifier_descriptor->type_uuid !=
+              ExactCanonicalCoreDatatypeUuidV1("int64") ||
+          literal_descriptor->type_uuid !=
+              ExactCanonicalCoreDatatypeUuidV1("int64") ||
+          identifier_descriptor->type_uuid != literal_descriptor->type_uuid ||
+          literal_descriptor->nullability !=
+              api::RelationalNullability::kNonNull ||
+          predicate_descriptor->nullability !=
+              api::RelationalNullability::kNullable ||
+          predicate_descriptor->type_uuid !=
+              ExactCanonicalCoreDatatypeUuidV1("boolean") ||
+          identifier_descriptor->collation_uuid.has_value() ||
+          literal_descriptor->collation_uuid.has_value() ||
+          predicate_descriptor->collation_uuid.has_value() ||
+          identifier_descriptor->timezone_profile_id.has_value() ||
+          literal_descriptor->timezone_profile_id.has_value() ||
+          predicate_descriptor->timezone_profile_id.has_value() ||
+          identifier_descriptor->width.has_value() ||
+          identifier_descriptor->precision.has_value() ||
+          identifier_descriptor->scale.has_value() ||
+          literal_descriptor->width.has_value() ||
+          literal_descriptor->precision.has_value() ||
+          literal_descriptor->scale.has_value() ||
+          predicate_descriptor->width.has_value() ||
+          predicate_descriptor->precision.has_value() ||
+          predicate_descriptor->scale.has_value() ||
+          limit_value == dag.expressions.end() ||
+          !distinct_expression_ids || !distinct_descriptor_ids) {
+        return refuse(
+            "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
+            "object-backed join FILTER and LIMIT operands are not composable");
+      }
+    }
+    CanonicalRelationalExpressionRuntime expression_runtime(
+        input.relational_dag, {});
+    std::string detail;
+    const auto terminal_limit_arity =
+        terminal_limit->semantic_variant_id == "limit.bound-count.v1"
+            ? std::size_t{1}
+            : terminal_limit->semantic_variant_id ==
+                      "limit.bound-count-offset.v1"
+                  ? std::size_t{2}
+                  : std::size_t{0};
+    std::unordered_set<std::uint32_t> limit_expression_ids;
+    std::unordered_set<std::uint32_t> limit_descriptor_ids;
+    bool exact_limit_values = terminal_limit_arity != 0;
+    for (const auto expression_id : terminal_limit->bound_expression_ids) {
+      const auto expression = std::ranges::find_if(
+          dag.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == expression_id;
+          });
+      const auto descriptor =
+          expression == dag.expressions.end()
+              ? dag.descriptors.end()
+              : std::ranges::find_if(
+                    dag.descriptors, [&](const auto& candidate) {
+                      return candidate.descriptor_id ==
+                             expression->result_descriptor_id;
+                    });
+      const bool literal_value =
+          expression != dag.expressions.end() &&
+          expression->expression_kind ==
+              api::RelationalExpressionKind::kLiteral &&
+          expression->literal_kind == api::RelationalLiteralKind::kNumeric &&
+          !expression->parameter_typed_value_v1.has_value() &&
+          (expression->literal_or_parameter_ref.has_value() ||
+           expression->literal_typed_value_v1.has_value());
+      const bool parameter_value =
+          expression != dag.expressions.end() &&
+          expression->expression_kind ==
+              api::RelationalExpressionKind::kParameter &&
+          !expression->literal_kind.has_value() &&
+          !expression->literal_or_parameter_ref.has_value() &&
+          !expression->literal_typed_value_v1.has_value() &&
+          expression->parameter_typed_value_v1.has_value();
+      exact_limit_values =
+          exact_limit_values && expression != dag.expressions.end() &&
+          limit_expression_ids.insert(expression_id).second &&
+          (literal_value || parameter_value) &&
+          expression->child_expression_ids.empty() &&
+          !expression->function_uuid.has_value() &&
+          !expression->bound_name_uuid.has_value() &&
+          !expression->operator_name.has_value() &&
+          descriptor != dag.descriptors.end() &&
+          limit_descriptor_ids.insert(descriptor->descriptor_id).second &&
+          descriptor->nullability ==
+              api::RelationalNullability::kNonNull &&
+          descriptor->type_uuid == ExactCanonicalCoreDatatypeUuidV1("int64") &&
+          !descriptor->collation_uuid.has_value() &&
+          !descriptor->timezone_profile_id.has_value() &&
+          !descriptor->width.has_value() && !descriptor->precision.has_value() &&
+          !descriptor->scale.has_value();
+    }
+    if (terminal_limit->shareable ||
+        terminal_limit_arity == 0 ||
+        !exact_limit_values ||
+        (terminal_limit_arity == 2 && terminal_filter != nullptr) ||
+        terminal_limit->input_node_ids !=
+            std::vector<std::uint32_t>{limit_input->node_id} ||
+        terminal_limit->bound_expression_ids.size() != terminal_limit_arity ||
+        terminal_limit->output_descriptor_ids !=
+            limit_input->output_descriptor_ids ||
+        !unary_empty(*terminal_limit) ||
+        !EvaluateNonNegativeRowBound(
+            &expression_runtime,
+            terminal_limit->bound_expression_ids.front(), &row_limit,
+            &detail) ||
+        (terminal_limit_arity == 2 &&
+         !EvaluateNonNegativeRowBound(
+             &expression_runtime,
+             terminal_limit->bound_expression_ids[1], &row_offset,
+             &detail))) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
+          detail.empty()
+              ? "object-backed join LIMIT tail binding is not exact"
+              : detail);
+    }
+    std::vector<const api::RelationalOutputRecord*> input_outputs;
+    std::vector<const api::RelationalOutputRecord*> limit_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == limit_input->node_id) {
+        input_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == terminal_limit->node_id) {
+        limit_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(input_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    std::ranges::sort(limit_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    bool exact_limit_outputs =
+        input_outputs.size() == limit_input->output_descriptor_ids.size() &&
+        limit_outputs.size() ==
+            terminal_limit->output_descriptor_ids.size() &&
+        input_outputs.size() == limit_outputs.size();
+    std::unordered_set<std::uint32_t> limit_output_ids;
+    for (std::size_t ordinal = 0;
+         exact_limit_outputs && ordinal < limit_outputs.size(); ++ordinal) {
+      exact_limit_outputs =
+          input_outputs[ordinal]->visible &&
+          input_outputs[ordinal]->ordinal == ordinal &&
+          limit_outputs[ordinal]->visible &&
+          limit_outputs[ordinal]->ordinal == ordinal &&
+          limit_outputs[ordinal]->output_id != 0 &&
+          limit_output_ids.insert(limit_outputs[ordinal]->output_id).second &&
+          limit_outputs[ordinal]->descriptor_id ==
+              terminal_limit->output_descriptor_ids[ordinal] &&
+          limit_outputs[ordinal]->descriptor_id ==
+              input_outputs[ordinal]->descriptor_id &&
+          limit_outputs[ordinal]->expression_id ==
+              input_outputs[ordinal]->expression_id &&
+          limit_outputs[ordinal]->output_name_utf8 ==
+              input_outputs[ordinal]->output_name_utf8;
+    }
+    if (!exact_limit_outputs) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
+          "object-backed join LIMIT output lineage is not exact");
+    }
+    nullable_by_node.emplace(terminal_limit->node_id,
+                             nullable_by_node.at(limit_input->node_id));
+  }
+
+  const auto* cte_input =
+      terminal_project != nullptr
+          ? terminal_project
+          : (terminal_filter != nullptr ? terminal_filter : join);
+  if (terminal_cte != nullptr) {
+    const bool outputless =
+        std::ranges::none_of(dag.outputs, [&](const auto& output) {
+          return output.relation_node_id == terminal_cte->node_id;
+        });
+    if (terminal_cte->semantic_variant_id != "cte.bound.v1" ||
+        terminal_cte->input_node_ids !=
+            std::vector<std::uint32_t>{cte_input->node_id} ||
+        terminal_cte->output_descriptor_ids !=
+            cte_input->output_descriptor_ids ||
+        !terminal_cte->bound_expression_ids.empty() ||
+        !unary_empty(*terminal_cte) || !outputless) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-CTE-V1",
+          "object-backed join nonrecursive CTE tail binding is not exact");
+    }
+    nullable_by_node.emplace(terminal_cte->node_id,
+                             nullable_by_node.at(cte_input->node_id));
+    bound_ctes.push_back({terminal_cte});
+  }
+  if (bound_ctes.size() != ctes.size()) {
+    return refuse(
+        "QOW-DIAG-RELATIONAL-LIVE-CTE-INPUT-V1",
+        "object-backed join CTE configuration coverage is incomplete");
+  }
+  const auto* final_output_node =
+      terminal_limit != nullptr
+          ? terminal_limit
+          : terminal_cte != nullptr
+          ? terminal_cte
+          : (terminal_project != nullptr
+                 ? terminal_project
+                 : (terminal_filter != nullptr ? terminal_filter : join));
+  // CTE is schema preserving and owns no public output records.
+  const auto* publication_node =
+      terminal_limit != nullptr
+          ? terminal_limit
+          : terminal_project != nullptr
+          ? terminal_project
+          : (terminal_filter != nullptr ? terminal_filter : join);
 
   const auto admission = api::BuildCanonicalCurrentHeapOptimizerAdmission(
       {input.context, input.relational_dag});
@@ -33766,13 +35398,118 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
          join_memory_grant, 2, 2});
     profiles.back().runtime_peak_from_callback_batches = true;
   }
+  std::string filter_capability_uuid;
+  if (!filters.empty()) {
+    filter_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-join-filter.capability");
+    for (const auto* filter : filters) {
+      profiles.push_back(
+          {filter->node_id, "filter.3vl.row.v1", filter_capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kFilter,
+           exec::PhysicalNodeKind::kFilter,
+           filter == terminal_filter
+               ? "canonical.heap.join-tail.filter.v1"
+               : (join_subtree_filter_node_ids.contains(filter->node_id)
+                      ? "canonical.heap.join-subtree.filter.v1"
+                      : "canonical.heap.join-input.filter.v1"),
+           1, join_memory_grant, 1, 1});
+      profiles.back().runtime_peak_from_callback_batches = true;
+    }
+  }
+  std::string project_capability_uuid;
+  if (!projects.empty()) {
+    project_capability_uuid = DerivedCanonicalUuid(
+        identity_scope, "heap-join-project.capability");
+    for (const auto* project : projects) {
+      profiles.push_back(
+          {project->node_id, "project.descriptor-direct.v1",
+           project_capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kProject,
+           exec::PhysicalNodeKind::kProject,
+           project == terminal_project
+               ? "canonical.heap.join-tail.project.visible-columns.v1"
+               : (join_subtree_project_node_ids.contains(project->node_id)
+                      ? "canonical.heap.join-subtree.project.visible-columns.v1"
+                      : "canonical.heap.join-input.project.visible-columns.v1"),
+           1, join_memory_grant, 1, 1});
+      profiles.back().runtime_peak_from_callback_batches = true;
+    }
+  }
+  std::string inline_cte_capability_uuid;
+  std::string materialized_cte_capability_uuid;
+  if (!ctes.empty()) {
+    inline_cte_capability_uuid = DerivedCanonicalUuid(
+        identity_scope, "heap-join-cte-inline.capability");
+    materialized_cte_capability_uuid = DerivedCanonicalUuid(
+        identity_scope, "heap-join-cte-materialized.capability");
+    for (const auto* cte : ctes) {
+      const auto implementation_id =
+          cte->shareable ? "cte.bound.materialize.typed.v1"
+                         : "cte.bound.inline.typed.v1";
+      const auto& capability_uuid = cte->shareable
+                                        ? materialized_cte_capability_uuid
+                                        : inline_cte_capability_uuid;
+      const bool terminal = cte == terminal_cte;
+      const bool join_subtree =
+          join_subtree_cte_node_ids.contains(cte->node_id);
+      profiles.push_back(
+          {cte->node_id, implementation_id, capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kCte,
+           exec::PhysicalNodeKind::kCte,
+           terminal
+               ? (cte->shareable
+                      ? "canonical.heap.join-tail.cte.materialize.v1"
+                      : "canonical.heap.join-tail.cte.inline.v1")
+               : (join_subtree
+                      ? (cte->shareable
+                             ? "canonical.heap.join-subtree.cte.materialize.v1"
+                             : "canonical.heap.join-subtree.cte.inline.v1")
+                      : (cte->shareable
+                             ? "canonical.heap.join-input.cte.materialize.v1"
+                             : "canonical.heap.join-input.cte.inline.v1")),
+           1, join_memory_grant, 1, 1});
+      profiles.back().runtime_peak_from_callback_batches = true;
+      profiles.back().runtime_auxiliary_from_first_input_batch =
+          cte->shareable;
+    }
+  }
+  std::string limit_capability_uuid;
+  if (terminal_limit != nullptr) {
+    limit_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-join-limit.capability");
+    profiles.push_back(
+        {terminal_limit->node_id, "limit.typed.v1", limit_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kLimit,
+         exec::PhysicalNodeKind::kLimit,
+         terminal_limit->semantic_variant_id == "limit.bound-count.v1"
+             ? "canonical.heap.join-tail.limit.bound-count.v1"
+             : "canonical.heap.join-tail.limit.bound-count-offset.v1",
+         1,
+         join_memory_grant, 1, 1});
+    profiles.back().runtime_peak_from_callback_batches = true;
+  }
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
-                  "heap JOIN runtime memory receipts are incomplete");
+                  "heap JOIN-tail runtime memory receipts are incomplete");
   }
   const auto physical = PlanAndPublishLivePhysicalDag(
-      planning_request, profiles, "heap-join-tree.selected-plan",
-      "object-backed heap join tree");
+      planning_request, profiles,
+      terminal_limit != nullptr
+          ? "heap-join-tail-limit.selected-plan"
+          : terminal_cte != nullptr
+          ? "heap-join-tail-cte.selected-plan"
+          : (terminal_project != nullptr
+                 ? "heap-join-tail-project.selected-plan"
+                 : (terminal_filter != nullptr
+                        ? "heap-join-tail-filter.selected-plan"
+                        : (!local_ctes.empty()
+                               ? "heap-join-input-cte.selected-plan"
+                               : (!local_projects.empty()
+                                      ? "heap-join-input-project.selected-plan"
+                                      : (!local_filters.empty()
+                                             ? "heap-join-input-filter.selected-plan"
+                                             : "heap-join-tree.selected-plan"))))),
+      "object-backed heap join tree with unary tail");
   if (!physical.ok) {
     return refuse(
         physical.diagnostic_id.empty()
@@ -33852,13 +35589,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
 
   std::vector<const api::RelationalOutputRecord*> ordered_outputs;
   for (const auto& output : dag.outputs) {
-    if (output.relation_node_id == join->node_id) {
+    if (output.relation_node_id == publication_node->node_id) {
       ordered_outputs.push_back(&output);
     }
   }
   std::ranges::sort(ordered_outputs, {},
                     &api::RelationalOutputRecord::ordinal);
-  if (ordered_outputs.size() != join->output_descriptor_ids.size()) {
+  if (ordered_outputs.size() != publication_node->output_descriptor_ids.size()) {
     return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-BINDING-V1",
                   "object-backed CROSS JOIN result bindings are incomplete");
   }
@@ -33867,7 +35604,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     const auto& output = *ordered_outputs[ordinal];
     if (!output.visible || output.ordinal != ordinal || output.output_id == 0 ||
         !root_output_ids.insert(output.output_id).second ||
-        output.descriptor_id != join->output_descriptor_ids[ordinal]) {
+        output.descriptor_id !=
+            publication_node->output_descriptor_ids[ordinal]) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-BINDING-V1",
                     "object-backed join result lineage is not exact");
     }
@@ -33939,6 +35677,84 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         &input.relational_dag, &input.context,
         selected.borrowed_mga_authority));
   }
+  if (!filters.empty()) {
+    CanonicalRelationalExpressionRuntimeServices filter_services;
+    filter_services.comparison_evaluator =
+        [context = &input.context](const api::EngineTypedValue& left,
+                                   const api::EngineTypedValue& right,
+                                   int* comparison,
+                                   std::string* diagnostic_id,
+                                   std::string* refusal_detail) {
+          return CompareCanonicalQueryScalarsV1(
+              *context, left, right, comparison, diagnostic_id,
+              refusal_detail);
+        };
+    std::vector<LiveFilterRuntimeNodeConfiguration>
+        filter_node_configurations;
+    filter_node_configurations.reserve(bound_filters.size());
+    for (auto& bound_filter : bound_filters) {
+      filter_node_configurations.push_back(
+          {bound_filter.node->node_id,
+           bound_filter.node->bound_expression_ids.front(),
+           std::move(bound_filter.predicate_row_binding)});
+    }
+    selected.available_executors.push_back(
+        MakeLiveHeapFilterRegistration(
+            0, {}, {}, std::move(filter_services),
+            filter_capability_uuid, maximum_output_rows, {},
+            api::EngineCanonicalExpressionConsumer::filter,
+            api::EnginePredicateConsumer::filter, &input.relational_dag,
+            &input.context, selected.borrowed_mga_authority,
+            std::move(filter_node_configurations)));
+  }
+  if (!projects.empty()) {
+    std::vector<LiveProjectRuntimeNodeConfiguration>
+        project_node_configurations;
+    project_node_configurations.reserve(bound_projects.size());
+    for (auto& bound_project : bound_projects) {
+      project_node_configurations.push_back(
+          {bound_project.node->node_id,
+           std::move(bound_project.projected_columns)});
+    }
+    selected.available_executors.push_back(
+        MakeLiveHeapProjectRegistration(
+            {}, project_capability_uuid,
+            maximum_output_rows, {}, &input.context,
+            selected.borrowed_mga_authority,
+            std::move(project_node_configurations)));
+  }
+  std::vector<LiveNonrecursiveCteRuntimeNodeConfiguration>
+      inline_cte_node_configurations;
+  std::vector<LiveNonrecursiveCteRuntimeNodeConfiguration>
+      materialized_cte_node_configurations;
+  for (const auto& bound_cte : bound_ctes) {
+    auto& configurations = bound_cte.node->shareable
+                               ? materialized_cte_node_configurations
+                               : inline_cte_node_configurations;
+    configurations.push_back({bound_cte.node->node_id});
+  }
+  if (!inline_cte_node_configurations.empty()) {
+    selected.available_executors.push_back(
+        MakeLiveNonrecursiveCteRegistration(
+            "cte.bound.inline.typed.v1", inline_cte_capability_uuid,
+            maximum_output_rows, {}, &input.context,
+            selected.borrowed_mga_authority,
+            std::move(inline_cte_node_configurations)));
+  }
+  if (!materialized_cte_node_configurations.empty()) {
+    selected.available_executors.push_back(
+        MakeLiveNonrecursiveCteRegistration(
+            "cte.bound.materialize.typed.v1",
+            materialized_cte_capability_uuid, maximum_output_rows, {},
+            &input.context, selected.borrowed_mga_authority,
+            std::move(materialized_cte_node_configurations)));
+  }
+  if (terminal_limit != nullptr) {
+    selected.available_executors.push_back(MakeLiveLimitRegistration(
+        "limit.typed.v1", limit_capability_uuid, row_limit, row_offset, false,
+        maximum_output_rows, {}, &input.context,
+        selected.borrowed_mga_authority));
+  }
   std::uint64_t executor_registration_live_bytes =
       sizeof(selected.available_executors);
   std::uint64_t executor_registration_slots_bytes = 0;
@@ -34005,7 +35821,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     published.name_utf8 = output.output_name_utf8;
     published.descriptor_uuid = descriptor->descriptor_uuid;
     published.type_uuid = descriptor->type_uuid;
-    const auto& root_nullability = nullable_by_node.at(join->node_id);
+    const auto& root_nullability =
+        nullable_by_node.at(final_output_node->node_id);
     const bool null_extended_output = root_nullability[ordinal];
     published.nullability =
         null_extended_output ||
@@ -34018,7 +35835,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     selected.result_publication_request.column_bindings.push_back(
         {ordinal, true, std::move(published)});
   }
-  selected.result_publication_request.maximum_row_count = maximum_output_rows;
+  selected.result_publication_request.maximum_row_count =
+      terminal_limit == nullptr
+          ? maximum_output_rows
+          : std::max<std::size_t>(
+                1, std::min<std::size_t>(
+                       maximum_output_rows,
+                       static_cast<std::size_t>(std::min<std::uint64_t>(
+                           row_limit,
+                           std::numeric_limits<std::size_t>::max()))));
   const auto execution = ExecuteSelectedWithMgaGuard(
       input.context, selected, physical.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||

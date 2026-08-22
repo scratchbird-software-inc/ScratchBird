@@ -376,6 +376,113 @@ struct BoundCatalogRelationSourceAstRecord {
   std::vector<BoundCatalogColumnAstRecord> columns;
 };
 
+// An ordinary catalog source must not carry parser- or donor-authored model
+// identity.  Keep this shared across the AST, binding, and lowering boundaries
+// so a source cannot change profile by retaining an otherwise ignored carrier.
+template <typename SourceRecord>
+[[nodiscard]] inline bool IsExactOrdinaryCatalogSourceProfile(
+    const SourceRecord& source) {
+  const bool exact_ordinary_alias =
+      (!source.alias.has_value() && !source.alias_is_explicit) ||
+      (source.alias.has_value() && !source.alias->spelling.empty());
+  const bool common_model_carriers_are_empty =
+      source.source_kind == NativeRelationSourceAstKind::kCatalogRelation &&
+      exact_ordinary_alias &&
+      source.model_family_id.empty() && source.model_operation_id.empty() &&
+      source.model_operation_ids.empty() &&
+      source.model_operation_expression_ids.empty() &&
+      !source.model_source_alias.has_value() &&
+      !source.model_document_expression_id.has_value() &&
+      !source.model_path_expression_id.has_value() &&
+      !source.model_value_expression_id.has_value() &&
+      !source.model_pattern_expression_id.has_value() &&
+      !source.model_graph_alias_expression_id.has_value() &&
+      source.model_key_expression_ids.empty() &&
+      !source.model_time_series_alias_expression_id.has_value() &&
+      !source.model_range_expression_id.has_value() &&
+      !source.model_range_start_expression_id.has_value() &&
+      !source.model_range_end_expression_id.has_value() &&
+      !source.model_interval_expression_id.has_value() &&
+      !source.model_time_input_expression_id.has_value() &&
+      !source.model_bucket_expression_id.has_value() &&
+      !source.model_bucket_interval_expression_id.has_value() &&
+      !source.model_bucket_time_input_expression_id.has_value() &&
+      !source.model_downsample_expression_id.has_value() &&
+      source.model_time_series_aggregate_id.empty() &&
+      !source.model_vector_alias_expression_id.has_value() &&
+      !source.model_vector_nearest_expression_id.has_value() &&
+      !source.model_vector_query_expression_id.has_value() &&
+      !source.model_vector_metric_expression_id.has_value() &&
+      !source.model_vector_top_k_expression_id.has_value() &&
+      !source.model_vector_filter_expression_id.has_value() &&
+      !source.model_vector_metadata_predicate_expression_id.has_value() &&
+      !source.model_vector_metadata_column_expression_id.has_value() &&
+      !source.model_vector_metadata_value_expression_id.has_value() &&
+      !source.model_vector_result_alias.has_value() &&
+      source.model_vector_metric_id.empty() &&
+      !source.model_vector_top_k.has_value() &&
+      !source.model_search_alias_expression_id.has_value() &&
+      !source.model_search_match_expression_id.has_value() &&
+      !source.model_search_query_expression_id.has_value() &&
+      !source.model_search_text_expression_id.has_value() &&
+      !source.model_search_edit_expression_id.has_value() &&
+      !source.model_search_analyzer_expression_id.has_value() &&
+      !source.model_search_top_k_expression_id.has_value() &&
+      !source.model_search_filter_expression_id.has_value() &&
+      !source.model_search_category_predicate_expression_id.has_value() &&
+      !source.model_search_category_column_expression_id.has_value() &&
+      !source.model_search_category_value_expression_id.has_value() &&
+      !source.model_search_result_alias.has_value() &&
+      source.model_search_analyzer_name.empty() &&
+      source.model_search_query_kind.empty() &&
+      !source.model_search_top_k.has_value() &&
+      !source.model_spatial_alias_expression_id.has_value() &&
+      !source.model_spatial_operation_expression_id.has_value() &&
+      !source.model_spatial_match_expression_id.has_value() &&
+      !source.model_spatial_nearest_expression_id.has_value() &&
+      !source.model_spatial_query_expression_id.has_value() &&
+      source.model_spatial_query_expression_ids.empty() &&
+      !source.model_spatial_predicate_expression_id.has_value() &&
+      !source.model_spatial_crs_expression_id.has_value() &&
+      source.model_spatial_crs_expression_ids.empty() &&
+      source.model_spatial_crs_name.empty() &&
+      source.model_spatial_crs_names.empty() &&
+      source.model_spatial_predicate_id.empty() &&
+      !source.model_spatial_top_k_expression_id.has_value() &&
+      !source.model_spatial_top_k.has_value() &&
+      !source.model_columnar_alias_expression_id.has_value() &&
+      !source.model_columnar_operation_expression_id.has_value() &&
+      !source.model_columnar_project_expression_id.has_value() &&
+      !source.model_columnar_filter_expression_id.has_value() &&
+      !source.model_columnar_predicate_expression_id.has_value() &&
+      source.model_columnar_project_expression_ids.empty() &&
+      source.model_graph_direction.empty() &&
+      !source.model_graph_minimum_depth.has_value() &&
+      !source.model_graph_maximum_depth.has_value() &&
+      source.model_graph_cycle_policy.empty() &&
+      source.model_comparison_operator.empty() && !source.model_wildcard_path;
+  if (!common_model_carriers_are_empty) return false;
+  if constexpr (requires { source.model_columnar_project_names; }) {
+    if (!source.model_columnar_project_names.empty()) return false;
+  }
+  if constexpr (requires { source.model_columnar_project_column_uuids; }) {
+    if (!source.model_columnar_project_column_uuids.empty()) return false;
+  }
+  if constexpr (requires { source.model_search_analyzer_uuid; }) {
+    if (!source.model_search_analyzer_uuid.empty() ||
+        source.model_search_analyzer_generation != 0) {
+      return false;
+    }
+  }
+  if constexpr (requires { source.model_spatial_crs_uuids; }) {
+    if (!source.model_spatial_crs_uuids.empty() ||
+        !source.model_spatial_crs_generations.empty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 struct BoundNativeRelationalDocument {
   bool bound{false};
   std::string bound_ast_uuid;

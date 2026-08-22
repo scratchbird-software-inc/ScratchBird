@@ -51,6 +51,15 @@ bool SameIdentifier(const NativeIdentifierAstNode& expected,
              : ToLowerAscii(expected.spelling) == ToLowerAscii(presented.text);
 }
 
+bool SameIdentifier(const NativeIdentifierAstNode& expected,
+                    const NativeIdentifierAstNode& presented) {
+  if (expected.quoted != presented.quoted) return false;
+  return expected.quoted
+             ? expected.spelling == presented.spelling
+             : ToLowerAscii(expected.spelling) ==
+                   ToLowerAscii(presented.spelling);
+}
+
 SourceRange Span(const Token& first, const Token& last) {
   SourceRange range = TokenSourceRange(first);
   range.length = last.offset + last.length - first.offset;
@@ -3807,11 +3816,45 @@ class NativeRelationalParser final {
   }
 
   bool LooksLikeBoundedCatalogJoinSelect() const {
-    if (tokens_.size() < 8 || tokens_[1]->text != "*" ||
-        !IsWord(*tokens_[2], "FROM")) {
+    if (tokens_.size() < 7) return false;
+    std::size_t from_index = 1;
+    if (tokens_[from_index]->text == "*") {
+      ++from_index;
+    } else {
+      bool expect_identifier = true;
+      while (from_index < tokens_.size()) {
+        if (expect_identifier) {
+          if (tokens_[from_index]->kind != TokenKind::kIdentifier) return false;
+          ++from_index;
+          if (from_index < tokens_.size() &&
+              tokens_[from_index]->text == ".") {
+            ++from_index;
+            if (from_index >= tokens_.size() ||
+                tokens_[from_index]->kind != TokenKind::kIdentifier) {
+              return false;
+            }
+            ++from_index;
+            if (from_index < tokens_.size() &&
+                tokens_[from_index]->text == ".") {
+              return false;
+            }
+          }
+          expect_identifier = false;
+        } else if (tokens_[from_index]->text == ",") {
+          ++from_index;
+          expect_identifier = true;
+        } else {
+          break;
+        }
+      }
+      if (expect_identifier) return false;
+    }
+    if (from_index >= tokens_.size() ||
+        !IsWord(*tokens_[from_index], "FROM")) {
       return false;
     }
-    for (std::size_t index = 3; index + 1 < tokens_.size(); ++index) {
+    for (std::size_t index = from_index + 1;
+         index + 1 < tokens_.size(); ++index) {
       const bool accepted_kind =
           IsWord(*tokens_[index], "CROSS") ||
           IsWord(*tokens_[index], "INNER") ||
@@ -3849,9 +3892,79 @@ class NativeRelationalParser final {
     }
 
     const Token& select_token = Consume();
-    if (!RequireSymbol("*", "catalog_cross_join_wildcard_required",
-                       "bounded catalog CROSS JOIN requires SELECT *") ||
-        !RequireWord("FROM", "catalog_cross_join_from_required",
+    bool wildcard_projection = false;
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      Consume();
+      wildcard_projection = true;
+    } else {
+      std::unordered_set<std::string> projection_names;
+      const auto projection_identifier_key = [](const auto& components) {
+        std::string key;
+        for (const auto& component : components) {
+          const auto spelling = component.quoted
+                                    ? component.spelling
+                                    : ToLowerAscii(component.spelling);
+          key.push_back(component.quoted ? 'q' : 'u');
+          key.append(std::to_string(spelling.size()));
+          key.push_back(':');
+          key.append(spelling);
+        }
+        return key;
+      };
+      while (true) {
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_join_projection_identifier_required",
+                 "bounded catalog JOIN projection requires an unqualified or "
+                 "relation-terminal-qualified column identifier");
+          return FinishRefusal();
+        }
+        const Token& first_identifier_token = Consume();
+        const Token* column_token = &first_identifier_token;
+        std::vector<NativeIdentifierAstNode> qualified_identifier;
+        qualified_identifier.push_back(
+            {first_identifier_token.text, first_identifier_token.quoted,
+             TokenSourceRange(first_identifier_token)});
+        if (AtSymbol(".")) {
+          Consume();
+          if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+            Refuse("catalog_join_projection_identifier_required",
+                   "bounded catalog JOIN projection qualifier requires one "
+                   "column identifier");
+            return FinishRefusal();
+          }
+          column_token = &Consume();
+          qualified_identifier.push_back(
+              {column_token->text, column_token->quoted,
+               TokenSourceRange(*column_token)});
+          if (AtSymbol(".")) {
+            Refuse("catalog_join_projection_identifier_required",
+                   "bounded catalog JOIN projection admits at most a "
+                   "relation-terminal qualifier and column");
+            return FinishRefusal();
+          }
+        }
+        auto projection_key =
+            projection_identifier_key(qualified_identifier);
+        if (!projection_names.insert(std::move(projection_key)).second) {
+          Refuse("catalog_join_projection_identifier_duplicate",
+                 "bounded catalog JOIN projection identifiers must be unique");
+          return FinishRefusal();
+        }
+        NativeExpressionAstNode identifier;
+        identifier.expression_id = NextExpressionId();
+        identifier.expression_kind = NativeExpressionAstKind::kIdentifier;
+        identifier.qualified_identifier = std::move(qualified_identifier);
+        identifier.spelling =
+            SourceSpelling(first_identifier_token, *column_token);
+        identifier.range = Span(first_identifier_token, *column_token);
+        projection_expression_ids.push_back(identifier.expression_id);
+        document_.expressions.push_back(std::move(identifier));
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "catalog_cross_join_from_required",
                      "bounded catalog CROSS JOIN requires FROM")) {
       return FinishRefusal();
     }
@@ -3987,9 +4100,36 @@ class NativeRelationalParser final {
           source.model_operation_expression_ids = {operation.expression_id};
           document_.expressions.push_back(std::move(operation));
         }
+      } else if (!AtEnd() && IsWord(Current(), "AS")) {
+        Consume();
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_join_source_alias_required",
+                 "ordinary catalog JOIN source AS requires one alias");
+          return std::nullopt;
+        }
+        const Token& alias = Consume();
+        source.alias = NativeIdentifierAstNode{
+            alias.text, alias.quoted, TokenSourceRange(alias)};
+        source.alias_is_explicit = true;
+        source_end = &alias;
+      } else if (
+          !AtEnd() && Current().kind == TokenKind::kIdentifier &&
+          (Current().quoted ||
+           (!IsWord(Current(), "CROSS") && !IsWord(Current(), "INNER") &&
+            !IsWord(Current(), "LEFT") && !IsWord(Current(), "RIGHT") &&
+            !IsWord(Current(), "FULL") && !IsWord(Current(), "JOIN") &&
+            !IsWord(Current(), "OUTER") && !IsWord(Current(), "SEMI") &&
+            !IsWord(Current(), "ANTI") && !IsWord(Current(), "ON") &&
+            !IsWord(Current(), "WHERE") && !IsWord(Current(), "LIMIT") &&
+            !IsWord(Current(), "AND")))) {
+        const Token& alias = Consume();
+        source.alias = NativeIdentifierAstNode{
+            alias.text, alias.quoted, TokenSourceRange(alias)};
+        source.alias_is_explicit = false;
+        source_end = &alias;
       }
       source.range = model_source ? Span(*model_operator, *source_end)
-                                  : source.qualified_name_range;
+                                  : Span(first, *source_end);
       return source;
     };
 
@@ -4202,7 +4342,7 @@ class NativeRelationalParser final {
             parsed_sources.size() == 9) {
           if (parsed_sources.size() == 9) {
             RefuseExact("SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1",
-                        "bounded multimodel JOIN admits at most nine sources");
+                        "bounded multi-source JOIN admits at most nine sources");
           }
           return FinishRefusal();
         }
@@ -4459,24 +4599,296 @@ class NativeRelationalParser final {
         }
       }
     }
-    if (AtSymbol(";")) Consume();
-    if (!AtEnd()) {
-      Refuse("catalog_cross_join_clause_unsupported",
-             "bounded catalog CROSS JOIN does not admit aliases or clauses");
-      return FinishRefusal();
-    }
-
+    const Token* join_end = query_end;
+    std::optional<std::uint32_t> join_filter_predicate_id;
+    std::vector<std::uint32_t> join_limit_expression_ids;
     const auto parsed_model_source_count = std::ranges::count_if(
         parsed_sources, [](const auto& source) {
           return source.source_kind !=
                  NativeRelationSourceAstKind::kCatalogRelation;
         });
+    const bool all_ordinary_catalog_sources =
+        std::ranges::all_of(parsed_sources, [](const auto& source) {
+          return source.source_kind ==
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    const bool has_ordinary_catalog_alias =
+        std::ranges::any_of(parsed_sources, [](const auto& source) {
+          return source.source_kind ==
+                     NativeRelationSourceAstKind::kCatalogRelation &&
+                 (source.alias.has_value() || source.alias_is_explicit);
+        });
+    if (has_ordinary_catalog_alias && !all_ordinary_catalog_sources) {
+      Refuse("catalog_join_source_alias_profile_unsupported",
+             "ordinary catalog JOIN source aliases require an all-catalog "
+             "source graph");
+      return FinishRefusal();
+    }
+    bool unique_ordinary_source_bindings = true;
+    if (all_ordinary_catalog_sources) {
+      for (std::size_t left = 0;
+           unique_ordinary_source_bindings && left < parsed_sources.size();
+           ++left) {
+        const auto& left_binding =
+            parsed_sources[left].alias.has_value()
+                ? *parsed_sources[left].alias
+                : parsed_sources[left].qualified_name.back();
+        for (std::size_t right = left + 1; right < parsed_sources.size();
+             ++right) {
+          const auto& right_binding =
+              parsed_sources[right].alias.has_value()
+                  ? *parsed_sources[right].alias
+                  : parsed_sources[right].qualified_name.back();
+          if ((parsed_sources[left].alias.has_value() ||
+               parsed_sources[right].alias.has_value()) &&
+              SameIdentifier(left_binding, right_binding)) {
+            unique_ordinary_source_bindings = false;
+            break;
+          }
+        }
+      }
+    }
+    if (!unique_ordinary_source_bindings) {
+      Refuse("catalog_join_source_alias_duplicate",
+             "ordinary catalog JOIN source binding names must be unique");
+      return FinishRefusal();
+    }
+    const bool ordinary_two_source_join =
+        parsed_sources.size() == 2 && all_ordinary_catalog_sources;
+    const bool ordinary_multi_catalog_cross_join =
+        parsed_sources.size() >= 3 && parsed_sources.size() <= 9 &&
+        join_kind == NativeJoinAstKind::kCross &&
+        parsed_model_source_count == 0 && all_ordinary_catalog_sources;
+    const auto exact_source_qualifier =
+        [&](const NativeIdentifierAstNode& qualifier) {
+          return std::ranges::count_if(
+                     parsed_sources, [&](const auto& source) {
+                       if (source.qualified_name.empty()) return false;
+                       const auto& binding_name =
+                           source.alias.has_value()
+                               ? *source.alias
+                               : source.qualified_name.back();
+                       return SameIdentifier(binding_name, qualifier);
+                     }) == 1;
+        };
+    for (const auto expression_id : projection_expression_ids) {
+      const auto& expression = document_.expressions[expression_id - 1];
+      if (expression.qualified_identifier.size() == 2 &&
+          !exact_source_qualifier(
+              expression.qualified_identifier.front())) {
+        Refuse("catalog_join_projection_qualifier_ambiguous",
+               "bounded catalog JOIN projection qualifier must match one "
+               "effective source binding name");
+        return FinishRefusal();
+      }
+    }
+    if (!wildcard_projection && !ordinary_two_source_join &&
+        !ordinary_multi_catalog_cross_join) {
+      Refuse("catalog_join_projection_profile_unsupported",
+             "bounded catalog JOIN identifier projection requires two "
+             "ordinary sources or a three-to-nine-source catalog CROSS JOIN");
+      return FinishRefusal();
+    }
+    const bool ordinary_multi_catalog_filter =
+        ordinary_multi_catalog_cross_join;
+    if ((ordinary_two_source_join || ordinary_multi_catalog_filter) &&
+        !AtEnd() && IsWord(Current(), "WHERE")) {
+      Consume();
+      join_filter_predicate_id = ParseExpression(0, 0);
+      if (!join_filter_predicate_id.has_value()) return FinishRefusal();
+      const auto& predicate =
+          document_.expressions[*join_filter_predicate_id - 1];
+      const NativeExpressionAstNode* identifier = nullptr;
+      const NativeExpressionAstNode* value = nullptr;
+      if (predicate.expression_kind == NativeExpressionAstKind::kBinary &&
+          predicate.child_expression_ids.size() == 2) {
+        identifier =
+            &document_.expressions[predicate.child_expression_ids[0] - 1];
+        value = &document_.expressions[predicate.child_expression_ids[1] - 1];
+      }
+      const bool accepted_operator =
+          predicate.operator_name == "=" || predicate.operator_name == "<>" ||
+          predicate.operator_name == "!=" || predicate.operator_name == "<" ||
+          predicate.operator_name == "<=" || predicate.operator_name == ">" ||
+          predicate.operator_name == ">=";
+      if (identifier == nullptr || value == nullptr || !accepted_operator ||
+          identifier->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          (identifier->qualified_identifier.size() != 1 &&
+           identifier->qualified_identifier.size() != 2) ||
+          (identifier->qualified_identifier.size() == 2 &&
+           !exact_source_qualifier(
+               identifier->qualified_identifier.front())) ||
+          !identifier->child_expression_ids.empty() ||
+          !((value->expression_kind == NativeExpressionAstKind::kLiteral &&
+             value->literal_kind == NativeLiteralAstKind::kNumeric) ||
+            value->expression_kind == NativeExpressionAstKind::kParameter ||
+            value->expression_kind == NativeExpressionAstKind::kVariable) ||
+          !value->child_expression_ids.empty()) {
+        Refuse("catalog_join_where_profile_unsupported",
+               "bounded catalog JOIN WHERE requires one unqualified or "
+               "source-qualified column "
+               "comparison to an unsigned numeric literal, structural "
+               "parameter occurrence, or structural variable occurrence");
+        return FinishRefusal();
+      }
+      query_end = &TokenForRangeEnd(predicate.range);
+    }
+    if (!AtEnd() && IsWord(Current(), "LIMIT")) {
+      const NativeExpressionAstNode* filter_value = nullptr;
+      if (join_filter_predicate_id.has_value()) {
+        const auto& predicate =
+            document_.expressions[*join_filter_predicate_id - 1];
+        if (predicate.child_expression_ids.size() == 2) {
+          filter_value =
+              &document_.expressions[predicate.child_expression_ids[1] - 1];
+        }
+      }
+      if (!all_ordinary_catalog_sources) {
+        Refuse("catalog_join_limit_profile_unsupported",
+               "bounded catalog JOIN LIMIT requires an all-catalog query");
+        return FinishRefusal();
+      }
+      Consume();
+      if (AtEnd() ||
+          (Current().kind != TokenKind::kNumericLiteral &&
+           Current().kind != TokenKind::kParameter)) {
+        Refuse("catalog_join_limit_bound_required",
+               "bounded catalog JOIN LIMIT requires one unsigned int64 "
+               "literal or structural parameter");
+        return FinishRefusal();
+      }
+      const Token& bound_token = Consume();
+      const bool literal_filter_parameter_limit =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+          filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
+          bound_token.kind == TokenKind::kParameter;
+      const bool parameter_filter_literal_limit =
+          filter_value != nullptr &&
+          filter_value->expression_kind ==
+              NativeExpressionAstKind::kParameter &&
+          bound_token.kind == TokenKind::kNumericLiteral;
+      const bool parameter_filter_parameter_limit =
+          filter_value != nullptr &&
+          filter_value->expression_kind ==
+              NativeExpressionAstKind::kParameter &&
+          bound_token.kind == TokenKind::kParameter;
+      const bool literal_filter_literal_limit =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+          filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
+          bound_token.kind == TokenKind::kNumericLiteral;
+      if (join_filter_predicate_id.has_value() &&
+          !literal_filter_parameter_limit &&
+          !parameter_filter_literal_limit &&
+          !parameter_filter_parameter_limit &&
+          !literal_filter_literal_limit) {
+        Refuse("catalog_join_filter_limit_profile_unsupported",
+               "bounded catalog JOIN WHERE and LIMIT composition requires "
+               "two numeric literals, one numeric literal and one structural "
+               "parameter on opposite operands, or two structural parameters");
+        return FinishRefusal();
+      }
+      NativeExpressionAstNode bound;
+      bound.expression_id = NextExpressionId();
+      bound.spelling = bound_token.text;
+      bound.range = TokenSourceRange(bound_token);
+      if (bound_token.kind == TokenKind::kNumericLiteral) {
+        std::uint64_t parsed_limit = 0;
+        const auto converted = std::from_chars(
+            bound_token.text.data(),
+            bound_token.text.data() + bound_token.text.size(), parsed_limit);
+        if (bound_token.text.empty() ||
+            (bound_token.text.size() > 1 && bound_token.text.front() == '0') ||
+            converted.ec != std::errc{} ||
+            converted.ptr !=
+                bound_token.text.data() + bound_token.text.size() ||
+            parsed_limit > static_cast<std::uint64_t>(
+                               std::numeric_limits<std::int64_t>::max())) {
+          Refuse("catalog_join_limit_bound_invalid",
+                 "bounded catalog JOIN LIMIT requires one canonical "
+                 "nonnegative int64 literal");
+          return FinishRefusal();
+        }
+        bound.expression_kind = NativeExpressionAstKind::kLiteral;
+        bound.literal_kind = NativeLiteralAstKind::kNumeric;
+      } else {
+        bound.expression_kind = NativeExpressionAstKind::kParameter;
+      }
+      join_limit_expression_ids.push_back(bound.expression_id);
+      document_.expressions.push_back(std::move(bound));
+      query_end = &bound_token;
+      if (!join_filter_predicate_id.has_value() &&
+          (bound_token.kind == TokenKind::kNumericLiteral ||
+           bound_token.kind == TokenKind::kParameter) &&
+          !AtEnd() &&
+          IsWord(Current(), "OFFSET")) {
+        Consume();
+        const bool accepted_offset_kind =
+            !AtEnd() &&
+            (Current().kind == bound_token.kind ||
+             (bound_token.kind == TokenKind::kNumericLiteral &&
+              Current().kind == TokenKind::kParameter) ||
+             (bound_token.kind == TokenKind::kParameter &&
+              Current().kind == TokenKind::kNumericLiteral));
+        if (!accepted_offset_kind) {
+          Refuse("catalog_join_limit_offset_required",
+                 "bounded catalog JOIN OFFSET requires a second unsigned "
+                 "int64 literal or an admitted structural parameter");
+          return FinishRefusal();
+        }
+        const Token& offset_token = Consume();
+        if (offset_token.kind == TokenKind::kNumericLiteral) {
+          std::uint64_t parsed_offset = 0;
+          const auto converted = std::from_chars(
+              offset_token.text.data(),
+              offset_token.text.data() + offset_token.text.size(),
+              parsed_offset);
+          if (offset_token.text.empty() ||
+              (offset_token.text.size() > 1 &&
+               offset_token.text.front() == '0') ||
+              converted.ec != std::errc{} ||
+              converted.ptr !=
+                  offset_token.text.data() + offset_token.text.size() ||
+              parsed_offset > static_cast<std::uint64_t>(
+                                  std::numeric_limits<std::int64_t>::max())) {
+            Refuse("catalog_join_limit_offset_invalid",
+                   "bounded catalog JOIN OFFSET requires one canonical "
+                   "nonnegative int64 literal");
+            return FinishRefusal();
+          }
+        }
+        NativeExpressionAstNode offset;
+        offset.expression_id = NextExpressionId();
+        offset.expression_kind =
+            offset_token.kind == TokenKind::kNumericLiteral
+                ? NativeExpressionAstKind::kLiteral
+                : NativeExpressionAstKind::kParameter;
+        if (offset_token.kind == TokenKind::kNumericLiteral) {
+          offset.literal_kind = NativeLiteralAstKind::kNumeric;
+        }
+        offset.spelling = offset_token.text;
+        offset.range = TokenSourceRange(offset_token);
+        join_limit_expression_ids.push_back(offset.expression_id);
+        document_.expressions.push_back(std::move(offset));
+        query_end = &offset_token;
+      }
+    }
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("catalog_cross_join_clause_unsupported",
+             "bounded catalog CROSS JOIN does not admit additional clauses");
+      return FinishRefusal();
+    }
+
+    const bool bounded_multimodel_join =
+        parsed_sources.size() >= 3 && parsed_sources.size() <= 9 &&
+        parsed_model_source_count >= 2;
     if (parsed_sources.size() > 2 &&
-        (parsed_sources.size() < 3 || parsed_sources.size() > 9 ||
-         parsed_model_source_count < 2)) {
+        !ordinary_multi_catalog_cross_join && !bounded_multimodel_join) {
       RefuseExact("SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1",
-                  "multimodel JOIN requires three to nine sources and at "
-                  "least two model-family legs");
+                  "multi-source JOIN requires either three to nine ordinary "
+                  "catalog CROSS JOIN legs or at least two model-family legs");
       return FinishRefusal();
     }
     std::vector<std::uint32_t> source_wildcard_ids;
@@ -4522,7 +4934,7 @@ class NativeRelationalParser final {
         joined_wildcard_ids.push_back(source_wildcard_ids[source_ordinal]);
         join.output_expression_ids = joined_wildcard_ids;
       }
-      join.range = Span(select_token, *query_end);
+      join.range = Span(select_token, *join_end);
       if (source_ordinal + 1 == parsed_sources.size() &&
           join_kind != NativeJoinAstKind::kCross) {
         std::vector<std::uint32_t> predicate_expression_ids(
@@ -4534,6 +4946,9 @@ class NativeRelationalParser final {
             NativeExpressionAstNode left_key;
             left_key.expression_id = NextExpressionId();
             left_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+            left_key.qualified_identifier.push_back(NativeIdentifierAstNode{
+                parsed.left_key->text, parsed.left_key->quoted,
+                TokenSourceRange(*parsed.left_key)});
             left_key.spelling = parsed.left_key->text;
             left_key.range = TokenSourceRange(*parsed.left_key);
             const auto left_key_id = left_key.expression_id;
@@ -4542,6 +4957,9 @@ class NativeRelationalParser final {
             NativeExpressionAstNode right_key;
             right_key.expression_id = NextExpressionId();
             right_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+            right_key.qualified_identifier.push_back(NativeIdentifierAstNode{
+                parsed.right_key->text, parsed.right_key->quoted,
+                TokenSourceRange(*parsed.right_key)});
             right_key.spelling = parsed.right_key->text;
             right_key.range = TokenSourceRange(*parsed.right_key);
             const auto right_key_id = right_key.expression_id;
@@ -4576,6 +4994,40 @@ class NativeRelationalParser final {
     }
     document_.catalog_relation_sources = std::move(parsed_sources);
     document_.root_relation_id = prior_relation_id;
+    if (join_filter_predicate_id.has_value()) {
+      NativeRelationAstNode filter;
+      filter.relation_id = prior_relation_id + 1;
+      filter.relation_kind = NativeRelationAstKind::kFilter;
+      filter.input_relation_ids = {prior_relation_id};
+      filter.output_expression_ids = joined_wildcard_ids;
+      filter.predicate_expression_ids = {*join_filter_predicate_id};
+      filter.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(filter));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    }
+    if (!wildcard_projection) {
+      NativeRelationAstNode project;
+      project.relation_id = document_.root_relation_id + 1;
+      project.relation_kind = NativeRelationAstKind::kProject;
+      project.input_relation_ids = {document_.root_relation_id};
+      project.output_expression_ids = projection_expression_ids;
+      project.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(project));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    }
+    if (!join_limit_expression_ids.empty()) {
+      NativeRelationAstNode limit;
+      limit.relation_id = document_.root_relation_id + 1;
+      limit.relation_kind = NativeRelationAstKind::kLimit;
+      limit.input_relation_ids = {document_.root_relation_id};
+      limit.output_expression_ids =
+          wildcard_projection ? joined_wildcard_ids
+                              : projection_expression_ids;
+      limit.limit_expression_ids = join_limit_expression_ids;
+      limit.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(limit));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    }
     document_.status = NativeRelationalParseStatus::kAccepted;
     return std::move(document_);
   }

@@ -1780,7 +1780,8 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
       case api::RelationalExpressionKind::kParameter:
         exact_shape = record.child_expression_ids.empty() &&
                       (has_payload != has_typed_parameter) && !has_literal &&
-                      !has_function && !has_name && !has_operator;
+                      !has_typed_literal && !has_function && !has_name &&
+                      !has_operator;
         break;
       case api::RelationalExpressionKind::kIdentifier:
       case api::RelationalExpressionKind::kFunctionCall:
@@ -2195,9 +2196,32 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
       *refusal_detail = "binary scalar operator is not admitted";
       return leave(false);
     }
-    case api::RelationalExpressionKind::kParameter:
-      *refusal_detail = "parameter expression lacks an engine-bound runtime value";
-      return leave(false);
+    case api::RelationalExpressionKind::kParameter: {
+      if (!expression.parameter_typed_value_v1.has_value() ||
+          expression.literal_or_parameter_ref.has_value() ||
+          expression.literal_typed_value_v1.has_value() ||
+          expression.literal_kind.has_value() ||
+          !expression.child_expression_ids.empty() ||
+          expression.function_uuid.has_value() ||
+          expression.bound_name_uuid.has_value() ||
+          expression.operator_name.has_value()) {
+        *refusal_detail =
+            "parameter expression lacks an engine-bound runtime value";
+        return leave(false);
+      }
+      const auto descriptor =
+          descriptors_.find(expression.result_descriptor_id);
+      if (descriptor == descriptors_.end()) {
+        *refusal_detail = "parameter result descriptor is absent";
+        return leave(false);
+      }
+      std::string type_name;
+      if (!ResolveDescriptorType(*descriptor->second, &type_name,
+                                 refusal_detail)) {
+        return leave(false);
+      }
+      return finish_type(std::move(type_name));
+    }
     case api::RelationalExpressionKind::kIdentifier:
       *refusal_detail = "identifier expression requires an input row binding";
       return leave(false);
@@ -2631,6 +2655,16 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
 
   if (expression.expression_kind == api::RelationalExpressionKind::kParameter &&
       expression.parameter_typed_value_v1.has_value()) {
+    if (!expression.child_expression_ids.empty() ||
+        expression.literal_or_parameter_ref.has_value() ||
+        expression.literal_typed_value_v1.has_value() ||
+        expression.literal_kind.has_value() ||
+        expression.function_uuid.has_value() ||
+        expression.bound_name_uuid.has_value() ||
+        expression.operator_name.has_value()) {
+      *refusal_detail = "parameter expression shape is malformed";
+      return false;
+    }
     const auto& typed = *expression.parameter_typed_value_v1;
     const auto digest = scratchbird::core::hash::ComputeSha256Digest(
         typed.canonical_value_bytes);

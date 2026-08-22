@@ -152,6 +152,17 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilterBound(
         "QOW-DIAG-QRY-007-FILTER-PREDICATE-RECEIPT-REFUSAL-V1",
         "borrowed descriptor filter receipt carries conflicting owned authority"));
   }
+  if (receipt.borrowed_mga_authority_ != nullptr &&
+      !CanonicalExecutionMgaAuthorityCarrierIsExactDefault(
+          receipt.mga_authority_)) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-FILTER-PREDICATE-RECEIPT-REFUSAL-V1",
+        "descriptor filter receipt carries conflicting MGA authority"));
+  }
+  const auto& active_mga_authority =
+      receipt.borrowed_mga_authority_ == nullptr
+          ? receipt.mga_authority_
+          : *receipt.borrowed_mga_authority_;
   const auto& execution_dag = borrowed_execution_carriers
                                   ? borrowed_execution_dag
                                   : receipt.physical_dag_;
@@ -186,7 +197,7 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilterBound(
         "predicate receipt consumer pairing is not canonical"));
   }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      receipt.mga_authority_, execution_dag);
+      active_mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
@@ -303,14 +314,14 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilterBound(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      receipt.mga_authority_, execution_dag);
+      active_mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
   result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
-  result.mga_statement_context = receipt.mga_authority_.statement_context;
+  result.mga_statement_context = active_mga_authority.statement_context;
   return result;
 }
 

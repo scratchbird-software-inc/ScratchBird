@@ -1814,15 +1814,87 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       }
       const auto& value =
           dispatch_request.parameter_value_set->records[reference.slot_ordinal];
-      const auto descriptor_uuid = uuid_text(node->datatype_descriptor_uuid);
+      const auto descriptor_uuid = uuid_text(value.slot_uuid);
+      const auto joined_scan_count = std::ranges::count_if(
+          decoded.request.relational_dag.nodes, [](const auto& candidate) {
+            return candidate.node_kind == api::RelationalDagNodeKind::kScan;
+          });
+      const auto limit_binding_count = std::ranges::count_if(
+          decoded.request.relational_dag.nodes,
+          [&](const auto& candidate) {
+            if (candidate.node_kind != api::RelationalDagNodeKind::kLimit) {
+              return false;
+            }
+            const bool exact_single_bound =
+                candidate.bound_expression_ids ==
+                std::vector<std::uint32_t>{expression_id};
+            const bool exact_join_count_offset_bound =
+                joined_scan_count >= 2 && joined_scan_count <= 9 &&
+                candidate.semantic_variant_id ==
+                    "limit.bound-count-offset.v1" &&
+                candidate.bound_expression_ids.size() == 2 &&
+                std::ranges::count(candidate.bound_expression_ids,
+                                   expression_id) == 1;
+            return exact_single_bound || exact_join_count_offset_bound;
+          });
+      const bool exact_limit_binding = limit_binding_count == 1;
+      std::uint32_t exact_filter_descriptor_id = 0;
+      const auto filter_binding_count = std::ranges::count_if(
+          decoded.request.relational_dag.nodes,
+          [&](const auto& candidate) {
+            if (candidate.node_kind !=
+                    api::RelationalDagNodeKind::kFilter ||
+                candidate.bound_expression_ids.size() != 1) {
+              return false;
+            }
+            const auto predicate = std::ranges::find_if(
+                decoded.request.relational_dag.expressions,
+                [&](const auto& expression) {
+                  return expression.expression_id ==
+                         candidate.bound_expression_ids.front();
+                });
+            if (predicate == decoded.request.relational_dag.expressions.end() ||
+                predicate->expression_kind !=
+                    api::RelationalExpressionKind::kBinary ||
+                predicate->child_expression_ids.size() != 2 ||
+                predicate->child_expression_ids[1] != expression_id) {
+              return false;
+            }
+            exact_filter_descriptor_id = predicate->expression_id;
+            return true;
+          });
+      const auto exact_filter_descriptor_count =
+          filter_binding_count == 1
+              ? std::ranges::count_if(
+                    decoded.request.relational_dag.descriptors,
+                    [&](const auto& candidate) {
+                      return candidate.descriptor_id ==
+                                 exact_filter_descriptor_id &&
+                             candidate.descriptor_uuid == descriptor_uuid;
+                    })
+              : std::size_t{0};
+      const bool exact_filter_binding =
+          filter_binding_count == 1 && exact_filter_descriptor_count == 1;
+      const auto exact_limit_descriptor_count = std::ranges::count_if(
+          decoded.request.relational_dag.descriptors,
+          [&](const auto& candidate) {
+            return candidate.descriptor_id == expression_id &&
+                   candidate.descriptor_uuid == descriptor_uuid;
+          });
       const auto descriptor = std::ranges::find_if(
           decoded.request.relational_dag.descriptors,
           [&](const auto& candidate) {
-            return candidate.descriptor_uuid == descriptor_uuid;
+            return candidate.descriptor_uuid == descriptor_uuid &&
+                   (!exact_limit_binding ||
+                    candidate.descriptor_id == expression_id) &&
+                   (!exact_filter_binding ||
+                    candidate.descriptor_id == exact_filter_descriptor_id);
           });
       const auto value_sha = scratchbird::core::hash::ComputeSha256Digest(
           value.canonical_value_bytes);
-      if (descriptor == decoded.request.relational_dag.descriptors.end() ||
+      if (limit_binding_count > 1 ||
+          (exact_limit_binding && exact_limit_descriptor_count != 1) ||
+          descriptor == decoded.request.relational_dag.descriptors.end() ||
           value.slot_ordinal != reference.slot_ordinal || !value_sha.ok()) {
         decoded.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
         decoded.detail = "parameter descriptor or canonical value is invalid";
@@ -1834,7 +1906,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       expression.result_descriptor_id = descriptor->descriptor_id;
       api::RelationalExpressionRecord::ParameterTypedValueV1 typed;
       typed.descriptor_uuid = descriptor_uuid;
-      typed.descriptor_generation = value.datatype_descriptor_generation;
+      typed.descriptor_generation = node->parameter_set_generation;
       typed.value_state =
           value.state == SblrParameterValueStateV1::null_value ? "null" : "value";
       typed.canonical_value_bytes = value.canonical_value_bytes;
@@ -1854,7 +1926,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           {"slot_uuid", uuid_text(value.slot_uuid)},
           {"descriptor_uuid", descriptor_uuid},
           {"descriptor_generation",
-           std::to_string(value.datatype_descriptor_generation)},
+           std::to_string(node->parameter_set_generation)},
           {"value_state", value.state == SblrParameterValueStateV1::null_value
                               ? "null" : "value"},
           {"canonical_value_sha256",

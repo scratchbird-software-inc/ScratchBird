@@ -10,6 +10,7 @@
 
 #include "datatype_catalog_manifest.hpp"
 #include "engine/executor/canonical_aggregate_registry.hpp"
+#include "hash_digest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "security/security_model.hpp"
@@ -211,32 +212,379 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   const auto& relational = request.relational_dag;
   std::vector<const RelationalDagNode*> scans;
   std::vector<const RelationalDagNode*> joins;
+  std::vector<const RelationalDagNode*> filters;
+  std::vector<const RelationalDagNode*> projects;
+  std::vector<const RelationalDagNode*> ctes;
+  const RelationalDagNode* limit = nullptr;
   for (const auto& node : relational.nodes) {
     if (node.node_kind == RelationalDagNodeKind::kScan) {
       scans.push_back(&node);
     } else if (node.node_kind == RelationalDagNodeKind::kJoin) {
       joins.push_back(&node);
+    } else if (node.node_kind == RelationalDagNodeKind::kFilter) {
+      filters.push_back(&node);
+    } else if (node.node_kind == RelationalDagNodeKind::kProject) {
+      projects.push_back(&node);
+    } else if (node.node_kind == RelationalDagNodeKind::kCte) {
+      ctes.push_back(&node);
+    } else if (node.node_kind == RelationalDagNodeKind::kLimit &&
+               limit == nullptr) {
+      limit = &node;
     } else {
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                    "bounded_heap_scan_join_tree");
+                    "bounded_heap_scan_join_tree_with_unary_tail");
     }
   }
-  const auto root_join = std::ranges::find_if(joins, [&](const auto* node) {
-    return node->node_id == relational.root_node_id;
-  });
   if (scans.size() < 2 || scans.size() > 9 ||
-      joins.size() != scans.size() - 1 || root_join == joins.end() ||
-      relational.nodes.size() != scans.size() + joins.size() ||
+      joins.size() != scans.size() - 1 ||
+      filters.size() > scans.size() + joins.size() ||
+      projects.size() > scans.size() + joins.size() ||
+      ctes.size() > scans.size() + joins.size() ||
+      relational.nodes.size() !=
+          scans.size() + joins.size() + filters.size() +
+              projects.size() + ctes.size() +
+              static_cast<std::size_t>(limit != nullptr) ||
       !relational.values_rows.empty() || !relational.grouping_sets.empty() ||
       !relational.properties.empty()) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "bounded_heap_scan_join_tree");
+                  "bounded_heap_scan_join_tree_with_unary_tail");
   }
   std::unordered_map<std::uint32_t, const RelationalDagNode*> nodes_by_id;
   for (const auto& node : relational.nodes) {
     if (node.node_id == 0 || !nodes_by_id.emplace(node.node_id, &node).second) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "unique_join_tree_node_identity");
+    }
+  }
+  const auto node_for = [&](const std::uint32_t node_id) {
+    const auto found = nodes_by_id.find(node_id);
+    return found == nodes_by_id.end() ? nullptr : found->second;
+  };
+  const auto* terminal = node_for(relational.root_node_id);
+  const auto* join_root = terminal;
+  const auto consume_unary = [&](const RelationalDagNodeKind kind,
+                                 const RelationalDagNode* expected) {
+    if (join_root == nullptr || join_root->node_kind != kind ||
+        join_root != expected || join_root->input_node_ids.size() != 1) {
+      return false;
+    }
+    join_root = node_for(join_root->input_node_ids.front());
+    return join_root != nullptr;
+  };
+  const RelationalDagNode* terminal_cte = nullptr;
+  if (join_root != nullptr &&
+      join_root->node_kind == RelationalDagNodeKind::kCte) {
+    terminal_cte = join_root;
+    if (!consume_unary(RelationalDagNodeKind::kCte, terminal_cte)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "terminal_nonrecursive_cte_tail");
+    }
+  }
+  std::vector<const RelationalDagNode*> local_ctes;
+  local_ctes.reserve(ctes.size());
+  for (const auto* candidate : ctes) {
+    if (candidate != terminal_cte) local_ctes.push_back(candidate);
+  }
+  const RelationalDagNode* terminal_limit = nullptr;
+  if (join_root != nullptr &&
+      join_root->node_kind == RelationalDagNodeKind::kLimit) {
+    terminal_limit = join_root;
+    if (!consume_unary(RelationalDagNodeKind::kLimit, terminal_limit)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "terminal_limit_tail");
+    }
+  }
+  const RelationalDagNode* terminal_project = nullptr;
+  if (join_root != nullptr &&
+      join_root->node_kind == RelationalDagNodeKind::kProject) {
+    terminal_project = join_root;
+    if (!consume_unary(RelationalDagNodeKind::kProject, terminal_project)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "terminal_descriptor_project_tail");
+    }
+  }
+  std::vector<const RelationalDagNode*> local_projects;
+  local_projects.reserve(projects.size());
+  for (const auto* candidate : projects) {
+    if (candidate != terminal_project) local_projects.push_back(candidate);
+  }
+  const RelationalDagNode* terminal_filter = nullptr;
+  if (join_root != nullptr &&
+      join_root->node_kind == RelationalDagNodeKind::kFilter) {
+    terminal_filter = join_root;
+    if (!consume_unary(RelationalDagNodeKind::kFilter, terminal_filter)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "terminal_filter_tail");
+    }
+  }
+  std::vector<const RelationalDagNode*> local_filters;
+  local_filters.reserve(filters.size());
+  for (const auto* candidate : filters) {
+    if (candidate != terminal_filter) local_filters.push_back(candidate);
+  }
+  if (join_root == nullptr ||
+      join_root->node_kind != RelationalDagNodeKind::kJoin ||
+      std::ranges::find(joins, join_root) == joins.end()) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "join_tree_root_before_unary_tail");
+  }
+  const auto unary_empty = [](const RelationalDagNode& node) {
+    return node.required_object_uuids.empty() && node.values_row_ids.empty() &&
+           node.required_property_uuids.empty() &&
+           node.delivered_property_uuids.empty();
+  };
+  const auto* limit_input =
+      terminal_project != nullptr
+          ? terminal_project
+          : (terminal_filter != nullptr ? terminal_filter : join_root);
+  const auto terminal_limit_arity = terminal_limit == nullptr
+                                        ? std::size_t{0}
+                                        : terminal_limit->semantic_variant_id ==
+                                                  "limit.bound-count.v1"
+                                              ? std::size_t{1}
+                                              : terminal_limit
+                                                            ->semantic_variant_id ==
+                                                        "limit.bound-count-offset.v1"
+                                                    ? std::size_t{2}
+                                                    : std::size_t{0};
+  if ((limit == nullptr) != (terminal_limit == nullptr) ||
+      (terminal_limit != nullptr &&
+       (!local_filters.empty() || !local_projects.empty() || !ctes.empty())) ||
+      (terminal_limit != nullptr &&
+       (terminal_limit->shareable ||
+        terminal_limit_arity == 0 ||
+        (terminal_limit_arity == 2 && terminal_filter != nullptr) ||
+        terminal_limit->input_node_ids !=
+            std::vector<std::uint32_t>{limit_input->node_id} ||
+        terminal_limit->bound_expression_ids.size() != terminal_limit_arity ||
+        terminal_limit->output_descriptor_ids !=
+            limit_input->output_descriptor_ids ||
+        !unary_empty(*terminal_limit)))) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "exact_terminal_limit_binding");
+  }
+  const auto filter_input_for = [&](const RelationalDagNode* candidate) {
+    if (candidate == nullptr) {
+      return static_cast<const RelationalDagNode*>(nullptr);
+    }
+    if (candidate == terminal_filter) return join_root;
+    return candidate->input_node_ids.size() == 1
+               ? node_for(candidate->input_node_ids.front())
+               : nullptr;
+  };
+  std::unordered_set<std::uint32_t> local_filter_scan_node_ids;
+  std::unordered_set<std::uint32_t> local_filter_join_node_ids;
+  std::unordered_set<std::uint32_t> filter_predicate_expression_ids;
+  for (const auto* filter : filters) {
+    const auto* filter_input = filter_input_for(filter);
+    const bool local = filter != terminal_filter;
+    const bool local_scan =
+        local && filter_input != nullptr &&
+        filter_input->node_kind == RelationalDagNodeKind::kScan;
+    const bool local_join_subtree =
+        local && filter_input != nullptr && filter_input != join_root &&
+        filter_input->node_kind == RelationalDagNodeKind::kJoin;
+    if (filter->semantic_variant_id !=
+            "filter.catalog-column-numeric-comparison.v1" ||
+        filter_input == nullptr ||
+        filter->input_node_ids !=
+            std::vector<std::uint32_t>{filter_input->node_id} ||
+        (local && (!local_scan && !local_join_subtree)) ||
+        (local && filter->shareable) ||
+        filter->bound_expression_ids.size() != 1 ||
+        !filter_predicate_expression_ids
+             .insert(filter->bound_expression_ids.front())
+             .second ||
+        (local_scan &&
+         !local_filter_scan_node_ids.insert(filter_input->node_id).second) ||
+        (local_join_subtree &&
+         !local_filter_join_node_ids.insert(filter_input->node_id).second) ||
+        filter->output_descriptor_ids != filter_input->output_descriptor_ids ||
+        !unary_empty(*filter)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "exact_filter_binding");
+    }
+  }
+  const auto project_input_for = [&](const RelationalDagNode* candidate) {
+    if (candidate == nullptr) {
+      return static_cast<const RelationalDagNode*>(nullptr);
+    }
+    if (candidate == terminal_project) {
+      return terminal_filter != nullptr ? terminal_filter : join_root;
+    }
+    return candidate->input_node_ids.size() == 1
+               ? node_for(candidate->input_node_ids.front())
+               : nullptr;
+  };
+  std::unordered_set<std::uint32_t> local_project_scan_node_ids;
+  std::unordered_set<std::uint32_t> local_project_join_node_ids;
+  for (const auto* project : projects) {
+    const auto* project_input = project_input_for(project);
+    const bool local = project != terminal_project;
+    const RelationalDagNode* project_scan = nullptr;
+    const RelationalDagNode* project_join = nullptr;
+    if (local && project_input != nullptr) {
+      if (project_input->node_kind == RelationalDagNodeKind::kScan) {
+        project_scan = project_input;
+      } else if (
+          project_input->node_kind == RelationalDagNodeKind::kFilter &&
+          std::ranges::find(local_filters, project_input) !=
+              local_filters.end() &&
+          project_input->input_node_ids.size() == 1) {
+        const auto* filter_input =
+            node_for(project_input->input_node_ids.front());
+        if (filter_input != nullptr &&
+            filter_input->node_kind == RelationalDagNodeKind::kScan) {
+          project_scan = filter_input;
+        } else if (
+            filter_input != nullptr && filter_input != join_root &&
+            filter_input->node_kind == RelationalDagNodeKind::kJoin &&
+            local_filter_join_node_ids.contains(filter_input->node_id)) {
+          project_join = filter_input;
+        }
+      } else if (project_input != join_root &&
+                 project_input->node_kind ==
+                     RelationalDagNodeKind::kJoin) {
+        project_join = project_input;
+      }
+    }
+    if (project_input == nullptr ||
+        (local &&
+         ((project_scan == nullptr) == (project_join == nullptr) ||
+          project->shareable ||
+          (project_scan != nullptr &&
+           !local_project_scan_node_ids.insert(project_scan->node_id).second) ||
+          (project_join != nullptr &&
+           !local_project_join_node_ids.insert(project_join->node_id).second))) ||
+        project->semantic_variant_id !=
+            "project.catalog-visible-columns.v1" ||
+        project->input_node_ids !=
+            std::vector<std::uint32_t>{project_input->node_id} ||
+        project->bound_expression_ids.empty() ||
+        project->bound_expression_ids.size() !=
+            project->output_descriptor_ids.size() ||
+        project->output_descriptor_ids.size() >=
+            project_input->output_descriptor_ids.size() ||
+        std::ranges::any_of(
+            project->output_descriptor_ids, [&](const auto descriptor_id) {
+              return std::ranges::find(project_input->output_descriptor_ids,
+                                       descriptor_id) ==
+                     project_input->output_descriptor_ids.end();
+            }) ||
+        !unary_empty(*project)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "exact_descriptor_project_binding");
+    }
+  }
+  const auto branch_scan_for = [&](const RelationalDagNode* input) {
+    if (input == nullptr) return static_cast<const RelationalDagNode*>(nullptr);
+    if (input->node_kind == RelationalDagNodeKind::kScan) return input;
+    if (input->node_kind == RelationalDagNodeKind::kFilter &&
+        std::ranges::find(local_filters, input) != local_filters.end() &&
+        input->input_node_ids.size() == 1) {
+      const auto* scan = node_for(input->input_node_ids.front());
+      return scan != nullptr && scan->node_kind == RelationalDagNodeKind::kScan
+                 ? scan
+                 : nullptr;
+    }
+    if (input->node_kind == RelationalDagNodeKind::kProject &&
+        std::ranges::find(local_projects, input) != local_projects.end() &&
+        input->input_node_ids.size() == 1) {
+      const auto* project_input = node_for(input->input_node_ids.front());
+      if (project_input != nullptr &&
+          project_input->node_kind == RelationalDagNodeKind::kScan) {
+        return project_input;
+      }
+      if (project_input != nullptr &&
+          project_input->node_kind == RelationalDagNodeKind::kFilter &&
+          std::ranges::find(local_filters, project_input) !=
+              local_filters.end() &&
+          project_input->input_node_ids.size() == 1) {
+        const auto* scan = node_for(project_input->input_node_ids.front());
+        return scan != nullptr &&
+                       scan->node_kind == RelationalDagNodeKind::kScan
+                   ? scan
+                   : nullptr;
+      }
+    }
+    return static_cast<const RelationalDagNode*>(nullptr);
+  };
+  const auto branch_join_for = [&](const RelationalDagNode* input) {
+    if (input == nullptr) return static_cast<const RelationalDagNode*>(nullptr);
+    if (input != join_root &&
+        input->node_kind == RelationalDagNodeKind::kJoin) {
+      return input;
+    }
+    if (input->node_kind == RelationalDagNodeKind::kFilter &&
+        std::ranges::find(local_filters, input) != local_filters.end() &&
+        input->input_node_ids.size() == 1) {
+      const auto* filter_input = node_for(input->input_node_ids.front());
+      return filter_input != nullptr && filter_input != join_root &&
+                     filter_input->node_kind == RelationalDagNodeKind::kJoin &&
+                     local_filter_join_node_ids.contains(filter_input->node_id)
+                 ? filter_input
+                 : nullptr;
+    }
+    if (input->node_kind == RelationalDagNodeKind::kProject &&
+        std::ranges::find(local_projects, input) != local_projects.end() &&
+        input->input_node_ids.size() == 1) {
+      const auto* project_input = node_for(input->input_node_ids.front());
+      if (project_input != nullptr && project_input != join_root &&
+          project_input->node_kind == RelationalDagNodeKind::kJoin &&
+          local_project_join_node_ids.contains(project_input->node_id)) {
+        return project_input;
+      }
+      if (project_input != nullptr &&
+          project_input->node_kind == RelationalDagNodeKind::kFilter &&
+          std::ranges::find(local_filters, project_input) !=
+              local_filters.end() &&
+          project_input->input_node_ids.size() == 1) {
+        const auto* filter_input =
+            node_for(project_input->input_node_ids.front());
+        if (filter_input != nullptr && filter_input != join_root &&
+            filter_input->node_kind == RelationalDagNodeKind::kJoin &&
+            local_filter_join_node_ids.contains(filter_input->node_id) &&
+            local_project_join_node_ids.contains(filter_input->node_id)) {
+          return filter_input;
+        }
+      }
+    }
+    return static_cast<const RelationalDagNode*>(nullptr);
+  };
+  const auto cte_input_for = [&](const RelationalDagNode* candidate) {
+    if (candidate == nullptr) {
+      return static_cast<const RelationalDagNode*>(nullptr);
+    }
+    if (candidate == terminal_cte) {
+      return terminal_project != nullptr
+                 ? terminal_project
+                 : (terminal_filter != nullptr ? terminal_filter : join_root);
+    }
+    return candidate->input_node_ids.size() == 1
+               ? node_for(candidate->input_node_ids.front())
+               : nullptr;
+  };
+  std::unordered_set<std::uint32_t> local_cte_scan_node_ids;
+  std::unordered_set<std::uint32_t> local_cte_join_node_ids;
+  for (const auto* cte : ctes) {
+    const auto* cte_input = cte_input_for(cte);
+    const bool local = cte != terminal_cte;
+    const auto* cte_scan = local ? branch_scan_for(cte_input) : nullptr;
+    const auto* cte_join = local ? branch_join_for(cte_input) : nullptr;
+    if (cte_input == nullptr ||
+        (local &&
+         ((cte_scan == nullptr) == (cte_join == nullptr) ||
+          (cte_scan != nullptr &&
+           !local_cte_scan_node_ids.insert(cte_scan->node_id).second) ||
+          (cte_join != nullptr &&
+           !local_cte_join_node_ids.insert(cte_join->node_id).second))) ||
+        cte->semantic_variant_id != "cte.bound.v1" ||
+        cte->input_node_ids !=
+            std::vector<std::uint32_t>{cte_input->node_id} ||
+        cte->output_descriptor_ids != cte_input->output_descriptor_ids ||
+        !cte->bound_expression_ids.empty() || !unary_empty(*cte)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "exact_nonrecursive_cte_binding");
     }
   }
   for (const auto* scan : scans) {
@@ -263,6 +611,46 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         const auto& node = *found->second;
         if (node.node_kind == RelationalDagNodeKind::kScan) {
           return completed.insert(node_id).second;
+        }
+        if (node.node_kind == RelationalDagNodeKind::kFilter) {
+          if (std::ranges::find(local_filters, &node) == local_filters.end() ||
+              node.input_node_ids.size() != 1 ||
+              node.input_node_ids.front() == node.node_id ||
+              completed.contains(node_id) ||
+              !visiting.insert(node_id).second ||
+              !validate_tree(node.input_node_ids.front())) {
+            return false;
+          }
+          visiting.erase(node_id);
+          completed.insert(node_id);
+          return true;
+        }
+        if (node.node_kind == RelationalDagNodeKind::kProject) {
+          if (std::ranges::find(local_projects, &node) ==
+                  local_projects.end() ||
+              node.input_node_ids.size() != 1 ||
+              node.input_node_ids.front() == node.node_id ||
+              completed.contains(node_id) ||
+              !visiting.insert(node_id).second ||
+              !validate_tree(node.input_node_ids.front())) {
+            return false;
+          }
+          visiting.erase(node_id);
+          completed.insert(node_id);
+          return true;
+        }
+        if (node.node_kind == RelationalDagNodeKind::kCte) {
+          if (std::ranges::find(local_ctes, &node) == local_ctes.end() ||
+              node.input_node_ids.size() != 1 ||
+              node.input_node_ids.front() == node.node_id ||
+              completed.contains(node_id) ||
+              !visiting.insert(node_id).second ||
+              !validate_tree(node.input_node_ids.front())) {
+            return false;
+          }
+          visiting.erase(node_id);
+          completed.insert(node_id);
+          return true;
         }
         const bool accepted_join =
             node.node_kind == RelationalDagNodeKind::kJoin &&
@@ -304,8 +692,10 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         completed.insert(node_id);
         return true;
       };
-  if (!validate_tree((*root_join)->node_id) ||
-      completed.size() != relational.nodes.size()) {
+  if (!validate_tree(join_root->node_id) ||
+      completed.size() != scans.size() + joins.size() +
+                              local_filters.size() + local_projects.size() +
+                              local_ctes.size()) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                   "connected_acyclic_join_output_lineage");
   }
@@ -358,6 +748,618 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   }
   for (const auto& descriptor : relational.descriptors) {
     descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor);
+  }
+  if (terminal_limit != nullptr) {
+    std::unordered_set<std::uint32_t> limit_expression_ids;
+    std::unordered_set<std::uint32_t> limit_descriptor_ids;
+    for (const auto expression_id : terminal_limit->bound_expression_ids) {
+      const auto expression = expressions_by_id.find(expression_id);
+      const auto descriptor =
+          expression == expressions_by_id.end()
+              ? descriptors_by_id.end()
+              : descriptors_by_id.find(
+                    expression->second->result_descriptor_id);
+      const bool numeric_literal =
+          expression != expressions_by_id.end() &&
+          expression->second->expression_kind ==
+              RelationalExpressionKind::kLiteral &&
+          expression->second->literal_kind ==
+              RelationalLiteralKind::kNumeric &&
+          expression->second->literal_or_parameter_ref.has_value() &&
+          !expression->second->parameter_typed_value_v1.has_value();
+      const bool parameter_value =
+          expression != expressions_by_id.end() &&
+          expression->second->expression_kind ==
+              RelationalExpressionKind::kParameter &&
+          !expression->second->literal_kind.has_value() &&
+          !expression->second->literal_or_parameter_ref.has_value() &&
+          !expression->second->literal_typed_value_v1.has_value() &&
+          expression->second->parameter_typed_value_v1.has_value();
+      std::uint64_t parsed = 0;
+      const auto* encoded =
+          numeric_literal
+              ? &*expression->second->literal_or_parameter_ref
+              : nullptr;
+      const auto converted =
+          encoded == nullptr
+              ? std::from_chars_result{}
+              : std::from_chars(encoded->data(),
+                                encoded->data() + encoded->size(), parsed);
+      bool exact_parameter = parameter_value;
+      if (exact_parameter) {
+        const auto& typed = *expression->second->parameter_typed_value_v1;
+        const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+            typed.canonical_value_bytes);
+        exact_parameter =
+            typed.descriptor_generation != 0 &&
+            typed.value_state == "value" &&
+            typed.canonical_value_bytes.size() == 8 &&
+            (typed.canonical_value_bytes.back() & 0x80U) == 0 &&
+            digest.ok() && digest.digest == typed.canonical_value_sha256 &&
+            descriptor != descriptors_by_id.end() &&
+            typed.descriptor_uuid == descriptor->second->descriptor_uuid;
+      }
+      if (expression == expressions_by_id.end() ||
+          !limit_expression_ids.insert(expression_id).second ||
+          (!numeric_literal && !exact_parameter) ||
+          !expression->second->child_expression_ids.empty() ||
+          expression->second->function_uuid.has_value() ||
+          expression->second->bound_name_uuid.has_value() ||
+          expression->second->operator_name.has_value() ||
+          (numeric_literal &&
+           (encoded == nullptr || encoded->empty() ||
+            (encoded->size() > 1 && encoded->front() == '0') ||
+            converted.ec != std::errc{} ||
+            converted.ptr != encoded->data() + encoded->size() ||
+            parsed > static_cast<std::uint64_t>(
+                         std::numeric_limits<std::int64_t>::max()))) ||
+          descriptor == descriptors_by_id.end() ||
+          !limit_descriptor_ids.insert(descriptor->first).second ||
+          descriptor->second->nullability !=
+              RelationalNullability::kNonNull ||
+          descriptor->second->type_uuid !=
+              CanonicalCoreDatatypeUuid("int64") ||
+          descriptor->second->collation_uuid.has_value() ||
+          descriptor->second->timezone_profile_id.has_value() ||
+          descriptor->second->width.has_value() ||
+          descriptor->second->precision.has_value() ||
+          descriptor->second->scale.has_value()) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                      "exact_terminal_limit_literal_binding");
+      }
+    }
+  }
+  if (terminal_limit != nullptr && terminal_filter != nullptr) {
+    const auto predicate = terminal_filter->bound_expression_ids.size() == 1
+                               ? expressions_by_id.find(
+                                     terminal_filter->bound_expression_ids.front())
+                               : expressions_by_id.end();
+    const RelationalExpressionRecord* filter_identifier = nullptr;
+    const RelationalExpressionRecord* filter_value = nullptr;
+    if (predicate != expressions_by_id.end() &&
+        predicate->second->child_expression_ids.size() == 2) {
+      const auto identifier = expressions_by_id.find(
+          predicate->second->child_expression_ids[0]);
+      const auto value = expressions_by_id.find(
+          predicate->second->child_expression_ids[1]);
+      if (identifier != expressions_by_id.end()) {
+        filter_identifier = identifier->second;
+      }
+      if (value != expressions_by_id.end()) filter_value = value->second;
+    }
+    const auto limit_value = expressions_by_id.find(
+        terminal_limit->bound_expression_ids.front());
+    const auto identifier_descriptor =
+        filter_identifier == nullptr
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(filter_identifier->result_descriptor_id);
+    const auto literal_descriptor =
+        filter_value == nullptr
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(filter_value->result_descriptor_id);
+    const auto predicate_descriptor =
+        predicate == expressions_by_id.end()
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(predicate->second->result_descriptor_id);
+    const auto limit_descriptor =
+        limit_value == expressions_by_id.end()
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(limit_value->second->result_descriptor_id);
+    const bool accepted_operator =
+        predicate != expressions_by_id.end() &&
+        predicate->second->operator_name.has_value() &&
+        (*predicate->second->operator_name == "=" ||
+         *predicate->second->operator_name == "<>" ||
+         *predicate->second->operator_name == "!=" ||
+         *predicate->second->operator_name == "<" ||
+         *predicate->second->operator_name == "<=" ||
+         *predicate->second->operator_name == ">" ||
+         *predicate->second->operator_name == ">=");
+    const bool literal_filter_value =
+        filter_value != nullptr &&
+        filter_value->expression_kind == RelationalExpressionKind::kLiteral &&
+        filter_value->literal_kind == RelationalLiteralKind::kNumeric &&
+        filter_value->literal_typed_value_v1.has_value() &&
+        !filter_value->parameter_typed_value_v1.has_value();
+    const bool parameter_filter_value =
+        filter_value != nullptr &&
+        filter_value->expression_kind ==
+            RelationalExpressionKind::kParameter &&
+        !filter_value->literal_kind.has_value() &&
+        !filter_value->literal_typed_value_v1.has_value() &&
+        filter_value->parameter_typed_value_v1.has_value();
+    const bool literal_limit_value =
+        limit_value != expressions_by_id.end() &&
+        limit_value->second->expression_kind ==
+            RelationalExpressionKind::kLiteral;
+    const bool parameter_limit_value =
+        limit_value != expressions_by_id.end() &&
+        limit_value->second->expression_kind ==
+            RelationalExpressionKind::kParameter;
+    const bool exact_operand_pair =
+        (literal_filter_value && parameter_limit_value) ||
+        (parameter_filter_value && literal_limit_value) ||
+        (parameter_filter_value && parameter_limit_value) ||
+        (literal_filter_value && literal_limit_value);
+    bool exact_filter_value = literal_filter_value || parameter_filter_value;
+    if (exact_filter_value) {
+      const auto& typed_bytes =
+          literal_filter_value
+              ? filter_value->literal_typed_value_v1->canonical_value_bytes
+              : filter_value->parameter_typed_value_v1->canonical_value_bytes;
+      const auto& typed_descriptor_uuid =
+          literal_filter_value
+              ? filter_value->literal_typed_value_v1->descriptor_uuid
+              : filter_value->parameter_typed_value_v1->descriptor_uuid;
+      const auto typed_descriptor_generation =
+          literal_filter_value
+              ? filter_value->literal_typed_value_v1->descriptor_generation
+              : filter_value->parameter_typed_value_v1->descriptor_generation;
+      const auto& typed_value_state =
+          literal_filter_value
+              ? filter_value->literal_typed_value_v1->value_state
+              : filter_value->parameter_typed_value_v1->value_state;
+      const auto& typed_sha =
+          literal_filter_value
+              ? filter_value->literal_typed_value_v1->canonical_value_sha256
+              : filter_value->parameter_typed_value_v1->canonical_value_sha256;
+      const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+          typed_bytes);
+      exact_filter_value =
+          typed_descriptor_generation != 0 && typed_value_state == "value" &&
+          typed_bytes.size() == 8 && (typed_bytes.back() & 0x80U) == 0 &&
+          digest.ok() && digest.digest == typed_sha &&
+          literal_descriptor != descriptors_by_id.end() &&
+          typed_descriptor_uuid == literal_descriptor->second->descriptor_uuid;
+    }
+    const auto identifier_source_count =
+        filter_identifier == nullptr
+            ? 0
+            : std::ranges::count_if(
+                  relational.outputs, [&](const auto& output) {
+                    return output.relation_node_id == join_root->node_id &&
+                           output.visible &&
+                           output.expression_id ==
+                               filter_identifier->expression_id &&
+                           output.descriptor_id ==
+                               filter_identifier->result_descriptor_id;
+                  });
+    const bool distinct_expression_ids =
+        predicate != expressions_by_id.end() &&
+        filter_identifier != nullptr && filter_value != nullptr &&
+        limit_value != expressions_by_id.end() &&
+        predicate->second->expression_id != filter_identifier->expression_id &&
+        predicate->second->expression_id != filter_value->expression_id &&
+        predicate->second->expression_id != limit_value->second->expression_id &&
+        filter_identifier->expression_id != filter_value->expression_id &&
+        filter_identifier->expression_id != limit_value->second->expression_id &&
+        filter_value->expression_id != limit_value->second->expression_id;
+    const bool distinct_descriptor_ids =
+        identifier_descriptor != descriptors_by_id.end() &&
+        literal_descriptor != descriptors_by_id.end() &&
+        predicate_descriptor != descriptors_by_id.end() &&
+        limit_descriptor != descriptors_by_id.end() &&
+        identifier_descriptor->first != literal_descriptor->first &&
+        identifier_descriptor->first != predicate_descriptor->first &&
+        identifier_descriptor->first != limit_descriptor->first &&
+        literal_descriptor->first != predicate_descriptor->first &&
+        literal_descriptor->first != limit_descriptor->first &&
+        predicate_descriptor->first != limit_descriptor->first;
+    if (!accepted_operator || filter_identifier == nullptr ||
+        filter_identifier->expression_kind !=
+            RelationalExpressionKind::kIdentifier ||
+        !filter_identifier->child_expression_ids.empty() ||
+        filter_identifier->function_uuid.has_value() ||
+        !filter_identifier->bound_name_uuid.has_value() ||
+        filter_identifier->literal_kind.has_value() ||
+        filter_identifier->operator_name.has_value() ||
+        filter_identifier->literal_or_parameter_ref.has_value() ||
+        filter_identifier->literal_typed_value_v1.has_value() ||
+        filter_identifier->parameter_typed_value_v1.has_value() ||
+        predicate == expressions_by_id.end() ||
+        predicate->second->expression_kind !=
+            RelationalExpressionKind::kBinary ||
+        predicate->second->function_uuid.has_value() ||
+        predicate->second->bound_name_uuid.has_value() ||
+        predicate->second->literal_kind.has_value() ||
+        predicate->second->literal_or_parameter_ref.has_value() ||
+        predicate->second->literal_typed_value_v1.has_value() ||
+        predicate->second->parameter_typed_value_v1.has_value() ||
+        filter_value == nullptr || !exact_operand_pair ||
+        !filter_value->child_expression_ids.empty() ||
+        filter_value->function_uuid.has_value() ||
+        filter_value->bound_name_uuid.has_value() ||
+        filter_value->operator_name.has_value() ||
+        filter_value->literal_or_parameter_ref.has_value() ||
+        !exact_filter_value || identifier_source_count != 1 ||
+        identifier_descriptor == descriptors_by_id.end() ||
+        literal_descriptor == descriptors_by_id.end() ||
+        predicate_descriptor == descriptors_by_id.end() ||
+        identifier_descriptor->second->type_uuid !=
+            CanonicalCoreDatatypeUuid("int64") ||
+        literal_descriptor->second->type_uuid !=
+            CanonicalCoreDatatypeUuid("int64") ||
+        identifier_descriptor->second->type_uuid !=
+            literal_descriptor->second->type_uuid ||
+        literal_descriptor->second->nullability !=
+            RelationalNullability::kNonNull ||
+        predicate_descriptor->second->nullability !=
+            RelationalNullability::kNullable ||
+        predicate_descriptor->second->type_uuid !=
+            CanonicalCoreDatatypeUuid("boolean") ||
+        identifier_descriptor->second->collation_uuid.has_value() ||
+        literal_descriptor->second->collation_uuid.has_value() ||
+        predicate_descriptor->second->collation_uuid.has_value() ||
+        identifier_descriptor->second->timezone_profile_id.has_value() ||
+        literal_descriptor->second->timezone_profile_id.has_value() ||
+        predicate_descriptor->second->timezone_profile_id.has_value() ||
+        identifier_descriptor->second->width.has_value() ||
+        identifier_descriptor->second->precision.has_value() ||
+        identifier_descriptor->second->scale.has_value() ||
+        literal_descriptor->second->width.has_value() ||
+        literal_descriptor->second->precision.has_value() ||
+        literal_descriptor->second->scale.has_value() ||
+        predicate_descriptor->second->width.has_value() ||
+        predicate_descriptor->second->precision.has_value() ||
+        predicate_descriptor->second->scale.has_value() ||
+        limit_value == expressions_by_id.end() ||
+        !distinct_expression_ids || !distinct_descriptor_ids) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "exact_terminal_filter_limit_operand_profile");
+    }
+  }
+  const auto lineage_output_node_for = [&](const RelationalDagNode* candidate) {
+    for (std::size_t depth = 0;
+         candidate != nullptr &&
+             candidate->node_kind == RelationalDagNodeKind::kCte &&
+             depth <= ctes.size();
+         ++depth) {
+      candidate = candidate->input_node_ids.size() == 1
+                      ? node_for(candidate->input_node_ids.front())
+                      : nullptr;
+    }
+    return candidate != nullptr &&
+                   candidate->node_kind != RelationalDagNodeKind::kCte
+               ? candidate
+               : nullptr;
+  };
+  const auto exact_join_output_lineage = [&](const RelationalDagNode& join) {
+    if (join.input_node_ids.size() != 2) return false;
+    const auto* left = node_for(join.input_node_ids[0]);
+    const auto* right = node_for(join.input_node_ids[1]);
+    const auto* left_output_node = lineage_output_node_for(left);
+    const auto* right_output_node = lineage_output_node_for(right);
+    if (left == nullptr || right == nullptr || left_output_node == nullptr ||
+        right_output_node == nullptr ||
+        left_output_node->output_descriptor_ids != left->output_descriptor_ids ||
+        right_output_node->output_descriptor_ids !=
+            right->output_descriptor_ids) {
+      return false;
+    }
+    std::vector<const RelationalOutputRecord*> left_outputs;
+    std::vector<const RelationalOutputRecord*> right_outputs;
+    std::vector<const RelationalOutputRecord*> join_outputs;
+    for (const auto& output : relational.outputs) {
+      if (output.relation_node_id == left_output_node->node_id) {
+        left_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == right_output_node->node_id) {
+        right_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == join.node_id) {
+        join_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(left_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(right_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(join_outputs, {}, &RelationalOutputRecord::ordinal);
+    if (left_outputs.size() != left->output_descriptor_ids.size() ||
+        right_outputs.size() != right->output_descriptor_ids.size()) {
+      return false;
+    }
+    for (std::size_t ordinal = 0; ordinal < left_outputs.size(); ++ordinal) {
+      if (!left_outputs[ordinal]->visible ||
+          left_outputs[ordinal]->ordinal != ordinal ||
+          left_outputs[ordinal]->descriptor_id !=
+              left->output_descriptor_ids[ordinal]) {
+        return false;
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < right_outputs.size(); ++ordinal) {
+      if (!right_outputs[ordinal]->visible ||
+          right_outputs[ordinal]->ordinal != ordinal ||
+          right_outputs[ordinal]->descriptor_id !=
+              right->output_descriptor_ids[ordinal]) {
+        return false;
+      }
+    }
+    const bool left_only =
+        join.semantic_variant_id == "join.left-semi.v1" ||
+        join.semantic_variant_id == "join.left-anti.v1";
+    std::vector<const RelationalOutputRecord*> expected_outputs = left_outputs;
+    if (!left_only) {
+      expected_outputs.insert(expected_outputs.end(), right_outputs.begin(),
+                              right_outputs.end());
+    }
+    if (join_outputs.size() != expected_outputs.size() ||
+        join_outputs.size() != join.output_descriptor_ids.size()) {
+      return false;
+    }
+    std::unordered_set<std::uint32_t> join_output_ids;
+    for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
+      const auto& output = *join_outputs[ordinal];
+      const auto& expected = *expected_outputs[ordinal];
+      if (!output.visible || output.ordinal != ordinal ||
+          output.output_id == 0 ||
+          !join_output_ids.insert(output.output_id).second ||
+          output.descriptor_id != join.output_descriptor_ids[ordinal] ||
+          output.descriptor_id != expected.descriptor_id ||
+          output.expression_id != expected.expression_id ||
+          output.output_name_utf8 != expected.output_name_utf8) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (std::ranges::any_of(joins, [&](const auto* join) {
+        return !exact_join_output_lineage(*join);
+      })) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "exact_join_output_record_lineage");
+  }
+  for (const auto* join : joins) {
+    if (join->semantic_variant_id == "join.cross.v1") continue;
+    const auto* left = node_for(join->input_node_ids[0]);
+    const auto* right = node_for(join->input_node_ids[1]);
+    if (left == nullptr || right == nullptr) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "join_predicate_immediate_input_lineage");
+    }
+    std::vector<std::uint32_t> input_descriptor_ids =
+        left->output_descriptor_ids;
+    input_descriptor_ids.insert(input_descriptor_ids.end(),
+                                right->output_descriptor_ids.begin(),
+                                right->output_descriptor_ids.end());
+    std::unordered_set<std::uint32_t> active_expression_ids;
+    std::unordered_set<std::uint32_t> completed_expression_ids;
+    const auto validate_join_expression_source =
+        [&](auto&& self, const std::uint32_t expression_id,
+            const std::size_t depth) -> bool {
+      if (expression_id == 0 || depth > 64) return false;
+      if (completed_expression_ids.contains(expression_id)) return true;
+      if (!active_expression_ids.insert(expression_id).second) return false;
+      const auto found = expressions_by_id.find(expression_id);
+      if (found == expressions_by_id.end()) return false;
+      const auto& expression = *found->second;
+      if (expression.expression_kind ==
+          RelationalExpressionKind::kIdentifier) {
+        if (!expression.child_expression_ids.empty() ||
+            std::ranges::count(input_descriptor_ids,
+                               expression.result_descriptor_id) != 1) {
+          return false;
+        }
+      } else {
+        for (const auto child_id : expression.child_expression_ids) {
+          if (!self(self, child_id, depth + 1)) return false;
+        }
+      }
+      active_expression_ids.erase(expression_id);
+      completed_expression_ids.insert(expression_id);
+      return true;
+    };
+    if (!validate_join_expression_source(
+            validate_join_expression_source,
+            join->bound_expression_ids.front(), 1)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "join_predicate_immediate_input_lineage");
+    }
+  }
+  for (const auto* filter : filters) {
+    const auto* filter_input = filter_input_for(filter);
+    std::unordered_set<std::uint32_t> active_filter_expression_ids;
+    std::unordered_set<std::uint32_t> completed_filter_expression_ids;
+    const auto validate_filter_expression_source =
+        [&](auto&& self, const std::uint32_t expression_id,
+            const std::size_t depth) -> bool {
+      if (expression_id == 0 || depth > 64) return false;
+      if (completed_filter_expression_ids.contains(expression_id)) return true;
+      if (!active_filter_expression_ids.insert(expression_id).second) {
+        return false;
+      }
+      const auto found = expressions_by_id.find(expression_id);
+      if (found == expressions_by_id.end()) return false;
+      const auto& expression = *found->second;
+      if (expression.expression_kind ==
+          RelationalExpressionKind::kIdentifier) {
+        if (!expression.child_expression_ids.empty() ||
+            std::ranges::count(filter_input->output_descriptor_ids,
+                               expression.result_descriptor_id) != 1) {
+          return false;
+        }
+      } else {
+        for (const auto child_id : expression.child_expression_ids) {
+          if (!self(self, child_id, depth + 1)) return false;
+        }
+      }
+      active_filter_expression_ids.erase(expression_id);
+      completed_filter_expression_ids.insert(expression_id);
+      return true;
+    };
+    if (!validate_filter_expression_source(
+            validate_filter_expression_source,
+            filter->bound_expression_ids.front(), 1)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "filter_predicate_immediate_input_lineage");
+    }
+  }
+  for (const auto* filter : filters) {
+    const auto* filter_input = filter_input_for(filter);
+    std::vector<const RelationalOutputRecord*> filter_outputs;
+    std::vector<const RelationalOutputRecord*> input_outputs;
+    for (const auto& output : relational.outputs) {
+      if (output.relation_node_id == filter->node_id) {
+        filter_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == filter_input->node_id) {
+        input_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(filter_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(input_outputs, {}, &RelationalOutputRecord::ordinal);
+    bool exact_filter_outputs =
+        filter_outputs.size() == filter->output_descriptor_ids.size() &&
+        input_outputs.size() == filter_input->output_descriptor_ids.size() &&
+        filter_outputs.size() == input_outputs.size();
+    std::unordered_set<std::uint32_t> filter_output_ids;
+    for (std::size_t ordinal = 0;
+         exact_filter_outputs && ordinal < filter_outputs.size(); ++ordinal) {
+      exact_filter_outputs =
+          filter_outputs[ordinal]->visible &&
+          filter_outputs[ordinal]->ordinal == ordinal &&
+          filter_outputs[ordinal]->output_id != 0 &&
+          filter_output_ids.insert(filter_outputs[ordinal]->output_id).second &&
+          filter_outputs[ordinal]->descriptor_id ==
+              filter->output_descriptor_ids[ordinal] &&
+          input_outputs[ordinal]->ordinal == ordinal &&
+          input_outputs[ordinal]->descriptor_id ==
+              filter_input->output_descriptor_ids[ordinal] &&
+          filter_outputs[ordinal]->descriptor_id ==
+              input_outputs[ordinal]->descriptor_id &&
+          filter_outputs[ordinal]->expression_id ==
+              input_outputs[ordinal]->expression_id &&
+          filter_outputs[ordinal]->output_name_utf8 ==
+              input_outputs[ordinal]->output_name_utf8;
+    }
+    if (!exact_filter_outputs) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "exact_filter_output_lineage");
+    }
+  }
+  for (const auto* cte : ctes) {
+    if (std::ranges::any_of(relational.outputs, [&](const auto& output) {
+          return output.relation_node_id == cte->node_id;
+        })) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "outputless_nonrecursive_cte");
+    }
+  }
+  for (const auto* project : projects) {
+    const auto* project_input = project_input_for(project);
+    std::vector<const RelationalOutputRecord*> project_outputs;
+    std::vector<const RelationalOutputRecord*> lineage_outputs;
+    for (const auto& output : relational.outputs) {
+      if (output.relation_node_id == project->node_id) {
+        project_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == project_input->node_id) {
+        lineage_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(project_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(lineage_outputs, {}, &RelationalOutputRecord::ordinal);
+    bool exact_project_outputs =
+        project_outputs.size() == project->output_descriptor_ids.size() &&
+        lineage_outputs.size() == project_input->output_descriptor_ids.size();
+    for (std::size_t ordinal = 0;
+         exact_project_outputs && ordinal < lineage_outputs.size(); ++ordinal) {
+      exact_project_outputs =
+          lineage_outputs[ordinal]->ordinal == ordinal &&
+          lineage_outputs[ordinal]->descriptor_id ==
+              project_input->output_descriptor_ids[ordinal];
+    }
+    std::unordered_set<std::size_t> projected_source_ordinals;
+    for (std::size_t ordinal = 0;
+         exact_project_outputs && ordinal < project_outputs.size(); ++ordinal) {
+      const auto& output = *project_outputs[ordinal];
+      const auto expression =
+          expressions_by_id.find(project->bound_expression_ids[ordinal]);
+      const auto source = std::ranges::find_if(
+          lineage_outputs, [&](const auto* candidate) {
+            return candidate->expression_id ==
+                       project->bound_expression_ids[ordinal] &&
+                   candidate->descriptor_id == output.descriptor_id;
+          });
+      if (expression == expressions_by_id.end() ||
+          source == lineage_outputs.end() || !output.visible ||
+          output.ordinal != ordinal || output.output_id == 0 ||
+          output.expression_id != project->bound_expression_ids[ordinal] ||
+          output.descriptor_id != project->output_descriptor_ids[ordinal] ||
+          output.output_name_utf8 != (*source)->output_name_utf8 ||
+          expression->second->result_descriptor_id != output.descriptor_id) {
+        exact_project_outputs = false;
+        break;
+      }
+      const auto source_ordinal = static_cast<std::size_t>(
+          std::distance(lineage_outputs.begin(), source));
+      if (!projected_source_ordinals.insert(source_ordinal).second) {
+        exact_project_outputs = false;
+      }
+    }
+    if (!exact_project_outputs) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "exact_descriptor_project_output_lineage");
+    }
+  }
+  if (terminal_limit != nullptr) {
+    std::vector<const RelationalOutputRecord*> limit_outputs;
+    std::vector<const RelationalOutputRecord*> input_outputs;
+    for (const auto& output : relational.outputs) {
+      if (output.relation_node_id == terminal_limit->node_id) {
+        limit_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == limit_input->node_id) {
+        input_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(limit_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(input_outputs, {}, &RelationalOutputRecord::ordinal);
+    bool exact_limit_outputs =
+        limit_outputs.size() == terminal_limit->output_descriptor_ids.size() &&
+        input_outputs.size() == limit_input->output_descriptor_ids.size() &&
+        limit_outputs.size() == input_outputs.size();
+    std::unordered_set<std::uint32_t> limit_output_ids;
+    for (std::size_t ordinal = 0;
+         exact_limit_outputs && ordinal < limit_outputs.size(); ++ordinal) {
+      exact_limit_outputs =
+          limit_outputs[ordinal]->visible &&
+          limit_outputs[ordinal]->ordinal == ordinal &&
+          limit_outputs[ordinal]->output_id != 0 &&
+          limit_output_ids.insert(limit_outputs[ordinal]->output_id).second &&
+          input_outputs[ordinal]->visible &&
+          input_outputs[ordinal]->ordinal == ordinal &&
+          limit_outputs[ordinal]->descriptor_id ==
+              terminal_limit->output_descriptor_ids[ordinal] &&
+          limit_outputs[ordinal]->descriptor_id ==
+              input_outputs[ordinal]->descriptor_id &&
+          limit_outputs[ordinal]->expression_id ==
+              input_outputs[ordinal]->expression_id &&
+          limit_outputs[ordinal]->output_name_utf8 ==
+              input_outputs[ordinal]->output_name_utf8;
+    }
+    if (!exact_limit_outputs) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "exact_terminal_limit_output_lineage");
+    }
   }
 
   std::vector<std::string> relation_uuids;
@@ -640,7 +1642,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       std::to_string(issue.node_id));
   }
   if (relational.wire_version != 2 || relational.nodes.empty() ||
-      relational.nodes.size() > 17) {
+      relational.nodes.size() > 68) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "bounded_heap_scan_composition");
   }

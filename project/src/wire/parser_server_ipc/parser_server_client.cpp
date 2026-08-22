@@ -3787,6 +3787,27 @@ std::vector<std::uint8_t> EncodeCanonicalExecuteLiteralPayloadV1(
   return out;
 }
 
+void AppendCanonicalExecuteLiteralEvidenceV1(
+    std::vector<std::uint8_t>* out,
+    const ParserCanonicalSblrSubmission& submission) {
+  PutU32(out, 176);
+  out->insert(out->end(), {'S', 'B', 'E', 'L'});
+  PutU16(out, 1);
+  PutU16(out, 176);
+  PutU32(out, 176);
+  PutU32(out, 0);
+  PutUuid(out, TextToUuid(submission.literal_final_receipt_uuid));
+  PutUuid(out, TextToUuid(submission.literal_admission_token_uuid));
+  out->insert(out->end(), submission.literal_token_binding_sha256.begin(),
+              submission.literal_token_binding_sha256.end());
+  out->insert(out->end(), submission.literal_bound_ast_sha256.begin(),
+              submission.literal_bound_ast_sha256.end());
+  out->insert(out->end(), submission.literal_sbxn_sha256.begin(),
+              submission.literal_sbxn_sha256.end());
+  out->insert(out->end(), submission.literal_sbos_sha256.begin(),
+              submission.literal_sbos_sha256.end());
+}
+
 std::vector<std::uint8_t> EncodeCanonicalExecuteParameterPayloadV1(
     const ParserSessionContext& session,
     const ParserStatementContext& statement_context,
@@ -3803,6 +3824,9 @@ std::vector<std::uint8_t> EncodeCanonicalExecuteParameterPayloadV1(
          static_cast<std::uint32_t>(submission.parameter_value_set_bytes.size()));
   out.insert(out.end(), submission.parameter_value_set_bytes.begin(),
              submission.parameter_value_set_bytes.end());
+  if (submission.literal_finalized()) {
+    AppendCanonicalExecuteLiteralEvidenceV1(&out, submission);
+  }
   return out;
 }
 
@@ -6504,7 +6528,8 @@ ServerExecutionResult SbpsClient::ExecuteCanonicalSblrWithDataPacket(
   if (!RequireTransactionRoutingV2(session, &messages) ||
       !statement_context.complete() || !submission.complete() ||
       submission.statement_uuid != statement_context.statement_uuid ||
-      (submission.literal_finalized() && submission.parameter_finalized())) {
+      (submission.variable_finalized() &&
+       (submission.literal_finalized() || submission.parameter_finalized()))) {
     if (messages.diagnostics.empty()) {
       AddDiagnostic(&messages,
                     "PARSER_SERVER_IPC.CANONICAL_STATEMENT_CONTEXT_INVALID",
