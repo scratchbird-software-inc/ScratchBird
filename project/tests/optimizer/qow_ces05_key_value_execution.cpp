@@ -767,6 +767,20 @@ ExchangeRun ExecuteThroughCommonSpine(
   input.maximum_cells = provider_request.maximum_output_rows * 3;
   input.maximum_memory_bytes = provider_request.maximum_memory_bytes;
   input.exact_fallback_selected = provider_request.exact_fallback_selected;
+  if (provider_request.operation ==
+      api::EngineBoundKeyValueReadOperationV1::kMultiGet) {
+    input.maximum_key_value_request_count =
+        provider_request.maximum_request_keys;
+    input.maximum_key_value_request_bytes =
+        provider_request.maximum_request_bytes;
+    for (const auto& value : provider_request.request_values) {
+      if (std::ranges::find(input.key_value_request_order,
+                            value.encoded_value) ==
+          input.key_value_request_order.end()) {
+        input.key_value_request_order.push_back(value.encoded_value);
+      }
+    }
+  }
 
   request.capability.capability_uuid = input.capability_uuid;
   request.capability.family_id = input.family_id;
@@ -1180,8 +1194,8 @@ bool ProviderMatrix(const Fixture& fixture,
   passed &= Require(!supplemental_post_read_stale.ok &&
                         Diagnostic(supplemental_post_read_stale) ==
                             "SB_MODEL_CATALOG_GENERATION_STALE_V1" &&
-                        supplemental_post_read_stale.data_access_observed,
-                    "supplemental post-read descriptor drift was not refused");
+                        !supplemental_post_read_stale.data_access_observed,
+                    "supplemental descriptor drift escaped pre-access refusal");
   const auto catalog_stale = ExecuteThroughCommonSpine(
       Request(context, base, exact, {"alpha"}), base, true,
       context.catalog_generation_id + 1);

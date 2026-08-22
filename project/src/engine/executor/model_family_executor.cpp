@@ -401,6 +401,18 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
            "model-family executor has no bounded resource admission");
     return result;
   }
+  try {
+    if (request.cancellation_requested()) {
+      refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+             "model-family execution was cancelled before data access");
+      return result;
+    }
+  } catch (...) {
+    refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+           "model-family cancellation probe failed before data access");
+    return result;
+  }
+
   result.execution_started = true;
   bool cleanup_attempted = false;
   const auto cleanup_once = [&]() noexcept {
@@ -419,20 +431,6 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
     }
     return result.cleanup_complete;
   };
-
-  try {
-    if (request.cancellation_requested()) {
-      refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
-             "model-family execution was cancelled before data access");
-      cleanup_once();
-      return result;
-    }
-  } catch (...) {
-    refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-           "model-family cancellation probe failed before data access");
-    cleanup_once();
-    return result;
-  }
 
   if (request.fault_injected) {
     refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
