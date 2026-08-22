@@ -22,6 +22,7 @@ namespace dt = scratchbird::core::datatypes;
 namespace {
 
 constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'fe00ULL;
+constexpr std::uint64_t kMemoryBudgetBytes = 32ULL * 1024ULL * 1024ULL;
 constexpr std::string_view kCollationUuid =
     "019f0000-0000-7400-8000-000000002101";
 
@@ -72,7 +73,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 5;
   dag->route_epoch = 6;
   dag->route_generation = 7;
-  dag->memory_budget_bytes = 64 * 1024;
+  dag->memory_budget_bytes = kMemoryBudgetBytes;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -88,7 +89,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-000000002113";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = kMemoryBudgetBytes;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -265,7 +266,7 @@ Fixture MakeFixture() {
        {{Value(int8, "1"), Value(real64, "3.75"),
          Value(decimal, "11.25"), Value(binary, std::string("c\0", 2)),
          Value(uuid, "019f0000-0000-7200-8000-000000002203"),
-         Value(timestamp, "2026-08-03T11:00:00 America/Toronto"),
+         Value(timestamp, "2026-08-03T11:00:00-04:00"),
          Value(text, "Zulu")}}});
 
   for (std::size_t column = 0; column < descriptor_ids.size(); ++column) {
@@ -295,6 +296,8 @@ bool ValidateBreadthComposition() {
   auto fixture = MakeFixture();
   exec::CanonicalDescriptorDistinctRequest distinct;
   distinct.physical_dag = fixture.dag;
+  distinct.physical_dag.root_physical_node_id = 2102;
+  distinct.physical_dag.nodes.resize(2);
   distinct.selected_physical_node_id = 2102;
   distinct.input_batch = fixture.input;
   distinct.equality_terms = fixture.equality_terms;
@@ -315,6 +318,8 @@ bool ValidateBreadthComposition() {
 
   exec::CanonicalDescriptorSortRequest sort;
   sort.physical_dag = fixture.dag;
+  sort.physical_dag.root_physical_node_id = 2103;
+  sort.physical_dag.nodes.resize(3);
   sort.selected_physical_node_id = 2103;
   sort.input_batch = distinct_result.output_batch;
   sort.order_terms = fixture.order_terms;
@@ -469,6 +474,8 @@ bool ValidateAtomicRefusals() {
   overflow.input.rows[0].values[0].encoded_value = "128";
   exec::CanonicalDescriptorDistinctRequest overflow_request;
   overflow_request.physical_dag = overflow.dag;
+  overflow_request.physical_dag.root_physical_node_id = 2102;
+  overflow_request.physical_dag.nodes.resize(2);
   overflow_request.selected_physical_node_id = 2102;
   overflow_request.input_batch = overflow.input;
   overflow_request.equality_terms = overflow.equality_terms;
@@ -483,6 +490,8 @@ bool ValidateAtomicRefusals() {
   missing_timezone.equality_terms[5].timezone_seed = {};
   exec::CanonicalDescriptorDistinctRequest timezone_request;
   timezone_request.physical_dag = missing_timezone.dag;
+  timezone_request.physical_dag.root_physical_node_id = 2102;
+  timezone_request.physical_dag.nodes.resize(2);
   timezone_request.selected_physical_node_id = 2102;
   timezone_request.input_batch = missing_timezone.input;
   timezone_request.equality_terms = missing_timezone.equality_terms;

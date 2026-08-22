@@ -32,6 +32,7 @@ constexpr std::uint64_t kInDoubtLocalTransactionId =
     0xffff'ffff'ffff'fef0ULL;
 constexpr std::uint64_t kInventoryNextLocalTransactionId =
     0xffff'ffff'ffff'fff0ULL;
+constexpr std::uint64_t kMemoryBudgetBytes = 32ULL * 1024ULL * 1024ULL;
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-QRY-010-V1: " << detail << '\n';
@@ -87,7 +88,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = kMemoryBudgetBytes;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -102,7 +103,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000ff06";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = kMemoryBudgetBytes;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -266,7 +267,7 @@ exec::CanonicalDescriptorDistinctRequest DistinctRequest() {
   exec::CanonicalDescriptorDistinctRequest request;
   request.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000001108";
-  request.physical_dag.root_physical_node_id = 1113;
+  request.physical_dag.root_physical_node_id = 1112;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000001111"},
@@ -299,13 +300,6 @@ exec::CanonicalDescriptorDistinctRequest DistinctRequest() {
        .input_physical_node_ids = {1111},
        .output_descriptor_ids = {1101, 1102},
        .causal_counter_id = 11102},
-      {.physical_node_id = 1113,
-       .relational_node_id = 1113,
-       .node_kind = exec::PhysicalNodeKind::kSort,
-       .implementation_id = "sort.typed.terms.v1",
-       .input_physical_node_ids = {1112},
-       .output_descriptor_ids = {1101, 1102},
-       .causal_counter_id = 11103},
   };
   request.selected_physical_node_id = 1112;
   request.input_batch = exec::MakeDescriptorBatch(
