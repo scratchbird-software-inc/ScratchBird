@@ -874,7 +874,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       left_relation_id = source_relations.front()->relation_id;
     }
     std::vector<std::uint32_t> expected_join_output_expression_ids;
-    if (!source_relations.empty()) {
+    if (exact_graph) {
       expected_join_output_expression_ids =
           source_relations.front()->output_expression_ids;
     }
