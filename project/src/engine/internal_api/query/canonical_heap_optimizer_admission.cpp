@@ -233,7 +233,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   if (scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 ||
       filters.size() > scans.size() + 2 ||
-      projects.size() > scans.size() + 1 ||
+      projects.size() > scans.size() + 2 ||
       ctes.size() > scans.size() + 1 ||
       relational.nodes.size() !=
           scans.size() + joins.size() + filters.size() +
@@ -376,26 +376,40 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
                : nullptr;
   };
   std::unordered_set<std::uint32_t> local_project_scan_node_ids;
+  std::unordered_set<std::uint32_t> local_project_join_node_ids;
   for (const auto* project : projects) {
     const auto* project_input = project_input_for(project);
     const bool local = project != terminal_project;
-    const auto* project_scan =
-        !local || project_input == nullptr
-            ? nullptr
-            : (project_input->node_kind == RelationalDagNodeKind::kScan
-                   ? project_input
-                   : (project_input->node_kind == RelationalDagNodeKind::kFilter &&
-                              std::ranges::find(local_filters, project_input) !=
-                                  local_filters.end() &&
-                              project_input->input_node_ids.size() == 1
-                          ? node_for(project_input->input_node_ids.front())
-                          : nullptr));
+    const RelationalDagNode* project_scan = nullptr;
+    const RelationalDagNode* project_join = nullptr;
+    if (local && project_input != nullptr) {
+      if (project_input->node_kind == RelationalDagNodeKind::kScan) {
+        project_scan = project_input;
+      } else if (
+          project_input->node_kind == RelationalDagNodeKind::kFilter &&
+          std::ranges::find(local_filters, project_input) !=
+              local_filters.end() &&
+          project_input->input_node_ids.size() == 1) {
+        const auto* filter_input =
+            node_for(project_input->input_node_ids.front());
+        if (filter_input != nullptr &&
+            filter_input->node_kind == RelationalDagNodeKind::kScan) {
+          project_scan = filter_input;
+        }
+      } else if (project_input != join_root &&
+                 project_input->node_kind ==
+                     RelationalDagNodeKind::kJoin) {
+        project_join = project_input;
+      }
+    }
     if (project_input == nullptr ||
         (local &&
-         (project_scan == nullptr ||
-          project_scan->node_kind != RelationalDagNodeKind::kScan ||
+         ((project_scan == nullptr) == (project_join == nullptr) ||
           project->shareable ||
-          !local_project_scan_node_ids.insert(project_scan->node_id).second)) ||
+          (project_scan != nullptr &&
+           !local_project_scan_node_ids.insert(project_scan->node_id).second) ||
+          (project_join != nullptr &&
+           !local_project_join_node_ids.insert(project_join->node_id).second))) ||
         project->semantic_variant_id !=
             "project.catalog-visible-columns.v1" ||
         project->input_node_ids !=
@@ -415,6 +429,10 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "exact_descriptor_project_binding");
     }
+  }
+  if (local_project_join_node_ids.size() > 1) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "single_join_subtree_project");
   }
   const auto branch_scan_for = [&](const RelationalDagNode* input) {
     if (input == nullptr) return static_cast<const RelationalDagNode*>(nullptr);
@@ -641,6 +659,105 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   }
   for (const auto& descriptor : relational.descriptors) {
     descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor);
+  }
+  const auto lineage_output_node_for = [&](const RelationalDagNode* candidate) {
+    for (std::size_t depth = 0;
+         candidate != nullptr &&
+             candidate->node_kind == RelationalDagNodeKind::kCte &&
+             depth <= ctes.size();
+         ++depth) {
+      candidate = candidate->input_node_ids.size() == 1
+                      ? node_for(candidate->input_node_ids.front())
+                      : nullptr;
+    }
+    return candidate != nullptr &&
+                   candidate->node_kind != RelationalDagNodeKind::kCte
+               ? candidate
+               : nullptr;
+  };
+  const auto exact_join_output_lineage = [&](const RelationalDagNode& join) {
+    if (join.input_node_ids.size() != 2) return false;
+    const auto* left = node_for(join.input_node_ids[0]);
+    const auto* right = node_for(join.input_node_ids[1]);
+    const auto* left_output_node = lineage_output_node_for(left);
+    const auto* right_output_node = lineage_output_node_for(right);
+    if (left == nullptr || right == nullptr || left_output_node == nullptr ||
+        right_output_node == nullptr ||
+        left_output_node->output_descriptor_ids != left->output_descriptor_ids ||
+        right_output_node->output_descriptor_ids !=
+            right->output_descriptor_ids) {
+      return false;
+    }
+    std::vector<const RelationalOutputRecord*> left_outputs;
+    std::vector<const RelationalOutputRecord*> right_outputs;
+    std::vector<const RelationalOutputRecord*> join_outputs;
+    for (const auto& output : relational.outputs) {
+      if (output.relation_node_id == left_output_node->node_id) {
+        left_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == right_output_node->node_id) {
+        right_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == join.node_id) {
+        join_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(left_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(right_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(join_outputs, {}, &RelationalOutputRecord::ordinal);
+    if (left_outputs.size() != left->output_descriptor_ids.size() ||
+        right_outputs.size() != right->output_descriptor_ids.size()) {
+      return false;
+    }
+    for (std::size_t ordinal = 0; ordinal < left_outputs.size(); ++ordinal) {
+      if (!left_outputs[ordinal]->visible ||
+          left_outputs[ordinal]->ordinal != ordinal ||
+          left_outputs[ordinal]->descriptor_id !=
+              left->output_descriptor_ids[ordinal]) {
+        return false;
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < right_outputs.size(); ++ordinal) {
+      if (!right_outputs[ordinal]->visible ||
+          right_outputs[ordinal]->ordinal != ordinal ||
+          right_outputs[ordinal]->descriptor_id !=
+              right->output_descriptor_ids[ordinal]) {
+        return false;
+      }
+    }
+    const bool left_only =
+        join.semantic_variant_id == "join.left-semi.v1" ||
+        join.semantic_variant_id == "join.left-anti.v1";
+    std::vector<const RelationalOutputRecord*> expected_outputs = left_outputs;
+    if (!left_only) {
+      expected_outputs.insert(expected_outputs.end(), right_outputs.begin(),
+                              right_outputs.end());
+    }
+    if (join_outputs.size() != expected_outputs.size() ||
+        join_outputs.size() != join.output_descriptor_ids.size()) {
+      return false;
+    }
+    std::unordered_set<std::uint32_t> join_output_ids;
+    for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
+      const auto& output = *join_outputs[ordinal];
+      const auto& expected = *expected_outputs[ordinal];
+      if (!output.visible || output.ordinal != ordinal ||
+          output.output_id == 0 ||
+          !join_output_ids.insert(output.output_id).second ||
+          output.descriptor_id != join.output_descriptor_ids[ordinal] ||
+          output.descriptor_id != expected.descriptor_id ||
+          output.expression_id != expected.expression_id ||
+          output.output_name_utf8 != expected.output_name_utf8) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (std::ranges::any_of(joins, [&](const auto* join) {
+        return !exact_join_output_lineage(*join);
+      })) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "exact_join_output_record_lineage");
   }
   for (const auto* join : joins) {
     if (join->semantic_variant_id == "join.cross.v1") continue;
@@ -1115,7 +1232,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       std::to_string(issue.node_id));
   }
   if (relational.wire_version != 2 || relational.nodes.empty() ||
-      relational.nodes.size() > 48) {
+      relational.nodes.size() > 49) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "bounded_heap_scan_composition");
   }
