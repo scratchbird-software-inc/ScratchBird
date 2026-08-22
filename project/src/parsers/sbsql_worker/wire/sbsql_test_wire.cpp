@@ -5369,9 +5369,12 @@ BuildEngineProjectedNativeBindingContext(
         if (expression == ast.expressions.end() ||
             expression->expression_kind !=
                 NativeExpressionAstKind::kIdentifier ||
-            expression->qualified_identifier.size() != 1 ||
-            expression->qualified_identifier.front().spelling !=
-                expression->spelling ||
+            (expression->qualified_identifier.size() != 1 &&
+             expression->qualified_identifier.size() != 2) ||
+            expression->qualified_identifier.back().spelling.empty() ||
+            (expression->qualified_identifier.size() == 1 &&
+             expression->qualified_identifier.back().spelling !=
+                 expression->spelling) ||
             expression->spelling.empty() ||
             !expression->child_expression_ids.empty() ||
             expression->literal_kind.has_value() ||
@@ -5382,7 +5385,7 @@ BuildEngineProjectedNativeBindingContext(
             !project_expression_ids.insert(expression_id).second ||
             !project_names
                  .insert(CanonicalColumnLookupKey(
-                     expression->qualified_identifier.front()))
+                     expression->qualified_identifier.back()))
                  .second) {
           return fail("catalog_join_project_identifier_invalid");
         }
@@ -5448,9 +5451,12 @@ BuildEngineProjectedNativeBindingContext(
           filter_predicate->structural_variable_occurrence_id != 0 ||
           filter_identifier->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
-          filter_identifier->qualified_identifier.size() != 1 ||
-          filter_identifier->qualified_identifier.front().spelling !=
-              filter_identifier->spelling ||
+          (filter_identifier->qualified_identifier.size() != 1 &&
+           filter_identifier->qualified_identifier.size() != 2) ||
+          filter_identifier->qualified_identifier.back().spelling.empty() ||
+          (filter_identifier->qualified_identifier.size() == 1 &&
+           filter_identifier->qualified_identifier.back().spelling !=
+               filter_identifier->spelling) ||
           filter_identifier->spelling.empty() ||
           !filter_identifier->child_expression_ids.empty() ||
           filter_identifier->literal_kind.has_value() ||
@@ -6198,6 +6204,77 @@ BuildEngineProjectedNativeBindingContext(
     for (auto& outputs : public_source_outputs) {
       std::ranges::sort(outputs, {}, &NativeOutputBindingInput::ordinal);
     }
+    const auto resolve_visible_identifier =
+        [&](const NativeExpressionAstNode* identifier,
+            const std::vector<NativeOutputBindingInput>& visible_outputs)
+        -> const NativeOutputBindingInput* {
+      if (identifier == nullptr ||
+          (identifier->qualified_identifier.size() != 1 &&
+           identifier->qualified_identifier.size() != 2)) {
+        return nullptr;
+      }
+      const auto column_key = CanonicalColumnLookupKey(
+          identifier->qualified_identifier.back());
+      if (identifier->qualified_identifier.size() == 1) {
+        const auto matching_count = std::ranges::count_if(
+            visible_outputs, [&](const auto& output) {
+              return output.output_name_utf8 == column_key;
+            });
+        const auto selected = std::ranges::find_if(
+            visible_outputs, [&](const auto& output) {
+              return output.output_name_utf8 == column_key;
+            });
+        return matching_count == 1 && selected != visible_outputs.end()
+                   ? &*selected
+                   : nullptr;
+      }
+      const auto& qualifier = identifier->qualified_identifier.front();
+      std::optional<std::size_t> source_ordinal;
+      for (std::size_t ordinal = 0; ordinal < source_count; ++ordinal) {
+        const auto& source = ast.catalog_relation_sources[ordinal];
+        if (source.qualified_name.empty() ||
+            !SameIdentifierComponent(source.qualified_name.back(),
+                                     qualifier)) {
+          continue;
+        }
+        if (source_ordinal.has_value()) return nullptr;
+        source_ordinal = ordinal;
+      }
+      if (!source_ordinal.has_value()) return nullptr;
+      const auto& columns =
+          context.catalog_relations[*source_ordinal].columns;
+      const auto matching_column_count = std::ranges::count_if(
+          columns, [&](const auto& column) {
+            return column.canonical_name_key == column_key;
+          });
+      const auto column = std::ranges::find_if(
+          columns, [&](const auto& candidate) {
+            return candidate.canonical_name_key == column_key;
+          });
+      if (matching_column_count != 1 || column == columns.end()) {
+        return nullptr;
+      }
+      const auto& source_outputs = public_source_outputs[*source_ordinal];
+      const auto source_output = std::ranges::find_if(
+          source_outputs, [&](const auto& output) {
+            return output.ordinal == column->ordinal &&
+                   output.descriptor_id == column->descriptor_id;
+          });
+      if (source_output == source_outputs.end()) return nullptr;
+      const auto matching_visible_count = std::ranges::count_if(
+          visible_outputs, [&](const auto& output) {
+            return output.expression_id == source_output->expression_id &&
+                   output.descriptor_id == source_output->descriptor_id;
+          });
+      const auto selected = std::ranges::find_if(
+          visible_outputs, [&](const auto& output) {
+            return output.expression_id == source_output->expression_id &&
+                   output.descriptor_id == source_output->descriptor_id;
+          });
+      return matching_visible_count == 1 && selected != visible_outputs.end()
+                 ? &*selected
+                 : nullptr;
+    };
     std::vector<NativeOutputBindingInput> accumulated_outputs =
         public_source_outputs.front();
     for (std::size_t join_ordinal = 0; join_ordinal < join_relations.size();
@@ -6229,12 +6306,9 @@ BuildEngineProjectedNativeBindingContext(
         }
       }
       std::ranges::sort(join_outputs, {}, &NativeOutputBindingInput::ordinal);
-      const auto matching_filter_columns = std::ranges::count_if(
-          join_outputs, [&](const auto& output) {
-            return output.output_name_utf8 == CanonicalColumnLookupKey(
-                filter_identifier->qualified_identifier.front());
-          });
-      if (join_outputs.empty() || matching_filter_columns != 1) {
+      const auto* selected_filter_column =
+          resolve_visible_identifier(filter_identifier, join_outputs);
+      if (join_outputs.empty() || selected_filter_column == nullptr) {
         return fail("catalog_join_filter_column_unresolved_or_ambiguous");
       }
       const auto boolean_profile = std::ranges::find_if(
@@ -6282,17 +6356,9 @@ BuildEngineProjectedNativeBindingContext(
       for (std::size_t ordinal = 0; ordinal < project_identifiers.size();
            ++ordinal) {
         const auto* identifier = project_identifiers[ordinal];
-        const auto identifier_key = CanonicalColumnLookupKey(
-            identifier->qualified_identifier.front());
-        const auto matching_count = std::ranges::count_if(
-            predecessor_outputs, [&](const auto& output) {
-              return output.output_name_utf8 == identifier_key;
-            });
-        const auto selected = std::ranges::find_if(
-            predecessor_outputs, [&](const auto& output) {
-              return output.output_name_utf8 == identifier_key;
-            });
-        if (matching_count != 1 || selected == predecessor_outputs.end() ||
+        const auto* selected =
+            resolve_visible_identifier(identifier, predecessor_outputs);
+        if (selected == nullptr ||
             !selected_predecessor_output_ids.insert(selected->output_id)
                  .second) {
           return fail("catalog_join_project_column_unresolved_or_ambiguous");

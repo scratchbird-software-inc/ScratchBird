@@ -29,6 +29,20 @@ std::string ToLowerAscii(std::string value) {
   return value;
 }
 
+bool SameIdentifierComponent(const NativeIdentifierAstNode& left,
+                             const NativeIdentifierAstNode& right) {
+  if (left.quoted != right.quoted) return false;
+  return left.quoted
+             ? left.spelling == right.spelling
+             : ToLowerAscii(left.spelling) == ToLowerAscii(right.spelling);
+}
+
+std::string CanonicalIdentifierKey(
+    const NativeIdentifierAstNode& component) {
+  return component.quoted ? component.spelling
+                          : ToLowerAscii(component.spelling);
+}
+
 bool ParseFixedTimeSeriesIntervalNs(const std::string_view encoded,
                                     std::int64_t* interval_ns) {
   if (interval_ns == nullptr || encoded.empty()) return false;
@@ -844,9 +858,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         if (expression == ast_expression_by_id.end() ||
             expression->second->expression_kind !=
                 NativeExpressionAstKind::kIdentifier ||
-            expression->second->qualified_identifier.size() != 1 ||
-            expression->second->qualified_identifier.front().spelling !=
-                expression->second->spelling ||
+            (expression->second->qualified_identifier.size() != 1 &&
+             expression->second->qualified_identifier.size() != 2) ||
+            expression->second->qualified_identifier.back().spelling.empty() ||
+            (expression->second->qualified_identifier.size() == 1 &&
+             expression->second->qualified_identifier.back().spelling !=
+                 expression->second->spelling) ||
             expression->second->spelling.empty() ||
             !expression->second->child_expression_ids.empty() ||
             expression->second->literal_kind.has_value() ||
@@ -856,11 +873,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             expression->second->structural_variable_occurrence_id != 0 ||
             !project_expression_ids.insert(expression_id).second ||
             !project_names
-                 .insert(expression->second->qualified_identifier.front().quoted
-                             ? expression->second->qualified_identifier.front()
+                 .insert(expression->second->qualified_identifier.back().quoted
+                             ? expression->second->qualified_identifier.back()
                                    .spelling
                              : ToLowerAscii(
-                                   expression->second->qualified_identifier.front()
+                                   expression->second->qualified_identifier.back()
                                        .spelling))
                  .second) {
           AddBoundAstDiagnostic(
@@ -943,9 +960,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           filter_predicate->structural_variable_occurrence_id != 0 ||
           filter_identifier->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
-          filter_identifier->qualified_identifier.size() != 1 ||
-          filter_identifier->qualified_identifier.front().spelling !=
-              filter_identifier->spelling ||
+          (filter_identifier->qualified_identifier.size() != 1 &&
+           filter_identifier->qualified_identifier.size() != 2) ||
+          filter_identifier->qualified_identifier.back().spelling.empty() ||
+          (filter_identifier->qualified_identifier.size() == 1 &&
+           filter_identifier->qualified_identifier.back().spelling !=
+               filter_identifier->spelling) ||
           filter_identifier->spelling.empty() ||
           !filter_identifier->child_expression_ids.empty() ||
           filter_identifier->literal_kind.has_value() ||
@@ -1641,6 +1661,60 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       bound.relations.push_back(std::move(bound_join));
     }
+    const auto resolve_source_column =
+        [&](const NativeExpressionAstNode& identifier,
+            const BoundCatalogColumnAstRecord** selected_column,
+            std::uint32_t* selected_expression_id) {
+          if (selected_column == nullptr || selected_expression_id == nullptr ||
+              (identifier.qualified_identifier.size() != 1 &&
+               identifier.qualified_identifier.size() != 2)) {
+            return false;
+          }
+          *selected_column = nullptr;
+          *selected_expression_id = 0;
+          const auto column_key =
+              CanonicalIdentifierKey(identifier.qualified_identifier.back());
+          std::optional<std::size_t> qualified_source_ordinal;
+          if (identifier.qualified_identifier.size() == 2) {
+            const auto& qualifier = identifier.qualified_identifier.front();
+            for (std::size_t source_ordinal = 0;
+                 source_ordinal < source_count; ++source_ordinal) {
+              const auto& ast_source =
+                  ast.catalog_relation_sources[source_ordinal];
+              if (ast_source.qualified_name.empty() ||
+                  !SameIdentifierComponent(ast_source.qualified_name.back(),
+                                           qualifier)) {
+                continue;
+              }
+              if (qualified_source_ordinal.has_value()) return false;
+              qualified_source_ordinal = source_ordinal;
+            }
+            if (!qualified_source_ordinal.has_value()) return false;
+          }
+          std::size_t matching_column_count = 0;
+          for (std::size_t source_ordinal = 0;
+               source_ordinal < source_count; ++source_ordinal) {
+            if (qualified_source_ordinal.has_value() &&
+                *qualified_source_ordinal != source_ordinal) {
+              continue;
+            }
+            const auto& source =
+                bound.catalog_relation_sources[source_ordinal];
+            const auto& source_relation = bound.relations[source_ordinal];
+            for (std::size_t ordinal = 0; ordinal < source.columns.size();
+                 ++ordinal) {
+              if (source.columns[ordinal].canonical_name_key != column_key) {
+                continue;
+              }
+              ++matching_column_count;
+              *selected_column = &source.columns[ordinal];
+              *selected_expression_id =
+                  source_relation.output_expression_ids[ordinal];
+            }
+          }
+          return matching_column_count == 1 && *selected_column != nullptr &&
+                 *selected_expression_id != 0;
+        };
     if (filter_composition) {
       if (source_projection_count >
           std::numeric_limits<std::uint32_t>::max() - 2U) {
@@ -1649,26 +1723,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             "ordinary multi-source FILTER descriptor identity overflowed");
         return RefusedBoundAst(std::move(bound));
       }
-      const auto filter_name =
-          filter_identifier->qualified_identifier.front().quoted
-              ? filter_identifier->qualified_identifier.front().spelling
-              : ToLowerAscii(
-                    filter_identifier->qualified_identifier.front().spelling);
       const BoundCatalogColumnAstRecord* selected_column = nullptr;
       std::uint32_t selected_expression_id = 0;
-      std::size_t matching_column_count = 0;
-      for (std::size_t source_ordinal = 0; source_ordinal < source_count;
-           ++source_ordinal) {
-        const auto& source = bound.catalog_relation_sources[source_ordinal];
-        const auto& source_relation = bound.relations[source_ordinal];
-        for (std::size_t ordinal = 0; ordinal < source.columns.size(); ++ordinal) {
-          if (source.columns[ordinal].canonical_name_key != filter_name) continue;
-          ++matching_column_count;
-          selected_column = &source.columns[ordinal];
-          selected_expression_id =
-              source_relation.output_expression_ids[ordinal];
-        }
-      }
+      const bool exact_selected_column = resolve_source_column(
+          *filter_identifier, &selected_column, &selected_expression_id);
 
       const bool literal_value =
           filter_value->expression_kind == NativeExpressionAstKind::kLiteral;
@@ -1716,7 +1774,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                      operand_binding->structural_parameter_occurrence_id == 0 &&
                      operand_binding->structural_variable_occurrence_id ==
                          filter_value->structural_variable_occurrence_id);
-      if (matching_column_count != 1 || selected_column == nullptr ||
+      if (!exact_selected_column || selected_column == nullptr ||
           selected_expression_id == 0 || matching_operand_count != 1 ||
           operand_binding == context.expressions.end() ||
           !exact_operand_occurrence ||
@@ -1861,18 +1919,17 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       for (std::size_t ordinal = 0; ordinal < project_identifiers.size();
            ++ordinal) {
         const auto* identifier = project_identifiers[ordinal];
-        const auto identifier_key =
-            identifier->qualified_identifier.front().quoted
-                ? identifier->qualified_identifier.front().spelling
-                : ToLowerAscii(
-                      identifier->qualified_identifier.front().spelling);
+        const BoundCatalogColumnAstRecord* selected_column = nullptr;
+        std::uint32_t selected_expression_id = 0;
+        const bool exact_selected_column = resolve_source_column(
+            *identifier, &selected_column, &selected_expression_id);
         const auto matching_count = std::ranges::count_if(
             predecessor_outputs, [&](const auto* output) {
-              return output->output_name_utf8 == identifier_key;
+              return output->expression_id == selected_expression_id;
             });
         const auto selected = std::ranges::find_if(
             predecessor_outputs, [&](const auto* output) {
-              return output->output_name_utf8 == identifier_key;
+              return output->expression_id == selected_expression_id;
             });
         if (output_offset >= context.outputs.size()) {
           AddBoundAstDiagnostic(
@@ -1883,7 +1940,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         const auto& output = context.outputs[output_offset++];
         const auto expected_output_id =
             static_cast<std::uint32_t>(output_offset);
-        if (matching_count != 1 || selected == predecessor_outputs.end() ||
+        if (!exact_selected_column || matching_count != 1 ||
+            selected == predecessor_outputs.end() ||
             !selected_predecessor_output_ids.insert((*selected)->output_id)
                  .second ||
             output.output_id != expected_output_id ||
@@ -6536,9 +6594,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         if (expression == ast.expressions.end() ||
             expression->expression_kind !=
                 NativeExpressionAstKind::kIdentifier ||
-            expression->qualified_identifier.size() != 1 ||
-            expression->qualified_identifier.front().spelling !=
-                expression->spelling ||
+            (expression->qualified_identifier.size() != 1 &&
+             expression->qualified_identifier.size() != 2) ||
+            expression->qualified_identifier.back().spelling.empty() ||
+            (expression->qualified_identifier.size() == 1 &&
+             expression->qualified_identifier.back().spelling !=
+                 expression->spelling) ||
             expression->spelling.empty() ||
             !expression->child_expression_ids.empty() ||
             expression->literal_kind.has_value() ||
@@ -6548,10 +6609,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             expression->structural_variable_occurrence_id != 0 ||
             !project_expression_ids.insert(expression_id).second ||
             !project_names
-                 .insert(expression->qualified_identifier.front().quoted
-                             ? expression->qualified_identifier.front().spelling
+                 .insert(expression->qualified_identifier.back().quoted
+                             ? expression->qualified_identifier.back().spelling
                              : ToLowerAscii(
-                                   expression->qualified_identifier.front()
+                                   expression->qualified_identifier.back()
                                        .spelling))
                  .second) {
           AddBoundAstDiagnostic(
@@ -6610,7 +6671,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeExpressionAstKind::kBinary ||
           filter_identifier->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
-          filter_identifier->qualified_identifier.size() != 1 ||
+          (filter_identifier->qualified_identifier.size() != 1 &&
+           filter_identifier->qualified_identifier.size() != 2) ||
+          filter_identifier->qualified_identifier.back().spelling.empty() ||
           !filter_identifier->child_expression_ids.empty() ||
           !filter_identifier->operator_name.empty() ||
           !filter_value->child_expression_ids.empty() ||
@@ -7077,33 +7140,71 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     std::optional<std::uint32_t> bound_filter_predicate_id;
     std::vector<std::uint32_t> bound_project_expression_ids;
     std::vector<std::uint32_t> terminal_output_ids = joined_output_ids;
+    const auto visible_source_count = left_only_join ? std::size_t{1}
+                                                     : std::size_t{2};
+    const auto resolve_source_column =
+        [&](const NativeExpressionAstNode& identifier,
+            const BoundCatalogColumnAstRecord** selected_column,
+            std::uint32_t* selected_expression_id) {
+          if (selected_column == nullptr || selected_expression_id == nullptr ||
+              (identifier.qualified_identifier.size() != 1 &&
+               identifier.qualified_identifier.size() != 2)) {
+            return false;
+          }
+          *selected_column = nullptr;
+          *selected_expression_id = 0;
+          const auto column_key =
+              CanonicalIdentifierKey(identifier.qualified_identifier.back());
+          std::optional<std::size_t> qualified_source_ordinal;
+          if (identifier.qualified_identifier.size() == 2) {
+            const auto& qualifier = identifier.qualified_identifier.front();
+            for (std::size_t source_ordinal = 0;
+                 source_ordinal < ast.catalog_relation_sources.size();
+                 ++source_ordinal) {
+              const auto& ast_source =
+                  ast.catalog_relation_sources[source_ordinal];
+              if (ast_source.qualified_name.empty() ||
+                  !SameIdentifierComponent(ast_source.qualified_name.back(),
+                                           qualifier)) {
+                continue;
+              }
+              if (qualified_source_ordinal.has_value()) return false;
+              qualified_source_ordinal = source_ordinal;
+            }
+            if (!qualified_source_ordinal.has_value() ||
+                *qualified_source_ordinal >= visible_source_count) {
+              return false;
+            }
+          }
+          std::size_t matching_column_count = 0;
+          for (std::size_t source_ordinal = 0;
+               source_ordinal < visible_source_count; ++source_ordinal) {
+            if (qualified_source_ordinal.has_value() &&
+                *qualified_source_ordinal != source_ordinal) {
+              continue;
+            }
+            const auto& source =
+                bound.catalog_relation_sources[source_ordinal];
+            const auto& source_relation = bound.relations[source_ordinal];
+            for (std::size_t ordinal = 0; ordinal < source.columns.size();
+                 ++ordinal) {
+              if (source.columns[ordinal].canonical_name_key != column_key) {
+                continue;
+              }
+              ++matching_column_count;
+              *selected_column = &source.columns[ordinal];
+              *selected_expression_id =
+                  source_relation.output_expression_ids[ordinal];
+            }
+          }
+          return matching_column_count == 1 && *selected_column != nullptr &&
+                 *selected_expression_id != 0;
+        };
     if (filter_composition) {
       const BoundCatalogColumnAstRecord* selected_column = nullptr;
       std::uint32_t selected_expression_id = 0;
-      std::size_t matching_column_count = 0;
-      const auto visible_source_count = left_only_join ? std::size_t{1}
-                                                       : std::size_t{2};
-      for (std::size_t source_ordinal = 0;
-           source_ordinal < visible_source_count; ++source_ordinal) {
-        const auto& source = bound.catalog_relation_sources[source_ordinal];
-        const auto& source_relation = bound.relations[source_ordinal];
-        for (std::size_t ordinal = 0; ordinal < source.columns.size();
-             ++ordinal) {
-          const auto filter_name =
-              filter_identifier->qualified_identifier.front().quoted
-                  ? filter_identifier->qualified_identifier.front().spelling
-                  : ToLowerAscii(
-                        filter_identifier->qualified_identifier.front().spelling);
-          if (source.columns[ordinal].canonical_name_key !=
-              filter_name) {
-            continue;
-          }
-          ++matching_column_count;
-          selected_column = &source.columns[ordinal];
-          selected_expression_id =
-              source_relation.output_expression_ids[ordinal];
-        }
-      }
+      const bool exact_selected_column = resolve_source_column(
+          *filter_identifier, &selected_column, &selected_expression_id);
       const auto boolean_descriptor_index =
           source_projection_count + predicate_node_count;
       const auto* boolean_descriptor =
@@ -7173,7 +7274,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                     operand_binding->structural_parameter_occurrence_id == 0 &&
                     operand_binding->structural_variable_occurrence_id ==
                         filter_value->structural_variable_occurrence_id;
-      if (matching_column_count != 1 || selected_column == nullptr ||
+      if (!exact_selected_column || selected_column == nullptr ||
           selected_expression_id == 0 || boolean_descriptor == nullptr ||
           boolean_descriptor->descriptor_id !=
               boolean_descriptor_index + 1 ||
@@ -7290,23 +7391,23 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       for (std::size_t ordinal = 0; ordinal < project_identifiers.size();
            ++ordinal) {
         const auto* identifier = project_identifiers[ordinal];
-        const auto identifier_key =
-            identifier->qualified_identifier.front().quoted
-                ? identifier->qualified_identifier.front().spelling
-                : ToLowerAscii(
-                      identifier->qualified_identifier.front().spelling);
+        const BoundCatalogColumnAstRecord* selected_column = nullptr;
+        std::uint32_t selected_expression_id = 0;
+        const bool exact_selected_column = resolve_source_column(
+            *identifier, &selected_column, &selected_expression_id);
         const auto matching_count = std::ranges::count_if(
             predecessor_outputs, [&](const auto& output) {
-              return output.output_name_utf8 == identifier_key;
+              return output.expression_id == selected_expression_id;
             });
         const auto selected = std::ranges::find_if(
             predecessor_outputs, [&](const auto& output) {
-              return output.output_name_utf8 == identifier_key;
+              return output.expression_id == selected_expression_id;
             });
         const auto& output = context.outputs[project_output_offset + ordinal];
         const auto expected_output_id =
             static_cast<std::uint32_t>(project_output_offset + ordinal + 1);
-        if (matching_count != 1 || selected == predecessor_outputs.end() ||
+        if (!exact_selected_column || matching_count != 1 ||
+            selected == predecessor_outputs.end() ||
             !selected_predecessor_output_ids.insert(selected->output_id)
                  .second ||
             output.output_id != expected_output_id ||
