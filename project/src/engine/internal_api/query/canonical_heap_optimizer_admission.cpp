@@ -395,6 +395,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         if (filter_input != nullptr &&
             filter_input->node_kind == RelationalDagNodeKind::kScan) {
           project_scan = filter_input;
+        } else if (
+            filter_input != nullptr && filter_input != join_root &&
+            filter_input->node_kind == RelationalDagNodeKind::kJoin &&
+            local_filter_join_node_ids.contains(filter_input->node_id)) {
+          project_join = filter_input;
         }
       } else if (project_input != join_root &&
                  project_input->node_kind ==
@@ -936,6 +941,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           output.ordinal != ordinal || output.output_id == 0 ||
           output.expression_id != project->bound_expression_ids[ordinal] ||
           output.descriptor_id != project->output_descriptor_ids[ordinal] ||
+          output.output_name_utf8 != (*source)->output_name_utf8 ||
           expression->second->result_descriptor_id != output.descriptor_id) {
         exact_project_outputs = false;
         break;

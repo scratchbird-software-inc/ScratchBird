@@ -34185,12 +34185,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
                     "join PROJECT input node is absent");
     }
-    if (input_node->second->node_kind ==
+    const bool direct_join_subtree =
+        input_node->second->node_kind ==
             api::RelationalDagNodeKind::kJoin &&
-        input_node->second != join) {
+        input_node->second != join;
+    const bool filtered_join_subtree =
+        input_node->second->node_kind ==
+            api::RelationalDagNodeKind::kFilter &&
+        join_subtree_filter_node_ids.contains(input_node->second->node_id);
+    if (direct_join_subtree || filtered_join_subtree) {
       if (!join_subtree_project_node_ids.empty()) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
-                      "join subtree admits at most one direct local PROJECT");
+                      "join subtree admits at most one local PROJECT");
       }
       join_subtree_project_node_ids.insert(project->node_id);
     }
@@ -34381,6 +34387,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               output.ordinal != ordinal ||
               output.expression_id != project.bound_expression_ids[ordinal] ||
               output.descriptor_id != project.output_descriptor_ids[ordinal] ||
+              output.output_name_utf8 != (*source)->output_name_utf8 ||
               expression->result_descriptor_id != output.descriptor_id) {
             exact_project = false;
             break;
@@ -34516,8 +34523,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                     api::RelationalDagNodeKind::kFilter &&
                 std::ranges::find(local_filters, input_node->second) !=
                     local_filters.end() &&
-                !join_subtree_filter_node_ids.contains(
-                    input_node->second->node_id)) ||
+                (!join_subtree_filter_node_ids.contains(
+                     input_node->second->node_id) ||
+                 join_subtree_project_node_ids.contains(node.node_id))) ||
                (input_node->second->node_kind ==
                     api::RelationalDagNodeKind::kJoin &&
                 join_subtree_project_node_ids.contains(node.node_id)));
