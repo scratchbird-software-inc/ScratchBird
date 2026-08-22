@@ -118,6 +118,10 @@ struct ParserStatementContext {
   struct LiteralStatementDescriptorProfileV1 {
     std::uint16_t profile_version{0};
     std::string profile_uuid;
+    // Statement-local relational descriptor identity issued for this literal
+    // occurrence. The SBLP descriptor_uuid remains the core codec/catalog
+    // identity and must not be reused as a DAG descriptor identity.
+    std::string binding_descriptor_uuid;
     std::string statement_receipt_uuid;
     std::string catalog_snapshot_uuid;
     std::uint64_t catalog_generation{0};

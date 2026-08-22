@@ -37292,9 +37292,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         limit_value->second->expression_kind ==
             NativeExpressionAstKind::kParameter &&
         limit_value->second->structural_parameter_occurrence_id == 2;
+    const bool literal_filter_literal_limit =
+        filter_value != nullptr && limit_value != expressions_by_id.end() &&
+        filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+        filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
+        filter_value->structural_literal_occurrence_id == 1 &&
+        limit_value->second->expression_kind ==
+            NativeExpressionAstKind::kLiteral &&
+        limit_value->second->literal_kind == NativeLiteralAstKind::kNumeric &&
+        limit_value->second->structural_literal_occurrence_id == 2;
     if (!literal_filter_parameter_limit &&
         !parameter_filter_literal_limit &&
-        !parameter_filter_parameter_limit) {
+        !parameter_filter_parameter_limit &&
+        !literal_filter_literal_limit) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed JOIN FILTER and LIMIT operands are not composable");

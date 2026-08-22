@@ -878,7 +878,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     const bool exact_operand_pair =
         (literal_filter_value && parameter_limit_value) ||
         (parameter_filter_value && literal_limit_value) ||
-        (parameter_filter_value && parameter_limit_value);
+        (parameter_filter_value && parameter_limit_value) ||
+        (literal_filter_value && literal_limit_value);
     bool exact_filter_value = literal_filter_value || parameter_filter_value;
     if (exact_filter_value) {
       const auto& typed_bytes =

@@ -4201,36 +4201,38 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
   if(!decoded.request.demands.empty()){
     std::unordered_set<std::string> identities{receipt->view.receipt_uuid,
         identity.row.descriptor_uuid,identity.row.type_uuid};
-    std::string profile_uuid_text;
-    if(!generate_distinct_statement_context_uuid(&identities,&profile_uuid_text)){
-      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
-                         "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
-                         "sblr.literal_prebind.profile_identity_unavailable");
+    for(const auto& demand:decoded.request.demands){
+      std::string profile_uuid_text;
+      if(!generate_distinct_statement_context_uuid(&identities,&profile_uuid_text)){
+        return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
+                           "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
+                           "sblr.literal_prebind.profile_identity_unavailable");
+      }
+      scratchbird::engine::sblr::SblrLiteralStatementDescriptorProfileV1 profile;
+      if(!uuid_bytes(profile_uuid_text,&profile.profile_uuid)||
+         !uuid_bytes(identity.row.descriptor_uuid,&profile.descriptor_uuid)||
+         !uuid_bytes(identity.row.type_uuid,&profile.type_uuid)){
+        return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
+                           "DATATYPE.DESCRIPTOR_INVALID",
+                           "sblr.literal_prebind.registry_identity_invalid");
+      }
+      profile.statement_receipt_uuid=receipt_uuid;
+      profile.catalog_snapshot_uuid=catalog_uuid;
+      profile.catalog_generation=identity.row.catalog_generation;
+      profile.descriptor_generation=identity.row.descriptor_generation;
+      profile.codec_id=identity.row.codec_id;profile.codec_version=identity.row.codec_version;
+      profile.codec_generation=identity.row.codec_generation;profile.nullable=false;
+      profile.profile_binding_sha256=
+          scratchbird::engine::sblr::ComputeSblrLiteralDescriptorProfileBindingV1(
+              profile,receipt->view.security_epoch,receipt->view.resource_epoch);
+      auto sblp=scratchbird::engine::sblr::EncodeSblrLiteralDescriptorProfileV1(profile);
+      if(sblp.empty()){
+        return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
+                           "DATATYPE.DESCRIPTOR_INVALID",
+                           "sblr.literal_prebind.profile_encoding_failed");
+      }
+      response.mappings.push_back({demand.occurrence_id,std::move(sblp)});
     }
-    scratchbird::engine::sblr::SblrLiteralStatementDescriptorProfileV1 profile;
-    if(!uuid_bytes(profile_uuid_text,&profile.profile_uuid)||
-       !uuid_bytes(identity.row.descriptor_uuid,&profile.descriptor_uuid)||
-       !uuid_bytes(identity.row.type_uuid,&profile.type_uuid)){
-      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
-                         "DATATYPE.DESCRIPTOR_INVALID",
-                         "sblr.literal_prebind.registry_identity_invalid");
-    }
-    profile.statement_receipt_uuid=receipt_uuid;
-    profile.catalog_snapshot_uuid=catalog_uuid;
-    profile.catalog_generation=identity.row.catalog_generation;
-    profile.descriptor_generation=identity.row.descriptor_generation;
-    profile.codec_id=identity.row.codec_id;profile.codec_version=identity.row.codec_version;
-    profile.codec_generation=identity.row.codec_generation;profile.nullable=false;
-    profile.profile_binding_sha256=
-        scratchbird::engine::sblr::ComputeSblrLiteralDescriptorProfileBindingV1(
-            profile,receipt->view.security_epoch,receipt->view.resource_epoch);
-    const auto sblp=scratchbird::engine::sblr::EncodeSblrLiteralDescriptorProfileV1(profile);
-    if(sblp.empty()){
-      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
-                         "DATATYPE.DESCRIPTOR_INVALID",
-                         "sblr.literal_prebind.profile_encoding_failed");
-    }
-    for(const auto& demand:decoded.request.demands){response.mappings.push_back({demand.occurrence_id,sblp});}
   }
   response.ordered_profile_sha256=
       scratchbird::engine::sblr::ComputeSblrLiteralOrderedProfilesSha256V1(response.mappings);
@@ -4315,9 +4317,8 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
         receipt->view.literal_catalog_generation,
         receipt->view.literal_registry_generation,
         "019d0000-0000-7000-8000-00000000d711",1);
-    std::array<std::uint8_t,16> descriptor{},type{};
-    if(!identity.ok||!uuid_bytes(identity.row.descriptor_uuid,&descriptor)||
-       !uuid_bytes(identity.row.type_uuid,&type)||node.descriptor_uuid!=descriptor||
+    std::array<std::uint8_t,16> type{};
+    if(!identity.ok||!uuid_bytes(identity.row.type_uuid,&type)||
        node.descriptor_generation!=identity.row.descriptor_generation||
        node.type_uuid!=type)
       return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4075,
@@ -4355,10 +4356,21 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
                          "sblr.literal_finalize.profile_mapping_extent_invalid");
     const auto profile=scratchbird::engine::sblr::DecodeSblrLiteralDescriptorProfileV1(
         sblq.data()+mapping_offset,profile_bytes);mapping_offset+=profile_bytes;
+    const auto identity=scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        receipt->view.literal_catalog_snapshot_uuid,
+        receipt->view.literal_catalog_generation,
+        receipt->view.literal_registry_generation,
+        "019d0000-0000-7000-8000-00000000d711",1);
+    std::array<std::uint8_t,16> core_descriptor{},core_type{};
     if(!profile.ok||occurrence!=ast.occurrence_id||
        profile.profile.profile_uuid!=ast.profile_uuid||
-       profile.profile.descriptor_uuid!=ast.descriptor_uuid||
+       profile.profile.profile_uuid!=ast.descriptor_uuid||
+       !identity.ok||
+       !uuid_bytes(identity.row.descriptor_uuid,&core_descriptor)||
+       !uuid_bytes(identity.row.type_uuid,&core_type)||
+       profile.profile.descriptor_uuid!=core_descriptor||
        profile.profile.descriptor_generation!=ast.descriptor_generation||
+       profile.profile.type_uuid!=core_type||
        profile.profile.type_uuid!=ast.type_uuid||
        profile.profile.profile_binding_sha256!=
          scratchbird::engine::sblr::ComputeSblrLiteralDescriptorProfileBindingV1(
