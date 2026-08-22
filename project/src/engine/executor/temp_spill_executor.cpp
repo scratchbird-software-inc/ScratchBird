@@ -368,8 +368,15 @@ std::vector<std::string> BaselineOutput(const TempSpillRequest& request) {
       return DistinctOutput(records);
     case TempSpillRouteKind::kGroupBy:
       return GroupByOutput(records);
-    case TempSpillRouteKind::kHashAggregate:
-      return HashAggregateOutput(HashRows(request.rows));
+    case TempSpillRouteKind::kHashAggregate: {
+      auto hash_rows = HashRows(request.rows);
+      std::sort(hash_rows.begin(), hash_rows.end(), [](const auto& left,
+                                                       const auto& right) {
+        return std::tie(left.key, left.row_ordinal, left.payload) <
+               std::tie(right.key, right.row_ordinal, right.payload);
+      });
+      return HashAggregateOutput(hash_rows);
+    }
   }
   return {};
 }

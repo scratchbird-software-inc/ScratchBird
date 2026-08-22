@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +22,8 @@
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
+namespace uuid = scratchbird::core::uuid;
 
 namespace {
 
@@ -35,6 +39,7 @@ constexpr std::uint64_t kInDoubtLocalTransactionId =
     0xffff'ffff'ffff'fef0ULL;
 constexpr std::uint64_t kInventoryNextLocalTransactionId =
     0xffff'ffff'ffff'fff0ULL;
+constexpr std::size_t kAggregateMemoryGrantBytes = 32u * 1024u * 1024u;
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
@@ -92,7 +97,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = kAggregateMemoryGrantBytes + 1;
   dag->spill_allowed = true;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
@@ -108,7 +113,10 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000f706";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required =
+        node.node_kind == exec::PhysicalNodeKind::kAggregate
+            ? kAggregateMemoryGrantBytes
+            : 1;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -140,6 +148,18 @@ api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
   return descriptor;
 }
 
+std::string CoreDescriptorUuid(const std::string_view stable_name,
+                               const std::string_view fallback) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) std::abort();
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return found == manifest.manifest.descriptor_rows.end()
+             ? std::string(fallback)
+             : uuid::UuidToString(found->descriptor_uuid.value);
+}
+
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             const std::string& encoded) {
   api::EngineTypedValue value;
@@ -161,16 +181,20 @@ exec::CanonicalInt64SumSpillRequest Request(
     const std::filesystem::path& root) {
   const auto key_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001802",
-      "019f0000-0000-7300-8000-000000001803");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001803"));
   const auto value_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001804",
-      "019f0000-0000-7300-8000-000000001805");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001805"));
   const auto key_result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001806",
-      "019f0000-0000-7300-8000-000000001803");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001803"));
   const auto sum_result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001808",
-      "019f0000-0000-7300-8000-000000001805");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001805"));
 
   exec::CanonicalInt64SumSpillRequest request;
   auto& aggregate = request.aggregate_request;
