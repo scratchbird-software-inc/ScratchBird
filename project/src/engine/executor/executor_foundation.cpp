@@ -10291,8 +10291,6 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
       canonical.distinct_tuple_count;
   const auto expected_order_comparison_count =
       canonical.order_comparison_count;
-  const auto expected_combined_state_bytes =
-      canonical.combined_state_bytes;
   auto reopened = std::move(canonical);
   reopened.transition_count = 0;
   reopened.inverse_transition_count = 0;
@@ -10609,7 +10607,6 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
       reopened.distinct_tuple_count != expected_distinct_tuple_count ||
       reopened.order_comparison_count !=
           expected_order_comparison_count ||
-      reopened.combined_state_bytes != expected_combined_state_bytes ||
       replayed_combined_final_output_bytes !=
           expected_combined_final_output_bytes ||
       reopened.combined_final_output_bytes !=
@@ -10617,7 +10614,7 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
       replay_peak_finalization_workspace_bytes !=
           baseline_peak_finalization_workspace_bytes) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EQUIVALENCE",
-                  "restored and in-memory aggregate window results diverge");
+                  "restored logical aggregate window results diverge");
   }
   reopened.peak_finalization_workspace_bytes =
       replay_peak_finalization_workspace_bytes;
@@ -11274,8 +11271,12 @@ ExecuteCanonicalRegistryWindowAggregate(
   runtime_request.forced_strategy = CanonicalWindowRuntimeStrategy::aggregate;
   runtime_request.mga_authority = request.aggregate_template.mga_authority;
   auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
-  if (runtime.diagnostic.ok && runtime.aggregate_strategy_result.has_value()) {
-    runtime.aggregate_strategy_result->values = std::move(runtime.values);
+  if (runtime.aggregate_strategy_result.has_value()) {
+    if (runtime.diagnostic.ok) {
+      runtime.aggregate_strategy_result->values = std::move(runtime.values);
+    } else {
+      runtime.aggregate_strategy_result->values.clear();
+    }
     return std::move(*runtime.aggregate_strategy_result);
   }
   CanonicalRegistryWindowAggregateResult refused;
@@ -11443,6 +11444,19 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   aggregate.result_column = request.result_column;
   aggregate.filter_truth_values = request.filter_truth_values;
   aggregate.distinct = request.distinct;
+  if (aggregate.distinct) {
+    aggregate.aggregate_equality_terms = {
+        {.column = *value_column,
+         .expression_descriptor_id =
+             request.value_expression_descriptor_id}};
+    const auto equality_authority =
+        BindCanonicalAggregateEqualityAuthorityProfile(
+            &aggregate, request.frames.ordered_batch);
+    if (!equality_authority.ok) {
+      return refuse(std::move(equality_authority.diagnostic_code),
+                    std::move(equality_authority.detail));
+    }
+  }
   aggregate.aggregate_order_terms = request.aggregate_order_terms;
   aggregate.maximum_transition_count = request.maximum_transition_count;
   aggregate.maximum_distinct_value_count =

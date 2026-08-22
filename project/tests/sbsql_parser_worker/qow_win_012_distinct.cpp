@@ -28,7 +28,8 @@ bool ValidateAggregateWindowDistinct() {
           result.transition_row_indices[0] ==
               std::vector<std::size_t>({0, 3, 4}) &&
           result.distinct_applied_before_transition,
-      "aggregate-window DISTINCT did not use typed frame-local equality");
+      "aggregate-window DISTINCT did not use typed frame-local equality: " +
+          result.diagnostic.diagnostic_code + ":" + result.diagnostic.detail);
 
   request.distinct = false;
   const auto ordinary = exec::ExecuteCanonicalWindowAggregate(request);

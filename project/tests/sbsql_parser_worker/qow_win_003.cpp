@@ -371,6 +371,7 @@ bool ValidateTemporalRangeAndCausalCarryThrough() {
         descriptor, "2026-07-0" + std::to_string(day) + "T12:00:00Z");
   }
   temporal.input_batch.columns[2].descriptor = descriptor;
+  temporal.input_batch.columns[2].nullable = false;
   const auto interval = TypedOffset("interval", "P1D", 4930);
   const auto result = ExecuteFrame(
       temporal,
@@ -389,7 +390,8 @@ bool ValidateTemporalRangeAndCausalCarryThrough() {
               temporal.physical_dag.mga_statement_context) &&
           result.mga_statement_context.visible_committed_high_watermark == 0 &&
           result.authority.engine_mga_snapshot_bound,
-      "temporal RANGE or selected-plan/MGA evidence did not carry through");
+      "temporal RANGE or selected-plan/MGA evidence did not carry through: " +
+          result.diagnostic.diagnostic_code + ":" + result.diagnostic.detail);
   const auto wider = ExecuteFrame(
       temporal,
       ExplicitFrame(

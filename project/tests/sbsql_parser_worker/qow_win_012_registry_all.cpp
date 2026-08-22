@@ -32,6 +32,10 @@ exec::CanonicalRegistryWindowAggregateRequest RegistryWindowProfile(
   request.aggregate_template = std::move(profile);
   auto& aggregate = request.aggregate_template;
   aggregate.physical_dag = window_dag;
+  aggregate.physical_dag.memory_budget_bytes = 32U << 20;
+  for (auto& node : aggregate.physical_dag.nodes) {
+    node.memory_bytes_required = 32U << 20;
+  }
   aggregate.mga_authority = request.frames.mga_authority;
   aggregate.selected_physical_node_id =
       request.frames.executed_physical_node_id;
@@ -45,8 +49,11 @@ exec::CanonicalRegistryWindowAggregateRequest RegistryWindowProfile(
   for (const auto& column : request.frames.ordered_batch.columns) {
     frame_descriptor_ids.push_back(column.descriptor_id);
   }
-  aggregate.physical_dag.nodes[0].output_descriptor_ids =
-      std::move(frame_descriptor_ids);
+  request.frames.physical_dag.nodes[0].output_descriptor_ids =
+      frame_descriptor_ids;
+  request.frames.physical_dag.nodes[1].output_descriptor_ids =
+      frame_descriptor_ids;
+  aggregate.physical_dag.nodes[0].output_descriptor_ids = frame_descriptor_ids;
   aggregate.physical_dag.nodes[1].node_kind =
       exec::PhysicalNodeKind::kAggregate;
   aggregate.physical_dag.nodes[1].implementation_id =
@@ -68,6 +75,9 @@ exec::CanonicalAggregateRuntimeResult FrameBaseline(
   aggregate.distinct = window.aggregate_template.distinct;
   aggregate.aggregate_order_terms =
       window.aggregate_template.aggregate_order_terms;
+  if (aggregate.distinct) {
+    BindEqualityAuthority(&aggregate);
+  }
   if (window.aggregate_template.filter_truth_values.has_value()) {
     std::vector<api::EngineSqlTruthValue> filter;
     filter.reserve(aggregate.input_batch.rows.size());
@@ -97,6 +107,11 @@ void ApplyEveryAuthorizedModifier(
           api::EngineSqlTruthValue::unknown,
           api::EngineSqlTruthValue::true_value};
   aggregate.distinct = !aggregate.descriptor.count_star;
+  if (aggregate.distinct) {
+    aggregate.input_batch = request->frames.ordered_batch;
+    BindEqualityAuthority(&aggregate);
+    aggregate.input_batch = {};
+  }
   if (aggregate.aggregate_order_terms.empty()) {
     aggregate.aggregate_order_terms = {
         {.column = 3,
