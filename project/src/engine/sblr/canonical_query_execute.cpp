@@ -12275,6 +12275,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
   return registration;
 }
 
+struct LiveProjectRuntimeNodeConfiguration {
+  std::uint32_t relational_node_id{0};
+  std::vector<std::size_t> projected_columns;
+};
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
     std::vector<std::size_t> projected_columns,
     std::string capability_uuid,
@@ -12282,12 +12287,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
     api::EngineRequestContext mga_context,
     const api::EngineRequestContext* borrowed_mga_context = nullptr,
     const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
-        nullptr) {
+        nullptr,
+    std::vector<LiveProjectRuntimeNodeConfiguration>
+        runtime_node_configurations = {}) {
   const bool strict_dispatcher_memory =
       borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
   std::uint64_t registration_retained_bytes =
       sizeof(std::vector<std::size_t>) +
-      sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512;
+      sizeof(api::EngineRequestContext) +
+      sizeof(std::vector<LiveProjectRuntimeNodeConfiguration>) +
+      8 * sizeof(void*) + 512;
   std::uint64_t projected_column_bytes = 0;
   if (!strict_dispatcher_memory ||
       !CheckedMultiply(projected_columns.capacity(), sizeof(std::size_t),
@@ -12295,6 +12304,26 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
       !CheckedAdd(registration_retained_bytes, projected_column_bytes,
                   &registration_retained_bytes)) {
     registration_retained_bytes = 0;
+  }
+  std::uint64_t configuration_bytes = 0;
+  if (registration_retained_bytes == 0 ||
+      !CheckedMultiply(runtime_node_configurations.capacity(),
+                       sizeof(LiveProjectRuntimeNodeConfiguration),
+                       &configuration_bytes) ||
+      !CheckedAdd(registration_retained_bytes, configuration_bytes,
+                  &registration_retained_bytes)) {
+    registration_retained_bytes = 0;
+  }
+  for (const auto& configuration : runtime_node_configurations) {
+    std::uint64_t nested_bytes = 0;
+    if (registration_retained_bytes == 0 ||
+        !CheckedMultiply(configuration.projected_columns.capacity(),
+                         sizeof(std::size_t), &nested_bytes) ||
+        !CheckedAdd(registration_retained_bytes, nested_bytes,
+                    &registration_retained_bytes)) {
+      registration_retained_bytes = 0;
+      break;
+    }
   }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kProject;
@@ -12309,13 +12338,41 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
   registration.execute =
       [projected_columns = std::move(projected_columns),
        maximum_input_row_count, mga_context = std::move(mga_context),
-       borrowed_mga_authority, strict_dispatcher_memory](
+       borrowed_mga_authority, strict_dispatcher_memory,
+       runtime_node_configurations = std::move(runtime_node_configurations)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
+        const LiveProjectRuntimeNodeConfiguration* runtime_node_configuration =
+            nullptr;
+        for (const auto& candidate : runtime_node_configurations) {
+          if (candidate.relational_node_id != node.relational_node_id) continue;
+          if (runtime_node_configuration != nullptr) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1";
+            step.diagnostic.detail =
+                "object-backed PROJECT has duplicate logical-node configuration";
+            return step;
+          }
+          runtime_node_configuration = &candidate;
+        }
+        if (!runtime_node_configurations.empty() &&
+            runtime_node_configuration == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1";
+          step.diagnostic.detail =
+              "object-backed PROJECT logical-node configuration is absent";
+          return step;
+        }
+        const auto& active_projected_columns =
+            runtime_node_configuration == nullptr
+                ? projected_columns
+                : runtime_node_configuration->projected_columns;
         if (inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -12381,7 +12438,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
                                                   *execution_dag);
         }
         auto project_result = exec::ExecuteCanonicalDescriptorProjection(
-            project_request, *execution_dag, input_batch, projected_columns);
+            project_request, *execution_dag, input_batch,
+            active_projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
           return step;
@@ -33853,7 +33911,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   std::vector<const api::RelationalDagNode*> scans;
   std::vector<const api::RelationalDagNode*> joins;
   std::vector<const api::RelationalDagNode*> filters;
-  const api::RelationalDagNode* project = nullptr;
+  std::vector<const api::RelationalDagNode*> projects;
   const api::RelationalDagNode* cte = nullptr;
   bool duplicate_or_unsupported_node = false;
   for (const auto& node : dag.nodes) {
@@ -33863,9 +33921,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       joins.push_back(&node);
     } else if (node.node_kind == api::RelationalDagNodeKind::kFilter) {
       filters.push_back(&node);
-    } else if (node.node_kind == api::RelationalDagNodeKind::kProject &&
-               project == nullptr) {
-      project = &node;
+    } else if (node.node_kind == api::RelationalDagNodeKind::kProject) {
+      projects.push_back(&node);
     } else if (node.node_kind == api::RelationalDagNodeKind::kCte &&
                cte == nullptr) {
       cte = &node;
@@ -33895,10 +33952,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         exact_terminal_chain &&
         consume_terminal(api::RelationalDagNodeKind::kCte, cte);
   }
-  if (project != nullptr) {
+  const api::RelationalDagNode* terminal_project = nullptr;
+  if (join != nullptr &&
+      join->node_kind == api::RelationalDagNodeKind::kProject) {
+    terminal_project = join;
     exact_terminal_chain =
         exact_terminal_chain &&
-        consume_terminal(api::RelationalDagNodeKind::kProject, project);
+        consume_terminal(api::RelationalDagNodeKind::kProject,
+                         terminal_project);
+  }
+  std::vector<const api::RelationalDagNode*> local_projects;
+  local_projects.reserve(projects.size());
+  for (const auto* candidate : projects) {
+    if (candidate != terminal_project) local_projects.push_back(candidate);
   }
   const api::RelationalDagNode* terminal_filter = nullptr;
   if (join != nullptr &&
@@ -33965,12 +34031,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       accepted_join && join_kind != exec::CanonicalAcceptedJoinKind::kCross;
   if (dag.wire_version != 2 || scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 || join == nullptr ||
-      filters.size() > scans.size() + 1 || dag.nodes.size() > 29 ||
+      filters.size() > scans.size() + 1 ||
+      projects.size() > scans.size() + 1 || dag.nodes.size() > 38 ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
       dag.nodes.size() !=
           scans.size() + joins.size() + filters.size() +
-              static_cast<std::size_t>(project != nullptr) +
+              projects.size() +
               static_cast<std::size_t>(cte != nullptr) ||
       !accepted_join ||
       join->bound_expression_ids.size() !=
@@ -34011,6 +34078,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     const api::RelationalDagNode* node{nullptr};
     CanonicalRelationalExpressionRowBinding predicate_row_binding;
   };
+  struct BoundHeapProjectNode {
+    const api::RelationalDagNode* node{nullptr};
+    std::vector<std::size_t> projected_columns;
+  };
   const auto unary_empty = [](const api::RelationalDagNode& node) {
     return node.required_object_uuids.empty() && node.values_row_ids.empty() &&
            node.required_property_uuids.empty() &&
@@ -34028,7 +34099,95 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   std::unordered_map<std::uint32_t, std::vector<bool>> nullable_by_node;
   std::vector<BoundHeapJoinNode> bound_joins;
   std::vector<BoundHeapFilterNode> bound_filters;
+  std::vector<BoundHeapProjectNode> bound_projects;
   std::unordered_set<std::uint32_t> bound_filter_predicate_expression_ids;
+  const auto bind_project_lineage =
+      [&](const api::RelationalDagNode& project,
+          const api::RelationalDagNode& project_input,
+          std::string* detail) {
+        std::vector<const api::RelationalOutputRecord*> project_outputs;
+        std::vector<const api::RelationalOutputRecord*> input_outputs;
+        for (const auto& output : dag.outputs) {
+          if (output.relation_node_id == project.node_id) {
+            project_outputs.push_back(&output);
+          }
+          if (output.relation_node_id == project_input.node_id) {
+            input_outputs.push_back(&output);
+          }
+        }
+        std::ranges::sort(project_outputs, {},
+                          &api::RelationalOutputRecord::ordinal);
+        std::ranges::sort(input_outputs, {},
+                          &api::RelationalOutputRecord::ordinal);
+        bool exact_project =
+            project.semantic_variant_id ==
+                "project.catalog-visible-columns.v1" &&
+            project.input_node_ids ==
+                std::vector<std::uint32_t>{project_input.node_id} &&
+            !project.bound_expression_ids.empty() &&
+            project.bound_expression_ids.size() ==
+                project.output_descriptor_ids.size() &&
+            project_outputs.size() == project.output_descriptor_ids.size() &&
+            input_outputs.size() == project_input.output_descriptor_ids.size() &&
+            project.output_descriptor_ids.size() <
+                project_input.output_descriptor_ids.size() &&
+            unary_empty(project);
+        for (std::size_t ordinal = 0;
+             exact_project && ordinal < input_outputs.size(); ++ordinal) {
+          exact_project = input_outputs[ordinal]->ordinal == ordinal &&
+                          input_outputs[ordinal]->descriptor_id ==
+                              project_input.output_descriptor_ids[ordinal];
+        }
+        std::unordered_set<std::size_t> selected_input_ordinals;
+        auto project_nullable = std::vector<bool>{};
+        project_nullable.reserve(project_outputs.size());
+        BoundHeapProjectNode bound_project;
+        bound_project.node = &project;
+        bound_project.projected_columns.reserve(project_outputs.size());
+        for (std::size_t ordinal = 0;
+             exact_project && ordinal < project_outputs.size(); ++ordinal) {
+          const auto& output = *project_outputs[ordinal];
+          const auto expression = std::ranges::find_if(
+              dag.expressions, [&](const auto& candidate) {
+                return candidate.expression_id ==
+                       project.bound_expression_ids[ordinal];
+              });
+          const auto source = std::ranges::find_if(
+              input_outputs, [&](const auto* candidate) {
+                return candidate->expression_id ==
+                           project.bound_expression_ids[ordinal] &&
+                       candidate->descriptor_id == output.descriptor_id;
+              });
+          if (expression == dag.expressions.end() ||
+              source == input_outputs.end() || !output.visible ||
+              output.ordinal != ordinal ||
+              output.expression_id != project.bound_expression_ids[ordinal] ||
+              output.descriptor_id != project.output_descriptor_ids[ordinal] ||
+              expression->result_descriptor_id != output.descriptor_id) {
+            exact_project = false;
+            break;
+          }
+          const auto source_ordinal = static_cast<std::size_t>(
+              std::distance(input_outputs.begin(), source));
+          if (!selected_input_ordinals.insert(source_ordinal).second) {
+            exact_project = false;
+            break;
+          }
+          bound_project.projected_columns.push_back(source_ordinal);
+          project_nullable.push_back(
+              nullable_by_node.at(project_input.node_id)[source_ordinal]);
+        }
+        if (!exact_project ||
+            !nullable_by_node.emplace(project.node_id,
+                                      std::move(project_nullable)).second) {
+          if (detail != nullptr && detail->empty()) {
+            *detail = "object-backed join PROJECT lineage is not exact";
+          }
+          return false;
+        }
+        bound_projects.push_back(std::move(bound_project));
+        return true;
+      };
   std::function<bool(std::uint32_t, std::string*)> bind_tree =
       [&](const std::uint32_t node_id, std::string* detail) {
         const auto found = nodes_by_id.find(node_id);
@@ -34114,6 +34273,36 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           nullable_by_node.emplace(
               node_id, nullable_by_node.at(input_node->second->node_id));
           bound_filters.push_back(std::move(bound_filter));
+          visiting_join_nodes.erase(node_id);
+          completed_join_nodes.insert(node_id);
+          return true;
+        }
+        if (node.node_kind == api::RelationalDagNodeKind::kProject) {
+          const auto input_node =
+              node.input_node_ids.size() == 1
+                  ? nodes_by_id.find(node.input_node_ids.front())
+                  : nodes_by_id.end();
+          const bool exact_input =
+              input_node != nodes_by_id.end() &&
+              (input_node->second->node_kind ==
+                   api::RelationalDagNodeKind::kScan ||
+               (input_node->second->node_kind ==
+                    api::RelationalDagNodeKind::kFilter &&
+                std::ranges::find(local_filters, input_node->second) !=
+                    local_filters.end()));
+          if (std::ranges::find(local_projects, &node) ==
+                  local_projects.end() ||
+              !exact_input || node.input_node_ids.front() == node.node_id ||
+              node.shareable || completed_join_nodes.contains(node_id) ||
+              !visiting_join_nodes.insert(node_id).second ||
+              !bind_tree(node.input_node_ids.front(), detail) ||
+              !bind_project_lineage(node, *input_node->second, detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail =
+                  "join leaf PROJECT is not one exact scan projection";
+            }
+            return false;
+          }
           visiting_join_nodes.erase(node_id);
           completed_join_nodes.insert(node_id);
           return true;
@@ -34212,9 +34401,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   if (!bind_tree(join->node_id, &join_tree_detail) ||
       completed_join_nodes.size() !=
           scans.size() + joins.size() +
-              local_filters.size() ||
+              local_filters.size() + local_projects.size() ||
       bound_joins.size() != joins.size() ||
-      bound_filters.size() != local_filters.size()) {
+      bound_filters.size() != local_filters.size() ||
+      bound_projects.size() != local_projects.size()) {
     return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
                   join_tree_detail.empty()
                       ? "object-backed join tree is disconnected"
@@ -34259,89 +34449,27 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         "object-backed join FILTER configuration coverage is incomplete");
   }
 
-  std::vector<std::size_t> projected_columns;
   const auto* project_input =
       terminal_filter != nullptr ? terminal_filter : join;
-  if (project != nullptr) {
-    std::vector<const api::RelationalOutputRecord*> project_outputs;
-    std::vector<const api::RelationalOutputRecord*> input_outputs;
-    for (const auto& output : dag.outputs) {
-      if (output.relation_node_id == project->node_id) {
-        project_outputs.push_back(&output);
-      }
-      if (output.relation_node_id == project_input->node_id) {
-        input_outputs.push_back(&output);
-      }
-    }
-    std::ranges::sort(project_outputs, {},
-                      &api::RelationalOutputRecord::ordinal);
-    std::ranges::sort(input_outputs, {},
-                      &api::RelationalOutputRecord::ordinal);
-    bool exact_project =
-        project->semantic_variant_id ==
-            "project.catalog-visible-columns.v1" &&
-        project->input_node_ids ==
-            std::vector<std::uint32_t>{project_input->node_id} &&
-        !project->bound_expression_ids.empty() &&
-        project->bound_expression_ids.size() ==
-            project->output_descriptor_ids.size() &&
-        project_outputs.size() == project->output_descriptor_ids.size() &&
-        input_outputs.size() == project_input->output_descriptor_ids.size() &&
-        project->output_descriptor_ids.size() <
-            project_input->output_descriptor_ids.size() &&
-        unary_empty(*project);
-    for (std::size_t ordinal = 0;
-         exact_project && ordinal < input_outputs.size(); ++ordinal) {
-      exact_project = input_outputs[ordinal]->ordinal == ordinal &&
-                      input_outputs[ordinal]->descriptor_id ==
-                          project_input->output_descriptor_ids[ordinal];
-    }
-    std::unordered_set<std::size_t> selected_input_ordinals;
-    auto project_nullable = std::vector<bool>{};
-    project_nullable.reserve(project_outputs.size());
-    for (std::size_t ordinal = 0;
-         exact_project && ordinal < project_outputs.size(); ++ordinal) {
-      const auto& output = *project_outputs[ordinal];
-      const auto expression = std::ranges::find_if(
-          dag.expressions, [&](const auto& candidate) {
-            return candidate.expression_id ==
-                   project->bound_expression_ids[ordinal];
-          });
-      const auto source = std::ranges::find_if(
-          input_outputs, [&](const auto* candidate) {
-            return candidate->expression_id ==
-                       project->bound_expression_ids[ordinal] &&
-                   candidate->descriptor_id == output.descriptor_id;
-          });
-      if (expression == dag.expressions.end() || source == input_outputs.end() ||
-          !output.visible || output.ordinal != ordinal ||
-          output.expression_id != project->bound_expression_ids[ordinal] ||
-          output.descriptor_id != project->output_descriptor_ids[ordinal] ||
-          expression->result_descriptor_id != output.descriptor_id) {
-        exact_project = false;
-        break;
-      }
-      const auto source_ordinal = static_cast<std::size_t>(
-          std::distance(input_outputs.begin(), source));
-      if (!selected_input_ordinals.insert(source_ordinal).second) {
-        exact_project = false;
-        break;
-      }
-      projected_columns.push_back(source_ordinal);
-      project_nullable.push_back(
-          nullable_by_node.at(project_input->node_id)[source_ordinal]);
-    }
-    if (!exact_project) {
+  if (terminal_project != nullptr) {
+    std::string detail;
+    if (!bind_project_lineage(*terminal_project, *project_input, &detail)) {
       return refuse(
           "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-PROJECT-V1",
-          "object-backed join PROJECT tail lineage is not exact");
+          detail.empty()
+              ? "object-backed join PROJECT tail lineage is not exact"
+              : detail);
     }
-    nullable_by_node.emplace(project->node_id, std::move(project_nullable));
+  }
+  if (bound_projects.size() != projects.size()) {
+    return refuse(
+        "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
+        "object-backed join PROJECT configuration coverage is incomplete");
   }
 
   const auto* cte_input =
-      project != nullptr
-          ? project
+      terminal_project != nullptr
+          ? terminal_project
           : (terminal_filter != nullptr ? terminal_filter : join);
   if (cte != nullptr) {
     if (cte->semantic_variant_id != "cte.bound.v1" ||
@@ -34357,15 +34485,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                              nullable_by_node.at(cte_input->node_id));
   }
   const auto* final_output_node =
-      cte != nullptr ? cte : (project != nullptr
-                                  ? project
+      cte != nullptr ? cte : (terminal_project != nullptr
+                                  ? terminal_project
                                   : (terminal_filter != nullptr
                                          ? terminal_filter
                                          : join));
   // CTE is schema preserving and owns no public output records.
   const auto* publication_node =
-      project != nullptr
-          ? project
+      terminal_project != nullptr
+          ? terminal_project
           : (terminal_filter != nullptr ? terminal_filter : join);
 
   const auto admission = api::BuildCanonicalCurrentHeapOptimizerAdmission(
@@ -34465,17 +34593,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     }
   }
   std::string project_capability_uuid;
-  if (project != nullptr) {
+  if (!projects.empty()) {
     project_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "heap-join-tail-project.capability");
-    profiles.push_back(
-        {project->node_id, "project.descriptor-direct.v1",
-         project_capability_uuid,
-         plan::CanonicalLogicalRelationalNodeKind::kProject,
-         exec::PhysicalNodeKind::kProject,
-         "canonical.heap.join-tail.project.visible-columns.v1", 1,
-         join_memory_grant, 1, 1});
-    profiles.back().runtime_peak_from_callback_batches = true;
+        identity_scope, "heap-join-project.capability");
+    for (const auto* project : projects) {
+      profiles.push_back(
+          {project->node_id, "project.descriptor-direct.v1",
+           project_capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kProject,
+           exec::PhysicalNodeKind::kProject,
+           project == terminal_project
+               ? "canonical.heap.join-tail.project.visible-columns.v1"
+               : "canonical.heap.join-input.project.visible-columns.v1",
+           1, join_memory_grant, 1, 1});
+      profiles.back().runtime_peak_from_callback_batches = true;
+    }
   }
   std::string cte_implementation_id;
   std::string cte_capability_uuid;
@@ -34503,7 +34635,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       planning_request, profiles,
       cte != nullptr
           ? "heap-join-tail-cte.selected-plan"
-          : (project != nullptr
+          : (terminal_project != nullptr
                  ? "heap-join-tail-project.selected-plan"
                  : (terminal_filter != nullptr
                         ? "heap-join-tail-filter.selected-plan"
@@ -34708,12 +34840,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             &input.context, selected.borrowed_mga_authority,
             std::move(filter_node_configurations)));
   }
-  if (project != nullptr) {
+  if (!projects.empty()) {
+    std::vector<LiveProjectRuntimeNodeConfiguration>
+        project_node_configurations;
+    project_node_configurations.reserve(bound_projects.size());
+    for (auto& bound_project : bound_projects) {
+      project_node_configurations.push_back(
+          {bound_project.node->node_id,
+           std::move(bound_project.projected_columns)});
+    }
     selected.available_executors.push_back(
         MakeLiveHeapProjectRegistration(
-            std::move(projected_columns), project_capability_uuid,
+            {}, project_capability_uuid,
             maximum_output_rows, {}, &input.context,
-            selected.borrowed_mga_authority));
+            selected.borrowed_mga_authority,
+            std::move(project_node_configurations)));
   }
   if (cte != nullptr) {
     selected.available_executors.push_back(
