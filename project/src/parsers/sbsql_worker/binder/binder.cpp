@@ -648,6 +648,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     std::vector<const NativeRelationAstNode*> source_relations(source_count,
                                                                nullptr);
     std::vector<const NativeRelationAstNode*> join_relations;
+    const NativeRelationAstNode* filter_relation = nullptr;
     const NativeRelationAstNode* project_relation = nullptr;
     for (const auto& relation : ast.relations) {
       if (relation.relation_kind == NativeRelationAstKind::kCatalogSource &&
@@ -663,6 +664,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         slot = &relation;
       } else if (relation.relation_kind == NativeRelationAstKind::kJoin) {
         join_relations.push_back(&relation);
+      } else if (relation.relation_kind == NativeRelationAstKind::kFilter &&
+                 filter_relation == nullptr) {
+        filter_relation = &relation;
       } else if (relation.relation_kind == NativeRelationAstKind::kProject &&
                  project_relation == nullptr) {
         project_relation = &relation;
@@ -685,8 +689,30 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool bounded_multimodel_join = model_source_count >= 2;
     const auto final_join_relation_id =
         static_cast<std::uint32_t>((2 * source_count) - 1);
+    const bool filter_composition =
+        ordinary_multi_catalog_cross_join && filter_relation != nullptr &&
+        project_relation == nullptr && !join_relations.empty() &&
+        filter_relation->relation_id == final_join_relation_id + 1 &&
+        filter_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{final_join_relation_id} &&
+        filter_relation->output_expression_ids ==
+            join_relations.back()->output_expression_ids &&
+        filter_relation->predicate_expression_ids.size() == 1 &&
+        filter_relation->relation_source_ids.empty() &&
+        filter_relation->values_row_ids.empty() &&
+        filter_relation->grouping_key_expression_ids.empty() &&
+        filter_relation->aggregate_expression_ids.empty() &&
+        filter_relation->limit_expression_ids.empty() &&
+        filter_relation->window_invocation_ids.empty() &&
+        filter_relation->ordering_terms.empty() &&
+        filter_relation->join_kind == NativeJoinAstKind::kNone &&
+        filter_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kNone &&
+        filter_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kNone;
     const bool project_composition =
         ordinary_multi_catalog_cross_join && project_relation != nullptr &&
+        filter_relation == nullptr &&
         project_relation->relation_id == final_join_relation_id + 1 &&
         project_relation->input_relation_ids ==
             std::vector<std::uint32_t>{final_join_relation_id} &&
@@ -710,10 +736,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         join_relations.size() + 1 == source_count &&
         ast.relations.size() ==
             source_count + join_relations.size() +
+                static_cast<std::size_t>(filter_composition) +
                 static_cast<std::size_t>(project_composition) &&
         context.catalog_relations.size() == source_count &&
         context.relations.size() == join_relations.size() &&
+        (filter_relation == nullptr || filter_composition) &&
         (project_relation == nullptr || project_composition) &&
+        (!bounded_multimodel_join || filter_relation == nullptr) &&
         (!bounded_multimodel_join || project_relation == nullptr);
     if (ordinary_multi_catalog_cross_join) {
       for (std::size_t ordinal = 0;
@@ -781,8 +810,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     exact_graph =
         exact_graph &&
         ast.root_relation_id ==
-            (project_composition ? project_relation->relation_id
-                                 : left_relation_id);
+            (project_composition
+                 ? project_relation->relation_id
+                 : (filter_composition ? filter_relation->relation_id
+                                       : left_relation_id));
     if (!exact_graph ||
         (!ordinary_multi_catalog_cross_join && !bounded_multimodel_join)) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
@@ -837,11 +868,119 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         project_identifiers.push_back(expression->second);
       }
     }
+    const NativeExpressionAstNode* filter_predicate = nullptr;
+    const NativeExpressionAstNode* filter_identifier = nullptr;
+    const NativeExpressionAstNode* filter_value = nullptr;
+    std::unordered_set<std::uint32_t> filter_expression_ids;
+    if (filter_composition) {
+      const auto predicate = ast_expression_by_id.find(
+          filter_relation->predicate_expression_ids.front());
+      if (predicate != ast_expression_by_id.end() &&
+          predicate->second->child_expression_ids.size() == 2) {
+        filter_predicate = predicate->second;
+        const auto identifier = ast_expression_by_id.find(
+            filter_predicate->child_expression_ids[0]);
+        const auto value = ast_expression_by_id.find(
+            filter_predicate->child_expression_ids[1]);
+        if (identifier != ast_expression_by_id.end()) {
+          filter_identifier = identifier->second;
+        }
+        if (value != ast_expression_by_id.end()) filter_value = value->second;
+      }
+      const bool accepted_operator =
+          filter_predicate != nullptr &&
+          (filter_predicate->operator_name == "=" ||
+           filter_predicate->operator_name == "<>" ||
+           filter_predicate->operator_name == "!=" ||
+           filter_predicate->operator_name == "<" ||
+           filter_predicate->operator_name == "<=" ||
+           filter_predicate->operator_name == ">" ||
+           filter_predicate->operator_name == ">=");
+      const bool numeric_literal =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+          filter_value->literal_kind == NativeLiteralAstKind::kNumeric;
+      const bool parameter_value =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kParameter;
+      const bool variable_value =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kVariable;
+      std::uint64_t parsed_numeric = 0;
+      const auto parsed =
+          numeric_literal
+              ? std::from_chars(filter_value->spelling.data(),
+                                filter_value->spelling.data() +
+                                    filter_value->spelling.size(),
+                                parsed_numeric)
+              : std::from_chars_result{};
+      const bool exact_value_occurrence =
+          numeric_literal
+              ? filter_value->structural_literal_occurrence_id != 0 &&
+                    filter_value->structural_parameter_occurrence_id == 0 &&
+                    filter_value->structural_variable_occurrence_id == 0
+          : parameter_value
+              ? filter_value->structural_literal_occurrence_id == 0 &&
+                    filter_value->structural_parameter_occurrence_id != 0 &&
+                    filter_value->structural_variable_occurrence_id == 0 &&
+                    !filter_value->literal_kind.has_value()
+              : variable_value &&
+                    filter_value->structural_literal_occurrence_id == 0 &&
+                    filter_value->structural_parameter_occurrence_id == 0 &&
+                    filter_value->structural_variable_occurrence_id != 0 &&
+                    !filter_value->literal_kind.has_value();
+      if (!accepted_operator || filter_identifier == nullptr ||
+          filter_value == nullptr ||
+          filter_predicate->expression_kind !=
+              NativeExpressionAstKind::kBinary ||
+          filter_predicate->literal_kind.has_value() ||
+          !filter_predicate->qualified_identifier.empty() ||
+          filter_predicate->structural_literal_occurrence_id != 0 ||
+          filter_predicate->structural_parameter_occurrence_id != 0 ||
+          filter_predicate->structural_variable_occurrence_id != 0 ||
+          filter_identifier->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          filter_identifier->qualified_identifier.size() != 1 ||
+          filter_identifier->qualified_identifier.front().spelling !=
+              filter_identifier->spelling ||
+          filter_identifier->spelling.empty() ||
+          !filter_identifier->child_expression_ids.empty() ||
+          filter_identifier->literal_kind.has_value() ||
+          !filter_identifier->operator_name.empty() ||
+          filter_identifier->structural_literal_occurrence_id != 0 ||
+          filter_identifier->structural_parameter_occurrence_id != 0 ||
+          filter_identifier->structural_variable_occurrence_id != 0 ||
+          !filter_value->qualified_identifier.empty() ||
+          !filter_value->child_expression_ids.empty() ||
+          !filter_value->operator_name.empty() || !exact_value_occurrence ||
+          (numeric_literal &&
+           (filter_value->spelling.empty() ||
+            (filter_value->spelling.size() > 1 &&
+             filter_value->spelling.front() == '0') ||
+            parsed.ec != std::errc{} ||
+            parsed.ptr != filter_value->spelling.data() +
+                              filter_value->spelling.size()))) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+            "ordinary multi-source FILTER predicate is not exact");
+        return RefusedBoundAst(std::move(bound));
+      }
+      filter_expression_ids = {
+          filter_identifier->expression_id, filter_value->expression_id,
+          filter_predicate->expression_id};
+      if (filter_expression_ids.size() != 3) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+            "ordinary multi-source FILTER expression identities overlap");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
     if (ordinary_multi_catalog_cross_join) {
       std::unordered_set<std::uint32_t> source_wildcard_ids;
       bool exact_source_expression_inventory =
           ast.expressions.size() ==
-          source_count + project_expression_ids.size();
+          source_count + project_expression_ids.size() +
+              filter_expression_ids.size();
       for (const auto* source_relation : source_relations) {
         if (!exact_source_expression_inventory ||
             source_relation->output_expression_ids.size() != 1) {
@@ -872,7 +1011,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           std::ranges::none_of(project_expression_ids, [&](const auto id) {
             return source_wildcard_ids.contains(id);
           }) &&
-          source_wildcard_ids.size() + project_expression_ids.size() ==
+          std::ranges::none_of(filter_expression_ids, [&](const auto id) {
+            return source_wildcard_ids.contains(id) ||
+                   project_expression_ids.contains(id);
+          }) &&
+          source_wildcard_ids.size() + project_expression_ids.size() +
+                  filter_expression_ids.size() ==
               ast_expression_by_id.size();
       if (!exact_source_expression_inventory) {
         AddBoundAstDiagnostic(
@@ -944,6 +1088,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           return expression.expression_kind !=
                      NativeExpressionAstKind::kWildcard &&
                  !project_expression_ids.contains(expression.expression_id) &&
+                 !filter_expression_ids.contains(expression.expression_id) &&
                  !expression_owner.contains(expression.expression_id);
         })) {
       AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -979,8 +1124,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (project_composition) {
       expected_output_count += project_identifiers.size();
     }
+    if (filter_composition) {
+      expected_output_count += source_projection_count;
+    }
     if (context.expressions.size() !=
-            source_projection_count + operation_closure_count ||
+            source_projection_count + operation_closure_count +
+                static_cast<std::size_t>(filter_composition) ||
+        (filter_composition &&
+         context.descriptors.size() != source_projection_count + 2) ||
         context.outputs.size() != expected_output_count) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "multimodel typed binding cardinality is incomplete");
@@ -1486,6 +1637,201 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         root_output_ids.push_back(output.output_id);
       }
       bound.relations.push_back(std::move(bound_join));
+    }
+    if (filter_composition) {
+      if (source_projection_count >
+          std::numeric_limits<std::uint32_t>::max() - 2U) {
+        AddBoundAstDiagnostic(
+            &bound, "RESOURCE.BUDGET_EXCEEDED",
+            "ordinary multi-source FILTER descriptor identity overflowed");
+        return RefusedBoundAst(std::move(bound));
+      }
+      const auto filter_name =
+          filter_identifier->qualified_identifier.front().quoted
+              ? filter_identifier->qualified_identifier.front().spelling
+              : ToLowerAscii(
+                    filter_identifier->qualified_identifier.front().spelling);
+      const BoundCatalogColumnAstRecord* selected_column = nullptr;
+      std::uint32_t selected_expression_id = 0;
+      std::size_t matching_column_count = 0;
+      for (std::size_t source_ordinal = 0; source_ordinal < source_count;
+           ++source_ordinal) {
+        const auto& source = bound.catalog_relation_sources[source_ordinal];
+        const auto& source_relation = bound.relations[source_ordinal];
+        for (std::size_t ordinal = 0; ordinal < source.columns.size(); ++ordinal) {
+          if (source.columns[ordinal].canonical_name_key != filter_name) continue;
+          ++matching_column_count;
+          selected_column = &source.columns[ordinal];
+          selected_expression_id =
+              source_relation.output_expression_ids[ordinal];
+        }
+      }
+
+      const bool literal_value =
+          filter_value->expression_kind == NativeExpressionAstKind::kLiteral;
+      const bool parameter_value =
+          filter_value->expression_kind == NativeExpressionAstKind::kParameter;
+      const auto occurrence_matches = [&](const auto& expression) {
+        return literal_value
+                   ? expression.structural_literal_occurrence_id ==
+                         filter_value->structural_literal_occurrence_id
+               : parameter_value
+                   ? expression.structural_parameter_occurrence_id ==
+                         filter_value->structural_parameter_occurrence_id
+                   : expression.structural_variable_occurrence_id ==
+                         filter_value->structural_variable_occurrence_id;
+      };
+      const auto matching_operand_count =
+          std::ranges::count_if(context.expressions, occurrence_matches);
+      const auto operand_binding =
+          std::ranges::find_if(context.expressions, occurrence_matches);
+      const auto boolean_descriptor_id =
+          static_cast<std::uint32_t>(source_projection_count + 1);
+      const auto operand_descriptor_id =
+          static_cast<std::uint32_t>(source_projection_count + 2);
+      const auto boolean_descriptor =
+          descriptor_by_id.find(boolean_descriptor_id);
+      const auto operand_descriptor =
+          descriptor_by_id.find(operand_descriptor_id);
+      const auto selected_descriptor =
+          selected_column == nullptr
+              ? descriptor_by_id.end()
+              : descriptor_by_id.find(selected_column->descriptor_id);
+      const bool exact_operand_occurrence =
+          operand_binding != context.expressions.end() &&
+          (literal_value
+               ? operand_binding->structural_literal_occurrence_id ==
+                         filter_value->structural_literal_occurrence_id &&
+                     operand_binding->structural_parameter_occurrence_id == 0 &&
+                     operand_binding->structural_variable_occurrence_id == 0
+           : parameter_value
+               ? operand_binding->structural_literal_occurrence_id == 0 &&
+                     operand_binding->structural_parameter_occurrence_id ==
+                         filter_value->structural_parameter_occurrence_id &&
+                     operand_binding->structural_variable_occurrence_id == 0
+               : operand_binding->structural_literal_occurrence_id == 0 &&
+                     operand_binding->structural_parameter_occurrence_id == 0 &&
+                     operand_binding->structural_variable_occurrence_id ==
+                         filter_value->structural_variable_occurrence_id);
+      if (matching_column_count != 1 || selected_column == nullptr ||
+          selected_expression_id == 0 || matching_operand_count != 1 ||
+          operand_binding == context.expressions.end() ||
+          !exact_operand_occurrence ||
+          operand_binding->expression_id != boolean_descriptor_id ||
+          operand_binding->descriptor_id != operand_descriptor_id ||
+          operand_binding->function_uuid.has_value() ||
+          operand_binding->bound_name_uuid.has_value() ||
+          boolean_descriptor == descriptor_by_id.end() ||
+          boolean_descriptor->second->nullability !=
+              BoundNullability::kNullable ||
+          boolean_descriptor->second->collation_uuid.has_value() ||
+          boolean_descriptor->second->timezone_profile_id.has_value() ||
+          operand_descriptor == descriptor_by_id.end() ||
+          selected_descriptor == descriptor_by_id.end() ||
+          operand_descriptor->second->type_uuid !=
+              selected_descriptor->second->type_uuid ||
+          operand_descriptor->second->collation_uuid.has_value() ||
+          operand_descriptor->second->timezone_profile_id.has_value() ||
+          selected_descriptor->second->collation_uuid.has_value() ||
+          selected_descriptor->second->timezone_profile_id.has_value() ||
+          (literal_value && operand_descriptor->second->nullability !=
+                                BoundNullability::kNonNull) ||
+          binding_offset != source_projection_count) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+            "ordinary multi-source FILTER value binding is incomplete");
+        return RefusedBoundAst(std::move(bound));
+      }
+
+      BoundExpressionAstRecord operand;
+      operand.expression_id = operand_binding->expression_id;
+      operand.expression_kind = filter_value->expression_kind;
+      operand.literal_kind = filter_value->literal_kind;
+      operand.result_descriptor_id = operand_binding->descriptor_id;
+      if (literal_value) {
+        operand.literal_or_parameter_ref = filter_value->spelling;
+      }
+      operand.structural_literal_occurrence_id =
+          filter_value->structural_literal_occurrence_id;
+      operand.structural_parameter_occurrence_id =
+          filter_value->structural_parameter_occurrence_id;
+      operand.structural_variable_occurrence_id =
+          filter_value->structural_variable_occurrence_id;
+      const auto operand_expression_id = operand.expression_id;
+      bound.expressions.push_back(std::move(operand));
+      ++binding_offset;
+      if (bound.expressions.size() >=
+          std::numeric_limits<std::uint32_t>::max()) {
+        AddBoundAstDiagnostic(
+            &bound, "RESOURCE.BUDGET_EXCEEDED",
+            "ordinary multi-source FILTER expression identity overflowed");
+        return RefusedBoundAst(std::move(bound));
+      }
+      BoundExpressionAstRecord predicate;
+      predicate.expression_id =
+          static_cast<std::uint32_t>(bound.expressions.size() + 1);
+      predicate.expression_kind = NativeExpressionAstKind::kBinary;
+      predicate.result_descriptor_id = boolean_descriptor_id;
+      predicate.child_expression_ids = {selected_expression_id,
+                                        operand_expression_id};
+      predicate.canonical_operator_name = filter_predicate->operator_name;
+      const auto predicate_expression_id = predicate.expression_id;
+      bound.expressions.push_back(std::move(predicate));
+
+      std::vector<const NativeOutputBindingInput*> predecessor_outputs;
+      for (const auto& output : context.outputs) {
+        if (output.relation_id == final_join_relation_id) {
+          predecessor_outputs.push_back(&output);
+        }
+      }
+      std::ranges::sort(predecessor_outputs, {}, [](const auto* output) {
+        return output->ordinal;
+      });
+      if (predecessor_outputs.size() != source_projection_count) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+            "ordinary multi-source FILTER input width is incomplete");
+        return RefusedBoundAst(std::move(bound));
+      }
+      root_output_ids.clear();
+      for (std::size_t ordinal = 0; ordinal < predecessor_outputs.size();
+           ++ordinal) {
+        if (output_offset >= context.outputs.size()) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "ordinary multi-source FILTER output is missing");
+          return RefusedBoundAst(std::move(bound));
+        }
+        const auto& source = *predecessor_outputs[ordinal];
+        const auto& output = context.outputs[output_offset++];
+        if (output.output_id != output_offset ||
+            output.relation_id != filter_relation->relation_id ||
+            output.expression_id != source.expression_id ||
+            output.output_name_utf8 != source.output_name_utf8 ||
+            output.descriptor_id != source.descriptor_id || !output.visible ||
+            output.ordinal != ordinal) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "ordinary multi-source FILTER output does not preserve JOIN lineage");
+          return RefusedBoundAst(std::move(bound));
+        }
+        bound.outputs.push_back(
+            {output.output_id, output.relation_id, output.expression_id,
+             output.output_name_utf8, output.descriptor_id, output.visible,
+             output.ordinal});
+        root_output_ids.push_back(output.output_id);
+      }
+
+      BoundRelationAstRecord bound_filter;
+      bound_filter.relation_id = filter_relation->relation_id;
+      bound_filter.relation_kind = NativeRelationAstKind::kFilter;
+      bound_filter.input_relation_ids = {final_join_relation_id};
+      bound_filter.output_expression_ids = accumulated_projection_ids;
+      bound_filter.predicate_expression_ids = {predicate_expression_id};
+      bound_filter.bound_expression_ids = {predicate_expression_id};
+      bound_filter.semantic_variant_id =
+          "filter.catalog-column-numeric-comparison.v1";
+      bound.relations.push_back(std::move(bound_filter));
     }
     if (project_composition) {
       std::vector<const NativeOutputBindingInput*> predecessor_outputs;

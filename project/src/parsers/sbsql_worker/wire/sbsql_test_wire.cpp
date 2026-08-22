@@ -5097,6 +5097,9 @@ BuildEngineProjectedNativeBindingContext(
         ast.model_object_resolution_requests.empty();
     const bool ordinary_project_sources =
         ordinary_relational_sources || ordinary_multi_catalog_cross_join;
+    const bool ordinary_filter_sources =
+        ordinary_relational_sources ||
+        (ordinary_multi_catalog_cross_join && project_relation == nullptr);
     const bool bounded_multimodel_join =
         source_count >= 3 && source_count <= 9 && model_source_count >= 2;
     const bool bounded_multi_source_join =
@@ -5173,7 +5176,7 @@ BuildEngineProjectedNativeBindingContext(
       expected_left_relation_id = join->relation_id;
     }
     const bool exact_filter_tail =
-        filter_relation != nullptr && ordinary_relational_sources &&
+        filter_relation != nullptr && ordinary_filter_sources &&
         !join_relations.empty() &&
         filter_relation->relation_id == join_relations.back()->relation_id + 1 &&
         filter_relation->input_relation_ids ==
@@ -5421,6 +5424,12 @@ BuildEngineProjectedNativeBindingContext(
           filter_value != nullptr &&
           filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
           filter_value->literal_kind == NativeLiteralAstKind::kNumeric;
+      const bool parameter_value =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kParameter;
+      const bool variable_value =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kVariable;
       std::uint64_t parsed_numeric = 0;
       const auto parsed =
           numeric_literal
@@ -5433,36 +5442,47 @@ BuildEngineProjectedNativeBindingContext(
           filter_value == nullptr ||
           filter_predicate->expression_kind !=
               NativeExpressionAstKind::kBinary ||
+          filter_predicate->literal_kind.has_value() ||
+          !filter_predicate->qualified_identifier.empty() ||
+          filter_predicate->structural_literal_occurrence_id != 0 ||
+          filter_predicate->structural_parameter_occurrence_id != 0 ||
+          filter_predicate->structural_variable_occurrence_id != 0 ||
           filter_identifier->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
           filter_identifier->qualified_identifier.size() != 1 ||
+          filter_identifier->qualified_identifier.front().spelling !=
+              filter_identifier->spelling ||
           filter_identifier->spelling.empty() ||
           !filter_identifier->child_expression_ids.empty() ||
+          filter_identifier->literal_kind.has_value() ||
           !filter_identifier->operator_name.empty() ||
+          filter_identifier->structural_literal_occurrence_id != 0 ||
+          filter_identifier->structural_parameter_occurrence_id != 0 ||
+          filter_identifier->structural_variable_occurrence_id != 0 ||
+          !filter_value->qualified_identifier.empty() ||
           !filter_value->child_expression_ids.empty() ||
           !filter_value->operator_name.empty() ||
-          (!numeric_literal &&
-           filter_value->expression_kind !=
-               NativeExpressionAstKind::kParameter &&
-           filter_value->expression_kind != NativeExpressionAstKind::kVariable) ||
-          ((filter_value->expression_kind ==
-                NativeExpressionAstKind::kParameter ||
-            filter_value->expression_kind == NativeExpressionAstKind::kVariable) &&
-           filter_value->literal_kind.has_value()) ||
+          (!numeric_literal && !parameter_value && !variable_value) ||
+          (parameter_value &&
+           (filter_value->literal_kind.has_value() ||
+            filter_value->structural_literal_occurrence_id != 0 ||
+            filter_value->structural_parameter_occurrence_id == 0 ||
+            filter_value->structural_variable_occurrence_id != 0)) ||
+          (variable_value &&
+           (filter_value->literal_kind.has_value() ||
+            filter_value->structural_literal_occurrence_id != 0 ||
+            filter_value->structural_parameter_occurrence_id != 0 ||
+            filter_value->structural_variable_occurrence_id == 0)) ||
           (numeric_literal &&
            (filter_value->spelling.empty() ||
             (filter_value->spelling.size() > 1 &&
              filter_value->spelling.front() == '0') ||
             parsed.ec != std::errc{} ||
             parsed.ptr != filter_value->spelling.data() +
-                              filter_value->spelling.size())) ||
-          (filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
-           filter_value->structural_literal_occurrence_id == 0) ||
-          (filter_value->expression_kind ==
-               NativeExpressionAstKind::kParameter &&
-           filter_value->structural_parameter_occurrence_id == 0) ||
-          (filter_value->expression_kind == NativeExpressionAstKind::kVariable &&
-           filter_value->structural_variable_occurrence_id == 0)) {
+                              filter_value->spelling.size() ||
+            filter_value->structural_literal_occurrence_id == 0 ||
+            filter_value->structural_parameter_occurrence_id != 0 ||
+            filter_value->structural_variable_occurrence_id != 0))) {
         return fail("catalog_join_filter_predicate_invalid");
       }
       std::unordered_set<std::uint32_t> admitted_expression_ids;
@@ -5568,11 +5588,13 @@ BuildEngineProjectedNativeBindingContext(
         return fail("catalog_join_project_expression_inventory_invalid");
       }
     }
-    if (ordinary_multi_catalog_cross_join && filter_relation == nullptr) {
+    if (ordinary_multi_catalog_cross_join) {
       std::unordered_set<std::uint32_t> source_wildcard_ids;
+      const auto filter_expression_count =
+          filter_relation != nullptr ? std::size_t{3} : std::size_t{0};
       bool exact_source_expression_inventory =
           ast.expressions.size() ==
-          source_count + project_identifiers.size();
+          source_count + project_identifiers.size() + filter_expression_count;
       for (const auto* source_relation : source_relations) {
         if (!exact_source_expression_inventory ||
             source_relation->output_expression_ids.size() != 1) {
@@ -5608,6 +5630,19 @@ BuildEngineProjectedNativeBindingContext(
                 [&](const auto expression_id) {
                   return source_wildcard_ids.contains(expression_id);
                 });
+      }
+      if (filter_relation != nullptr) {
+        exact_source_expression_inventory =
+            exact_source_expression_inventory &&
+            filter_identifier != nullptr && filter_value != nullptr &&
+            filter_predicate != nullptr &&
+            !source_wildcard_ids.contains(filter_identifier->expression_id) &&
+            !source_wildcard_ids.contains(filter_value->expression_id) &&
+            !source_wildcard_ids.contains(filter_predicate->expression_id) &&
+            filter_identifier->expression_id != filter_value->expression_id &&
+            filter_identifier->expression_id !=
+                filter_predicate->expression_id &&
+            filter_value->expression_id != filter_predicate->expression_id;
       }
       if (!exact_source_expression_inventory) {
         return fail("catalog_multi_cross_join_expression_inventory_invalid");
@@ -16427,11 +16462,18 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 native_join_project_relation->relation_id;
         const bool exact_native_join_filter_operand_route =
             native_binding_context.has_value() &&
-            ast.native_relational.catalog_relation_sources.size() == 2 &&
+            ast.native_relational.catalog_relation_sources.size() >= 2 &&
+            ast.native_relational.catalog_relation_sources.size() <= 9 &&
+            std::ranges::all_of(
+                ast.native_relational.catalog_relation_sources,
+                [](const auto& source) {
+                  return IsExactOrdinaryCatalogSourceProfile(source);
+                }) &&
             std::ranges::count_if(
                 ast.native_relational.relations, [](const auto& relation) {
                   return relation.relation_kind == NativeRelationAstKind::kJoin;
-                }) == 1 &&
+                }) + 1 ==
+                ast.native_relational.catalog_relation_sources.size() &&
             native_join_filter_relation !=
                 ast.native_relational.relations.end() &&
             (ast.native_relational.root_relation_id ==

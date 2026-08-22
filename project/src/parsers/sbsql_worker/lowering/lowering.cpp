@@ -36223,7 +36223,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       limit_relation == nullptr && window_relation == nullptr &&
       qualify_relation == nullptr &&
       (!bounded_ordinary_catalog_cross_join_candidate ||
-       catalog_filter_relation == nullptr) &&
+       catalog_filter_relation == nullptr ||
+       catalog_project_relation == nullptr) &&
       ((catalog_filter_relation == nullptr &&
         catalog_project_relation == nullptr) ||
        catalog_join_tail_sources_are_relational) &&
@@ -37075,6 +37076,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         identifier->expression_kind != NativeExpressionAstKind::kIdentifier ||
         !identifier->child_expression_ids.empty() ||
         !identifier->bound_name_uuid.has_value() ||
+        identifier->structural_literal_occurrence_id != 0 ||
+        identifier->structural_parameter_occurrence_id != 0 ||
+        identifier->structural_variable_occurrence_id != 0 ||
+        predicate->second->structural_literal_occurrence_id != 0 ||
+        predicate->second->structural_parameter_occurrence_id != 0 ||
+        predicate->second->structural_variable_occurrence_id != 0 ||
         (!literal_leaf && !parameter_leaf && !variable_leaf) ||
         (literal_leaf &&
          literal->literal_kind != NativeLiteralAstKind::kNumeric) ||
@@ -37084,17 +37091,24 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (literal_leaf &&
          (encoded.empty() || (encoded.size() > 1 && encoded.front() == '0') ||
           error != std::errc{} || end != encoded.data() + encoded.size())) ||
+        (literal_leaf &&
+         (literal->structural_literal_occurrence_id == 0 ||
+          literal->structural_parameter_occurrence_id != 0 ||
+          literal->structural_variable_occurrence_id != 0)) ||
         (parameter_leaf &&
          (literal->literal_or_parameter_ref.has_value() ||
-          literal->structural_parameter_occurrence_id == 0)) ||
+          literal->structural_literal_occurrence_id != 0 ||
+          literal->structural_parameter_occurrence_id == 0 ||
+          literal->structural_variable_occurrence_id != 0)) ||
         (variable_leaf &&
          (literal->literal_or_parameter_ref.has_value() ||
+          literal->structural_literal_occurrence_id != 0 ||
+          literal->structural_parameter_occurrence_id != 0 ||
           literal->structural_variable_occurrence_id == 0)) ||
         identifier_descriptor == native.descriptors.end() ||
         literal_descriptor == native.descriptors.end() ||
         predicate_descriptor == native.descriptors.end() ||
         identifier_descriptor->type_uuid != literal_descriptor->type_uuid ||
-        (literal_leaf && literal->structural_literal_occurrence_id == 0) ||
         predicate_descriptor->nullability != BoundNullability::kNullable ||
         identifier_descriptor->collation_uuid.has_value() ||
         literal_descriptor->collation_uuid.has_value() ||

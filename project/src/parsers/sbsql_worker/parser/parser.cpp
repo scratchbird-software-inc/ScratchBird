@@ -4545,7 +4545,10 @@ class NativeRelationalParser final {
              "ordinary sources or a three-to-nine-source catalog CROSS JOIN");
       return FinishRefusal();
     }
-    if (ordinary_two_source_join && !AtEnd() && IsWord(Current(), "WHERE")) {
+    const bool ordinary_multi_catalog_filter =
+        ordinary_multi_catalog_cross_join && wildcard_projection;
+    if ((ordinary_two_source_join || ordinary_multi_catalog_filter) &&
+        !AtEnd() && IsWord(Current(), "WHERE")) {
       Consume();
       join_filter_predicate_id = ParseExpression(0, 0);
       if (!join_filter_predicate_id.has_value()) return FinishRefusal();
