@@ -7,7 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -18,6 +21,8 @@
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
+namespace uuid = scratchbird::core::uuid;
 
 namespace {
 
@@ -31,6 +36,7 @@ constexpr std::uint64_t kInDoubtLocalTransactionId =
     0xffff'ffff'ffff'fef0ULL;
 constexpr std::uint64_t kInventoryNextLocalTransactionId =
     0xffff'ffff'ffff'fff0ULL;
+constexpr std::size_t kGroupedMemoryGrantBytes = 128u * 1024u * 1024u;
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-QRY-011-GROUP-V1: " << detail << '\n';
@@ -86,7 +92,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = kGroupedMemoryGrantBytes + 1;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -101,7 +107,10 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000f906";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required =
+        node.node_kind == exec::PhysicalNodeKind::kAggregate
+            ? kGroupedMemoryGrantBytes
+            : 1;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -129,6 +138,31 @@ api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
   return descriptor;
 }
 
+std::string CoreDescriptorUuid(const std::string_view stable_name,
+                               const std::string_view fallback) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) std::abort();
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return found == manifest.manifest.descriptor_rows.end()
+             ? std::string(fallback)
+             : uuid::UuidToString(found->descriptor_uuid.value);
+}
+
+void BindEqualityAuthority(exec::CanonicalAggregateRuntimeRequest* request) {
+  request->aggregate_equality_terms.clear();
+  for (std::size_t index = 0; index < request->value_columns.size(); ++index) {
+    request->aggregate_equality_terms.push_back(
+        {.column = request->value_columns[index],
+         .expression_descriptor_id =
+             request->value_expression_descriptor_ids[index]});
+  }
+  const auto diagnostic = exec::BindCanonicalAggregateEqualityAuthorityProfile(
+      request, request->input_batch);
+  if (!diagnostic.ok) std::abort();
+}
+
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             const std::string& encoded) {
   api::EngineTypedValue value;
@@ -149,16 +183,24 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 exec::CanonicalInt64SumGroupRequest Request() {
   const auto key_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001401",
-      "019f0000-0000-7300-8000-000000001402", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001402"),
+      "nullable");
   const auto value_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001403",
-      "019f0000-0000-7300-8000-000000001404", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001404"),
+      "nullable");
   const auto key_result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001405",
-      "019f0000-0000-7300-8000-000000001402", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001402"),
+      "nullable");
   const auto sum_result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001407",
-      "019f0000-0000-7300-8000-000000001408", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001408"),
+      "nullable");
 
   exec::CanonicalInt64SumGroupRequest request;
   request.physical_dag.selected_plan_uuid =
@@ -223,22 +265,34 @@ exec::CanonicalInt64SumGroupRequest Request() {
 exec::CanonicalGroupedAggregateRuntimeRequest GroupedRegistryRequest() {
   const auto key_a = Descriptor(
       "019f0000-0000-7200-8000-000000001421",
-      "019f0000-0000-7300-8000-000000001422", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001422"),
+      "nullable");
   const auto key_b = Descriptor(
       "019f0000-0000-7200-8000-000000001423",
-      "019f0000-0000-7300-8000-000000001424", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001424"),
+      "nullable");
   const auto amount = Descriptor(
       "019f0000-0000-7200-8000-000000001425",
-      "019f0000-0000-7300-8000-000000001426", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001426"),
+      "nullable");
   const auto result_a = Descriptor(
       "019f0000-0000-7200-8000-000000001427",
-      "019f0000-0000-7300-8000-000000001422", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001422"),
+      "nullable");
   const auto result_b = Descriptor(
       "019f0000-0000-7200-8000-000000001429",
-      "019f0000-0000-7300-8000-000000001424", "nullable");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001424"),
+      "nullable");
   const auto average = Descriptor(
       "019f0000-0000-7200-8000-000000001431",
-      "019f0000-0000-7300-8000-000000001432", "nullable", "real64");
+      CoreDescriptorUuid("real64",
+                         "019f0000-0000-7300-8000-000000001432"),
+      "nullable", "real64");
 
   exec::CanonicalGroupedAggregateRuntimeRequest request;
   auto& aggregate = request.aggregate_request;
@@ -318,7 +372,9 @@ exec::CanonicalGroupedAggregateSetRuntimeRequest GroupedAggregateSetRequest() {
   request.first_aggregate = GroupedRegistryRequest();
   const auto count_result = Descriptor(
       "019f0000-0000-7200-8000-000000001442",
-      "019f0000-0000-7300-8000-000000001443", "required");
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001443"),
+      "non_null");
   request.first_aggregate.aggregate_request.physical_dag.nodes.back()
       .output_descriptor_ids.push_back(1427);
 
@@ -464,6 +520,7 @@ bool ValidateGroupedRegistryState() {
   request = GroupedRegistryRequest();
   request.aggregate_request.distinct = true;
   request.maximum_combined_distinct_tuple_count = 1;
+  BindEqualityAuthority(&request.aggregate_request);
   result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
   passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
                     "combined grouped DISTINCT bound was exceeded");
@@ -563,7 +620,10 @@ bool ValidateOrdinaryGroupByIdentity() {
   request.grouping_sets = {{.key_term_ordinals = {0, 1}}};
   request.group_result_columns[0].nullable = false;
   request.group_result_columns[0].descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000001422;nullability=non_null";
+      "type_uuid=" +
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001422") +
+      ";nullability=non_null";
   result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
   passed &= Require(!result.diagnostic.ok && result.groups.empty() &&
                         result.output_batch.rows.empty(),
@@ -774,6 +834,7 @@ bool ValidateGroupedAggregateSetState() {
        .direction = exec::CanonicalDescriptorOrderDirection::ascending,
        .null_placement = exec::CanonicalDescriptorNullPlacement::last},
   };
+  BindEqualityAuthority(&average);
   result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
   passed &= Require(
       result.diagnostic.ok && result.aggregate_count == 2 &&
@@ -882,14 +943,20 @@ bool ValidateTypedGroupingState() {
   request.grouping_set_rule = exec::CanonicalInt64GroupingSetRule::key_only;
   request.input_batch.columns[0].nullable = false;
   request.input_batch.columns[0].descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000001402;nullability=non_null";
+      "type_uuid=" +
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001402") +
+      ";nullability=non_null";
   request.input_batch.rows.erase(request.input_batch.rows.begin() + 3);
   for (auto& row : request.input_batch.rows) {
     row.values[0].descriptor = request.input_batch.columns[0].descriptor;
   }
   request.key_result_column.nullable = false;
   request.key_result_column.descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000001402;nullability=non_null";
+      "type_uuid=" +
+      CoreDescriptorUuid("int64",
+                         "019f0000-0000-7300-8000-000000001402") +
+      ";nullability=non_null";
   result = exec::ExecuteCanonicalInt64SumGroups(request);
   passed &= Require(result.diagnostic.ok && result.groups.size() == 2,
                     "non-null ordinary GROUP BY did not derive a non-null key output" +
