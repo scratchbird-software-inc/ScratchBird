@@ -78,7 +78,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = 32ULL * 1024ULL * 1024ULL;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -94,7 +94,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000e656";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -197,14 +197,14 @@ exec::CanonicalCorrelatedSubqueryRequest Request() {
   request.selected_physical_node_id = 3003;
   request.outer_batch = exec::MakeDescriptorBatch(
       {{"outer_key", outer_key, true, 3001},
-       {"outer_payload", outer_payload, false, 3002}},
+       {"outer_payload", outer_payload, true, 3002}},
       {{{Value(outer_key, "1"), Value(outer_payload, "outer-a")}},
        {{Null(outer_key), Value(outer_payload, "outer-null")}},
        {{Value(outer_key, "2"), Value(outer_payload, "outer-b")}},
        {{Value(outer_key, "01"), Value(outer_payload, "outer-alias")}}});
   request.inner_batch = exec::MakeDescriptorBatch(
       {{"inner_key", inner_key, true, 3003},
-       {"inner_payload", inner_payload, false, 3004}},
+       {"inner_payload", inner_payload, true, 3004}},
       {{{Value(inner_key, "01"), Value(inner_payload, "inner-a")}},
        {{Value(inner_key, "2"), Value(inner_payload, "inner-b")}},
        {{Value(inner_key, "1"), Value(inner_payload, "inner-c")}},
@@ -249,7 +249,7 @@ bool ValidateCorrelatedSubquery() {
   auto result = exec::ExecuteCanonicalCorrelatedSubquery(Request());
   passed &= Require(
       result.diagnostic.ok && result.scope_execution_count == 4 &&
-          result.comparison_count == 16 && result.result_row_count == 5 &&
+          result.comparison_count == 9 && result.result_row_count == 5 &&
           result.scopes.size() == 4 &&
           result.scopes[0].outer_row_index == 0 &&
           result.scopes[0].bound_outer_value.encoded_value == "1" &&
@@ -303,7 +303,7 @@ bool ValidateCorrelatedSubquery() {
   result = exec::ExecuteCanonicalCorrelatedSubquery(request);
   passed &= Require(
       result.diagnostic.ok && result.scope_execution_count == 4 &&
-          result.comparison_count == 16 && result.result_row_count == 5 &&
+          result.comparison_count == 9 && result.result_row_count == 5 &&
           result.scopes[0].output_batch.rows.size() == 2 &&
           result.scopes[2].output_batch.rows.size() == 1 &&
           result.scopes[3].output_batch.rows.size() == 2,

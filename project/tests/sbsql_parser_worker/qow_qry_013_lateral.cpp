@@ -77,7 +77,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = 32ULL * 1024ULL * 1024ULL;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -97,7 +97,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000e666";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -200,14 +200,14 @@ exec::CanonicalCorrelatedSubqueryRequest CorrelatedRequest() {
   request.selected_physical_node_id = 3103;
   request.outer_batch = exec::MakeDescriptorBatch(
       {{"outer_key", outer_key, true, 3101},
-       {"outer_payload", outer_payload, false, 3102}},
+       {"outer_payload", outer_payload, true, 3102}},
       {{{Value(outer_key, "1"), Value(outer_payload, "outer-a")}},
        {{Null(outer_key), Value(outer_payload, "outer-null")}},
        {{Value(outer_key, "2"), Value(outer_payload, "outer-b")}},
        {{Value(outer_key, "01"), Value(outer_payload, "outer-alias")}}});
   request.inner_batch = exec::MakeDescriptorBatch(
       {{"inner_key", inner_key, true, 3103},
-       {"inner_payload", inner_payload, false, 3104}},
+       {"inner_payload", inner_payload, true, 3104}},
       {{{Value(inner_key, "01"), Value(inner_payload, "inner-a")}},
        {{Value(inner_key, "2"), Value(inner_payload, "inner-b")}},
        {{Value(inner_key, "1"), Value(inner_payload, "inner-c")}},

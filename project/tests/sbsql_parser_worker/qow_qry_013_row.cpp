@@ -78,7 +78,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = 32ULL * 1024ULL * 1024ULL;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -94,7 +94,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000e626";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -144,6 +144,12 @@ exec::CanonicalRowSubqueryRequest Request() {
   const auto payload = Descriptor(
       "019f0000-0000-7200-8000-000000002703",
       "019f0000-0000-7300-8000-000000002704", "text");
+  const auto key_result = Descriptor(
+      "019f0000-0000-7200-8000-000000002721",
+      "019f0000-0000-7300-8000-000000002702", "int64");
+  const auto payload_result = Descriptor(
+      "019f0000-0000-7200-8000-000000002723",
+      "019f0000-0000-7300-8000-000000002704", "text");
 
   exec::CanonicalRowSubqueryRequest request;
   auto& table = request.table_request;
@@ -185,15 +191,15 @@ exec::CanonicalRowSubqueryRequest Request() {
   };
   table.selected_physical_node_id = 2702;
   table.input_batch = exec::MakeDescriptorBatch(
-      {{"row_key_source", key, false, 2701},
+      {{"row_key_source", key, true, 2701},
        {"row_payload_source", payload, true, 2702}},
       {{{Value(key, "07"), Null(payload)}}});
   table.maximum_materialized_row_count = 2;
   table.mga_authority = BindPhysicalAbiV2(&table.physical_dag);
   request.row_expression_descriptor_ids = {2701, 2702};
   request.result_columns = {
-      {"row_key_result", key, true, 2701},
-      {"row_payload_result", payload, true, 2702},
+      {"row_key_result", key_result, true, 2701},
+      {"row_payload_result", payload_result, true, 2702},
   };
   return request;
 }

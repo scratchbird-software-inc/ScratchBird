@@ -8,6 +8,9 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
+
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -15,6 +18,8 @@
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
+namespace uuid = scratchbird::core::uuid;
 
 namespace {
 
@@ -78,7 +83,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = 32ULL * 1024ULL * 1024ULL;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -94,7 +99,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000e636";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -121,6 +126,17 @@ api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
   return descriptor;
 }
 
+std::string CoreTypeUuid(const std::string_view stable_name) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  for (const auto& row : manifest.manifest.descriptor_rows) {
+    if (row.stable_name == stable_name && row.descriptor_uuid.valid()) {
+      return uuid::UuidToString(row.descriptor_uuid.value);
+    }
+  }
+  return {};
+}
+
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             const std::string& encoded) {
   api::EngineTypedValue value;
@@ -144,7 +160,7 @@ exec::CanonicalExistsSubqueryRequest Request() {
       "019f0000-0000-7300-8000-000000002802", "int64", "nullable");
   const auto exists_result = Descriptor(
       "019f0000-0000-7200-8000-000000002803",
-      "019f0000-0000-7300-8000-000000002804", "boolean", "required");
+      CoreTypeUuid("boolean"), "boolean", "non_null");
 
   exec::CanonicalExistsSubqueryRequest request;
   auto& table = request.table_request;
