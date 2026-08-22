@@ -314,6 +314,9 @@ struct CanonicalDescriptorProjectionRequest {
   DescriptorBatch input_batch;
   std::vector<std::size_t> projected_columns;
   CanonicalExecutionMgaAuthority mga_authority;
+  // Strict synchronous physical callbacks borrow the one engine-issued
+  // statement authority shared by the selected DAG.
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
 };
 
 struct CanonicalDescriptorProjectionResult {
@@ -369,6 +372,7 @@ class CanonicalDescriptorFilterPredicateReceipt {
   std::vector<std::uint32_t> row_slot_expression_ids_;
   std::size_t maximum_input_row_count_ = 0;
   CanonicalExecutionMgaAuthority mga_authority_;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority_ = nullptr;
   bool exact_current_revalidated_before_issue_ = false;
   bool borrowed_execution_carriers_ = false;
 };

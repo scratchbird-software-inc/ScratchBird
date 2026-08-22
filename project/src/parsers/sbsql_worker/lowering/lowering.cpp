@@ -35514,8 +35514,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const bool bounded_multimodel_preflight =
       native.catalog_relation_sources.size() >= 3 &&
       native.catalog_relation_sources.size() <= 9 &&
-      native.relations.size() ==
-          (2 * native.catalog_relation_sources.size()) - 1;
+      native.relations.size() >=
+          (2 * native.catalog_relation_sources.size()) - 1 &&
+      native.relations.size() <=
+          (2 * native.catalog_relation_sources.size()) + 1;
   const bool catalog_source_candidate =
       (native.relations.size() <= 5 || bounded_multimodel_preflight) &&
       std::ranges::any_of(native.relations, [](const auto& relation) {
@@ -35543,6 +35545,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const BoundRelationAstRecord* aggregate_relation = nullptr;
   const BoundRelationAstRecord* filter_relation = nullptr;
   const BoundRelationAstRecord* catalog_filter_relation = nullptr;
+  const BoundRelationAstRecord* catalog_filter_input_relation = nullptr;
   const BoundRelationAstRecord* catalog_relation = nullptr;
   std::vector<const BoundRelationAstRecord*> catalog_relations;
   const BoundRelationAstRecord* catalog_join_relation = nullptr;
@@ -35551,6 +35554,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.catalog_relation_sources.size() >= 3 &&
       native.catalog_relation_sources.size() <= 9;
   const BoundRelationAstRecord* catalog_project_relation = nullptr;
+  const BoundRelationAstRecord* catalog_project_input_relation = nullptr;
   const BoundRelationAstRecord* catalog_sort_relation = nullptr;
   const BoundRelationAstRecord* limit_relation = nullptr;
   const BoundRelationAstRecord* window_relation = nullptr;
@@ -35791,12 +35795,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       filter_relation = &relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kFilter &&
                catalog_relation != nullptr) {
+      const auto* filter_input_relation =
+          catalog_join_relation != nullptr ? catalog_join_relation
+                                           : catalog_relation;
       if (catalog_filter_relation != nullptr ||
           relation.input_relation_ids !=
-              std::vector<std::uint32_t>{catalog_relation->relation_id} ||
+              std::vector<std::uint32_t>{filter_input_relation->relation_id} ||
           !relation.values_row_ids.empty() ||
           relation.output_expression_ids !=
-              catalog_relation->output_expression_ids ||
+              filter_input_relation->output_expression_ids ||
           relation.aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
           relation.aggregate_projection_form !=
@@ -35815,23 +35822,27 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       catalog_filter_relation = &relation;
+      catalog_filter_input_relation = filter_input_relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kProject) {
+      const auto* project_input_relation =
+          catalog_sort_relation != nullptr
+              ? catalog_sort_relation
+              : (catalog_filter_relation != nullptr
+                     ? catalog_filter_relation
+                     : (catalog_join_relation != nullptr
+                            ? catalog_join_relation
+                            : catalog_relation));
       std::unordered_set<std::uint32_t> projected_expression_ids;
       const bool exact_projection =
           std::ranges::all_of(
               relation.output_expression_ids, [&](const auto expression_id) {
                 return projected_expression_ids.insert(expression_id).second &&
-                       catalog_relation != nullptr &&
+                       project_input_relation != nullptr &&
                        std::ranges::find(
-                           catalog_relation->output_expression_ids,
+                           project_input_relation->output_expression_ids,
                            expression_id) !=
-                           catalog_relation->output_expression_ids.end();
+                           project_input_relation->output_expression_ids.end();
               });
-      const auto* project_input_relation =
-          catalog_sort_relation != nullptr
-              ? catalog_sort_relation
-              : (catalog_filter_relation != nullptr ? catalog_filter_relation
-                                                    : catalog_relation);
       if (catalog_project_relation != nullptr ||
           project_input_relation == nullptr ||
           relation.input_relation_ids !=
@@ -35856,6 +35867,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       catalog_project_relation = &relation;
+      catalog_project_input_relation = project_input_relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kSort) {
       const auto* sort_input_relation =
           catalog_filter_relation != nullptr ? catalog_filter_relation
@@ -36168,6 +36180,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                     ? catalog_filter_relation->relation_id
                                     : catalog_relation->relation_id))))) &&
       native.values_rows.empty() && native.grouping_sets.empty();
+  const auto* catalog_join_terminal_relation =
+      catalog_project_relation != nullptr
+          ? catalog_project_relation
+          : (catalog_filter_relation != nullptr ? catalog_filter_relation
+                                                : catalog_join_relation);
+  const bool catalog_join_tail_sources_are_relational =
+      std::ranges::all_of(native.catalog_relation_sources,
+                          [](const auto& source) {
+                            return source.source_kind ==
+                                   NativeRelationSourceAstKind::kCatalogRelation;
+                          });
   const bool catalog_cross_join_graph_is_exact =
       ((catalog_relations.size() == 2 &&
         catalog_join_relations.size() == 1) ||
@@ -36175,12 +36198,24 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         catalog_join_relations.size() + 1 == catalog_relations.size())) &&
       catalog_join_relation != nullptr &&
       values_relation == nullptr && aggregate_relation == nullptr &&
-      filter_relation == nullptr && catalog_filter_relation == nullptr &&
-      catalog_project_relation == nullptr && catalog_sort_relation == nullptr &&
-      limit_relation == nullptr &&
+      filter_relation == nullptr && catalog_sort_relation == nullptr &&
+      limit_relation == nullptr && window_relation == nullptr &&
+      qualify_relation == nullptr &&
+      ((catalog_filter_relation == nullptr &&
+        catalog_project_relation == nullptr) ||
+       catalog_join_tail_sources_are_relational) &&
       native.relations.size() ==
-          catalog_relations.size() + catalog_join_relations.size() &&
-      native.root_relation_id == catalog_join_relation->relation_id &&
+          catalog_relations.size() + catalog_join_relations.size() +
+              static_cast<std::size_t>(catalog_filter_relation != nullptr) +
+              static_cast<std::size_t>(catalog_project_relation != nullptr) &&
+      (catalog_filter_relation == nullptr ||
+       catalog_filter_input_relation == catalog_join_relation) &&
+      (catalog_project_relation == nullptr ||
+       catalog_project_input_relation ==
+           (catalog_filter_relation != nullptr ? catalog_filter_relation
+                                               : catalog_join_relation)) &&
+      catalog_join_terminal_relation != nullptr &&
+      native.root_relation_id == catalog_join_terminal_relation->relation_id &&
       native.values_rows.empty() && native.grouping_sets.empty();
   const bool catalog_window_graph_is_exact =
       catalog_relations.size() == 1 && catalog_relation != nullptr &&
@@ -37049,7 +37084,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           "typed catalog WHERE comparison binding is not descriptor exact");
       return envelope;
     }
-    if (std::ranges::count(catalog_relation->output_expression_ids,
+    if (catalog_filter_input_relation == nullptr ||
+        std::ranges::count(
+            catalog_filter_input_relation->output_expression_ids,
                            identifier->expression_id) != 1) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -37676,18 +37713,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation->output_expression_ids.end());
       source_projection_count += relation->output_expression_ids.size();
     }
-    if (bounded_multimodel_join &&
-        std::ranges::any_of(native.expressions, [&](const auto& expression) {
-          return !owned_model_expression_ids.contains(expression.expression_id) &&
-                 std::ranges::find(expected_join_projection_ids,
-                                   expression.expression_id) ==
-                     expected_join_projection_ids.end();
-        })) {
-      AddNativeRelationalLoweringError(
-          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
-          "model JOIN expression inventory contains an orphan");
-      return envelope;
-    }
     if (predicate_join) {
       const auto predicate = expressions_by_id.find(
           catalog_join_relation->predicate_expression_ids.front());
@@ -37816,13 +37841,129 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         join_output_ids.push_back(output->output_id);
       }
     }
-    if ((!bounded_multimodel_join &&
-         descriptor_offset != native.descriptors.size()) ||
+    std::vector<std::uint32_t> terminal_output_ids = join_output_ids;
+    std::size_t tail_output_count = 0;
+    if (catalog_filter_relation != nullptr) {
+      const auto& join_outputs =
+          outputs_by_relation.at(catalog_join_relation->relation_id);
+      const auto& filter_outputs =
+          outputs_by_relation.at(catalog_filter_relation->relation_id);
+      bool exact_filter_outputs =
+          filter_outputs.size() == join_outputs.size();
+      terminal_output_ids.clear();
+      for (std::size_t ordinal = 0;
+           exact_filter_outputs && ordinal < filter_outputs.size();
+           ++ordinal) {
+        const auto& source = *join_outputs[ordinal];
+        const auto& output = *filter_outputs[ordinal];
+        exact_filter_outputs =
+            output.expression_id == source.expression_id &&
+            output.descriptor_id == source.descriptor_id &&
+            output.output_name_utf8 == source.output_name_utf8 &&
+            output.ordinal == ordinal && output.visible;
+        terminal_output_ids.push_back(output.output_id);
+      }
+      if (!exact_filter_outputs) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed JOIN FILTER result lineage is not canonical");
+        return envelope;
+      }
+      tail_output_count += filter_outputs.size();
+    }
+    if (catalog_project_relation != nullptr) {
+      const auto& input_outputs = outputs_by_relation.at(
+          catalog_project_input_relation->relation_id);
+      const auto& project_outputs =
+          outputs_by_relation.at(catalog_project_relation->relation_id);
+      std::unordered_set<std::uint32_t> projected_input_output_ids;
+      bool exact_project_outputs =
+          !project_outputs.empty() &&
+          project_outputs.size() < input_outputs.size();
+      terminal_output_ids.clear();
+      for (std::size_t ordinal = 0;
+           exact_project_outputs && ordinal < project_outputs.size();
+           ++ordinal) {
+        const auto& output = *project_outputs[ordinal];
+        const auto source = std::ranges::find_if(
+            input_outputs, [&](const auto* candidate) {
+              return candidate->expression_id == output.expression_id;
+            });
+        exact_project_outputs =
+            source != input_outputs.end() &&
+            projected_input_output_ids.insert((*source)->output_id).second &&
+            output.descriptor_id == (*source)->descriptor_id &&
+            output.output_name_utf8 == (*source)->output_name_utf8 &&
+            output.ordinal == ordinal && output.visible;
+        terminal_output_ids.push_back(output.output_id);
+      }
+      if (!exact_project_outputs) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed JOIN PROJECT result lineage is not canonical");
+        return envelope;
+      }
+      tail_output_count += project_outputs.size();
+    }
+    std::unordered_set<std::uint32_t> admitted_expression_ids;
+    std::unordered_set<std::uint32_t> active_expression_ids;
+    const auto admit_expression_closure =
+        [&](auto&& self, const std::uint32_t expression_id,
+            const std::size_t depth) -> bool {
+      if (expression_id == 0 || depth > 32) return false;
+      if (admitted_expression_ids.contains(expression_id)) return true;
+      if (!active_expression_ids.insert(expression_id).second) return false;
+      const auto expression = expressions_by_id.find(expression_id);
+      if (expression == expressions_by_id.end()) return false;
+      for (const auto child_id : expression->second->child_expression_ids) {
+        if (!self(self, child_id, depth + 1)) return false;
+      }
+      active_expression_ids.erase(expression_id);
+      admitted_expression_ids.insert(expression_id);
+      return true;
+    };
+    bool exact_expression_closure = true;
+    const auto admit_relation_expressions =
+        [&](const BoundRelationAstRecord* relation) {
+      if (relation == nullptr) return true;
+      return std::ranges::all_of(
+          relation->bound_expression_ids, [&](const auto expression_id) {
+            return admit_expression_closure(admit_expression_closure,
+                                            expression_id, 1);
+          });
+    };
+    for (const auto* relation : catalog_relations) {
+      exact_expression_closure =
+          exact_expression_closure && admit_relation_expressions(relation);
+    }
+    for (const auto* relation : catalog_join_relations) {
+      exact_expression_closure =
+          exact_expression_closure && admit_relation_expressions(relation);
+    }
+    exact_expression_closure =
+        exact_expression_closure &&
+        admit_relation_expressions(catalog_filter_relation) &&
+        admit_relation_expressions(catalog_project_relation) &&
+        admitted_expression_ids.size() == native.expressions.size();
+    std::unordered_set<std::uint32_t> admitted_descriptor_ids;
+    if (exact_expression_closure) {
+      for (const auto expression_id : admitted_expression_ids) {
+        admitted_descriptor_ids.insert(
+            expressions_by_id.at(expression_id)->result_descriptor_id);
+      }
+      exact_expression_closure =
+          admitted_descriptor_ids.size() == descriptor_ids.size() &&
+          std::ranges::all_of(descriptor_ids, [&](const auto descriptor_id) {
+            return admitted_descriptor_ids.contains(descriptor_id);
+          });
+    }
+    if (!exact_expression_closure ||
         catalog_join_relation->output_expression_ids !=
             expected_join_projection_ids ||
         native.outputs.size() !=
-            source_projection_count + expected_join_output_count ||
-        native.scopes.front().visible_projection_ids != join_output_ids) {
+            source_projection_count + expected_join_output_count +
+                tail_output_count ||
+        native.scopes.front().visible_projection_ids != terminal_output_ids) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed CROSS JOIN result scope does not cover its exact lineage");
