@@ -4112,6 +4112,20 @@ class NativeRelationalParser final {
             alias.text, alias.quoted, TokenSourceRange(alias)};
         source.alias_is_explicit = true;
         source_end = &alias;
+      } else if (
+          !AtEnd() && Current().kind == TokenKind::kIdentifier &&
+          (Current().quoted ||
+           (!IsWord(Current(), "CROSS") && !IsWord(Current(), "INNER") &&
+            !IsWord(Current(), "LEFT") && !IsWord(Current(), "RIGHT") &&
+            !IsWord(Current(), "FULL") && !IsWord(Current(), "JOIN") &&
+            !IsWord(Current(), "OUTER") && !IsWord(Current(), "SEMI") &&
+            !IsWord(Current(), "ANTI") && !IsWord(Current(), "ON") &&
+            !IsWord(Current(), "WHERE") && !IsWord(Current(), "AND")))) {
+        const Token& alias = Consume();
+        source.alias = NativeIdentifierAstNode{
+            alias.text, alias.quoted, TokenSourceRange(alias)};
+        source.alias_is_explicit = false;
+        source_end = &alias;
       }
       source.range = model_source ? Span(*model_operator, *source_end)
                                   : Span(first, *source_end);

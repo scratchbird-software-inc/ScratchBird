@@ -384,8 +384,7 @@ template <typename SourceRecord>
     const SourceRecord& source) {
   const bool exact_ordinary_alias =
       (!source.alias.has_value() && !source.alias_is_explicit) ||
-      (source.alias.has_value() && source.alias_is_explicit &&
-       !source.alias->spelling.empty());
+      (source.alias.has_value() && !source.alias->spelling.empty());
   const bool common_model_carriers_are_empty =
       source.source_kind == NativeRelationSourceAstKind::kCatalogRelation &&
       exact_ordinary_alias &&
