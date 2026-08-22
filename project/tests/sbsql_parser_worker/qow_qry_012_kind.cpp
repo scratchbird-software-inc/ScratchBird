@@ -79,7 +79,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = 32ULL * 1024ULL * 1024ULL;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -95,7 +95,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000e526";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -116,7 +116,7 @@ api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
   descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=nullable";
+      "type_uuid=" + type_uuid + ";nullability=non_null";
   return descriptor;
 }
 
@@ -333,6 +333,8 @@ bool ValidateJoinKind() {
       12, api::EngineSqlTruthValue::false_value);
   request.bound_pair_truth_profile = true;
   request.join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+  request.residual_request.key_request.physical_dag.nodes[2]
+      .implementation_id = "join.left-outer.3vl.nested.v1";
   result = exec::ExecuteCanonicalJoinKind(request);
   passed &= Require(
       result.diagnostic.ok && result.matched_pair_count == 0 &&

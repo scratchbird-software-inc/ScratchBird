@@ -80,7 +80,7 @@ void UpgradeToCanonicalStatementContext(exec::TypedPhysicalNodeDag* dag,
   dag->statistics_generation = seed + 25;
   dag->route_epoch = seed + 26;
   dag->route_generation = seed + 27;
-  dag->memory_budget_bytes = 1U << 20;
+  dag->memory_budget_bytes = 32ULL * 1024ULL * 1024ULL;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -104,7 +104,7 @@ void UpgradeToCanonicalStatementContext(exec::TypedPhysicalNodeDag* dag,
     node.executor_capability_uuid = ContextUuid(seed + 101 + index * 3);
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid = ContextUuid(seed + 102 + index * 3);
-    node.memory_bytes_required = 1024;
+    node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
     node.mga_statement_context = dag->mga_statement_context;
   }
@@ -346,7 +346,7 @@ bool ValidateCanonicalAdoption() {
   const auto row = exec::ExecuteCanonicalDescriptorProjection(
       Request("project.typed.row.v1"));
   const auto vector = exec::ExecuteCanonicalDescriptorProjection(
-      Request("project.typed.vector.v1"));
+      Request("project.descriptor-direct.v1"));
   passed &= Require(row.diagnostic.ok && vector.diagnostic.ok,
                     "canonical physical strategies did not reach helper");
   passed &= Require(row.executed_physical_node_id == 1402 &&
@@ -362,7 +362,7 @@ bool ValidateCanonicalAdoption() {
   passed &= Require(
       exec::PhysicalMgaStatementContextEqual(
           vector.mga_statement_context,
-          Request("project.typed.vector.v1")
+          Request("project.descriptor-direct.v1")
               .physical_dag.mga_statement_context) &&
           vector.output_batch.rows[0].values[0].encoded_value ==
               row.output_batch.rows[0].values[0].encoded_value &&

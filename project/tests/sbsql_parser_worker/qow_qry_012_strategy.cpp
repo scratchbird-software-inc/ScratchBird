@@ -83,7 +83,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   dag->statistics_generation = 1;
   dag->route_epoch = 1;
   dag->route_generation = 1;
-  dag->memory_budget_bytes = 4096;
+  dag->memory_budget_bytes = 32ULL * 1024ULL * 1024ULL;
   dag->optimizer_published = true;
   dag->immutable_node_identity_validated = true;
   dag->capability_validated_before_access = true;
@@ -99,7 +99,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
         "019f0000-0000-7200-8000-00000000e546";
-    node.memory_bytes_required = 1;
+    node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
   exec::CanonicalExecutionMgaAuthority authority;
@@ -114,13 +114,15 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
-                                 const std::string& type_uuid) {
+                                 const std::string& type_uuid,
+                                 const bool nullable = true) {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_uuid.canonical = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
   descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=nullable";
+      "type_uuid=" + type_uuid + ";nullability=" +
+      (nullable ? "nullable" : "non_null");
   return descriptor;
 }
 
@@ -158,13 +160,13 @@ exec::CanonicalJoinStrategyRequest Request() {
       "019f0000-0000-7300-8000-000000002302");
   const auto left_payload = Descriptor(
       "019f0000-0000-7200-8000-000000002303",
-      "019f0000-0000-7300-8000-000000002304");
+      "019f0000-0000-7300-8000-000000002304", false);
   const auto right_key = Descriptor(
       "019f0000-0000-7200-8000-000000002305",
       "019f0000-0000-7300-8000-000000002306");
   const auto right_payload = Descriptor(
       "019f0000-0000-7200-8000-000000002307",
-      "019f0000-0000-7300-8000-000000002308");
+      "019f0000-0000-7300-8000-000000002308", false);
 
   exec::CanonicalJoinStrategyRequest request;
   auto& residual = request.residual_request;
@@ -302,10 +304,10 @@ exec::CanonicalJoinStrategyRequest TypedCompositeRequest() {
       "nullability=non_null;precision=12;scale=2";
   auto left_boolean = Descriptor(
       "019f0000-0000-7200-8000-000000002331",
-      "019f0000-0000-7300-8000-000000002332");
+      "019f0000-0000-7300-8000-000000002332", false);
   auto right_boolean = Descriptor(
       "019f0000-0000-7200-8000-000000002333",
-      "019f0000-0000-7300-8000-000000002334");
+      "019f0000-0000-7300-8000-000000002334", false);
   left_boolean.canonical_type_name = "boolean";
   right_boolean.canonical_type_name = "boolean";
   const std::vector<std::string> left_secondary =
