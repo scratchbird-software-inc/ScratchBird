@@ -5285,15 +5285,25 @@ BuildEngineProjectedNativeBindingContext(
     exact_join_graph =
         exact_join_graph &&
         (project_relation == nullptr || exact_project_tail);
+    const auto limit_predecessor_relation_id =
+        project_relation != nullptr
+            ? project_relation->relation_id
+            : (join_relations.empty() ? 0 : join_relations.back()->relation_id);
+    const auto* limit_predecessor_expression_ids =
+        project_relation != nullptr
+            ? &project_relation->output_expression_ids
+            : (join_relations.empty()
+                   ? nullptr
+                   : &join_relations.back()->output_expression_ids);
     const bool exact_limit_tail =
-        limit_relation != nullptr && all_catalog_sources &&
-        filter_relation == nullptr && project_relation == nullptr &&
-        !join_relations.empty() &&
-        limit_relation->relation_id == join_relations.back()->relation_id + 1 &&
+        limit_relation != nullptr && ordinary_project_sources &&
+        filter_relation == nullptr && !join_relations.empty() &&
+        limit_relation->relation_id == limit_predecessor_relation_id + 1 &&
         limit_relation->input_relation_ids ==
-            std::vector<std::uint32_t>{join_relations.back()->relation_id} &&
+            std::vector<std::uint32_t>{limit_predecessor_relation_id} &&
+        limit_predecessor_expression_ids != nullptr &&
         limit_relation->output_expression_ids ==
-            join_relations.back()->output_expression_ids &&
+            *limit_predecessor_expression_ids &&
         limit_relation->limit_expression_ids.size() == 1 &&
         limit_relation->relation_source_ids.empty() &&
         limit_relation->values_row_ids.empty() &&
@@ -5688,6 +5698,13 @@ BuildEngineProjectedNativeBindingContext(
             exact_expression_inventory &&
             admit_expression(admit_expression, expression_id, 1);
       }
+      if (limit_relation != nullptr) {
+        for (const auto expression_id : limit_relation->limit_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
       if (!exact_expression_inventory ||
           admitted_expression_ids.size() != ast.expressions.size()) {
         return fail("catalog_join_project_expression_inventory_invalid");
@@ -5761,6 +5778,14 @@ BuildEngineProjectedNativeBindingContext(
       for (const auto* join_relation : join_relations) {
         for (const auto expression_id :
              join_relation->predicate_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
+      if (project_relation != nullptr) {
+        for (const auto expression_id :
+             project_relation->output_expression_ids) {
           exact_expression_inventory =
               exact_expression_inventory &&
               admit_expression(admit_expression, expression_id, 1);
@@ -6588,18 +6613,20 @@ BuildEngineProjectedNativeBindingContext(
            limit_literal->structural_literal_occurrence_id,
            limit_literal->structural_parameter_occurrence_id,
            limit_literal->structural_variable_occurrence_id});
-      std::vector<NativeOutputBindingInput> join_outputs;
+      std::vector<NativeOutputBindingInput> predecessor_outputs;
       for (const auto& output : context.outputs) {
-        if (output.relation_id == join_relations.back()->relation_id) {
-          join_outputs.push_back(output);
+        if (output.relation_id == limit_predecessor_relation_id) {
+          predecessor_outputs.push_back(output);
         }
       }
-      std::ranges::sort(join_outputs, {}, &NativeOutputBindingInput::ordinal);
-      if (join_outputs.empty()) {
+      std::ranges::sort(predecessor_outputs, {},
+                        &NativeOutputBindingInput::ordinal);
+      if (predecessor_outputs.empty()) {
         return fail("catalog_join_limit_input_lineage_unavailable");
       }
-      for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
-        const auto& source_output = join_outputs[ordinal];
+      for (std::size_t ordinal = 0; ordinal < predecessor_outputs.size();
+           ++ordinal) {
+        const auto& source_output = predecessor_outputs[ordinal];
         context.outputs.push_back(
             {static_cast<std::uint32_t>(context.outputs.size() + 1),
              source_output.expression_id, source_output.output_name_utf8,
@@ -16800,8 +16827,6 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 }) + 1 ==
                 ast.native_relational.catalog_relation_sources.size() &&
             native_join_filter_relation ==
-                ast.native_relational.relations.end() &&
-            native_join_project_relation ==
                 ast.native_relational.relations.end() &&
             native_join_limit_relation !=
                 ast.native_relational.relations.end() &&

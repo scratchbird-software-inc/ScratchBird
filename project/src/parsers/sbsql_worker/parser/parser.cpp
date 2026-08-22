@@ -4734,11 +4734,11 @@ class NativeRelationalParser final {
       query_end = &TokenForRangeEnd(predicate.range);
     }
     if (!AtEnd() && IsWord(Current(), "LIMIT")) {
-      if (!wildcard_projection || join_filter_predicate_id.has_value() ||
+      if (join_filter_predicate_id.has_value() ||
           !all_ordinary_catalog_sources) {
         Refuse("catalog_join_limit_profile_unsupported",
-               "bounded catalog JOIN LIMIT requires an all-catalog wildcard "
-               "query without WHERE");
+               "bounded catalog JOIN LIMIT requires an all-catalog query "
+               "without WHERE");
         return FinishRefusal();
       }
       Consume();
@@ -4919,7 +4919,9 @@ class NativeRelationalParser final {
       limit.relation_id = document_.root_relation_id + 1;
       limit.relation_kind = NativeRelationAstKind::kLimit;
       limit.input_relation_ids = {document_.root_relation_id};
-      limit.output_expression_ids = joined_wildcard_ids;
+      limit.output_expression_ids =
+          wildcard_projection ? joined_wildcard_ids
+                              : projection_expression_ids;
       limit.limit_expression_ids = {*join_limit_expression_id};
       limit.range = Span(select_token, *query_end);
       document_.relations.push_back(std::move(limit));

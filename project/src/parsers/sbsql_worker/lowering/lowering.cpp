@@ -36243,13 +36243,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       qualify_relation == nullptr &&
       (limit_relation == nullptr ||
        (catalog_filter_relation == nullptr &&
-        catalog_project_relation == nullptr &&
         catalog_join_limit_sources_are_ordinary &&
         bounded_model_source_count == 0 &&
         limit_relation->limit_expression_ids.size() == 1 &&
         limit_relation->semantic_variant_id == "limit.bound-count.v1" &&
         limit_relation->input_relation_ids ==
-            std::vector<std::uint32_t>{catalog_join_relation->relation_id})) &&
+            std::vector<std::uint32_t>{
+                catalog_project_relation != nullptr
+                    ? catalog_project_relation->relation_id
+                    : catalog_join_relation->relation_id})) &&
       ((catalog_filter_relation == nullptr &&
         catalog_project_relation == nullptr) ||
        catalog_join_tail_sources_are_relational) &&
@@ -38020,15 +38022,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       tail_output_count += project_outputs.size();
     }
     if (limit_relation != nullptr) {
-      const auto& join_outputs =
-          outputs_by_relation.at(catalog_join_relation->relation_id);
+      const auto* limit_input_relation =
+          catalog_project_relation != nullptr ? catalog_project_relation
+                                              : catalog_join_relation;
+      const auto& input_outputs =
+          outputs_by_relation.at(limit_input_relation->relation_id);
       const auto& limit_outputs =
           outputs_by_relation.at(limit_relation->relation_id);
-      bool exact_limit_outputs = limit_outputs.size() == join_outputs.size();
+      bool exact_limit_outputs = limit_outputs.size() == input_outputs.size();
       terminal_output_ids.clear();
       for (std::size_t ordinal = 0;
            exact_limit_outputs && ordinal < limit_outputs.size(); ++ordinal) {
-        const auto& source = *join_outputs[ordinal];
+        const auto& source = *input_outputs[ordinal];
         const auto& output = *limit_outputs[ordinal];
         exact_limit_outputs =
             output.expression_id == source.expression_id &&

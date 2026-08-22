@@ -792,15 +792,24 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             NativeAggregateGroupingForm::kNone &&
         project_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kNone;
+    const auto limit_predecessor_relation_id =
+        project_composition ? project_relation->relation_id
+                            : final_join_relation_id;
+    const auto* limit_predecessor_expression_ids =
+        project_composition
+            ? &project_relation->output_expression_ids
+            : (!join_relations.empty()
+                   ? &join_relations.back()->output_expression_ids
+                   : nullptr);
     const bool limit_composition =
         ordinary_multi_catalog_cross_join && limit_relation != nullptr &&
-        filter_relation == nullptr && project_relation == nullptr &&
-        limit_relation->relation_id == final_join_relation_id + 1 &&
+        filter_relation == nullptr &&
+        limit_relation->relation_id == limit_predecessor_relation_id + 1 &&
         limit_relation->input_relation_ids ==
-            std::vector<std::uint32_t>{final_join_relation_id} &&
-        !join_relations.empty() &&
+            std::vector<std::uint32_t>{limit_predecessor_relation_id} &&
+        limit_predecessor_expression_ids != nullptr &&
         limit_relation->output_expression_ids ==
-            join_relations.back()->output_expression_ids &&
+            *limit_predecessor_expression_ids &&
         limit_relation->limit_expression_ids.size() == 1 &&
         limit_relation->relation_source_ids.empty() &&
         limit_relation->values_row_ids.empty() &&
@@ -1276,7 +1285,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       expected_output_count += source_projection_count;
     }
     if (limit_composition) {
-      expected_output_count += source_projection_count;
+      expected_output_count +=
+          project_composition ? project_identifiers.size()
+                              : source_projection_count;
     }
     if (context.expressions.size() !=
             source_projection_count + operation_closure_count +
@@ -2035,6 +2046,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           "filter.catalog-column-numeric-comparison.v1";
       bound.relations.push_back(std::move(bound_filter));
     }
+    std::vector<std::uint32_t> projected_expression_ids;
     if (project_composition) {
       std::vector<const NativeOutputBindingInput*> predecessor_outputs;
       for (const auto& output : context.outputs) {
@@ -2055,7 +2067,6 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
 
       std::unordered_set<std::uint32_t> selected_predecessor_output_ids;
-      std::vector<std::uint32_t> projected_expression_ids;
       root_output_ids.clear();
       for (std::size_t ordinal = 0; ordinal < project_identifiers.size();
            ++ordinal) {
@@ -2174,14 +2185,17 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
       std::vector<const NativeOutputBindingInput*> predecessor_outputs;
       for (const auto& output : context.outputs) {
-        if (output.relation_id == final_join_relation_id) {
+        if (output.relation_id == limit_predecessor_relation_id) {
           predecessor_outputs.push_back(&output);
         }
       }
       std::ranges::sort(predecessor_outputs, {}, [](const auto* output) {
         return output->ordinal;
       });
-      if (predecessor_outputs.size() != source_projection_count) {
+      const auto expected_limit_width =
+          project_composition ? project_identifiers.size()
+                              : source_projection_count;
+      if (predecessor_outputs.size() != expected_limit_width) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
             "ordinary multi-source LIMIT input width is incomplete");
@@ -2218,8 +2232,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       BoundRelationAstRecord bound_limit;
       bound_limit.relation_id = limit_relation->relation_id;
       bound_limit.relation_kind = NativeRelationAstKind::kLimit;
-      bound_limit.input_relation_ids = {final_join_relation_id};
-      bound_limit.output_expression_ids = accumulated_projection_ids;
+      bound_limit.input_relation_ids = {limit_predecessor_relation_id};
+      bound_limit.output_expression_ids =
+          project_composition ? projected_expression_ids
+                              : accumulated_projection_ids;
       bound_limit.limit_expression_ids = {bound_limit_expression_id};
       bound_limit.bound_expression_ids = {bound_limit_expression_id};
       bound_limit.semantic_variant_id = "limit.bound-count.v1";
@@ -6767,14 +6783,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             NativeAggregateGroupingForm::kNone &&
         project_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kNone;
+    const auto limit_predecessor_relation_id =
+        project_composition ? project_relation->relation_id
+                            : catalog_join->relation_id;
+    const auto* limit_predecessor_expression_ids =
+        project_composition ? &project_relation->output_expression_ids
+                            : &catalog_join->output_expression_ids;
     const bool limit_composition =
         ordinary_catalog_join && limit_relation != nullptr &&
-        filter_relation == nullptr && project_relation == nullptr &&
-        limit_relation->relation_id == catalog_join->relation_id + 1 &&
+        filter_relation == nullptr &&
+        limit_relation->relation_id == limit_predecessor_relation_id + 1 &&
         limit_relation->input_relation_ids ==
-            std::vector<std::uint32_t>{catalog_join->relation_id} &&
+            std::vector<std::uint32_t>{limit_predecessor_relation_id} &&
         limit_relation->output_expression_ids ==
-            catalog_join->output_expression_ids &&
+            *limit_predecessor_expression_ids &&
         limit_relation->limit_expression_ids.size() == 1 &&
         limit_relation->relation_source_ids.empty() &&
         limit_relation->values_row_ids.empty() &&
@@ -7152,6 +7174,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             exact_expression_inventory &&
             admit_expression(admit_expression, expression_id, 1);
       }
+      if (limit_composition) {
+        exact_expression_inventory =
+            exact_expression_inventory && limit_literal != nullptr &&
+            admit_expression(admit_expression,
+                             limit_literal->expression_id, 1);
+      }
       if (!exact_expression_inventory ||
           admitted_expression_ids.size() != ast.expressions.size()) {
         AddBoundAstDiagnostic(
@@ -7200,6 +7228,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             exact_expression_inventory &&
             admit_expression(admit_expression, expression_id, 1);
       }
+      if (project_composition) {
+        for (const auto expression_id :
+             project_relation->output_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
       if (!exact_expression_inventory ||
           admitted_expression_ids.size() != ast.expressions.size()) {
         AddBoundAstDiagnostic(
@@ -7228,7 +7264,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 (filter_composition ? join_output_count : std::size_t{0}) +
                 (project_composition ? project_identifiers.size()
                                      : std::size_t{0}) +
-                (limit_composition ? join_output_count : std::size_t{0}) ||
+                (limit_composition
+                     ? (project_composition ? project_identifiers.size()
+                                            : join_output_count)
+                     : std::size_t{0}) ||
         context.expressions.size() !=
             source_projection_count +
                 (spatial_columnar_join ? ast.catalog_relation_sources.size()
@@ -7839,7 +7878,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         terminal_output_ids.push_back(output.output_id);
       }
     }
-    if (limit_composition) {
+    if (limit_composition && !project_composition) {
       if (!bound_limit_expression_id.has_value()) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
                               "catalog JOIN LIMIT expression is unbound");
@@ -7944,6 +7983,48 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         terminal_output_ids.push_back(output.output_id);
       }
     }
+    if (limit_composition && project_composition) {
+      if (!bound_limit_expression_id.has_value()) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "catalog JOIN LIMIT expression is unbound");
+        return RefusedBoundAst(std::move(bound));
+      }
+      const auto limit_output_offset =
+          source_projection_count + join_output_count +
+          project_identifiers.size();
+      const auto project_output_offset =
+          source_projection_count + join_output_count;
+      terminal_output_ids.clear();
+      for (std::size_t ordinal = 0; ordinal < project_identifiers.size();
+           ++ordinal) {
+        const auto& project_output =
+            context.outputs[project_output_offset + ordinal];
+        const auto& output = context.outputs[limit_output_offset + ordinal];
+        const auto expected_output_id =
+            static_cast<std::uint32_t>(limit_output_offset + ordinal + 1);
+        if (output.output_id != expected_output_id ||
+            output.relation_id != limit_relation->relation_id ||
+            output.expression_id != project_output.expression_id ||
+            output.output_name_utf8 != project_output.output_name_utf8 ||
+            output.descriptor_id != project_output.descriptor_id ||
+            !output.visible || output.ordinal != ordinal) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "catalog JOIN LIMIT output does not preserve PROJECT lineage");
+          return RefusedBoundAst(std::move(bound));
+        }
+        BoundOutputAstRecord bound_output;
+        bound_output.output_id = output.output_id;
+        bound_output.relation_id = output.relation_id;
+        bound_output.expression_id = output.expression_id;
+        bound_output.output_name_utf8 = output.output_name_utf8;
+        bound_output.descriptor_id = output.descriptor_id;
+        bound_output.visible = output.visible;
+        bound_output.ordinal = output.ordinal;
+        bound.outputs.push_back(std::move(bound_output));
+        terminal_output_ids.push_back(output.output_id);
+      }
+    }
 
     BoundRelationAstRecord bound_join;
     bound_join.relation_id = catalog_join->relation_id;
@@ -7985,8 +8066,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       BoundRelationAstRecord bound_limit;
       bound_limit.relation_id = limit_relation->relation_id;
       bound_limit.relation_kind = NativeRelationAstKind::kLimit;
-      bound_limit.input_relation_ids = {catalog_join->relation_id};
-      bound_limit.output_expression_ids = joined_expression_ids;
+      bound_limit.input_relation_ids = {limit_predecessor_relation_id};
+      bound_limit.output_expression_ids =
+          project_composition ? bound_project_expression_ids
+                              : joined_expression_ids;
       bound_limit.limit_expression_ids = {*bound_limit_expression_id};
       bound_limit.bound_expression_ids = {*bound_limit_expression_id};
       bound_limit.semantic_variant_id = "limit.bound-count.v1";

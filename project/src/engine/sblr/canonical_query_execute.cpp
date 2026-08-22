@@ -34132,7 +34132,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       ctes.size() > scans.size() + joins.size() ||
       dag.nodes.size() > 68 ||
       (terminal_limit != nullptr &&
-       (!filters.empty() || !projects.empty() || !ctes.empty())) ||
+       (!filters.empty() || !local_projects.empty() || !ctes.empty())) ||
       (limit == nullptr) != (terminal_limit == nullptr) ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
@@ -34840,74 +34840,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   }
 
   std::uint64_t row_limit = 0;
-  if (terminal_limit != nullptr) {
-    CanonicalRelationalExpressionRuntime expression_runtime(
-        input.relational_dag, {});
-    std::string detail;
-    if (terminal_limit->shareable ||
-        terminal_limit->semantic_variant_id != "limit.bound-count.v1" ||
-        terminal_limit->input_node_ids !=
-            std::vector<std::uint32_t>{join->node_id} ||
-        terminal_limit->bound_expression_ids.size() != 1 ||
-        terminal_limit->output_descriptor_ids != join->output_descriptor_ids ||
-        !unary_empty(*terminal_limit) ||
-        !EvaluateNonNegativeRowBound(
-            &expression_runtime,
-            terminal_limit->bound_expression_ids.front(), &row_limit,
-            &detail)) {
-      return refuse(
-          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
-          detail.empty()
-              ? "object-backed join LIMIT tail binding is not exact"
-              : detail);
-    }
-    std::vector<const api::RelationalOutputRecord*> join_outputs;
-    std::vector<const api::RelationalOutputRecord*> limit_outputs;
-    for (const auto& output : dag.outputs) {
-      if (output.relation_node_id == join->node_id) {
-        join_outputs.push_back(&output);
-      }
-      if (output.relation_node_id == terminal_limit->node_id) {
-        limit_outputs.push_back(&output);
-      }
-    }
-    std::ranges::sort(join_outputs, {},
-                      &api::RelationalOutputRecord::ordinal);
-    std::ranges::sort(limit_outputs, {},
-                      &api::RelationalOutputRecord::ordinal);
-    bool exact_limit_outputs =
-        join_outputs.size() == join->output_descriptor_ids.size() &&
-        limit_outputs.size() ==
-            terminal_limit->output_descriptor_ids.size() &&
-        join_outputs.size() == limit_outputs.size();
-    std::unordered_set<std::uint32_t> limit_output_ids;
-    for (std::size_t ordinal = 0;
-         exact_limit_outputs && ordinal < limit_outputs.size(); ++ordinal) {
-      exact_limit_outputs =
-          join_outputs[ordinal]->visible &&
-          join_outputs[ordinal]->ordinal == ordinal &&
-          limit_outputs[ordinal]->visible &&
-          limit_outputs[ordinal]->ordinal == ordinal &&
-          limit_outputs[ordinal]->output_id != 0 &&
-          limit_output_ids.insert(limit_outputs[ordinal]->output_id).second &&
-          limit_outputs[ordinal]->descriptor_id ==
-              terminal_limit->output_descriptor_ids[ordinal] &&
-          limit_outputs[ordinal]->descriptor_id ==
-              join_outputs[ordinal]->descriptor_id &&
-          limit_outputs[ordinal]->expression_id ==
-              join_outputs[ordinal]->expression_id &&
-          limit_outputs[ordinal]->output_name_utf8 ==
-              join_outputs[ordinal]->output_name_utf8;
-    }
-    if (!exact_limit_outputs) {
-      return refuse(
-          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
-          "object-backed join LIMIT output lineage is not exact");
-    }
-    nullable_by_node.emplace(terminal_limit->node_id,
-                             nullable_by_node.at(join->node_id));
-  }
-
   CanonicalRelationalExpressionRowBinding terminal_filter_row_binding;
   const auto* filter_input = join;
   if (terminal_filter != nullptr) {
@@ -34962,6 +34894,77 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     return refuse(
         "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
         "object-backed join PROJECT configuration coverage is incomplete");
+  }
+
+  const auto* limit_input =
+      terminal_project != nullptr ? terminal_project : join;
+  if (terminal_limit != nullptr) {
+    CanonicalRelationalExpressionRuntime expression_runtime(
+        input.relational_dag, {});
+    std::string detail;
+    if (terminal_limit->shareable ||
+        terminal_limit->semantic_variant_id != "limit.bound-count.v1" ||
+        terminal_limit->input_node_ids !=
+            std::vector<std::uint32_t>{limit_input->node_id} ||
+        terminal_limit->bound_expression_ids.size() != 1 ||
+        terminal_limit->output_descriptor_ids !=
+            limit_input->output_descriptor_ids ||
+        !unary_empty(*terminal_limit) ||
+        !EvaluateNonNegativeRowBound(
+            &expression_runtime,
+            terminal_limit->bound_expression_ids.front(), &row_limit,
+            &detail)) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
+          detail.empty()
+              ? "object-backed join LIMIT tail binding is not exact"
+              : detail);
+    }
+    std::vector<const api::RelationalOutputRecord*> input_outputs;
+    std::vector<const api::RelationalOutputRecord*> limit_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == limit_input->node_id) {
+        input_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == terminal_limit->node_id) {
+        limit_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(input_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    std::ranges::sort(limit_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    bool exact_limit_outputs =
+        input_outputs.size() == limit_input->output_descriptor_ids.size() &&
+        limit_outputs.size() ==
+            terminal_limit->output_descriptor_ids.size() &&
+        input_outputs.size() == limit_outputs.size();
+    std::unordered_set<std::uint32_t> limit_output_ids;
+    for (std::size_t ordinal = 0;
+         exact_limit_outputs && ordinal < limit_outputs.size(); ++ordinal) {
+      exact_limit_outputs =
+          input_outputs[ordinal]->visible &&
+          input_outputs[ordinal]->ordinal == ordinal &&
+          limit_outputs[ordinal]->visible &&
+          limit_outputs[ordinal]->ordinal == ordinal &&
+          limit_outputs[ordinal]->output_id != 0 &&
+          limit_output_ids.insert(limit_outputs[ordinal]->output_id).second &&
+          limit_outputs[ordinal]->descriptor_id ==
+              terminal_limit->output_descriptor_ids[ordinal] &&
+          limit_outputs[ordinal]->descriptor_id ==
+              input_outputs[ordinal]->descriptor_id &&
+          limit_outputs[ordinal]->expression_id ==
+              input_outputs[ordinal]->expression_id &&
+          limit_outputs[ordinal]->output_name_utf8 ==
+              input_outputs[ordinal]->output_name_utf8;
+    }
+    if (!exact_limit_outputs) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
+          "object-backed join LIMIT output lineage is not exact");
+    }
+    nullable_by_node.emplace(terminal_limit->node_id,
+                             nullable_by_node.at(limit_input->node_id));
   }
 
   const auto* cte_input =

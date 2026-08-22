@@ -338,7 +338,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           : (terminal_filter != nullptr ? terminal_filter : join_root);
   if ((limit == nullptr) != (terminal_limit == nullptr) ||
       (terminal_limit != nullptr &&
-       (!filters.empty() || !projects.empty() || !ctes.empty())) ||
+       (!filters.empty() || !local_projects.empty() || !ctes.empty())) ||
       (terminal_limit != nullptr &&
        (terminal_limit->shareable ||
         terminal_limit->semantic_variant_id != "limit.bound-count.v1" ||
@@ -1078,7 +1078,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       if (output.relation_node_id == terminal_limit->node_id) {
         limit_outputs.push_back(&output);
       }
-      if (output.relation_node_id == join_root->node_id) {
+      if (output.relation_node_id == limit_input->node_id) {
         input_outputs.push_back(&output);
       }
     }
@@ -1086,7 +1086,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     std::ranges::sort(input_outputs, {}, &RelationalOutputRecord::ordinal);
     bool exact_limit_outputs =
         limit_outputs.size() == terminal_limit->output_descriptor_ids.size() &&
-        input_outputs.size() == join_root->output_descriptor_ids.size() &&
+        input_outputs.size() == limit_input->output_descriptor_ids.size() &&
         limit_outputs.size() == input_outputs.size();
     std::unordered_set<std::uint32_t> limit_output_ids;
     for (std::size_t ordinal = 0;
