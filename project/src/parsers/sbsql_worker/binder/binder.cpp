@@ -1111,7 +1111,16 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             limit_values[1]->expression_kind ==
                 NativeExpressionAstKind::kParameter &&
             !limit_values[1]->literal_kind.has_value();
-        if (!both_literals && !both_parameters && !literal_then_parameter) {
+        const bool parameter_then_literal =
+            limit_values[0]->expression_kind ==
+                NativeExpressionAstKind::kParameter &&
+            !limit_values[0]->literal_kind.has_value() &&
+            limit_values[1]->expression_kind ==
+                NativeExpressionAstKind::kLiteral &&
+            limit_values[1]->literal_kind ==
+                NativeLiteralAstKind::kNumeric;
+        if (!both_literals && !both_parameters && !literal_then_parameter &&
+            !parameter_then_literal) {
           AddBoundAstDiagnostic(
               &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
               "ordinary multi-source LIMIT and OFFSET operand kinds differ");
@@ -7274,7 +7283,16 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             limit_values[1]->expression_kind ==
                 NativeExpressionAstKind::kParameter &&
             !limit_values[1]->literal_kind.has_value();
-        if (!both_literals && !both_parameters && !literal_then_parameter) {
+        const bool parameter_then_literal =
+            limit_values[0]->expression_kind ==
+                NativeExpressionAstKind::kParameter &&
+            !limit_values[0]->literal_kind.has_value() &&
+            limit_values[1]->expression_kind ==
+                NativeExpressionAstKind::kLiteral &&
+            limit_values[1]->literal_kind ==
+                NativeLiteralAstKind::kNumeric;
+        if (!both_literals && !both_parameters && !literal_then_parameter &&
+            !parameter_then_literal) {
           AddBoundAstDiagnostic(
               &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
               "catalog JOIN LIMIT and OFFSET operand kinds differ");

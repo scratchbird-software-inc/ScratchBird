@@ -5804,10 +5804,13 @@ BuildEngineProjectedNativeBindingContext(
             numeric_literal && numeric_offset;
         const bool literal_count_parameter_offset =
             numeric_literal && parameter_offset;
+        const bool parameter_count_literal_offset =
+            parameter_value && numeric_offset;
         const bool parameter_count_parameter_offset =
             parameter_value && parameter_offset;
         if ((!literal_count_literal_offset &&
              !literal_count_parameter_offset &&
+             !parameter_count_literal_offset &&
              !parameter_count_parameter_offset) ||
             (numeric_literal &&
              value->structural_literal_occurrence_id != 1) ||
@@ -5821,7 +5824,8 @@ BuildEngineProjectedNativeBindingContext(
             !offset->child_expression_ids.empty() ||
             !offset->operator_name.empty() ||
             (numeric_offset &&
-             (offset->structural_literal_occurrence_id != 2 ||
+             (offset->structural_literal_occurrence_id !=
+                  (numeric_literal ? 2 : 1) ||
               offset->structural_parameter_occurrence_id != 0)) ||
             (parameter_offset &&
              (offset->structural_literal_occurrence_id != 0 ||
@@ -6808,10 +6812,19 @@ BuildEngineProjectedNativeBindingContext(
       }
       const std::array<const NativeExpressionAstNode*, 2> limit_values{
           limit_value, limit_offset_value};
+      const bool deferred_parameter_count_literal_offset =
+          limit_value->expression_kind ==
+              NativeExpressionAstKind::kParameter &&
+          limit_offset_value != nullptr &&
+          limit_offset_value->expression_kind ==
+              NativeExpressionAstKind::kLiteral &&
+          limit_offset_value->literal_kind == NativeLiteralAstKind::kNumeric;
       for (const auto* bound_value : limit_values) {
         if (bound_value == nullptr ||
             bound_value->expression_kind !=
-                NativeExpressionAstKind::kLiteral) {
+                NativeExpressionAstKind::kLiteral ||
+            (deferred_parameter_count_literal_offset &&
+             bound_value == limit_offset_value)) {
           continue;
         }
         const auto literal_profile =
@@ -17246,6 +17259,36 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                  offset->structural_literal_occurrence_id == 0 &&
                  offset->structural_parameter_occurrence_id == 1;
         }();
+        const bool exact_native_join_parameter_literal_offset = [&]() {
+          if (!exact_native_join_limit_operand_route ||
+              native_join_filter_relation !=
+                  ast.native_relational.relations.end() ||
+              native_join_limit_relation->limit_expression_ids.size() != 2) {
+            return false;
+          }
+          const auto count = std::ranges::find_if(
+              ast.native_relational.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       native_join_limit_relation->limit_expression_ids[0];
+              });
+          const auto offset = std::ranges::find_if(
+              ast.native_relational.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       native_join_limit_relation->limit_expression_ids[1];
+              });
+          return count != ast.native_relational.expressions.end() &&
+                 count->expression_kind ==
+                     NativeExpressionAstKind::kParameter &&
+                 !count->literal_kind.has_value() &&
+                 count->structural_literal_occurrence_id == 0 &&
+                 count->structural_parameter_occurrence_id == 1 &&
+                 offset != ast.native_relational.expressions.end() &&
+                 offset->expression_kind ==
+                     NativeExpressionAstKind::kLiteral &&
+                 offset->literal_kind == NativeLiteralAstKind::kNumeric &&
+                 offset->structural_literal_occurrence_id == 1 &&
+                 offset->structural_parameter_occurrence_id == 0;
+        }();
         const bool exact_native_join_dual_parameter_tail = [&]() {
           if (!exact_native_join_limit_after_filter ||
               native_join_filter_relation->predicate_expression_ids.size() !=
@@ -17296,11 +17339,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               "sbp_sbsql.wire"));
         }
         if (parameter_prepare_only &&
-            exact_native_join_literal_parameter_offset) {
+            (exact_native_join_literal_parameter_offset ||
+             exact_native_join_parameter_literal_offset)) {
           result.messages.diagnostics.push_back(MakeDiagnostic(
               "SBLR.OPERAND_INVALID", "ERROR",
-              "Prepared execution does not admit a literal LIMIT with a "
-              "parameter OFFSET; use direct execution.",
+              "Prepared execution does not admit mixed literal and "
+              "parameter LIMIT/OFFSET operands; use direct execution.",
               "sbp_sbsql.wire"));
         }
         if (native_binding_context.has_value() &&
@@ -17337,6 +17381,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                     "The negotiated literal occurrence was absent from the typed AST.",
                     "sbp_sbsql.wire"));
                 break;
+              }
+              if (exact_native_join_parameter_literal_offset &&
+                  occurrence.occurrence_id == 1) {
+                continue;
               }
               const auto reserved_expression_id =
                   exact_native_join_filter_operand_route
@@ -17503,6 +17551,64 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             descriptor->nullability = mapping.nullable != 0
                                           ? BoundNullability::kNullable
                                           : BoundNullability::kNonNull;
+          }
+        }
+        if (native_binding_context.has_value() &&
+            exact_native_join_parameter_literal_offset &&
+            !result.messages.has_errors()) {
+          const auto offset = std::ranges::find_if(
+              ast.native_relational.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       native_join_limit_relation->limit_expression_ids[1];
+              });
+          const auto count_binding = std::ranges::find_if(
+              native_binding_context->expressions, [](const auto& expression) {
+                return expression.structural_parameter_occurrence_id == 1;
+              });
+          const auto existing_offset_count = std::ranges::count_if(
+              native_binding_context->expressions, [](const auto& expression) {
+                return expression.structural_literal_occurrence_id == 1;
+              });
+          const auto* profile =
+              native_statement_context->literal_statement_descriptor_profiles
+                          .size() == 1
+                  ? &native_statement_context
+                         ->literal_statement_descriptor_profiles.front()
+                  : nullptr;
+          const auto reserved_id =
+              native_binding_context->descriptors.size() <
+                      std::numeric_limits<std::uint32_t>::max()
+                  ? static_cast<std::uint32_t>(
+                        native_binding_context->descriptors.size() + 1)
+                  : 0;
+          if (offset == ast.native_relational.expressions.end() ||
+              count_binding == native_binding_context->expressions.end() ||
+              existing_offset_count != 0 || profile == nullptr ||
+              profile->binding_descriptor_uuid.empty() ||
+              profile->type_uuid.empty() || reserved_id == 0 ||
+              std::ranges::any_of(
+                  native_binding_context->expressions,
+                  [&](const auto& expression) {
+                    return expression.expression_id >= reserved_id;
+                  })) {
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                "The JOIN OFFSET literal could not receive its ordered "
+                "engine-issued descriptor binding.",
+                "sbp_sbsql.wire"));
+          } else {
+            NativeDescriptorBindingInput descriptor;
+            descriptor.descriptor_id = reserved_id;
+            descriptor.descriptor_uuid = profile->binding_descriptor_uuid;
+            descriptor.type_uuid = profile->type_uuid;
+            descriptor.nullability = BoundNullability::kNonNull;
+            descriptor.canonical_type_name = "int64";
+            native_binding_context->descriptors.push_back(
+                std::move(descriptor));
+            native_binding_context->expressions.push_back(
+                {reserved_id, reserved_id, std::nullopt, std::nullopt,
+                 offset->structural_literal_occurrence_id,
+                 offset->structural_parameter_occurrence_id});
           }
         }
         if (native_binding_context.has_value() &&

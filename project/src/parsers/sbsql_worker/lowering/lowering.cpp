@@ -37196,6 +37196,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     bool all_join_limit_parameters = true;
     bool first_join_limit_literal = false;
     bool second_join_limit_parameter = false;
+    bool first_join_limit_parameter = false;
+    bool second_join_limit_literal = false;
     for (std::size_t bound_ordinal = 0;
          bound_ordinal < limit_relation->limit_expression_ids.size();
          ++bound_ordinal) {
@@ -37223,6 +37225,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       second_join_limit_parameter =
           second_join_limit_parameter ||
           (bound_ordinal == 1 && parameter_value);
+      first_join_limit_parameter =
+          first_join_limit_parameter ||
+          (bound_ordinal == 0 && parameter_value);
+      second_join_limit_literal =
+          second_join_limit_literal ||
+          (bound_ordinal == 1 && numeric_literal);
       const auto current_literal_occurrence = expected_literal_occurrence;
       const auto current_parameter_occurrence = expected_parameter_occurrence;
       if (numeric_literal) ++expected_literal_occurrence;
@@ -37292,7 +37300,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     if (catalog_join_relation != nullptr &&
         limit_relation->limit_expression_ids.size() == 2 &&
         !all_join_limit_literals && !all_join_limit_parameters &&
-        !(first_join_limit_literal && second_join_limit_parameter)) {
+        !(first_join_limit_literal && second_join_limit_parameter) &&
+        !(first_join_limit_parameter && second_join_limit_literal)) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed JOIN LIMIT and OFFSET operand kinds differ");

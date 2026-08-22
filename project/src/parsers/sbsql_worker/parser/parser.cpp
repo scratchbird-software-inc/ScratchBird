@@ -4828,7 +4828,9 @@ class NativeRelationalParser final {
             !AtEnd() &&
             (Current().kind == bound_token.kind ||
              (bound_token.kind == TokenKind::kNumericLiteral &&
-              Current().kind == TokenKind::kParameter));
+              Current().kind == TokenKind::kParameter) ||
+             (bound_token.kind == TokenKind::kParameter &&
+              Current().kind == TokenKind::kNumericLiteral));
         if (!accepted_offset_kind) {
           Refuse("catalog_join_limit_offset_required",
                  "bounded catalog JOIN OFFSET requires a second unsigned "
