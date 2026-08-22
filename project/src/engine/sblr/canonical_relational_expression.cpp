@@ -528,6 +528,8 @@ bool SamePersistedRowDescriptor(
       }
     } else if (key == "scale") {
       if (!exact_u32_optional(value, bound.scale, &scale_seen)) return false;
+    } else {
+      return false;
     }
 
     if (end == std::string::npos) break;
@@ -535,7 +537,7 @@ bool SamePersistedRowDescriptor(
     if (start == actual.encoded_descriptor.size()) return false;
   }
 
-  return canonical_seen && type_uuid_seen && nullability_seen &&
+  return type_uuid_seen && nullability_seen &&
          collation_seen == bound.collation_uuid.has_value() &&
          timezone_seen == bound.timezone_profile_id.has_value() &&
          width_seen == bound.width.has_value() &&

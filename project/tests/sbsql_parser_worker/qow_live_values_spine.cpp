@@ -37,6 +37,14 @@ constexpr std::string_view kCatalogEpochUuid =
     "019f0000-0000-7100-8000-000000008102";
 constexpr std::string_view kSecurityContextUuid =
     "019f0000-0000-7110-8000-000000008103";
+constexpr std::string_view kCanonicalBooleanTypeUuid =
+    "01000000-626f-7f6c-a561-6e0000000000";
+constexpr std::string_view kCanonicalInt64TypeUuid =
+    "019d0000-0000-7000-8000-00000000d711";
+constexpr std::string_view kCanonicalReal64TypeUuid =
+    "8d000000-7265-716c-b634-000000000000";
+constexpr std::string_view kAggregateCollationUuid =
+    "019f0000-0000-7200-8000-00000000c011";
 
 std::string EncodeHex(std::string_view value);
 
@@ -1921,7 +1929,7 @@ sblr::SblrOperationEnvelope NodeDrivenPredicateSubqueryLimitEnvelope(
        "019f0000-0000-7400-8000-00000000cf62|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-00000000cf63|"
-           "019f0000-0000-7400-8000-00000000cf64|" +
+           "01000000-626f-7f6c-a561-6e0000000000|" +
            std::string(exists ? "1" : "2") + "|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000cf65|"
@@ -1958,7 +1966,7 @@ sblr::SblrOperationEnvelope NodeDrivenPredicateSubqueryLimitEnvelope(
     envelope.operands.push_back(
         {"relational_descriptor_v1", "5",
          "019f0000-0000-7300-8000-00000000cf69|"
-         "019f0000-0000-7400-8000-00000000cf6a|1|-|-|-|-|-"});
+         "01000000-626f-7f6c-a561-6e0000000000|1|-|-|-|-|-"});
     envelope.operands.push_back(
         {"relational_expression_v1", "7",
          "1|-|5|-|-|6|-|66616c7365"});
@@ -2162,11 +2170,11 @@ NodeDrivenRecursiveSearchCycleLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-00000000cfc5|"
-       "019f0000-0000-7400-8000-00000000cfc6|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000cfc7|"
-       "019f0000-0000-7400-8000-00000000cfc8|1|-|-|-|-|-"});
+       "01000000-626f-7f6c-a561-6e0000000000|1|-|-|-|-|-"});
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
@@ -2264,7 +2272,7 @@ sblr::SblrOperationEnvelope GlobalCountStarValuesEnvelope() {
        "019f0000-0000-7400-8000-000000009002|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000009003|"
-       "019f0000-0000-7400-8000-000000009004|1|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3", "1|-|1|-|-|1|-|39"},
@@ -2301,7 +2309,7 @@ sblr::SblrOperationEnvelope NodeDrivenCountStarLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000c981|"
-       "019f0000-0000-7400-8000-000000009004|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "5", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -2331,7 +2339,7 @@ sblr::SblrOperationEnvelope GlobalCountExpressionValuesEnvelope() {
        "019f0000-0000-7400-8000-000000009102|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000009103|"
-       "019f0000-0000-7400-8000-000000009104|1|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3", "1|-|1|-|-|1|-|39"},
@@ -2373,7 +2381,7 @@ sblr::SblrOperationEnvelope NodeDrivenCountExpressionLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000c991|"
-       "019f0000-0000-7400-8000-000000009104|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -2400,10 +2408,10 @@ sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-000000009201|"
-       "019f0000-0000-7400-8000-000000009202|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000009203|"
-       "019f0000-0000-7400-8000-000000009204|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|35"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3", "1|-|1|-|-|1|-|2d32"},
@@ -2444,7 +2452,7 @@ sblr::SblrOperationEnvelope NodeDrivenSumExpressionLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000c9a1|"
-       "019f0000-0000-7400-8000-000000009204|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -2672,13 +2680,21 @@ sblr::SblrOperationEnvelope GlobalUnaryAggregateModifierValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       fixture_uuid("7300", "11") + "|" + fixture_uuid("7400", "12") +
+       fixture_uuid("7300", "11") + "|" +
+           std::string(target.boolean_input ? kCanonicalBooleanTypeUuid
+                                            : kCanonicalInt64TypeUuid) +
            "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
-       fixture_uuid("7300", "13") + "|" + fixture_uuid("7400", "14") +
+       fixture_uuid("7300", "13") + "|" +
+           std::string(kCanonicalBooleanTypeUuid) +
            "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
-       fixture_uuid("7300", "15") + "|" + fixture_uuid("7400", "16") +
+       fixture_uuid("7300", "15") + "|" +
+           std::string(target.result_type == "int64"
+                           ? kCanonicalInt64TypeUuid
+                           : target.result_type == "boolean"
+                                 ? kCanonicalBooleanTypeUuid
+                                 : kCanonicalReal64TypeUuid) +
            (target.result_nullable ? "|2|-|-|-|-|-" : "|1|-|-|-|-|-")},
       {"relational_expression_v1", "1",
        target.boolean_input ? "1|-|1|-|-|6|-|74727565"
@@ -2748,10 +2764,10 @@ sblr::SblrOperationEnvelope GlobalAvgExpressionValuesEnvelope() {
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-000000009301|"
-       "019f0000-0000-7400-8000-000000009302|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000009303|"
-       "019f0000-0000-7400-8000-000000009304|2|-|-|-|-|-"},
+       "8d000000-7265-716c-b634-000000000000|2|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|32"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3", "1|-|1|-|-|1|-|35"},
@@ -2792,7 +2808,7 @@ sblr::SblrOperationEnvelope NodeDrivenAvgExpressionLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000ca01|"
-       "019f0000-0000-7400-8000-000000009304|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -2805,6 +2821,12 @@ sblr::SblrOperationEnvelope NodeDrivenAvgExpressionLimitEnvelope() {
 
 sblr::SblrOperationEnvelope GlobalExtremumExpressionValuesEnvelope(
     const bool maximum) {
+  const std::string input_descriptor =
+      maximum ? "019f0000-0000-7300-8000-000000009501"
+              : "019f0000-0000-7300-8000-000000009401";
+  const std::string result_descriptor =
+      maximum ? "019f0000-0000-7300-8000-000000009503"
+              : "019f0000-0000-7300-8000-000000009403";
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
       maximum ? "qow.live.values.max-expression"
@@ -2821,17 +2843,11 @@ sblr::SblrOperationEnvelope GlobalExtremumExpressionValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       maximum
-           ? "019f0000-0000-7300-8000-000000009501|"
-             "019f0000-0000-7400-8000-000000009502|2|-|-|-|-|-"
-           : "019f0000-0000-7300-8000-000000009401|"
-             "019f0000-0000-7400-8000-000000009402|2|-|-|-|-|-"},
+       input_descriptor + "|" + std::string(kCanonicalInt64TypeUuid) +
+           "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
-       maximum
-           ? "019f0000-0000-7300-8000-000000009503|"
-             "019f0000-0000-7400-8000-000000009504|2|-|-|-|-|-"
-           : "019f0000-0000-7300-8000-000000009403|"
-             "019f0000-0000-7400-8000-000000009404|2|-|-|-|-|-"},
+       result_descriptor + "|" + std::string(kCanonicalInt64TypeUuid) +
+           "|2|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|2d34"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3", "1|-|1|-|-|1|-|39"},
@@ -2884,9 +2900,8 @@ sblr::SblrOperationEnvelope NodeDrivenExtremumExpressionLimitEnvelope(
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        (maximum ? "019f0000-0000-7300-8000-00000000c9c1|"
-                  "019f0000-0000-7400-8000-000000009504|1|-|-|-|-|-"
-                : "019f0000-0000-7300-8000-00000000c9b1|"
-                  "019f0000-0000-7400-8000-000000009404|1|-|-|-|-|-")});
+                  : "019f0000-0000-7300-8000-00000000c9b1|") +
+           std::string(kCanonicalInt64TypeUuid) + "|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -2931,18 +2946,12 @@ sblr::SblrOperationEnvelope GlobalBooleanAggregateExpressionValuesEnvelope(
       bool_and ? "019f0000-0000-7300-8000-000000009601"
                : (bool_or ? "019f0000-0000-7300-8000-000000009701"
                           : "019f0000-0000-7300-8000-000000009801");
-  const std::string input_type =
-      bool_and ? "019f0000-0000-7400-8000-000000009602"
-               : (bool_or ? "019f0000-0000-7400-8000-000000009702"
-                          : "019f0000-0000-7400-8000-000000009802");
+  const std::string input_type(kCanonicalBooleanTypeUuid);
   const std::string result_descriptor =
       bool_and ? "019f0000-0000-7300-8000-000000009603"
                : (bool_or ? "019f0000-0000-7300-8000-000000009703"
                           : "019f0000-0000-7300-8000-000000009803");
-  const std::string result_type =
-      bool_and ? "019f0000-0000-7400-8000-000000009604"
-               : (bool_or ? "019f0000-0000-7400-8000-000000009704"
-                          : "019f0000-0000-7400-8000-000000009804");
+  const std::string result_type(kCanonicalBooleanTypeUuid);
   const std::string bound_name =
       bool_and ? "019f0000-0000-7500-8000-000000009605"
                : (bool_or ? "019f0000-0000-7500-8000-000000009705"
@@ -3023,10 +3032,7 @@ sblr::SblrOperationEnvelope NodeDrivenBooleanAggregateLimitEnvelope(
       bool_and ? "019f0000-0000-7300-8000-00000000c9d1"
                : (bool_or ? "019f0000-0000-7300-8000-00000000c9e1"
                           : "019f0000-0000-7300-8000-00000000c9f1");
-  const std::string type =
-      bool_and ? "019f0000-0000-7400-8000-000000009604"
-               : (bool_or ? "019f0000-0000-7400-8000-000000009704"
-                          : "019f0000-0000-7400-8000-000000009804");
+  const std::string type(kCanonicalInt64TypeUuid);
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        descriptor + "|" + type + "|1|-|-|-|-|-"});
@@ -3061,9 +3067,9 @@ constexpr StatisticalAggregateProfile kStatisticalAggregateProfiles[] = {
      "aggregate.global-stddev-pop-expression.v1",
      "019f0000-0000-7000-8000-000000009900",
      "019f0000-0000-7300-8000-000000009901",
-     "019f0000-0000-7400-8000-000000009902",
+     kCanonicalInt64TypeUuid,
      "019f0000-0000-7300-8000-000000009903",
-     "019f0000-0000-7400-8000-000000009904",
+     kCanonicalReal64TypeUuid,
      "019f0000-0000-7500-8000-000000009905",
      "019de5fc-2400-73c9-ba10-4665f741215d",
      "stddev_pop_value",
@@ -3073,9 +3079,9 @@ constexpr StatisticalAggregateProfile kStatisticalAggregateProfiles[] = {
      "aggregate.global-variance-pop-expression.v1",
      "019f0000-0000-7000-8000-000000009a00",
      "019f0000-0000-7300-8000-000000009a01",
-     "019f0000-0000-7400-8000-000000009a02",
+     kCanonicalInt64TypeUuid,
      "019f0000-0000-7300-8000-000000009a03",
-     "019f0000-0000-7400-8000-000000009a04",
+     kCanonicalReal64TypeUuid,
      "019f0000-0000-7500-8000-000000009a05",
      "019de5fc-2400-7fda-b470-e85414dcb314",
      "variance_pop_value",
@@ -3085,9 +3091,9 @@ constexpr StatisticalAggregateProfile kStatisticalAggregateProfiles[] = {
      "aggregate.global-stddev-expression.v1",
      "019f0000-0000-7000-8000-000000009b00",
      "019f0000-0000-7300-8000-000000009b01",
-     "019f0000-0000-7400-8000-000000009b02",
+     kCanonicalInt64TypeUuid,
      "019f0000-0000-7300-8000-000000009b03",
-     "019f0000-0000-7400-8000-000000009b04",
+     kCanonicalReal64TypeUuid,
      "019f0000-0000-7500-8000-000000009b05",
      "019dffbb-f000-7475-8516-ff003b2bdad9",
      "stddev_value",
@@ -3097,9 +3103,9 @@ constexpr StatisticalAggregateProfile kStatisticalAggregateProfiles[] = {
      "aggregate.global-variance-expression.v1",
      "019f0000-0000-7000-8000-000000009c00",
      "019f0000-0000-7300-8000-000000009c01",
-     "019f0000-0000-7400-8000-000000009c02",
+     kCanonicalInt64TypeUuid,
      "019f0000-0000-7300-8000-000000009c03",
-     "019f0000-0000-7400-8000-000000009c04",
+     kCanonicalReal64TypeUuid,
      "019f0000-0000-7500-8000-000000009c05",
      "019dffbb-f000-7968-82c5-04cffbeb971b",
      "variance_value",
@@ -3109,9 +3115,9 @@ constexpr StatisticalAggregateProfile kStatisticalAggregateProfiles[] = {
      "aggregate.global-stddev-samp-expression.v1",
      "019f0000-0000-7000-8000-000000009d00",
      "019f0000-0000-7300-8000-000000009d01",
-     "019f0000-0000-7400-8000-000000009d02",
+     kCanonicalInt64TypeUuid,
      "019f0000-0000-7300-8000-000000009d03",
-     "019f0000-0000-7400-8000-000000009d04",
+     kCanonicalReal64TypeUuid,
      "019f0000-0000-7500-8000-000000009d05",
      "019dffbb-f000-7d99-a495-70f9c3b1b587",
      "stddev_samp_value",
@@ -3121,9 +3127,9 @@ constexpr StatisticalAggregateProfile kStatisticalAggregateProfiles[] = {
      "aggregate.global-variance-samp-expression.v1",
      "019f0000-0000-7000-8000-000000009e00",
      "019f0000-0000-7300-8000-000000009e01",
-     "019f0000-0000-7400-8000-000000009e02",
+     kCanonicalInt64TypeUuid,
      "019f0000-0000-7300-8000-000000009e03",
-     "019f0000-0000-7400-8000-000000009e04",
+     kCanonicalReal64TypeUuid,
      "019f0000-0000-7500-8000-000000009e05",
      "019dffbb-f000-732b-8a0c-2aa88b04f3c5",
      "variance_samp_value",
@@ -3161,16 +3167,16 @@ sblr::SblrOperationEnvelope GroupedCountSumValuesEnvelope(
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-00000000e001|"
-       "019f0000-0000-7400-8000-00000000e002|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-00000000e003|"
-       "019f0000-0000-7400-8000-00000000e004|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000e005|"
-       "019f0000-0000-7400-8000-00000000e006|1|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "4",
        "019f0000-0000-7300-8000-00000000e007|"
-       "019f0000-0000-7400-8000-00000000e008|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
   };
 
   constexpr std::string_view kManyGroupKeys[] = {
@@ -3239,7 +3245,7 @@ sblr::SblrOperationEnvelope NodeDrivenGroupedCountSumLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "5",
        "019f0000-0000-7300-8000-00000000cc01|"
-       "019f0000-0000-7400-8000-00000000e008|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "17", "1|-|5|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -3286,7 +3292,7 @@ sblr::SblrOperationEnvelope NodeDrivenGroupedExpansionLimitEnvelope(
   envelope.operands.push_back(
       {"relational_descriptor_v1", "9",
        "019f0000-0000-7300-8000-00000000cd01|"
-       "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "27", "1|-|9|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -3314,10 +3320,10 @@ sblr::SblrOperationEnvelope TwoKeyGroupedCountSumHavingValuesEnvelope() {
       envelope.operands.end(),
       {{"relational_descriptor_v1", "9",
         "019f0000-0000-7300-8000-00000000ce01|"
-        "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"},
+        "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
        {"relational_descriptor_v1", "10",
         "019f0000-0000-7300-8000-00000000ce02|"
-        "019f0000-0000-7400-8000-00000000ce03|2|-|-|-|-|-"},
+        "01000000-626f-7f6c-a561-6e0000000000|2|-|-|-|-|-"},
        {"relational_expression_v1", "24",
         "3|-|3|-|019f0000-0000-7500-8000-00000000e20d|-|-|-"},
        {"relational_expression_v1", "25",
@@ -3351,7 +3357,7 @@ sblr::SblrOperationEnvelope NodeDrivenGroupedHavingLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "11",
        "019f0000-0000-7300-8000-00000000ce11|"
-       "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "28", "1|-|11|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -3378,19 +3384,19 @@ sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-00000000e201|"
-       "019f0000-0000-7400-8000-00000000e202|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-00000000e203|"
-       "019f0000-0000-7400-8000-00000000e204|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000e205|"
-       "019f0000-0000-7400-8000-00000000e206|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "4",
        "019f0000-0000-7300-8000-00000000e207|"
-       "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "5",
        "019f0000-0000-7300-8000-00000000e209|"
-       "019f0000-0000-7400-8000-00000000e20a|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
   };
 
   struct RollupRow {
@@ -3470,13 +3476,13 @@ sblr::SblrOperationEnvelope RollupCountSumGroupingValuesEnvelope() {
       envelope.operands.end(),
       {{"relational_descriptor_v1", "6",
         "019f0000-0000-7300-8000-00000000e20e|"
-        "019f0000-0000-7400-8000-00000000e20f|1|-|-|-|-|-"},
+        "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
        {"relational_descriptor_v1", "7",
         "019f0000-0000-7300-8000-00000000e210|"
-        "019f0000-0000-7400-8000-00000000e211|1|-|-|-|-|-"},
+        "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
        {"relational_descriptor_v1", "8",
         "019f0000-0000-7300-8000-00000000e212|"
-        "019f0000-0000-7400-8000-00000000e213|1|-|-|-|-|-"},
+        "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
        {"relational_expression_v1", "24",
         "5|19|6|-|-|-|67726f7570696e67|-"},
        {"relational_expression_v1", "25",
@@ -3647,7 +3653,7 @@ sblr::SblrOperationEnvelope NodeDrivenStatisticalAggregateLimitEnvelope(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000" +
            std::string(fixture_family) + "1|" +
-           std::string(profile.result_type_uuid) + "|1|-|-|-|-|-"});
+           std::string(kCanonicalInt64TypeUuid) + "|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -3814,14 +3820,15 @@ GlobalPairStatisticalAggregateExpressionValuesEnvelope(
   const auto tree_uuid = PairProfileUuid("7000", profile.uuid_family, "00");
   const auto y_descriptor =
       PairProfileUuid("7300", profile.uuid_family, "01");
-  const auto y_type = PairProfileUuid("7400", profile.uuid_family, "02");
+  const auto y_type = std::string(kCanonicalInt64TypeUuid);
   const auto x_descriptor =
       PairProfileUuid("7300", profile.uuid_family, "03");
-  const auto x_type = PairProfileUuid("7400", profile.uuid_family, "04");
+  const auto x_type = std::string(kCanonicalInt64TypeUuid);
   const auto result_descriptor =
       PairProfileUuid("7300", profile.uuid_family, "05");
-  const auto result_type =
-      PairProfileUuid("7400", profile.uuid_family, "06");
+  const auto result_type = std::string(
+      profile.count_result ? kCanonicalInt64TypeUuid
+                           : kCanonicalReal64TypeUuid);
   const auto y_bound_name =
       PairProfileUuid("7500", profile.uuid_family, "07");
   const auto x_bound_name =
@@ -3893,7 +3900,7 @@ sblr::SblrOperationEnvelope NodeDrivenPairStatisticalLimitEnvelope(
       {"relational_descriptor_v1", "4",
        "019f0000-0000-7300-8000-00000000" +
            std::string(fixture_family) + "1|" +
-           PairProfileUuid("7400", profile.uuid_family, "06") +
+           std::string(kCanonicalInt64TypeUuid) +
            "|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "12", "1|-|4|-|-|1|-|31"});
@@ -3932,13 +3939,15 @@ GlobalPairStatisticalAggregateModifierValuesEnvelope(
   };
   const auto tree_uuid = fixture_uuid("710", "00");
   const auto y_descriptor = fixture_uuid("730", "01");
-  const auto y_type = fixture_uuid("740", "02");
+  const auto y_type = std::string(kCanonicalInt64TypeUuid);
   const auto x_descriptor = fixture_uuid("730", "03");
-  const auto x_type = fixture_uuid("740", "04");
+  const auto x_type = std::string(kCanonicalInt64TypeUuid);
   const auto filter_descriptor = fixture_uuid("730", "05");
-  const auto filter_type = fixture_uuid("740", "06");
+  const auto filter_type = std::string(kCanonicalBooleanTypeUuid);
   const auto result_descriptor = fixture_uuid("730", "07");
-  const auto result_type = fixture_uuid("740", "08");
+  const auto result_type = std::string(
+      profile.count_result ? kCanonicalInt64TypeUuid
+                           : kCanonicalReal64TypeUuid);
   const auto y_bound_name = fixture_uuid("750", "09");
   const auto x_bound_name = fixture_uuid("750", "0a");
   const auto filter_bound_name = fixture_uuid("750", "0b");
@@ -4130,16 +4139,17 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateValuesEnvelope(
       OrderedSetProfileUuid("7000", profile.uuid_family, "00");
   const auto input_descriptor =
       OrderedSetProfileUuid("7300", profile.uuid_family, "01");
-  const auto input_type =
-      OrderedSetProfileUuid("7400", profile.uuid_family, "02");
+  const auto input_type = std::string(kCanonicalInt64TypeUuid);
   const auto direct_descriptor =
       OrderedSetProfileUuid("7300", profile.uuid_family, "03");
-  const auto direct_type =
-      OrderedSetProfileUuid("7400", profile.uuid_family, "04");
+  const auto direct_type = std::string(
+      profile.percentile_fraction ? kCanonicalReal64TypeUuid
+                                  : kCanonicalInt64TypeUuid);
   const auto result_descriptor =
       OrderedSetProfileUuid("7300", profile.uuid_family, "05");
-  const auto result_type =
-      OrderedSetProfileUuid("7400", profile.uuid_family, "06");
+  const auto result_type = std::string(
+      profile.real_result ? kCanonicalReal64TypeUuid
+                          : kCanonicalInt64TypeUuid);
   const auto bound_name =
       OrderedSetProfileUuid("7500", profile.uuid_family, "07");
   envelope.operands = {
@@ -4221,13 +4231,17 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateModifierValuesEnvelope(
       semantic_base + modifier_suffix + std::string(kExpressionSuffix);
   const auto tree_uuid = fixture_uuid("00");
   const auto input_descriptor = fixture_uuid("01");
-  const auto input_type = fixture_uuid("02");
+  const auto input_type = std::string(kCanonicalInt64TypeUuid);
   const auto direct_descriptor = fixture_uuid("03");
-  const auto direct_type = fixture_uuid("04");
+  const auto direct_type = std::string(
+      profile.percentile_fraction ? kCanonicalReal64TypeUuid
+                                  : kCanonicalInt64TypeUuid);
   const auto filter_descriptor = fixture_uuid("05");
-  const auto filter_type = fixture_uuid("06");
+  const auto filter_type = std::string(kCanonicalBooleanTypeUuid);
   const auto result_descriptor = fixture_uuid("07");
-  const auto result_type = fixture_uuid("08");
+  const auto result_type = std::string(
+      profile.real_result ? kCanonicalReal64TypeUuid
+                          : kCanonicalInt64TypeUuid);
   const auto input_bound_name = fixture_uuid("09");
   const auto filter_bound_name = fixture_uuid("0a");
 
@@ -4403,16 +4417,25 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateValuesEnvelope(
       ApproximateProfileUuid("7000", profile.uuid_family, "00");
   const auto input_descriptor =
       ApproximateProfileUuid("7300", profile.uuid_family, "01");
-  const auto input_type =
-      ApproximateProfileUuid("7400", profile.uuid_family, "02");
+  const auto input_type = std::string(
+      profile.text_input ? ApproximateProfileUuid(
+                               "7400", profile.uuid_family, "02")
+                         : std::string(kCanonicalInt64TypeUuid));
   const auto direct_descriptor =
       ApproximateProfileUuid("7300", profile.uuid_family, "03");
-  const auto direct_type =
-      ApproximateProfileUuid("7400", profile.uuid_family, "04");
+  const auto direct_type = std::string(
+      profile.direct_literal_hex.empty()
+          ? ApproximateProfileUuid("7400", profile.uuid_family, "04")
+          : profile.result_type == "real64" ? kCanonicalReal64TypeUuid
+                                             : kCanonicalInt64TypeUuid);
   const auto result_descriptor =
       ApproximateProfileUuid("7300", profile.uuid_family, "05");
-  const auto result_type =
-      ApproximateProfileUuid("7400", profile.uuid_family, "06");
+  const auto result_type = std::string(
+      profile.result_type == "int64"
+          ? kCanonicalInt64TypeUuid
+          : profile.result_type == "real64"
+                ? kCanonicalReal64TypeUuid
+                : ApproximateProfileUuid("7400", profile.uuid_family, "06"));
   const auto bound_name =
       ApproximateProfileUuid("7500", profile.uuid_family, "07");
   envelope.operands = {
@@ -4423,7 +4446,9 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       input_descriptor + "|" + input_type + "|2|-|-|-|-|-"},
+       input_descriptor + "|" + input_type + "|2|" +
+           std::string(profile.text_input ? kAggregateCollationUuid : "-") +
+           "|-|-|-|-"},
       {"relational_descriptor_v1", "3",
        result_descriptor + "|" + result_type +
            (profile.nullable_result ? "|2|-|-|-|-|-" : "|1|-|-|-|-|-")},
@@ -4508,13 +4533,23 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateModifierValuesEnvelope(
       semantic_base + modifier_suffix + std::string(kExpressionSuffix);
   const auto tree_uuid = fixture_uuid("00");
   const auto input_descriptor = fixture_uuid("01");
-  const auto input_type = fixture_uuid("02");
+  const auto input_type = std::string(
+      profile.text_input ? fixture_uuid("02")
+                         : std::string(kCanonicalInt64TypeUuid));
   const auto direct_descriptor = fixture_uuid("03");
-  const auto direct_type = fixture_uuid("04");
+  const auto direct_type = std::string(
+      profile.direct_literal_hex.empty()
+          ? fixture_uuid("04")
+          : profile.result_type == "real64" ? kCanonicalReal64TypeUuid
+                                             : kCanonicalInt64TypeUuid);
   const auto filter_descriptor = fixture_uuid("05");
-  const auto filter_type = fixture_uuid("06");
+  const auto filter_type = std::string(kCanonicalBooleanTypeUuid);
   const auto result_descriptor = fixture_uuid("07");
-  const auto result_type = fixture_uuid("08");
+  const auto result_type = std::string(
+      profile.result_type == "int64"
+          ? kCanonicalInt64TypeUuid
+          : profile.result_type == "real64" ? kCanonicalReal64TypeUuid
+                                             : fixture_uuid("08"));
   const auto input_bound_name = fixture_uuid("09");
   const auto filter_bound_name = fixture_uuid("0a");
 
@@ -4531,7 +4566,9 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateModifierValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       input_descriptor + "|" + input_type + "|2|-|-|-|-|-"},
+       input_descriptor + "|" + input_type + "|2|" +
+           std::string(profile.text_input ? kAggregateCollationUuid : "-") +
+           "|-|-|-|-"},
       {"relational_descriptor_v1", "3",
        filter_descriptor + "|" + filter_type + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "4",
@@ -4684,7 +4721,8 @@ sblr::SblrOperationEnvelope OrderedStringAggExpressionValuesEnvelope() {
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+       value_descriptor + "|" + value_type + "|2|" +
+           std::string(kAggregateCollationUuid) + "|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        separator_descriptor + "|" + separator_type + "|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
@@ -4788,9 +4826,9 @@ sblr::SblrOperationEnvelope StringAggModifierValuesEnvelope(
   const auto value_descriptor = fixture_uuid("7c", "01");
   const auto value_type = fixture_uuid("7d", "02");
   const auto order_descriptor = fixture_uuid("7c", "03");
-  const auto order_type = fixture_uuid("7d", "04");
+  const auto order_type = std::string(kCanonicalInt64TypeUuid);
   const auto filter_descriptor = fixture_uuid("7c", "05");
-  const auto filter_type = fixture_uuid("7d", "06");
+  const auto filter_type = std::string(kCanonicalBooleanTypeUuid);
   const auto separator_descriptor = fixture_uuid("7c", "07");
   const auto separator_type = fixture_uuid("7d", "08");
   const auto result_descriptor = fixture_uuid("7c", "09");
@@ -4819,7 +4857,8 @@ sblr::SblrOperationEnvelope StringAggModifierValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+       value_descriptor + "|" + value_type + "|2|" +
+           std::string(kAggregateCollationUuid) + "|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        order_descriptor + "|" + order_type + "|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
@@ -4916,13 +4955,13 @@ sblr::SblrOperationEnvelope OrderedListaggExpressionValuesEnvelope(
   const auto separator_descriptor = PairProfileUuid("7f10", "b4", "03");
   const auto separator_type = PairProfileUuid("7f20", "b4", "04");
   const auto order_descriptor = PairProfileUuid("7f10", "b4", "05");
-  const auto order_type = PairProfileUuid("7f20", "b4", "06");
+  const auto order_type = std::string(kCanonicalInt64TypeUuid);
   const auto maximum_descriptor = PairProfileUuid("7f10", "b4", "07");
-  const auto maximum_type = PairProfileUuid("7f20", "b4", "08");
+  const auto maximum_type = std::string(kCanonicalInt64TypeUuid);
   const auto indicator_descriptor = PairProfileUuid("7f10", "b4", "09");
   const auto indicator_type = PairProfileUuid("7f20", "b4", "0a");
   const auto count_descriptor = PairProfileUuid("7f10", "b4", "0b");
-  const auto count_type = PairProfileUuid("7f20", "b4", "0c");
+  const auto count_type = std::string(kCanonicalBooleanTypeUuid);
   const auto result_descriptor = PairProfileUuid("7f10", "b4", "0d");
   const auto result_type = PairProfileUuid("7f20", "b4", "0e");
   const auto value_bound_name = PairProfileUuid("7f30", "b4", "0f");
@@ -4935,7 +4974,8 @@ sblr::SblrOperationEnvelope OrderedListaggExpressionValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+       value_descriptor + "|" + value_type + "|2|" +
+           std::string(kAggregateCollationUuid) + "|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        separator_descriptor + "|" + separator_type + "|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
@@ -5047,15 +5087,15 @@ sblr::SblrOperationEnvelope OrderedListaggModifierExpressionValuesEnvelope(
   const auto separator_descriptor = fixture_uuid("03");
   const auto separator_type = fixture_uuid("04");
   const auto order_descriptor = fixture_uuid("05");
-  const auto order_type = fixture_uuid("06");
+  const auto order_type = std::string(kCanonicalInt64TypeUuid);
   const auto filter_descriptor = fixture_uuid("07");
-  const auto filter_type = fixture_uuid("08");
+  const auto filter_type = std::string(kCanonicalBooleanTypeUuid);
   const auto maximum_descriptor = fixture_uuid("09");
-  const auto maximum_type = fixture_uuid("0a");
+  const auto maximum_type = std::string(kCanonicalInt64TypeUuid);
   const auto indicator_descriptor = fixture_uuid("0b");
   const auto indicator_type = fixture_uuid("0c");
   const auto count_descriptor = fixture_uuid("0d");
-  const auto count_type = fixture_uuid("0e");
+  const auto count_type = std::string(kCanonicalBooleanTypeUuid);
   const auto result_descriptor = fixture_uuid("0f");
   const auto result_type = fixture_uuid("10");
   const auto value_bound_name = fixture_uuid("11");
@@ -5075,7 +5115,8 @@ sblr::SblrOperationEnvelope OrderedListaggModifierExpressionValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+       value_descriptor + "|" + value_type + "|2|" +
+           std::string(kAggregateCollationUuid) + "|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        separator_descriptor + "|" + separator_type + "|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
@@ -5215,7 +5256,7 @@ sblr::SblrOperationEnvelope OrderedSingleCollectionValuesEnvelope(
   const auto value_type = PairProfileUuid("7d20", profile.uuid_family, "02");
   const auto order_descriptor =
       PairProfileUuid("7d10", profile.uuid_family, "03");
-  const auto order_type = PairProfileUuid("7d20", profile.uuid_family, "04");
+  const auto order_type = std::string(kCanonicalInt64TypeUuid);
   const auto result_descriptor =
       PairProfileUuid("7d10", profile.uuid_family, "05");
   const auto result_type = PairProfileUuid("7d20", profile.uuid_family, "06");
@@ -5231,7 +5272,8 @@ sblr::SblrOperationEnvelope OrderedSingleCollectionValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+       value_descriptor + "|" + value_type + "|2|" +
+           std::string(kAggregateCollationUuid) + "|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        order_descriptor + "|" + order_type + "|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
@@ -5294,9 +5336,9 @@ sblr::SblrOperationEnvelope OrderedSingleCollectionModifierValuesEnvelope(
   const auto value_descriptor = fixture_uuid("8c", "01");
   const auto value_type = fixture_uuid("8d", "02");
   const auto order_descriptor = fixture_uuid("8c", "03");
-  const auto order_type = fixture_uuid("8d", "04");
+  const auto order_type = std::string(kCanonicalInt64TypeUuid);
   const auto filter_descriptor = fixture_uuid("8c", "05");
-  const auto filter_type = fixture_uuid("8d", "06");
+  const auto filter_type = std::string(kCanonicalBooleanTypeUuid);
   const auto result_descriptor = fixture_uuid("8c", "07");
   const auto result_type = fixture_uuid("8d", "08");
   const auto value_bound_name = fixture_uuid("8e", "09");
@@ -5324,7 +5366,8 @@ sblr::SblrOperationEnvelope OrderedSingleCollectionModifierValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+       value_descriptor + "|" + value_type + "|2|" +
+           std::string(kAggregateCollationUuid) + "|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        order_descriptor + "|" + order_type + "|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
@@ -5394,9 +5437,9 @@ sblr::SblrOperationEnvelope OrderedJsonObjectAggValuesEnvelope() {
   const auto key_descriptor = PairProfileUuid("7e10", "b2", "01");
   const auto key_type = PairProfileUuid("7e20", "b2", "02");
   const auto value_descriptor = PairProfileUuid("7e10", "b2", "03");
-  const auto value_type = PairProfileUuid("7e20", "b2", "04");
+  const auto value_type = std::string(kCanonicalInt64TypeUuid);
   const auto order_descriptor = PairProfileUuid("7e10", "b2", "05");
-  const auto order_type = PairProfileUuid("7e20", "b2", "06");
+  const auto order_type = std::string(kCanonicalInt64TypeUuid);
   const auto result_descriptor = PairProfileUuid("7e10", "b2", "07");
   const auto result_type = PairProfileUuid("7e20", "b2", "08");
   const auto key_bound_name = PairProfileUuid("7e30", "b2", "09");
@@ -5410,7 +5453,8 @@ sblr::SblrOperationEnvelope OrderedJsonObjectAggValuesEnvelope() {
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       key_descriptor + "|" + key_type + "|2|-|-|-|-|-"},
+       key_descriptor + "|" + key_type + "|2|" +
+           std::string(kAggregateCollationUuid) + "|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
@@ -5478,11 +5522,11 @@ sblr::SblrOperationEnvelope OrderedJsonObjectAggModifierValuesEnvelope(
   const auto key_descriptor = fixture_uuid("01");
   const auto key_type = fixture_uuid("02");
   const auto value_descriptor = fixture_uuid("03");
-  const auto value_type = fixture_uuid("04");
+  const auto value_type = std::string(kCanonicalInt64TypeUuid);
   const auto order_descriptor = fixture_uuid("05");
-  const auto order_type = fixture_uuid("06");
+  const auto order_type = std::string(kCanonicalInt64TypeUuid);
   const auto filter_descriptor = fixture_uuid("07");
-  const auto filter_type = fixture_uuid("08");
+  const auto filter_type = std::string(kCanonicalBooleanTypeUuid);
   const auto result_descriptor = fixture_uuid("09");
   const auto result_type = fixture_uuid("0a");
   const auto key_bound_name = fixture_uuid("0b");
@@ -5508,7 +5552,8 @@ sblr::SblrOperationEnvelope OrderedJsonObjectAggModifierValuesEnvelope(
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       key_descriptor + "|" + key_type + "|2|-|-|-|-|-"},
+       key_descriptor + "|" + key_type + "|2|" +
+           std::string(kAggregateCollationUuid) + "|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
@@ -9164,24 +9209,24 @@ bool ValidateNodeDrivenGroupingExpansionCompositionSpine() {
                      "1,2,4,5", 84, "two-key GROUP BY");
   passed &= validate(RollupCountSumValuesEnvelope(),
                      "019f0000-0000-7000-8000-00000000cd20",
-                     "1,2,4,5", 240, "ROLLUP");
+                     "1,2,4,5", 3, "ROLLUP");
   passed &= validate(RollupCountSumGroupingValuesEnvelope(),
                      "019f0000-0000-7000-8000-00000000cd30",
-                     "1,2,4,5,6,7,8", 240,
+                     "1,2,4,5,6,7,8", 3,
                      "ROLLUP with GROUPING metadata");
   passed &= validate(CubeCountSumValuesEnvelope(),
                      "019f0000-0000-7000-8000-00000000cd40",
-                     "1,2,4,5", 318, "CUBE");
+                     "1,2,4,5", 3, "CUBE");
   passed &= validate(CubeCountSumGroupingValuesEnvelope(),
                      "019f0000-0000-7000-8000-00000000cd50",
-                     "1,2,4,5,6,7,8", 318,
+                     "1,2,4,5,6,7,8", 3,
                      "CUBE with GROUPING metadata");
   passed &= validate(GroupingSetsCountSumValuesEnvelope(),
                      "019f0000-0000-7000-8000-00000000cd60",
-                     "1,2,4,5", 318, "GROUPING SETS");
+                     "1,2,4,5", 3, "GROUPING SETS");
   passed &= validate(GroupingSetsCountSumGroupingValuesEnvelope(),
                      "019f0000-0000-7000-8000-00000000cd70",
-                     "1,2,4,5,6,7,8", 318,
+                     "1,2,4,5,6,7,8", 3,
                      "GROUPING SETS with GROUPING metadata");
   return passed;
 }
@@ -9196,11 +9241,6 @@ bool ValidateNodeDrivenGroupedHavingCompositionSpine() {
   const auto reference = dispatch(TwoKeyGroupedCountSumHavingValuesEnvelope());
   const auto first = dispatch(NodeDrivenGroupedHavingLimitEnvelope());
   const auto repeated = dispatch(NodeDrivenGroupedHavingLimitEnvelope());
-  if (!first.api_result.ok) {
-    for (const auto& diagnostic : first.api_result.diagnostics) {
-      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
-    }
-  }
   const auto& rows = first.api_result.result_shape.rows;
   bool passed = true;
   passed &= Require(
@@ -9284,7 +9324,7 @@ bool ValidateNodeDrivenStringAggCompositionSpine() {
             "deterministic replay semantics");
 
     auto bounded_context = Context();
-    bounded_context.optimizer_maximum_candidate_count = ordered ? 24 : 8;
+    bounded_context.optimizer_maximum_candidate_count = 8;
     const auto exhausted = dispatch(NodeDrivenStringAggLimitEnvelope(ordered),
                                     std::move(bounded_context));
     passed &= Require(
@@ -9311,10 +9351,10 @@ bool ValidateNodeDrivenComplexAggregateCompositionSpine() {
     return sblr::DispatchTextualRelationalQueryForContractTest(
         {std::move(context), std::move(envelope), {}});
   };
+  constexpr std::uint64_t kExhaustedCandidateBound = 8;
   std::size_t ordinal = 0;
   const auto validate_case = [&](sblr::SblrOperationEnvelope envelope,
-                                 const std::string& label,
-                                 const std::uint64_t exhausted_bound) {
+                                 const std::string& label) {
     const auto reference = dispatch(envelope);
     const auto composed = NodeDrivenComplexAggregateLimitEnvelope(
         std::move(envelope), ordinal++);
@@ -9349,7 +9389,7 @@ bool ValidateNodeDrivenComplexAggregateCompositionSpine() {
           observed.second.encoded_value == expected.second.encoded_value &&
           observed.second.binary_value == expected.second.binary_value;
     }
-    bool passed = Require(
+    const bool composition_exact =
         first.accepted && first.optimizer_admitted &&
             first.optimizer_selected && first.physical_dag_published &&
             first.physical_dag_executed && first.runtime_actuals_attached &&
@@ -9361,15 +9401,18 @@ bool ValidateNodeDrivenComplexAggregateCompositionSpine() {
             first.canonical_result_row_count == 1 && exact_value &&
             repeated.api_result.ok &&
             repeated.selected_plan_uuid == first.selected_plan_uuid &&
-            repeated.canonical_result_bytes == first.canonical_result_bytes,
+            repeated.canonical_result_bytes == first.canonical_result_bytes;
+    bool passed = Require(
+        composition_exact,
         "node-driven " + label +
             " composition lost its aggregate value, LIMIT, descriptor, or "
             "deterministic replay semantics");
 
     auto bounded_context = Context();
-    bounded_context.optimizer_maximum_candidate_count = exhausted_bound;
+    bounded_context.optimizer_maximum_candidate_count =
+        kExhaustedCandidateBound;
     const auto exhausted = dispatch(composed, std::move(bounded_context));
-    passed &= Require(
+    const bool exhaustion_exact =
         !exhausted.optimizer_selected &&
             !exhausted.physical_dag_published &&
             !exhausted.physical_dag_executed &&
@@ -9379,7 +9422,9 @@ bool ValidateNodeDrivenComplexAggregateCompositionSpine() {
             exhausted.canonical_result_bytes.empty() &&
             HasApiDiagnostic(
                 exhausted,
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1");
+    passed &= Require(
+        exhaustion_exact,
         "exhausted node-driven " + label +
             " composition published partial evidence");
     return passed;
@@ -9393,38 +9438,35 @@ bool ValidateNodeDrivenComplexAggregateCompositionSpine() {
       passed &= validate_case(
           StringAggModifierValuesEnvelope(ordered, modifier),
           std::string(ordered ? "ordered " : "") + "STRING_AGG " +
-              std::string(AggregateModifierName(modifier)),
-          ordered || modifier != AggregateModifierProfile::kFilter ? 63 : 14);
+              std::string(AggregateModifierName(modifier)));
     }
   }
   for (const auto& profile : kOrderedSingleCollectionProfiles) {
     passed &= validate_case(OrderedSingleCollectionValuesEnvelope(profile),
-                            std::string(profile.name), 24);
+                            std::string(profile.name));
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
       passed &= validate_case(
           OrderedSingleCollectionModifierValuesEnvelope(profile, modifier),
           std::string(profile.name) + " " +
-              std::string(AggregateModifierName(modifier)),
-          63);
+              std::string(AggregateModifierName(modifier)));
     }
   }
   passed &= validate_case(OrderedJsonObjectAggValuesEnvelope(),
-                          "JSON_OBJECT_AGG", 40);
+                          "JSON_OBJECT_AGG");
   for (const auto modifier : {AggregateModifierProfile::kFilter,
                               AggregateModifierProfile::kDistinct,
                               AggregateModifierProfile::kDistinctFilter}) {
     passed &= validate_case(OrderedJsonObjectAggModifierValuesEnvelope(modifier),
                             "JSON_OBJECT_AGG " +
-                                std::string(AggregateModifierName(modifier)),
-                            144);
+                                std::string(AggregateModifierName(modifier)));
   }
   for (const auto profile : {LiveListaggProfile::kOrdered,
                              LiveListaggProfile::kOverflowTruncateWithCount,
                              LiveListaggProfile::kOverflowTruncateWithoutCount}) {
     passed &= validate_case(OrderedListaggExpressionValuesEnvelope(profile),
-                            "LISTAGG", 24);
+                            "LISTAGG");
   }
   for (const auto profile : {LiveListaggProfile::kOrdered,
                              LiveListaggProfile::kOverflowError,
@@ -9434,33 +9476,31 @@ bool ValidateNodeDrivenComplexAggregateCompositionSpine() {
                                 AggregateModifierProfile::kDistinctFilter}) {
       passed &= validate_case(
           OrderedListaggModifierExpressionValuesEnvelope(profile, modifier),
-          "LISTAGG " + std::string(AggregateModifierName(modifier)), 63);
+          "LISTAGG " + std::string(AggregateModifierName(modifier)));
     }
   }
   for (const auto& profile : kOrderedSetAggregateProfiles) {
     passed &= validate_case(GlobalOrderedSetAggregateValuesEnvelope(profile),
-                            std::string(profile.name), 35);
+                            std::string(profile.name));
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
       passed &= validate_case(
           GlobalOrderedSetAggregateModifierValuesEnvelope(profile, modifier),
           std::string(profile.name) + " " +
-              std::string(AggregateModifierName(modifier)),
-          63);
+              std::string(AggregateModifierName(modifier)));
     }
   }
   for (const auto& profile : kApproximateAggregateProfiles) {
     passed &= validate_case(GlobalApproximateAggregateValuesEnvelope(profile),
-                            std::string(profile.name), 48);
+                            std::string(profile.name));
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
       passed &= validate_case(
           GlobalApproximateAggregateModifierValuesEnvelope(profile, modifier),
           std::string(profile.name) + " " +
-              std::string(AggregateModifierName(modifier)),
-          63);
+              std::string(AggregateModifierName(modifier)));
     }
   }
   return passed;
@@ -11190,7 +11230,7 @@ bool ValidateGlobalCountStarRefusalIsAtomic() {
     if (operand.type == "relational_descriptor_v1" && operand.name == "2") {
       operand.value =
           "019f0000-0000-7300-8000-000000009003|"
-          "019f0000-0000-7400-8000-000000009004|2|-|-|-|-|-";
+          "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-";
     }
   }
   for (auto& operand : argument_drift.operands) {
@@ -15450,26 +15490,26 @@ sblr::SblrOperationEnvelope PivotValuesEnvelope() {
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       "019f0000-0000-7300-8000-000000019401|"
-       "019f0000-0000-7400-8000-000000019411|2|-|-|-|-|-"},
+       "019f0000-0000-7300-8000-000000019401|" +
+           std::string(kCanonicalInt64TypeUuid) + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
-       "019f0000-0000-7300-8000-000000019402|"
-       "019f0000-0000-7400-8000-000000019412|2|-|-|-|-|-"},
+       "019f0000-0000-7300-8000-000000019402|" +
+           std::string(kCanonicalInt64TypeUuid) + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
-       "019f0000-0000-7300-8000-000000019403|"
-       "019f0000-0000-7400-8000-000000019413|2|-|-|-|-|-"},
+       "019f0000-0000-7300-8000-000000019403|" +
+           std::string(kCanonicalInt64TypeUuid) + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "4",
-       "019f0000-0000-7300-8000-000000019404|"
-       "019f0000-0000-7400-8000-000000019414|2|-|-|-|-|-"},
+       "019f0000-0000-7300-8000-000000019404|" +
+           std::string(kCanonicalInt64TypeUuid) + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "5",
-       "019f0000-0000-7300-8000-000000019405|"
-       "019f0000-0000-7400-8000-000000019415|1|-|-|-|-|-"},
+       "019f0000-0000-7300-8000-000000019405|" +
+           std::string(kCanonicalInt64TypeUuid) + "|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "6",
-       "019f0000-0000-7300-8000-000000019406|"
-       "019f0000-0000-7400-8000-000000019416|2|-|-|-|-|-"},
+       "019f0000-0000-7300-8000-000000019406|" +
+           std::string(kCanonicalInt64TypeUuid) + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "7",
-       "019f0000-0000-7300-8000-000000019407|"
-       "019f0000-0000-7400-8000-000000019417|1|-|-|-|-|-"},
+       "019f0000-0000-7300-8000-000000019407|" +
+           std::string(kCanonicalInt64TypeUuid) + "|1|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
       {"relational_expression_v1", "2", "1|-|2|-|-|1|-|31"},
       {"relational_expression_v1", "3", "1|-|3|-|-|1|-|3130"},

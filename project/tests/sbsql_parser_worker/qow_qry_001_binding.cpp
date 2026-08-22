@@ -100,10 +100,10 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   context.descriptors.push_back(text);
 
   context.expressions = {
-      {1, 1, std::nullopt},
-      {2, 2, std::nullopt},
-      {3, 1, std::nullopt},
-      {4, 2, std::nullopt},
+      {1, 1, std::nullopt, std::nullopt, 1},
+      {2, 2, std::nullopt, std::nullopt, 2},
+      {3, 1, std::nullopt, std::nullopt, 3},
+      {4, 2, std::nullopt, std::nullopt, 4},
   };
   context.outputs = {
       {1, 1, "", 1, true, 0},

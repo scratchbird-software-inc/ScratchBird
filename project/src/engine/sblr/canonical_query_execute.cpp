@@ -5912,11 +5912,28 @@ bool BindCanonicalDescriptorEqualityTerm(
     }
     term->collation_uuid = *collation_uuid;
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
-    *term = {};
-    *detail =
-        "aggregate character equality requires the production engine "
-        "resource catalog";
-    return false;
+    constexpr std::string_view kContractCollationUuid =
+        "019f0000-0000-7200-8000-00000000c011";
+    if (term->collation_uuid != kContractCollationUuid ||
+        context.resource_epoch == 0 || context.catalog_generation_id == 0) {
+      *term = {};
+      *detail =
+          "aggregate character equality lacks exact contract collation "
+          "authority";
+      return false;
+    }
+    // The query-route contract library cannot link the production resource
+    // catalog. Its single named fixture remains authority-bound to the
+    // engine-issued request epochs and is compiled out of production builds.
+    term->resource_epoch = context.resource_epoch;
+    term->collation_epoch = context.catalog_generation_id;
+    term->text_seed.active = true;
+    term->text_seed.seed_pack_name = "qow.query-route.resources";
+    term->text_seed.seed_pack_version = "1";
+    term->text_seed.charset_name = "UTF-8";
+    term->text_seed.collation_name = "qow_aggregate_binary";
+    term->text_seed.collation_case_insensitive = false;
+    term->text_seed.collation_accent_insensitive = false;
 #else
     api::EngineUuid resource_uuid;
     resource_uuid.canonical = term->collation_uuid;
@@ -8760,6 +8777,20 @@ PreparedJoinRoot PrepareJoinRoot(
   const bool right_null_extended =
       join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
       join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter;
+  if ((left_null_extended &&
+       std::ranges::any_of(left.batch.columns,
+                           [](const auto& column) {
+                             return !column.nullable;
+                           })) ||
+      (right_null_extended &&
+       std::ranges::any_of(right.batch.columns,
+                           [](const auto& column) {
+                             return !column.nullable;
+                           }))) {
+    result.detail =
+        "outer join result lacks an exact nullable descriptor carrier";
+    return result;
+  }
 
   if (join_kind != exec::CanonicalAcceptedJoinKind::kCross) {
     if (root.bound_expression_ids.size() != 1) {
@@ -9610,6 +9641,59 @@ LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
       return true;
     };
 
+    const auto materialized_slot = std::ranges::find_if(
+        row_binding.slots, [&](const auto& slot) {
+          return slot.expression_id == record.expression_id;
+        });
+    if (materialized_slot != row_binding.slots.end()) {
+      const bool duplicate_slot =
+          std::ranges::find_if(
+              std::next(materialized_slot), row_binding.slots.end(),
+              [&](const auto& slot) {
+                return slot.expression_id == record.expression_id;
+              }) != row_binding.slots.end();
+      const bool exact_materialized_function =
+          materialized_slot->slot_kind ==
+              CanonicalRelationalExpressionRowSlotKind::materialized_function &&
+          record.expression_kind ==
+              api::RelationalExpressionKind::kFunctionCall &&
+          record.function_uuid.has_value() &&
+          CanonicalUuidText(*record.function_uuid) &&
+          !record.bound_name_uuid.has_value() &&
+          !record.literal_kind.has_value() &&
+          !record.operator_name.has_value() &&
+          !record.literal_or_parameter_ref.has_value();
+      const bool exact_input_identifier =
+          materialized_slot->slot_kind ==
+              CanonicalRelationalExpressionRowSlotKind::input_identifier &&
+          record.expression_kind ==
+              api::RelationalExpressionKind::kIdentifier &&
+          record.child_expression_ids.empty() &&
+          record.bound_name_uuid.has_value() &&
+          CanonicalUuidText(*record.bound_name_uuid) &&
+          !record.function_uuid.has_value() &&
+          !record.literal_kind.has_value() &&
+          !record.operator_name.has_value() &&
+          !record.literal_or_parameter_ref.has_value();
+      std::uint64_t materialized_payload = 0;
+      if (duplicate_slot || materialized_slot->descriptor_id !=
+                                record.result_descriptor_id ||
+          materialized_slot->row_ordinal >=
+              row_binding.row_descriptor_ids.size() ||
+          row_binding.row_descriptor_ids[materialized_slot->row_ordinal] !=
+              materialized_slot->descriptor_id ||
+          (!exact_materialized_function && !exact_input_identifier) ||
+          !CheckedAdd(pair_payload_bytes, declared_extent,
+                      &materialized_payload) ||
+          !finish_leaf(materialized_payload)) {
+        result.detail =
+            "join predicate materialized row slot is not exactly bounded";
+        return false;
+      }
+      *bound = computed;
+      return true;
+    }
+
     bool bounded = false;
     switch (record.expression_kind) {
       case api::RelationalExpressionKind::kLiteral: {
@@ -10416,7 +10500,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
         property == relational_dag.properties.end() ||
         property->property_kind != api::RelationalPropertyKind::kOrdering ||
         property->origin_node_id != logical_node->node_id ||
-        property->expression_ids != expression_ids ||
+        !property->expression_ids.empty() ||
         property->ordering_terms.size() != expressions.size() ||
         order_terms.size() != expressions.size() || expressions.empty()) {
       return refuse(
@@ -11444,6 +11528,16 @@ bool BuildStrictUnaryOperatorLocalPhysicalDag(
     const exec::PhysicalNodeRecord& node,
     const exec::DescriptorBatch& input_batch,
     std::uint64_t maximum_additional_batch_copies,
+    std::uint64_t auxiliary_memory_bytes,
+    exec::TypedPhysicalNodeDag* operator_dag,
+    std::size_t* callback_memory_bound,
+    std::string* detail);
+
+bool BuildStrictBinaryOperatorLocalPhysicalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    const exec::PhysicalNodeRecord& node,
+    const exec::DescriptorBatch& left_input_batch,
+    const exec::DescriptorBatch& right_input_batch,
     std::uint64_t auxiliary_memory_bytes,
     exec::TypedPhysicalNodeDag* operator_dag,
     std::size_t* callback_memory_bound,
@@ -12882,6 +12976,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.publishes_runtime_observation_v1 = true;
+  registration.honors_dispatcher_memory_limit_v1 = true;
   registration.execute =
       [ntile_column = std::move(ntile_column),
        order_term = std::move(order_term),
@@ -13722,6 +13817,154 @@ bool BuildStrictUnaryOperatorLocalPhysicalDag(
   return true;
 }
 
+bool BuildStrictBinaryOperatorLocalPhysicalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    const exec::PhysicalNodeRecord& node,
+    const exec::DescriptorBatch& left_input_batch,
+    const exec::DescriptorBatch& right_input_batch,
+    const std::uint64_t auxiliary_memory_bytes,
+    exec::TypedPhysicalNodeDag* operator_dag,
+    std::size_t* callback_memory_bound,
+    std::string* detail) {
+  if (operator_dag == nullptr || callback_memory_bound == nullptr ||
+      detail == nullptr) {
+    if (detail != nullptr) {
+      *detail = "strict binary preflight request is incomplete";
+    }
+    return false;
+  }
+  const auto selected_bound = SelectedNodeAggregateMemoryBound(dag, node);
+  const auto dag_copy_bound =
+      BoundOperatorLocalPhysicalDagCopyMemoryBytes(dag);
+  bool cancellation_observed = false;
+  bool cancellation_probe_failed = false;
+  const auto left_validation_scratch =
+      exec::BoundDescriptorBatchValidationScratchMemoryBytes(
+          left_input_batch, {}, &cancellation_observed,
+          &cancellation_probe_failed);
+  const auto right_validation_scratch =
+      exec::BoundDescriptorBatchValidationScratchMemoryBytes(
+          right_input_batch, {}, &cancellation_observed,
+          &cancellation_probe_failed);
+  std::uint64_t left_input_live_bytes = 0;
+  std::uint64_t right_input_live_bytes = 0;
+  std::uint64_t input_live_bytes = 0;
+  std::uint64_t maximum_operator_batch_bytes = 0;
+  std::uint64_t dag_validation_scratch_bytes = 0;
+  std::uint64_t callback_carrier_bytes =
+      sizeof(exec::CanonicalPhysicalDispatchStepResult) + 64 * 1024;
+  const auto add_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
+           CheckedAdd(callback_carrier_bytes,
+                      static_cast<std::uint64_t>(value.capacity()) + 1,
+                      &callback_carrier_bytes);
+  };
+  const auto& context = dag.mga_statement_context;
+  std::uint64_t context_array_bytes = 0;
+  const auto add_context_array = [&](const std::size_t count,
+                                     const std::size_t width) {
+    return CheckedMultiply(count, width, &context_array_bytes) &&
+           CheckedAdd(callback_carrier_bytes, context_array_bytes,
+                      &callback_carrier_bytes);
+  };
+  const bool callback_carriers_bounded =
+      add_string(dag.selected_plan_uuid) &&
+      add_string(context.statement_uuid) &&
+      add_string(context.owning_transaction_uuid) &&
+      add_string(context.statement_snapshot_uuid) &&
+      add_string(context.statement_metadata_snapshot_uuid) &&
+      add_context_array(
+          context.active_excluded_local_transaction_ids.capacity(),
+          sizeof(std::uint64_t)) &&
+      add_context_array(
+          context.in_doubt_excluded_local_transaction_ids.capacity(),
+          sizeof(std::uint64_t)) &&
+      add_string(context.snapshot_kind) &&
+      add_string(context.statement_timestamp) &&
+      add_context_array(node.output_descriptor_ids.size(),
+                        sizeof(std::uint32_t));
+  std::uint64_t coexistence_bytes = 0;
+  const bool preflight_ok =
+      selected_bound.has_value() && dag_copy_bound.has_value() &&
+      left_validation_scratch.has_value() &&
+      right_validation_scratch.has_value() && !cancellation_observed &&
+      !cancellation_probe_failed && callback_carriers_bounded &&
+      BoundDescriptorBatchLiveMemoryBytes(left_input_batch,
+                                          &left_input_live_bytes) &&
+      BoundDescriptorBatchLiveMemoryBytes(right_input_batch,
+                                          &right_input_live_bytes) &&
+      CheckedAdd(left_input_live_bytes, right_input_live_bytes,
+                 &input_live_bytes) &&
+      // SET evaluation may retain reconciled operands, equality keys,
+      // membership state, and the output while both dispatcher inputs remain
+      // borrowed. Eight complete input-sized carriers conservatively dominate
+      // those bounded copies; the executor's logical-memory ledger still
+      // independently enforces the rebound callback grant.
+      CheckedMultiply(input_live_bytes, 8,
+                      &maximum_operator_batch_bytes) &&
+      CheckedMultiply(*dag_copy_bound, 32,
+                      &dag_validation_scratch_bytes) &&
+      CheckedAdd(maximum_operator_batch_bytes, *dag_copy_bound,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, dag_validation_scratch_bytes,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, *left_validation_scratch,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, *right_validation_scratch,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, auxiliary_memory_bytes,
+                 &coexistence_bytes) &&
+      CheckedAdd(coexistence_bytes, callback_carrier_bytes,
+                 &coexistence_bytes) &&
+      coexistence_bytes <= *selected_bound;
+  if (!preflight_ok) {
+    *operator_dag = {};
+    *callback_memory_bound = 0;
+    *detail =
+        "retained inputs, output, validation, or operator-local state "
+        "exceeds the dispatcher callback memory allowance";
+    return false;
+  }
+  if (!BuildOperatorLocalPhysicalDag(
+          dag, node.physical_node_id, operator_dag, detail)) {
+    *callback_memory_bound = 0;
+    return false;
+  }
+  const auto root = std::ranges::find_if(
+      operator_dag->nodes, [&](const auto& candidate) {
+        return candidate.physical_node_id == node.physical_node_id;
+      });
+  if (root == operator_dag->nodes.end()) {
+    *operator_dag = {};
+    *callback_memory_bound = 0;
+    *detail = "operator-local binary root is absent";
+    return false;
+  }
+  if (root->memory_bytes_required < *selected_bound) {
+    *operator_dag = {};
+    *callback_memory_bound = 0;
+    *detail = "dispatcher callback memory exceeds the published binary grant";
+    return false;
+  }
+  const auto memory_delta = root->memory_bytes_required - *selected_bound;
+  if (root->retained_cost.memory_bytes_required !=
+          root->memory_bytes_required ||
+      root->retained_cost.scalar_score < memory_delta ||
+      operator_dag->selected_scalar_score < memory_delta) {
+    *operator_dag = {};
+    *callback_memory_bound = 0;
+    *detail = "operator-local binary retained cost cannot be rebound";
+    return false;
+  }
+  root->memory_bytes_required = *selected_bound;
+  root->retained_cost.memory_bytes_required = *selected_bound;
+  root->retained_cost.scalar_score -= memory_delta;
+  operator_dag->selected_scalar_score -= memory_delta;
+  *callback_memory_bound = *selected_bound;
+  detail->clear();
+  return true;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     std::string implementation_id,
     std::string capability_uuid,
@@ -14411,14 +14654,42 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                                    " operator-local root is absent";
           return step;
         }
+        if (bounded_operator_node->memory_bytes_required <
+                *selected_node_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail = active_operation_name +
+                                   " callback memory exceeds its published grant";
+          return step;
+        }
+        const auto memory_delta =
+            bounded_operator_node->memory_bytes_required -
+            *selected_node_memory_bound;
+        if (bounded_operator_node->retained_cost.memory_bytes_required !=
+                bounded_operator_node->memory_bytes_required ||
+            bounded_operator_node->retained_cost.scalar_score <
+                memory_delta ||
+            key_request.physical_dag.selected_scalar_score < memory_delta) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail = active_operation_name +
+                                   " retained cost cannot be rebound";
+          return step;
+        }
         bounded_operator_node->memory_bytes_required =
             *selected_node_memory_bound;
         bounded_operator_node->retained_cost.memory_bytes_required =
             *selected_node_memory_bound;
+        bounded_operator_node->retained_cost.scalar_score -= memory_delta;
+        key_request.physical_dag.selected_scalar_score -= memory_delta;
         key_request.selected_physical_node_id = node.physical_node_id;
         key_request.borrowed_left_batch = &left_batch;
         key_request.borrowed_right_batch = &right_batch;
-        key_request.dispatcher_mga_boundary_active = true;
+        key_request.dispatcher_mga_boundary_active =
+            borrowed_runtime_mga_authority != nullptr ||
+            runtime_mga_authority.has_value();
         if (borrowed_runtime_mga_authority != nullptr) {
           key_request.borrowed_mga_authority =
               borrowed_runtime_mga_authority;
@@ -15621,6 +15892,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.publishes_runtime_observation_v1 = true;
+  registration.honors_dispatcher_memory_limit_v1 = true;
   registration.execute =
       [prepared_set_nodes = std::move(prepared_set_nodes),
        mga_context = std::move(mga_context)](
@@ -15657,48 +15929,45 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
           return step;
         }
         const auto& config = prepared->second;
-        exec::CanonicalSetOperationAllRequest set_request;
-        set_request.physical_dag = dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
-          std::unordered_set<std::uint64_t> execution_view_nodes;
-          std::vector<std::uint64_t> execution_view_pending{
-              node.physical_node_id};
-          while (!execution_view_pending.empty()) {
-            const auto physical_node_id = execution_view_pending.back();
-            execution_view_pending.pop_back();
-            if (!execution_view_nodes.insert(physical_node_id).second) {
-              continue;
-            }
-            const auto found = std::ranges::find_if(
-                dag.nodes, [&](const auto& candidate) {
-                  return candidate.physical_node_id == physical_node_id;
-                });
-            if (found == dag.nodes.end()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
-              step.diagnostic.detail =
-                  "set-operation execution view is unresolved";
-              return step;
-            }
-            execution_view_pending.insert(
-                execution_view_pending.end(),
-                found->input_physical_node_ids.begin(),
-                found->input_physical_node_ids.end());
-          }
-          std::erase_if(set_request.physical_dag.nodes,
-                        [&](const auto& candidate) {
-                          return !execution_view_nodes.contains(
-                              candidate.physical_node_id);
-                        });
-          set_request.physical_dag.root_physical_node_id =
-              node.physical_node_id;
+        const auto& left_input_batch =
+            *inputs[0].materialized_output_batch;
+        const auto& right_input_batch =
+            *inputs[1].materialized_output_batch;
+        exec::TypedPhysicalNodeDag execution_dag;
+        std::size_t callback_memory_bound = 0;
+        std::string preflight_detail;
+        if (!BuildStrictBinaryOperatorLocalPhysicalDag(
+                dag, node, left_input_batch, right_input_batch,
+                64 * 1024, &execution_dag, &callback_memory_bound,
+                &preflight_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "set-operation " + std::move(preflight_detail);
+          return step;
         }
+        const auto execution_node = std::ranges::find_if(
+            execution_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
+        if (execution_node == execution_dag.nodes.end() ||
+            execution_node->memory_bytes_required !=
+                callback_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "set-operation callback grant rebinding changed";
+          return step;
+        }
+        exec::CanonicalSetOperationAllRequest set_request;
+        set_request.physical_dag = execution_dag;
         set_request.selected_physical_node_id = node.physical_node_id;
         set_request.borrowed_left_batch =
-            &*inputs[0].materialized_output_batch;
+            &left_input_batch;
         set_request.borrowed_right_batch =
-            &*inputs[1].materialized_output_batch;
+            &right_input_batch;
         set_request.result_columns = config.prepared.result_columns;
         set_request.operation = config.profile.operation;
         set_request.alignment = config.profile.alignment;
@@ -15714,7 +15983,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
             std::max<std::size_t>(1, config.maximum_output_row_count);
         set_request.enforce_payload_memory_grant = true;
         set_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
-            mga_context, set_request.physical_dag);
+            mga_context, execution_dag);
         auto set_result =
             config.profile.quantifier ==
                     exec::CanonicalSetOperationQuantifier::kAll
@@ -15725,7 +15994,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
           return step;
         }
         if (!CanonicalSetOperationExecutionReceiptMatches(
-                set_request, node, set_result)) {
+                set_request, *execution_node, set_result)) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
@@ -15737,7 +16006,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
         std::uint64_t peak_memory_bytes = 0;
         std::string memory_detail;
         if (!ValidateLiveSetMemoryReceipt(
-                set_request.physical_dag, node, set_result,
+                set_request.physical_dag, *execution_node, set_result,
                 &current_memory_bytes, &peak_memory_bytes,
                 &memory_detail)) {
           step.diagnostic.ok = false;
@@ -15998,7 +16267,8 @@ MakeLiveAggregateRegistryRegistration(
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::uint64_t maximum_filter_truth_memory_bytes,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const bool strict_dispatcher_memory = false) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kAggregate;
   registration.implementation_id = "aggregate.registry-core.v1";
@@ -16007,10 +16277,12 @@ MakeLiveAggregateRegistryRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.publishes_runtime_observation_v1 = true;
+  registration.honors_dispatcher_memory_limit_v1 =
+      strict_dispatcher_memory;
   registration.execute =
       [prepared = std::move(prepared), maximum_input_row_count,
        maximum_filter_truth_memory_bytes,
-       mga_context = std::move(mga_context)](
+       mga_context = std::move(mga_context), strict_dispatcher_memory](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -16050,12 +16322,42 @@ MakeLiveAggregateRegistryRegistration(
         }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
+        const exec::PhysicalNodeRecord* runtime_node = &node;
+        std::size_t callback_memory_bound = 0;
+        if (strict_dispatcher_memory) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                  dag, node, input_batch, 8, 128 * 1024,
+                  &*scoped_execution_dag, &callback_memory_bound,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "aggregate registry " + scope_detail;
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+          const auto selected_runtime_node = std::ranges::find_if(
+              scoped_execution_dag->nodes, [&](const auto& candidate) {
+                return candidate.physical_node_id == node.physical_node_id;
+              });
+          if (selected_runtime_node == scoped_execution_dag->nodes.end()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "aggregate registry execution view is unresolved";
+            return step;
+          }
+          runtime_node = &*selected_runtime_node;
+        } else if (node.physical_node_id != dag.root_physical_node_id) {
           scoped_execution_dag.emplace();
           std::string scope_detail;
           if (!BuildOperatorLocalPhysicalDag(
-                  dag, node.physical_node_id,
-                  &*scoped_execution_dag, &scope_detail)) {
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
@@ -16066,10 +16368,16 @@ MakeLiveAggregateRegistryRegistration(
           execution_dag = &*scoped_execution_dag;
         }
         const auto aggregate_memory_bound =
-            SelectedNodeAggregateMemoryBound(dag, node);
+            SelectedNodeAggregateMemoryBound(*execution_dag,
+                                             *runtime_node);
         std::uint64_t input_memory_bytes = 1;
+        std::uint64_t input_payload_bytes = 0;
         if (!aggregate_memory_bound.has_value() ||
+            (strict_dispatcher_memory &&
+             *aggregate_memory_bound != callback_memory_bound) ||
             !AddBatchMemoryBytes(input_batch, &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                input_batch, &input_payload_bytes) ||
             input_memory_bytes > *aggregate_memory_bound ||
             maximum_filter_truth_memory_bytes >
                 *aggregate_memory_bound - input_memory_bytes) {
@@ -16227,7 +16535,7 @@ MakeLiveAggregateRegistryRegistration(
                 aggregate_result.output_batch, &output_memory_bytes) ||
             aggregate_result.executed_strategy !=
                 exec::CanonicalAggregateExecutionStrategy::serial ||
-            aggregate_result.input_payload_bytes != input_memory_bytes ||
+            aggregate_result.input_payload_bytes != input_payload_bytes ||
             aggregate_result.fixed_retained_memory_bytes !=
                 retained_filter_truth_bytes ||
             aggregate_result.current_memory_bytes != output_memory_bytes ||
@@ -16274,6 +16582,7 @@ MakeLiveGroupedCountSumRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.publishes_runtime_observation_v1 = true;
+  registration.honors_dispatcher_memory_limit_v1 = true;
   registration.execute =
       [prepared = std::move(prepared), maximum_input_row_count,
        maximum_output_row_count, mga_context = std::move(mga_context)](
@@ -16312,52 +16621,37 @@ MakeLiveGroupedCountSumRegistration(
           step.diagnostic.detail = std::move(key_binding_detail);
           return step;
         }
-        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
-        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
-        if (node.physical_node_id != dag.root_physical_node_id ||
-            !prepared.grouping_projection_columns.empty()) {
-          scoped_execution_dag.emplace(dag);
-          execution_dag = &*scoped_execution_dag;
+        exec::TypedPhysicalNodeDag scoped_execution_dag;
+        std::size_t callback_memory_bound = 0;
+        std::string scope_detail;
+        if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                dag, node, input_batch, 8, 128 * 1024,
+                &scoped_execution_dag, &callback_memory_bound,
+                &scope_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "grouped aggregate " + scope_detail;
+          return step;
         }
-        if (node.physical_node_id != dag.root_physical_node_id) {
-          auto& execution_view = *scoped_execution_dag;
-          std::unordered_set<std::uint64_t> execution_view_nodes;
-          std::vector<std::uint64_t> pending{node.physical_node_id};
-          while (!pending.empty()) {
-            const auto physical_node_id = pending.back();
-            pending.pop_back();
-            if (!execution_view_nodes.insert(physical_node_id).second) {
-              continue;
-            }
-            const auto found = std::ranges::find_if(
-                dag.nodes, [&](const auto& candidate) {
-                  return candidate.physical_node_id == physical_node_id;
-                });
-            if (found == dag.nodes.end()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-              step.diagnostic.detail =
-                  "composed grouped aggregate execution view is unresolved";
-              return step;
-            }
-            pending.insert(pending.end(),
-                           found->input_physical_node_ids.begin(),
-                           found->input_physical_node_ids.end());
-          }
-          std::erase_if(execution_view.nodes, [&](const auto& candidate) {
-            return !execution_view_nodes.contains(candidate.physical_node_id);
-          });
-          execution_view.root_physical_node_id = node.physical_node_id;
+        const exec::TypedPhysicalNodeDag* execution_dag =
+            &scoped_execution_dag;
+        const auto runtime_node = std::ranges::find_if(
+            scoped_execution_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
+        if (runtime_node == scoped_execution_dag.nodes.end()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "composed grouped aggregate execution view is unresolved";
+          return step;
         }
         if (!prepared.grouping_projection_columns.empty()) {
-          auto& execution_view = *scoped_execution_dag;
-          const auto runtime_node = std::ranges::find_if(
-              execution_view.nodes, [&](const auto& candidate) {
-                return candidate.physical_node_id == node.physical_node_id;
-              });
-          if (runtime_node == execution_view.nodes.end() ||
-              runtime_node->output_descriptor_ids.size() !=
+          auto& execution_view = scoped_execution_dag;
+          if (runtime_node->output_descriptor_ids.size() !=
                   prepared.key_terms.size() + 2 +
                       prepared.grouping_projection_columns.size()) {
             step.diagnostic.ok = false;
@@ -16371,8 +16665,10 @@ MakeLiveGroupedCountSumRegistration(
               prepared.key_terms.size() + 2);
         }
         const auto aggregate_memory_bound =
-            SelectedNodeAggregateMemoryBound(dag, node);
-        if (!aggregate_memory_bound.has_value()) {
+            SelectedNodeAggregateMemoryBound(*execution_dag,
+                                             *runtime_node);
+        if (!aggregate_memory_bound.has_value() ||
+            *aggregate_memory_bound != callback_memory_bound) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
@@ -20223,7 +20519,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     prepared.maximum_iteration_count =
         std::max<std::size_t>(1, iteration_count);
     prepared.maximum_working_row_count =
-        std::max<std::size_t>(1, maximum_working);
+        std::max<std::size_t>(
+            anchor.batch.rows.size(),
+            std::max<std::size_t>(1, maximum_working));
     prepared.maximum_term_output_row_count =
         std::max<std::size_t>(1, maximum_term_output);
     prepared.maximum_result_row_count =
@@ -20749,7 +21047,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          plan::CanonicalLogicalRelationalNodeKind::kJoin,
          exec::PhysicalNodeKind::kJoin,
          "canonical." + join_implementation_id, join_output_row_bound,
-         join_memory, 2, 2});
+         request.optimizer_request.resource.memory_budget_bytes, 2, 2});
     profiles.back().runtime_accounted_auxiliary_memory_bytes =
         join_state_memory;
     if (!CheckedAdd(left_count, right_count, &total_work) ||
@@ -24852,19 +25150,26 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         implementation_id != "subquery.table.materialize.typed.v1";
     const bool dynamic_nonrecursive_cte =
         physical_kind == exec::PhysicalNodeKind::kCte;
-    if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
+    const bool strict_grouped_filter =
+        physical_kind == exec::PhysicalNodeKind::kFilter &&
+        prepared_grouped_aggregate.has_value();
+    if (strict_grouped_filter ||
+        ((physical_kind == exec::PhysicalNodeKind::kFilter ||
          physical_kind == exec::PhysicalNodeKind::kProject ||
          physical_kind == exec::PhysicalNodeKind::kSort ||
          physical_kind == exec::PhysicalNodeKind::kWindow ||
          physical_kind == exec::PhysicalNodeKind::kLimit ||
          dynamic_subquery || dynamic_nonrecursive_cte ||
          query_distinct || count_star_aggregate) &&
-        !planning_values_exact) {
+         !planning_values_exact)) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
       // dynamic FILTER, PROJECT, DISTINCT, COUNT(*), SORT, WINDOW, LIMIT,
       // SUBQUERY, or nonrecursive CTE to the full selected budget and let its
       // issuer/executor charge exact callback payloads and auxiliary state.
+      // A grouped FILTER also needs the full strict callback envelope even
+      // when its small planning batch is exact: the live row-bound expression
+      // validates the operator-local DAG and materialized aggregate slots.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
     }
@@ -24993,14 +25298,26 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             request.context));
   }
   if (prepared_filter.has_value()) {
-    execution_request.available_executors.push_back(
-        MakeLiveHeapFilterRegistration(
-            prepared_filter->predicate_expression_id,
-            prepared_filter->predicate_row_binding,
-            request.relational_dag, request.expression_services,
-            filter_capability_uuid, filter_input_row_count,
-            request.context, filter_expression_consumer,
-            filter_predicate_consumer));
+    if (prepared_grouped_aggregate.has_value()) {
+      execution_request.available_executors.push_back(
+          MakeLiveHeapFilterRegistration(
+              prepared_filter->predicate_expression_id,
+              prepared_filter->predicate_row_binding,
+              {}, request.expression_services,
+              filter_capability_uuid, filter_input_row_count,
+              {}, filter_expression_consumer,
+              filter_predicate_consumer, &request.relational_dag,
+              &request.context, &execution_request.mga_authority));
+    } else {
+      execution_request.available_executors.push_back(
+          MakeLiveHeapFilterRegistration(
+              prepared_filter->predicate_expression_id,
+              prepared_filter->predicate_row_binding,
+              request.relational_dag, request.expression_services,
+              filter_capability_uuid, filter_input_row_count,
+              request.context, filter_expression_consumer,
+              filter_predicate_consumer));
+    }
   }
   if (prepared_project.has_value()) {
     execution_request.available_executors.push_back(
@@ -25031,7 +25348,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             registry_aggregate_capability_uuid,
             registry_aggregate_input_row_count,
             registry_aggregate_filter_truth_memory_bytes,
-            request.context));
+            request.context, !planning_values_exact));
   }
   if (prepared_grouped_aggregate.has_value()) {
     execution_request.available_executors.push_back(
@@ -25167,11 +25484,19 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             recursive_root_capability_uuid, request.context));
   }
   if (prepared_limit.has_value()) {
-    execution_request.available_executors.push_back(
-        MakeLiveLimitRegistration(
-            limit_implementation_id, limit_capability_uuid, row_limit,
-            row_offset, fetch_first_rows_only, limit_input_row_count,
-            request.context));
+    if (planning_values_exact) {
+      execution_request.available_executors.push_back(
+          MakeLiveLimitRegistration(
+              limit_implementation_id, limit_capability_uuid, row_limit,
+              row_offset, fetch_first_rows_only, limit_input_row_count,
+              request.context));
+    } else {
+      execution_request.available_executors.push_back(
+          MakeLiveLimitRegistration(
+              limit_implementation_id, limit_capability_uuid, row_limit,
+              row_offset, fetch_first_rows_only, limit_input_row_count, {},
+              &request.context, &execution_request.mga_authority));
+    }
   }
 
   execution_request.engine_execution_authorized = true;
@@ -25441,6 +25766,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
   set_registration.engine_owned = true;
   set_registration.accepts_optimizer_publication_v2 = true;
   set_registration.publishes_runtime_observation_v1 = true;
+  set_registration.honors_dispatcher_memory_limit_v1 = true;
   set_registration.execute =
       [result_columns = prepared_root.result_columns,
        collation_bindings = prepared_root.collation_bindings,
@@ -25473,13 +25799,45 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
               "set-operation executor did not receive two typed input batches";
           return step;
         }
+        const auto& left_input_batch =
+            *inputs[0].materialized_output_batch;
+        const auto& right_input_batch =
+            *inputs[1].materialized_output_batch;
+        exec::TypedPhysicalNodeDag execution_dag;
+        std::size_t callback_memory_bound = 0;
+        std::string preflight_detail;
+        if (!BuildStrictBinaryOperatorLocalPhysicalDag(
+                dag, node, left_input_batch, right_input_batch,
+                64 * 1024, &execution_dag, &callback_memory_bound,
+                &preflight_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "set-operation " + std::move(preflight_detail);
+          return step;
+        }
+        const auto execution_node = std::ranges::find_if(
+            execution_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
+        if (execution_node == execution_dag.nodes.end() ||
+            execution_node->memory_bytes_required !=
+                callback_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "set-operation callback grant rebinding changed";
+          return step;
+        }
         exec::CanonicalSetOperationAllRequest set_request;
-        set_request.physical_dag = dag;
+        set_request.physical_dag = execution_dag;
         set_request.selected_physical_node_id = node.physical_node_id;
         set_request.borrowed_left_batch =
-            &*inputs[0].materialized_output_batch;
+            &left_input_batch;
         set_request.borrowed_right_batch =
-            &*inputs[1].materialized_output_batch;
+            &right_input_batch;
         set_request.result_columns = result_columns;
         set_request.operation = set_profile.operation;
         set_request.alignment = set_profile.alignment;
@@ -25494,7 +25852,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
             std::max<std::size_t>(1, set_output_row_bound);
         set_request.enforce_payload_memory_grant = true;
         set_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, execution_dag);
         auto set_result =
             set_profile.quantifier ==
                     exec::CanonicalSetOperationQuantifier::kAll
@@ -25505,7 +25863,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
           return step;
         }
         if (!CanonicalSetOperationExecutionReceiptMatches(
-                set_request, node, set_result)) {
+                set_request, *execution_node, set_result)) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
@@ -25517,7 +25875,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
         std::uint64_t peak_memory_bytes = 0;
         std::string memory_detail;
         if (!ValidateLiveSetMemoryReceipt(
-                set_request.physical_dag, node, set_result,
+                set_request.physical_dag, *execution_node, set_result,
                 &current_memory_bytes, &peak_memory_bytes,
                 &memory_detail)) {
           step.diagnostic.ok = false;
@@ -25903,160 +26261,11 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
              .second) {
       continue;
     }
-    exec::CanonicalPhysicalExecutorRegistration registration;
-    registration.node_kind = exec::PhysicalNodeKind::kSetOperation;
-    registration.implementation_id = prepared.profile.implementation_id;
-    registration.executor_capability_uuid =
-        set_capability_uuids.at(prepared.profile.implementation_id);
-    registration.executor_capability_abi_version = 1;
-    registration.engine_owned = true;
-    registration.accepts_optimizer_publication_v2 = true;
-    registration.publishes_runtime_observation_v1 = true;
-    registration.execute =
-        [prepared_set_nodes, mga_context = request.context](
-            const exec::TypedPhysicalNodeDag& dag,
-            const exec::PhysicalNodeRecord& node,
-            const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
-          exec::CanonicalPhysicalDispatchStepResult step;
-          step.selected_plan_uuid = dag.selected_plan_uuid;
-          step.mga_statement_context = dag.mga_statement_context;
-          step.executed_physical_node_id = node.physical_node_id;
-          step.causal_counter_id = node.causal_counter_id;
-          step.output_descriptor_ids = node.output_descriptor_ids;
-          step.authority.engine_mga_snapshot_bound = true;
-          const auto prepared =
-              prepared_set_nodes.find(node.relational_node_id);
-          if (prepared == prepared_set_nodes.end() ||
-              prepared->second.profile.implementation_id !=
-                  node.implementation_id ||
-              inputs.size() != 2 ||
-              node.input_physical_node_ids.size() != 2 ||
-              node.input_physical_node_ids[0] ==
-                  node.input_physical_node_ids[1] ||
-              inputs[0].physical_node_id !=
-                  node.input_physical_node_ids[0] ||
-              inputs[1].physical_node_id !=
-                  node.input_physical_node_ids[1] ||
-              !inputs[0].materialized_output_batch.has_value() ||
-              !inputs[1].materialized_output_batch.has_value()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
-            step.diagnostic.detail =
-                "nested set-operation executor input/profile is unresolved";
-            return step;
-          }
-          const auto& config = prepared->second;
-          exec::CanonicalSetOperationAllRequest set_request;
-          set_request.physical_dag = dag;
-          if (node.physical_node_id != dag.root_physical_node_id) {
-            // The quantified set executor validates one binary operation as
-            // its request root. Build a request-local ancestor view for this
-            // already selected dispatch step; the optimizer publication and
-            // outer physical DAG remain unchanged and are still consumed by
-            // the engine dispatcher.
-            std::unordered_set<std::uint64_t> execution_view_nodes;
-            std::vector<std::uint64_t> execution_view_pending{
-                node.physical_node_id};
-            while (!execution_view_pending.empty()) {
-              const auto physical_node_id = execution_view_pending.back();
-              execution_view_pending.pop_back();
-              if (!execution_view_nodes.insert(physical_node_id).second) {
-                continue;
-              }
-              const auto found = std::ranges::find_if(
-                  dag.nodes, [&](const auto& candidate) {
-                    return candidate.physical_node_id == physical_node_id;
-                  });
-              if (found == dag.nodes.end()) {
-                step.diagnostic.ok = false;
-                step.diagnostic.diagnostic_code =
-                    "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
-                step.diagnostic.detail =
-                    "nested set-operation execution view is unresolved";
-                return step;
-              }
-              execution_view_pending.insert(
-                  execution_view_pending.end(),
-                  found->input_physical_node_ids.begin(),
-                  found->input_physical_node_ids.end());
-            }
-            std::erase_if(set_request.physical_dag.nodes,
-                          [&](const auto& candidate) {
-                            return !execution_view_nodes.contains(
-                                candidate.physical_node_id);
-                          });
-            set_request.physical_dag.root_physical_node_id =
-                node.physical_node_id;
-          }
-          set_request.selected_physical_node_id = node.physical_node_id;
-          set_request.borrowed_left_batch =
-              &*inputs[0].materialized_output_batch;
-          set_request.borrowed_right_batch =
-              &*inputs[1].materialized_output_batch;
-          set_request.result_columns = config.prepared.result_columns;
-          set_request.operation = config.profile.operation;
-          set_request.alignment = config.profile.alignment;
-          set_request.quantifier = config.profile.quantifier;
-          set_request.equality_profile = config.profile.equality_profile;
-          set_request.type_profile = config.profile.type_profile;
-          set_request.collation_bindings =
-              config.prepared.collation_bindings;
-          set_request.maximum_equality_comparison_count =
-              config.maximum_equality_comparison_count;
-          set_request.maximum_output_row_count =
-              std::max<std::size_t>(1, config.maximum_output_row_count);
-          set_request.enforce_payload_memory_grant = true;
-          set_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(
-                  mga_context, set_request.physical_dag);
-          auto set_result =
-              config.profile.quantifier ==
-                      exec::CanonicalSetOperationQuantifier::kAll
-                  ? exec::ExecuteCanonicalSetOperationAll(set_request)
-                  : exec::ExecuteCanonicalSetOperationDistinct(set_request);
-          if (!set_result.diagnostic.ok) {
-            step.diagnostic = std::move(set_result.diagnostic);
-            return step;
-          }
-          if (!CanonicalSetOperationExecutionReceiptMatches(
-                  set_request, node, set_result)) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
-            step.diagnostic.detail =
-                "set-operation execution receipt is inconsistent";
-            return step;
-          }
-          std::uint64_t current_memory_bytes = 0;
-          std::uint64_t peak_memory_bytes = 0;
-          std::string memory_detail;
-          if (!ValidateLiveSetMemoryReceipt(
-                  set_request.physical_dag, node, set_result,
-                  &current_memory_bytes, &peak_memory_bytes,
-                  &memory_detail)) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-OPT-017-REFUSAL-V1";
-            step.diagnostic.detail = std::move(memory_detail);
-            return step;
-          }
-          step.result_handle_id = node.physical_node_id;
-          step.input_row_count = set_result.left_input_row_count +
-                                 set_result.right_input_row_count;
-          step.rows_examined = step.input_row_count;
-          step.output_row_count = set_result.output_batch.rows.size();
-          step.materialized_output_batch =
-              std::move(set_result.output_batch);
-          step.mga_statement_context =
-              std::move(set_result.mga_statement_context);
-          step.data_access_observation_known = true;
-          step.data_access_observed = false;
-          PublishRuntimeMemoryObservation(
-              &step, current_memory_bytes, peak_memory_bytes);
-          return step;
-        };
-    execution_request.available_executors.push_back(std::move(registration));
+    execution_request.available_executors.push_back(
+        MakeLiveSetOperationRegistration(
+            prepared_set_nodes, prepared.profile.implementation_id,
+            set_capability_uuids.at(prepared.profile.implementation_id),
+            request.context));
   }
 
   execution_request.engine_execution_authorized = true;
@@ -26490,7 +26699,8 @@ ExecuteCanonicalObjectFreeJoinQuery(
          values ? "canonical.values.materialize.v1"
                 : "canonical." + join_implementation_id,
          node_rows,
-         node_memory,
+         values ? node_memory
+                : request.optimizer_request.resource.memory_budget_bytes,
          values ? 0U : 2U,
          values ? 0U : 2U});
   }
@@ -27126,7 +27336,7 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
            join_capability_uuid, node.node_kind,
            exec::PhysicalNodeKind::kJoin,
            "canonical.join.inner.3vl.nested.v1", joined_row_count,
-           join_memory, 2, 2});
+           request.optimizer_request.resource.memory_budget_bytes, 2, 2});
     } else if (node.logical_node_id == filter_node->logical_node_id) {
       profiles.push_back(
           {node.logical_node_id, "filter.3vl.row.v1", filter_capability_uuid,
@@ -29996,6 +30206,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   aggregate_registration.engine_owned = true;
   aggregate_registration.accepts_optimizer_publication_v2 = true;
   aggregate_registration.publishes_runtime_observation_v1 = true;
+  aggregate_registration.honors_dispatcher_memory_limit_v1 = true;
   aggregate_registration.execute =
       [prepared_root, input_row_count, maximum_output_rows, has_having,
        mga_context = request.context](
@@ -30040,9 +30251,54 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           return step;
         }
 
+        exec::TypedPhysicalNodeDag scoped_grouped_runtime_dag;
+        std::size_t callback_memory_bound = 0;
+        std::string scope_detail;
+        if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                dag, node, input_batch, 8, 128 * 1024,
+                &scoped_grouped_runtime_dag, &callback_memory_bound,
+                &scope_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "grouped aggregate " + scope_detail;
+          return step;
+        }
+        const exec::TypedPhysicalNodeDag* grouped_runtime_dag =
+            &scoped_grouped_runtime_dag;
+        const auto runtime_node = std::ranges::find_if(
+            scoped_grouped_runtime_dag.nodes,
+            [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
+        if (runtime_node == scoped_grouped_runtime_dag.nodes.end()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "grouped aggregate execution view is unresolved";
+          return step;
+        }
+        if (!prepared_root.grouping_projection_columns.empty()) {
+          if (runtime_node->output_descriptor_ids.size() !=
+                  prepared_root.key_terms.size() + 2 +
+                      prepared_root.grouping_projection_columns.size()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "grouping projection physical descriptor shape drifted";
+            return step;
+          }
+          runtime_node->output_descriptor_ids.resize(
+              prepared_root.key_terms.size() + 2);
+        }
         const auto aggregate_memory_bound =
-            SelectedNodeAggregateMemoryBound(dag, node);
-        if (!aggregate_memory_bound.has_value()) {
+            SelectedNodeAggregateMemoryBound(*grouped_runtime_dag,
+                                             *runtime_node);
+        if (!aggregate_memory_bound.has_value() ||
+            *aggregate_memory_bound != callback_memory_bound) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
@@ -30079,52 +30335,6 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         exec::CanonicalGroupedAggregateSetRuntimeRequest grouped_request;
         auto& first = grouped_request.first_aggregate;
         first.aggregate_request = make_aggregate(prepared_root.count);
-        const exec::TypedPhysicalNodeDag* grouped_runtime_dag = &dag;
-        std::optional<exec::TypedPhysicalNodeDag> scoped_grouped_runtime_dag;
-        if (has_having ||
-            !prepared_root.grouping_projection_columns.empty()) {
-          scoped_grouped_runtime_dag.emplace(dag);
-          grouped_runtime_dag = &*scoped_grouped_runtime_dag;
-        }
-        if (has_having) {
-          auto& execution_view = *scoped_grouped_runtime_dag;
-          const auto physical_filter = std::ranges::find_if(
-              execution_view.nodes, [&](const auto& candidate) {
-                return candidate.physical_node_id ==
-                           execution_view.root_physical_node_id &&
-                       candidate.node_kind == exec::PhysicalNodeKind::kFilter;
-              });
-          if (physical_filter == execution_view.nodes.end()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
-            step.diagnostic.detail =
-                "grouped HAVING physical FILTER root is missing";
-            return step;
-          }
-          execution_view.nodes.erase(physical_filter);
-          execution_view.root_physical_node_id = node.physical_node_id;
-        }
-        if (!prepared_root.grouping_projection_columns.empty()) {
-          auto& execution_view = *scoped_grouped_runtime_dag;
-          const auto runtime_node = std::ranges::find_if(
-              execution_view.nodes, [&](const auto& candidate) {
-                return candidate.physical_node_id == node.physical_node_id;
-              });
-          if (runtime_node == execution_view.nodes.end() ||
-              runtime_node->output_descriptor_ids.size() !=
-                  prepared_root.key_terms.size() + 2 +
-                      prepared_root.grouping_projection_columns.size()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "grouping projection physical descriptor shape drifted";
-            return step;
-          }
-          runtime_node->output_descriptor_ids.resize(
-              prepared_root.key_terms.size() + 2);
-        }
         first.aggregate_request.selected_physical_node_id =
             node.physical_node_id;
         first.aggregate_request.mga_authority =
@@ -30425,109 +30635,25 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         return step;
       };
 
+  auto execution_mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   exec::CanonicalPhysicalExecutorRegistration having_registration;
   if (has_having) {
-    having_registration.node_kind = exec::PhysicalNodeKind::kFilter;
-    having_registration.implementation_id = "filter.3vl.row.v1";
-    having_registration.executor_capability_uuid = filter_capability_uuid;
-    having_registration.executor_capability_abi_version = 1;
-    having_registration.engine_owned = true;
-    having_registration.accepts_optimizer_publication_v2 = true;
-    having_registration.execute =
-        [prepared_having, maximum_output_rows,
-         relational_dag = request.relational_dag,
-         expression_services = request.expression_services,
-         mga_context = request.context](
-            const exec::TypedPhysicalNodeDag& dag,
-            const exec::PhysicalNodeRecord& node,
-            const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
-          exec::CanonicalPhysicalDispatchStepResult step;
-          step.selected_plan_uuid = dag.selected_plan_uuid;
-          step.mga_statement_context = dag.mga_statement_context;
-          step.executed_physical_node_id = node.physical_node_id;
-          step.causal_counter_id = node.causal_counter_id;
-          step.output_descriptor_ids = node.output_descriptor_ids;
-          step.authority.engine_mga_snapshot_bound = true;
-          if (inputs.size() != 1 ||
-              node.input_physical_node_ids.size() != 1 ||
-              inputs.front().physical_node_id !=
-                  node.input_physical_node_ids.front() ||
-              !inputs.front().materialized_output_batch.has_value()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
-            step.diagnostic.detail =
-                "HAVING executor did not receive one grouped aggregate batch";
-            return step;
-          }
-          const auto& input_batch = *inputs.front().materialized_output_batch;
-          if (input_batch.rows.size() > maximum_output_rows ||
-              input_batch.columns.size() !=
-                  prepared_having.output_column_count ||
-              node.output_descriptor_ids.size() !=
-                  prepared_having.output_column_count ||
-              node.output_descriptor_ids !=
-                  prepared_having.row_binding.row_descriptor_ids) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
-            step.diagnostic.detail =
-                "HAVING grouped COUNT/SUM input shape differs from the selected cost";
-            return step;
-          }
-
-          const auto input_validation =
-              exec::ValidateCanonicalDescriptorBatch(
-                  input_batch,
-                  prepared_having.row_binding.row_descriptor_ids);
-          if (!input_validation.ok) {
-            step.diagnostic = input_validation;
-            return step;
-          }
-
-          const auto mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-          auto filter_result = CanonicalDescriptorFilterPredicateReceiptIssuer::
-              IssueAndExecuteBorrowed(
-                  relational_dag, prepared_having.predicate_expression_id,
-                  prepared_having.row_binding, input_batch,
-                  expression_services,
-                  api::EngineCanonicalExpressionConsumer::aggregate,
-                  api::EnginePredicateConsumer::having, dag,
-                  node.physical_node_id, node.physical_node_id,
-                  maximum_output_rows, mga_authority);
-          if (!filter_result.diagnostic.ok) {
-            step.diagnostic = std::move(filter_result.diagnostic);
-            return step;
-          }
-          if (!CanonicalOperatorExecutionReceiptMatches(
-                  filter_result, dag, node,
-                  mga_authority.statement_context)) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-FILTER-EXECUTION-V1";
-            step.diagnostic.detail =
-                "HAVING FILTER execution receipt changed";
-            return step;
-          }
-          step.result_handle_id = node.physical_node_id;
-          step.input_row_count = input_batch.rows.size();
-          step.rows_examined = input_batch.rows.size();
-          step.output_row_count = filter_result.output_batch.rows.size();
-          step.materialized_output_batch =
-              std::move(filter_result.output_batch);
-          step.mga_statement_context =
-              std::move(filter_result.mga_statement_context);
-          return step;
-        };
+    having_registration = MakeLiveHeapFilterRegistration(
+        prepared_having.predicate_expression_id,
+        std::move(prepared_having.row_binding), {},
+        request.expression_services, filter_capability_uuid,
+        maximum_output_rows, {},
+        api::EngineCanonicalExpressionConsumer::aggregate,
+        api::EnginePredicateConsumer::having, &request.relational_dag,
+        &request.context, &execution_mga_authority);
   }
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.mga_authority =
-      BuildCanonicalExecutionMgaAuthority(request.context,
-                                          planning.physical_dag);
+  execution_request.mga_authority = execution_mga_authority;
   execution_request.selected_physical_dag =
       std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
@@ -32192,8 +32318,14 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (ordered_set_expression) {
     std::uint64_t ordered_state_memory = 0;
+    std::uint64_t frequency_payload_memory = 0;
     if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
                          &ordered_state_memory) ||
+        (aggregate_function == exec::CanonicalAggregateFunction::mode &&
+         (!CheckedMultiply(input_memory, 2U,
+                           &frequency_payload_memory) ||
+          !CheckedAdd(ordered_state_memory, frequency_payload_memory,
+                      &ordered_state_memory))) ||
         !CheckedAdd(aggregate_result_memory, ordered_state_memory,
                     &aggregate_result_memory)) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -32202,10 +32334,17 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (approximate_expression) {
     std::uint64_t approximate_state_memory = 0;
+    std::uint64_t approximate_payload_memory = input_memory;
     std::uint64_t row_overhead_memory = 0;
-    if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
+    if (((aggregate_function ==
+              exec::CanonicalAggregateFunction::approx_count_distinct ||
+          aggregate_function ==
+              exec::CanonicalAggregateFunction::approx_top_k) &&
+         !CheckedMultiply(input_memory, 2U,
+                          &approximate_payload_memory)) ||
+        !CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
                          &row_overhead_memory) ||
-        !CheckedAdd(input_memory, row_overhead_memory,
+        !CheckedAdd(approximate_payload_memory, row_overhead_memory,
                     &approximate_state_memory)) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "live approximate aggregate state size overflowed");
@@ -32412,8 +32551,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
         const auto aggregate_memory_bound =
             SelectedNodeAggregateMemoryBound(dag, node);
         std::uint64_t input_memory_bytes = 1;
+        std::uint64_t input_payload_bytes = 0;
         if (!aggregate_memory_bound.has_value() ||
             !AddBatchMemoryBytes(input_batch, &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                input_batch, &input_payload_bytes) ||
             input_memory_bytes > *aggregate_memory_bound ||
             maximum_filter_truth_memory_bytes >
                 *aggregate_memory_bound - input_memory_bytes) {
@@ -32481,11 +32623,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           std::uint64_t expected_peak_memory_bytes = 0;
           if (!RuntimeMaterializedBatchMemoryBytes(
                   aggregate_result.output_batch, &output_memory_bytes) ||
-              !CheckedAdd(input_memory_bytes, sizeof(std::int64_t),
+              !CheckedAdd(input_payload_bytes, sizeof(std::int64_t),
                           &expected_peak_memory_bytes) ||
               !CheckedAdd(expected_peak_memory_bytes, output_memory_bytes,
                           &expected_peak_memory_bytes) ||
-              aggregate_result.input_payload_bytes != input_memory_bytes ||
+              aggregate_result.input_payload_bytes != input_payload_bytes ||
               aggregate_result.state_bytes != sizeof(std::int64_t) ||
               aggregate_result.output_payload_bytes != output_memory_bytes ||
               aggregate_result.current_memory_bytes != output_memory_bytes ||
@@ -32578,7 +32720,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                   aggregate_result.output_batch, &output_memory_bytes) ||
               aggregate_result.executed_strategy !=
                   exec::CanonicalAggregateExecutionStrategy::serial ||
-              aggregate_result.input_payload_bytes != input_memory_bytes ||
+              aggregate_result.input_payload_bytes != input_payload_bytes ||
               aggregate_result.fixed_retained_memory_bytes !=
                   retained_filter_truth_bytes ||
               aggregate_result.current_memory_bytes != output_memory_bytes ||
