@@ -5309,7 +5309,9 @@ BuildEngineProjectedNativeBindingContext(
         limit_predecessor_expression_ids != nullptr &&
         limit_relation->output_expression_ids ==
             *limit_predecessor_expression_ids &&
-        limit_relation->limit_expression_ids.size() == 1 &&
+        (limit_relation->limit_expression_ids.size() == 1 ||
+         (limit_relation->limit_expression_ids.size() == 2 &&
+          filter_relation == nullptr)) &&
         limit_relation->relation_source_ids.empty() &&
         limit_relation->values_row_ids.empty() &&
         limit_relation->window_invocation_ids.empty() &&
@@ -5723,6 +5725,7 @@ BuildEngineProjectedNativeBindingContext(
       }
     }
     const NativeExpressionAstNode* limit_value = nullptr;
+    const NativeExpressionAstNode* limit_offset_value = nullptr;
     if (limit_relation != nullptr) {
       const auto value = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
@@ -5775,6 +5778,43 @@ BuildEngineProjectedNativeBindingContext(
         return fail("catalog_join_limit_value_invalid");
       }
       limit_value = &*value;
+      if (limit_relation->limit_expression_ids.size() == 2) {
+        const auto offset = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     limit_relation->limit_expression_ids[1];
+            });
+        std::uint64_t parsed_offset = 0;
+        const auto converted_offset =
+            offset == ast.expressions.end()
+                ? std::from_chars_result{}
+                : std::from_chars(
+                      offset->spelling.data(),
+                      offset->spelling.data() + offset->spelling.size(),
+                      parsed_offset);
+        if (!numeric_literal ||
+            value->structural_literal_occurrence_id != 1 ||
+            offset == ast.expressions.end() ||
+            offset->expression_kind != NativeExpressionAstKind::kLiteral ||
+            offset->literal_kind != NativeLiteralAstKind::kNumeric ||
+            offset->spelling.empty() ||
+            (offset->spelling.size() > 1 &&
+             offset->spelling.front() == '0') ||
+            !offset->qualified_identifier.empty() ||
+            !offset->child_expression_ids.empty() ||
+            !offset->operator_name.empty() ||
+            offset->structural_literal_occurrence_id != 2 ||
+            offset->structural_parameter_occurrence_id != 0 ||
+            offset->structural_variable_occurrence_id != 0 ||
+            converted_offset.ec != std::errc{} ||
+            converted_offset.ptr !=
+                offset->spelling.data() + offset->spelling.size() ||
+            parsed_offset > static_cast<std::uint64_t>(
+                                std::numeric_limits<std::int64_t>::max())) {
+          return fail("catalog_join_limit_offset_value_invalid");
+        }
+        limit_offset_value = &*offset;
+      }
       std::unordered_set<std::uint32_t> admitted_expression_ids;
       std::unordered_set<std::uint32_t> active_expression_ids;
       const auto find_expression = [&](const std::uint32_t expression_id) {
@@ -5801,6 +5841,12 @@ BuildEngineProjectedNativeBindingContext(
       };
       bool exact_expression_inventory =
           admit_expression(admit_expression, limit_value->expression_id, 1);
+      if (limit_offset_value != nullptr) {
+        exact_expression_inventory =
+            exact_expression_inventory &&
+            admit_expression(admit_expression,
+                             limit_offset_value->expression_id, 1);
+      }
       for (const auto* source_relation : source_relations) {
         for (const auto expression_id : source_relation->output_expression_ids) {
           exact_expression_inventory =
@@ -5877,7 +5923,9 @@ BuildEngineProjectedNativeBindingContext(
       bool exact_source_expression_inventory =
           ast.expressions.size() ==
           source_count + project_identifiers.size() + filter_expression_count +
-              static_cast<std::size_t>(limit_value != nullptr);
+              (limit_relation == nullptr
+                   ? std::size_t{0}
+                   : limit_relation->limit_expression_ids.size());
       for (const auto* source_relation : source_relations) {
         if (!exact_source_expression_inventory ||
             source_relation->output_expression_ids.size() != 1) {
@@ -6728,17 +6776,6 @@ BuildEngineProjectedNativeBindingContext(
           statement_context.descriptor_profiles, [](const auto& candidate) {
             return candidate.profile_kind == 1 && candidate.slot == 0;
           });
-      const auto literal_profile =
-          limit_value != nullptr &&
-                  limit_value->expression_kind ==
-                      NativeExpressionAstKind::kLiteral &&
-                  limit_value->structural_literal_occurrence_id != 0 &&
-                  limit_value->structural_literal_occurrence_id <=
-                      statement_context.literal_statement_descriptor_profiles
-                          .size()
-              ? &statement_context.literal_statement_descriptor_profiles[
-                    limit_value->structural_literal_occurrence_id - 1]
-              : nullptr;
       if (limit_value == nullptr ||
           numeric_profile == statement_context.descriptor_profiles.end() ||
           numeric_profile->nullable ||
@@ -6746,8 +6783,22 @@ BuildEngineProjectedNativeBindingContext(
           !CanonicalUuidBytes(numeric_profile->type_uuid).has_value()) {
         return fail("catalog_join_limit_numeric_descriptor_unavailable");
       }
-      if (limit_value->expression_kind ==
-          NativeExpressionAstKind::kLiteral) {
+      const std::array<const NativeExpressionAstNode*, 2> limit_values{
+          limit_value, limit_offset_value};
+      for (const auto* bound_value : limit_values) {
+        if (bound_value == nullptr ||
+            bound_value->expression_kind !=
+                NativeExpressionAstKind::kLiteral) {
+          continue;
+        }
+        const auto literal_profile =
+            bound_value->structural_literal_occurrence_id != 0 &&
+                    bound_value->structural_literal_occurrence_id <=
+                        statement_context
+                            .literal_statement_descriptor_profiles.size()
+                ? &statement_context.literal_statement_descriptor_profiles[
+                      bound_value->structural_literal_occurrence_id - 1]
+                : nullptr;
         NativeDescriptorBindingInput descriptor;
         descriptor.descriptor_id =
             static_cast<std::uint32_t>(context.descriptors.size() + 1);
@@ -6764,9 +6815,9 @@ BuildEngineProjectedNativeBindingContext(
         context.descriptors.push_back(std::move(descriptor));
         context.expressions.push_back(
             {limit_binding_id, limit_binding_id, std::nullopt, std::nullopt,
-             limit_value->structural_literal_occurrence_id,
-             limit_value->structural_parameter_occurrence_id,
-             limit_value->structural_variable_occurrence_id});
+             bound_value->structural_literal_occurrence_id,
+             bound_value->structural_parameter_occurrence_id,
+             bound_value->structural_variable_occurrence_id});
       }
       std::vector<NativeOutputBindingInput> predecessor_outputs;
       for (const auto& output : context.outputs) {

@@ -36244,8 +36244,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       (limit_relation == nullptr ||
        (catalog_join_limit_sources_are_ordinary &&
         bounded_model_source_count == 0 &&
-        limit_relation->limit_expression_ids.size() == 1 &&
-        limit_relation->semantic_variant_id == "limit.bound-count.v1" &&
+        ((limit_relation->limit_expression_ids.size() == 1 &&
+          limit_relation->semantic_variant_id == "limit.bound-count.v1") ||
+         (limit_relation->limit_expression_ids.size() == 2 &&
+          catalog_filter_relation == nullptr &&
+          limit_relation->semantic_variant_id ==
+              "limit.bound-count-offset.v1")) &&
         limit_relation->input_relation_ids ==
             std::vector<std::uint32_t>{
                 catalog_project_relation != nullptr
@@ -37179,7 +37183,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
     }
     std::unordered_set<std::uint32_t> bound_ids;
-    for (const auto expression_id : limit_relation->limit_expression_ids) {
+    for (std::size_t bound_ordinal = 0;
+         bound_ordinal < limit_relation->limit_expression_ids.size();
+         ++bound_ordinal) {
+      const auto expression_id =
+          limit_relation->limit_expression_ids[bound_ordinal];
       const auto expression = expressions_by_id.find(expression_id);
       const bool numeric_literal =
           expression != expressions_by_id.end() &&
@@ -37197,7 +37205,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool exact_occurrence =
           catalog_join_relation == nullptr ||
           (numeric_literal &&
-           expression->second->structural_literal_occurrence_id != 0 &&
+           expression->second->structural_literal_occurrence_id ==
+               (limit_relation->limit_expression_ids.size() == 2
+                    ? bound_ordinal + 1
+                    : 1) &&
            expression->second->structural_parameter_occurrence_id == 0 &&
            expression->second->structural_variable_occurrence_id == 0) ||
           (parameter_value &&
@@ -38029,21 +38040,23 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       descriptor_offset += 2;
     }
     if (limit_relation != nullptr) {
-      const auto limit_expression = expressions_by_id.find(
-          limit_relation->limit_expression_ids.front());
-      if (limit_expression == expressions_by_id.end() ||
-          descriptor_offset >= native.descriptors.size() ||
-          descriptor_offset >= bound.descriptor_refs.size() ||
-          limit_expression->second->result_descriptor_id !=
-              native.descriptors[descriptor_offset].descriptor_id ||
-          bound.descriptor_refs[descriptor_offset] !=
-              native.descriptors[descriptor_offset].descriptor_uuid) {
-        AddNativeRelationalLoweringError(
-            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed JOIN LIMIT descriptor lineage is incomplete");
-        return envelope;
+      for (const auto expression_id :
+           limit_relation->limit_expression_ids) {
+        const auto limit_expression = expressions_by_id.find(expression_id);
+        if (limit_expression == expressions_by_id.end() ||
+            descriptor_offset >= native.descriptors.size() ||
+            descriptor_offset >= bound.descriptor_refs.size() ||
+            limit_expression->second->result_descriptor_id !=
+                native.descriptors[descriptor_offset].descriptor_id ||
+            bound.descriptor_refs[descriptor_offset] !=
+                native.descriptors[descriptor_offset].descriptor_uuid) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed JOIN LIMIT descriptor lineage is incomplete");
+          return envelope;
+        }
+        ++descriptor_offset;
       }
-      ++descriptor_offset;
     }
     std::vector<std::uint32_t> accumulated_join_projection_ids;
     std::vector<std::uint32_t> join_output_ids;

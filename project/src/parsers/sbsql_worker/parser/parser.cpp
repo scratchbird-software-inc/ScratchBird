@@ -4601,7 +4601,7 @@ class NativeRelationalParser final {
     }
     const Token* join_end = query_end;
     std::optional<std::uint32_t> join_filter_predicate_id;
-    std::optional<std::uint32_t> join_limit_expression_id;
+    std::vector<std::uint32_t> join_limit_expression_ids;
     const auto parsed_model_source_count = std::ranges::count_if(
         parsed_sources, [](const auto& source) {
           return source.source_kind !=
@@ -4815,9 +4815,48 @@ class NativeRelationalParser final {
       } else {
         bound.expression_kind = NativeExpressionAstKind::kParameter;
       }
-      join_limit_expression_id = bound.expression_id;
+      join_limit_expression_ids.push_back(bound.expression_id);
       document_.expressions.push_back(std::move(bound));
       query_end = &bound_token;
+      if (!join_filter_predicate_id.has_value() &&
+          bound_token.kind == TokenKind::kNumericLiteral && !AtEnd() &&
+          IsWord(Current(), "OFFSET")) {
+        Consume();
+        if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+          Refuse("catalog_join_limit_offset_required",
+                 "bounded catalog JOIN OFFSET requires one unsigned int64 "
+                 "literal");
+          return FinishRefusal();
+        }
+        const Token& offset_token = Consume();
+        std::uint64_t parsed_offset = 0;
+        const auto converted = std::from_chars(
+            offset_token.text.data(),
+            offset_token.text.data() + offset_token.text.size(),
+            parsed_offset);
+        if (offset_token.text.empty() ||
+            (offset_token.text.size() > 1 &&
+             offset_token.text.front() == '0') ||
+            converted.ec != std::errc{} ||
+            converted.ptr !=
+                offset_token.text.data() + offset_token.text.size() ||
+            parsed_offset > static_cast<std::uint64_t>(
+                                std::numeric_limits<std::int64_t>::max())) {
+          Refuse("catalog_join_limit_offset_invalid",
+                 "bounded catalog JOIN OFFSET requires one canonical "
+                 "nonnegative int64 literal");
+          return FinishRefusal();
+        }
+        NativeExpressionAstNode offset;
+        offset.expression_id = NextExpressionId();
+        offset.expression_kind = NativeExpressionAstKind::kLiteral;
+        offset.literal_kind = NativeLiteralAstKind::kNumeric;
+        offset.spelling = offset_token.text;
+        offset.range = TokenSourceRange(offset_token);
+        join_limit_expression_ids.push_back(offset.expression_id);
+        document_.expressions.push_back(std::move(offset));
+        query_end = &offset_token;
+      }
     }
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
@@ -4960,7 +4999,7 @@ class NativeRelationalParser final {
       document_.relations.push_back(std::move(project));
       document_.root_relation_id = document_.relations.back().relation_id;
     }
-    if (join_limit_expression_id.has_value()) {
+    if (!join_limit_expression_ids.empty()) {
       NativeRelationAstNode limit;
       limit.relation_id = document_.root_relation_id + 1;
       limit.relation_kind = NativeRelationAstKind::kLimit;
@@ -4968,7 +5007,7 @@ class NativeRelationalParser final {
       limit.output_expression_ids =
           wildcard_projection ? joined_wildcard_ids
                               : projection_expression_ids;
-      limit.limit_expression_ids = {*join_limit_expression_id};
+      limit.limit_expression_ids = join_limit_expression_ids;
       limit.range = Span(select_token, *query_end);
       document_.relations.push_back(std::move(limit));
       document_.root_relation_id = document_.relations.back().relation_id;
