@@ -275,10 +275,18 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                   "terminal_descriptor_project_tail");
   }
-  if (filter != nullptr &&
-      !consume_unary(RelationalDagNodeKind::kFilter, filter)) {
-    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "terminal_filter_tail");
+  const RelationalDagNode* terminal_filter = nullptr;
+  const RelationalDagNode* local_filter = nullptr;
+  if (filter != nullptr) {
+    if (join_root == filter) {
+      if (!consume_unary(RelationalDagNodeKind::kFilter, filter)) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                      "terminal_filter_tail");
+      }
+      terminal_filter = filter;
+    } else {
+      local_filter = filter;
+    }
   }
   if (join_root == nullptr ||
       join_root->node_kind != RelationalDagNodeKind::kJoin ||
@@ -291,19 +299,29 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
            node.required_property_uuids.empty() &&
            node.delivered_property_uuids.empty();
   };
-  const auto* filter_input = join_root;
+  const auto* filter_input =
+      local_filter != nullptr
+          ? (local_filter->input_node_ids.size() == 1
+                 ? node_for(local_filter->input_node_ids.front())
+                 : nullptr)
+          : join_root;
   if (filter != nullptr &&
       (filter->semantic_variant_id !=
            "filter.catalog-column-numeric-comparison.v1" ||
+       filter_input == nullptr ||
        filter->input_node_ids !=
            std::vector<std::uint32_t>{filter_input->node_id} ||
+       (local_filter != nullptr &&
+        (filter_input->node_kind != RelationalDagNodeKind::kScan ||
+         filter->shareable)) ||
        filter->bound_expression_ids.size() != 1 ||
        filter->output_descriptor_ids != filter_input->output_descriptor_ids ||
        !unary_empty(*filter))) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                   "exact_filter_tail_binding");
   }
-  const auto* project_input = filter != nullptr ? filter : join_root;
+  const auto* project_input =
+      terminal_filter != nullptr ? terminal_filter : join_root;
   if (project != nullptr &&
       (project->semantic_variant_id != "project.catalog-visible-columns.v1" ||
        project->input_node_ids !=
@@ -325,7 +343,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   }
   const auto* cte_input = project != nullptr
                               ? project
-                              : (filter != nullptr ? filter : join_root);
+                              : (terminal_filter != nullptr ? terminal_filter
+                                                            : join_root);
   if (cte != nullptr &&
       (cte->semantic_variant_id != "cte.bound.v1" ||
        cte->input_node_ids != std::vector<std::uint32_t>{cte_input->node_id} ||
@@ -358,6 +377,18 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         const auto& node = *found->second;
         if (node.node_kind == RelationalDagNodeKind::kScan) {
           return completed.insert(node_id).second;
+        }
+        if (node.node_kind == RelationalDagNodeKind::kFilter) {
+          if (&node != local_filter || node.input_node_ids.size() != 1 ||
+              node.input_node_ids.front() == node.node_id ||
+              completed.contains(node_id) ||
+              !visiting.insert(node_id).second ||
+              !validate_tree(node.input_node_ids.front())) {
+            return false;
+          }
+          visiting.erase(node_id);
+          completed.insert(node_id);
+          return true;
         }
         const bool accepted_join =
             node.node_kind == RelationalDagNodeKind::kJoin &&
@@ -400,7 +431,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         return true;
       };
   if (!validate_tree(join_root->node_id) ||
-      completed.size() != scans.size() + joins.size()) {
+      completed.size() != scans.size() + joins.size() +
+                              static_cast<std::size_t>(local_filter != nullptr)) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                   "connected_acyclic_join_output_lineage");
   }
@@ -455,22 +487,59 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor);
   }
   if (filter != nullptr) {
+    std::unordered_set<std::uint32_t> active_filter_expression_ids;
+    std::unordered_set<std::uint32_t> completed_filter_expression_ids;
+    const auto validate_filter_expression_source =
+        [&](auto&& self, const std::uint32_t expression_id,
+            const std::size_t depth) -> bool {
+      if (expression_id == 0 || depth > 64) return false;
+      if (completed_filter_expression_ids.contains(expression_id)) return true;
+      if (!active_filter_expression_ids.insert(expression_id).second) {
+        return false;
+      }
+      const auto found = expressions_by_id.find(expression_id);
+      if (found == expressions_by_id.end()) return false;
+      const auto& expression = *found->second;
+      if (expression.expression_kind ==
+          RelationalExpressionKind::kIdentifier) {
+        if (!expression.child_expression_ids.empty() ||
+            std::ranges::count(filter_input->output_descriptor_ids,
+                               expression.result_descriptor_id) != 1) {
+          return false;
+        }
+      } else {
+        for (const auto child_id : expression.child_expression_ids) {
+          if (!self(self, child_id, depth + 1)) return false;
+        }
+      }
+      active_filter_expression_ids.erase(expression_id);
+      completed_filter_expression_ids.insert(expression_id);
+      return true;
+    };
+    if (!validate_filter_expression_source(
+            validate_filter_expression_source,
+            filter->bound_expression_ids.front(), 1)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "filter_predicate_immediate_input_lineage");
+    }
+  }
+  if (filter != nullptr) {
     std::vector<const RelationalOutputRecord*> filter_outputs;
-    std::vector<const RelationalOutputRecord*> join_outputs;
+    std::vector<const RelationalOutputRecord*> input_outputs;
     for (const auto& output : relational.outputs) {
       if (output.relation_node_id == filter->node_id) {
         filter_outputs.push_back(&output);
       }
-      if (output.relation_node_id == join_root->node_id) {
-        join_outputs.push_back(&output);
+      if (output.relation_node_id == filter_input->node_id) {
+        input_outputs.push_back(&output);
       }
     }
     std::ranges::sort(filter_outputs, {}, &RelationalOutputRecord::ordinal);
-    std::ranges::sort(join_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(input_outputs, {}, &RelationalOutputRecord::ordinal);
     bool exact_filter_outputs =
         filter_outputs.size() == filter->output_descriptor_ids.size() &&
-        join_outputs.size() == join_root->output_descriptor_ids.size() &&
-        filter_outputs.size() == join_outputs.size();
+        input_outputs.size() == filter_input->output_descriptor_ids.size() &&
+        filter_outputs.size() == input_outputs.size();
     std::unordered_set<std::uint32_t> filter_output_ids;
     for (std::size_t ordinal = 0;
          exact_filter_outputs && ordinal < filter_outputs.size(); ++ordinal) {
@@ -481,13 +550,15 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           filter_output_ids.insert(filter_outputs[ordinal]->output_id).second &&
           filter_outputs[ordinal]->descriptor_id ==
               filter->output_descriptor_ids[ordinal] &&
-          join_outputs[ordinal]->ordinal == ordinal &&
-          join_outputs[ordinal]->descriptor_id ==
-              join_root->output_descriptor_ids[ordinal] &&
+          input_outputs[ordinal]->ordinal == ordinal &&
+          input_outputs[ordinal]->descriptor_id ==
+              filter_input->output_descriptor_ids[ordinal] &&
           filter_outputs[ordinal]->descriptor_id ==
-              join_outputs[ordinal]->descriptor_id &&
+              input_outputs[ordinal]->descriptor_id &&
           filter_outputs[ordinal]->expression_id ==
-              join_outputs[ordinal]->expression_id;
+              input_outputs[ordinal]->expression_id &&
+          filter_outputs[ordinal]->output_name_utf8 ==
+              input_outputs[ordinal]->output_name_utf8;
     }
     if (!exact_filter_outputs) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",

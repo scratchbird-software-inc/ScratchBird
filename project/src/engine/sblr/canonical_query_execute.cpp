@@ -12417,6 +12417,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
   return registration;
 }
 
+struct LiveFilterRuntimeNodeConfiguration {
+  std::uint32_t relational_node_id{0};
+  std::uint32_t predicate_expression_id{0};
+  CanonicalRelationalExpressionRowBinding predicate_row_binding;
+};
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
     const std::uint32_t predicate_expression_id,
     CanonicalRelationalExpressionRowBinding predicate_row_binding,
@@ -12432,7 +12438,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
     const api::TypedRelationalDag* borrowed_relational_dag = nullptr,
     const api::EngineRequestContext* borrowed_mga_context = nullptr,
     const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
-        nullptr) {
+        nullptr,
+    std::vector<LiveFilterRuntimeNodeConfiguration>
+        runtime_node_configurations = {}) {
   const bool strict_dispatcher_memory =
       borrowed_relational_dag != nullptr &&
       borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
@@ -12440,7 +12448,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
       sizeof(CanonicalRelationalExpressionRowBinding) +
       sizeof(api::TypedRelationalDag) +
       sizeof(CanonicalRelationalExpressionRuntimeServices) +
-      sizeof(api::EngineRequestContext) + 12 * sizeof(void*) + 1024;
+      sizeof(api::EngineRequestContext) +
+      sizeof(std::vector<LiveFilterRuntimeNodeConfiguration>) +
+      12 * sizeof(void*) + 1024;
   const auto account_registration_array =
       [&](const std::size_t count, const std::size_t width) {
         std::uint64_t bytes = 0;
@@ -12457,8 +12467,27 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
           sizeof(std::uint64_t)) ||
       !account_registration_array(
           predicate_row_binding.slots.capacity(),
-          sizeof(CanonicalRelationalExpressionRowSlotBinding))) {
+          sizeof(CanonicalRelationalExpressionRowSlotBinding)) ||
+      !account_registration_array(
+          runtime_node_configurations.capacity(),
+          sizeof(LiveFilterRuntimeNodeConfiguration))) {
     registration_retained_bytes = 0;
+  }
+  for (const auto& configuration : runtime_node_configurations) {
+    if (registration_retained_bytes == 0 ||
+        !account_registration_array(
+            configuration.predicate_row_binding.row_descriptor_ids.capacity(),
+            sizeof(std::uint32_t)) ||
+        !account_registration_array(
+            (configuration.predicate_row_binding.row_nullable.capacity() + 63) /
+                64,
+            sizeof(std::uint64_t)) ||
+        !account_registration_array(
+            configuration.predicate_row_binding.slots.capacity(),
+            sizeof(CanonicalRelationalExpressionRowSlotBinding))) {
+      registration_retained_bytes = 0;
+      break;
+    }
   }
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kFilter;
@@ -12477,13 +12506,45 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
        expression_services = std::move(expression_services),
        maximum_input_row_count, mga_context = std::move(mga_context),
        expression_consumer, predicate_consumer, borrowed_relational_dag,
-       borrowed_mga_authority, strict_dispatcher_memory](
+       borrowed_mga_authority, strict_dispatcher_memory,
+       runtime_node_configurations = std::move(runtime_node_configurations)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
+        const LiveFilterRuntimeNodeConfiguration* runtime_node_configuration =
+            nullptr;
+        for (const auto& candidate : runtime_node_configurations) {
+          if (candidate.relational_node_id != node.relational_node_id) continue;
+          if (runtime_node_configuration != nullptr) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1";
+            step.diagnostic.detail =
+                "object-backed FILTER has duplicate logical-node configuration";
+            return step;
+          }
+          runtime_node_configuration = &candidate;
+        }
+        if (!runtime_node_configurations.empty() &&
+            runtime_node_configuration == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1";
+          step.diagnostic.detail =
+              "object-backed FILTER logical-node configuration is absent";
+          return step;
+        }
+        const auto active_predicate_expression_id =
+            runtime_node_configuration == nullptr
+                ? predicate_expression_id
+                : runtime_node_configuration->predicate_expression_id;
+        const auto& active_predicate_row_binding =
+            runtime_node_configuration == nullptr
+                ? predicate_row_binding
+                : runtime_node_configuration->predicate_row_binding;
         if (node.input_physical_node_ids.size() != 1 ||
             inputs.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -12522,8 +12583,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
           }
           const auto& active_relational_dag = *borrowed_relational_dag;
           const auto predicate_scratch = BoundLiveJoinPredicateScratchBytes(
-              active_relational_dag, predicate_expression_id,
-              predicate_row_binding, input_live_bytes, [] { return false; });
+              active_relational_dag, active_predicate_expression_id,
+              active_predicate_row_binding, input_live_bytes,
+              [] { return false; });
           if (!predicate_scratch.ok ||
               !CheckedAdd(auxiliary_bytes,
                           predicate_scratch.maximum_payload_bytes,
@@ -12586,8 +12648,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
             IssueAndExecuteBorrowed(
                 strict_dispatcher_memory ? *borrowed_relational_dag
                                          : relational_dag,
-                predicate_expression_id,
-                predicate_row_binding, input_batch, expression_services,
+                active_predicate_expression_id,
+                active_predicate_row_binding, input_batch, expression_services,
                 expression_consumer, predicate_consumer, *execution_dag,
                 node.physical_node_id, node.physical_node_id,
                 maximum_input_row_count, *active_authority,
@@ -33839,10 +33901,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         exact_terminal_chain &&
         consume_terminal(api::RelationalDagNodeKind::kProject, project);
   }
+  const api::RelationalDagNode* terminal_filter = nullptr;
+  const api::RelationalDagNode* local_filter = nullptr;
   if (filter != nullptr) {
-    exact_terminal_chain =
-        exact_terminal_chain &&
-        consume_terminal(api::RelationalDagNodeKind::kFilter, filter);
+    if (join == filter) {
+      exact_terminal_chain =
+          exact_terminal_chain &&
+          consume_terminal(api::RelationalDagNodeKind::kFilter, filter);
+      terminal_filter = filter;
+    } else {
+      local_filter = filter;
+    }
   }
   const auto bind_join_identity =
       [](const api::RelationalDagNode& node,
@@ -33937,6 +34006,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     std::string capability_uuid;
     CanonicalRelationalExpressionRowBinding predicate_row_binding;
   };
+  struct BoundHeapFilterNode {
+    const api::RelationalDagNode* node{nullptr};
+    CanonicalRelationalExpressionRowBinding predicate_row_binding;
+  };
+  const auto unary_empty = [](const api::RelationalDagNode& node) {
+    return node.required_object_uuids.empty() && node.values_row_ids.empty() &&
+           node.required_property_uuids.empty() &&
+           node.delivered_property_uuids.empty();
+  };
   std::unordered_map<std::uint32_t, const api::RelationalDagNode*> nodes_by_id;
   for (const auto& node : dag.nodes) {
     if (node.node_id == 0 || !nodes_by_id.emplace(node.node_id, &node).second) {
@@ -33948,6 +34026,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   std::unordered_set<std::uint32_t> completed_join_nodes;
   std::unordered_map<std::uint32_t, std::vector<bool>> nullable_by_node;
   std::vector<BoundHeapJoinNode> bound_joins;
+  std::vector<BoundHeapFilterNode> bound_filters;
   std::function<bool(std::uint32_t, std::string*)> bind_tree =
       [&](const std::uint32_t node_id, std::string* detail) {
         const auto found = nodes_by_id.find(node_id);
@@ -33988,6 +34067,49 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             nullable.push_back(
                 descriptor->nullability == api::RelationalNullability::kNullable);
           }
+          return true;
+        }
+        if (node.node_kind == api::RelationalDagNodeKind::kFilter) {
+          const auto input_node =
+              node.input_node_ids.size() == 1
+                  ? nodes_by_id.find(node.input_node_ids.front())
+                  : nodes_by_id.end();
+          if (&node != local_filter || input_node == nodes_by_id.end() ||
+              input_node->second->node_kind !=
+                  api::RelationalDagNodeKind::kScan ||
+              node.semantic_variant_id !=
+                  "filter.catalog-column-numeric-comparison.v1" ||
+              node.input_node_ids.front() == node.node_id || node.shareable ||
+              node.bound_expression_ids.size() != 1 ||
+              node.output_descriptor_ids !=
+                  input_node->second->output_descriptor_ids ||
+              !unary_empty(node) || completed_join_nodes.contains(node_id) ||
+              !visiting_join_nodes.insert(node_id).second ||
+              !bind_tree(node.input_node_ids.front(), detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail =
+                  "join leaf FILTER is not one exact schema-preserving scan predicate";
+            }
+            return false;
+          }
+          BoundHeapFilterNode bound_filter;
+          bound_filter.node = &node;
+          if (!PrepareInputRowBinding(
+                  dag, node.bound_expression_ids.front(),
+                  input_node->second->output_descriptor_ids,
+                  &bound_filter.predicate_row_binding, detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail = "join leaf FILTER predicate binding is not exact";
+            }
+            return false;
+          }
+          bound_filter.predicate_row_binding.row_nullable =
+              nullable_by_node.at(input_node->second->node_id);
+          nullable_by_node.emplace(
+              node_id, nullable_by_node.at(input_node->second->node_id));
+          bound_filters.push_back(std::move(bound_filter));
+          visiting_join_nodes.erase(node_id);
+          completed_join_nodes.insert(node_id);
           return true;
         }
         if (node.node_kind != api::RelationalDagNodeKind::kJoin ||
@@ -34082,33 +34204,34 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       };
   std::string join_tree_detail;
   if (!bind_tree(join->node_id, &join_tree_detail) ||
-      completed_join_nodes.size() != scans.size() + joins.size() ||
-      bound_joins.size() != joins.size()) {
+      completed_join_nodes.size() !=
+          scans.size() + joins.size() +
+              static_cast<std::size_t>(local_filter != nullptr) ||
+      bound_joins.size() != joins.size() ||
+      bound_filters.size() !=
+          static_cast<std::size_t>(local_filter != nullptr)) {
     return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
                   join_tree_detail.empty()
                       ? "object-backed join tree is disconnected"
                       : join_tree_detail);
   }
 
-  const auto unary_empty = [](const api::RelationalDagNode& node) {
-    return node.required_object_uuids.empty() && node.values_row_ids.empty() &&
-           node.required_property_uuids.empty() &&
-           node.delivered_property_uuids.empty();
-  };
-  CanonicalRelationalExpressionRowBinding filter_row_binding;
+  CanonicalRelationalExpressionRowBinding terminal_filter_row_binding;
   const auto* filter_input = join;
-  if (filter != nullptr) {
+  if (terminal_filter != nullptr) {
     std::string detail;
-    if (filter->semantic_variant_id !=
+    if (terminal_filter->semantic_variant_id !=
             "filter.catalog-column-numeric-comparison.v1" ||
-        filter->input_node_ids !=
+        terminal_filter->input_node_ids !=
             std::vector<std::uint32_t>{filter_input->node_id} ||
-        filter->bound_expression_ids.size() != 1 ||
-        filter->output_descriptor_ids != filter_input->output_descriptor_ids ||
-        !unary_empty(*filter) ||
+        terminal_filter->bound_expression_ids.size() != 1 ||
+        terminal_filter->output_descriptor_ids !=
+            filter_input->output_descriptor_ids ||
+        !unary_empty(*terminal_filter) ||
         !PrepareInputRowBinding(
-            dag, filter->bound_expression_ids.front(),
-            filter_input->output_descriptor_ids, &filter_row_binding,
+            dag, terminal_filter->bound_expression_ids.front(),
+            filter_input->output_descriptor_ids,
+            &terminal_filter_row_binding,
             &detail)) {
       return refuse(
           "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-FILTER-V1",
@@ -34116,13 +34239,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               ? "object-backed join FILTER tail binding is not exact"
               : detail);
     }
-    filter_row_binding.row_nullable = nullable_by_node.at(join->node_id);
-    nullable_by_node.emplace(filter->node_id,
+    terminal_filter_row_binding.row_nullable = nullable_by_node.at(join->node_id);
+    nullable_by_node.emplace(terminal_filter->node_id,
                              nullable_by_node.at(join->node_id));
+    bound_filters.push_back(
+        {terminal_filter, std::move(terminal_filter_row_binding)});
   }
 
   std::vector<std::size_t> projected_columns;
-  const auto* project_input = filter != nullptr ? filter : join;
+  const auto* project_input =
+      terminal_filter != nullptr ? terminal_filter : join;
   if (project != nullptr) {
     std::vector<const api::RelationalOutputRecord*> project_outputs;
     std::vector<const api::RelationalOutputRecord*> input_outputs;
@@ -34201,7 +34327,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   }
 
   const auto* cte_input =
-      project != nullptr ? project : (filter != nullptr ? filter : join);
+      project != nullptr
+          ? project
+          : (terminal_filter != nullptr ? terminal_filter : join);
   if (cte != nullptr) {
     if (cte->semantic_variant_id != "cte.bound.v1" ||
         cte->input_node_ids !=
@@ -34218,10 +34346,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   const auto* final_output_node =
       cte != nullptr ? cte : (project != nullptr
                                   ? project
-                                  : (filter != nullptr ? filter : join));
+                                  : (terminal_filter != nullptr
+                                         ? terminal_filter
+                                         : join));
   // CTE is schema preserving and owns no public output records.
   const auto* publication_node =
-      project != nullptr ? project : (filter != nullptr ? filter : join);
+      project != nullptr
+          ? project
+          : (terminal_filter != nullptr ? terminal_filter : join);
 
   const auto admission = api::BuildCanonicalCurrentHeapOptimizerAdmission(
       {input.context, input.relational_dag});
@@ -34306,12 +34438,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   std::string filter_capability_uuid;
   if (filter != nullptr) {
     filter_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-join-tail-filter.capability");
+        DerivedCanonicalUuid(identity_scope, "heap-join-filter.capability");
     profiles.push_back(
         {filter->node_id, "filter.3vl.row.v1", filter_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kFilter,
          exec::PhysicalNodeKind::kFilter,
-         "canonical.heap.join-tail.filter.v1", 1, join_memory_grant, 1, 1});
+         local_filter != nullptr
+             ? "canonical.heap.join-input.filter.v1"
+             : "canonical.heap.join-tail.filter.v1",
+         1, join_memory_grant, 1, 1});
     profiles.back().runtime_peak_from_callback_batches = true;
   }
   std::string project_capability_uuid;
@@ -34355,8 +34490,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           ? "heap-join-tail-cte.selected-plan"
           : (project != nullptr
                  ? "heap-join-tail-project.selected-plan"
-                 : (filter != nullptr ? "heap-join-tail-filter.selected-plan"
-                                      : "heap-join-tree.selected-plan")),
+                 : (terminal_filter != nullptr
+                        ? "heap-join-tail-filter.selected-plan"
+                        : (local_filter != nullptr
+                               ? "heap-join-input-filter.selected-plan"
+                               : "heap-join-tree.selected-plan"))),
       "object-backed heap join tree with unary tail");
   if (!physical.ok) {
     return refuse(
@@ -34537,14 +34675,23 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               *context, left, right, comparison, diagnostic_id,
               refusal_detail);
         };
+    std::vector<LiveFilterRuntimeNodeConfiguration>
+        filter_node_configurations;
+    filter_node_configurations.reserve(bound_filters.size());
+    for (auto& bound_filter : bound_filters) {
+      filter_node_configurations.push_back(
+          {bound_filter.node->node_id,
+           bound_filter.node->bound_expression_ids.front(),
+           std::move(bound_filter.predicate_row_binding)});
+    }
     selected.available_executors.push_back(
         MakeLiveHeapFilterRegistration(
-            filter->bound_expression_ids.front(),
-            std::move(filter_row_binding), {}, std::move(filter_services),
+            0, {}, {}, std::move(filter_services),
             filter_capability_uuid, maximum_output_rows, {},
             api::EngineCanonicalExpressionConsumer::filter,
             api::EnginePredicateConsumer::filter, &input.relational_dag,
-            &input.context, selected.borrowed_mga_authority));
+            &input.context, selected.borrowed_mga_authority,
+            std::move(filter_node_configurations)));
   }
   if (project != nullptr) {
     selected.available_executors.push_back(
