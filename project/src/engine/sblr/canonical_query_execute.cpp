@@ -34150,7 +34150,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       ctes.size() > scans.size() + joins.size() ||
       dag.nodes.size() > 68 ||
       (terminal_limit != nullptr &&
-       (!filters.empty() || !local_projects.empty() || !ctes.empty())) ||
+       (!local_filters.empty() || !local_projects.empty() || !ctes.empty())) ||
       (limit == nullptr) != (terminal_limit == nullptr) ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
@@ -34915,8 +34915,194 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   }
 
   const auto* limit_input =
-      terminal_project != nullptr ? terminal_project : join;
+      terminal_project != nullptr
+          ? terminal_project
+          : (terminal_filter != nullptr ? terminal_filter : join);
   if (terminal_limit != nullptr) {
+    if (terminal_filter != nullptr) {
+      const auto predicate = std::ranges::find_if(
+          dag.expressions, [&](const auto& expression) {
+            return terminal_filter->bound_expression_ids.size() == 1 &&
+                   expression.expression_id ==
+                       terminal_filter->bound_expression_ids.front();
+          });
+      const api::RelationalExpressionRecord* filter_identifier = nullptr;
+      const api::RelationalExpressionRecord* filter_value = nullptr;
+      if (predicate != dag.expressions.end() &&
+          predicate->child_expression_ids.size() == 2) {
+        const auto identifier = std::ranges::find_if(
+            dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     predicate->child_expression_ids[0];
+            });
+        const auto value = std::ranges::find_if(
+            dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     predicate->child_expression_ids[1];
+            });
+        if (identifier != dag.expressions.end()) {
+          filter_identifier = &*identifier;
+        }
+        if (value != dag.expressions.end()) filter_value = &*value;
+      }
+      const auto limit_value = std::ranges::find_if(
+          dag.expressions, [&](const auto& expression) {
+            return terminal_limit->bound_expression_ids.size() == 1 &&
+                   expression.expression_id ==
+                       terminal_limit->bound_expression_ids.front();
+          });
+      const auto descriptor_for = [&](const auto* expression) {
+        return expression == nullptr
+                   ? dag.descriptors.end()
+                   : std::ranges::find_if(
+                         dag.descriptors, [&](const auto& descriptor) {
+                           return descriptor.descriptor_id ==
+                                  expression->result_descriptor_id;
+                         });
+      };
+      const auto identifier_descriptor = descriptor_for(filter_identifier);
+      const auto literal_descriptor = descriptor_for(filter_value);
+      const auto predicate_descriptor =
+          predicate == dag.expressions.end()
+              ? dag.descriptors.end()
+              : descriptor_for(&*predicate);
+      const auto limit_descriptor =
+          limit_value == dag.expressions.end()
+              ? dag.descriptors.end()
+              : descriptor_for(&*limit_value);
+      const bool accepted_operator =
+          predicate != dag.expressions.end() &&
+          predicate->operator_name.has_value() &&
+          (*predicate->operator_name == "=" ||
+           *predicate->operator_name == "<>" ||
+           *predicate->operator_name == "!=" ||
+           *predicate->operator_name == "<" ||
+           *predicate->operator_name == "<=" ||
+           *predicate->operator_name == ">" ||
+           *predicate->operator_name == ">=");
+      bool exact_literal_value =
+          filter_value != nullptr &&
+          filter_value->literal_typed_value_v1.has_value();
+      if (exact_literal_value) {
+        const auto& typed = *filter_value->literal_typed_value_v1;
+        const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+            typed.canonical_value_bytes);
+        exact_literal_value =
+            typed.descriptor_generation != 0 &&
+            typed.value_state == "value" &&
+            typed.canonical_value_bytes.size() == 8 &&
+            (typed.canonical_value_bytes.back() & 0x80U) == 0 && digest.ok() &&
+            digest.digest == typed.canonical_value_sha256 &&
+            literal_descriptor != dag.descriptors.end() &&
+            typed.descriptor_uuid == literal_descriptor->descriptor_uuid;
+      }
+      const auto identifier_source_count =
+          filter_identifier == nullptr
+              ? 0
+              : std::ranges::count_if(dag.outputs, [&](const auto& output) {
+                  return output.relation_node_id == join->node_id &&
+                         output.visible &&
+                         output.expression_id ==
+                             filter_identifier->expression_id &&
+                         output.descriptor_id ==
+                             filter_identifier->result_descriptor_id;
+                });
+      const bool distinct_expression_ids =
+          predicate != dag.expressions.end() &&
+          filter_identifier != nullptr && filter_value != nullptr &&
+          limit_value != dag.expressions.end() &&
+          predicate->expression_id != filter_identifier->expression_id &&
+          predicate->expression_id != filter_value->expression_id &&
+          predicate->expression_id != limit_value->expression_id &&
+          filter_identifier->expression_id != filter_value->expression_id &&
+          filter_identifier->expression_id != limit_value->expression_id &&
+          filter_value->expression_id != limit_value->expression_id;
+      const bool distinct_descriptor_ids =
+          identifier_descriptor != dag.descriptors.end() &&
+          literal_descriptor != dag.descriptors.end() &&
+          predicate_descriptor != dag.descriptors.end() &&
+          limit_descriptor != dag.descriptors.end() &&
+          identifier_descriptor->descriptor_id !=
+              literal_descriptor->descriptor_id &&
+          identifier_descriptor->descriptor_id !=
+              predicate_descriptor->descriptor_id &&
+          identifier_descriptor->descriptor_id !=
+              limit_descriptor->descriptor_id &&
+          literal_descriptor->descriptor_id !=
+              predicate_descriptor->descriptor_id &&
+          literal_descriptor->descriptor_id !=
+              limit_descriptor->descriptor_id &&
+          predicate_descriptor->descriptor_id !=
+              limit_descriptor->descriptor_id;
+      if (!accepted_operator || filter_identifier == nullptr ||
+          filter_identifier->expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          !filter_identifier->child_expression_ids.empty() ||
+          filter_identifier->function_uuid.has_value() ||
+          !filter_identifier->bound_name_uuid.has_value() ||
+          filter_identifier->literal_kind.has_value() ||
+          filter_identifier->operator_name.has_value() ||
+          filter_identifier->literal_or_parameter_ref.has_value() ||
+          filter_identifier->literal_typed_value_v1.has_value() ||
+          filter_identifier->parameter_typed_value_v1.has_value() ||
+          predicate == dag.expressions.end() ||
+          predicate->expression_kind !=
+              api::RelationalExpressionKind::kBinary ||
+          predicate->function_uuid.has_value() ||
+          predicate->bound_name_uuid.has_value() ||
+          predicate->literal_kind.has_value() ||
+          predicate->literal_or_parameter_ref.has_value() ||
+          predicate->literal_typed_value_v1.has_value() ||
+          predicate->parameter_typed_value_v1.has_value() ||
+          filter_value == nullptr ||
+          filter_value->expression_kind !=
+              api::RelationalExpressionKind::kLiteral ||
+          filter_value->literal_kind != api::RelationalLiteralKind::kNumeric ||
+          !filter_value->child_expression_ids.empty() ||
+          filter_value->function_uuid.has_value() ||
+          filter_value->bound_name_uuid.has_value() ||
+          filter_value->operator_name.has_value() ||
+          filter_value->literal_or_parameter_ref.has_value() ||
+          filter_value->parameter_typed_value_v1.has_value() ||
+          !exact_literal_value || identifier_source_count != 1 ||
+          identifier_descriptor == dag.descriptors.end() ||
+          literal_descriptor == dag.descriptors.end() ||
+          predicate_descriptor == dag.descriptors.end() ||
+          identifier_descriptor->type_uuid !=
+              ExactCanonicalCoreDatatypeUuidV1("int64") ||
+          literal_descriptor->type_uuid !=
+              ExactCanonicalCoreDatatypeUuidV1("int64") ||
+          identifier_descriptor->type_uuid != literal_descriptor->type_uuid ||
+          literal_descriptor->nullability !=
+              api::RelationalNullability::kNonNull ||
+          predicate_descriptor->nullability !=
+              api::RelationalNullability::kNullable ||
+          predicate_descriptor->type_uuid !=
+              ExactCanonicalCoreDatatypeUuidV1("boolean") ||
+          identifier_descriptor->collation_uuid.has_value() ||
+          literal_descriptor->collation_uuid.has_value() ||
+          predicate_descriptor->collation_uuid.has_value() ||
+          identifier_descriptor->timezone_profile_id.has_value() ||
+          literal_descriptor->timezone_profile_id.has_value() ||
+          predicate_descriptor->timezone_profile_id.has_value() ||
+          identifier_descriptor->width.has_value() ||
+          identifier_descriptor->precision.has_value() ||
+          identifier_descriptor->scale.has_value() ||
+          literal_descriptor->width.has_value() ||
+          literal_descriptor->precision.has_value() ||
+          literal_descriptor->scale.has_value() ||
+          predicate_descriptor->width.has_value() ||
+          predicate_descriptor->precision.has_value() ||
+          predicate_descriptor->scale.has_value() ||
+          limit_value == dag.expressions.end() ||
+          limit_value->expression_kind !=
+              api::RelationalExpressionKind::kParameter ||
+          !distinct_expression_ids || !distinct_descriptor_ids) {
+        return refuse(
+            "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
+            "object-backed join FILTER and LIMIT operands are not composable");
+      }
+    }
     CanonicalRelationalExpressionRuntime expression_runtime(
         input.relational_dag, {});
     std::string detail;

@@ -6473,7 +6473,6 @@ sb_engine_status_t DispatchStatementContextReceipt(
       return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4061,
                          "ENGINE.STATEMENT_CONTEXT.ADMISSION_TOKEN_STALE",
                          "sblr.literal_execution_binding.token_replayed");
-    receipt->literal_admission_consumed=true;
   }
   if (parameter_token_validated) {
     scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity
@@ -6527,7 +6526,6 @@ sb_engine_status_t DispatchStatementContextReceipt(
                          "ENGINE.STATEMENT_CONTEXT.ADMISSION_TOKEN_STALE",
                          "sblr.parameter_execution_binding.token_replayed");
     }
-    receipt->parameter_admission_consumed = true;
   }
   if (variable_token_validated) {
     scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot current;
@@ -6551,8 +6549,13 @@ sb_engine_status_t DispatchStatementContextReceipt(
                          "ENGINE.STATEMENT_CONTEXT.ADMISSION_TOKEN_STALE",
                          "sblr.variable_execution_binding.token_replayed");
     }
-    receipt->variable_admission_consumed = true;
   }
+  // Every live executor and value cohort has now been revalidated. Commit all
+  // admission-token transitions together while the receipt mutex is held so a
+  // mixed literal/parameter request cannot consume only one side.
+  if (literal_token_validated) receipt->literal_admission_consumed = true;
+  if (parameter_token_validated) receipt->parameter_admission_consumed = true;
+  if (variable_token_validated) receipt->variable_admission_consumed = true;
 
   scratchbird::engine::sblr::SblrDispatchResult dispatched;
   bool source_map_root = false;

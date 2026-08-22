@@ -4734,11 +4734,18 @@ class NativeRelationalParser final {
       query_end = &TokenForRangeEnd(predicate.range);
     }
     if (!AtEnd() && IsWord(Current(), "LIMIT")) {
-      if (join_filter_predicate_id.has_value() ||
-          !all_ordinary_catalog_sources) {
+      const NativeExpressionAstNode* filter_value = nullptr;
+      if (join_filter_predicate_id.has_value()) {
+        const auto& predicate =
+            document_.expressions[*join_filter_predicate_id - 1];
+        if (predicate.child_expression_ids.size() == 2) {
+          filter_value =
+              &document_.expressions[predicate.child_expression_ids[1] - 1];
+        }
+      }
+      if (!all_ordinary_catalog_sources) {
         Refuse("catalog_join_limit_profile_unsupported",
-               "bounded catalog JOIN LIMIT requires an all-catalog query "
-               "without WHERE");
+               "bounded catalog JOIN LIMIT requires an all-catalog query");
         return FinishRefusal();
       }
       Consume();
@@ -4751,6 +4758,18 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       const Token& bound_token = Consume();
+      if (join_filter_predicate_id.has_value() &&
+          (bound_token.kind != TokenKind::kParameter ||
+           filter_value == nullptr ||
+           filter_value->expression_kind !=
+               NativeExpressionAstKind::kLiteral ||
+           filter_value->literal_kind != NativeLiteralAstKind::kNumeric)) {
+        Refuse("catalog_join_filter_limit_profile_unsupported",
+               "bounded catalog JOIN WHERE and LIMIT composition requires "
+               "one numeric WHERE literal and one structural LIMIT "
+               "parameter");
+        return FinishRefusal();
+      }
       NativeExpressionAstNode bound;
       bound.expression_id = NextExpressionId();
       bound.spelling = bound_token.text;

@@ -981,6 +981,7 @@ std::optional<ExecutePayload> DecodeExecutePayload(
       offset += kSbelBytes;
     } else if (schema_id == sbps::kSchemaExecuteCanonicalSblrParameterV1) {
       constexpr std::uint32_t kSbpeBytes = 176;
+      constexpr std::uint32_t kSbelBytes = 176;
       constexpr std::uint32_t kMaxSbpvBytes = 33'554'432;
       if (offset > payload.size() || payload.size() - offset < 4 ||
           GetU32(payload, offset) != kSbpeBytes) {
@@ -996,17 +997,35 @@ std::optional<ExecutePayload> DecodeExecutePayload(
       offset += kSbpeBytes;
       const auto sbpv_bytes = GetU32(payload, offset);
       offset += 4;
-      if (sbpv_bytes == 0 || payload.size() - offset != sbpv_bytes) {
+      if (sbpv_bytes == 0 || payload.size() - offset < sbpv_bytes) {
+        return std::nullopt;
+      }
+      const auto parameter_value_end = offset + sbpv_bytes;
+      const auto trailing_bytes = payload.size() - parameter_value_end;
+      const bool has_literal_evidence = trailing_bytes != 0;
+      if (has_literal_evidence &&
+          (trailing_bytes != 4 + kSbelBytes ||
+           GetU32(payload, parameter_value_end) != kSbelBytes)) {
         return std::nullopt;
       }
       if (sbpv_bytes > kMaxSbpvBytes || payload.size() > kMaxSbpvBytes) {
         out.parameter_transport_budget_exceeded = true;
-        offset += sbpv_bytes;
+        offset = payload.size();
         return out;
       }
       out.parameter_value_set.assign(
-          payload.begin() + static_cast<std::ptrdiff_t>(offset), payload.end());
+          payload.begin() + static_cast<std::ptrdiff_t>(offset),
+          payload.begin() +
+              static_cast<std::ptrdiff_t>(parameter_value_end));
       offset += sbpv_bytes;
+      if (has_literal_evidence) {
+        offset += 4;
+        out.literal_execution_binding.assign(
+            payload.begin() + static_cast<std::ptrdiff_t>(offset),
+            payload.begin() +
+                static_cast<std::ptrdiff_t>(offset + kSbelBytes));
+        offset += kSbelBytes;
+      }
     } else if (schema_id == sbps::kSchemaExecuteCanonicalSblrVariableV1) {
       constexpr std::uint32_t kSbveBytes = 192;
       if (offset > payload.size() || payload.size() - offset < 4 ||

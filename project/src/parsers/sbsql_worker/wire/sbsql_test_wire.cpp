@@ -5288,16 +5288,20 @@ BuildEngineProjectedNativeBindingContext(
     const auto limit_predecessor_relation_id =
         project_relation != nullptr
             ? project_relation->relation_id
+            : filter_relation != nullptr
+            ? filter_relation->relation_id
             : (join_relations.empty() ? 0 : join_relations.back()->relation_id);
     const auto* limit_predecessor_expression_ids =
         project_relation != nullptr
             ? &project_relation->output_expression_ids
+            : filter_relation != nullptr
+            ? &filter_relation->output_expression_ids
             : (join_relations.empty()
                    ? nullptr
                    : &join_relations.back()->output_expression_ids);
     const bool exact_limit_tail =
         limit_relation != nullptr && ordinary_project_sources &&
-        filter_relation == nullptr && !join_relations.empty() &&
+        !join_relations.empty() &&
         limit_relation->relation_id == limit_predecessor_relation_id + 1 &&
         limit_relation->input_relation_ids ==
             std::vector<std::uint32_t>{limit_predecessor_relation_id} &&
@@ -5645,6 +5649,13 @@ BuildEngineProjectedNativeBindingContext(
               admit_expression(admit_expression, expression_id, 1);
         }
       }
+      if (limit_relation != nullptr) {
+        for (const auto expression_id : limit_relation->limit_expression_ids) {
+          exact_expression_inventory =
+              exact_expression_inventory &&
+              admit_expression(admit_expression, expression_id, 1);
+        }
+      }
       exact_expression_inventory =
           exact_expression_inventory &&
           admitted_expression_ids.size() == ast.expressions.size();
@@ -5804,10 +5815,24 @@ BuildEngineProjectedNativeBindingContext(
               admit_expression(admit_expression, expression_id, 1);
         }
       }
+      if (filter_predicate != nullptr) {
+        exact_expression_inventory =
+            exact_expression_inventory &&
+            admit_expression(admit_expression,
+                             filter_predicate->expression_id, 1);
+      }
       if (!exact_expression_inventory ||
           admitted_expression_ids.size() != ast.expressions.size()) {
         return fail("catalog_join_limit_expression_inventory_invalid");
       }
+    }
+    if (filter_relation != nullptr && limit_relation != nullptr &&
+        (filter_value == nullptr || limit_value == nullptr ||
+         filter_value->expression_kind != NativeExpressionAstKind::kLiteral ||
+         filter_value->literal_kind != NativeLiteralAstKind::kNumeric ||
+         filter_value->structural_literal_occurrence_id != 1 ||
+         limit_value->expression_kind != NativeExpressionAstKind::kParameter)) {
+      return fail("catalog_join_filter_limit_operand_profile_invalid");
     }
     if (ordinary_multi_catalog_cross_join) {
       std::unordered_set<std::uint32_t> source_wildcard_ids;
@@ -16810,6 +16835,22 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                     native_join_filter_relation->relation_id} &&
             ast.native_relational.root_relation_id ==
                 native_join_project_relation->relation_id;
+        const bool exact_native_join_limit_after_filter =
+            native_join_filter_relation !=
+                ast.native_relational.relations.end() &&
+            native_join_limit_relation !=
+                ast.native_relational.relations.end() &&
+            native_join_limit_relation->input_relation_ids ==
+                std::vector<std::uint32_t>{
+                    native_join_project_relation !=
+                                ast.native_relational.relations.end() &&
+                            native_join_project_relation->input_relation_ids ==
+                                std::vector<std::uint32_t>{
+                                    native_join_filter_relation->relation_id}
+                        ? native_join_project_relation->relation_id
+                        : native_join_filter_relation->relation_id} &&
+            ast.native_relational.root_relation_id ==
+                native_join_limit_relation->relation_id;
         const bool exact_native_join_filter_operand_route =
             native_binding_context.has_value() &&
             ast.native_relational.catalog_relation_sources.size() >= 2 &&
@@ -16828,7 +16869,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 ast.native_relational.relations.end() &&
             (ast.native_relational.root_relation_id ==
                  native_join_filter_relation->relation_id ||
-             exact_native_join_project_after_filter);
+             exact_native_join_project_after_filter ||
+             exact_native_join_limit_after_filter);
         const bool exact_native_join_limit_operand_route =
             native_binding_context.has_value() &&
             ast.native_relational.catalog_relation_sources.size() >= 2 &&
@@ -16843,8 +16885,6 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                   return relation.relation_kind == NativeRelationAstKind::kJoin;
                 }) + 1 ==
                 ast.native_relational.catalog_relation_sources.size() &&
-            native_join_filter_relation ==
-                ast.native_relational.relations.end() &&
             native_join_limit_relation !=
                 ast.native_relational.relations.end() &&
             ast.native_relational.root_relation_id ==
@@ -16852,24 +16892,15 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         const bool exact_native_join_occurrence_operand_route =
             exact_native_join_filter_operand_route ||
             exact_native_join_limit_operand_route;
-        const auto reserved_join_occurrence_operand_expression_id = [&]()
+        const auto reserved_join_filter_operand_expression_id = [&]()
             -> std::optional<std::uint32_t> {
-          if (!exact_native_join_occurrence_operand_route) {
+          if (!exact_native_join_filter_operand_route) {
             return std::nullopt;
           }
-          const auto reserved_id = exact_native_join_filter_operand_route
-                                       ? (native_binding_context->descriptors.empty()
-                                              ? 0
-                                              : native_binding_context
-                                                    ->descriptors.back()
-                                                    .descriptor_id)
-                                       : (native_binding_context->descriptors.size() >=
-                                                  std::numeric_limits<std::uint32_t>::max()
-                                              ? 0
-                                              : static_cast<std::uint32_t>(
-                                                    native_binding_context
-                                                        ->descriptors.size() +
-                                                    1));
+          const auto reserved_id = native_binding_context->descriptors.empty()
+                                       ? 0
+                                       : native_binding_context->descriptors.back()
+                                             .descriptor_id;
           if (reserved_id == 0 ||
               std::ranges::any_of(
                   native_binding_context->expressions,
@@ -16880,6 +16911,32 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           }
           return reserved_id;
         };
+        const auto reserved_join_limit_operand_expression_id = [&]()
+            -> std::optional<std::uint32_t> {
+          if (!exact_native_join_limit_operand_route ||
+              native_binding_context->descriptors.size() >=
+                  std::numeric_limits<std::uint32_t>::max()) {
+            return std::nullopt;
+          }
+          const auto reserved_id = static_cast<std::uint32_t>(
+              native_binding_context->descriptors.size() + 1);
+          if (reserved_id == 0 ||
+              std::ranges::any_of(
+                  native_binding_context->expressions,
+                  [&](const auto& expression) {
+                    return expression.expression_id >= reserved_id;
+                  })) {
+            return std::nullopt;
+          }
+          return reserved_id;
+        };
+        if (exact_native_join_limit_after_filter && parameter_prepare_only) {
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBLR.OPERAND_INVALID", "ERROR",
+              "Prepared execution does not admit a literal WHERE operand "
+              "composed with a parameterized LIMIT.",
+              "sbp_sbsql.wire"));
+        }
         if (native_binding_context.has_value() &&
             literal_prebind_state.has_value() &&
             native_statement_context->literal_statement_descriptor_profiles.size()==1) {
@@ -16907,7 +16964,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             } else {
               const auto reserved_expression_id =
                   exact_native_join_filter_operand_route
-                      ? reserved_join_occurrence_operand_expression_id()
+                      ? reserved_join_filter_operand_expression_id()
                       : exact_native_join_limit_operand_route
                       ? std::optional<std::uint32_t>{}
                       : std::optional<std::uint32_t>{
@@ -16989,8 +17046,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             if (ast_parameter != ast.native_relational.expressions.end() &&
                 bound_input == native_binding_context->expressions.end()) {
               const auto reserved_expression_id =
-                  exact_native_join_occurrence_operand_route
-                      ? reserved_join_occurrence_operand_expression_id()
+                  exact_native_join_limit_operand_route
+                      ? reserved_join_limit_operand_expression_id()
+                      : exact_native_join_filter_operand_route
+                      ? reserved_join_filter_operand_expression_id()
                       : std::optional<std::uint32_t>{
                             ast_parameter->expression_id};
               if (!reserved_expression_id.has_value()) {
@@ -17102,7 +17161,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             const auto descriptor_id = descriptor.descriptor_id;
             const auto reserved_expression_id =
                 exact_native_join_filter_operand_route
-                    ? reserved_join_occurrence_operand_expression_id()
+                    ? reserved_join_filter_operand_expression_id()
                     : std::optional<std::uint32_t>{
                           ast_variable->expression_id};
             if (!reserved_expression_id.has_value()) {

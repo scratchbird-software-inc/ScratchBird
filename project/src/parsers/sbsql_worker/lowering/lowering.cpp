@@ -36242,8 +36242,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       window_relation == nullptr &&
       qualify_relation == nullptr &&
       (limit_relation == nullptr ||
-       (catalog_filter_relation == nullptr &&
-        catalog_join_limit_sources_are_ordinary &&
+       (catalog_join_limit_sources_are_ordinary &&
         bounded_model_source_count == 0 &&
         limit_relation->limit_expression_ids.size() == 1 &&
         limit_relation->semantic_variant_id == "limit.bound-count.v1" &&
@@ -36251,6 +36250,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             std::vector<std::uint32_t>{
                 catalog_project_relation != nullptr
                     ? catalog_project_relation->relation_id
+                    : catalog_filter_relation != nullptr
+                    ? catalog_filter_relation->relation_id
                     : catalog_join_relation->relation_id})) &&
       ((catalog_filter_relation == nullptr &&
         catalog_project_relation == nullptr) ||
@@ -37237,6 +37238,30 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
     }
   }
+  if (catalog_filter_relation != nullptr && limit_relation != nullptr) {
+    const auto filter_predicate = expressions_by_id.find(
+        catalog_filter_relation->predicate_expression_ids.front());
+    const BoundExpressionAstRecord* filter_value = nullptr;
+    if (filter_predicate != expressions_by_id.end() &&
+        filter_predicate->second->child_expression_ids.size() == 2) {
+      filter_value = expressions_by_id.at(
+          filter_predicate->second->child_expression_ids[1]);
+    }
+    const auto limit_value = expressions_by_id.find(
+        limit_relation->limit_expression_ids.front());
+    if (filter_value == nullptr ||
+        filter_value->expression_kind != NativeExpressionAstKind::kLiteral ||
+        filter_value->literal_kind != NativeLiteralAstKind::kNumeric ||
+        filter_value->structural_literal_occurrence_id != 1 ||
+        limit_value == expressions_by_id.end() ||
+        limit_value->second->expression_kind !=
+            NativeExpressionAstKind::kParameter) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed JOIN FILTER and LIMIT operands are not composable");
+      return envelope;
+    }
+  }
 
   if (values_relation != nullptr) {
     std::unordered_map<std::uint32_t, const BoundValuesRowAstRecord*>
@@ -37926,6 +37951,34 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
     }
+    if (catalog_filter_relation != nullptr) {
+      const auto predicate_expression = expressions_by_id.find(
+          catalog_filter_relation->predicate_expression_ids.front());
+      const BoundExpressionAstRecord* operand_expression = nullptr;
+      if (predicate_expression != expressions_by_id.end() &&
+          predicate_expression->second->child_expression_ids.size() == 2) {
+        operand_expression = expressions_by_id.at(
+            predicate_expression->second->child_expression_ids[1]);
+      }
+      if (predicate_expression == expressions_by_id.end() ||
+          operand_expression == nullptr ||
+          descriptor_offset + 1 >= native.descriptors.size() ||
+          descriptor_offset + 1 >= bound.descriptor_refs.size() ||
+          predicate_expression->second->result_descriptor_id !=
+              native.descriptors[descriptor_offset].descriptor_id ||
+          operand_expression->result_descriptor_id !=
+              native.descriptors[descriptor_offset + 1].descriptor_id ||
+          bound.descriptor_refs[descriptor_offset] !=
+              native.descriptors[descriptor_offset].descriptor_uuid ||
+          bound.descriptor_refs[descriptor_offset + 1] !=
+              native.descriptors[descriptor_offset + 1].descriptor_uuid) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed JOIN FILTER descriptor lineage is incomplete");
+        return envelope;
+      }
+      descriptor_offset += 2;
+    }
     if (limit_relation != nullptr) {
       const auto limit_expression = expressions_by_id.find(
           limit_relation->limit_expression_ids.front());
@@ -38051,7 +38104,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     if (limit_relation != nullptr) {
       const auto* limit_input_relation =
           catalog_project_relation != nullptr ? catalog_project_relation
-                                              : catalog_join_relation;
+          : catalog_filter_relation != nullptr ? catalog_filter_relation
+                                               : catalog_join_relation;
       const auto& input_outputs =
           outputs_by_relation.at(limit_input_relation->relation_id);
       const auto& limit_outputs =

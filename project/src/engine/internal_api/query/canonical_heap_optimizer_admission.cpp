@@ -339,7 +339,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           : (terminal_filter != nullptr ? terminal_filter : join_root);
   if ((limit == nullptr) != (terminal_limit == nullptr) ||
       (terminal_limit != nullptr &&
-       (!filters.empty() || !local_projects.empty() || !ctes.empty())) ||
+       (!local_filters.empty() || !local_projects.empty() || !ctes.empty())) ||
       (terminal_limit != nullptr &&
        (terminal_limit->shareable ||
         terminal_limit->semantic_variant_id != "limit.bound-count.v1" ||
@@ -806,6 +806,168 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
         descriptor->second->scale.has_value()) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "exact_terminal_limit_literal_binding");
+    }
+  }
+  if (terminal_limit != nullptr && terminal_filter != nullptr) {
+    const auto predicate = terminal_filter->bound_expression_ids.size() == 1
+                               ? expressions_by_id.find(
+                                     terminal_filter->bound_expression_ids.front())
+                               : expressions_by_id.end();
+    const RelationalExpressionRecord* filter_identifier = nullptr;
+    const RelationalExpressionRecord* filter_value = nullptr;
+    if (predicate != expressions_by_id.end() &&
+        predicate->second->child_expression_ids.size() == 2) {
+      const auto identifier = expressions_by_id.find(
+          predicate->second->child_expression_ids[0]);
+      const auto value = expressions_by_id.find(
+          predicate->second->child_expression_ids[1]);
+      if (identifier != expressions_by_id.end()) {
+        filter_identifier = identifier->second;
+      }
+      if (value != expressions_by_id.end()) filter_value = value->second;
+    }
+    const auto limit_value = expressions_by_id.find(
+        terminal_limit->bound_expression_ids.front());
+    const auto identifier_descriptor =
+        filter_identifier == nullptr
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(filter_identifier->result_descriptor_id);
+    const auto literal_descriptor =
+        filter_value == nullptr
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(filter_value->result_descriptor_id);
+    const auto predicate_descriptor =
+        predicate == expressions_by_id.end()
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(predicate->second->result_descriptor_id);
+    const auto limit_descriptor =
+        limit_value == expressions_by_id.end()
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(limit_value->second->result_descriptor_id);
+    const bool accepted_operator =
+        predicate != expressions_by_id.end() &&
+        predicate->second->operator_name.has_value() &&
+        (*predicate->second->operator_name == "=" ||
+         *predicate->second->operator_name == "<>" ||
+         *predicate->second->operator_name == "!=" ||
+         *predicate->second->operator_name == "<" ||
+         *predicate->second->operator_name == "<=" ||
+         *predicate->second->operator_name == ">" ||
+         *predicate->second->operator_name == ">=");
+    bool exact_literal_value =
+        filter_value != nullptr &&
+        filter_value->literal_typed_value_v1.has_value();
+    if (exact_literal_value) {
+      const auto& typed = *filter_value->literal_typed_value_v1;
+      const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+          typed.canonical_value_bytes);
+      exact_literal_value =
+          typed.descriptor_generation != 0 && typed.value_state == "value" &&
+          typed.canonical_value_bytes.size() == 8 &&
+          (typed.canonical_value_bytes.back() & 0x80U) == 0 && digest.ok() &&
+          digest.digest == typed.canonical_value_sha256 &&
+          literal_descriptor != descriptors_by_id.end() &&
+          typed.descriptor_uuid == literal_descriptor->second->descriptor_uuid;
+    }
+    const auto identifier_source_count =
+        filter_identifier == nullptr
+            ? 0
+            : std::ranges::count_if(
+                  relational.outputs, [&](const auto& output) {
+                    return output.relation_node_id == join_root->node_id &&
+                           output.visible &&
+                           output.expression_id ==
+                               filter_identifier->expression_id &&
+                           output.descriptor_id ==
+                               filter_identifier->result_descriptor_id;
+                  });
+    const bool distinct_expression_ids =
+        predicate != expressions_by_id.end() &&
+        filter_identifier != nullptr && filter_value != nullptr &&
+        limit_value != expressions_by_id.end() &&
+        predicate->second->expression_id != filter_identifier->expression_id &&
+        predicate->second->expression_id != filter_value->expression_id &&
+        predicate->second->expression_id != limit_value->second->expression_id &&
+        filter_identifier->expression_id != filter_value->expression_id &&
+        filter_identifier->expression_id != limit_value->second->expression_id &&
+        filter_value->expression_id != limit_value->second->expression_id;
+    const bool distinct_descriptor_ids =
+        identifier_descriptor != descriptors_by_id.end() &&
+        literal_descriptor != descriptors_by_id.end() &&
+        predicate_descriptor != descriptors_by_id.end() &&
+        limit_descriptor != descriptors_by_id.end() &&
+        identifier_descriptor->first != literal_descriptor->first &&
+        identifier_descriptor->first != predicate_descriptor->first &&
+        identifier_descriptor->first != limit_descriptor->first &&
+        literal_descriptor->first != predicate_descriptor->first &&
+        literal_descriptor->first != limit_descriptor->first &&
+        predicate_descriptor->first != limit_descriptor->first;
+    if (!accepted_operator || filter_identifier == nullptr ||
+        filter_identifier->expression_kind !=
+            RelationalExpressionKind::kIdentifier ||
+        !filter_identifier->child_expression_ids.empty() ||
+        filter_identifier->function_uuid.has_value() ||
+        !filter_identifier->bound_name_uuid.has_value() ||
+        filter_identifier->literal_kind.has_value() ||
+        filter_identifier->operator_name.has_value() ||
+        filter_identifier->literal_or_parameter_ref.has_value() ||
+        filter_identifier->literal_typed_value_v1.has_value() ||
+        filter_identifier->parameter_typed_value_v1.has_value() ||
+        predicate == expressions_by_id.end() ||
+        predicate->second->expression_kind !=
+            RelationalExpressionKind::kBinary ||
+        predicate->second->function_uuid.has_value() ||
+        predicate->second->bound_name_uuid.has_value() ||
+        predicate->second->literal_kind.has_value() ||
+        predicate->second->literal_or_parameter_ref.has_value() ||
+        predicate->second->literal_typed_value_v1.has_value() ||
+        predicate->second->parameter_typed_value_v1.has_value() ||
+        filter_value == nullptr ||
+        filter_value->expression_kind != RelationalExpressionKind::kLiteral ||
+        filter_value->literal_kind != RelationalLiteralKind::kNumeric ||
+        !filter_value->child_expression_ids.empty() ||
+        filter_value->function_uuid.has_value() ||
+        filter_value->bound_name_uuid.has_value() ||
+        filter_value->operator_name.has_value() ||
+        filter_value->literal_or_parameter_ref.has_value() ||
+        filter_value->parameter_typed_value_v1.has_value() ||
+        !exact_literal_value || identifier_source_count != 1 ||
+        identifier_descriptor == descriptors_by_id.end() ||
+        literal_descriptor == descriptors_by_id.end() ||
+        predicate_descriptor == descriptors_by_id.end() ||
+        identifier_descriptor->second->type_uuid !=
+            CanonicalCoreDatatypeUuid("int64") ||
+        literal_descriptor->second->type_uuid !=
+            CanonicalCoreDatatypeUuid("int64") ||
+        identifier_descriptor->second->type_uuid !=
+            literal_descriptor->second->type_uuid ||
+        literal_descriptor->second->nullability !=
+            RelationalNullability::kNonNull ||
+        predicate_descriptor->second->nullability !=
+            RelationalNullability::kNullable ||
+        predicate_descriptor->second->type_uuid !=
+            CanonicalCoreDatatypeUuid("boolean") ||
+        identifier_descriptor->second->collation_uuid.has_value() ||
+        literal_descriptor->second->collation_uuid.has_value() ||
+        predicate_descriptor->second->collation_uuid.has_value() ||
+        identifier_descriptor->second->timezone_profile_id.has_value() ||
+        literal_descriptor->second->timezone_profile_id.has_value() ||
+        predicate_descriptor->second->timezone_profile_id.has_value() ||
+        identifier_descriptor->second->width.has_value() ||
+        identifier_descriptor->second->precision.has_value() ||
+        identifier_descriptor->second->scale.has_value() ||
+        literal_descriptor->second->width.has_value() ||
+        literal_descriptor->second->precision.has_value() ||
+        literal_descriptor->second->scale.has_value() ||
+        predicate_descriptor->second->width.has_value() ||
+        predicate_descriptor->second->precision.has_value() ||
+        predicate_descriptor->second->scale.has_value() ||
+        limit_value == expressions_by_id.end() ||
+        limit_value->second->expression_kind !=
+            RelationalExpressionKind::kParameter ||
+        !distinct_expression_ids || !distinct_descriptor_ids) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "exact_terminal_filter_limit_operand_profile");
     }
   }
   const auto lineage_output_node_for = [&](const RelationalDagNode* candidate) {
