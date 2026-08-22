@@ -8,15 +8,11 @@
 
 #include "descriptor_value_runtime.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
-#include <limits>
 #include <string>
 #include <string_view>
-#include <type_traits>
-#include <utility>
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
@@ -110,26 +106,6 @@ void UpgradeToCanonicalStatementContext(exec::TypedPhysicalNodeDag* dag,
   }
 }
 
-template <typename Request>
-void ReplaceCarriedContext(Request* request,
-                           exec::PhysicalMgaStatementContext context,
-                           const bool replace_authority) {
-  auto& dag = request->physical_dag;
-  dag.mga_statement_context = std::move(context);
-  dag.local_transaction_id =
-      dag.mga_statement_context.owning_local_transaction_id;
-  dag.statement_snapshot_id =
-      dag.mga_statement_context.visible_committed_high_watermark;
-  dag.admission_evidence[3].evidence_uuid =
-      dag.mga_statement_context.statement_snapshot_uuid;
-  for (auto& node : dag.nodes) {
-    node.mga_statement_context = dag.mga_statement_context;
-  }
-  if (replace_authority) {
-    request->mga_authority = ClosureAuthority(dag.mga_statement_context);
-  }
-}
-
 template <typename Result>
 bool AtomicStatementContextRefusal(const Result& result) {
   return !result.diagnostic.ok && result.output_batch.rows.empty() &&
@@ -138,148 +114,6 @@ bool AtomicStatementContextRefusal(const Result& result) {
          result.executed_physical_node_id == 0 &&
          result.causal_counter_id == 0 &&
          result.mga_statement_context.statement_uuid.empty();
-}
-
-template <typename Request, typename Execute>
-bool ValidateStatementContextMatrix(Request base, Execute execute) {
-  static_assert(std::is_same_v<
-                decltype(base.physical_dag.local_transaction_id),
-                std::uint64_t>);
-  static_assert(std::is_same_v<
-                decltype(base.physical_dag.statement_snapshot_id),
-                std::uint64_t>);
-  bool passed = true;
-  const auto& dag = base.physical_dag;
-  passed &= Require(
-      dag.abi_version == 2 &&
-          dag.local_transaction_id ==
-              dag.mga_statement_context.owning_local_transaction_id &&
-          dag.statement_snapshot_id ==
-              dag.mga_statement_context.visible_committed_high_watermark &&
-          dag.local_transaction_id >
-              std::numeric_limits<std::uint32_t>::max() &&
-          dag.catalog_epoch_uuid !=
-              dag.mga_statement_context.statement_metadata_snapshot_uuid,
-      "canonical names, uint64 values, or independent catalog identity were lost");
-
-  const auto accepted = execute(base);
-  passed &= Require(
-      accepted.diagnostic.ok &&
-          exec::PhysicalMgaStatementContextEqual(
-              accepted.mga_statement_context, dag.mga_statement_context),
-      "successful descriptor execution did not retain exact statement context");
-
-  auto zero = base;
-  auto zero_context = zero.physical_dag.mga_statement_context;
-  zero_context.visible_committed_high_watermark = 0;
-  zero_context.publication_inventory_next_local_transaction_id =
-      zero_context.owning_local_transaction_id + 1;
-  ReplaceCarriedContext(&zero, std::move(zero_context), true);
-  const auto zero_result = execute(zero);
-  passed &= Require(
-      zero_result.diagnostic.ok &&
-          zero_result.mga_statement_context.visible_committed_high_watermark ==
-              0 &&
-          exec::PhysicalMgaStatementContextEqual(
-              zero_result.mga_statement_context,
-              zero.physical_dag.mga_statement_context),
-      "zero visibility high-water was refused or rewritten");
-
-  const auto expect_refusal = [&](Request candidate,
-                                  const std::string_view detail) {
-    passed &= Require(AtomicStatementContextRefusal(execute(candidate)), detail);
-  };
-
-  auto missing_authority = base;
-  missing_authority.mga_authority = {};
-  expect_refusal(std::move(missing_authority),
-                 "missing inventory authority reached descriptor output");
-
-  auto missing_context = base;
-  ReplaceCarriedContext(&missing_context, {}, true);
-  expect_refusal(std::move(missing_context),
-                 "missing carried context reached descriptor output");
-
-  auto malformed = base;
-  auto malformed_context = malformed.physical_dag.mga_statement_context;
-  malformed_context.statement_uuid = "malformed";
-  ReplaceCarriedContext(&malformed, std::move(malformed_context), true);
-  expect_refusal(std::move(malformed),
-                 "malformed statement UUID reached descriptor output");
-
-  auto nil = base;
-  auto nil_context = nil.physical_dag.mga_statement_context;
-  nil_context.statement_metadata_snapshot_uuid =
-      "00000000-0000-0000-0000-000000000000";
-  ReplaceCarriedContext(&nil, std::move(nil_context), true);
-  expect_refusal(std::move(nil),
-                 "nil metadata snapshot UUID reached descriptor output");
-
-  auto duplicated = base;
-  auto duplicated_context = duplicated.physical_dag.mga_statement_context;
-  duplicated_context.statement_snapshot_uuid =
-      duplicated_context.statement_metadata_snapshot_uuid;
-  ReplaceCarriedContext(&duplicated, std::move(duplicated_context), false);
-  expect_refusal(std::move(duplicated),
-                 "duplicated snapshot identity reached descriptor output");
-
-  auto swapped = base;
-  auto swapped_context = swapped.physical_dag.mga_statement_context;
-  std::swap(swapped_context.statement_snapshot_uuid,
-            swapped_context.statement_metadata_snapshot_uuid);
-  ReplaceCarriedContext(&swapped, std::move(swapped_context), false);
-  expect_refusal(std::move(swapped),
-                 "swapped snapshot identities reached descriptor output");
-
-  auto stale = base;
-  auto stale_current = stale.physical_dag.mga_statement_context;
-  stale_current.statement_snapshot_uuid = ContextUuid(799901);
-  stale.mga_authority = ClosureAuthority(
-      stale.physical_dag.mga_statement_context, stale_current);
-  expect_refusal(std::move(stale),
-                 "stale current inventory vector reached descriptor output");
-
-  auto narrowed = base;
-  narrowed.physical_dag.local_transaction_id =
-      static_cast<std::uint32_t>(narrowed.physical_dag.local_transaction_id);
-  expect_refusal(std::move(narrowed),
-                 "narrowed local transaction id reached descriptor output");
-
-  auto overflowing = base;
-  overflowing.physical_dag.statement_snapshot_id =
-      std::numeric_limits<std::uint64_t>::max();
-  expect_refusal(std::move(overflowing),
-                 "overflowing visibility boundary reached descriptor output");
-
-  auto vector_mismatch = base;
-  auto different_vector = vector_mismatch.physical_dag.mga_statement_context;
-  different_vector.active_excluded_local_transaction_ids.push_back(
-      different_vector.owning_local_transaction_id + 1);
-  ReplaceCarriedContext(&vector_mismatch, std::move(different_vector), false);
-  expect_refusal(std::move(vector_mismatch),
-                 "mismatched active exclusion vector reached descriptor output");
-
-  auto duplicate_evidence = base;
-  duplicate_evidence.physical_dag.admission_evidence[1] =
-      duplicate_evidence.physical_dag.admission_evidence[0];
-  expect_refusal(std::move(duplicate_evidence),
-                 "duplicate admission evidence reached descriptor output");
-
-  auto out_of_order = base;
-  std::swap(out_of_order.physical_dag.admission_evidence[1],
-            out_of_order.physical_dag.admission_evidence[2]);
-  expect_refusal(std::move(out_of_order),
-                 "out-of-order admission evidence reached descriptor output");
-
-  auto conflated_catalog = base;
-  conflated_catalog.physical_dag.catalog_epoch_uuid =
-      conflated_catalog.physical_dag.mga_statement_context
-          .statement_metadata_snapshot_uuid;
-  conflated_catalog.physical_dag.admission_evidence[1].evidence_uuid =
-      conflated_catalog.physical_dag.catalog_epoch_uuid;
-  expect_refusal(std::move(conflated_catalog),
-                 "metadata snapshot substituted for catalog identity");
-  return passed;
 }
 
 
@@ -370,72 +204,52 @@ exec::CanonicalDescriptorFilterRequest Request() {
 }
 
 // QOW-TEST-QRY-007-FILTER-V1
-bool ValidatePhysicalFilter() {
+// Positive FILTER execution is exercised through the canonical query route,
+// which alone can issue the predicate receipt after evaluating the bound
+// expression. This direct executor boundary proves that legacy truth-value
+// sidecars cannot bypass that authority.
+bool ValidateLegacyFilterSidecarRefusal() {
   bool passed = true;
-  const auto result = exec::ExecuteCanonicalDescriptorFilter(Request());
-  passed &= Require(result.diagnostic.ok,
-                    "typed interior physical filter node was not executable");
-  passed &= Require(
-      result.executed_physical_node_id == 712 &&
-          result.causal_counter_id == 7102 &&
-          exec::PhysicalMgaStatementContextEqual(
-              result.mga_statement_context,
-              Request().physical_dag.mga_statement_context),
-      "filter node execution identity or statement context was lost");
-  passed &= Require(result.output_batch.rows.size() == 1 &&
-                        result.output_batch.rows[0].values[0].encoded_value ==
-                            "1.00",
-                    "filter did not admit TRUE exclusively");
-  passed &= Require(result.output_batch.columns[0].descriptor_id == 711,
-                    "filter changed the bound output schema");
+  const auto require_refusal =
+      [&](const exec::CanonicalDescriptorFilterRequest& request,
+          const std::string_view detail) {
+    const auto result = exec::ExecuteCanonicalDescriptorFilter(request);
+    passed &= Require(
+        result.diagnostic.diagnostic_code ==
+                "QOW-DIAG-QRY-007-FILTER-PREDICATE-RECEIPT-REFUSAL-V1" &&
+            AtomicStatementContextRefusal(result),
+        detail);
+  };
+
+  require_refusal(Request(),
+                  "legacy WHERE truth sidecar reached descriptor execution");
 
   auto having = Request();
   having.consumer = api::EnginePredicateConsumer::having;
-  const auto having_result =
-      exec::ExecuteCanonicalDescriptorFilter(having);
-  passed &= Require(
-      having_result.diagnostic.ok &&
-          exec::PhysicalMgaStatementContextEqual(
-              having_result.mga_statement_context,
-              having.physical_dag.mga_statement_context) &&
-          having_result.output_batch.rows.size() == 1 &&
-          having_result.output_batch.rows[0].values[0].encoded_value ==
-              "1.00",
-      "HAVING consumer did not admit TRUE exclusively at the filter node");
+  require_refusal(having,
+                  "legacy HAVING truth sidecar reached descriptor execution");
 
   auto invalid = Request();
   invalid.row_truth_values[1] = api::EngineSqlTruthValue::unspecified;
-  auto refused = exec::ExecuteCanonicalDescriptorFilter(invalid);
-  passed &= Require(
-      refused.diagnostic.diagnostic_code ==
-              "QOW-DIAG-QRY-017-3VL-REFUSAL-V1" &&
-          AtomicStatementContextRefusal(refused),
-      "unbound truth state reached row admission");
+  require_refusal(invalid,
+                  "unbound legacy truth state reached descriptor execution");
 
   invalid = Request();
   invalid.consumer = api::EnginePredicateConsumer::join_on;
-  refused = exec::ExecuteCanonicalDescriptorFilter(invalid);
-  passed &= Require(
-      AtomicStatementContextRefusal(refused),
-      "join-ON consumer was admitted as a filter node");
+  require_refusal(invalid,
+                  "legacy join-ON sidecar reached descriptor execution");
 
   invalid = Request();
   invalid.row_truth_values.pop_back();
-  refused = exec::ExecuteCanonicalDescriptorFilter(invalid);
-  passed &= Require(
-      AtomicStatementContextRefusal(refused),
-      "predicate cardinality mismatch produced partial rows");
-  passed &= ValidateStatementContextMatrix(
-      Request(), [](const auto& request) {
-        return exec::ExecuteCanonicalDescriptorFilter(request);
-      });
+  require_refusal(invalid,
+                  "legacy predicate cardinality drift reached execution");
   return passed;
 }
 
 }  // namespace
 
 int main() {
-  if (!ValidatePhysicalFilter()) return 1;
+  if (!ValidateLegacyFilterSidecarRefusal()) return 1;
   std::cout << "QOW-TEST-QRY-007-FILTER-V1: PASS\n";
   return 0;
 }

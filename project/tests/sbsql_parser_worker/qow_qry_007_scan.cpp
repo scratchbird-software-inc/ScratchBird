@@ -58,7 +58,7 @@ exec::TypedPhysicalNodeDag Dag() {
   exec::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
   dag.selected_plan_uuid = Uuid(1);
-  dag.root_physical_node_id = 72;
+  dag.root_physical_node_id = 71;
   dag.local_transaction_id = kOwner;
   dag.statement_snapshot_id = 0;
   dag.mga_statement_context = {
@@ -94,13 +94,6 @@ exec::TypedPhysicalNodeDag Dag() {
        .implementation_id = "scan.heap.v1",
        .output_descriptor_ids = {711},
        .causal_counter_id = 7101},
-      {.physical_node_id = 72,
-       .relational_node_id = 72,
-       .node_kind = exec::PhysicalNodeKind::kProject,
-       .implementation_id = "project.typed.row.v1",
-       .input_physical_node_ids = {71},
-       .output_descriptor_ids = {711},
-       .causal_counter_id = 7201},
   };
   dag.catalog_generation = 1;
   dag.security_epoch = 1;
@@ -201,7 +194,7 @@ bool ValidateReachableTypedScan() {
       "descriptor drift did not atomically request replanning");
 
   auto input_scan = Request();
-  input_scan.physical_dag.nodes.front().input_physical_node_ids = {72};
+  input_scan.physical_dag.nodes.front().input_physical_node_ids = {71};
   const auto input_result =
       exec::ExecuteCanonicalSelectedScanAccess(input_scan);
   passed &= Require(!input_result.diagnostic.ok &&

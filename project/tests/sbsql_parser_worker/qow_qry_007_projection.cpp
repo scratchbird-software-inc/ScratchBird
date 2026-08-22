@@ -313,7 +313,7 @@ exec::CanonicalDescriptorProjectionRequest Request() {
   exec::CanonicalDescriptorProjectionRequest request;
   request.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000007001";
-  request.physical_dag.root_physical_node_id = 703;
+  request.physical_dag.root_physical_node_id = 702;
   request.physical_dag.local_transaction_id = 703;
   request.physical_dag.statement_snapshot_id = 704;
   request.physical_dag.admission_evidence = {
@@ -348,13 +348,6 @@ exec::CanonicalDescriptorProjectionRequest Request() {
        .input_physical_node_ids = {701},
        .output_descriptor_ids = {72, 71},
        .causal_counter_id = 7002},
-      {.physical_node_id = 703,
-       .relational_node_id = 73,
-       .node_kind = exec::PhysicalNodeKind::kLimit,
-       .implementation_id = "limit.typed.v1",
-       .input_physical_node_ids = {702},
-       .output_descriptor_ids = {72, 71},
-       .causal_counter_id = 7003},
   };
   UpgradeToCanonicalStatementContext(&request.physical_dag, 7000);
   request.selected_physical_node_id = 702;

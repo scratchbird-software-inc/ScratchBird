@@ -7,10 +7,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -20,8 +23,20 @@
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
+namespace uuid = scratchbird::core::uuid;
 
 namespace {
+
+std::string CoreDescriptorUuid(const std::string_view stable_name) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) std::abort();
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (found == manifest.manifest.descriptor_rows.end()) std::abort();
+  return uuid::UuidToString(found->descriptor_uuid.value);
+}
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-QRY-007-WINDOW-V1: " << detail << '\n';
@@ -298,10 +313,10 @@ api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
 exec::CanonicalDescriptorRowNumberRequest Request() {
   const auto input_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000007501",
-      "019f0000-0000-7300-8000-000000007502", "nullable");
+      CoreDescriptorUuid("int64"), "nullable");
   const auto row_number_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000007503",
-      "019f0000-0000-7300-8000-000000007504", "non_null");
+      CoreDescriptorUuid("int64"), "non_null");
   const auto value = [&](const std::string& encoded) {
     api::EngineTypedValue typed;
     typed.descriptor = input_descriptor;
@@ -356,6 +371,14 @@ exec::CanonicalDescriptorRowNumberRequest Request() {
        .causal_counter_id = 7503},
   };
   UpgradeToCanonicalStatementContext(&request.physical_dag, 7500);
+  const auto ordering_property_uuid = ContextUuid(7901);
+  const auto window_property_uuid = ContextUuid(7902);
+  request.physical_dag.nodes[1].delivered_property_uuids = {
+      ordering_property_uuid};
+  request.physical_dag.nodes[2].required_property_uuids = {
+      ordering_property_uuid};
+  request.physical_dag.nodes[2].delivered_property_uuids = {
+      ordering_property_uuid, window_property_uuid};
   request.selected_physical_node_id = 753;
   request.ordered_input_batch = exec::MakeDescriptorBatch(
       {{"order_key", input_descriptor, true, 751}},
