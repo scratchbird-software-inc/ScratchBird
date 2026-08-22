@@ -33852,7 +33852,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   const auto& dag = input.relational_dag;
   std::vector<const api::RelationalDagNode*> scans;
   std::vector<const api::RelationalDagNode*> joins;
-  const api::RelationalDagNode* filter = nullptr;
+  std::vector<const api::RelationalDagNode*> filters;
   const api::RelationalDagNode* project = nullptr;
   const api::RelationalDagNode* cte = nullptr;
   bool duplicate_or_unsupported_node = false;
@@ -33861,9 +33861,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       scans.push_back(&node);
     } else if (node.node_kind == api::RelationalDagNodeKind::kJoin) {
       joins.push_back(&node);
-    } else if (node.node_kind == api::RelationalDagNodeKind::kFilter &&
-               filter == nullptr) {
-      filter = &node;
+    } else if (node.node_kind == api::RelationalDagNodeKind::kFilter) {
+      filters.push_back(&node);
     } else if (node.node_kind == api::RelationalDagNodeKind::kProject &&
                project == nullptr) {
       project = &node;
@@ -33902,16 +33901,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         consume_terminal(api::RelationalDagNodeKind::kProject, project);
   }
   const api::RelationalDagNode* terminal_filter = nullptr;
-  const api::RelationalDagNode* local_filter = nullptr;
-  if (filter != nullptr) {
-    if (join == filter) {
-      exact_terminal_chain =
-          exact_terminal_chain &&
-          consume_terminal(api::RelationalDagNodeKind::kFilter, filter);
-      terminal_filter = filter;
-    } else {
-      local_filter = filter;
-    }
+  if (join != nullptr &&
+      join->node_kind == api::RelationalDagNodeKind::kFilter) {
+    terminal_filter = join;
+    exact_terminal_chain =
+        exact_terminal_chain &&
+        consume_terminal(api::RelationalDagNodeKind::kFilter,
+                         terminal_filter);
+  }
+  std::vector<const api::RelationalDagNode*> local_filters;
+  local_filters.reserve(filters.size());
+  for (const auto* candidate : filters) {
+    if (candidate != terminal_filter) local_filters.push_back(candidate);
   }
   const auto bind_join_identity =
       [](const api::RelationalDagNode& node,
@@ -33964,11 +33965,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       accepted_join && join_kind != exec::CanonicalAcceptedJoinKind::kCross;
   if (dag.wire_version != 2 || scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 || join == nullptr ||
+      filters.size() > scans.size() + 1 || dag.nodes.size() > 29 ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
       dag.nodes.size() !=
-          scans.size() + joins.size() +
-              static_cast<std::size_t>(filter != nullptr) +
+          scans.size() + joins.size() + filters.size() +
               static_cast<std::size_t>(project != nullptr) +
               static_cast<std::size_t>(cte != nullptr) ||
       !accepted_join ||
@@ -34027,6 +34028,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   std::unordered_map<std::uint32_t, std::vector<bool>> nullable_by_node;
   std::vector<BoundHeapJoinNode> bound_joins;
   std::vector<BoundHeapFilterNode> bound_filters;
+  std::unordered_set<std::uint32_t> bound_filter_predicate_expression_ids;
   std::function<bool(std::uint32_t, std::string*)> bind_tree =
       [&](const std::uint32_t node_id, std::string* detail) {
         const auto found = nodes_by_id.find(node_id);
@@ -34074,7 +34076,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               node.input_node_ids.size() == 1
                   ? nodes_by_id.find(node.input_node_ids.front())
                   : nodes_by_id.end();
-          if (&node != local_filter || input_node == nodes_by_id.end() ||
+          if (std::ranges::find(local_filters, &node) == local_filters.end() ||
+              input_node == nodes_by_id.end() ||
               input_node->second->node_kind !=
                   api::RelationalDagNodeKind::kScan ||
               node.semantic_variant_id !=
@@ -34083,6 +34086,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               node.bound_expression_ids.size() != 1 ||
               node.output_descriptor_ids !=
                   input_node->second->output_descriptor_ids ||
+              !bound_filter_predicate_expression_ids
+                   .insert(node.bound_expression_ids.front())
+                   .second ||
               !unary_empty(node) || completed_join_nodes.contains(node_id) ||
               !visiting_join_nodes.insert(node_id).second ||
               !bind_tree(node.input_node_ids.front(), detail)) {
@@ -34206,10 +34212,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   if (!bind_tree(join->node_id, &join_tree_detail) ||
       completed_join_nodes.size() !=
           scans.size() + joins.size() +
-              static_cast<std::size_t>(local_filter != nullptr) ||
+              local_filters.size() ||
       bound_joins.size() != joins.size() ||
-      bound_filters.size() !=
-          static_cast<std::size_t>(local_filter != nullptr)) {
+      bound_filters.size() != local_filters.size()) {
     return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
                   join_tree_detail.empty()
                       ? "object-backed join tree is disconnected"
@@ -34225,6 +34230,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         terminal_filter->input_node_ids !=
             std::vector<std::uint32_t>{filter_input->node_id} ||
         terminal_filter->bound_expression_ids.size() != 1 ||
+        !bound_filter_predicate_expression_ids
+             .insert(terminal_filter->bound_expression_ids.front())
+             .second ||
         terminal_filter->output_descriptor_ids !=
             filter_input->output_descriptor_ids ||
         !unary_empty(*terminal_filter) ||
@@ -34244,6 +34252,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                              nullable_by_node.at(join->node_id));
     bound_filters.push_back(
         {terminal_filter, std::move(terminal_filter_row_binding)});
+  }
+  if (bound_filters.size() != filters.size()) {
+    return refuse(
+        "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
+        "object-backed join FILTER configuration coverage is incomplete");
   }
 
   std::vector<std::size_t> projected_columns;
@@ -34436,18 +34449,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     profiles.back().runtime_peak_from_callback_batches = true;
   }
   std::string filter_capability_uuid;
-  if (filter != nullptr) {
+  if (!filters.empty()) {
     filter_capability_uuid =
         DerivedCanonicalUuid(identity_scope, "heap-join-filter.capability");
-    profiles.push_back(
-        {filter->node_id, "filter.3vl.row.v1", filter_capability_uuid,
-         plan::CanonicalLogicalRelationalNodeKind::kFilter,
-         exec::PhysicalNodeKind::kFilter,
-         local_filter != nullptr
-             ? "canonical.heap.join-input.filter.v1"
-             : "canonical.heap.join-tail.filter.v1",
-         1, join_memory_grant, 1, 1});
-    profiles.back().runtime_peak_from_callback_batches = true;
+    for (const auto* filter : filters) {
+      profiles.push_back(
+          {filter->node_id, "filter.3vl.row.v1", filter_capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kFilter,
+           exec::PhysicalNodeKind::kFilter,
+           filter == terminal_filter
+               ? "canonical.heap.join-tail.filter.v1"
+               : "canonical.heap.join-input.filter.v1",
+           1, join_memory_grant, 1, 1});
+      profiles.back().runtime_peak_from_callback_batches = true;
+    }
   }
   std::string project_capability_uuid;
   if (project != nullptr) {
@@ -34492,7 +34507,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                  ? "heap-join-tail-project.selected-plan"
                  : (terminal_filter != nullptr
                         ? "heap-join-tail-filter.selected-plan"
-                        : (local_filter != nullptr
+                        : (!local_filters.empty()
                                ? "heap-join-input-filter.selected-plan"
                                : "heap-join-tree.selected-plan"))),
       "object-backed heap join tree with unary tail");
@@ -34663,7 +34678,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         &input.relational_dag, &input.context,
         selected.borrowed_mga_authority));
   }
-  if (filter != nullptr) {
+  if (!filters.empty()) {
     CanonicalRelationalExpressionRuntimeServices filter_services;
     filter_services.comparison_evaluator =
         [context = &input.context](const api::EngineTypedValue& left,
