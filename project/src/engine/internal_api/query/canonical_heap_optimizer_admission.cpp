@@ -232,9 +232,9 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   }
   if (scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 ||
-      filters.size() > scans.size() + 2 ||
-      projects.size() > scans.size() + 2 ||
-      ctes.size() > scans.size() + 2 ||
+      filters.size() > scans.size() + joins.size() ||
+      projects.size() > scans.size() + joins.size() ||
+      ctes.size() > scans.size() + joins.size() ||
       relational.nodes.size() !=
           scans.size() + joins.size() + filters.size() +
               projects.size() + ctes.size() ||
@@ -360,10 +360,6 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
                     "exact_filter_binding");
     }
   }
-  if (local_filter_join_node_ids.size() > 1) {
-    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "single_join_subtree_filter");
-  }
   const auto project_input_for = [&](const RelationalDagNode* candidate) {
     if (candidate == nullptr) {
       return static_cast<const RelationalDagNode*>(nullptr);
@@ -434,10 +430,6 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "exact_descriptor_project_binding");
     }
-  }
-  if (local_project_join_node_ids.size() > 1) {
-    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "single_join_subtree_project");
   }
   const auto branch_scan_for = [&](const RelationalDagNode* input) {
     if (input == nullptr) return static_cast<const RelationalDagNode*>(nullptr);
@@ -549,10 +541,6 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "exact_nonrecursive_cte_binding");
     }
-  }
-  if (local_cte_join_node_ids.size() > 1) {
-    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "single_join_subtree_cte");
   }
   for (const auto* scan : scans) {
     if (scan->semantic_variant_id != "relation.source.v1" ||
@@ -1289,7 +1277,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       std::to_string(issue.node_id));
   }
   if (relational.wire_version != 2 || relational.nodes.empty() ||
-      relational.nodes.size() > 50) {
+      relational.nodes.size() > 68) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "bounded_heap_scan_composition");
   }

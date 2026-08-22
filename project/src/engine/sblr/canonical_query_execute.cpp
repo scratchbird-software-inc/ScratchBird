@@ -34078,9 +34078,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       accepted_join && join_kind != exec::CanonicalAcceptedJoinKind::kCross;
   if (dag.wire_version != 2 || scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 || join == nullptr ||
-      filters.size() > scans.size() + 2 ||
-      projects.size() > scans.size() + 2 ||
-      ctes.size() > scans.size() + 2 || dag.nodes.size() > 50 ||
+      filters.size() > scans.size() + joins.size() ||
+      projects.size() > scans.size() + joins.size() ||
+      ctes.size() > scans.size() + joins.size() ||
+      dag.nodes.size() > 68 ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
       dag.nodes.size() !=
@@ -34146,6 +34147,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   }
   std::unordered_set<std::uint32_t> local_filter_scan_input_node_ids;
   std::unordered_set<std::uint32_t> join_subtree_filter_node_ids;
+  std::unordered_set<std::uint32_t> join_subtree_filter_base_node_ids;
   for (const auto* filter : local_filters) {
     const auto input_node =
         filter->input_node_ids.size() == 1
@@ -34168,14 +34170,33 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     if (input_node->second != join &&
         input_node->second->node_kind ==
             api::RelationalDagNodeKind::kJoin &&
-        join_subtree_filter_node_ids.empty()) {
+        join_subtree_filter_base_node_ids
+            .insert(input_node->second->node_id)
+            .second) {
       join_subtree_filter_node_ids.insert(filter->node_id);
       continue;
     }
     return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
-                  "join subtree admits at most one direct local FILTER");
+                  "join subtree base admits at most one direct local FILTER");
   }
+  const auto join_base_for_subtree_filter =
+      [&](const api::RelationalDagNode* candidate)
+      -> std::optional<std::uint32_t> {
+    if (candidate == nullptr ||
+        !join_subtree_filter_node_ids.contains(candidate->node_id) ||
+        candidate->input_node_ids.size() != 1) {
+      return std::nullopt;
+    }
+    const auto input = nodes_by_id.find(candidate->input_node_ids.front());
+    if (input == nodes_by_id.end() || input->second == join ||
+        input->second->node_kind != api::RelationalDagNodeKind::kJoin ||
+        !join_subtree_filter_base_node_ids.contains(input->second->node_id)) {
+      return std::nullopt;
+    }
+    return input->second->node_id;
+  };
   std::unordered_set<std::uint32_t> join_subtree_project_node_ids;
+  std::unordered_set<std::uint32_t> join_subtree_project_base_node_ids;
   for (const auto* project : local_projects) {
     const auto input_node =
         project->input_node_ids.size() == 1
@@ -34185,23 +34206,52 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
                     "join PROJECT input node is absent");
     }
-    const bool direct_join_subtree =
-        input_node->second->node_kind ==
+    std::optional<std::uint32_t> join_base_node_id;
+    if (input_node->second->node_kind ==
             api::RelationalDagNodeKind::kJoin &&
-        input_node->second != join;
-    const bool filtered_join_subtree =
-        input_node->second->node_kind ==
-            api::RelationalDagNodeKind::kFilter &&
-        join_subtree_filter_node_ids.contains(input_node->second->node_id);
-    if (direct_join_subtree || filtered_join_subtree) {
-      if (!join_subtree_project_node_ids.empty()) {
+        input_node->second != join) {
+      join_base_node_id = input_node->second->node_id;
+    } else if (input_node->second->node_kind ==
+               api::RelationalDagNodeKind::kFilter) {
+      join_base_node_id = join_base_for_subtree_filter(input_node->second);
+    }
+    if (join_base_node_id.has_value()) {
+      if (!join_subtree_project_base_node_ids
+               .insert(*join_base_node_id)
+               .second) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1",
-                      "join subtree admits at most one local PROJECT");
+                      "join subtree base admits at most one local PROJECT");
       }
       join_subtree_project_node_ids.insert(project->node_id);
     }
   }
+  const auto join_base_for_subtree_project =
+      [&](const api::RelationalDagNode* candidate)
+      -> std::optional<std::uint32_t> {
+    if (candidate == nullptr ||
+        !join_subtree_project_node_ids.contains(candidate->node_id) ||
+        candidate->input_node_ids.size() != 1) {
+      return std::nullopt;
+    }
+    const auto input = nodes_by_id.find(candidate->input_node_ids.front());
+    if (input == nodes_by_id.end()) return std::nullopt;
+    if (input->second != join &&
+        input->second->node_kind == api::RelationalDagNodeKind::kJoin) {
+      return join_subtree_project_base_node_ids.contains(input->second->node_id)
+                 ? std::optional<std::uint32_t>{input->second->node_id}
+                 : std::nullopt;
+    }
+    if (input->second->node_kind == api::RelationalDagNodeKind::kFilter) {
+      const auto base = join_base_for_subtree_filter(input->second);
+      return base.has_value() &&
+                     join_subtree_project_base_node_ids.contains(*base)
+                 ? base
+                 : std::nullopt;
+    }
+    return std::nullopt;
+  };
   std::unordered_set<std::uint32_t> join_subtree_cte_node_ids;
+  std::unordered_set<std::uint32_t> join_subtree_cte_base_node_ids;
   for (const auto* cte : local_ctes) {
     const auto input_node =
         cte->input_node_ids.size() == 1
@@ -34211,23 +34261,22 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CTE-INPUT-V1",
                     "join CTE input node is absent");
     }
-    const bool direct_join_subtree =
-        input_node->second->node_kind ==
+    std::optional<std::uint32_t> join_base_node_id;
+    if (input_node->second->node_kind ==
             api::RelationalDagNodeKind::kJoin &&
-        input_node->second != join;
-    const bool filtered_join_subtree =
-        input_node->second->node_kind ==
-            api::RelationalDagNodeKind::kFilter &&
-        join_subtree_filter_node_ids.contains(input_node->second->node_id);
-    const bool projected_join_subtree =
-        input_node->second->node_kind ==
-            api::RelationalDagNodeKind::kProject &&
-        join_subtree_project_node_ids.contains(input_node->second->node_id);
-    if (direct_join_subtree || filtered_join_subtree ||
-        projected_join_subtree) {
-      if (!join_subtree_cte_node_ids.empty()) {
+        input_node->second != join) {
+      join_base_node_id = input_node->second->node_id;
+    } else if (input_node->second->node_kind ==
+               api::RelationalDagNodeKind::kFilter) {
+      join_base_node_id = join_base_for_subtree_filter(input_node->second);
+    } else if (input_node->second->node_kind ==
+               api::RelationalDagNodeKind::kProject) {
+      join_base_node_id = join_base_for_subtree_project(input_node->second);
+    }
+    if (join_base_node_id.has_value()) {
+      if (!join_subtree_cte_base_node_ids.insert(*join_base_node_id).second) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CTE-INPUT-V1",
-                      "join subtree admits at most one local CTE");
+                      "join subtree base admits at most one local CTE");
       }
       join_subtree_cte_node_ids.insert(cte->node_id);
     }
