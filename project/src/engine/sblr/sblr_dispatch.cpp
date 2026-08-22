@@ -1815,12 +1815,27 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       const auto& value =
           dispatch_request.parameter_value_set->records[reference.slot_ordinal];
       const auto descriptor_uuid = uuid_text(value.slot_uuid);
+      const auto joined_scan_count = std::ranges::count_if(
+          decoded.request.relational_dag.nodes, [](const auto& candidate) {
+            return candidate.node_kind == api::RelationalDagNodeKind::kScan;
+          });
       const auto limit_binding_count = std::ranges::count_if(
           decoded.request.relational_dag.nodes,
           [&](const auto& candidate) {
-            return candidate.node_kind == api::RelationalDagNodeKind::kLimit &&
-                   candidate.bound_expression_ids ==
-                       std::vector<std::uint32_t>{expression_id};
+            if (candidate.node_kind != api::RelationalDagNodeKind::kLimit) {
+              return false;
+            }
+            const bool exact_single_bound =
+                candidate.bound_expression_ids ==
+                std::vector<std::uint32_t>{expression_id};
+            const bool exact_join_count_offset_bound =
+                joined_scan_count >= 2 && joined_scan_count <= 9 &&
+                candidate.semantic_variant_id ==
+                    "limit.bound-count-offset.v1" &&
+                candidate.bound_expression_ids.size() == 2 &&
+                std::ranges::count(candidate.bound_expression_ids,
+                                   expression_id) == 1;
+            return exact_single_bound || exact_join_count_offset_bound;
           });
       const bool exact_limit_binding = limit_binding_count == 1;
       std::uint32_t exact_filter_descriptor_id = 0;

@@ -1039,10 +1039,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
              expression->second->structural_parameter_occurrence_id == 0 &&
              expression->second->structural_variable_occurrence_id == 0) ||
             (parameter_value &&
-             limit_relation->limit_expression_ids.size() == 1 &&
              expression->second->structural_literal_occurrence_id == 0 &&
              expression->second->structural_parameter_occurrence_id ==
-                 expected_parameter_occurrence &&
+                 (limit_relation->limit_expression_ids.size() == 2
+                      ? index + 1
+                      : expected_parameter_occurrence) &&
              expression->second->structural_variable_occurrence_id == 0);
         if (expression == ast_expression_by_id.end() ||
             (!numeric_literal && !parameter_value) ||
@@ -1066,6 +1067,27 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           return RefusedBoundAst(std::move(bound));
         }
         limit_values.push_back(expression->second);
+      }
+      if (limit_values.size() == 2) {
+        const bool both_literals = std::ranges::all_of(
+            limit_values, [](const auto* expression) {
+              return expression->expression_kind ==
+                         NativeExpressionAstKind::kLiteral &&
+                     expression->literal_kind ==
+                         NativeLiteralAstKind::kNumeric;
+            });
+        const bool both_parameters = std::ranges::all_of(
+            limit_values, [](const auto* expression) {
+              return expression->expression_kind ==
+                         NativeExpressionAstKind::kParameter &&
+                     !expression->literal_kind.has_value();
+            });
+        if (!both_literals && !both_parameters) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "ordinary multi-source LIMIT and OFFSET operand kinds differ");
+          return RefusedBoundAst(std::move(bound));
+        }
       }
       limit_value = limit_values.front();
     }
@@ -7147,10 +7169,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
              expression->structural_parameter_occurrence_id == 0 &&
              expression->structural_variable_occurrence_id == 0) ||
             (parameter_value &&
-             limit_relation->limit_expression_ids.size() == 1 &&
              expression->structural_literal_occurrence_id == 0 &&
              expression->structural_parameter_occurrence_id ==
-                 expected_parameter_occurrence &&
+                 (limit_relation->limit_expression_ids.size() == 2
+                      ? index + 1
+                      : expected_parameter_occurrence) &&
              expression->structural_variable_occurrence_id == 0);
         if (expression == ast.expressions.end() ||
             (!numeric_literal && !parameter_value) ||
@@ -7173,6 +7196,27 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           return RefusedBoundAst(std::move(bound));
         }
         limit_values.push_back(&*expression);
+      }
+      if (limit_values.size() == 2) {
+        const bool both_literals = std::ranges::all_of(
+            limit_values, [](const auto* expression) {
+              return expression->expression_kind ==
+                         NativeExpressionAstKind::kLiteral &&
+                     expression->literal_kind ==
+                         NativeLiteralAstKind::kNumeric;
+            });
+        const bool both_parameters = std::ranges::all_of(
+            limit_values, [](const auto* expression) {
+              return expression->expression_kind ==
+                         NativeExpressionAstKind::kParameter &&
+                     !expression->literal_kind.has_value();
+            });
+        if (!both_literals && !both_parameters) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog JOIN LIMIT and OFFSET operand kinds differ");
+          return RefusedBoundAst(std::move(bound));
+        }
       }
       limit_value = limit_values.front();
     }

@@ -5784,33 +5784,48 @@ BuildEngineProjectedNativeBindingContext(
               return candidate.expression_id ==
                      limit_relation->limit_expression_ids[1];
             });
+        const bool numeric_offset =
+            offset != ast.expressions.end() &&
+            offset->expression_kind == NativeExpressionAstKind::kLiteral &&
+            offset->literal_kind == NativeLiteralAstKind::kNumeric;
+        const bool parameter_offset =
+            offset != ast.expressions.end() &&
+            offset->expression_kind == NativeExpressionAstKind::kParameter &&
+            !offset->literal_kind.has_value();
         std::uint64_t parsed_offset = 0;
         const auto converted_offset =
-            offset == ast.expressions.end()
+            !numeric_offset
                 ? std::from_chars_result{}
                 : std::from_chars(
                       offset->spelling.data(),
                       offset->spelling.data() + offset->spelling.size(),
                       parsed_offset);
-        if (!numeric_literal ||
-            value->structural_literal_occurrence_id != 1 ||
+        if ((!numeric_literal || !numeric_offset) &&
+            (!parameter_value || !parameter_offset) ||
+            (numeric_literal &&
+             value->structural_literal_occurrence_id != 1) ||
+            (parameter_value &&
+             value->structural_parameter_occurrence_id != 1) ||
             offset == ast.expressions.end() ||
-            offset->expression_kind != NativeExpressionAstKind::kLiteral ||
-            offset->literal_kind != NativeLiteralAstKind::kNumeric ||
             offset->spelling.empty() ||
-            (offset->spelling.size() > 1 &&
+            (numeric_offset && offset->spelling.size() > 1 &&
              offset->spelling.front() == '0') ||
             !offset->qualified_identifier.empty() ||
             !offset->child_expression_ids.empty() ||
             !offset->operator_name.empty() ||
-            offset->structural_literal_occurrence_id != 2 ||
-            offset->structural_parameter_occurrence_id != 0 ||
+            (numeric_offset &&
+             (offset->structural_literal_occurrence_id != 2 ||
+              offset->structural_parameter_occurrence_id != 0)) ||
+            (parameter_offset &&
+             (offset->structural_literal_occurrence_id != 0 ||
+              offset->structural_parameter_occurrence_id != 2)) ||
             offset->structural_variable_occurrence_id != 0 ||
-            converted_offset.ec != std::errc{} ||
-            converted_offset.ptr !=
-                offset->spelling.data() + offset->spelling.size() ||
-            parsed_offset > static_cast<std::uint64_t>(
-                                std::numeric_limits<std::int64_t>::max())) {
+            (numeric_offset &&
+             (converted_offset.ec != std::errc{} ||
+              converted_offset.ptr !=
+                  offset->spelling.data() + offset->spelling.size() ||
+              parsed_offset > static_cast<std::uint64_t>(
+                                  std::numeric_limits<std::int64_t>::max())))) {
           return fail("catalog_join_limit_offset_value_invalid");
         }
         limit_offset_value = &*offset;

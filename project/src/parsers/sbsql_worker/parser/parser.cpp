@@ -4819,38 +4819,48 @@ class NativeRelationalParser final {
       document_.expressions.push_back(std::move(bound));
       query_end = &bound_token;
       if (!join_filter_predicate_id.has_value() &&
-          bound_token.kind == TokenKind::kNumericLiteral && !AtEnd() &&
+          (bound_token.kind == TokenKind::kNumericLiteral ||
+           bound_token.kind == TokenKind::kParameter) &&
+          !AtEnd() &&
           IsWord(Current(), "OFFSET")) {
         Consume();
-        if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+        const auto expected_offset_kind = bound_token.kind;
+        if (AtEnd() || Current().kind != expected_offset_kind) {
           Refuse("catalog_join_limit_offset_required",
-                 "bounded catalog JOIN OFFSET requires one unsigned int64 "
-                 "literal");
+                 "bounded catalog JOIN OFFSET requires a second unsigned "
+                 "int64 literal or structural parameter matching LIMIT");
           return FinishRefusal();
         }
         const Token& offset_token = Consume();
-        std::uint64_t parsed_offset = 0;
-        const auto converted = std::from_chars(
-            offset_token.text.data(),
-            offset_token.text.data() + offset_token.text.size(),
-            parsed_offset);
-        if (offset_token.text.empty() ||
-            (offset_token.text.size() > 1 &&
-             offset_token.text.front() == '0') ||
-            converted.ec != std::errc{} ||
-            converted.ptr !=
-                offset_token.text.data() + offset_token.text.size() ||
-            parsed_offset > static_cast<std::uint64_t>(
-                                std::numeric_limits<std::int64_t>::max())) {
-          Refuse("catalog_join_limit_offset_invalid",
-                 "bounded catalog JOIN OFFSET requires one canonical "
-                 "nonnegative int64 literal");
-          return FinishRefusal();
+        if (offset_token.kind == TokenKind::kNumericLiteral) {
+          std::uint64_t parsed_offset = 0;
+          const auto converted = std::from_chars(
+              offset_token.text.data(),
+              offset_token.text.data() + offset_token.text.size(),
+              parsed_offset);
+          if (offset_token.text.empty() ||
+              (offset_token.text.size() > 1 &&
+               offset_token.text.front() == '0') ||
+              converted.ec != std::errc{} ||
+              converted.ptr !=
+                  offset_token.text.data() + offset_token.text.size() ||
+              parsed_offset > static_cast<std::uint64_t>(
+                                  std::numeric_limits<std::int64_t>::max())) {
+            Refuse("catalog_join_limit_offset_invalid",
+                   "bounded catalog JOIN OFFSET requires one canonical "
+                   "nonnegative int64 literal");
+            return FinishRefusal();
+          }
         }
         NativeExpressionAstNode offset;
         offset.expression_id = NextExpressionId();
-        offset.expression_kind = NativeExpressionAstKind::kLiteral;
-        offset.literal_kind = NativeLiteralAstKind::kNumeric;
+        offset.expression_kind =
+            offset_token.kind == TokenKind::kNumericLiteral
+                ? NativeExpressionAstKind::kLiteral
+                : NativeExpressionAstKind::kParameter;
+        if (offset_token.kind == TokenKind::kNumericLiteral) {
+          offset.literal_kind = NativeLiteralAstKind::kNumeric;
+        }
         offset.spelling = offset_token.text;
         offset.range = TokenSourceRange(offset_token);
         join_limit_expression_ids.push_back(offset.expression_id);

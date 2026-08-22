@@ -37183,6 +37183,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
     }
     std::unordered_set<std::uint32_t> bound_ids;
+    bool all_join_limit_literals = true;
+    bool all_join_limit_parameters = true;
     for (std::size_t bound_ordinal = 0;
          bound_ordinal < limit_relation->limit_expression_ids.size();
          ++bound_ordinal) {
@@ -37202,6 +37204,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeExpressionAstKind::kParameter &&
           !expression->second->literal_kind.has_value() &&
           !expression->second->literal_or_parameter_ref.has_value();
+      all_join_limit_literals = all_join_limit_literals && numeric_literal;
+      all_join_limit_parameters =
+          all_join_limit_parameters && parameter_value;
       const bool exact_occurrence =
           catalog_join_relation == nullptr ||
           (numeric_literal &&
@@ -37214,7 +37219,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           (parameter_value &&
            expression->second->structural_literal_occurrence_id == 0 &&
            expression->second->structural_parameter_occurrence_id ==
-               expected_parameter_occurrence &&
+               (limit_relation->limit_expression_ids.size() == 2
+                    ? bound_ordinal + 1
+                    : expected_parameter_occurrence) &&
            expression->second->structural_variable_occurrence_id == 0);
       if (expression == expressions_by_id.end() ||
           !bound_ids.insert(expression_id).second ||
@@ -37265,6 +37272,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             "typed LIMIT row bound requires a canonical non-null numeric descriptor");
         return envelope;
       }
+    }
+    if (catalog_join_relation != nullptr &&
+        limit_relation->limit_expression_ids.size() == 2 &&
+        !all_join_limit_literals && !all_join_limit_parameters) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed JOIN LIMIT and OFFSET operand kinds differ");
+      return envelope;
     }
   }
   if (catalog_filter_relation != nullptr && limit_relation != nullptr) {
