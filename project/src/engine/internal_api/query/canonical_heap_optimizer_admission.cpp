@@ -232,7 +232,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   }
   if (scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 ||
-      filters.size() > scans.size() + 1 ||
+      filters.size() > scans.size() + 2 ||
       projects.size() > scans.size() + 1 ||
       ctes.size() > scans.size() + 1 ||
       relational.nodes.size() !=
@@ -328,29 +328,41 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
                : nullptr;
   };
   std::unordered_set<std::uint32_t> local_filter_scan_node_ids;
+  std::unordered_set<std::uint32_t> local_filter_join_node_ids;
   std::unordered_set<std::uint32_t> filter_predicate_expression_ids;
   for (const auto* filter : filters) {
     const auto* filter_input = filter_input_for(filter);
     const bool local = filter != terminal_filter;
+    const bool local_scan =
+        local && filter_input != nullptr &&
+        filter_input->node_kind == RelationalDagNodeKind::kScan;
+    const bool local_join_subtree =
+        local && filter_input != nullptr && filter_input != join_root &&
+        filter_input->node_kind == RelationalDagNodeKind::kJoin;
     if (filter->semantic_variant_id !=
             "filter.catalog-column-numeric-comparison.v1" ||
         filter_input == nullptr ||
         filter->input_node_ids !=
             std::vector<std::uint32_t>{filter_input->node_id} ||
-        (local &&
-         (filter_input->node_kind != RelationalDagNodeKind::kScan ||
-          filter->shareable)) ||
+        (local && (!local_scan && !local_join_subtree)) ||
+        (local && filter->shareable) ||
         filter->bound_expression_ids.size() != 1 ||
         !filter_predicate_expression_ids
              .insert(filter->bound_expression_ids.front())
              .second ||
-        (local &&
+        (local_scan &&
          !local_filter_scan_node_ids.insert(filter_input->node_id).second) ||
+        (local_join_subtree &&
+         !local_filter_join_node_ids.insert(filter_input->node_id).second) ||
         filter->output_descriptor_ids != filter_input->output_descriptor_ids ||
         !unary_empty(*filter)) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "exact_filter_binding");
     }
+  }
+  if (local_filter_join_node_ids.size() > 1) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "single_join_subtree_filter");
   }
   const auto project_input_for = [&](const RelationalDagNode* candidate) {
     if (candidate == nullptr) {
@@ -1103,7 +1115,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       std::to_string(issue.node_id));
   }
   if (relational.wire_version != 2 || relational.nodes.empty() ||
-      relational.nodes.size() > 47) {
+      relational.nodes.size() > 48) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "bounded_heap_scan_composition");
   }

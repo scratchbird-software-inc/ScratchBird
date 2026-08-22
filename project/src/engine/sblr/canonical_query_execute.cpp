@@ -34078,9 +34078,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       accepted_join && join_kind != exec::CanonicalAcceptedJoinKind::kCross;
   if (dag.wire_version != 2 || scans.size() < 2 || scans.size() > 9 ||
       joins.size() != scans.size() - 1 || join == nullptr ||
-      filters.size() > scans.size() + 1 ||
+      filters.size() > scans.size() + 2 ||
       projects.size() > scans.size() + 1 ||
-      ctes.size() > scans.size() + 1 || dag.nodes.size() > 47 ||
+      ctes.size() > scans.size() + 1 || dag.nodes.size() > 48 ||
       !exact_terminal_chain ||
       std::ranges::find(joins, join) == joins.end() ||
       dag.nodes.size() !=
@@ -34143,6 +34143,37 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
                     "object-backed join tree has a missing or duplicate node identity");
     }
+  }
+  std::unordered_set<std::uint32_t> local_filter_scan_input_node_ids;
+  std::unordered_set<std::uint32_t> join_subtree_filter_node_ids;
+  for (const auto* filter : local_filters) {
+    const auto input_node =
+        filter->input_node_ids.size() == 1
+            ? nodes_by_id.find(filter->input_node_ids.front())
+            : nodes_by_id.end();
+    if (input_node == nodes_by_id.end()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
+                    "join FILTER input node is absent");
+    }
+    if (input_node->second->node_kind ==
+        api::RelationalDagNodeKind::kScan) {
+      if (!local_filter_scan_input_node_ids
+               .insert(input_node->second->node_id)
+               .second) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
+                      "join scan has more than one local FILTER");
+      }
+      continue;
+    }
+    if (input_node->second != join &&
+        input_node->second->node_kind ==
+            api::RelationalDagNodeKind::kJoin &&
+        join_subtree_filter_node_ids.empty()) {
+      join_subtree_filter_node_ids.insert(filter->node_id);
+      continue;
+    }
+    return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1",
+                  "join subtree admits at most one direct local FILTER");
   }
   std::unordered_set<std::uint32_t> visiting_join_nodes;
   std::unordered_set<std::uint32_t> completed_join_nodes;
@@ -34286,10 +34317,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               node.input_node_ids.size() == 1
                   ? nodes_by_id.find(node.input_node_ids.front())
                   : nodes_by_id.end();
+          const bool scan_input =
+              input_node != nodes_by_id.end() &&
+              input_node->second->node_kind ==
+                  api::RelationalDagNodeKind::kScan;
+          const bool join_subtree_input =
+              input_node != nodes_by_id.end() &&
+              join_subtree_filter_node_ids.contains(node.node_id) &&
+              input_node->second->node_kind ==
+                  api::RelationalDagNodeKind::kJoin;
           if (std::ranges::find(local_filters, &node) == local_filters.end() ||
               input_node == nodes_by_id.end() ||
-              input_node->second->node_kind !=
-                  api::RelationalDagNodeKind::kScan ||
+              (!scan_input && !join_subtree_input) ||
               node.semantic_variant_id !=
                   "filter.catalog-column-numeric-comparison.v1" ||
               node.input_node_ids.front() == node.node_id || node.shareable ||
@@ -34304,7 +34343,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               !bind_tree(node.input_node_ids.front(), detail)) {
             if (detail != nullptr && detail->empty()) {
               *detail =
-                  "join leaf FILTER is not one exact schema-preserving scan predicate";
+                  "join input FILTER is not one exact schema-preserving predicate";
             }
             return false;
           }
@@ -34695,7 +34734,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
            exec::PhysicalNodeKind::kFilter,
            filter == terminal_filter
                ? "canonical.heap.join-tail.filter.v1"
-               : "canonical.heap.join-input.filter.v1",
+               : (join_subtree_filter_node_ids.contains(filter->node_id)
+                      ? "canonical.heap.join-subtree.filter.v1"
+                      : "canonical.heap.join-input.filter.v1"),
            1, join_memory_grant, 1, 1});
       profiles.back().runtime_peak_from_callback_batches = true;
     }
