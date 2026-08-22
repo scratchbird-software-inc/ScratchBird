@@ -31,6 +31,7 @@ exec::CanonicalGroupedAggregateSetStateSpillRequest GroupedStateSpillRequest(
   first.distinct = true;
   first.aggregate_order_terms = {
       {.column = 2, .expression_descriptor_id = 1423}};
+  BindEqualityAuthority(&first);
   request.spill_root = root;
   request.spill_owner_uuid = kGroupedSpillOwner;
   request.runtime_generation = 1451;

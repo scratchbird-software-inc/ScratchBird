@@ -70,6 +70,7 @@ exec::CanonicalAggregateRuntimeRequest SpillProfile(
       request.input_batch.rows[1].values[0] = Value(descriptor, "4");
       request.input_batch.rows[2].values[0] = Value(descriptor, "5");
       request.input_batch.rows[3].values[0] = Value(descriptor, "4");
+      BindEqualityAuthority(&request);
       return request;
     }
     case Function::percentile_cont:
@@ -83,7 +84,8 @@ exec::CanonicalAggregateRuntimeRequest SpillProfile(
     }
     case Function::approx_count_distinct: {
       auto request = Request(function, 0, 2101, "int64");
-      request.result_column.nullable = false;
+      SetResultNullability(&request, false);
+      BindEqualityAuthority(&request);
       return request;
     }
     case Function::approx_median: {
@@ -91,8 +93,11 @@ exec::CanonicalAggregateRuntimeRequest SpillProfile(
       request.aggregate_order_terms.clear();
       return request;
     }
-    case Function::approx_top_k:
-      return TopKRequest();
+    case Function::approx_top_k: {
+      auto request = TopKRequest();
+      BindEqualityAuthority(&request);
+      return request;
+    }
     case Function::unknown:
       break;
   }
@@ -194,6 +199,7 @@ bool ValidateAllRegistryStateSpillProfiles(
           api::EngineSqlTruthValue::true_value,
           api::EngineSqlTruthValue::true_value,
           api::EngineSqlTruthValue::unknown};
+  BindEqualityAuthority(&modifiers.aggregate_request);
   auto modified = exec::ExecuteCanonicalAggregateStateSpill(modifiers);
   passed &= Require(
       modified.diagnostic.ok && modified.restored_result_equivalent &&
