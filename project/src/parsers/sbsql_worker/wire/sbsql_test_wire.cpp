@@ -5095,6 +5095,8 @@ BuildEngineProjectedNativeBindingContext(
     const bool ordinary_multi_catalog_cross_join =
         source_count >= 3 && source_count <= 9 && all_catalog_sources &&
         ast.model_object_resolution_requests.empty();
+    const bool ordinary_project_sources =
+        ordinary_relational_sources || ordinary_multi_catalog_cross_join;
     const bool bounded_multimodel_join =
         source_count >= 3 && source_count <= 9 && model_source_count >= 2;
     const bool bounded_multi_source_join =
@@ -5199,7 +5201,7 @@ BuildEngineProjectedNativeBindingContext(
             ? filter_relation->relation_id
             : (join_relations.empty() ? 0 : join_relations.back()->relation_id);
     const bool exact_project_tail =
-        project_relation != nullptr && ordinary_relational_sources &&
+        project_relation != nullptr && ordinary_project_sources &&
         project_relation->relation_id == project_predecessor_relation_id + 1 &&
         project_relation->input_relation_ids ==
             std::vector<std::uint32_t>{project_predecessor_relation_id} &&
@@ -5566,11 +5568,11 @@ BuildEngineProjectedNativeBindingContext(
         return fail("catalog_join_project_expression_inventory_invalid");
       }
     }
-    if (ordinary_multi_catalog_cross_join && filter_relation == nullptr &&
-        project_relation == nullptr) {
+    if (ordinary_multi_catalog_cross_join && filter_relation == nullptr) {
       std::unordered_set<std::uint32_t> source_wildcard_ids;
       bool exact_source_expression_inventory =
-          ast.expressions.size() == source_count;
+          ast.expressions.size() ==
+          source_count + project_identifiers.size();
       for (const auto* source_relation : source_relations) {
         if (!exact_source_expression_inventory ||
             source_relation->output_expression_ids.size() != 1) {
@@ -5597,6 +5599,15 @@ BuildEngineProjectedNativeBindingContext(
           exact_source_expression_inventory = false;
           break;
         }
+      }
+      if (project_relation != nullptr) {
+        exact_source_expression_inventory =
+            exact_source_expression_inventory &&
+            std::ranges::none_of(
+                project_relation->output_expression_ids,
+                [&](const auto expression_id) {
+                  return source_wildcard_ids.contains(expression_id);
+                });
       }
       if (!exact_source_expression_inventory) {
         return fail("catalog_multi_cross_join_expression_inventory_invalid");

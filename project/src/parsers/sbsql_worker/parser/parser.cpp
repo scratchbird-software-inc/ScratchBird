@@ -4522,16 +4522,27 @@ class NativeRelationalParser final {
     }
     const Token* join_end = query_end;
     std::optional<std::uint32_t> join_filter_predicate_id;
-    const bool ordinary_two_source_join =
-        parsed_sources.size() == 2 &&
+    const auto parsed_model_source_count = std::ranges::count_if(
+        parsed_sources, [](const auto& source) {
+          return source.source_kind !=
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    const bool all_ordinary_catalog_sources =
         std::ranges::all_of(parsed_sources, [](const auto& source) {
           return source.source_kind ==
                  NativeRelationSourceAstKind::kCatalogRelation;
         });
-    if (!wildcard_projection && !ordinary_two_source_join) {
+    const bool ordinary_two_source_join =
+        parsed_sources.size() == 2 && all_ordinary_catalog_sources;
+    const bool ordinary_multi_catalog_cross_join =
+        parsed_sources.size() >= 3 && parsed_sources.size() <= 9 &&
+        join_kind == NativeJoinAstKind::kCross &&
+        parsed_model_source_count == 0 && all_ordinary_catalog_sources;
+    if (!wildcard_projection && !ordinary_two_source_join &&
+        !ordinary_multi_catalog_cross_join) {
       Refuse("catalog_join_projection_profile_unsupported",
-             "bounded catalog JOIN identifier projection requires exactly "
-             "two ordinary catalog relation sources");
+             "bounded catalog JOIN identifier projection requires two "
+             "ordinary sources or a three-to-nine-source catalog CROSS JOIN");
       return FinishRefusal();
     }
     if (ordinary_two_source_join && !AtEnd() && IsWord(Current(), "WHERE")) {
@@ -4577,20 +4588,6 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
 
-    const auto parsed_model_source_count = std::ranges::count_if(
-        parsed_sources, [](const auto& source) {
-          return source.source_kind !=
-                 NativeRelationSourceAstKind::kCatalogRelation;
-        });
-    const bool ordinary_multi_catalog_cross_join =
-        parsed_sources.size() >= 3 && parsed_sources.size() <= 9 &&
-        wildcard_projection &&
-        join_kind == NativeJoinAstKind::kCross &&
-        parsed_model_source_count == 0 &&
-        std::ranges::all_of(parsed_sources, [](const auto& source) {
-          return source.source_kind ==
-                 NativeRelationSourceAstKind::kCatalogRelation;
-        });
     const bool bounded_multimodel_join =
         parsed_sources.size() >= 3 && parsed_sources.size() <= 9 &&
         parsed_model_source_count >= 2;

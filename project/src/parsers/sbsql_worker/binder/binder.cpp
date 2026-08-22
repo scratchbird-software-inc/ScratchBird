@@ -648,6 +648,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     std::vector<const NativeRelationAstNode*> source_relations(source_count,
                                                                nullptr);
     std::vector<const NativeRelationAstNode*> join_relations;
+    const NativeRelationAstNode* project_relation = nullptr;
     for (const auto& relation : ast.relations) {
       if (relation.relation_kind == NativeRelationAstKind::kCatalogSource &&
           relation.relation_source_ids.size() == 1 &&
@@ -662,17 +663,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         slot = &relation;
       } else if (relation.relation_kind == NativeRelationAstKind::kJoin) {
         join_relations.push_back(&relation);
+      } else if (relation.relation_kind == NativeRelationAstKind::kProject &&
+                 project_relation == nullptr) {
+        project_relation = &relation;
       }
     }
     std::ranges::sort(join_relations, {},
                       [](const auto* relation) { return relation->relation_id; });
-    bool exact_graph =
-        std::ranges::none_of(source_relations,
-                            [](const auto* relation) { return relation == nullptr; }) &&
-        join_relations.size() + 1 == source_count &&
-        ast.relations.size() == source_count + join_relations.size() &&
-        context.catalog_relations.size() == source_count &&
-        context.relations.size() == join_relations.size();
     const auto model_source_count = std::ranges::count_if(
         ast.catalog_relation_sources, [](const auto& source) {
           return source.source_kind !=
@@ -686,6 +683,38 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                               return IsExactOrdinaryCatalogSourceProfile(source);
                             });
     const bool bounded_multimodel_join = model_source_count >= 2;
+    const auto final_join_relation_id =
+        static_cast<std::uint32_t>((2 * source_count) - 1);
+    const bool project_composition =
+        ordinary_multi_catalog_cross_join && project_relation != nullptr &&
+        project_relation->relation_id == final_join_relation_id + 1 &&
+        project_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{final_join_relation_id} &&
+        !project_relation->output_expression_ids.empty() &&
+        project_relation->relation_source_ids.empty() &&
+        project_relation->values_row_ids.empty() &&
+        project_relation->grouping_key_expression_ids.empty() &&
+        project_relation->aggregate_expression_ids.empty() &&
+        project_relation->predicate_expression_ids.empty() &&
+        project_relation->limit_expression_ids.empty() &&
+        project_relation->window_invocation_ids.empty() &&
+        project_relation->ordering_terms.empty() &&
+        project_relation->join_kind == NativeJoinAstKind::kNone &&
+        project_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kNone &&
+        project_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kNone;
+    bool exact_graph =
+        std::ranges::none_of(source_relations,
+                            [](const auto* relation) { return relation == nullptr; }) &&
+        join_relations.size() + 1 == source_count &&
+        ast.relations.size() ==
+            source_count + join_relations.size() +
+                static_cast<std::size_t>(project_composition) &&
+        context.catalog_relations.size() == source_count &&
+        context.relations.size() == join_relations.size() &&
+        (project_relation == nullptr || project_composition) &&
+        (!bounded_multimodel_join || project_relation == nullptr);
     if (ordinary_multi_catalog_cross_join) {
       for (std::size_t ordinal = 0;
            exact_graph && ordinal < source_relations.size(); ++ordinal) {
@@ -749,7 +778,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           relation_binding.semantic_variant_id == "join.cross.v1";
       left_relation_id = join->relation_id;
     }
-    exact_graph = exact_graph && ast.root_relation_id == left_relation_id;
+    exact_graph =
+        exact_graph &&
+        ast.root_relation_id ==
+            (project_composition ? project_relation->relation_id
+                                 : left_relation_id);
     if (!exact_graph ||
         (!ordinary_multi_catalog_cross_join && !bounded_multimodel_join)) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
@@ -768,10 +801,47 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return RefusedBoundAst(std::move(bound));
       }
     }
+    std::vector<const NativeExpressionAstNode*> project_identifiers;
+    std::unordered_set<std::uint32_t> project_expression_ids;
+    if (project_composition) {
+      std::unordered_set<std::string> project_names;
+      for (const auto expression_id : project_relation->output_expression_ids) {
+        const auto expression = ast_expression_by_id.find(expression_id);
+        if (expression == ast_expression_by_id.end() ||
+            expression->second->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            expression->second->qualified_identifier.size() != 1 ||
+            expression->second->qualified_identifier.front().spelling !=
+                expression->second->spelling ||
+            expression->second->spelling.empty() ||
+            !expression->second->child_expression_ids.empty() ||
+            expression->second->literal_kind.has_value() ||
+            !expression->second->operator_name.empty() ||
+            expression->second->structural_literal_occurrence_id != 0 ||
+            expression->second->structural_parameter_occurrence_id != 0 ||
+            expression->second->structural_variable_occurrence_id != 0 ||
+            !project_expression_ids.insert(expression_id).second ||
+            !project_names
+                 .insert(expression->second->qualified_identifier.front().quoted
+                             ? expression->second->qualified_identifier.front()
+                                   .spelling
+                             : ToLowerAscii(
+                                   expression->second->qualified_identifier.front()
+                                       .spelling))
+                 .second) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "ordinary multi-source PROJECT identifier is not exact");
+          return RefusedBoundAst(std::move(bound));
+        }
+        project_identifiers.push_back(expression->second);
+      }
+    }
     if (ordinary_multi_catalog_cross_join) {
       std::unordered_set<std::uint32_t> source_wildcard_ids;
       bool exact_source_expression_inventory =
-          ast.expressions.size() == source_count;
+          ast.expressions.size() ==
+          source_count + project_expression_ids.size();
       for (const auto* source_relation : source_relations) {
         if (!exact_source_expression_inventory ||
             source_relation->output_expression_ids.size() != 1) {
@@ -797,6 +867,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           break;
         }
       }
+      exact_source_expression_inventory =
+          exact_source_expression_inventory &&
+          std::ranges::none_of(project_expression_ids, [&](const auto id) {
+            return source_wildcard_ids.contains(id);
+          }) &&
+          source_wildcard_ids.size() + project_expression_ids.size() ==
+              ast_expression_by_id.size();
       if (!exact_source_expression_inventory) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
@@ -866,6 +943,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (std::ranges::any_of(ast.expressions, [&](const auto& expression) {
           return expression.expression_kind !=
                      NativeExpressionAstKind::kWildcard &&
+                 !project_expression_ids.contains(expression.expression_id) &&
                  !expression_owner.contains(expression.expression_id);
         })) {
       AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -897,6 +975,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
          ++source_ordinal) {
       accumulated_width += source_projection_bindings[source_ordinal].size();
       expected_output_count += accumulated_width;
+    }
+    if (project_composition) {
+      expected_output_count += project_identifiers.size();
     }
     if (context.expressions.size() !=
             source_projection_count + operation_closure_count ||
@@ -1405,6 +1486,85 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         root_output_ids.push_back(output.output_id);
       }
       bound.relations.push_back(std::move(bound_join));
+    }
+    if (project_composition) {
+      std::vector<const NativeOutputBindingInput*> predecessor_outputs;
+      for (const auto& output : context.outputs) {
+        if (output.relation_id == final_join_relation_id) {
+          predecessor_outputs.push_back(&output);
+        }
+      }
+      std::ranges::sort(predecessor_outputs, {}, [](const auto* output) {
+        return output->ordinal;
+      });
+      if (project_identifiers.empty() || predecessor_outputs.empty() ||
+          project_identifiers.size() >= predecessor_outputs.size() ||
+          predecessor_outputs.size() != accumulated_projection_ids.size()) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+            "ordinary multi-source PROJECT width is not a strict subset");
+        return RefusedBoundAst(std::move(bound));
+      }
+
+      std::unordered_set<std::uint32_t> selected_predecessor_output_ids;
+      std::vector<std::uint32_t> projected_expression_ids;
+      root_output_ids.clear();
+      for (std::size_t ordinal = 0; ordinal < project_identifiers.size();
+           ++ordinal) {
+        const auto* identifier = project_identifiers[ordinal];
+        const auto identifier_key =
+            identifier->qualified_identifier.front().quoted
+                ? identifier->qualified_identifier.front().spelling
+                : ToLowerAscii(
+                      identifier->qualified_identifier.front().spelling);
+        const auto matching_count = std::ranges::count_if(
+            predecessor_outputs, [&](const auto* output) {
+              return output->output_name_utf8 == identifier_key;
+            });
+        const auto selected = std::ranges::find_if(
+            predecessor_outputs, [&](const auto* output) {
+              return output->output_name_utf8 == identifier_key;
+            });
+        if (output_offset >= context.outputs.size()) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "ordinary multi-source PROJECT output is missing");
+          return RefusedBoundAst(std::move(bound));
+        }
+        const auto& output = context.outputs[output_offset++];
+        const auto expected_output_id =
+            static_cast<std::uint32_t>(output_offset);
+        if (matching_count != 1 || selected == predecessor_outputs.end() ||
+            !selected_predecessor_output_ids.insert((*selected)->output_id)
+                 .second ||
+            output.output_id != expected_output_id ||
+            output.relation_id != project_relation->relation_id ||
+            output.expression_id != (*selected)->expression_id ||
+            output.output_name_utf8 != (*selected)->output_name_utf8 ||
+            output.descriptor_id != (*selected)->descriptor_id ||
+            !output.visible || output.ordinal != ordinal) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "ordinary multi-source PROJECT output is unresolved or ambiguous");
+          return RefusedBoundAst(std::move(bound));
+        }
+        bound.outputs.push_back(
+            {output.output_id, output.relation_id, output.expression_id,
+             output.output_name_utf8, output.descriptor_id, output.visible,
+             output.ordinal});
+        projected_expression_ids.push_back(output.expression_id);
+        root_output_ids.push_back(output.output_id);
+      }
+
+      BoundRelationAstRecord bound_project;
+      bound_project.relation_id = project_relation->relation_id;
+      bound_project.relation_kind = NativeRelationAstKind::kProject;
+      bound_project.input_relation_ids = {final_join_relation_id};
+      bound_project.output_expression_ids = projected_expression_ids;
+      bound_project.bound_expression_ids = projected_expression_ids;
+      bound_project.semantic_variant_id =
+          "project.catalog-visible-columns.v1";
+      bound.relations.push_back(std::move(bound_project));
     }
     if (binding_offset != context.expressions.size() ||
         output_offset != context.outputs.size()) {

@@ -36223,8 +36223,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       limit_relation == nullptr && window_relation == nullptr &&
       qualify_relation == nullptr &&
       (!bounded_ordinary_catalog_cross_join_candidate ||
-       (catalog_filter_relation == nullptr &&
-        catalog_project_relation == nullptr)) &&
+       catalog_filter_relation == nullptr) &&
       ((catalog_filter_relation == nullptr &&
         catalog_project_relation == nullptr) ||
        catalog_join_tail_sources_are_relational) &&
