@@ -382,9 +382,13 @@ struct BoundCatalogRelationSourceAstRecord {
 template <typename SourceRecord>
 [[nodiscard]] inline bool IsExactOrdinaryCatalogSourceProfile(
     const SourceRecord& source) {
+  const bool exact_ordinary_alias =
+      (!source.alias.has_value() && !source.alias_is_explicit) ||
+      (source.alias.has_value() && source.alias_is_explicit &&
+       !source.alias->spelling.empty());
   const bool common_model_carriers_are_empty =
       source.source_kind == NativeRelationSourceAstKind::kCatalogRelation &&
-      !source.alias.has_value() && !source.alias_is_explicit &&
+      exact_ordinary_alias &&
       source.model_family_id.empty() && source.model_operation_id.empty() &&
       source.model_operation_ids.empty() &&
       source.model_operation_expression_ids.empty() &&

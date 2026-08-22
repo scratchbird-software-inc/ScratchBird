@@ -35563,10 +35563,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                           [](const auto& source) {
                             return IsExactOrdinaryCatalogSourceProfile(source);
                           });
+  const bool bounded_multimodel_has_ordinary_alias =
+      std::ranges::any_of(native.catalog_relation_sources,
+                          [](const auto& source) {
+                            return source.source_kind ==
+                                       NativeRelationSourceAstKind::kCatalogRelation &&
+                                   (source.alias.has_value() ||
+                                    source.alias_is_explicit);
+                          });
   const bool bounded_multimodel_join_candidate =
       native.catalog_relation_sources.size() >= 3 &&
       native.catalog_relation_sources.size() <= 9 &&
-      bounded_model_source_count >= 2;
+      bounded_model_source_count >= 2 &&
+      !bounded_multimodel_has_ordinary_alias;
   const bool bounded_multi_source_join_candidate =
       bounded_ordinary_catalog_cross_join_candidate ||
       bounded_multimodel_join_candidate;
@@ -37344,6 +37353,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     std::size_t source_projection_count = 0;
     std::vector<std::uint32_t> expected_join_projection_ids;
     std::unordered_set<std::string> object_uuids;
+    std::unordered_map<std::string, bool> ordinary_source_binding_names;
     std::unordered_set<std::uint32_t> source_ids;
     std::unordered_set<std::uint32_t> owned_model_expression_ids;
     const auto model_profile = [](const NativeRelationSourceAstKind kind)
@@ -37385,6 +37395,25 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           source.source_kind == NativeRelationSourceAstKind::kColumnar;
       const bool model = source.source_kind !=
                          NativeRelationSourceAstKind::kCatalogRelation;
+      const bool exact_ordinary_source =
+          model || IsExactOrdinaryCatalogSourceProfile(source);
+      bool ordinary_binding_collision = false;
+      if (!model && exact_ordinary_source && !source.qualified_name.empty()) {
+        const auto& binding_name =
+            source.alias.has_value() ? *source.alias
+                                     : source.qualified_name.back();
+        const auto spelling = binding_name.quoted
+                                  ? binding_name.spelling
+                                  : LowerAscii(binding_name.spelling);
+        auto binding_key = std::string(binding_name.quoted ? "q" : "u");
+        binding_key.append(std::to_string(spelling.size()));
+        binding_key.push_back(':');
+        binding_key.append(spelling);
+        const auto [binding, inserted] = ordinary_source_binding_names.emplace(
+            std::move(binding_key), source.alias.has_value());
+        ordinary_binding_collision =
+            !inserted && (binding->second || source.alias.has_value());
+      }
       const auto [expected_family, expected_logical_operation,
                   expected_attached_root, expected_model_object_type] =
           model_profile(source.source_kind);
@@ -37403,6 +37432,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           (spatial_columnar_join && !spatial && !columnar) ||
           source.resolution_state !=
               NativeCatalogRelationResolutionState::kBound ||
+          !exact_ordinary_source || ordinary_binding_collision ||
           source.qualified_name.empty() ||
           std::ranges::any_of(source.qualified_name,
                               [](const auto& component) {

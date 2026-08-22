@@ -3826,6 +3826,19 @@ class NativeRelationalParser final {
         if (expect_identifier) {
           if (tokens_[from_index]->kind != TokenKind::kIdentifier) return false;
           ++from_index;
+          if (from_index < tokens_.size() &&
+              tokens_[from_index]->text == ".") {
+            ++from_index;
+            if (from_index >= tokens_.size() ||
+                tokens_[from_index]->kind != TokenKind::kIdentifier) {
+              return false;
+            }
+            ++from_index;
+            if (from_index < tokens_.size() &&
+                tokens_[from_index]->text == ".") {
+              return false;
+            }
+          }
           expect_identifier = false;
         } else if (tokens_[from_index]->text == ",") {
           ++from_index;
@@ -3886,6 +3899,19 @@ class NativeRelationalParser final {
       wildcard_projection = true;
     } else {
       std::unordered_set<std::string> projection_names;
+      const auto projection_identifier_key = [](const auto& components) {
+        std::string key;
+        for (const auto& component : components) {
+          const auto spelling = component.quoted
+                                    ? component.spelling
+                                    : ToLowerAscii(component.spelling);
+          key.push_back(component.quoted ? 'q' : 'u');
+          key.append(std::to_string(spelling.size()));
+          key.push_back(':');
+          key.append(spelling);
+        }
+        return key;
+      };
       while (true) {
         if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
           Refuse("catalog_join_projection_identifier_required",
@@ -3918,14 +3944,8 @@ class NativeRelationalParser final {
             return FinishRefusal();
           }
         }
-        auto projection_key = column_token->text;
-        if (!column_token->quoted) {
-          for (auto& ch : projection_key) {
-            if (ch >= 'A' && ch <= 'Z') {
-              ch = static_cast<char>(ch - 'A' + 'a');
-            }
-          }
-        }
+        auto projection_key =
+            projection_identifier_key(qualified_identifier);
         if (!projection_names.insert(std::move(projection_key)).second) {
           Refuse("catalog_join_projection_identifier_duplicate",
                  "bounded catalog JOIN projection identifiers must be unique");
@@ -4080,9 +4100,21 @@ class NativeRelationalParser final {
           source.model_operation_expression_ids = {operation.expression_id};
           document_.expressions.push_back(std::move(operation));
         }
+      } else if (!AtEnd() && IsWord(Current(), "AS")) {
+        Consume();
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_join_source_alias_required",
+                 "ordinary catalog JOIN source AS requires one alias");
+          return std::nullopt;
+        }
+        const Token& alias = Consume();
+        source.alias = NativeIdentifierAstNode{
+            alias.text, alias.quoted, TokenSourceRange(alias)};
+        source.alias_is_explicit = true;
+        source_end = &alias;
       }
       source.range = model_source ? Span(*model_operator, *source_end)
-                                  : source.qualified_name_range;
+                                  : Span(first, *source_end);
       return source;
     };
 
@@ -4564,6 +4596,47 @@ class NativeRelationalParser final {
           return source.source_kind ==
                  NativeRelationSourceAstKind::kCatalogRelation;
         });
+    const bool has_ordinary_catalog_alias =
+        std::ranges::any_of(parsed_sources, [](const auto& source) {
+          return source.source_kind ==
+                     NativeRelationSourceAstKind::kCatalogRelation &&
+                 (source.alias.has_value() || source.alias_is_explicit);
+        });
+    if (has_ordinary_catalog_alias && !all_ordinary_catalog_sources) {
+      Refuse("catalog_join_source_alias_profile_unsupported",
+             "ordinary catalog JOIN source aliases require an all-catalog "
+             "source graph");
+      return FinishRefusal();
+    }
+    bool unique_ordinary_source_bindings = true;
+    if (all_ordinary_catalog_sources) {
+      for (std::size_t left = 0;
+           unique_ordinary_source_bindings && left < parsed_sources.size();
+           ++left) {
+        const auto& left_binding =
+            parsed_sources[left].alias.has_value()
+                ? *parsed_sources[left].alias
+                : parsed_sources[left].qualified_name.back();
+        for (std::size_t right = left + 1; right < parsed_sources.size();
+             ++right) {
+          const auto& right_binding =
+              parsed_sources[right].alias.has_value()
+                  ? *parsed_sources[right].alias
+                  : parsed_sources[right].qualified_name.back();
+          if ((parsed_sources[left].alias.has_value() ||
+               parsed_sources[right].alias.has_value()) &&
+              SameIdentifier(left_binding, right_binding)) {
+            unique_ordinary_source_bindings = false;
+            break;
+          }
+        }
+      }
+    }
+    if (!unique_ordinary_source_bindings) {
+      Refuse("catalog_join_source_alias_duplicate",
+             "ordinary catalog JOIN source binding names must be unique");
+      return FinishRefusal();
+    }
     const bool ordinary_two_source_join =
         parsed_sources.size() == 2 && all_ordinary_catalog_sources;
     const bool ordinary_multi_catalog_cross_join =
@@ -4574,9 +4647,12 @@ class NativeRelationalParser final {
         [&](const NativeIdentifierAstNode& qualifier) {
           return std::ranges::count_if(
                      parsed_sources, [&](const auto& source) {
-                       return !source.qualified_name.empty() &&
-                              SameIdentifier(source.qualified_name.back(),
-                                             qualifier);
+                       if (source.qualified_name.empty()) return false;
+                       const auto& binding_name =
+                           source.alias.has_value()
+                               ? *source.alias
+                               : source.qualified_name.back();
+                       return SameIdentifier(binding_name, qualifier);
                      }) == 1;
         };
     for (const auto expression_id : projection_expression_ids) {
@@ -4586,7 +4662,7 @@ class NativeRelationalParser final {
               expression.qualified_identifier.front())) {
         Refuse("catalog_join_projection_qualifier_ambiguous",
                "bounded catalog JOIN projection qualifier must match one "
-               "relation terminal name");
+               "effective source binding name");
         return FinishRefusal();
       }
     }
@@ -4634,7 +4710,7 @@ class NativeRelationalParser final {
           !value->child_expression_ids.empty()) {
         Refuse("catalog_join_where_profile_unsupported",
                "bounded catalog JOIN WHERE requires one unqualified or "
-               "relation-terminal-qualified column "
+               "source-qualified column "
                "comparison to an unsigned numeric literal, structural "
                "parameter occurrence, or structural variable occurrence");
         return FinishRefusal();
@@ -4644,7 +4720,7 @@ class NativeRelationalParser final {
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("catalog_cross_join_clause_unsupported",
-             "bounded catalog CROSS JOIN does not admit aliases or clauses");
+             "bounded catalog CROSS JOIN does not admit additional clauses");
       return FinishRefusal();
     }
 

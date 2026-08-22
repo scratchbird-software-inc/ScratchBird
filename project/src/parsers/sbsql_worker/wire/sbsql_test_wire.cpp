@@ -5085,13 +5085,55 @@ BuildEngineProjectedNativeBindingContext(
           return source.source_kind !=
                  NativeRelationSourceAstKind::kCatalogRelation;
         });
-    const bool all_catalog_sources =
+    const bool has_ordinary_catalog_alias =
+        std::ranges::any_of(ast.catalog_relation_sources,
+                            [](const auto& source) {
+                              return source.source_kind ==
+                                         NativeRelationSourceAstKind::kCatalogRelation &&
+                                     (source.alias.has_value() ||
+                                      source.alias_is_explicit);
+                            });
+    const bool exact_ordinary_source_profiles =
         std::ranges::all_of(ast.catalog_relation_sources,
                             [](const auto& source) {
                               return IsExactOrdinaryCatalogSourceProfile(source);
                             });
+    bool unique_ordinary_source_bindings = true;
+    if (exact_ordinary_source_profiles) {
+      for (std::size_t left = 0;
+           unique_ordinary_source_bindings && left < source_count; ++left) {
+        const auto& left_source = ast.catalog_relation_sources[left];
+        if (left_source.qualified_name.empty()) {
+          unique_ordinary_source_bindings = false;
+          break;
+        }
+        const auto& left_binding =
+            left_source.alias.has_value() ? *left_source.alias
+                                          : left_source.qualified_name.back();
+        for (std::size_t right = left + 1; right < source_count; ++right) {
+          const auto& right_source = ast.catalog_relation_sources[right];
+          if (right_source.qualified_name.empty()) {
+            unique_ordinary_source_bindings = false;
+            break;
+          }
+          const auto& right_binding =
+              right_source.alias.has_value()
+                  ? *right_source.alias
+                  : right_source.qualified_name.back();
+          if ((left_source.alias.has_value() ||
+               right_source.alias.has_value()) &&
+              SameIdentifierComponent(left_binding, right_binding)) {
+            unique_ordinary_source_bindings = false;
+            break;
+          }
+        }
+      }
+    }
+    const bool all_catalog_sources =
+        exact_ordinary_source_profiles && unique_ordinary_source_bindings;
     const bool ordinary_relational_sources =
-        source_count == 2 && all_catalog_sources;
+        source_count == 2 && all_catalog_sources &&
+        ast.model_object_resolution_requests.empty();
     const bool ordinary_multi_catalog_cross_join =
         source_count >= 3 && source_count <= 9 && all_catalog_sources &&
         ast.model_object_resolution_requests.empty();
@@ -5099,6 +5141,20 @@ BuildEngineProjectedNativeBindingContext(
         ordinary_relational_sources || ordinary_multi_catalog_cross_join;
     const bool ordinary_filter_sources =
         ordinary_relational_sources || ordinary_multi_catalog_cross_join;
+    const bool spatial_columnar_source_kinds =
+        source_count == 2 &&
+        std::ranges::all_of(ast.catalog_relation_sources,
+                            [](const auto& source) {
+                              return source.source_kind ==
+                                         NativeRelationSourceAstKind::kSpatial ||
+                                     source.source_kind ==
+                                         NativeRelationSourceAstKind::kColumnar;
+                            }) &&
+        std::ranges::count_if(ast.catalog_relation_sources,
+                              [](const auto& source) {
+                                return source.source_kind ==
+                                       NativeRelationSourceAstKind::kSpatial;
+                              }) == 1;
     const bool bounded_multimodel_join =
         source_count >= 3 && source_count <= 9 && model_source_count >= 2;
     const bool bounded_multi_source_join =
@@ -5236,6 +5292,9 @@ BuildEngineProjectedNativeBindingContext(
         });
     if (source_count < 2 || !exact_join_graph ||
         ast.root_relation_id != expected_root_relation_id ||
+        (has_ordinary_catalog_alias && model_source_count != 0) ||
+        (source_count == 2 && !ordinary_relational_sources &&
+         !spatial_columnar_source_kinds) ||
         (!bounded_multi_source_join && source_count != 2) ||
         resolved_object_reference_seeds.size() != expected_resolution_count) {
       return fail("catalog_join_shape_invalid:sources=" +
@@ -5361,6 +5420,17 @@ BuildEngineProjectedNativeBindingContext(
     if (project_relation != nullptr) {
       std::unordered_set<std::uint32_t> project_expression_ids;
       std::unordered_set<std::string> project_names;
+      const auto project_identifier_key = [](const auto& components) {
+        std::string key;
+        for (const auto& component : components) {
+          const auto spelling = CanonicalColumnLookupKey(component);
+          key.push_back(component.quoted ? 'q' : 'u');
+          key.append(std::to_string(spelling.size()));
+          key.push_back(':');
+          key.append(spelling);
+        }
+        return key;
+      };
       for (const auto expression_id : project_relation->output_expression_ids) {
         const auto expression = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
@@ -5372,9 +5442,8 @@ BuildEngineProjectedNativeBindingContext(
             (expression->qualified_identifier.size() != 1 &&
              expression->qualified_identifier.size() != 2) ||
             expression->qualified_identifier.back().spelling.empty() ||
-            (expression->qualified_identifier.size() == 1 &&
-             expression->qualified_identifier.back().spelling !=
-                 expression->spelling) ||
+            expression->qualified_identifier.back().spelling !=
+                expression->spelling ||
             expression->spelling.empty() ||
             !expression->child_expression_ids.empty() ||
             expression->literal_kind.has_value() ||
@@ -5384,8 +5453,8 @@ BuildEngineProjectedNativeBindingContext(
             expression->structural_variable_occurrence_id != 0 ||
             !project_expression_ids.insert(expression_id).second ||
             !project_names
-                 .insert(CanonicalColumnLookupKey(
-                     expression->qualified_identifier.back()))
+                 .insert(project_identifier_key(
+                     expression->qualified_identifier))
                  .second) {
           return fail("catalog_join_project_identifier_invalid");
         }
@@ -5660,6 +5729,7 @@ BuildEngineProjectedNativeBindingContext(
     std::optional<std::string> bounded_search_analyzer_uuid;
     std::uint64_t bounded_search_analyzer_generation = 0;
     std::unordered_set<std::string> lexical_relation_descriptor_uuids;
+    std::unordered_set<std::string> ordinary_relation_object_uuids;
     for (std::size_t source_ordinal = 0; source_ordinal < source_count;
          ++source_ordinal) {
       const auto& source = ast.catalog_relation_sources[source_ordinal];
@@ -5709,6 +5779,9 @@ BuildEngineProjectedNativeBindingContext(
                    ? std::string_view{resolved.object_class}
                    : expected_object_class) ||
           !exact_object_class || resolved.object_uuid.empty() ||
+          (all_catalog_sources &&
+           !ordinary_relation_object_uuids.insert(resolved.object_uuid)
+                .second) ||
           projection.relation_uuid != resolved.object_uuid ||
           projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
           !lexical_relation_descriptor_uuids
@@ -6232,9 +6305,13 @@ BuildEngineProjectedNativeBindingContext(
       std::optional<std::size_t> source_ordinal;
       for (std::size_t ordinal = 0; ordinal < source_count; ++ordinal) {
         const auto& source = ast.catalog_relation_sources[ordinal];
-        if (source.qualified_name.empty() ||
-            !SameIdentifierComponent(source.qualified_name.back(),
-                                     qualifier)) {
+        if (source.qualified_name.empty()) {
+          continue;
+        }
+        const auto& binding_name =
+            source.alias.has_value() ? *source.alias
+                                     : source.qualified_name.back();
+        if (!SameIdentifierComponent(binding_name, qualifier)) {
           continue;
         }
         if (source_ordinal.has_value()) return nullptr;
