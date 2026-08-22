@@ -5826,12 +5826,23 @@ BuildEngineProjectedNativeBindingContext(
         return fail("catalog_join_limit_expression_inventory_invalid");
       }
     }
+    const bool literal_filter_parameter_limit =
+        filter_value != nullptr && limit_value != nullptr &&
+        filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+        filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
+        filter_value->structural_literal_occurrence_id == 1 &&
+        limit_value->expression_kind == NativeExpressionAstKind::kParameter &&
+        limit_value->structural_parameter_occurrence_id == 1;
+    const bool parameter_filter_literal_limit =
+        filter_value != nullptr && limit_value != nullptr &&
+        filter_value->expression_kind == NativeExpressionAstKind::kParameter &&
+        filter_value->structural_parameter_occurrence_id == 1 &&
+        limit_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+        limit_value->literal_kind == NativeLiteralAstKind::kNumeric &&
+        limit_value->structural_literal_occurrence_id == 1;
     if (filter_relation != nullptr && limit_relation != nullptr &&
-        (filter_value == nullptr || limit_value == nullptr ||
-         filter_value->expression_kind != NativeExpressionAstKind::kLiteral ||
-         filter_value->literal_kind != NativeLiteralAstKind::kNumeric ||
-         filter_value->structural_literal_occurrence_id != 1 ||
-         limit_value->expression_kind != NativeExpressionAstKind::kParameter)) {
+        !literal_filter_parameter_limit &&
+        !parameter_filter_literal_limit) {
       return fail("catalog_join_filter_limit_operand_profile_invalid");
     }
     if (ordinary_multi_catalog_cross_join) {
@@ -6583,7 +6594,40 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.descriptor_uuid = boolean_profile->descriptor_uuid;
       descriptor.type_uuid = boolean_profile->type_uuid;
       descriptor.nullability = BoundNullability::kNullable;
+      const auto boolean_descriptor_id = descriptor.descriptor_id;
       context.descriptors.push_back(std::move(descriptor));
+      const bool parameter_filter_literal_limit =
+          limit_relation != nullptr && filter_value != nullptr &&
+          limit_value != nullptr &&
+          filter_value->expression_kind ==
+              NativeExpressionAstKind::kParameter &&
+          filter_value->structural_parameter_occurrence_id == 1 &&
+          limit_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+          limit_value->literal_kind == NativeLiteralAstKind::kNumeric &&
+          limit_value->structural_literal_occurrence_id == 1;
+      if (parameter_filter_literal_limit) {
+        const auto source_descriptor = std::ranges::find_if(
+            context.descriptors, [&](const auto& candidate) {
+              return candidate.descriptor_id ==
+                     selected_filter_column->descriptor_id;
+            });
+        if (source_descriptor == context.descriptors.end() ||
+            context.descriptors.size() >=
+                std::numeric_limits<std::uint32_t>::max()) {
+          return fail("catalog_join_filter_parameter_descriptor_unavailable");
+        }
+        auto operand_descriptor = *source_descriptor;
+        operand_descriptor.descriptor_id =
+            static_cast<std::uint32_t>(context.descriptors.size() + 1);
+        operand_descriptor.nullability = BoundNullability::kNonNull;
+        const auto operand_descriptor_id = operand_descriptor.descriptor_id;
+        context.descriptors.push_back(std::move(operand_descriptor));
+        NativeExpressionBindingInput operand_expression;
+        operand_expression.expression_id = boolean_descriptor_id;
+        operand_expression.descriptor_id = operand_descriptor_id;
+        operand_expression.structural_parameter_occurrence_id = 1;
+        context.expressions.push_back(std::move(operand_expression));
+      }
       for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
         const auto& source_output = join_outputs[ordinal];
         context.outputs.push_back(
@@ -16933,8 +16977,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         if (exact_native_join_limit_after_filter && parameter_prepare_only) {
           result.messages.diagnostics.push_back(MakeDiagnostic(
               "SBLR.OPERAND_INVALID", "ERROR",
-              "Prepared execution does not admit a literal WHERE operand "
-              "composed with a parameterized LIMIT.",
+              "Prepared execution does not admit a JOIN tail that composes "
+              "one literal with one parameter.",
               "sbp_sbsql.wire"));
         }
         if (native_binding_context.has_value() &&

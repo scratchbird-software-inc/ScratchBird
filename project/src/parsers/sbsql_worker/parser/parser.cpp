@@ -4758,16 +4758,23 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       const Token& bound_token = Consume();
+      const bool literal_filter_parameter_limit =
+          filter_value != nullptr &&
+          filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+          filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
+          bound_token.kind == TokenKind::kParameter;
+      const bool parameter_filter_literal_limit =
+          filter_value != nullptr &&
+          filter_value->expression_kind ==
+              NativeExpressionAstKind::kParameter &&
+          bound_token.kind == TokenKind::kNumericLiteral;
       if (join_filter_predicate_id.has_value() &&
-          (bound_token.kind != TokenKind::kParameter ||
-           filter_value == nullptr ||
-           filter_value->expression_kind !=
-               NativeExpressionAstKind::kLiteral ||
-           filter_value->literal_kind != NativeLiteralAstKind::kNumeric)) {
+          !literal_filter_parameter_limit &&
+          !parameter_filter_literal_limit) {
         Refuse("catalog_join_filter_limit_profile_unsupported",
                "bounded catalog JOIN WHERE and LIMIT composition requires "
-               "one numeric WHERE literal and one structural LIMIT "
-               "parameter");
+               "one numeric literal and one structural parameter on "
+               "opposite operands");
         return FinishRefusal();
       }
       NativeExpressionAstNode bound;

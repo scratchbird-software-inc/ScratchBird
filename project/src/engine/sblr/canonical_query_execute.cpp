@@ -34980,21 +34980,62 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
            *predicate->operator_name == "<=" ||
            *predicate->operator_name == ">" ||
            *predicate->operator_name == ">=");
-      bool exact_literal_value =
+      const bool literal_filter_value =
           filter_value != nullptr &&
-          filter_value->literal_typed_value_v1.has_value();
-      if (exact_literal_value) {
-        const auto& typed = *filter_value->literal_typed_value_v1;
+          filter_value->expression_kind ==
+              api::RelationalExpressionKind::kLiteral &&
+          filter_value->literal_kind == api::RelationalLiteralKind::kNumeric &&
+          filter_value->literal_typed_value_v1.has_value() &&
+          !filter_value->parameter_typed_value_v1.has_value();
+      const bool parameter_filter_value =
+          filter_value != nullptr &&
+          filter_value->expression_kind ==
+              api::RelationalExpressionKind::kParameter &&
+          !filter_value->literal_kind.has_value() &&
+          !filter_value->literal_typed_value_v1.has_value() &&
+          filter_value->parameter_typed_value_v1.has_value();
+      const bool literal_limit_value =
+          limit_value != dag.expressions.end() &&
+          limit_value->expression_kind ==
+              api::RelationalExpressionKind::kLiteral;
+      const bool parameter_limit_value =
+          limit_value != dag.expressions.end() &&
+          limit_value->expression_kind ==
+              api::RelationalExpressionKind::kParameter;
+      const bool exact_operand_pair =
+          (literal_filter_value && parameter_limit_value) ||
+          (parameter_filter_value && literal_limit_value);
+      bool exact_filter_value = literal_filter_value || parameter_filter_value;
+      if (exact_filter_value) {
+        const auto& typed_bytes =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->canonical_value_bytes
+                : filter_value->parameter_typed_value_v1->canonical_value_bytes;
+        const auto& typed_descriptor_uuid =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->descriptor_uuid
+                : filter_value->parameter_typed_value_v1->descriptor_uuid;
+        const auto typed_descriptor_generation =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->descriptor_generation
+                : filter_value->parameter_typed_value_v1->descriptor_generation;
+        const auto& typed_value_state =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->value_state
+                : filter_value->parameter_typed_value_v1->value_state;
+        const auto& typed_sha =
+            literal_filter_value
+                ? filter_value->literal_typed_value_v1->canonical_value_sha256
+                : filter_value->parameter_typed_value_v1->canonical_value_sha256;
         const auto digest = scratchbird::core::hash::ComputeSha256Digest(
-            typed.canonical_value_bytes);
-        exact_literal_value =
-            typed.descriptor_generation != 0 &&
-            typed.value_state == "value" &&
-            typed.canonical_value_bytes.size() == 8 &&
-            (typed.canonical_value_bytes.back() & 0x80U) == 0 && digest.ok() &&
-            digest.digest == typed.canonical_value_sha256 &&
+            typed_bytes);
+        exact_filter_value =
+            typed_descriptor_generation != 0 &&
+            typed_value_state == "value" && typed_bytes.size() == 8 &&
+            (typed_bytes.back() & 0x80U) == 0 && digest.ok() &&
+            digest.digest == typed_sha &&
             literal_descriptor != dag.descriptors.end() &&
-            typed.descriptor_uuid == literal_descriptor->descriptor_uuid;
+            typed_descriptor_uuid == literal_descriptor->descriptor_uuid;
       }
       const auto identifier_source_count =
           filter_identifier == nullptr
@@ -35054,17 +35095,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           predicate->literal_or_parameter_ref.has_value() ||
           predicate->literal_typed_value_v1.has_value() ||
           predicate->parameter_typed_value_v1.has_value() ||
-          filter_value == nullptr ||
-          filter_value->expression_kind !=
-              api::RelationalExpressionKind::kLiteral ||
-          filter_value->literal_kind != api::RelationalLiteralKind::kNumeric ||
+          filter_value == nullptr || !exact_operand_pair ||
           !filter_value->child_expression_ids.empty() ||
           filter_value->function_uuid.has_value() ||
           filter_value->bound_name_uuid.has_value() ||
           filter_value->operator_name.has_value() ||
           filter_value->literal_or_parameter_ref.has_value() ||
-          filter_value->parameter_typed_value_v1.has_value() ||
-          !exact_literal_value || identifier_source_count != 1 ||
+          !exact_filter_value || identifier_source_count != 1 ||
           identifier_descriptor == dag.descriptors.end() ||
           literal_descriptor == dag.descriptors.end() ||
           predicate_descriptor == dag.descriptors.end() ||
@@ -35095,8 +35132,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           predicate_descriptor->precision.has_value() ||
           predicate_descriptor->scale.has_value() ||
           limit_value == dag.expressions.end() ||
-          limit_value->expression_kind !=
-              api::RelationalExpressionKind::kParameter ||
           !distinct_expression_ids || !distinct_descriptor_ids) {
         return refuse(
             "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TAIL-LIMIT-V1",
