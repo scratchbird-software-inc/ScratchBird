@@ -1637,45 +1637,98 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           std::move(invocation));
       continue;
     }
-    if (operand.type == "relational_property_v1") {
+    if (operand.type == "relational_property_v1" ||
+        operand.type == "relational_property_v2") {
       if (decoded.request.relational_dag.properties.size() >= 524288 ||
           operand.value.size() > 65536) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
         decoded.detail = "relational property transport limit exceeded";
         return decoded;
       }
-      std::array<std::string_view, 6> fields{};
       std::uint64_t property_kind = 0;
       std::uint64_t origin_node_id = 0;
-      if (operand.name.empty() ||
-          !SplitRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalUnsigned(
-              fields[0], std::numeric_limits<std::uint8_t>::max(),
-              &property_kind) ||
-          !ParseCanonicalUnsigned(
-              fields[1], std::numeric_limits<std::uint32_t>::max(),
-              &origin_node_id)) {
+      api::RelationalPropertyRecord property;
+      property.property_uuid = operand.name;
+      const auto parse_common = [&](const auto& fields) {
+        return !operand.name.empty() &&
+               ParseCanonicalUnsigned(
+                   fields[0], std::numeric_limits<std::uint8_t>::max(),
+                   &property_kind) &&
+               ParseCanonicalUnsigned(
+                   fields[1], std::numeric_limits<std::uint32_t>::max(),
+                   &origin_node_id) &&
+               ParseRelationalHandleList(fields[2],
+                                         &property.expression_ids) &&
+               ParseRelationalOrderingTerms(fields[3],
+                                             &property.ordering_terms) &&
+               ParseRelationalStringList(
+                   fields[4], &property.dependency_property_uuids);
+      };
+      bool parsed = false;
+      if (operand.type == "relational_property_v1") {
+        std::array<std::string_view, 6> fields{};
+        parsed = SplitRelationalFields(operand.value, &fields) &&
+                 parse_common(fields);
+        if (parsed && fields[5] != "-") {
+          property.window_frame_descriptor_uuid = fields[5];
+        }
+      } else {
+        std::array<std::string_view, 13> fields{};
+        std::uint64_t distribution_kind = 0;
+        std::uint64_t materialization_kind = 0;
+        std::uint64_t rewindability_kind = 0;
+        std::uint64_t locality_kind = 0;
+        std::uint64_t security_visibility_generation = 0;
+        parsed = SplitRelationalFields(operand.value, &fields) &&
+                 parse_common(fields) &&
+                 ParseCanonicalUnsigned(
+                     fields[6], std::numeric_limits<std::uint8_t>::max(),
+                     &distribution_kind) &&
+                 ParseCanonicalUnsigned(
+                     fields[7], std::numeric_limits<std::uint8_t>::max(),
+                     &materialization_kind) &&
+                 ParseCanonicalUnsigned(
+                     fields[8], std::numeric_limits<std::uint8_t>::max(),
+                     &rewindability_kind) &&
+                 ParseCanonicalUnsigned(
+                     fields[9], std::numeric_limits<std::uint8_t>::max(),
+                     &locality_kind) &&
+                 ParseCanonicalUnsigned(
+                     fields[12], std::numeric_limits<std::uint64_t>::max(),
+                     &security_visibility_generation);
+        if (parsed) {
+          if (fields[5] != "-") {
+            property.window_frame_descriptor_uuid = fields[5];
+          }
+          property.distribution_kind =
+              static_cast<api::RelationalPropertyDistributionKind>(
+                  distribution_kind);
+          property.materialization_kind =
+              static_cast<api::RelationalPropertyMaterializationKind>(
+                  materialization_kind);
+          property.rewindability_kind =
+              static_cast<api::RelationalPropertyRewindabilityKind>(
+                  rewindability_kind);
+          property.locality_kind =
+              static_cast<api::RelationalPropertyLocalityKind>(locality_kind);
+          if (fields[10] != "-") {
+            property.locality_uuid = fields[10];
+          }
+          if (fields[11] != "-") {
+            property.security_visibility_context_uuid = fields[11];
+          }
+          property.security_visibility_generation =
+              security_visibility_generation;
+        }
+      }
+      if (!parsed) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-PROPERTY-IDENTITY-V1";
         decoded.detail = "malformed relational property record";
         return decoded;
       }
-      api::RelationalPropertyRecord property;
-      property.property_uuid = operand.name;
       property.property_kind =
           static_cast<api::RelationalPropertyKind>(property_kind);
       property.origin_node_id = static_cast<std::uint32_t>(origin_node_id);
-      if (!ParseRelationalHandleList(fields[2], &property.expression_ids) ||
-          !ParseRelationalOrderingTerms(fields[3],
-                                        &property.ordering_terms) ||
-          !ParseRelationalStringList(
-              fields[4], &property.dependency_property_uuids)) {
-        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1";
-        decoded.detail = "malformed relational property fields";
-        return decoded;
-      }
-      if (fields[5] != "-") {
-        property.window_frame_descriptor_uuid = fields[5];
-      }
       decoded.request.relational_dag.properties.push_back(
           std::move(property));
       continue;
@@ -9838,7 +9891,8 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
         std::all_of(operand.name.begin() + 5, operand.name.end(),
                     [](unsigned char ch) { return ch >= '0' && ch <= '9'; })) {
       operand.name.erase(0, 5);
-    } else if (operand.type == "relational_property_v1" &&
+    } else if ((operand.type == "relational_property_v1" ||
+                operand.type == "relational_property_v2") &&
                operand.name.rfind("property_", 0) == 0 &&
                operand.name.size() == 41 &&
                std::all_of(operand.name.begin() + 9, operand.name.end(),
@@ -10126,7 +10180,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                       })) {
         operand.name.erase(0, 5);
       } else if (materialize_query_slots &&
-                 operand.type == "relational_property_v1" &&
+                 (operand.type == "relational_property_v1" ||
+                  operand.type == "relational_property_v2") &&
                  operand.name.rfind("property_", 0) == 0 &&
                  operand.name.size() == 41 &&
                  std::all_of(operand.name.begin() + 9, operand.name.end(),

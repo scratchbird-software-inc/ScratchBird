@@ -67,14 +67,89 @@ bool SameCapability(const CanonicalExecutorCapabilityRecord& left,
          left.engine_owned == right.engine_owned;
 }
 
+std::uint64_t SaturatingAdd(const std::uint64_t left,
+                            const std::uint64_t right) {
+  if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  return left + right;
+}
+
+std::uint64_t SaturatingMultiply(const std::uint64_t left,
+                                 const std::uint64_t right) {
+  if (left != 0 &&
+      right > std::numeric_limits<std::uint64_t>::max() / left) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  return left * right;
+}
+
+std::uint64_t CpuMultiplier(
+    const planner::CanonicalLogicalRelationalNodeKind kind) {
+  using Kind = planner::CanonicalLogicalRelationalNodeKind;
+  switch (kind) {
+    case Kind::kRelationSource:
+    case Kind::kProject:
+    case Kind::kLimit:
+    case Kind::kValues: return 1;
+    case Kind::kFilter:
+    case Kind::kCte: return 2;
+    case Kind::kUnpivot: return 3;
+    case Kind::kJoin:
+    case Kind::kAggregate:
+    case Kind::kSetOperation:
+    case Kind::kSubquery:
+    case Kind::kPivot: return 4;
+    case Kind::kWindow:
+    case Kind::kTableFunctionInvoke: return 5;
+    case Kind::kSort:
+    case Kind::kRecursiveCte: return 6;
+    case Kind::kMatchRecognize: return 8;
+  }
+  return 1;
+}
+
+std::string ModelFamilyId(
+    const planner::CanonicalLogicalRelationalNode& node) {
+  using Family = planner::CanonicalLogicalModelFamilyIdentity;
+  switch (node.model_family_identity) {
+    case Family::kDocument: return "document.local.v1";
+    case Family::kGraph: return "graph.local.v1";
+    case Family::kKeyValue: return "key_value.local.v1";
+    case Family::kTimeSeries: return "time_series.local.v1";
+    case Family::kVector: return "vector.local.v1";
+    case Family::kSearch: return "search.local.v1";
+    case Family::kSpatial: return "spatial.local.v1";
+    case Family::kColumnar: return "columnar.local.v1";
+    case Family::kUnspecified: break;
+  }
+  return "relational.local.v1";
+}
+
+bool HasCostlyProperty(
+    const planner::CanonicalLogicalRelationalNode& node,
+    const std::unordered_map<
+        std::string, const planner::CanonicalLogicalPropertyRecord*>&
+        properties,
+    const planner::CanonicalLogicalPropertyKind kind) {
+  const auto contains = [&](const auto& values) {
+    return std::ranges::any_of(values, [&](const auto& uuid) {
+      const auto property = properties.find(uuid);
+      return property != properties.end() &&
+             property->second->property_kind == kind;
+    });
+  };
+  return contains(node.required_property_uuids) ||
+         contains(node.delivered_property_uuids);
+}
+
 }  // namespace
 
 CanonicalOptimizerProfileFactoryResult
 BuildCanonicalOptimizerAlternativeProfiles(
     const CanonicalOptimizerAdmissionRequest& admission_request,
     const CanonicalOptimizerAdmissionResult& admission,
-    const std::vector<CanonicalOptimizerImplementationProfile>&
-        implementations,
+    const CanonicalOptimizerExecutorAvailability& executor_availability,
     std::string identity_scope,
     std::string calibration_profile_uuid) {
   CanonicalOptimizerProfileFactoryResult result;
@@ -91,8 +166,16 @@ BuildCanonicalOptimizerAlternativeProfiles(
   if (!admission.admitted || !admission.planning_allowed ||
       admission.data_access_allowed || !admission.issues.empty() ||
       identity_scope.empty() || calibration_profile_uuid.empty() ||
-      implementations.empty() ||
-      implementations.size() >
+      !executor_availability.engine_owned ||
+      executor_availability.parser_profile_authority_claimed ||
+      !executor_availability.capability_catalog.engine_owned ||
+      executor_availability.capability_catalog.capability_snapshot_uuid !=
+          admission.capability_snapshot_uuid ||
+      executor_availability.capability_catalog.policy_epoch !=
+          admission.policy_epoch ||
+      executor_availability.capability_catalog.capabilities.empty() ||
+      executor_availability.node_bindings.empty() ||
+      executor_availability.node_bindings.size() >
           admission_request.resource.maximum_candidate_count) {
     return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-ADMISSION-V1", 0,
                   {}, "admission_or_bounds");
@@ -125,6 +208,23 @@ BuildCanonicalOptimizerAlternativeProfiles(
     estimates_by_node.emplace(estimate.logical_node_id, &estimate);
   }
 
+  std::unordered_map<std::string, const CanonicalExecutorCapabilityRecord*>
+      capabilities_by_uuid;
+  for (const auto& capability :
+       executor_availability.capability_catalog.capabilities) {
+    const auto [it, inserted] = capabilities_by_uuid.emplace(
+        capability.capability_uuid, &capability);
+    if (capability.capability_uuid.empty() ||
+        capability.implementation_id.empty() ||
+        capability.capability_abi_version != 1 || !capability.engine_owned ||
+        capability.minimum_input_count > capability.maximum_input_count ||
+        capability.maximum_memory_bytes == 0 ||
+        (!inserted && !SameCapability(*it->second, capability))) {
+      return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-CAPABILITY-V1", 0,
+                    capability.implementation_id, "capability_catalog");
+    }
+  }
+
   CanonicalOptimizerAlternativeDomainSnapshot domain;
   domain.capability_snapshot_uuid = admission.capability_snapshot_uuid;
   domain.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
@@ -136,39 +236,59 @@ BuildCanonicalOptimizerAlternativeProfiles(
   domain.complete_finite_domain = true;
   domain.engine_owned = true;
 
-  result.capability_catalog.capability_snapshot_uuid =
-      admission.capability_snapshot_uuid;
-  result.capability_catalog.policy_epoch = admission.policy_epoch;
-  result.capability_catalog.engine_owned = true;
-  std::unordered_map<std::string, std::size_t> capability_indexes;
+  result.capability_catalog = executor_availability.capability_catalog;
+  std::ranges::sort(result.capability_catalog.capabilities,
+                    [](const auto& left, const auto& right) {
+                      return left.capability_uuid < right.capability_uuid;
+                    });
   std::unordered_map<std::string,
-                     const CanonicalOptimizerImplementationProfile*>
-      implementation_by_alternative;
+                     const CanonicalOptimizerNodeCapabilityBinding*>
+      binding_by_alternative;
   std::unordered_set<std::string> node_implementations;
-  for (const auto& implementation : implementations) {
-    const auto node = nodes_by_id.find(implementation.logical_node_id);
+  std::vector<const CanonicalOptimizerNodeCapabilityBinding*> bindings;
+  bindings.reserve(executor_availability.node_bindings.size());
+  for (const auto& binding : executor_availability.node_bindings) {
+    bindings.push_back(&binding);
+  }
+  std::ranges::sort(bindings, [](const auto* left, const auto* right) {
+    if (left->logical_node_id != right->logical_node_id) {
+      return left->logical_node_id < right->logical_node_id;
+    }
+    return left->capability_uuid < right->capability_uuid;
+  });
+  for (const auto* binding : bindings) {
+    const auto node = nodes_by_id.find(binding->logical_node_id);
+    const auto capability = capabilities_by_uuid.find(binding->capability_uuid);
+    const auto implementation_id =
+        capability == capabilities_by_uuid.end()
+            ? std::string{}
+            : capability->second->implementation_id;
     const auto implementation_key =
-        std::to_string(implementation.logical_node_id) + ":" +
-        implementation.implementation_id;
+        std::to_string(binding->logical_node_id) + ":" + implementation_id;
     if (node == nodes_by_id.end() ||
-        node->second->node_kind != implementation.logical_node_kind ||
-        implementation.implementation_id.empty() ||
-        implementation.capability_uuid.empty() ||
-        implementation.transformation_rule_id.empty() ||
-        implementation.memory_bytes_required == 0 ||
-        implementation.minimum_input_count >
-            implementation.maximum_input_count ||
+        capability == capabilities_by_uuid.end() ||
+        node->second->node_kind != capability->second->logical_node_kind ||
+        binding->memory_bytes_required == 0 ||
+        binding->memory_bytes_required >
+            capability->second->maximum_memory_bytes ||
+        (binding->available && !binding->refusal_diagnostic_id.empty()) ||
+        (!binding->available && binding->refusal_diagnostic_id.empty()) ||
         !node_implementations.insert(implementation_key).second) {
       return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-IMPLEMENTATION-V1",
-                    implementation.logical_node_id,
-                    implementation.implementation_id,
-                    "implementation_profile");
+                    binding->logical_node_id, implementation_id,
+                    "executor_availability_binding");
     }
     const auto property_kinds = [&](const auto& property_uuids,
                                     auto* output) {
       for (const auto& property_uuid : property_uuids) {
         const auto property = properties_by_uuid.find(property_uuid);
-        if (property == properties_by_uuid.end()) return false;
+        if (property == properties_by_uuid.end() ||
+            std::ranges::find(
+                capability->second->supported_property_kinds,
+                property->second->property_kind) ==
+                capability->second->supported_property_kinds.end()) {
+          return false;
+        }
         if (std::ranges::find(*output, property->second->property_kind) ==
             output->end()) {
           output->push_back(property->second->property_kind);
@@ -176,81 +296,52 @@ BuildCanonicalOptimizerAlternativeProfiles(
       }
       return true;
     };
-    const auto suffix = std::to_string(implementation.logical_node_id) + "." +
-                        implementation.implementation_id;
+    const auto suffix = std::to_string(binding->logical_node_id) + "." +
+                        implementation_id;
     CanonicalOptimizerAlternativeDomainRecord record;
     record.alternative_uuid =
         DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
-    record.capability_uuid = implementation.capability_uuid;
-    record.logical_node_id = implementation.logical_node_id;
-    record.logical_node_kind = implementation.logical_node_kind;
+    record.capability_uuid = binding->capability_uuid;
+    record.logical_node_id = binding->logical_node_id;
+    record.logical_node_kind = capability->second->logical_node_kind;
     record.semantic_variant_id = node->second->semantic_variant_id;
-    record.implementation_id = implementation.implementation_id;
-    record.minimum_input_count = implementation.minimum_input_count;
-    record.maximum_input_count = implementation.maximum_input_count;
-    if (!property_kinds(implementation.required_property_uuids,
+    record.implementation_id = implementation_id;
+    record.minimum_input_count = capability->second->minimum_input_count;
+    record.maximum_input_count = capability->second->maximum_input_count;
+    std::vector<std::string> input_required_property_uuids;
+    for (const auto& property_uuid : node->second->required_property_uuids) {
+      if (std::ranges::find(node->second->delivered_property_uuids,
+                            property_uuid) ==
+          node->second->delivered_property_uuids.end()) {
+        input_required_property_uuids.push_back(property_uuid);
+      }
+    }
+    if (!property_kinds(input_required_property_uuids,
                         &record.required_property_kinds) ||
-        !property_kinds(implementation.delivered_property_uuids,
+        !property_kinds(node->second->delivered_property_uuids,
                         &record.delivered_property_kinds)) {
       return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-PROPERTY-V1",
-                    implementation.logical_node_id,
-                    implementation.implementation_id,
-                    "implementation_property_uuid");
+                    binding->logical_node_id, implementation_id,
+                    "logical_property_uuid");
     }
-    record.memory_bytes_required = implementation.memory_bytes_required;
-    record.spill_supported = implementation.spill_supported;
-    record.parallel_safe = implementation.parallel_safe;
-    record.parallel_required = implementation.parallel_required;
-    record.residual_predicate_required =
-        implementation.residual_predicate_required;
-    record.storage_recheck_required =
-        implementation.storage_recheck_required;
-    record.storage_read_capable = implementation.storage_read_capable;
-    record.mga_visibility_safe = implementation.mga_visibility_capable;
-    record.compatibility_profile_id =
-        implementation.compatibility_profile_id;
+    record.memory_bytes_required = binding->memory_bytes_required;
+    record.spill_supported = capability->second->spill_supported;
+    record.parallel_safe = true;
+    record.parallel_required = false;
+    record.residual_predicate_required = false;
+    record.storage_recheck_required = false;
+    record.storage_read_capable = capability->second->storage_read_capable;
+    record.mga_visibility_safe = capability->second->mga_visibility_capable;
+    record.compatibility_profile_id = "native.sblr.row.v1";
     record.exact_semantics = true;
     record.native_sblr_compatible = true;
-    record.available = implementation.available;
-    record.refusal_diagnostic_id = implementation.refusal_diagnostic_id;
+    record.available = binding->available && capability->second->available;
+    record.refusal_diagnostic_id =
+        !binding->available ? binding->refusal_diagnostic_id
+                            : capability->second->refusal_diagnostic_id;
     record.engine_owned = true;
     domain.records.push_back(record);
-    implementation_by_alternative.emplace(record.alternative_uuid,
-                                           &implementation);
-
-    CanonicalExecutorCapabilityRecord capability;
-    capability.capability_uuid = implementation.capability_uuid;
-    capability.capability_abi_version = 1;
-    capability.implementation_id = implementation.implementation_id;
-    capability.logical_node_kind = implementation.logical_node_kind;
-    capability.physical_node_kind = implementation.physical_node_kind;
-    capability.minimum_input_count = implementation.minimum_input_count;
-    capability.maximum_input_count = implementation.maximum_input_count;
-    capability.supported_property_kinds =
-        implementation.supported_property_kinds;
-    capability.maximum_memory_bytes =
-        admission_request.resource.memory_budget_bytes;
-    capability.spill_supported = implementation.spill_supported;
-    capability.storage_read_capable = implementation.storage_read_capable;
-    capability.mga_visibility_capable =
-        implementation.mga_visibility_capable;
-    capability.available = implementation.available;
-    capability.refusal_diagnostic_id =
-        implementation.refusal_diagnostic_id;
-    capability.engine_owned = true;
-    const auto [capability_it, inserted] = capability_indexes.emplace(
-        capability.capability_uuid,
-        result.capability_catalog.capabilities.size());
-    if (inserted) {
-      result.capability_catalog.capabilities.push_back(std::move(capability));
-    } else if (!SameCapability(
-                   result.capability_catalog.capabilities[capability_it->second],
-                   capability)) {
-      return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-CAPABILITY-V1",
-                    implementation.logical_node_id,
-                    implementation.implementation_id,
-                    "capability_identity");
-    }
+    binding_by_alternative.emplace(record.alternative_uuid, binding);
   }
 
   result.inventory = EnumerateCanonicalOptimizerAlternativeInventory(
@@ -270,12 +361,14 @@ BuildCanonicalOptimizerAlternativeProfiles(
   result.candidates.reserve(result.inventory.legal_candidate_count);
   for (const auto& receipt : result.inventory.receipts) {
     if (!receipt.legal) continue;
-    const auto* implementation =
-        implementation_by_alternative.at(receipt.alternative_uuid);
+    const auto* binding = binding_by_alternative.at(receipt.alternative_uuid);
+    const auto* capability =
+        capabilities_by_uuid.at(binding->capability_uuid);
+    const auto* node = nodes_by_id.at(receipt.logical_node_id);
     const auto suffix = std::to_string(receipt.logical_node_id) + "." +
                         receipt.implementation_id;
-    std::uint64_t estimated_rows =
-        std::max<std::uint64_t>(1, implementation->estimated_rows_hint);
+    std::uint64_t estimated_rows = 1;
+    std::uint64_t estimated_pages = 0;
     CostConfidence confidence = CostConfidence::kUnknown;
     const auto estimate = estimates_by_node.find(receipt.logical_node_id);
     if (estimate != estimates_by_node.end()) {
@@ -284,6 +377,10 @@ BuildCanonicalOptimizerAlternativeProfiles(
           estimate->second->row_count_present) {
         estimated_rows = std::max<std::uint64_t>(1,
                                                 estimate->second->row_count);
+      }
+      if (estimate->second->state == CanonicalOptimizerStatisticState::kKnown &&
+          estimate->second->page_count_present) {
+        estimated_pages = estimate->second->page_count;
       }
     }
     if (confidence == CostConfidence::kUnknown ||
@@ -297,47 +394,89 @@ BuildCanonicalOptimizerAlternativeProfiles(
     candidate.transformation_uuid =
         DerivedCanonicalUuid(identity_scope, "transformation." + suffix);
     candidate.transformation_rule_id =
-        implementation->transformation_rule_id;
+        "canonical.optimizer." +
+        std::string(planner::CanonicalLogicalRelationalNodeKindName(
+            node->node_kind)) +
+        "." + receipt.implementation_id;
     candidate.required_property_uuids = receipt.required_property_uuids;
     candidate.delivered_property_uuids = receipt.delivered_property_uuids;
     candidate.enforced_property_uuids = receipt.enforced_property_uuids;
     candidate.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
     candidate.statistics_snapshot_uuid = admission.statistics_snapshot_uuid;
     candidate.statistics_generation = admission.statistics_generation;
-    candidate.model_family_id = implementation->model_family_id;
+    candidate.model_family_id = ModelFamilyId(*node);
     auto& cost = candidate.cost_terms;
     cost.cost_vector_uuid =
         DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
     cost.calibration_profile_uuid = calibration_profile_uuid;
-    cost.cpu_units = estimated_rows;
-    cost.page_read_sequential_units =
-        implementation->page_read_sequential_units;
-    cost.page_read_random_units = implementation->page_read_random_units;
-    cost.page_write_units = implementation->page_write_units;
-    cost.memory_bytes_required = implementation->memory_bytes_required;
+    cost.cpu_units = SaturatingMultiply(estimated_rows,
+                                        CpuMultiplier(node->node_kind));
+    if (node->node_kind ==
+        planner::CanonicalLogicalRelationalNodeKind::kRelationSource) {
+      if (receipt.implementation_id.find("index") != std::string::npos) {
+        cost.page_read_random_units =
+            estimated_pages == 0 ? 1 : (estimated_pages + 7) / 8;
+        cost.cache_units = std::max<std::uint64_t>(1, estimated_pages / 16);
+      } else {
+        cost.page_read_sequential_units = estimated_pages;
+      }
+    }
+    cost.memory_bytes_required = std::min(
+        binding->memory_bytes_required,
+        admission_request.resource.memory_budget_bytes);
     cost.spill_bytes_expected =
         receipt.spill_required
-            ? implementation->memory_bytes_required -
-                  admission_request.resource.memory_budget_bytes
+            ? (binding->memory_bytes_required >
+                       admission_request.resource.memory_budget_bytes
+                   ? binding->memory_bytes_required -
+                         admission_request.resource.memory_budget_bytes
+                   : 0)
             : 0;
-    cost.mga_visibility_checks_expected =
-        implementation->mga_visibility_checks_expected;
-    cost.cache_units = implementation->cache_units;
-    cost.memory_grant_units = implementation->memory_grant_units;
-    cost.spill_units = implementation->spill_units;
-    cost.network_units = implementation->network_units;
-    cost.compression_units = implementation->compression_units;
-    cost.encryption_units = implementation->encryption_units;
-    cost.predicate_evaluation_units =
-        implementation->predicate_evaluation_units;
-    cost.vector_distance_units = implementation->vector_distance_units;
-    cost.text_scoring_units = implementation->text_scoring_units;
-    cost.spatial_evaluation_units =
-        implementation->spatial_evaluation_units;
-    cost.udr_invocation_units = implementation->udr_invocation_units;
-    cost.mga_units = implementation->mga_units;
-    cost.index_maintenance_units =
-        implementation->index_maintenance_units;
+    cost.memory_grant_units = cost.memory_bytes_required;
+    cost.spill_units = (cost.spill_bytes_expected + 4095) / 4096;
+    if (capability->mga_visibility_capable) {
+      cost.mga_visibility_checks_expected = estimated_rows;
+      cost.mga_units = estimated_rows;
+    }
+    using Kind = planner::CanonicalLogicalRelationalNodeKind;
+    if (node->node_kind == Kind::kFilter || node->node_kind == Kind::kJoin ||
+        node->node_kind == Kind::kMatchRecognize) {
+      cost.predicate_evaluation_units = SaturatingMultiply(
+          estimated_rows,
+          std::max<std::uint64_t>(1, node->bound_expression_ids.size()));
+    }
+    if (node->model_family_identity ==
+        planner::CanonicalLogicalModelFamilyIdentity::kVector) {
+      cost.vector_distance_units = estimated_rows;
+    } else if (node->model_family_identity ==
+               planner::CanonicalLogicalModelFamilyIdentity::kSearch) {
+      cost.text_scoring_units = estimated_rows;
+    } else if (node->model_family_identity ==
+               planner::CanonicalLogicalModelFamilyIdentity::kSpatial) {
+      cost.spatial_evaluation_units = estimated_rows;
+    }
+    if (node->node_kind == Kind::kTableFunctionInvoke) {
+      cost.udr_invocation_units = estimated_rows;
+    }
+    if (HasCostlyProperty(
+            *node, properties_by_uuid,
+            planner::CanonicalLogicalPropertyKind::kDistribution) ||
+        HasCostlyProperty(*node, properties_by_uuid,
+                          planner::CanonicalLogicalPropertyKind::kLocality)) {
+      cost.network_units = std::min(
+          SaturatingMultiply(
+              estimated_rows,
+              std::max<std::uint64_t>(1,
+                                      node->output_descriptor_ids.size())),
+          std::numeric_limits<std::uint64_t>::max() / 8);
+      cost.network_bytes_expected = cost.network_units * 8;
+    }
+    if (HasCostlyProperty(
+            *node, properties_by_uuid,
+            planner::CanonicalLogicalPropertyKind::kSecurityVisibility)) {
+      cost.encryption_units = estimated_rows;
+      cost.mga_units = SaturatingAdd(cost.mga_units, estimated_rows);
+    }
     if (confidence == CostConfidence::kMedium ||
         confidence == CostConfidence::kLow) {
       cost.uncertainty_penalty = 1;

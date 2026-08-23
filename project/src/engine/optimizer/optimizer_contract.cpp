@@ -1254,7 +1254,9 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
          terms.uncertainty_penalty == 0) ||
         terms.memory_bytes_required > resource.memory_budget_bytes ||
         (!resource.spill_allowed && terms.spill_bytes_expected != 0) ||
-        terms.network_bytes_expected != 0 ||
+        terms.network_units >
+            std::numeric_limits<std::uint64_t>::max() / 8 ||
+        terms.network_bytes_expected != terms.network_units * 8 ||
         terms.archive_fetches_expected != 0) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1", node_id,
                     candidate.alternative_uuid, "cost_vector_terms");

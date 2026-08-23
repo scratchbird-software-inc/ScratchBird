@@ -96,7 +96,7 @@ struct RelationalPlanDecision {
 struct RelationalDagPlanningInput {
   CanonicalOptimizerAdmissionRequest admission_request;
   CanonicalOptimizerAdmissionResult admission;
-  std::vector<CanonicalOptimizerImplementationProfile> implementations;
+  CanonicalOptimizerExecutorAvailability executor_availability;
   CanonicalOptimizerSearchPolicy search_policy;
   CanonicalOptimizerPhysicalPublicationIdentity publication_identity;
   std::string identity_scope;

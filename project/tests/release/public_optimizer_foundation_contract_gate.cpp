@@ -8,6 +8,7 @@
 
 #include "cost_model.hpp"
 #include "join_planner_full.hpp"
+#include "query/plan_api.hpp"
 #include "relational_planner.hpp"
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include <vector>
 
 namespace exec = scratchbird::engine::executor;
+namespace api = scratchbird::engine::internal_api;
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
 
@@ -260,52 +262,53 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   return request;
 }
 
-std::vector<opt::CanonicalOptimizerImplementationProfile> Implementations(
+opt::CanonicalOptimizerExecutorAvailability ExecutorAvailability(
     const opt::CanonicalOptimizerAdmissionRequest& request) {
   using Kind = plan::CanonicalLogicalRelationalNodeKind;
   using Physical = exec::PhysicalNodeKind;
-  opt::CanonicalOptimizerImplementationProfile heap;
-  heap.logical_node_id = 1;
+  opt::CanonicalOptimizerExecutorAvailability availability;
+  availability.engine_owned = true;
+  availability.capability_catalog.capability_snapshot_uuid = Uuid(5);
+  availability.capability_catalog.policy_epoch = 33;
+  availability.capability_catalog.engine_owned = true;
+
+  opt::CanonicalExecutorCapabilityRecord heap;
+  heap.capability_abi_version = 1;
   heap.implementation_id = "scan.heap.v1";
   heap.capability_uuid = Uuid(201);
   heap.logical_node_kind = Kind::kRelationSource;
   heap.physical_node_kind = Physical::kScan;
-  heap.transformation_rule_id = "canonical.scan.heap.v1";
-  heap.memory_bytes_required = 64;
-  heap.page_read_sequential_units = 10;
-  heap.mga_visibility_checks_expected = 100;
+  heap.maximum_memory_bytes = request.resource.memory_budget_bytes;
   heap.storage_read_capable = true;
   heap.mga_visibility_capable = true;
-  heap.parallel_safe = true;
-  heap.model_family_id = "relational.local.v1";
+  heap.available = true;
+  heap.engine_owned = true;
 
   auto index = heap;
   index.implementation_id = "scan.index.btree.v1";
   index.capability_uuid = Uuid(202);
-  index.transformation_rule_id = "canonical.scan.index.btree.v1";
-  index.page_read_sequential_units = 0;
-  index.page_read_random_units = 2;
-  index.cache_units = 1;
 
-  opt::CanonicalOptimizerImplementationProfile project;
-  project.logical_node_id = 2;
+  opt::CanonicalExecutorCapabilityRecord project;
+  project.capability_abi_version = 1;
   project.implementation_id = "project.direct.v1";
   project.capability_uuid = Uuid(203);
   project.logical_node_kind = Kind::kProject;
   project.physical_node_kind = Physical::kProject;
-  project.transformation_rule_id = "canonical.project.direct.v1";
   project.minimum_input_count = 1;
   project.maximum_input_count = 1;
-  project.estimated_rows_hint = 7;
-  project.memory_bytes_required = 64;
-  project.predicate_evaluation_units = 3;
-  project.parallel_safe = true;
-  project.model_family_id = "relational.local.v1";
+  project.maximum_memory_bytes = request.resource.memory_budget_bytes;
+  project.available = true;
+  project.engine_owned = true;
   for (const auto& property : request.logical_properties.properties) {
-    project.delivered_property_uuids.push_back(property.property_uuid);
     project.supported_property_kinds.push_back(property.property_kind);
   }
-  return {heap, index, project};
+  availability.capability_catalog.capabilities = {heap, index, project};
+  availability.node_bindings = {
+      {1, heap.capability_uuid, 64, true, {}},
+      {1, index.capability_uuid, 64, true, {}},
+      {2, project.capability_uuid, 64, true, {}},
+  };
+  return availability;
 }
 
 opt::RelationalDagPlanningInput PlanningInput() {
@@ -313,7 +316,8 @@ opt::RelationalDagPlanningInput PlanningInput() {
   input.admission_request = Request();
   input.admission =
       opt::AdmitCanonicalOptimizerPlanningRequest(input.admission_request);
-  input.implementations = Implementations(input.admission_request);
+  input.executor_availability =
+      ExecutorAvailability(input.admission_request);
   input.search_policy.maximum_exhaustive_plan_count = 16;
   input.search_policy.bounded_beam_width = 4;
   input.search_policy.deterministic_step_cost_ns = 1;
@@ -326,17 +330,213 @@ opt::RelationalDagPlanningInput PlanningInput() {
   return input;
 }
 
+opt::RelationalDagPlanningInput CompleteKindPlanningInput() {
+  auto input = PlanningInput();
+  auto& request = input.admission_request;
+  auto& graph = request.logical_graph;
+  const auto node = [](const std::uint32_t id,
+                       const plan::CanonicalLogicalRelationalNodeKind kind,
+                       std::vector<std::uint32_t> inputs,
+                       std::string semantic) {
+    plan::CanonicalLogicalRelationalNode value;
+    value.logical_node_id = id;
+    value.node_kind = kind;
+    value.input_logical_node_ids = std::move(inputs);
+    value.output_descriptor_ids = {100 + id};
+    value.bound_expression_ids = {1000 + id};
+    value.origin_relational_node_ids = {id};
+    value.semantic_variant_id = std::move(semantic);
+    return value;
+  };
+  graph.root_logical_node_id = 17;
+  graph.result_descriptor_ids = {117};
+  graph.nodes = {
+      node(1, plan::CanonicalLogicalRelationalNodeKind::kRelationSource, {},
+           "source.bound-relation.v1"),
+      node(2, plan::CanonicalLogicalRelationalNodeKind::kValues, {},
+           "values.literal-table.v1"),
+      node(3, plan::CanonicalLogicalRelationalNodeKind::kJoin, {1, 2},
+           "join.inner.v1"),
+      node(4, plan::CanonicalLogicalRelationalNodeKind::kFilter, {3},
+           "filter.where.v1"),
+      node(5, plan::CanonicalLogicalRelationalNodeKind::kProject, {4},
+           "project.select-list.v1"),
+      node(6, plan::CanonicalLogicalRelationalNodeKind::kAggregate, {5},
+           "aggregate.grouped.v1"),
+      node(7, plan::CanonicalLogicalRelationalNodeKind::kSort, {6},
+           "sort.required-order.v1"),
+      node(8, plan::CanonicalLogicalRelationalNodeKind::kWindow, {7},
+           "window.bound-spec.v1"),
+      node(9, plan::CanonicalLogicalRelationalNodeKind::kLimit, {8},
+           "limit.bound-count.v1"),
+      node(10, plan::CanonicalLogicalRelationalNodeKind::kSubquery, {9},
+           "subquery.table.v1"),
+      node(11, plan::CanonicalLogicalRelationalNodeKind::kCte, {10},
+           "cte.bound.v1"),
+      node(12, plan::CanonicalLogicalRelationalNodeKind::kRecursiveCte,
+           {11, 2}, "recursive-cte.union-all.v1"),
+      node(13, plan::CanonicalLogicalRelationalNodeKind::kPivot, {12},
+           "pivot.bound.v1"),
+      node(14, plan::CanonicalLogicalRelationalNodeKind::kUnpivot, {13},
+           "unpivot.bound.v1"),
+      node(15, plan::CanonicalLogicalRelationalNodeKind::kMatchRecognize,
+           {14}, "match-recognize.bound.v1"),
+      node(16,
+           plan::CanonicalLogicalRelationalNodeKind::kTableFunctionInvoke,
+           {15}, "table-function.bound.v1"),
+      node(17, plan::CanonicalLogicalRelationalNodeKind::kSetOperation,
+           {16, 2}, "set-operation.union-all.v1"),
+  };
+  graph.nodes[1].shareable = true;
+  graph.nodes[0].required_object_uuids = {Uuid(601)};
+  graph.nodes[15].required_object_uuids = {Uuid(602)};
+  auto sort_ordering =
+      Property(30, plan::CanonicalLogicalPropertyKind::kOrdering);
+  sort_ordering.origin_logical_node_id = 7;
+  sort_ordering.ordering_terms = {
+      {1007, plan::CanonicalLogicalPropertySortDirection::kAscending,
+       plan::CanonicalLogicalPropertyNullPlacement::kNullsLast, {}}};
+  auto window_property =
+      Property(32, plan::CanonicalLogicalPropertyKind::kWindow);
+  window_property.origin_logical_node_id = 8;
+  window_property.dependency_property_uuids = {sort_ordering.property_uuid};
+  window_property.window_frame_descriptor_uuid = Uuid(755);
+  request.logical_properties.properties = {sort_ordering, window_property};
+  graph.nodes[6].delivered_property_uuids = {sort_ordering.property_uuid};
+  graph.nodes[7].required_property_uuids = {sort_ordering.property_uuid};
+  graph.nodes[7].delivered_property_uuids = {window_property.property_uuid};
+  request.catalog.object_uuids = {Uuid(601), Uuid(602)};
+  request.catalog.descriptor_ids.clear();
+  for (std::uint32_t descriptor_id = 101; descriptor_id <= 117;
+       ++descriptor_id) {
+    request.catalog.descriptor_ids.push_back(descriptor_id);
+  }
+  request.security.authorized_object_uuids = request.catalog.object_uuids;
+  request.policy_capability.supported_node_kinds.clear();
+  request.statistics.node_estimates.clear();
+  for (const auto& logical : graph.nodes) {
+    request.policy_capability.supported_node_kinds.push_back(logical.node_kind);
+    opt::CanonicalOptimizerNodeEstimate estimate;
+    estimate.logical_node_id = logical.logical_node_id;
+    estimate.catalog_epoch_uuid = graph.catalog_epoch_uuid;
+    estimate.statistics_snapshot_uuid =
+        request.statistics.statistics_snapshot_uuid;
+    estimate.statistics_generation = request.statistics.statistics_generation;
+    estimate.admitted_at_monotonic_ns = 700'000;
+    if (logical.node_kind ==
+        plan::CanonicalLogicalRelationalNodeKind::kRelationSource) {
+      estimate.object_uuid = Uuid(601);
+      estimate.state = opt::CanonicalOptimizerStatisticState::kKnown;
+      estimate.source = opt::CanonicalOptimizerStatisticSource::kCatalogExact;
+      estimate.collected_at_monotonic_ns = 650'000;
+      estimate.maximum_age_ns = 100'000;
+      estimate.confidence = opt::CostConfidence::kExact;
+      estimate.row_count_present = true;
+      estimate.row_count = 16;
+      estimate.page_count_present = true;
+      estimate.page_count = 2;
+    } else if (logical.node_kind ==
+               plan::CanonicalLogicalRelationalNodeKind::kValues) {
+      estimate.state =
+          opt::CanonicalOptimizerStatisticState::kNotApplicable;
+      estimate.source = opt::CanonicalOptimizerStatisticSource::kUnavailable;
+      estimate.confidence = opt::CostConfidence::kUnknown;
+    } else {
+      estimate.state = opt::CanonicalOptimizerStatisticState::kUnknown;
+      estimate.source = opt::CanonicalOptimizerStatisticSource::kUnavailable;
+      estimate.confidence = opt::CostConfidence::kUnknown;
+    }
+    request.statistics.node_estimates.push_back(std::move(estimate));
+  }
+  request.resource.maximum_candidate_count = 32;
+  request.resource.maximum_memo_groups = 32;
+  request.resource.maximum_search_steps = 512;
+  input.admission = opt::AdmitCanonicalOptimizerPlanningRequest(request);
+
+  const auto physical_kind = [](const auto kind) {
+    using Logical = plan::CanonicalLogicalRelationalNodeKind;
+    using Physical = exec::PhysicalNodeKind;
+    switch (kind) {
+      case Logical::kRelationSource: return Physical::kScan;
+      case Logical::kValues: return Physical::kValues;
+      case Logical::kJoin: return Physical::kJoin;
+      case Logical::kFilter: return Physical::kFilter;
+      case Logical::kProject: return Physical::kProject;
+      case Logical::kAggregate: return Physical::kAggregate;
+      case Logical::kSort: return Physical::kSort;
+      case Logical::kWindow: return Physical::kWindow;
+      case Logical::kLimit: return Physical::kLimit;
+      case Logical::kSubquery: return Physical::kSubquery;
+      case Logical::kCte: return Physical::kCte;
+      case Logical::kRecursiveCte: return Physical::kRecursiveCte;
+      case Logical::kPivot: return Physical::kPivot;
+      case Logical::kUnpivot: return Physical::kUnpivot;
+      case Logical::kMatchRecognize: return Physical::kMatchRecognize;
+      case Logical::kTableFunctionInvoke:
+        return Physical::kTableFunctionInvoke;
+      case Logical::kSetOperation: return Physical::kSetOperation;
+    }
+    return Physical::kValues;
+  };
+  auto& availability = input.executor_availability;
+  availability = {};
+  availability.engine_owned = true;
+  availability.capability_catalog.capability_snapshot_uuid = Uuid(5);
+  availability.capability_catalog.policy_epoch = 33;
+  availability.capability_catalog.engine_owned = true;
+  for (const auto& logical : graph.nodes) {
+    opt::CanonicalExecutorCapabilityRecord capability;
+    capability.capability_abi_version = 1;
+    capability.implementation_id =
+        "complete." +
+        std::string(plan::CanonicalLogicalRelationalNodeKindName(
+            logical.node_kind)) +
+        ".v1";
+    capability.capability_uuid = Uuid(620 + logical.logical_node_id);
+    capability.logical_node_kind = logical.node_kind;
+    capability.physical_node_kind = physical_kind(logical.node_kind);
+    capability.minimum_input_count = logical.input_logical_node_ids.size();
+    capability.maximum_input_count = logical.input_logical_node_ids.size();
+    capability.maximum_memory_bytes = request.resource.memory_budget_bytes;
+    capability.supported_property_kinds = {
+        plan::CanonicalLogicalPropertyKind::kOrdering,
+        plan::CanonicalLogicalPropertyKind::kPartitioning,
+        plan::CanonicalLogicalPropertyKind::kWindow};
+    capability.storage_read_capable =
+        logical.node_kind ==
+        plan::CanonicalLogicalRelationalNodeKind::kRelationSource;
+    capability.mga_visibility_capable = capability.storage_read_capable;
+    capability.available = true;
+    capability.engine_owned = true;
+    availability.capability_catalog.capabilities.push_back(capability);
+    availability.node_bindings.push_back(
+        {logical.logical_node_id, capability.capability_uuid, 64, true, {}});
+  }
+  input.search_policy.maximum_exhaustive_plan_count = 64;
+  input.search_policy.bounded_beam_width = 32;
+  return input;
+}
+
 bool ValidateOptimizerOwnedPlanning() {
   auto input = PlanningInput();
   bool passed = Require(input.admission.admitted && input.admission.planning_allowed,
                         "admission fixture was refused");
   const auto first = opt::PlanCanonicalRelationalDag(input);
-  std::reverse(input.implementations.begin(), input.implementations.end());
+  std::reverse(input.executor_availability.node_bindings.begin(),
+               input.executor_availability.node_bindings.end());
+  std::reverse(
+      input.executor_availability.capability_catalog.capabilities.begin(),
+      input.executor_availability.capability_catalog.capabilities.end());
   const auto second = opt::PlanCanonicalRelationalDag(input);
   if (!first.accepted) {
     std::cerr << "PUBLIC-OPTIMIZER-FOUNDATION-CONTRACT: planning_refusal=";
     if (!first.diagnostics.empty()) {
       std::cerr << first.diagnostics.front();
+      if (!first.factory.issues.empty()) {
+        std::cerr << ':' << first.factory.issues.front().logical_node_id << ':'
+                  << first.factory.issues.front().implementation_id << ':'
+                  << first.factory.issues.front().field_id;
+      }
     } else if (!first.factory.issues.empty()) {
       std::cerr << first.factory.issues.front().diagnostic_id << ':'
                 << first.factory.issues.front().field_id;
@@ -392,6 +592,61 @@ bool ValidateOptimizerOwnedPlanning() {
           physical_scan->retained_cost.cache_units == 1,
       "published DAG lost the selected multidimensional cost vector");
   return passed;
+}
+
+bool ValidateCompleteKindFactoryCoverage() {
+  const auto input = CompleteKindPlanningInput();
+  const auto result = opt::PlanCanonicalRelationalDag(input);
+  bool has_match = false;
+  bool has_table_function = false;
+  for (const auto& candidate : result.factory.candidates) {
+    has_match |= candidate.logical_node_id == 15 &&
+                 candidate.cost_terms.predicate_evaluation_units != 0;
+    has_table_function |= candidate.logical_node_id == 16 &&
+                          candidate.cost_terms.udr_invocation_units != 0;
+  }
+  if (!input.admission.admitted || !result.accepted ||
+      result.factory.inventory.candidate_count != 17 ||
+      result.factory.candidates.size() != 17 ||
+      result.publication.physical_dag.nodes.size() != 17 || !has_match ||
+      !has_table_function) {
+    std::cerr << "PUBLIC-OPTIMIZER-FOUNDATION-CONTRACT: complete_kind_refusal=";
+    if (!input.admission.issues.empty()) {
+      const auto& issue = input.admission.issues.front();
+      std::cerr << issue.diagnostic_id << ':' << issue.field_id;
+    } else if (!result.factory.issues.empty()) {
+      const auto& issue = result.factory.issues.front();
+      std::cerr << issue.diagnostic_id << ':' << issue.logical_node_id << ':'
+                << issue.implementation_id << ':' << issue.field_id;
+    } else if (!result.search.issues.empty()) {
+      const auto& issue = result.search.issues.front();
+      std::cerr << issue.diagnostic_id << ':' << issue.logical_node_id << ':'
+                << issue.field_id;
+    } else if (!result.publication.issues.empty()) {
+      const auto& issue = result.publication.issues.front();
+      std::cerr << issue.diagnostic_id << ':' << issue.logical_node_id << ':'
+                << issue.field_id;
+    } else if (!result.diagnostics.empty()) {
+      std::cerr << result.diagnostics.front();
+    } else {
+      std::cerr << "accepted=" << result.accepted
+                << ",candidates=" << result.factory.candidates.size()
+                << ",inventory=" << result.factory.inventory.candidate_count
+                << ",published="
+                << result.publication.physical_dag.nodes.size()
+                << ",match=" << has_match
+                << ",table_function=" << has_table_function;
+    }
+    std::cerr << '\n';
+  }
+  return Require(
+      input.admission.admitted && result.accepted &&
+          result.factory.optimizer_owned_enumeration &&
+          result.factory.inventory.candidate_count == 17 &&
+          result.factory.candidates.size() == 17 &&
+          result.publication.physical_dag.nodes.size() == 17 && has_match &&
+          has_table_function,
+      "optimizer factory did not enumerate/cost every logical node family");
 }
 
 bool ValidateCostVectorBookkeeping() {
@@ -480,11 +735,109 @@ bool ValidateCrossJoinSemantics() {
       "CROSS identity, cardinality, method, or reorder barrier was not exact");
 }
 
+bool ValidateTypedPhysicalPropertyCarrier() {
+  api::TypedRelationalDag dag;
+  dag.wire_version = 2;
+  dag.bound_sblr_tree_uuid = Uuid(501);
+  dag.bound_catalog_epoch_uuid = Uuid(502);
+  dag.bound_security_context_uuid = Uuid(503);
+  dag.statement_uuid = Uuid(504);
+  dag.owning_transaction_uuid = Uuid(505);
+  dag.statement_snapshot_uuid = Uuid(506);
+  dag.statement_metadata_snapshot_uuid = Uuid(507);
+  dag.local_transaction_id = kOwner;
+  dag.root_node_id = 1;
+  dag.descriptors = {
+      {1, Uuid(508), Uuid(509), api::RelationalNullability::kNonNull},
+  };
+  api::RelationalExpressionRecord literal;
+  literal.expression_id = 1;
+  literal.expression_kind = api::RelationalExpressionKind::kLiteral;
+  literal.result_descriptor_id = 1;
+  literal.literal_kind = api::RelationalLiteralKind::kNumeric;
+  literal.literal_or_parameter_ref = "1";
+  dag.expressions.push_back(std::move(literal));
+  dag.outputs = {{1, 1, 1, "value", 1, false, 0}};
+  dag.values_rows = {{1, {1}}};
+  api::RelationalDagNode node;
+  node.node_id = 1;
+  node.node_kind = api::RelationalDagNodeKind::kValues;
+  node.output_descriptor_ids = {1};
+  node.values_row_ids = {1};
+  node.bound_expression_ids = {1};
+  node.semantic_variant_id = "values.literal-table.v1";
+
+  const auto property = [&](const std::uint64_t ordinal,
+                            const api::RelationalPropertyKind kind) {
+    api::RelationalPropertyRecord record;
+    record.property_uuid = Uuid(520 + ordinal);
+    record.property_kind = kind;
+    record.origin_node_id = 1;
+    return record;
+  };
+  auto distribution =
+      property(1, api::RelationalPropertyKind::kDistribution);
+  distribution.expression_ids = {1};
+  distribution.distribution_kind =
+      api::RelationalPropertyDistributionKind::kHashPartitioned;
+  auto uniqueness = property(2, api::RelationalPropertyKind::kUniqueness);
+  uniqueness.expression_ids = {1};
+  auto materialization =
+      property(3, api::RelationalPropertyKind::kMaterialization);
+  materialization.materialization_kind =
+      api::RelationalPropertyMaterializationKind::kMaterialized;
+  auto rewindability =
+      property(4, api::RelationalPropertyKind::kRewindability);
+  rewindability.rewindability_kind =
+      api::RelationalPropertyRewindabilityKind::kRewindable;
+  const api::RelationalPropertyOrderingTerm order{
+      1, api::RelationalPropertySortDirection::kAscending,
+      api::RelationalPropertyNullPlacement::kNullsLast, {}};
+  auto vector_ordering =
+      property(5, api::RelationalPropertyKind::kVectorOrdering);
+  vector_ordering.ordering_terms = {order};
+  auto text_ordering =
+      property(6, api::RelationalPropertyKind::kTextScoreOrdering);
+  text_ordering.ordering_terms = {order};
+  auto time_ordering =
+      property(7, api::RelationalPropertyKind::kTimeOrdering);
+  time_ordering.ordering_terms = {order};
+  auto locality = property(8, api::RelationalPropertyKind::kLocality);
+  locality.locality_kind = api::RelationalPropertyLocalityKind::kLocalNode;
+  locality.locality_uuid = Uuid(540);
+  auto visibility =
+      property(9, api::RelationalPropertyKind::kSecurityVisibility);
+  visibility.security_visibility_context_uuid =
+      dag.bound_security_context_uuid;
+  visibility.security_visibility_generation = 11;
+  dag.properties = {distribution, uniqueness, materialization, rewindability,
+                    vector_ordering, text_ordering, time_ordering, locality,
+                    visibility};
+  for (const auto& item : dag.properties) {
+    node.delivered_property_uuids.push_back(item.property_uuid);
+  }
+  dag.nodes.push_back(std::move(node));
+
+  const auto accepted = api::ValidateTypedRelationalDag(dag);
+  auto forged = dag;
+  forged.properties.back().security_visibility_context_uuid = Uuid(541);
+  const auto refused = api::ValidateTypedRelationalDag(forged);
+  return Require(
+      accepted.accepted && accepted.validated_node_count == 1 &&
+          dag.properties.size() == 9 &&
+          !refused.accepted && !refused.issues.empty() &&
+          refused.issues.front().diagnostic_id ==
+              "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
+      "typed SBLR property carrier omitted or weakened a physical domain");
+}
+
 }  // namespace
 
 int main() {
   const bool passed = ValidateOptimizerOwnedPlanning() &&
+                      ValidateCompleteKindFactoryCoverage() &&
                       ValidateCostVectorBookkeeping() &&
-                      ValidateCrossJoinSemantics();
+                      ValidateCrossJoinSemantics() &&
+                      ValidateTypedPhysicalPropertyCarrier();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

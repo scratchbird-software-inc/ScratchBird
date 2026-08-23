@@ -1381,6 +1381,7 @@ target_compile_features(public_optimizer_foundation_contract_gate PRIVATE
   cxx_std_23)
 target_link_libraries(public_optimizer_foundation_contract_gate PRIVATE
   sb_engine_optimizer_contract_only
+  sb_engine_internal_api
 )
 add_test(
   NAME public_optimizer_foundation_contract_gate

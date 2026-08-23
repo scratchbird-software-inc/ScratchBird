@@ -9422,7 +9422,8 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
           return ch >= '0' && ch <= '9';
         });
     const auto property_uuid =
-        operand.type == "relational_property_v1"
+        (operand.type == "relational_property_v1" ||
+         operand.type == "relational_property_v2")
             ? CanonicalUuidBytes(operand.name)
             : std::optional<std::array<std::uint8_t, 16>>{};
     const auto literal_reference =

@@ -199,7 +199,7 @@ RelationalDagPlanningResult PlanCanonicalRelationalDag(
     const RelationalDagPlanningInput& input) {
   RelationalDagPlanningResult result;
   result.factory = BuildCanonicalOptimizerAlternativeProfiles(
-      input.admission_request, input.admission, input.implementations,
+      input.admission_request, input.admission, input.executor_availability,
       input.identity_scope, input.calibration_profile_uuid);
   if (!result.factory.accepted ||
       !result.factory.optimizer_owned_enumeration ||

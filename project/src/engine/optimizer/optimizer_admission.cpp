@@ -190,6 +190,18 @@ CanonicalOptimizerAdmissionResult AdmitCanonicalOptimizerPlanningRequest(
                     "authorized_object_coverage");
     }
   }
+  for (const auto& property : request.logical_properties.properties) {
+    if (property.property_kind ==
+            planner::CanonicalLogicalPropertyKind::kSecurityVisibility &&
+        (property.security_visibility_context_uuid !=
+             request.security.security_context_uuid ||
+         property.security_visibility_generation !=
+             request.security.security_epoch)) {
+      return refuse(CanonicalOptimizerAdmissionStage::kSecurity,
+                    "QOW-DIAG-OPTIMIZER-ADMISSION-SECURITY-V1",
+                    "security_visibility_property_snapshot");
+    }
+  }
   record(CanonicalOptimizerAdmissionStage::kSecurity,
          "security_snapshot=validated");
 

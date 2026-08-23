@@ -172,6 +172,48 @@ enum class RelationalPropertyKind : std::uint8_t {
   kPartitioning,
   kWindow,
   kExpressionEquivalence,
+  kDistribution,
+  kUniqueness,
+  kMaterialization,
+  kRewindability,
+  kVectorOrdering,
+  kTextScoreOrdering,
+  kTimeOrdering,
+  kLocality,
+  kSecurityVisibility,
+};
+
+enum class RelationalPropertyDistributionKind : std::uint8_t {
+  kNone = 0,
+  kSingle,
+  kReplicated,
+  kHashPartitioned,
+  kRangePartitioned,
+  kRoundRobin,
+  kOwnerRouted,
+};
+
+enum class RelationalPropertyMaterializationKind : std::uint8_t {
+  kNone = 0,
+  kStreaming,
+  kMaterialized,
+  kSpillBacked,
+};
+
+enum class RelationalPropertyRewindabilityKind : std::uint8_t {
+  kNone = 0,
+  kForwardOnly,
+  kRewindable,
+  kMarkRestore,
+};
+
+enum class RelationalPropertyLocalityKind : std::uint8_t {
+  kNone = 0,
+  kLocalProcess,
+  kLocalNode,
+  kFilespace,
+  kShardOwner,
+  kRemoteAllowed,
 };
 
 enum class RelationalPropertySortDirection : std::uint8_t {
@@ -221,6 +263,11 @@ struct RelationalWindowInvocationRecord {
 };
 
 struct RelationalPropertyRecord {
+  // `relational_property_v1` carries the first six generic fields and is
+  // retained for ordering/grouping/partitioning/window/equivalence plans.
+  // `relational_property_v2` appends the four specialized enum values,
+  // locality UUID, security-context UUID, and visibility generation so the
+  // complete optimizer property state survives the SBLR boundary.
   std::string property_uuid;
   RelationalPropertyKind property_kind{RelationalPropertyKind::kOrdering};
   std::uint32_t origin_node_id{0};
@@ -228,6 +275,17 @@ struct RelationalPropertyRecord {
   std::vector<RelationalPropertyOrderingTerm> ordering_terms;
   std::vector<std::string> dependency_property_uuids;
   std::string window_frame_descriptor_uuid;
+  RelationalPropertyDistributionKind distribution_kind{
+      RelationalPropertyDistributionKind::kNone};
+  RelationalPropertyMaterializationKind materialization_kind{
+      RelationalPropertyMaterializationKind::kNone};
+  RelationalPropertyRewindabilityKind rewindability_kind{
+      RelationalPropertyRewindabilityKind::kNone};
+  RelationalPropertyLocalityKind locality_kind{
+      RelationalPropertyLocalityKind::kNone};
+  std::string locality_uuid;
+  std::string security_visibility_context_uuid;
+  std::uint64_t security_visibility_generation{0};
 };
 
 struct RelationalDagNode {

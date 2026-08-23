@@ -3529,7 +3529,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     if (!planning_wire || !canonical_uuid(property.property_uuid) ||
         property.property_kind < RelationalPropertyKind::kOrdering ||
         property.property_kind >
-            RelationalPropertyKind::kExpressionEquivalence ||
+            RelationalPropertyKind::kSecurityVisibility ||
         property.origin_node_id == 0 ||
         !nodes_by_id.contains(property.origin_node_id) ||
         !properties_by_uuid.emplace(property.property_uuid, &property).second) {
@@ -3575,6 +3575,161 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       return refuse("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
                     property.origin_node_id,
                     "window_frame_descriptor_uuid");
+    }
+    const bool ordering =
+        property.property_kind == RelationalPropertyKind::kOrdering ||
+        property.property_kind == RelationalPropertyKind::kVectorOrdering ||
+        property.property_kind ==
+            RelationalPropertyKind::kTextScoreOrdering ||
+        property.property_kind == RelationalPropertyKind::kTimeOrdering;
+    const bool expression_set =
+        property.property_kind == RelationalPropertyKind::kGrouping ||
+        property.property_kind == RelationalPropertyKind::kPartitioning ||
+        property.property_kind ==
+            RelationalPropertyKind::kExpressionEquivalence ||
+        property.property_kind == RelationalPropertyKind::kUniqueness;
+    const bool window =
+        property.property_kind == RelationalPropertyKind::kWindow;
+    const bool distribution =
+        property.property_kind == RelationalPropertyKind::kDistribution;
+    const bool materialization =
+        property.property_kind == RelationalPropertyKind::kMaterialization;
+    const bool rewindability =
+        property.property_kind == RelationalPropertyKind::kRewindability;
+    const bool locality =
+        property.property_kind == RelationalPropertyKind::kLocality;
+    const bool security_visibility =
+        property.property_kind ==
+        RelationalPropertyKind::kSecurityVisibility;
+    const bool no_specialized_state =
+        property.distribution_kind ==
+            RelationalPropertyDistributionKind::kNone &&
+        property.materialization_kind ==
+            RelationalPropertyMaterializationKind::kNone &&
+        property.rewindability_kind ==
+            RelationalPropertyRewindabilityKind::kNone &&
+        property.locality_kind == RelationalPropertyLocalityKind::kNone &&
+        property.locality_uuid.empty() &&
+        property.security_visibility_context_uuid.empty() &&
+        property.security_visibility_generation == 0;
+    const bool specialized_enums_known =
+        property.distribution_kind >=
+            RelationalPropertyDistributionKind::kNone &&
+        property.distribution_kind <=
+            RelationalPropertyDistributionKind::kOwnerRouted &&
+        property.materialization_kind >=
+            RelationalPropertyMaterializationKind::kNone &&
+        property.materialization_kind <=
+            RelationalPropertyMaterializationKind::kSpillBacked &&
+        property.rewindability_kind >=
+            RelationalPropertyRewindabilityKind::kNone &&
+        property.rewindability_kind <=
+            RelationalPropertyRewindabilityKind::kMarkRestore &&
+        property.locality_kind >= RelationalPropertyLocalityKind::kNone &&
+        property.locality_kind <=
+            RelationalPropertyLocalityKind::kRemoteAllowed;
+    const bool shape_valid =
+        specialized_enums_known &&
+        ((ordering && property.expression_ids.empty() &&
+         !property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         no_specialized_state) ||
+        (expression_set &&
+         property.expression_ids.size() >=
+             (property.property_kind ==
+                      RelationalPropertyKind::kExpressionEquivalence
+                  ? 2U
+                  : 1U) &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         no_specialized_state) ||
+        (window && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         !property.dependency_property_uuids.empty() &&
+         property.dependency_property_uuids.size() <= 2 &&
+         canonical_uuid(property.window_frame_descriptor_uuid) &&
+         no_specialized_state) ||
+        (distribution && property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind !=
+             RelationalPropertyDistributionKind::kNone &&
+         ((property.distribution_kind ==
+               RelationalPropertyDistributionKind::kHashPartitioned ||
+           property.distribution_kind ==
+               RelationalPropertyDistributionKind::kRangePartitioned)
+              ? !property.expression_ids.empty()
+              : property.expression_ids.empty()) &&
+         property.materialization_kind ==
+             RelationalPropertyMaterializationKind::kNone &&
+         property.rewindability_kind ==
+             RelationalPropertyRewindabilityKind::kNone &&
+         property.locality_kind == RelationalPropertyLocalityKind::kNone &&
+         property.locality_uuid.empty() &&
+         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_generation == 0) ||
+        (materialization && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind ==
+             RelationalPropertyDistributionKind::kNone &&
+         property.materialization_kind !=
+             RelationalPropertyMaterializationKind::kNone &&
+         property.rewindability_kind ==
+             RelationalPropertyRewindabilityKind::kNone &&
+         property.locality_kind == RelationalPropertyLocalityKind::kNone &&
+         property.locality_uuid.empty() &&
+         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_generation == 0) ||
+        (rewindability && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind ==
+             RelationalPropertyDistributionKind::kNone &&
+         property.materialization_kind ==
+             RelationalPropertyMaterializationKind::kNone &&
+         property.rewindability_kind !=
+             RelationalPropertyRewindabilityKind::kNone &&
+         property.locality_kind == RelationalPropertyLocalityKind::kNone &&
+         property.locality_uuid.empty() &&
+         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_generation == 0) ||
+        (locality && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind ==
+             RelationalPropertyDistributionKind::kNone &&
+         property.materialization_kind ==
+             RelationalPropertyMaterializationKind::kNone &&
+         property.rewindability_kind ==
+             RelationalPropertyRewindabilityKind::kNone &&
+         property.locality_kind != RelationalPropertyLocalityKind::kNone &&
+         canonical_uuid(property.locality_uuid) &&
+         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_generation == 0) ||
+        (security_visibility && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind ==
+             RelationalPropertyDistributionKind::kNone &&
+         property.materialization_kind ==
+             RelationalPropertyMaterializationKind::kNone &&
+         property.rewindability_kind ==
+             RelationalPropertyRewindabilityKind::kNone &&
+         property.locality_kind == RelationalPropertyLocalityKind::kNone &&
+         property.locality_uuid.empty() &&
+         property.security_visibility_context_uuid ==
+             dag.bound_security_context_uuid &&
+         property.security_visibility_generation != 0));
+    if (!shape_valid) {
+      return refuse("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
+                    property.origin_node_id, "property_shape");
     }
   }
   for (const auto& property : dag.properties) {
@@ -4719,6 +4874,23 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
         property.dependency_property_uuids;
     logical_property.window_frame_descriptor_uuid =
         property.window_frame_descriptor_uuid;
+    logical_property.distribution_kind =
+        static_cast<plan::CanonicalLogicalDistributionKind>(
+            property.distribution_kind);
+    logical_property.materialization_kind =
+        static_cast<plan::CanonicalLogicalMaterializationKind>(
+            property.materialization_kind);
+    logical_property.rewindability_kind =
+        static_cast<plan::CanonicalLogicalRewindabilityKind>(
+            property.rewindability_kind);
+    logical_property.locality_kind =
+        static_cast<plan::CanonicalLogicalLocalityKind>(
+            property.locality_kind);
+    logical_property.locality_uuid = property.locality_uuid;
+    logical_property.security_visibility_context_uuid =
+        property.security_visibility_context_uuid;
+    logical_property.security_visibility_generation =
+        property.security_visibility_generation;
     logical_property.populated_from_bound_sblr = true;
     catalog.properties.push_back(std::move(logical_property));
   }

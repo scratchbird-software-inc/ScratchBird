@@ -42760,6 +42760,13 @@ struct ParsedRelationalProperty {
   std::vector<ParsedRelationalOrderingTerm> ordering_terms;
   std::vector<std::string> dependency_uuids;
   std::optional<std::string> window_frame_descriptor_uuid;
+  std::uint8_t distribution_kind{0};
+  std::uint8_t materialization_kind{0};
+  std::uint8_t rewindability_kind{0};
+  std::uint8_t locality_kind{0};
+  std::optional<std::string> locality_uuid;
+  std::optional<std::string> security_visibility_context_uuid;
+  std::uint64_t security_visibility_generation{0};
 };
 
 struct ParsedRelationalWindowBound {
@@ -43777,7 +43784,8 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       graph->window_invocations.push_back(std::move(invocation));
       continue;
     }
-    if (operand.type == "relational_property_v1") {
+    if (operand.type == "relational_property_v1" ||
+        operand.type == "relational_property_v2") {
       if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
                               &record_count)) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
@@ -43786,22 +43794,75 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       }
       std::uint64_t kind = 0;
       std::uint64_t origin_node_id = 0;
-      std::array<std::string_view, 6> fields{};
       ParsedRelationalProperty property;
-      if (!IsCanonicalRelationalUuid(operand.name) ||
-          !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[0], std::numeric_limits<std::uint8_t>::max(), &kind) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[1], std::numeric_limits<std::uint32_t>::max(),
-              &origin_node_id) ||
-          origin_node_id == 0 ||
-          !ParseCanonicalRelationalHandleList(fields[2],
-                                              &property.expression_ids) ||
-          !ParseCanonicalRelationalOrderingTerms(fields[3],
-                                                 &property.ordering_terms) ||
-          !ParseCanonicalRelationalStringList(fields[4],
-                                              &property.dependency_uuids)) {
+      const auto parse_common = [&](const auto& fields) {
+        return IsCanonicalRelationalUuid(operand.name) &&
+               ParseCanonicalRelationalUnsigned(
+                   fields[0], std::numeric_limits<std::uint8_t>::max(),
+                   &kind) &&
+               ParseCanonicalRelationalUnsigned(
+                   fields[1], std::numeric_limits<std::uint32_t>::max(),
+                   &origin_node_id) &&
+               origin_node_id != 0 &&
+               ParseCanonicalRelationalHandleList(
+                   fields[2], &property.expression_ids) &&
+               ParseCanonicalRelationalOrderingTerms(
+                   fields[3], &property.ordering_terms) &&
+               ParseCanonicalRelationalStringList(
+                   fields[4], &property.dependency_uuids);
+      };
+      bool parsed = false;
+      if (operand.type == "relational_property_v1") {
+        std::array<std::string_view, 6> fields{};
+        parsed = SplitCanonicalRelationalFields(operand.value, &fields) &&
+                 parse_common(fields);
+        if (parsed && fields[5] != "-") {
+          property.window_frame_descriptor_uuid = std::string(fields[5]);
+        }
+      } else {
+        std::array<std::string_view, 13> fields{};
+        std::uint64_t distribution_kind = 0;
+        std::uint64_t materialization_kind = 0;
+        std::uint64_t rewindability_kind = 0;
+        std::uint64_t locality_kind = 0;
+        parsed = SplitCanonicalRelationalFields(operand.value, &fields) &&
+                 parse_common(fields) &&
+                 ParseCanonicalRelationalUnsigned(
+                     fields[6], std::numeric_limits<std::uint8_t>::max(),
+                     &distribution_kind) &&
+                 ParseCanonicalRelationalUnsigned(
+                     fields[7], std::numeric_limits<std::uint8_t>::max(),
+                     &materialization_kind) &&
+                 ParseCanonicalRelationalUnsigned(
+                     fields[8], std::numeric_limits<std::uint8_t>::max(),
+                     &rewindability_kind) &&
+                 ParseCanonicalRelationalUnsigned(
+                     fields[9], std::numeric_limits<std::uint8_t>::max(),
+                     &locality_kind) &&
+                 ParseCanonicalRelationalUnsigned(
+                     fields[12], std::numeric_limits<std::uint64_t>::max(),
+                     &property.security_visibility_generation);
+        if (parsed) {
+          if (fields[5] != "-") {
+            property.window_frame_descriptor_uuid = std::string(fields[5]);
+          }
+          property.distribution_kind =
+              static_cast<std::uint8_t>(distribution_kind);
+          property.materialization_kind =
+              static_cast<std::uint8_t>(materialization_kind);
+          property.rewindability_kind =
+              static_cast<std::uint8_t>(rewindability_kind);
+          property.locality_kind = static_cast<std::uint8_t>(locality_kind);
+          if (fields[10] != "-") {
+            property.locality_uuid = std::string(fields[10]);
+          }
+          if (fields[11] != "-") {
+            property.security_visibility_context_uuid =
+                std::string(fields[11]);
+          }
+        }
+      }
+      if (!parsed) {
         return RefuseRelationalGraph("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
                                      "relational property record is malformed",
                                      "property_record");
@@ -43809,9 +43870,6 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       property.uuid = operand.name;
       property.kind = static_cast<std::uint8_t>(kind);
       property.origin_node_id = static_cast<std::uint32_t>(origin_node_id);
-      if (fields[5] != "-") {
-        property.window_frame_descriptor_uuid = std::string(fields[5]);
-      }
       graph->properties.push_back(std::move(property));
       continue;
     }
@@ -46111,7 +46169,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                                    "relational property reference limit exceeded",
                                    "reference_count", property.origin_node_id);
     }
-    if (property.kind < 1 || property.kind > 5 ||
+    if (property.kind < 1 || property.kind > 14 ||
         !nodes.contains(property.origin_node_id) ||
         !properties.emplace(property.uuid, &property).second) {
       return RefuseRelationalGraph(
@@ -46159,6 +46217,104 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
           "relational window-frame descriptor is invalid",
           "window_frame_descriptor_uuid", property.origin_node_id);
+    }
+    if ((property.locality_uuid.has_value() &&
+         !IsCanonicalRelationalUuid(*property.locality_uuid)) ||
+        (property.security_visibility_context_uuid.has_value() &&
+         !IsCanonicalRelationalUuid(
+             *property.security_visibility_context_uuid)) ||
+        property.distribution_kind > 6 ||
+        property.materialization_kind > 3 ||
+        property.rewindability_kind > 3 || property.locality_kind > 5) {
+      return RefuseRelationalGraph(
+          "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
+          "relational specialized property state is malformed",
+          "property_shape", property.origin_node_id);
+    }
+    const bool ordering =
+        property.kind == 1 || property.kind == 10 || property.kind == 11 ||
+        property.kind == 12;
+    const bool expression_set = property.kind == 2 || property.kind == 3 ||
+                                property.kind == 5 || property.kind == 7;
+    const bool no_specialized_state =
+        property.distribution_kind == 0 &&
+        property.materialization_kind == 0 &&
+        property.rewindability_kind == 0 && property.locality_kind == 0 &&
+        !property.locality_uuid.has_value() &&
+        !property.security_visibility_context_uuid.has_value() &&
+        property.security_visibility_generation == 0;
+    const bool shape_valid =
+        (ordering && property.expression_ids.empty() &&
+         !property.ordering_terms.empty() && property.dependency_uuids.empty() &&
+         !property.window_frame_descriptor_uuid.has_value() &&
+         no_specialized_state) ||
+        (expression_set &&
+         property.expression_ids.size() >= (property.kind == 5 ? 2U : 1U) &&
+         property.ordering_terms.empty() && property.dependency_uuids.empty() &&
+         !property.window_frame_descriptor_uuid.has_value() &&
+         no_specialized_state) ||
+        (property.kind == 4 && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         !property.dependency_uuids.empty() &&
+         property.dependency_uuids.size() <= 2 &&
+         property.window_frame_descriptor_uuid.has_value() &&
+         no_specialized_state) ||
+        (property.kind == 6 && property.ordering_terms.empty() &&
+         property.dependency_uuids.empty() &&
+         !property.window_frame_descriptor_uuid.has_value() &&
+         property.distribution_kind != 0 &&
+         ((property.distribution_kind == 3 ||
+           property.distribution_kind == 4)
+              ? !property.expression_ids.empty()
+              : property.expression_ids.empty()) &&
+         property.materialization_kind == 0 &&
+         property.rewindability_kind == 0 && property.locality_kind == 0 &&
+         !property.locality_uuid.has_value() &&
+         !property.security_visibility_context_uuid.has_value() &&
+         property.security_visibility_generation == 0) ||
+        (property.kind == 8 && property.expression_ids.empty() &&
+         property.ordering_terms.empty() && property.dependency_uuids.empty() &&
+         !property.window_frame_descriptor_uuid.has_value() &&
+         property.distribution_kind == 0 &&
+         property.materialization_kind != 0 &&
+         property.rewindability_kind == 0 && property.locality_kind == 0 &&
+         !property.locality_uuid.has_value() &&
+         !property.security_visibility_context_uuid.has_value() &&
+         property.security_visibility_generation == 0) ||
+        (property.kind == 9 && property.expression_ids.empty() &&
+         property.ordering_terms.empty() && property.dependency_uuids.empty() &&
+         !property.window_frame_descriptor_uuid.has_value() &&
+         property.distribution_kind == 0 &&
+         property.materialization_kind == 0 &&
+         property.rewindability_kind != 0 && property.locality_kind == 0 &&
+         !property.locality_uuid.has_value() &&
+         !property.security_visibility_context_uuid.has_value() &&
+         property.security_visibility_generation == 0) ||
+        (property.kind == 13 && property.expression_ids.empty() &&
+         property.ordering_terms.empty() && property.dependency_uuids.empty() &&
+         !property.window_frame_descriptor_uuid.has_value() &&
+         property.distribution_kind == 0 &&
+         property.materialization_kind == 0 &&
+         property.rewindability_kind == 0 && property.locality_kind != 0 &&
+         property.locality_uuid.has_value() &&
+         !property.security_visibility_context_uuid.has_value() &&
+         property.security_visibility_generation == 0) ||
+        (property.kind == 14 && property.expression_ids.empty() &&
+         property.ordering_terms.empty() && property.dependency_uuids.empty() &&
+         !property.window_frame_descriptor_uuid.has_value() &&
+         property.distribution_kind == 0 &&
+         property.materialization_kind == 0 &&
+         property.rewindability_kind == 0 && property.locality_kind == 0 &&
+         !property.locality_uuid.has_value() &&
+         property.security_visibility_context_uuid.has_value() &&
+         *property.security_visibility_context_uuid ==
+             graph.security_context_uuid &&
+         property.security_visibility_generation != 0);
+    if (!shape_valid) {
+      return RefuseRelationalGraph(
+          "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
+          "relational property shape is invalid", "property_shape",
+          property.origin_node_id);
     }
   }
   for (const auto& property : graph.properties) {
