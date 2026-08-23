@@ -9,6 +9,7 @@
 #pragma once
 
 #include "logical_plan.hpp"
+#include "optimizer_profile_factory.hpp"
 #include "physical_plan.hpp"
 
 #include <cstdint>
@@ -88,6 +89,34 @@ struct RelationalPlanDecision {
   CostVector cost;
   std::vector<std::string> diagnostics;
 };
+
+// One production entry point for every admitted canonical relational node
+// kind.  Specialized helpers below remain formula providers; callers no
+// longer construct route-specific alternatives or publish physical DAGs.
+struct RelationalDagPlanningInput {
+  CanonicalOptimizerAdmissionRequest admission_request;
+  CanonicalOptimizerAdmissionResult admission;
+  std::vector<CanonicalOptimizerImplementationProfile> implementations;
+  CanonicalOptimizerSearchPolicy search_policy;
+  CanonicalOptimizerPhysicalPublicationIdentity publication_identity;
+  std::string identity_scope;
+  std::string calibration_profile_uuid;
+};
+
+struct RelationalDagPlanningResult {
+  bool accepted{false};
+  bool optimizer_owned{false};
+  bool complete_logical_dag_covered{false};
+  bool physical_dag_published{false};
+  bool data_access_allowed{false};
+  CanonicalOptimizerProfileFactoryResult factory;
+  CanonicalOptimizerSearchResult search;
+  CanonicalOptimizerPhysicalPublicationResult publication;
+  std::vector<std::string> diagnostics;
+};
+
+RelationalDagPlanningResult PlanCanonicalRelationalDag(
+    const RelationalDagPlanningInput& input);
 
 RelationalPlanDecision PlanAggregate(const AggregatePlanningInput& input);
 RelationalPlanDecision PlanWindow(const WindowPlanningInput& input);

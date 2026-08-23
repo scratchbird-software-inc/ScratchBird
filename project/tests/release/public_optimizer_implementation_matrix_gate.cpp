@@ -10,6 +10,7 @@
 #include "adaptive_cardinality_feedback.hpp"
 #include "cluster_candidate.hpp"
 #include "cluster_refusal_path.hpp"
+#include "join_planner_full.hpp"
 #include "logical_plan.hpp"
 #include "optimizer_contract.hpp"
 #include "optimizer_enterprise_manifest.hpp"
@@ -556,6 +557,20 @@ void ApplyJoinProof(MatrixRow* row) {
   logical.nodes.push_back(std::move(node));
 
   const auto optimized = opt::OptimizeLogicalPlanWithStatistics(logical, JoinStatistics());
+  std::vector<opt::JoinRelationNode> debug_relations = {
+      {"rel.pcr060.join.left", 1000, 0},
+      {"rel.pcr060.join.right", 500, 0}};
+  opt::JoinPredicateEdge debug_edge;
+  debug_edge.left_relation_uuid = debug_relations[0].relation_uuid;
+  debug_edge.right_relation_uuid = debug_relations[1].relation_uuid;
+  debug_edge.predicate_kind = "join.equi";
+  debug_edge.semantic_kind = opt::JoinSemanticKind::kInner;
+  debug_edge.predicate_count = 1;
+  debug_edge.equality = true;
+  debug_edge.selectivity = 0.10;
+  const auto debug_join_plan = opt::EnumerateDeterministicJoinOrder(
+      opt::BuildJoinGraph(debug_relations, {debug_edge}, false, false),
+      1048576);
   const auto selected_join = std::find_if(optimized.candidates.begin(), optimized.candidates.end(), [](const opt::OptimizerCandidate& candidate) {
     return candidate.selected_in_physical_tree &&
            candidate.plan_candidate.access_kind == plan::PhysicalAccessKind::kJoinHash;
@@ -580,7 +595,37 @@ void ApplyJoinProof(MatrixRow* row) {
                                   row->plan_cache_dependency_bound;
   row->surface_specific_validator = row->runtime_execution_tested;
   row->authority_clean = row->runtime_execution_tested;
-  row->diagnostic_code = row->runtime_execution_tested ? "OK" : "PCR060_JOIN_PROOF_INCOMPLETE";
+  if (row->runtime_execution_tested) {
+    row->diagnostic_code = "OK";
+  } else {
+    row->diagnostic_code =
+        "PCR060_JOIN_PROOF_INCOMPLETE[optimized=" +
+        std::string(optimized.ok ? "1" : "0") +
+        ",candidate=" + std::string(row->candidate_generated ? "1" : "0") +
+        ",physical=" + std::string(row->physical_node_emitted ? "1" : "0") +
+        ",executor=" + std::string(row->executor_validation ? "1" : "0") +
+        ",cache=" + std::string(row->plan_cache_dependency_bound ? "1" : "0") +
+        ",diagnostics=";
+    for (std::size_t index = 0; index < optimized.diagnostics.size(); ++index) {
+      if (index != 0) row->diagnostic_code += ";";
+      row->diagnostic_code += optimized.diagnostics[index];
+    }
+    row->diagnostic_code += ",candidates=";
+    for (std::size_t index = 0; index < optimized.candidates.size(); ++index) {
+      const auto& candidate = optimized.candidates[index];
+      if (index != 0) row->diagnostic_code += ";";
+      row->diagnostic_code += candidate.plan_candidate.candidate_id + ":" +
+                              std::string(plan::PhysicalAccessKindName(
+                                  candidate.plan_candidate.access_kind)) + ":" +
+                              (candidate.selected_in_physical_tree ? "selected" : "not-selected") + ":" +
+                              std::to_string(candidate.cost.total_cost);
+    }
+    row->diagnostic_code += ",join-plan=" +
+                            std::string(plan::PhysicalAccessKindName(
+                                debug_join_plan.method)) + ":" +
+                            std::to_string(debug_join_plan.cost.total_cost);
+    row->diagnostic_code += "]";
+  }
   row->evidence_detail = "join_hash_property_frontier";
   row->claim = "statistics_backed_join_property_frontier_reported";
 }
@@ -902,11 +947,14 @@ void ValidateRows(const std::vector<MatrixRow>& rows) {
             "PCR-060 duplicate optimizer surface row");
     Require(row.declared, "PCR-060 row not marked declared");
     Require(row.runtime_execution_tested,
-            "PCR-060 row lacks runtime execution proof");
+            std::string("PCR-060 row lacks runtime execution proof: ") +
+                row.surface_id + ":" + row.diagnostic_code);
     Require(row.surface_specific_validator,
-            "PCR-060 row lacks surface-specific validation");
+            std::string("PCR-060 row lacks surface-specific validation: ") +
+                row.surface_id + ":" + row.diagnostic_code);
     Require(row.authority_clean,
-            "PCR-060 row failed optimizer authority hygiene");
+            std::string("PCR-060 row failed optimizer authority hygiene: ") +
+                row.surface_id + ":" + row.diagnostic_code);
 
     if (row.surface_class == "noncluster_live" ||
         row.surface_class == "noncluster_exact_fallback") {

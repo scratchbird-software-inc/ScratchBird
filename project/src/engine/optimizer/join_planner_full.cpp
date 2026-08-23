@@ -44,27 +44,8 @@ std::uint64_t SaturatingScale(std::uint64_t value, double factor) {
   return static_cast<std::uint64_t>(scaled);
 }
 
-void FinishCost(CostVector* cost) {
-  cost->total_cost = SaturatingAdd(
-      SaturatingAdd(SaturatingAdd(cost->startup_cost, cost->row_cost),
-                    SaturatingAdd(cost->io_cost, cost->memory_cost)),
-      cost->uncertainty_cost);
-}
-
 void AddCost(CostVector* destination, const CostVector& source) {
-  destination->startup_cost = SaturatingAdd(destination->startup_cost, source.startup_cost);
-  destination->row_cost = SaturatingAdd(destination->row_cost, source.row_cost);
-  destination->io_cost = SaturatingAdd(destination->io_cost, source.io_cost);
-  destination->memory_cost = SaturatingAdd(destination->memory_cost, source.memory_cost);
-  destination->uncertainty_cost = SaturatingAdd(destination->uncertainty_cost, source.uncertainty_cost);
-  destination->selectable = destination->selectable && source.selectable;
-  if (!source.rejection_reason.empty() && destination->rejection_reason.empty()) {
-    destination->rejection_reason = source.rejection_reason;
-  }
-  if (source.confidence > destination->confidence) {
-    destination->confidence = source.confidence;
-  }
-  FinishCost(destination);
+  AccumulateCostVector(destination, source);
 }
 
 double CombinedSelectivity(const std::vector<JoinPredicateEdge>& predicates) {
@@ -87,6 +68,10 @@ bool IsSemiJoin(JoinSemanticKind kind) {
 
 bool IsAntiJoin(JoinSemanticKind kind) {
   return kind == JoinSemanticKind::kAnti;
+}
+
+bool IsCrossJoin(JoinSemanticKind kind) {
+  return kind == JoinSemanticKind::kCross;
 }
 
 void AddUniqueDiagnostic(std::vector<std::string>* diagnostics, std::string diagnostic) {
@@ -115,6 +100,10 @@ std::vector<std::string> SemanticBarrierDiagnostics(const JoinGraph& graph) {
   if (graph.contains_explicit_barrier) {
     AddUniqueDiagnostic(&diagnostics, "SB_OPT_JOIN_ORDER_PRESERVED_EXPLICIT_BARRIER");
   }
+  if (graph.contains_cross_join) {
+    AddUniqueDiagnostic(&diagnostics,
+                        "SB_OPT_JOIN_ORDER_PRESERVED_EXPLICIT_CROSS_JOIN");
+  }
   for (const auto& relation : graph.relations) {
     if (relation.semantic_order_barrier) {
       AddUniqueDiagnostic(&diagnostics, "SB_OPT_JOIN_ORDER_PRESERVED_EXPLICIT_BARRIER");
@@ -130,6 +119,10 @@ std::vector<std::string> SemanticBarrierDiagnostics(const JoinGraph& graph) {
     }
   }
   for (const auto& predicate : graph.predicates) {
+    if (IsCrossJoin(predicate.semantic_kind)) {
+      AddUniqueDiagnostic(&diagnostics,
+                          "SB_OPT_JOIN_ORDER_PRESERVED_EXPLICIT_CROSS_JOIN");
+    }
     if (IsOuterJoin(predicate.semantic_kind) || predicate.outer_join_sensitive) {
       AddUniqueDiagnostic(&diagnostics, "SB_OPT_JOIN_ORDER_PRESERVED_OUTER_JOIN");
     }
@@ -552,6 +545,23 @@ JoinGraph BuildJoinGraph(std::vector<JoinRelationNode> relations,
     graph.contains_volatile = graph.contains_volatile || relation.volatile_dependency;
   }
   for (const auto& predicate : graph.predicates) {
+    const bool cross = IsCrossJoin(predicate.semantic_kind);
+    if ((cross &&
+         (predicate.predicate_count != 0 || predicate.equality ||
+          predicate.predicate_kind != "join.cross" ||
+          predicate.selectivity != 1.0 || predicate.nullable ||
+          predicate.outer_join_sensitive || predicate.correlated ||
+          predicate.lateral || predicate.volatile_predicate)) ||
+        (!cross && predicate.predicate_count == 0)) {
+      graph.valid = false;
+      graph.refusal_diagnostic =
+          "SB_OPT_JOIN_CROSS_SEMANTIC_PREDICATE_INVALID";
+      return graph;
+    }
+    if (cross) {
+      graph.contains_cross_join = true;
+      graph.contains_explicit_barrier = true;
+    }
     graph.contains_outer_join = graph.contains_outer_join || IsOuterJoin(predicate.semantic_kind) ||
                                 predicate.outer_join_sensitive;
     graph.contains_semi_or_anti = graph.contains_semi_or_anti || IsSemiJoin(predicate.semantic_kind) ||
@@ -565,7 +575,7 @@ JoinGraph BuildJoinGraph(std::vector<JoinRelationNode> relations,
 }
 
 bool JoinReorderAllowed(const JoinGraph& graph) {
-  return SemanticBarrierDiagnostics(graph).empty();
+  return graph.valid && SemanticBarrierDiagnostics(graph).empty();
 }
 
 CostVector CostNestedLoopJoin(std::uint64_t outer_rows, std::uint64_t inner_rows, double selectivity) {
@@ -573,7 +583,7 @@ CostVector CostNestedLoopJoin(std::uint64_t outer_rows, std::uint64_t inner_rows
   const auto pairs = SaturatingMul(std::max<std::uint64_t>(outer_rows, 1),
                                    std::max<std::uint64_t>(inner_rows, 1));
   cost.row_cost = SaturatingAdd(cost.row_cost, SaturatingScale(pairs, selectivity));
-  FinishCost(&cost);
+  FinalizeCostVector(&cost);
   cost.confidence = CostConfidence::kMedium;
   return cost;
 }
@@ -590,7 +600,7 @@ CostVector CostHashJoin(std::uint64_t build_rows, std::uint64_t probe_rows, std:
                                                         1000));
     cost.reason = "hash_join_spill_expected";
   }
-  FinishCost(&cost);
+  FinalizeCostVector(&cost);
   cost.confidence = CostConfidence::kMedium;
   return cost;
 }
@@ -603,7 +613,7 @@ CostVector CostMergeJoin(std::uint64_t left_rows, std::uint64_t right_rows, bool
     cost.startup_cost = SaturatingAdd(cost.startup_cost,
                                       EstimateNodeCost(planner::MakeLogicalPlanNode(planner::LogicalPlanNodeKind::kDmlRead, planner::PhysicalAccessKind::kSort, "query.sort", "sort_for_merge_join")).total_cost);
   }
-  FinishCost(&cost);
+  FinalizeCostVector(&cost);
   cost.confidence = inputs_ordered ? CostConfidence::kMedium : CostConfidence::kLow;
   return cost;
 }
@@ -990,7 +1000,27 @@ JoinOrderPlan EnumerateDpJoinOrder(const JoinGraph& graph, const JoinSearchPolic
 }  // namespace
 
 JoinOrderPlan EnumerateJoinOrderWithPolicy(const JoinGraph& graph, const JoinSearchPolicy& policy) {
+  if (!graph.valid) {
+    JoinOrderPlan refused;
+    refused.requested_strategy = policy.strategy;
+    refused.selected_strategy = JoinSearchStrategy::kInputOrder;
+    refused.fallback_reason = graph.refusal_diagnostic;
+    refused.diagnostics.push_back(graph.refusal_diagnostic.empty()
+                                      ? "SB_OPT_JOIN_GRAPH_INVALID"
+                                      : graph.refusal_diagnostic);
+    return refused;
+  }
   const auto indexed_edges = BuildIndexedEdges(graph);
+  const auto semantic_diagnostics = SemanticBarrierDiagnostics(graph);
+  if (!semantic_diagnostics.empty()) {
+    auto plan = InputOrderPlan(
+        graph, indexed_edges, policy.memory_budget_bytes, policy.strategy,
+        "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER");
+    plan.diagnostics = semantic_diagnostics;
+    plan.diagnostics.push_back(
+        "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER");
+    return plan;
+  }
   JoinSearchStrategy selected = policy.strategy;
   if (selected == JoinSearchStrategy::kAuto) {
     selected = graph.relations.size() <= policy.exhaustive_relation_limit

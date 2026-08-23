@@ -130,16 +130,15 @@ CostVector ApplyTextMetricAdjustments(CostVector cost,
   const auto effective_postings = metric.posting_length - skipped;
   cost.row_cost = SaturatingAdd(cost.row_cost, effective_postings);
   cost.row_cost = SaturatingAdd(cost.row_cost, rerank_rows);
+  cost.text_scoring_units = SaturatingAdd(
+      cost.text_scoring_units, SaturatingAdd(effective_postings, rerank_rows));
   cost.memory_cost = SaturatingAdd(cost.memory_cost,
                                    metric.query_terms * metric.top_k);
   cost.uncertainty_cost = SaturatingAdd(
       cost.uncertainty_cost,
       static_cast<std::uint64_t>(
           std::ceil(metric.candidate_rows * metric.false_positive_ratio)));
-  cost.total_cost = SaturatingAdd(
-      SaturatingAdd(cost.startup_cost, cost.row_cost),
-      SaturatingAdd(cost.io_cost,
-                    SaturatingAdd(cost.memory_cost, cost.uncertainty_cost)));
+  FinalizeCostVector(&cost);
   cost.confidence = CostConfidence::kMedium;
   return cost;
 }

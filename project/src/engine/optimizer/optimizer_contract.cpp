@@ -704,7 +704,7 @@ EnumerateCanonicalOptimizerAlternativeInventory(
   const auto valid_property_kind = [](const auto kind) {
     return kind >= planner::CanonicalLogicalPropertyKind::kOrdering &&
            kind <=
-               planner::CanonicalLogicalPropertyKind::kExpressionEquivalence;
+               planner::CanonicalLogicalPropertyKind::kSecurityVisibility;
   };
 
   if (!admission.admitted || !admission.planning_allowed ||
@@ -1341,7 +1341,20 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
           !add_term(terms.mga_visibility_checks_expected) ||
           !add_term(terms.archive_fetches_expected) ||
           !add_term(terms.uncertainty_penalty) ||
-          !add_term(terms.risk_penalty)) {
+          !add_term(terms.risk_penalty) ||
+          !add_term(terms.cache_units) ||
+          !add_term(terms.memory_grant_units) ||
+          !add_term(terms.spill_units) ||
+          !add_term(terms.network_units) ||
+          !add_term(terms.compression_units) ||
+          !add_term(terms.encryption_units) ||
+          !add_term(terms.predicate_evaluation_units) ||
+          !add_term(terms.vector_distance_units) ||
+          !add_term(terms.text_scoring_units) ||
+          !add_term(terms.spatial_evaluation_units) ||
+          !add_term(terms.udr_invocation_units) ||
+          !add_term(terms.mga_units) ||
+          !add_term(terms.index_maintenance_units)) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1", node_id,
                       candidate.alternative_uuid, "scalar_score");
       }
@@ -1772,6 +1785,21 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
            left.archive_fetches_expected == right.archive_fetches_expected &&
            left.uncertainty_penalty == right.uncertainty_penalty &&
            left.risk_penalty == right.risk_penalty &&
+           left.cache_units == right.cache_units &&
+           left.memory_grant_units == right.memory_grant_units &&
+           left.spill_units == right.spill_units &&
+           left.network_units == right.network_units &&
+           left.compression_units == right.compression_units &&
+           left.encryption_units == right.encryption_units &&
+           left.predicate_evaluation_units ==
+               right.predicate_evaluation_units &&
+           left.vector_distance_units == right.vector_distance_units &&
+           left.text_scoring_units == right.text_scoring_units &&
+           left.spatial_evaluation_units ==
+               right.spatial_evaluation_units &&
+           left.udr_invocation_units == right.udr_invocation_units &&
+           left.mga_units == right.mga_units &&
+           left.index_maintenance_units == right.index_maintenance_units &&
            left.confidence == right.confidence;
   };
   const auto physical_kind = [](const auto logical_kind)
@@ -1961,7 +1989,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
               return kind >= planner::CanonicalLogicalPropertyKind::kOrdering &&
                      kind <=
                          planner::CanonicalLogicalPropertyKind::
-                             kExpressionEquivalence &&
+                             kSecurityVisibility &&
                      property_kinds.insert(kind).second;
             })) {
       return refuse("QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1", 0, {},
@@ -2316,6 +2344,23 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     physical.retained_cost.uncertainty_penalty =
         terms.uncertainty_penalty;
     physical.retained_cost.risk_penalty = terms.risk_penalty;
+    physical.retained_cost.cache_units = terms.cache_units;
+    physical.retained_cost.memory_grant_units = terms.memory_grant_units;
+    physical.retained_cost.spill_units = terms.spill_units;
+    physical.retained_cost.network_units = terms.network_units;
+    physical.retained_cost.compression_units = terms.compression_units;
+    physical.retained_cost.encryption_units = terms.encryption_units;
+    physical.retained_cost.predicate_evaluation_units =
+        terms.predicate_evaluation_units;
+    physical.retained_cost.vector_distance_units =
+        terms.vector_distance_units;
+    physical.retained_cost.text_scoring_units = terms.text_scoring_units;
+    physical.retained_cost.spatial_evaluation_units =
+        terms.spatial_evaluation_units;
+    physical.retained_cost.udr_invocation_units = terms.udr_invocation_units;
+    physical.retained_cost.mga_units = terms.mga_units;
+    physical.retained_cost.index_maintenance_units =
+        terms.index_maintenance_units;
     physical.retained_cost.confidence =
         static_cast<std::uint8_t>(terms.confidence);
     physical.memory_bytes_required =
@@ -2346,6 +2391,19 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
         !add_retained(cost.archive_fetches_expected) ||
         !add_retained(cost.uncertainty_penalty) ||
         !add_retained(cost.risk_penalty) ||
+        !add_retained(cost.cache_units) ||
+        !add_retained(cost.memory_grant_units) ||
+        !add_retained(cost.spill_units) ||
+        !add_retained(cost.network_units) ||
+        !add_retained(cost.compression_units) ||
+        !add_retained(cost.encryption_units) ||
+        !add_retained(cost.predicate_evaluation_units) ||
+        !add_retained(cost.vector_distance_units) ||
+        !add_retained(cost.text_scoring_units) ||
+        !add_retained(cost.spatial_evaluation_units) ||
+        !add_retained(cost.udr_invocation_units) ||
+        !add_retained(cost.mga_units) ||
+        !add_retained(cost.index_maintenance_units) ||
         retained_score != cost.scalar_score) {
       return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
                     node.relational_node_id,
@@ -2545,27 +2603,8 @@ std::uint64_t EstimateRowsForNode(const OptimizerStatisticsCatalog& statistics,
   return rows == 0 ? fallback : rows;
 }
 
-void FinishCost(CostVector* cost) {
-  cost->total_cost = SaturatingAdd(
-      SaturatingAdd(SaturatingAdd(cost->startup_cost, cost->row_cost),
-                    SaturatingAdd(cost->io_cost, cost->memory_cost)),
-      cost->uncertainty_cost);
-}
-
 void AddCost(CostVector* destination, const CostVector& source) {
-  destination->startup_cost = SaturatingAdd(destination->startup_cost, source.startup_cost);
-  destination->row_cost = SaturatingAdd(destination->row_cost, source.row_cost);
-  destination->io_cost = SaturatingAdd(destination->io_cost, source.io_cost);
-  destination->memory_cost = SaturatingAdd(destination->memory_cost, source.memory_cost);
-  destination->uncertainty_cost = SaturatingAdd(destination->uncertainty_cost, source.uncertainty_cost);
-  destination->selectable = destination->selectable && source.selectable;
-  if (!source.rejection_reason.empty() && destination->rejection_reason.empty()) {
-    destination->rejection_reason = source.rejection_reason;
-  }
-  if (source.confidence > destination->confidence) {
-    destination->confidence = source.confidence;
-  }
-  FinishCost(destination);
+  AccumulateCostVector(destination, source);
 }
 
 PlanCandidate MakeDecisionCandidate(std::string candidate_id,
@@ -2623,10 +2662,18 @@ bool JoinNodeHasSemanticBarrier(const planner::LogicalPlanNode& node) {
                            "join.correlation",
                            "join.lateral",
                            "join.volatile",
-                           "join.barrier"});
+                           "join.barrier",
+                           "join.cross"}) ||
+         node.operation_id == "join.cross.v1" ||
+         node.stable_name == "join.cross.v1";
 }
 
 JoinSemanticKind SemanticKindForJoinNode(const planner::LogicalPlanNode& node) {
+  if (HasDescriptor(node, "join.cross") ||
+      node.operation_id == "join.cross.v1" ||
+      node.stable_name == "join.cross.v1") {
+    return JoinSemanticKind::kCross;
+  }
   if (HasDescriptor(node, "join.left_outer") || HasDescriptor(node, "join.outer")) {
     return JoinSemanticKind::kLeftOuter;
   }
@@ -2653,6 +2700,7 @@ std::vector<std::string> JoinRelationKeysForNode(const planner::LogicalPlanNode&
 
 double JoinSelectivityForNode(const planner::LogicalPlanNode& node,
                               const OptimizerStatisticsCatalog& statistics) {
+  if (SemanticKindForJoinNode(node) == JoinSemanticKind::kCross) return 1.0;
   const auto statistic = statistics.Find("join_selectivity", node.operation_id);
   if (statistic && statistic->available) return std::clamp(statistic->value, 0.000001, 1.0);
   const auto fallback = statistics.Find("join_selectivity", "local.default");
@@ -2682,14 +2730,17 @@ JoinGraph JoinGraphForNode(const planner::LogicalPlanNode& node,
   std::vector<JoinPredicateEdge> predicates;
   const bool equality = !HasDescriptor(node, "join.non_equi");
   const auto semantic_kind = SemanticKindForJoinNode(node);
+  const bool cross = semantic_kind == JoinSemanticKind::kCross;
   const auto selectivity = JoinSelectivityForNode(node, statistics);
   for (std::size_t i = 1; i < relation_keys.size(); ++i) {
     JoinPredicateEdge edge;
     edge.left_relation_uuid = relation_keys[i - 1];
     edge.right_relation_uuid = relation_keys[i];
-    edge.predicate_kind = equality ? "join.equi" : "join.non_equi";
+    edge.predicate_kind = cross ? "join.cross"
+                                : (equality ? "join.equi" : "join.non_equi");
     edge.semantic_kind = semantic_kind;
-    edge.equality = equality;
+    edge.predicate_count = cross ? 0 : 1;
+    edge.equality = !cross && equality;
     edge.nullable = HasDescriptor(node, "join.nullable");
     edge.outer_join_sensitive = HasAnyDescriptor(node, {"join.outer",
                                                         "join.left_outer",
@@ -2699,9 +2750,9 @@ JoinGraph JoinGraphForNode(const planner::LogicalPlanNode& node,
                       HasDescriptor(node, "join.correlation");
     edge.lateral = HasDescriptor(node, "join.lateral");
     edge.volatile_predicate = HasDescriptor(node, "join.volatile");
-    edge.explicit_order_barrier = HasDescriptor(node, "join.barrier") ||
+    edge.explicit_order_barrier = cross || HasDescriptor(node, "join.barrier") ||
                                   HasDescriptor(node, "join.preserve_order");
-    edge.selectivity = selectivity;
+    edge.selectivity = cross ? 1.0 : selectivity;
     predicates.push_back(std::move(edge));
   }
 

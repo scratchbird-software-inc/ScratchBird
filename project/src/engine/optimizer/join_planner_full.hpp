@@ -40,6 +40,7 @@ enum class JoinSemanticKind {
   kFullOuter,
   kSemi,
   kAnti,
+  kCross,
 };
 
 struct JoinPredicateEdge {
@@ -47,6 +48,9 @@ struct JoinPredicateEdge {
   std::string right_relation_uuid;
   std::string predicate_kind;
   JoinSemanticKind semantic_kind = JoinSemanticKind::kInner;
+  // CROSS is represented as a semantic graph edge with no predicate.  Other
+  // join semantics retain one or more predicate terms.
+  std::uint32_t predicate_count = 1;
   bool equality = false;
   bool nullable = false;
   bool outer_join_sensitive = false;
@@ -66,6 +70,9 @@ struct JoinGraph {
   bool contains_lateral = false;
   bool contains_volatile = false;
   bool contains_explicit_barrier = false;
+  bool contains_cross_join = false;
+  bool valid = true;
+  std::string refusal_diagnostic;
 };
 
 // SEARCH_KEY: OPCH_MULTIPLE_JOIN_STRATEGIES_TELEMETRY

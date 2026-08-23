@@ -17,6 +17,7 @@
 #include "engine/executor/model_family_executor.hpp"
 #include "engine/optimizer/model_family_coordinator.hpp"
 #include "engine/optimizer/optimizer_contract.hpp"
+#include "engine/optimizer/relational_planner.hpp"
 #include "hash_digest.hpp"
 #include "uuid.hpp"
 #if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
@@ -11031,6 +11032,21 @@ struct LivePhysicalNodeProfile {
   std::vector<std::string> delivered_property_uuids;
   std::vector<plan::CanonicalLogicalPropertyKind> supported_property_kinds;
   std::uint64_t page_read_sequential_units{0};
+  std::uint64_t page_read_random_units{0};
+  std::uint64_t page_write_units{0};
+  std::uint64_t cache_units{0};
+  std::uint64_t memory_grant_units{0};
+  std::uint64_t spill_units{0};
+  std::uint64_t network_units{0};
+  std::uint64_t compression_units{0};
+  std::uint64_t encryption_units{0};
+  std::uint64_t predicate_evaluation_units{0};
+  std::uint64_t vector_distance_units{0};
+  std::uint64_t text_scoring_units{0};
+  std::uint64_t spatial_evaluation_units{0};
+  std::uint64_t udr_invocation_units{0};
+  std::uint64_t mga_units{0};
+  std::uint64_t index_maintenance_units{0};
   std::uint64_t mga_visibility_checks_expected{0};
   bool storage_read_capable{false};
   bool mga_visibility_capable{false};
@@ -11173,27 +11189,10 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
       graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
   const auto calibration_uuid =
       DerivedCanonicalUuid(identity_scope, "relational.calibration");
-  opt::CanonicalOptimizerAlternativeDomainSnapshot domain;
-  domain.capability_snapshot_uuid =
-      request.optimizer_admission.capability_snapshot_uuid;
-  domain.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
-  domain.catalog_epoch_uuid = graph.catalog_epoch_uuid;
-  domain.security_context_uuid = graph.security_context_uuid;
-  domain.local_transaction_id = graph.local_transaction_id;
-  domain.statement_snapshot_id = graph.statement_snapshot_id;
-  domain.mga_statement_context = graph.mga_statement_context;
-  domain.complete_finite_domain = true;
-  domain.engine_owned = true;
-
   std::unordered_set<std::uint32_t> covered_nodes;
-  std::unordered_set<std::string> published_capabilities;
-  std::unordered_map<std::string, const LivePhysicalNodeProfile*>
-      profiles_by_alternative_uuid;
-  opt::CanonicalExecutorCapabilityCatalog capabilities;
-  capabilities.capability_snapshot_uuid =
-      request.optimizer_admission.capability_snapshot_uuid;
-  capabilities.policy_epoch = request.optimizer_admission.policy_epoch;
-  capabilities.engine_owned = true;
+  std::vector<opt::CanonicalOptimizerImplementationProfile>
+      implementation_profiles;
+  implementation_profiles.reserve(profiles.size());
   for (const auto& profile : profiles) {
     const auto node = std::ranges::find_if(graph.nodes, [&](const auto& item) {
       return item.logical_node_id == profile.logical_node_id;
@@ -11209,94 +11208,60 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
       return result;
     }
     covered_nodes.insert(profile.logical_node_id);
-    const auto suffix = std::to_string(profile.logical_node_id) + "." +
-                        profile.implementation_id;
-    const auto alternative_uuid =
-        DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
-    opt::CanonicalOptimizerAlternativeDomainRecord domain_record;
-    domain_record.alternative_uuid = alternative_uuid;
-    domain_record.capability_uuid = profile.capability_uuid;
-    domain_record.logical_node_id = profile.logical_node_id;
-    domain_record.logical_node_kind = profile.logical_node_kind;
-    domain_record.semantic_variant_id = node->semantic_variant_id;
-    domain_record.implementation_id = profile.implementation_id;
-    domain_record.minimum_input_count = profile.minimum_input_count;
-    domain_record.maximum_input_count = profile.maximum_input_count;
-    const auto bind_property_kinds = [&](const auto& property_uuids,
-                                         auto* property_kinds) {
-      for (const auto& property_uuid : property_uuids) {
-        const auto property = std::ranges::find_if(
-            request.optimizer_request.logical_properties.properties,
-            [&](const auto& candidate) {
-              return candidate.property_uuid == property_uuid;
-            });
-        if (property ==
-            request.optimizer_request.logical_properties.properties.end()) {
-          return false;
-        }
-        if (std::ranges::find(*property_kinds, property->property_kind) ==
-            property_kinds->end()) {
-          property_kinds->push_back(property->property_kind);
-        }
-      }
-      return true;
-    };
-    if (!bind_property_kinds(profile.required_property_uuids,
-                             &domain_record.required_property_kinds) ||
-        !bind_property_kinds(profile.delivered_property_uuids,
-                             &domain_record.delivered_property_kinds)) {
-      result.diagnostic_id =
-          "QOW-DIAG-OPTIMIZER-INVENTORY-PROPERTY-V1";
-      result.detail = std::string(operation_name) +
-                      " live profile references an unknown property";
-      return result;
-    }
-    domain_record.memory_bytes_required = profile.memory_bytes_required;
-    domain_record.spill_supported = profile.spill_supported;
-    domain_record.parallel_safe = profile.parallel_safe;
-    domain_record.parallel_required = profile.parallel_required;
-    domain_record.residual_predicate_required =
+    opt::CanonicalOptimizerImplementationProfile implementation;
+    implementation.logical_node_id = profile.logical_node_id;
+    implementation.implementation_id = profile.implementation_id;
+    implementation.capability_uuid = profile.capability_uuid;
+    implementation.logical_node_kind = profile.logical_node_kind;
+    implementation.physical_node_kind = profile.physical_node_kind;
+    implementation.transformation_rule_id = profile.transformation_rule_id;
+    implementation.minimum_input_count = profile.minimum_input_count;
+    implementation.maximum_input_count = profile.maximum_input_count;
+    implementation.required_property_uuids =
+        profile.required_property_uuids;
+    implementation.delivered_property_uuids =
+        profile.delivered_property_uuids;
+    implementation.supported_property_kinds =
+        profile.supported_property_kinds;
+    implementation.estimated_rows_hint = profile.estimated_rows;
+    implementation.memory_bytes_required = profile.memory_bytes_required;
+    implementation.page_read_sequential_units =
+        profile.page_read_sequential_units;
+    implementation.page_read_random_units = profile.page_read_random_units;
+    implementation.page_write_units = profile.page_write_units;
+    implementation.cache_units = profile.cache_units;
+    implementation.memory_grant_units = profile.memory_grant_units;
+    implementation.spill_units = profile.spill_units;
+    implementation.network_units = profile.network_units;
+    implementation.compression_units = profile.compression_units;
+    implementation.encryption_units = profile.encryption_units;
+    implementation.predicate_evaluation_units =
+        profile.predicate_evaluation_units;
+    implementation.vector_distance_units = profile.vector_distance_units;
+    implementation.text_scoring_units = profile.text_scoring_units;
+    implementation.spatial_evaluation_units =
+        profile.spatial_evaluation_units;
+    implementation.udr_invocation_units = profile.udr_invocation_units;
+    implementation.mga_units = profile.mga_units;
+    implementation.index_maintenance_units =
+        profile.index_maintenance_units;
+    implementation.mga_visibility_checks_expected =
+        profile.mga_visibility_checks_expected;
+    implementation.storage_read_capable = profile.storage_read_capable;
+    implementation.mga_visibility_capable = profile.mga_visibility_capable;
+    implementation.spill_supported = profile.spill_supported;
+    implementation.parallel_safe = profile.parallel_safe;
+    implementation.parallel_required = profile.parallel_required;
+    implementation.residual_predicate_required =
         profile.residual_predicate_required;
-    domain_record.storage_recheck_required =
+    implementation.storage_recheck_required =
         profile.storage_recheck_required;
-    domain_record.storage_read_capable = profile.storage_read_capable;
-    domain_record.mga_visibility_safe = profile.mga_visibility_capable;
-    domain_record.compatibility_profile_id =
+    implementation.compatibility_profile_id =
         profile.compatibility_profile_id;
-    domain_record.exact_semantics = true;
-    domain_record.native_sblr_compatible = true;
-    domain_record.available = true;
-    domain_record.engine_owned = true;
-    domain.records.push_back(std::move(domain_record));
-    if (!profiles_by_alternative_uuid.emplace(alternative_uuid, &profile)
-             .second) {
-      result.diagnostic_id =
-          "QOW-DIAG-OPTIMIZER-INVENTORY-IDENTITY-V1";
-      result.detail = std::string(operation_name) +
-                      " live profile generated a duplicate alternative";
-      return result;
-    }
-
-    if (published_capabilities.insert(profile.capability_uuid).second) {
-      opt::CanonicalExecutorCapabilityRecord capability;
-      capability.capability_uuid = profile.capability_uuid;
-      capability.capability_abi_version = 1;
-      capability.implementation_id = profile.implementation_id;
-      capability.logical_node_kind = profile.logical_node_kind;
-      capability.physical_node_kind = profile.physical_node_kind;
-      capability.minimum_input_count = profile.minimum_input_count;
-      capability.maximum_input_count = profile.maximum_input_count;
-      capability.maximum_memory_bytes =
-          request.optimizer_request.resource.memory_budget_bytes;
-      capability.supported_property_kinds =
-          profile.supported_property_kinds;
-      capability.spill_supported = profile.spill_supported;
-      capability.storage_read_capable = profile.storage_read_capable;
-      capability.mga_visibility_capable = profile.mga_visibility_capable;
-      capability.available = true;
-      capability.engine_owned = true;
-      capabilities.capabilities.push_back(std::move(capability));
-    }
+    implementation.model_family_id = profile.model_family_id.empty()
+                                         ? std::string(model_family_id)
+                                         : profile.model_family_id;
+    implementation_profiles.push_back(std::move(implementation));
   }
 
   if (covered_nodes.size() != graph.nodes.size()) {
@@ -11305,116 +11270,35 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
                     " live profile does not cover every logical node";
     return result;
   }
-  const auto inventory = opt::EnumerateCanonicalOptimizerAlternativeInventory(
-      request.optimizer_request, request.optimizer_admission, domain);
-  if (!inventory.accepted || !inventory.inventory_complete ||
-      !inventory.issues.empty()) {
-    result.diagnostic_id =
-        inventory.issues.empty()
-            ? "QOW-DIAG-OPTIMIZER-INVENTORY-COVERAGE-V1"
-            : inventory.issues.front().diagnostic_id;
-    result.detail = inventory.issues.empty()
-                        ? std::string(operation_name) +
-                              " live alternative inventory is incomplete"
-                        : inventory.issues.front().field_id;
-    return result;
-  }
-
-  std::vector<opt::CanonicalOptimizerSearchCandidateInput> candidates;
-  candidates.reserve(inventory.legal_candidate_count);
-  for (const auto& receipt : inventory.receipts) {
-    if (!receipt.legal) continue;
-    const auto* profile = profiles_by_alternative_uuid.at(
-        receipt.alternative_uuid);
-    const auto suffix = std::to_string(profile->logical_node_id) + "." +
-                        profile->implementation_id;
-    opt::CanonicalOptimizerSearchCandidateInput candidate;
-    candidate.alternative_uuid = receipt.alternative_uuid;
-    candidate.logical_node_id = receipt.logical_node_id;
-    candidate.semantic_variant_id = receipt.semantic_variant_id;
-    candidate.transformation_uuid =
-        DerivedCanonicalUuid(identity_scope, "transformation." + suffix);
-    candidate.transformation_rule_id = profile->transformation_rule_id;
-    candidate.required_property_uuids = receipt.required_property_uuids;
-    candidate.delivered_property_uuids = receipt.delivered_property_uuids;
-    candidate.enforced_property_uuids = receipt.enforced_property_uuids;
-    candidate.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
-    candidate.statistics_snapshot_uuid =
-        request.optimizer_admission.statistics_snapshot_uuid;
-    candidate.statistics_generation =
-        request.optimizer_admission.statistics_generation;
-    candidate.model_family_id = profile->model_family_id.empty()
-                                    ? std::string(model_family_id)
-                                    : profile->model_family_id;
-    candidate.cost_terms.cost_vector_uuid =
-        DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
-    candidate.cost_terms.calibration_profile_uuid = calibration_uuid;
-    candidate.cost_terms.cpu_units =
-        std::max<std::uint64_t>(1, profile->estimated_rows);
-    candidate.cost_terms.page_read_sequential_units =
-        profile->page_read_sequential_units;
-    candidate.cost_terms.memory_bytes_required =
-        profile->memory_bytes_required;
-    candidate.cost_terms.spill_bytes_expected =
-        receipt.spill_required
-            ? profile->memory_bytes_required -
-                  request.optimizer_request.resource.memory_budget_bytes
-            : 0;
-    candidate.cost_terms.mga_visibility_checks_expected =
-        profile->mga_visibility_checks_expected;
-    candidate.cost_terms.confidence = opt::CostConfidence::kHigh;
-    candidate.semantic_preserving = true;
-    candidate.transformation_preconditions_satisfied = true;
-    candidate.property_enforcement_required =
-        receipt.property_enforcement_required;
-    candidate.derived_from_admitted_statistics = true;
-    candidate.engine_coster_owned = true;
-    candidates.push_back(std::move(candidate));
-  }
-
-  opt::CanonicalOptimizerSearchPolicy search_policy;
-  search_policy.maximum_exhaustive_plan_count = 1;
-  search_policy.bounded_beam_width = 1;
-  search_policy.deterministic_step_cost_ns = 1;
-  search_policy.engine_owned = true;
-  search_policy.allow_timeout_degradation = true;
-  const auto search = opt::SearchCanonicalRelationalMemo(
-      request.optimizer_request, request.optimizer_admission, inventory.catalog,
-      candidates, search_policy);
-  if (!search.accepted || !search.selected || !search.issues.empty()) {
-    result.diagnostic_id =
-        search.issues.empty() ? "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1"
-                              : search.issues.front().diagnostic_id;
-    result.detail = search.issues.empty()
-                        ? std::string(operation_name) +
-                              " live search returned no selected plan"
-                        : search.issues.front().field_id;
-    return result;
-  }
-
-  opt::CanonicalOptimizerPhysicalPublicationIdentity publication_identity;
-  publication_identity.selected_plan_uuid =
+  opt::RelationalDagPlanningInput planning_input;
+  planning_input.admission_request = request.optimizer_request;
+  planning_input.admission = request.optimizer_admission;
+  planning_input.implementations = std::move(implementation_profiles);
+  planning_input.identity_scope = identity_scope;
+  planning_input.calibration_profile_uuid = calibration_uuid;
+  planning_input.search_policy.maximum_exhaustive_plan_count = 1;
+  planning_input.search_policy.bounded_beam_width = 1;
+  planning_input.search_policy.deterministic_step_cost_ns = 1;
+  planning_input.search_policy.engine_owned = true;
+  planning_input.search_policy.allow_timeout_degradation = true;
+  planning_input.publication_identity.selected_plan_uuid =
       DerivedCanonicalUuid(identity_scope, selected_plan_purpose);
-  publication_identity.first_causal_counter_id = 1;
-  publication_identity.engine_owned = true;
-  auto publication = opt::PublishCanonicalPhysicalDag(
-      request.optimizer_request, request.optimizer_admission,
-      inventory.catalog,
-      search, capabilities, publication_identity);
-  if (!publication.accepted || !publication.published ||
-      !publication.issues.empty()) {
-    result.diagnostic_id =
-        publication.issues.empty()
-            ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
-            : publication.issues.front().diagnostic_id;
-    result.detail = publication.issues.empty()
-                        ? std::string(operation_name) +
-                              " live physical DAG was not published"
-                        : publication.issues.front().field_id;
+  planning_input.publication_identity.first_causal_counter_id = 1;
+  planning_input.publication_identity.engine_owned = true;
+  auto planning = opt::PlanCanonicalRelationalDag(planning_input);
+  if (!planning.accepted || !planning.optimizer_owned ||
+      !planning.complete_logical_dag_covered ||
+      !planning.physical_dag_published || planning.data_access_allowed ||
+      !planning.diagnostics.empty()) {
+    result.diagnostic_id = planning.diagnostics.empty()
+                               ? "QOW-DIAG-RELATIONAL-DAG-PLANNING-V1"
+                               : planning.diagnostics.front();
+    result.detail = std::string(operation_name) +
+                    " canonical relational-DAG planning refused the live implementation catalog";
     return result;
   }
   result.ok = true;
-  result.physical_dag = std::move(publication.physical_dag);
+  result.physical_dag = std::move(planning.publication.physical_dag);
   for (const auto& physical_node : result.physical_dag.nodes) {
     const auto profile = std::ranges::find_if(
         profiles, [&](const LivePhysicalNodeProfile& candidate) {

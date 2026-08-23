@@ -128,6 +128,8 @@ CostVector ApplyVectorMetricAdjustments(CostVector cost,
                                         bool rebuild_recommended) {
   const auto& metric = request.metric;
   cost.row_cost = SaturatingAdd(cost.row_cost, exact_rerank_rows);
+  cost.vector_distance_units = SaturatingAdd(
+      cost.vector_distance_units, exact_rerank_rows);
   cost.memory_cost = SaturatingAdd(cost.memory_cost,
                                    metric.candidate_rows * metric.dimensions);
   cost.uncertainty_cost = SaturatingAdd(
@@ -140,10 +142,7 @@ CostVector ApplyVectorMetricAdjustments(CostVector cost,
     cost.uncertainty_cost = SaturatingAdd(cost.uncertainty_cost,
                                           metric.candidate_rows);
   }
-  cost.total_cost = SaturatingAdd(
-      SaturatingAdd(cost.startup_cost, cost.row_cost),
-      SaturatingAdd(cost.io_cost,
-                    SaturatingAdd(cost.memory_cost, cost.uncertainty_cost)));
+  FinalizeCostVector(&cost);
   cost.confidence = request.metric.recall_observed >= request.min_recall
                         ? CostConfidence::kMedium
                         : CostConfidence::kLow;

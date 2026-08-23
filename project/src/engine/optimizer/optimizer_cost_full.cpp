@@ -18,8 +18,23 @@ namespace scratchbird::engine::optimizer {
 namespace planner = scratchbird::engine::planner;
 namespace {
 
+std::uint64_t SaturatingAdd(std::uint64_t left, std::uint64_t right);
+
 void Finish(CostVector* cost) {
-  cost->total_cost = cost->startup_cost + cost->row_cost + cost->io_cost + cost->memory_cost + cost->uncertainty_cost;
+  // This producer owns the base CPU dimension; specialized dimensions below
+  // remain independent additions.  FinalizeCostVector performs the canonical
+  // scalarization without replacing either class of term.
+  cost->cpu_units = SaturatingAdd(cost->startup_cost, cost->row_cost);
+  cost->compatibility_cpu_projection_units = cost->cpu_units;
+  if (cost->sequential_io_units == 0 && cost->random_io_units == 0 &&
+      cost->spill_units == 0 && cost->network_units == 0 &&
+      cost->compression_units == 0 && cost->encryption_units == 0) {
+    cost->sequential_io_units = cost->io_cost;
+  }
+  if (cost->memory_grant_bytes == 0) {
+    cost->memory_grant_bytes = cost->memory_cost;
+  }
+  FinalizeCostVector(cost);
 }
 
 std::uint64_t SaturatingAdd(std::uint64_t left, std::uint64_t right) {
@@ -174,6 +189,23 @@ CostVector EstimateCostVector(const OptimizerCostEnvironment& environment,
   cost.io_cost = 0;
   cost.memory_cost = 0;
   cost.uncertainty_cost = 0;
+  cost.cpu_units = 0;
+  cost.sequential_io_units = 0;
+  cost.random_io_units = 0;
+  cost.page_write_units = 0;
+  cost.cache_units = 0;
+  cost.memory_grant_bytes = 0;
+  cost.spill_units = 0;
+  cost.network_units = 0;
+  cost.compression_units = 0;
+  cost.encryption_units = 0;
+  cost.predicate_evaluation_units = 0;
+  cost.vector_distance_units = 0;
+  cost.text_scoring_units = 0;
+  cost.spatial_evaluation_units = 0;
+  cost.udr_invocation_units = 0;
+  cost.mga_units = 0;
+  cost.index_maintenance_units = 0;
   cost.reason = input.reason.empty() ? environment.cost_profile_id : input.reason;
   cost.confidence = input.input_confidence;
 
@@ -197,6 +229,13 @@ CostVector EstimateCostVector(const OptimizerCostEnvironment& environment,
                            cache_discount *
                            random_discount;
   cost.io_cost = CostUnits((seq_io + random_io) * 1000.0);
+  cost.sequential_io_units = CostUnits(seq_io * 1000.0);
+  cost.random_io_units = CostUnits(random_io * 1000.0);
+  cost.cache_units = CostUnits(
+      static_cast<double>(SaturatingAdd(input.sequential_pages,
+                                        input.random_pages)) *
+      std::clamp(input.cache_hit_ratio, 0.0, 1.0) *
+      environment.cache_lookup_cost * 1000.0);
 
   const auto tuple_visits = SaturatingAdd(input.estimated_rows,
                          SaturatingAdd(input.false_positive_rows, input.duplicate_rows));
@@ -214,6 +253,37 @@ CostVector EstimateCostVector(const OptimizerCostEnvironment& environment,
   cost.memory_cost = CostUnits(static_cast<double>(input.required_memory_bytes / 1024) *
                                environment.memory_kib_cost *
                                1000.0);
+  cost.memory_grant_bytes = input.required_memory_bytes;
+  cost.network_units = CostUnits(
+      static_cast<double>(input.network_bytes / 1024) *
+      environment.network_kib_cost * 1000.0);
+  cost.compression_units = CostUnits(
+      static_cast<double>(input.compression_bytes / 1024) *
+      environment.compression_kib_cost * 1000.0);
+  cost.encryption_units = CostUnits(
+      static_cast<double>(input.encryption_bytes / 1024) *
+      environment.encryption_kib_cost * 1000.0);
+  cost.predicate_evaluation_units = CostUnits(
+      static_cast<double>(input.predicate_evaluation_count) *
+      environment.predicate_operator_cost * 1000.0);
+  cost.vector_distance_units = CostUnits(
+      static_cast<double>(input.vector_distance_count) *
+      environment.vector_distance_cost * 1000.0);
+  cost.text_scoring_units = CostUnits(
+      static_cast<double>(input.text_scoring_count) *
+      environment.text_scoring_cost * 1000.0);
+  cost.spatial_evaluation_units = CostUnits(
+      static_cast<double>(input.spatial_evaluation_count) *
+      environment.spatial_evaluation_cost * 1000.0);
+  cost.udr_invocation_units = CostUnits(
+      static_cast<double>(input.udr_invocation_count) *
+      environment.udr_invocation_cost * 1000.0);
+  cost.mga_units = CostUnits(
+      static_cast<double>(input.mga_check_count) *
+      environment.mga_check_cost * 1000.0);
+  cost.index_maintenance_units = CostUnits(
+      static_cast<double>(input.index_maintenance_count) *
+      environment.index_maintenance_cost * 1000.0);
 
   if (input.sort_input_rows != 0 && !input.ordering_satisfied) {
     const auto sort_work = SortWorkRows(input.sort_input_rows, input.sort_key_count);
@@ -244,10 +314,9 @@ CostVector EstimateCostVector(const OptimizerCostEnvironment& environment,
   }
   if (spill_bytes != 0) {
     const auto spill_pages = (spill_bytes + 4095) / 4096;
-    cost.io_cost = SaturatingAdd(cost.io_cost,
-                                 CostUnits(static_cast<double>(spill_pages) *
-                                           environment.spill_page_cost *
-                                           1000.0));
+    cost.spill_units = CostUnits(static_cast<double>(spill_pages) *
+                                 environment.spill_page_cost * 1000.0);
+    cost.io_cost = SaturatingAdd(cost.io_cost, cost.spill_units);
     cost.uncertainty_cost = SaturatingAdd(cost.uncertainty_cost, spill_pages);
     cost.reason += ":spill_expected";
   }
@@ -265,6 +334,12 @@ CostVector ApplyFilespaceCost(CostVector cost, const PageFilespaceStats& filespa
   if (!OptimizerStatsIdentityIsUsable(filespace.identity)) return ApplyMissingStatsFallbackCost(std::move(cost), CostConfidence::kLow, "filespace_stats_unusable");
   const double health_multiplier = filespace.degraded ? 10.0 : std::clamp(2.0 - filespace.health_score, 0.25, 10.0);
   cost.io_cost = static_cast<std::uint64_t>(static_cast<double>(cost.io_cost) * filespace.sequential_latency_score * health_multiplier);
+  cost.sequential_io_units = static_cast<std::uint64_t>(
+      static_cast<double>(cost.sequential_io_units) *
+      filespace.sequential_latency_score * health_multiplier);
+  cost.random_io_units = static_cast<std::uint64_t>(
+      static_cast<double>(cost.random_io_units) *
+      filespace.sequential_latency_score * health_multiplier);
   if (filespace.degraded) cost.uncertainty_cost += 10000;
   Finish(&cost);
   return cost;
@@ -275,6 +350,8 @@ CostVector ApplyMemoryAndSpillCost(CostVector cost,
                                    std::uint64_t required_memory_bytes,
                                    bool spill_capable) {
   cost.memory_cost += required_memory_bytes / 1024;
+  cost.memory_grant_bytes = SaturatingAdd(cost.memory_grant_bytes,
+                                          required_memory_bytes);
   if (environment.memory_budget_bytes != 0 && required_memory_bytes > environment.memory_budget_bytes) {
     if (!spill_capable) {
       cost.selectable = false;
@@ -283,6 +360,10 @@ CostVector ApplyMemoryAndSpillCost(CostVector cost,
     } else {
       const auto excess_pages = (required_memory_bytes - environment.memory_budget_bytes + 4095) / 4096;
       cost.io_cost += static_cast<std::uint64_t>(static_cast<double>(excess_pages) * environment.spill_page_cost);
+      cost.spill_units = SaturatingAdd(
+          cost.spill_units,
+          static_cast<std::uint64_t>(static_cast<double>(excess_pages) *
+                                     environment.spill_page_cost));
       cost.uncertainty_cost += excess_pages;
       cost.reason = "spill_expected";
     }
@@ -306,6 +387,9 @@ CostVector ApplyMetricFeedbackCost(CostVector cost, const std::vector<OptimizerM
     } else if (metric.metric_name == "io_latency_multiplier") {
       const auto multiplier = std::clamp(metric.value, 0.25, 10.0);
       cost.io_cost = static_cast<std::uint64_t>(static_cast<double>(cost.io_cost) * multiplier);
+      cost.sequential_io_units = ScaleCost(cost.sequential_io_units, multiplier);
+      cost.random_io_units = ScaleCost(cost.random_io_units, multiplier);
+      cost.spill_units = ScaleCost(cost.spill_units, multiplier);
     } else if (metric.metric_name == "estimate_uncertainty") {
       cost.uncertainty_cost += static_cast<std::uint64_t>(std::clamp(metric.value, 0.0, 1000000.0));
     }
@@ -324,10 +408,21 @@ CostVector ApplyOptimizerCalibratedCostProfile(CostVector cost, const OptimizerC
   }
   cost.row_cost = ScaleCost(cost.row_cost, (profile.row_cost_multiplier + profile.visibility_cost_multiplier) / 2.0);
   cost.io_cost = ScaleCost(cost.io_cost, (profile.page_cost_multiplier + profile.io_cost_multiplier) / 2.0);
+  cost.sequential_io_units = ScaleCost(
+      cost.sequential_io_units,
+      (profile.page_cost_multiplier + profile.io_cost_multiplier) / 2.0);
+  cost.random_io_units = ScaleCost(
+      cost.random_io_units,
+      (profile.page_cost_multiplier + profile.io_cost_multiplier) / 2.0);
+  cost.spill_units = ScaleCost(cost.spill_units,
+                               profile.io_cost_multiplier);
   cost.memory_cost = ScaleCost(cost.memory_cost, profile.memory_cost_multiplier);
   cost.startup_cost = ScaleCost(cost.startup_cost, profile.latency_cost_multiplier);
   if (profile.spill_penalty_pages != 0) {
     cost.io_cost = SaturatingAdd(cost.io_cost, CostUnits(static_cast<double>(profile.spill_penalty_pages) * 1500.0));
+    cost.spill_units = SaturatingAdd(
+        cost.spill_units,
+        CostUnits(static_cast<double>(profile.spill_penalty_pages) * 1500.0));
     cost.uncertainty_cost = SaturatingAdd(cost.uncertainty_cost, profile.spill_penalty_pages);
   }
   cost.uncertainty_cost = SaturatingAdd(cost.uncertainty_cost, profile.uncertainty_penalty);
@@ -392,6 +487,12 @@ CostVector ApplyMgaPressureCost(CostVector cost,
   cost.row_cost = SaturatingAdd(cost.row_cost,
                                 SaturatingAdd(pressure.index_backlog_entries,
                                               pressure.commit_fence_backlog));
+  cost.mga_units = SaturatingAdd(
+      cost.mga_units,
+      SaturatingAdd(
+          SaturatingAdd(cleanup_pages, retained_pages),
+          SaturatingAdd(pressure.index_backlog_entries,
+                        pressure.commit_fence_backlog)));
   cost.uncertainty_cost = SaturatingAdd(
       cost.uncertainty_cost,
       SaturatingAdd(SaturatingAdd(pressure.chain_depth_bucket * 250,

@@ -397,7 +397,28 @@ std::string RenderOptimizerExplainJson(const OptimizerExplainDocument& document)
         << "\",\"selectable\":" << (candidate.cost.selectable ? "true" : "false")
         << ",\"selected\":" << (candidate.selected ? "true" : "false")
         << ",\"rejection_reason\":\"" << JsonEscape(candidate.cost.rejection_reason)
-        << "\",\"total_cost\":" << candidate.cost.total_cost;
+        << "\",\"total_cost\":" << candidate.cost.total_cost
+        << ",\"cost_vector\":{"
+        << "\"cpu_units\":" << candidate.cost.cpu_units
+        << ",\"sequential_io_units\":" << candidate.cost.sequential_io_units
+        << ",\"random_io_units\":" << candidate.cost.random_io_units
+        << ",\"page_write_units\":" << candidate.cost.page_write_units
+        << ",\"cache_units\":" << candidate.cost.cache_units
+        << ",\"memory_grant_bytes\":" << candidate.cost.memory_grant_bytes
+        << ",\"spill_units\":" << candidate.cost.spill_units
+        << ",\"network_units\":" << candidate.cost.network_units
+        << ",\"compression_units\":" << candidate.cost.compression_units
+        << ",\"encryption_units\":" << candidate.cost.encryption_units
+        << ",\"predicate_evaluation_units\":"
+        << candidate.cost.predicate_evaluation_units
+        << ",\"vector_distance_units\":" << candidate.cost.vector_distance_units
+        << ",\"text_scoring_units\":" << candidate.cost.text_scoring_units
+        << ",\"spatial_evaluation_units\":"
+        << candidate.cost.spatial_evaluation_units
+        << ",\"udr_invocation_units\":" << candidate.cost.udr_invocation_units
+        << ",\"mga_units\":" << candidate.cost.mga_units
+        << ",\"index_maintenance_units\":"
+        << candidate.cost.index_maintenance_units << "}";
     if (candidate.summary_prune_evidence.present) {
       out << ",\"summary_prune\":";
       RenderSummaryPruneEvidence(out, candidate.summary_prune_evidence);

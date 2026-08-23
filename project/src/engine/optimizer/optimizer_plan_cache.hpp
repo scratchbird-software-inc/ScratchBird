@@ -461,6 +461,22 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
              left.archive_fetches_expected == right.archive_fetches_expected &&
              left.uncertainty_penalty == right.uncertainty_penalty &&
              left.risk_penalty == right.risk_penalty &&
+             left.cache_units == right.cache_units &&
+             left.memory_grant_units == right.memory_grant_units &&
+             left.spill_units == right.spill_units &&
+             left.network_units == right.network_units &&
+             left.compression_units == right.compression_units &&
+             left.encryption_units == right.encryption_units &&
+             left.predicate_evaluation_units ==
+                 right.predicate_evaluation_units &&
+             left.vector_distance_units == right.vector_distance_units &&
+             left.text_scoring_units == right.text_scoring_units &&
+             left.spatial_evaluation_units ==
+                 right.spatial_evaluation_units &&
+             left.udr_invocation_units == right.udr_invocation_units &&
+             left.mga_units == right.mga_units &&
+             left.index_maintenance_units ==
+                 right.index_maintenance_units &&
              left.confidence == right.confidence;
     };
     std::string previous_candidate_key;

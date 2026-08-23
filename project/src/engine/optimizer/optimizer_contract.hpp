@@ -116,6 +116,19 @@ struct CanonicalOptimizerCostTerms {
   std::uint64_t archive_fetches_expected{0};
   std::uint64_t uncertainty_penalty{0};
   std::uint64_t risk_penalty{0};
+  std::uint64_t cache_units{0};
+  std::uint64_t memory_grant_units{0};
+  std::uint64_t spill_units{0};
+  std::uint64_t network_units{0};
+  std::uint64_t compression_units{0};
+  std::uint64_t encryption_units{0};
+  std::uint64_t predicate_evaluation_units{0};
+  std::uint64_t vector_distance_units{0};
+  std::uint64_t text_scoring_units{0};
+  std::uint64_t spatial_evaluation_units{0};
+  std::uint64_t udr_invocation_units{0};
+  std::uint64_t mga_units{0};
+  std::uint64_t index_maintenance_units{0};
   CostConfidence confidence{CostConfidence::kUnknown};
 };
 

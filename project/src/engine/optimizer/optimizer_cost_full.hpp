@@ -28,6 +28,17 @@ struct OptimizerCostEnvironment {
   double random_page_cost = 4.0;
   double memory_kib_cost = 0.001;
   double spill_page_cost = 1.5;
+  double cache_lookup_cost = 0.0005;
+  double network_kib_cost = 0.01;
+  double compression_kib_cost = 0.002;
+  double encryption_kib_cost = 0.003;
+  double predicate_operator_cost = 0.0025;
+  double vector_distance_cost = 0.02;
+  double text_scoring_cost = 0.01;
+  double spatial_evaluation_cost = 0.015;
+  double udr_invocation_cost = 0.05;
+  double mga_check_cost = 0.003;
+  double index_maintenance_cost = 0.01;
   std::uint64_t memory_budget_bytes = 0;
 };
 
@@ -44,6 +55,16 @@ struct CostFormulaInput {
   std::uint64_t duplicate_rows = 0;
   std::uint64_t required_memory_bytes = 0;
   std::uint64_t spill_bytes = 0;
+  std::uint64_t network_bytes = 0;
+  std::uint64_t compression_bytes = 0;
+  std::uint64_t encryption_bytes = 0;
+  std::uint64_t predicate_evaluation_count = 0;
+  std::uint64_t vector_distance_count = 0;
+  std::uint64_t text_scoring_count = 0;
+  std::uint64_t spatial_evaluation_count = 0;
+  std::uint64_t udr_invocation_count = 0;
+  std::uint64_t mga_check_count = 0;
+  std::uint64_t index_maintenance_count = 0;
   std::uint64_t sort_input_rows = 0;
   std::uint64_t sort_key_count = 0;
   bool ordering_satisfied = false;

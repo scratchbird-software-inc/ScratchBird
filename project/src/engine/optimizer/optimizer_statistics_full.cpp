@@ -646,7 +646,7 @@ CostVector ApplyIndexHealthCostAdjustment(CostVector cost, const IndexStats& sta
   }
   const double penalty = 1.0 + std::clamp(stats.fragmentation_ratio, 0.0, 10.0) + std::clamp(stats.contention_ratio, 0.0, 10.0);
   cost.io_cost = static_cast<std::uint64_t>(static_cast<double>(cost.io_cost) * penalty);
-  cost.total_cost = cost.startup_cost + cost.row_cost + cost.io_cost + cost.memory_cost + cost.uncertainty_cost;
+  FinalizeCostVector(&cost);
   return cost;
 }
 

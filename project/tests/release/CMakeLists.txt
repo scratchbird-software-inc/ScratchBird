@@ -1374,6 +1374,22 @@ set_tests_properties(public_cluster_projection_redaction_gate PROPERTIES
   LABELS "public_release_correctness;public_cluster_projection_redaction_gate;PCR-GATE-106;PCR-106;cluster_catalog;projection_redaction;support_bundle;security;retention;fail_closed"
 )
 
+add_executable(public_optimizer_foundation_contract_gate
+  public_optimizer_foundation_contract_gate.cpp
+)
+target_compile_features(public_optimizer_foundation_contract_gate PRIVATE
+  cxx_std_23)
+target_link_libraries(public_optimizer_foundation_contract_gate PRIVATE
+  sb_engine_optimizer_contract_only
+)
+add_test(
+  NAME public_optimizer_foundation_contract_gate
+  COMMAND public_optimizer_foundation_contract_gate
+)
+set_tests_properties(public_optimizer_foundation_contract_gate PROPERTIES
+  LABELS "public_release_correctness;optimizer;profile_factory;physical_properties;cost_vector;cross_join;relational_dag;MGA"
+)
+
 add_executable(public_cluster_projection_authority_guard_gate
   public_cluster_projection_authority_guard_gate.cpp
 )

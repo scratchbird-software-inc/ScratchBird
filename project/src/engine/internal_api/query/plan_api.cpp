@@ -5770,6 +5770,21 @@ RenderCanonicalStoredPlanExplain(
            left.archive_fetches_expected == right.archive_fetches_expected &&
            left.uncertainty_penalty == right.uncertainty_penalty &&
            left.risk_penalty == right.risk_penalty &&
+           left.cache_units == right.cache_units &&
+           left.memory_grant_units == right.memory_grant_units &&
+           left.spill_units == right.spill_units &&
+           left.network_units == right.network_units &&
+           left.compression_units == right.compression_units &&
+           left.encryption_units == right.encryption_units &&
+           left.predicate_evaluation_units ==
+               right.predicate_evaluation_units &&
+           left.vector_distance_units == right.vector_distance_units &&
+           left.text_scoring_units == right.text_scoring_units &&
+           left.spatial_evaluation_units ==
+               right.spatial_evaluation_units &&
+           left.udr_invocation_units == right.udr_invocation_units &&
+           left.mga_units == right.mga_units &&
+           left.index_maintenance_units == right.index_maintenance_units &&
            left.confidence == right.confidence;
   };
   std::unordered_set<std::uint64_t> physical_ids;
@@ -5839,6 +5854,19 @@ RenderCanonicalStoredPlanExplain(
         !add_cost(cost.archive_fetches_expected) ||
         !add_cost(cost.uncertainty_penalty) ||
         !add_cost(cost.risk_penalty) ||
+        !add_cost(cost.cache_units) ||
+        !add_cost(cost.memory_grant_units) ||
+        !add_cost(cost.spill_units) ||
+        !add_cost(cost.network_units) ||
+        !add_cost(cost.compression_units) ||
+        !add_cost(cost.encryption_units) ||
+        !add_cost(cost.predicate_evaluation_units) ||
+        !add_cost(cost.vector_distance_units) ||
+        !add_cost(cost.text_scoring_units) ||
+        !add_cost(cost.spatial_evaluation_units) ||
+        !add_cost(cost.udr_invocation_units) ||
+        !add_cost(cost.mga_units) ||
+        !add_cost(cost.index_maintenance_units) ||
         retained_scalar_score != cost.scalar_score ||
         (node.node_kind == metric::PhysicalNodeKind::kScan &&
          cost.mga_visibility_checks_expected == 0) ||

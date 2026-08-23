@@ -294,7 +294,7 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
   auto scan_cost = CostFor(planner::PhysicalAccessKind::kTableScan);
   scan_cost.row_cost += rows / 10;
   scan_cost.io_cost += pages;
-  scan_cost.total_cost = scan_cost.startup_cost + scan_cost.row_cost + scan_cost.io_cost + scan_cost.memory_cost + scan_cost.uncertainty_cost;
+  FinalizeCostVector(&scan_cost);
   candidates.push_back(MakeAccessCandidate("CAND-OPT-FULL-SCAN", planner::PhysicalAccessKind::kTableScan, scan_cost, rows,
                                            {"relation_uuid", "visibility_rules", "table_stats"},
                                            request.visibility_proven && request.grants_proven ? std::vector<std::string>{} : std::vector<std::string>{"visibility_or_grants_not_proven"}));
@@ -388,7 +388,7 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
         ordered_cost.io_cost = std::max<std::uint64_t>(1, index.height);
         ordered_cost.memory_cost = 1;
         ordered_cost.uncertainty_cost = 0;
-        ordered_cost.total_cost = ordered_cost.startup_cost + ordered_cost.row_cost + ordered_cost.io_cost + ordered_cost.memory_cost;
+        FinalizeCostVector(&ordered_cost);
       }
       auto ordered = MakeAccessCandidate("CAND-OPT-ORDERED-LIMIT:" + index.index_uuid,
                                          planner::PhysicalAccessKind::kScalarBtreeRange,

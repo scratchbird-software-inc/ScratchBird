@@ -22,6 +22,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   if(NOT TARGET sb_qow_canonical_candidate_legality)
     add_library(sb_qow_canonical_candidate_legality STATIC
       optimizer_contract.cpp
+      optimizer_profile_factory.cpp
       model_family_coordinator.cpp
     )
     target_compile_features(sb_qow_canonical_candidate_legality PUBLIC
@@ -137,6 +138,7 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     optimizer_catalog_backed_planning.cpp
     optimizer_admission.cpp
     optimizer_contract.cpp
+    optimizer_profile_factory.cpp
     # QOW-CMAKE-CES05-MODEL-FAMILY-COORDINATOR-V1
     model_family_coordinator.cpp
     optimizer_cost_full.cpp

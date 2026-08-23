@@ -133,10 +133,7 @@ CostVector ApplyMetricAdjustments(CostVector cost,
       cost.uncertainty_cost,
       static_cast<std::uint64_t>(
           std::ceil(metric.candidate_rows * metric.false_positive_ratio)));
-  cost.total_cost = SaturatingAdd(
-      SaturatingAdd(cost.startup_cost, cost.row_cost),
-      SaturatingAdd(cost.io_cost,
-                    SaturatingAdd(cost.memory_cost, cost.uncertainty_cost)));
+  FinalizeCostVector(&cost);
   cost.confidence = CostConfidence::kMedium;
   return cost;
 }

@@ -171,7 +171,7 @@ PlanCandidate MakeSpecialized(
       !contract.exact_fallback_available) {
     candidate.cost.uncertainty_cost += 10000;
   }
-  candidate.cost.total_cost = candidate.cost.startup_cost + candidate.cost.row_cost + candidate.cost.io_cost + candidate.cost.memory_cost + candidate.cost.uncertainty_cost;
+  FinalizeCostVector(&candidate.cost);
   candidate.cost.confidence = contract.exact_fallback_available ? CostConfidence::kMedium : CostConfidence::kLow;
   candidate.runtime_evidence.push_back("specialized_family_coverage=" +
                                        std::string(internal_api::EngineNoSqlProviderFamilyName(selection.family)));

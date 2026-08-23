@@ -199,6 +199,19 @@ struct PhysicalCostVectorReceipt {
   std::uint64_t archive_fetches_expected{0};
   std::uint64_t uncertainty_penalty{0};
   std::uint64_t risk_penalty{0};
+  std::uint64_t cache_units{0};
+  std::uint64_t memory_grant_units{0};
+  std::uint64_t spill_units{0};
+  std::uint64_t network_units{0};
+  std::uint64_t compression_units{0};
+  std::uint64_t encryption_units{0};
+  std::uint64_t predicate_evaluation_units{0};
+  std::uint64_t vector_distance_units{0};
+  std::uint64_t text_scoring_units{0};
+  std::uint64_t spatial_evaluation_units{0};
+  std::uint64_t udr_invocation_units{0};
+  std::uint64_t mga_units{0};
+  std::uint64_t index_maintenance_units{0};
   std::uint8_t confidence{0};
 };
 
@@ -620,6 +633,19 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
             !add_cost(cost.archive_fetches_expected) ||
             !add_cost(cost.uncertainty_penalty) ||
             !add_cost(cost.risk_penalty) ||
+            !add_cost(cost.cache_units) ||
+            !add_cost(cost.memory_grant_units) ||
+            !add_cost(cost.spill_units) ||
+            !add_cost(cost.network_units) ||
+            !add_cost(cost.compression_units) ||
+            !add_cost(cost.encryption_units) ||
+            !add_cost(cost.predicate_evaluation_units) ||
+            !add_cost(cost.vector_distance_units) ||
+            !add_cost(cost.text_scoring_units) ||
+            !add_cost(cost.spatial_evaluation_units) ||
+            !add_cost(cost.udr_invocation_units) ||
+            !add_cost(cost.mga_units) ||
+            !add_cost(cost.index_maintenance_units) ||
             retained_scalar_score != cost.scalar_score ||
             !checked_add(retained_selected_scalar_score,
                          cost.scalar_score,

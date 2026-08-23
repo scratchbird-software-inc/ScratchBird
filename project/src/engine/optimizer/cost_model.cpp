@@ -8,6 +8,8 @@
 
 #include "cost_model.hpp"
 
+#include <algorithm>
+#include <limits>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -15,6 +17,14 @@
 namespace scratchbird::engine::optimizer {
 namespace planner = scratchbird::engine::planner;
 namespace {
+
+std::uint64_t SaturatingAdd(const std::uint64_t left,
+                            const std::uint64_t right) {
+  if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  return left + right;
+}
 
 std::string JsonEscape(std::string_view input) {
   std::ostringstream out;
@@ -29,6 +39,149 @@ std::string JsonEscape(std::string_view input) {
 }
 
 }  // namespace
+
+void FinalizeCostVector(CostVector* cost) {
+  if (cost == nullptr) return;
+  // Preserve independently supplied CPU work while replacing, rather than
+  // accumulating, the compatibility projection from legacy startup/row
+  // fields. Legacy costers frequently adjust row_cost after obtaining an
+  // already-finalized base vector; tracking the prior projection makes this
+  // operation both mutation-aware and idempotent.
+  const std::uint64_t independent_cpu_units =
+      cost->cpu_units >= cost->compatibility_cpu_projection_units
+          ? cost->cpu_units - cost->compatibility_cpu_projection_units
+          : cost->cpu_units;
+  const std::uint64_t compatibility_cpu_units =
+      SaturatingAdd(cost->startup_cost, cost->row_cost);
+  cost->cpu_units =
+      SaturatingAdd(independent_cpu_units, compatibility_cpu_units);
+  cost->compatibility_cpu_projection_units = compatibility_cpu_units;
+
+  std::uint64_t categorized_io = 0;
+  const std::uint64_t categorized_io_terms[] = {
+      cost->random_io_units, cost->page_write_units, cost->cache_units,
+      cost->spill_units, cost->network_units, cost->compression_units,
+      cost->encryption_units};
+  for (const auto term : categorized_io_terms) {
+    categorized_io = SaturatingAdd(categorized_io, term);
+  }
+  if (cost->io_cost > categorized_io) {
+    cost->sequential_io_units = std::max(
+        cost->sequential_io_units, cost->io_cost - categorized_io);
+  }
+  cost->memory_grant_bytes =
+      std::max(cost->memory_grant_bytes, cost->memory_cost);
+
+  std::uint64_t total = 0;
+  const std::uint64_t dimensions[] = {
+      cost->cpu_units,
+      cost->sequential_io_units,
+      cost->random_io_units,
+      cost->page_write_units,
+      cost->cache_units,
+      cost->memory_grant_bytes,
+      cost->spill_units,
+      cost->network_units,
+      cost->compression_units,
+      cost->encryption_units,
+      cost->predicate_evaluation_units,
+      cost->vector_distance_units,
+      cost->text_scoring_units,
+      cost->spatial_evaluation_units,
+      cost->udr_invocation_units,
+      cost->mga_units,
+      cost->index_maintenance_units,
+      cost->uncertainty_cost};
+  for (const auto dimension : dimensions) {
+    total = SaturatingAdd(total, dimension);
+  }
+  cost->total_cost = total;
+}
+
+void AccumulateCostVector(CostVector* destination, const CostVector& source) {
+  if (destination == nullptr) return;
+  FinalizeCostVector(destination);
+  auto finalized_source = source;
+  FinalizeCostVector(&finalized_source);
+  const auto destination_independent_cpu =
+      destination->cpu_units >=
+              destination->compatibility_cpu_projection_units
+          ? destination->cpu_units -
+                destination->compatibility_cpu_projection_units
+          : destination->cpu_units;
+  const auto source_independent_cpu =
+      finalized_source.cpu_units >=
+              finalized_source.compatibility_cpu_projection_units
+          ? finalized_source.cpu_units -
+                finalized_source.compatibility_cpu_projection_units
+          : finalized_source.cpu_units;
+  destination->startup_cost =
+      SaturatingAdd(destination->startup_cost, finalized_source.startup_cost);
+  destination->row_cost =
+      SaturatingAdd(destination->row_cost, finalized_source.row_cost);
+  destination->io_cost =
+      SaturatingAdd(destination->io_cost, finalized_source.io_cost);
+  destination->memory_cost =
+      SaturatingAdd(destination->memory_cost, finalized_source.memory_cost);
+  destination->uncertainty_cost = SaturatingAdd(
+      destination->uncertainty_cost, finalized_source.uncertainty_cost);
+  destination->cpu_units = SaturatingAdd(destination_independent_cpu,
+                                         source_independent_cpu);
+  destination->compatibility_cpu_projection_units = 0;
+  destination->sequential_io_units = SaturatingAdd(
+      destination->sequential_io_units,
+      finalized_source.sequential_io_units);
+  destination->random_io_units =
+      SaturatingAdd(destination->random_io_units,
+                    finalized_source.random_io_units);
+  destination->page_write_units =
+      SaturatingAdd(destination->page_write_units,
+                    finalized_source.page_write_units);
+  destination->cache_units =
+      SaturatingAdd(destination->cache_units, finalized_source.cache_units);
+  destination->memory_grant_bytes = SaturatingAdd(
+      destination->memory_grant_bytes,
+      finalized_source.memory_grant_bytes);
+  destination->spill_units =
+      SaturatingAdd(destination->spill_units, finalized_source.spill_units);
+  destination->network_units =
+      SaturatingAdd(destination->network_units,
+                    finalized_source.network_units);
+  destination->compression_units = SaturatingAdd(
+      destination->compression_units, finalized_source.compression_units);
+  destination->encryption_units =
+      SaturatingAdd(destination->encryption_units,
+                    finalized_source.encryption_units);
+  destination->predicate_evaluation_units = SaturatingAdd(
+      destination->predicate_evaluation_units,
+      finalized_source.predicate_evaluation_units);
+  destination->vector_distance_units = SaturatingAdd(
+      destination->vector_distance_units,
+      finalized_source.vector_distance_units);
+  destination->text_scoring_units = SaturatingAdd(
+      destination->text_scoring_units, finalized_source.text_scoring_units);
+  destination->spatial_evaluation_units = SaturatingAdd(
+      destination->spatial_evaluation_units,
+      finalized_source.spatial_evaluation_units);
+  destination->udr_invocation_units = SaturatingAdd(
+      destination->udr_invocation_units,
+      finalized_source.udr_invocation_units);
+  destination->mga_units =
+      SaturatingAdd(destination->mga_units, finalized_source.mga_units);
+  destination->index_maintenance_units = SaturatingAdd(
+      destination->index_maintenance_units,
+      finalized_source.index_maintenance_units);
+  destination->selectable =
+      destination->selectable && finalized_source.selectable;
+  if (destination->rejection_reason.empty() &&
+      !finalized_source.rejection_reason.empty()) {
+    destination->rejection_reason = finalized_source.rejection_reason;
+  }
+  if (finalized_source.confidence > destination->confidence) {
+    destination->confidence = finalized_source.confidence;
+  }
+  FinalizeCostVector(destination);
+}
 
 const CostModelConstants& DefaultCostModelConstants() {
   static const CostModelConstants constants;
@@ -139,13 +292,20 @@ CostVector EstimateNodeCost(const planner::LogicalPlanNode& node) {
       cost = {c.table_scan_startup, 100, 40, 8, 158, "table_scan", 0, CostConfidence::kMedium, true, ""};
       break;
   }
-  cost.total_cost = cost.startup_cost + cost.row_cost + cost.io_cost + cost.memory_cost + cost.uncertainty_cost;
+  if (node.access_kind == planner::PhysicalAccessKind::kFullTextProbe) {
+    cost.text_scoring_units = cost.row_cost;
+  } else if (node.access_kind ==
+                 planner::PhysicalAccessKind::kVectorExactSearch ||
+             node.access_kind ==
+                 planner::PhysicalAccessKind::kVectorApproximateWithFallback) {
+    cost.vector_distance_units = cost.row_cost;
+  }
+  FinalizeCostVector(&cost);
   return cost;
 }
 
 CostVector RejectedCost(std::string reason, std::uint64_t penalty) {
   CostVector cost;
-  cost.startup_cost = penalty;
   cost.total_cost = penalty;
   cost.reason = std::move(reason);
   cost.uncertainty_cost = penalty;
@@ -170,6 +330,23 @@ std::string SerializeCostVectorToJson(const CostVector& cost) {
   out << "  \"row_cost\": " << cost.row_cost << ",\n";
   out << "  \"io_cost\": " << cost.io_cost << ",\n";
   out << "  \"memory_cost\": " << cost.memory_cost << ",\n";
+  out << "  \"cpu_units\": " << cost.cpu_units << ",\n";
+  out << "  \"sequential_io_units\": " << cost.sequential_io_units << ",\n";
+  out << "  \"random_io_units\": " << cost.random_io_units << ",\n";
+  out << "  \"page_write_units\": " << cost.page_write_units << ",\n";
+  out << "  \"cache_units\": " << cost.cache_units << ",\n";
+  out << "  \"memory_grant_bytes\": " << cost.memory_grant_bytes << ",\n";
+  out << "  \"spill_units\": " << cost.spill_units << ",\n";
+  out << "  \"network_units\": " << cost.network_units << ",\n";
+  out << "  \"compression_units\": " << cost.compression_units << ",\n";
+  out << "  \"encryption_units\": " << cost.encryption_units << ",\n";
+  out << "  \"predicate_evaluation_units\": " << cost.predicate_evaluation_units << ",\n";
+  out << "  \"vector_distance_units\": " << cost.vector_distance_units << ",\n";
+  out << "  \"text_scoring_units\": " << cost.text_scoring_units << ",\n";
+  out << "  \"spatial_evaluation_units\": " << cost.spatial_evaluation_units << ",\n";
+  out << "  \"udr_invocation_units\": " << cost.udr_invocation_units << ",\n";
+  out << "  \"mga_units\": " << cost.mga_units << ",\n";
+  out << "  \"index_maintenance_units\": " << cost.index_maintenance_units << ",\n";
   out << "  \"uncertainty_cost\": " << cost.uncertainty_cost << ",\n";
   out << "  \"total_cost\": " << cost.total_cost << ",\n";
   out << "  \"reason\": \"" << JsonEscape(cost.reason) << "\",\n";

@@ -29,13 +29,6 @@ std::uint64_t SaturatingMul(std::uint64_t lhs, std::uint64_t rhs) {
   return lhs * rhs;
 }
 
-void FinishCost(CostVector* cost) {
-  cost->total_cost = SaturatingAdd(
-      SaturatingAdd(SaturatingAdd(cost->startup_cost, cost->row_cost),
-                    SaturatingAdd(cost->io_cost, cost->memory_cost)),
-      cost->uncertainty_cost);
-}
-
 PlanCandidate JoinCandidate(const char* id,
                             planner::PhysicalAccessKind access_kind,
                             CostVector cost,
@@ -59,7 +52,7 @@ JoinPlanDecision PlanLocalJoin(const JoinPlanningInput& input) {
 
   auto nested_cost = EstimateNodeCost(planner::MakeLogicalPlanNode(planner::LogicalPlanNodeKind::kDmlRead, planner::PhysicalAccessKind::kJoinNestedLoop, "query.join", "join_nested_loop"));
   nested_cost.row_cost = std::max<std::uint64_t>(1, SaturatingMul(left, right));
-  FinishCost(&nested_cost);
+  FinalizeCostVector(&nested_cost);
   decision.candidates.push_back(JoinCandidate("CAND-OPT-010", planner::PhysicalAccessKind::kJoinNestedLoop, nested_cost, output_rows));
 
   auto hash_cost = EstimateNodeCost(planner::MakeLogicalPlanNode(planner::LogicalPlanNodeKind::kDmlRead, planner::PhysicalAccessKind::kJoinHash, "query.join", "join_hash"));
@@ -67,7 +60,7 @@ JoinPlanDecision PlanLocalJoin(const JoinPlanningInput& input) {
     hash_cost = RejectedCost(!input.equi_join ? "join_predicate_not_supported" : (!input.hash_join_executor_available ? "executor_hash_join_unavailable" : "memory_budget_insufficient"), 1000000ULL);
   } else {
     hash_cost.row_cost = SaturatingAdd(hash_cost.row_cost, SaturatingAdd(left, right) / 20);
-    FinishCost(&hash_cost);
+    FinalizeCostVector(&hash_cost);
   }
   decision.candidates.push_back(JoinCandidate("CAND-OPT-011", planner::PhysicalAccessKind::kJoinHash, hash_cost, output_rows));
 
@@ -76,7 +69,7 @@ JoinPlanDecision PlanLocalJoin(const JoinPlanningInput& input) {
     merge_cost = RejectedCost(!input.ordered_inputs ? "required_ordering_unavailable" : "executor_merge_join_unavailable", 1000000ULL);
   } else {
     merge_cost.row_cost = SaturatingAdd(merge_cost.row_cost, SaturatingAdd(left, right) / 15);
-    FinishCost(&merge_cost);
+    FinalizeCostVector(&merge_cost);
   }
   decision.candidates.push_back(JoinCandidate("CAND-OPT-012", planner::PhysicalAccessKind::kJoinMerge, merge_cost, output_rows));
 

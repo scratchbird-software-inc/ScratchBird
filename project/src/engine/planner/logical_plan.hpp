@@ -435,6 +435,16 @@ ValidateCanonicalLogicalRelationalGraph(
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.logical_node_id,
                     "logical_node_record");
     }
+    const bool cross_join =
+        node.node_kind == CanonicalLogicalRelationalNodeKind::kJoin &&
+        node.semantic_variant_id == "join.cross.v1";
+    if (cross_join &&
+        (node.input_logical_node_ids.size() != 2 ||
+         !node.bound_expression_ids.empty())) {
+      return refuse("QOW-DIAG-OPTIMIZER-CROSS-JOIN-SHAPE-V1",
+                    node.logical_node_id,
+                    "cross_join_requires_two_inputs_and_zero_predicates");
+    }
     const bool model_source =
         node.semantic_variant_id == kModelSourceSemantic;
     const bool model_expand =
@@ -891,6 +901,48 @@ enum class CanonicalLogicalPropertyKind : std::uint8_t {
   kPartitioning,
   kWindow,
   kExpressionEquivalence,
+  kDistribution,
+  kUniqueness,
+  kMaterialization,
+  kRewindability,
+  kVectorOrdering,
+  kTextScoreOrdering,
+  kTimeOrdering,
+  kLocality,
+  kSecurityVisibility,
+};
+
+enum class CanonicalLogicalDistributionKind : std::uint8_t {
+  kNone = 0,
+  kSingle,
+  kReplicated,
+  kHashPartitioned,
+  kRangePartitioned,
+  kRoundRobin,
+  kOwnerRouted,
+};
+
+enum class CanonicalLogicalMaterializationKind : std::uint8_t {
+  kNone = 0,
+  kStreaming,
+  kMaterialized,
+  kSpillBacked,
+};
+
+enum class CanonicalLogicalRewindabilityKind : std::uint8_t {
+  kNone = 0,
+  kForwardOnly,
+  kRewindable,
+  kMarkRestore,
+};
+
+enum class CanonicalLogicalLocalityKind : std::uint8_t {
+  kNone = 0,
+  kLocalProcess,
+  kLocalNode,
+  kFilespace,
+  kShardOwner,
+  kRemoteAllowed,
 };
 
 enum class CanonicalLogicalPropertySortDirection : std::uint8_t {
@@ -921,6 +973,17 @@ struct CanonicalLogicalPropertyRecord {
   std::vector<CanonicalLogicalPropertyOrderingTerm> ordering_terms;
   std::vector<std::string> dependency_property_uuids;
   std::string window_frame_descriptor_uuid;
+  CanonicalLogicalDistributionKind distribution_kind{
+      CanonicalLogicalDistributionKind::kNone};
+  CanonicalLogicalMaterializationKind materialization_kind{
+      CanonicalLogicalMaterializationKind::kNone};
+  CanonicalLogicalRewindabilityKind rewindability_kind{
+      CanonicalLogicalRewindabilityKind::kNone};
+  CanonicalLogicalLocalityKind locality_kind{
+      CanonicalLogicalLocalityKind::kNone};
+  std::string locality_uuid;
+  std::string security_visibility_context_uuid;
+  std::uint64_t security_visibility_generation{0};
   bool populated_from_bound_sblr{false};
 };
 
@@ -976,6 +1039,24 @@ inline const char* CanonicalLogicalPropertyKindName(
       return "window";
     case CanonicalLogicalPropertyKind::kExpressionEquivalence:
       return "expression_equivalence";
+    case CanonicalLogicalPropertyKind::kDistribution:
+      return "distribution";
+    case CanonicalLogicalPropertyKind::kUniqueness:
+      return "uniqueness";
+    case CanonicalLogicalPropertyKind::kMaterialization:
+      return "materialization";
+    case CanonicalLogicalPropertyKind::kRewindability:
+      return "rewindability";
+    case CanonicalLogicalPropertyKind::kVectorOrdering:
+      return "vector_ordering";
+    case CanonicalLogicalPropertyKind::kTextScoreOrdering:
+      return "text_score_ordering";
+    case CanonicalLogicalPropertyKind::kTimeOrdering:
+      return "time_ordering";
+    case CanonicalLogicalPropertyKind::kLocality:
+      return "locality";
+    case CanonicalLogicalPropertyKind::kSecurityVisibility:
+      return "security_visibility";
   }
   return "unknown";
 }
@@ -987,7 +1068,9 @@ inline std::string SerializeCanonicalLogicalPropertyIdentity(
       property.property_kind ==
           CanonicalLogicalPropertyKind::kPartitioning ||
       property.property_kind ==
-          CanonicalLogicalPropertyKind::kExpressionEquivalence) {
+          CanonicalLogicalPropertyKind::kExpressionEquivalence ||
+      property.property_kind == CanonicalLogicalPropertyKind::kUniqueness ||
+      property.property_kind == CanonicalLogicalPropertyKind::kDistribution) {
     std::ranges::sort(expression_ids);
   }
   std::vector<std::string> dependencies =
@@ -1019,6 +1102,22 @@ inline std::string SerializeCanonicalLogicalPropertyIdentity(
     serialized += dependency + ",";
   }
   serialized += "|frame=" + property.window_frame_descriptor_uuid;
+  serialized += "|distribution=" +
+                std::to_string(static_cast<std::uint8_t>(
+                    property.distribution_kind));
+  serialized += "|materialization=" +
+                std::to_string(static_cast<std::uint8_t>(
+                    property.materialization_kind));
+  serialized += "|rewindability=" +
+                std::to_string(static_cast<std::uint8_t>(
+                    property.rewindability_kind));
+  serialized += "|locality=" +
+                std::to_string(static_cast<std::uint8_t>(
+                    property.locality_kind)) +
+                ":" + property.locality_uuid;
+  serialized += "|security_visibility=" +
+                property.security_visibility_context_uuid + ":" +
+                std::to_string(property.security_visibility_generation);
   return serialized;
 }
 
@@ -1116,7 +1215,7 @@ ValidateCanonicalLogicalPropertyCatalog(
         !nodes_by_id.contains(property.origin_logical_node_id) ||
         property.property_kind < CanonicalLogicalPropertyKind::kOrdering ||
         property.property_kind >
-            CanonicalLogicalPropertyKind::kExpressionEquivalence ||
+            CanonicalLogicalPropertyKind::kSecurityVisibility ||
         !property.populated_from_bound_sblr) {
       return refuse("QOW-DIAG-LOGICAL-PROPERTY-IDENTITY-V1",
                     property.origin_logical_node_id, "property_record");
@@ -1159,20 +1258,51 @@ ValidateCanonicalLogicalPropertyCatalog(
       }
     }
     const bool ordering =
-        property.property_kind == CanonicalLogicalPropertyKind::kOrdering;
+        property.property_kind == CanonicalLogicalPropertyKind::kOrdering ||
+        property.property_kind ==
+            CanonicalLogicalPropertyKind::kVectorOrdering ||
+        property.property_kind ==
+            CanonicalLogicalPropertyKind::kTextScoreOrdering ||
+        property.property_kind ==
+            CanonicalLogicalPropertyKind::kTimeOrdering;
     const bool expression_set =
         property.property_kind == CanonicalLogicalPropertyKind::kGrouping ||
         property.property_kind ==
             CanonicalLogicalPropertyKind::kPartitioning ||
         property.property_kind ==
-            CanonicalLogicalPropertyKind::kExpressionEquivalence;
+            CanonicalLogicalPropertyKind::kExpressionEquivalence ||
+        property.property_kind == CanonicalLogicalPropertyKind::kUniqueness;
     const bool window =
         property.property_kind == CanonicalLogicalPropertyKind::kWindow;
+    const bool distribution =
+        property.property_kind == CanonicalLogicalPropertyKind::kDistribution;
+    const bool materialization =
+        property.property_kind ==
+        CanonicalLogicalPropertyKind::kMaterialization;
+    const bool rewindability =
+        property.property_kind ==
+        CanonicalLogicalPropertyKind::kRewindability;
+    const bool locality =
+        property.property_kind == CanonicalLogicalPropertyKind::kLocality;
+    const bool security_visibility =
+        property.property_kind ==
+        CanonicalLogicalPropertyKind::kSecurityVisibility;
+    const bool no_specialized_state =
+        property.distribution_kind == CanonicalLogicalDistributionKind::kNone &&
+        property.materialization_kind ==
+            CanonicalLogicalMaterializationKind::kNone &&
+        property.rewindability_kind ==
+            CanonicalLogicalRewindabilityKind::kNone &&
+        property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
+        property.locality_uuid.empty() &&
+        property.security_visibility_context_uuid.empty() &&
+        property.security_visibility_generation == 0;
     const bool shape_valid =
         (ordering && property.expression_ids.empty() &&
          !property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty()) ||
+         property.window_frame_descriptor_uuid.empty() &&
+         no_specialized_state) ||
         (expression_set &&
          property.expression_ids.size() >=
              (property.property_kind ==
@@ -1181,12 +1311,90 @@ ValidateCanonicalLogicalPropertyCatalog(
                   : 1U) &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty()) ||
+         property.window_frame_descriptor_uuid.empty() &&
+         no_specialized_state) ||
         (window && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          !property.dependency_property_uuids.empty() &&
          property.dependency_property_uuids.size() <= 2 &&
-         canonical_uuid(property.window_frame_descriptor_uuid));
+         canonical_uuid(property.window_frame_descriptor_uuid) &&
+         no_specialized_state) ||
+        (distribution && property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind !=
+             CanonicalLogicalDistributionKind::kNone &&
+         ((property.distribution_kind ==
+               CanonicalLogicalDistributionKind::kHashPartitioned ||
+           property.distribution_kind ==
+               CanonicalLogicalDistributionKind::kRangePartitioned)
+              ? !property.expression_ids.empty()
+              : property.expression_ids.empty()) &&
+         property.materialization_kind ==
+             CanonicalLogicalMaterializationKind::kNone &&
+         property.rewindability_kind ==
+             CanonicalLogicalRewindabilityKind::kNone &&
+         property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
+         property.locality_uuid.empty() &&
+         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_generation == 0) ||
+        (materialization && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind ==
+             CanonicalLogicalDistributionKind::kNone &&
+         property.materialization_kind !=
+             CanonicalLogicalMaterializationKind::kNone &&
+         property.rewindability_kind ==
+             CanonicalLogicalRewindabilityKind::kNone &&
+         property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
+         property.locality_uuid.empty() &&
+         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_generation == 0) ||
+        (rewindability && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind ==
+             CanonicalLogicalDistributionKind::kNone &&
+         property.materialization_kind ==
+             CanonicalLogicalMaterializationKind::kNone &&
+         property.rewindability_kind !=
+             CanonicalLogicalRewindabilityKind::kNone &&
+         property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
+         property.locality_uuid.empty() &&
+         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_generation == 0) ||
+        (locality && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind ==
+             CanonicalLogicalDistributionKind::kNone &&
+         property.materialization_kind ==
+             CanonicalLogicalMaterializationKind::kNone &&
+         property.rewindability_kind ==
+             CanonicalLogicalRewindabilityKind::kNone &&
+         property.locality_kind != CanonicalLogicalLocalityKind::kNone &&
+         canonical_uuid(property.locality_uuid) &&
+         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_generation == 0) ||
+        (security_visibility && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty() &&
+         property.distribution_kind ==
+             CanonicalLogicalDistributionKind::kNone &&
+         property.materialization_kind ==
+             CanonicalLogicalMaterializationKind::kNone &&
+         property.rewindability_kind ==
+             CanonicalLogicalRewindabilityKind::kNone &&
+         property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
+         property.locality_uuid.empty() &&
+         property.security_visibility_context_uuid ==
+             catalog.security_context_uuid &&
+         property.security_visibility_generation != 0);
     if (!shape_valid) {
       return refuse("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
                     property.origin_logical_node_id, "property_shape");

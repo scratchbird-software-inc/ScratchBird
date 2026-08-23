@@ -18,10 +18,6 @@ CostVector CostFor(planner::PhysicalAccessKind kind, const char* operation_id) {
   return EstimateNodeCost(planner::MakeLogicalPlanNode(planner::LogicalPlanNodeKind::kDmlRead, kind, operation_id, planner::PhysicalAccessKindName(kind)));
 }
 
-void Finish(CostVector* cost) {
-  cost->total_cost = cost->startup_cost + cost->row_cost + cost->io_cost + cost->memory_cost + cost->uncertainty_cost;
-}
-
 void AddProofDiagnostics(const RelationalPlannerProofMetadata& proof,
                          RelationalPlanDecision* decision) {
   if (!proof.transaction_proof_present) {
@@ -199,6 +195,63 @@ void ApplyMemoryAndSpillDiagnostics(std::uint64_t bytes,
 
 }  // namespace
 
+RelationalDagPlanningResult PlanCanonicalRelationalDag(
+    const RelationalDagPlanningInput& input) {
+  RelationalDagPlanningResult result;
+  result.factory = BuildCanonicalOptimizerAlternativeProfiles(
+      input.admission_request, input.admission, input.implementations,
+      input.identity_scope, input.calibration_profile_uuid);
+  if (!result.factory.accepted ||
+      !result.factory.optimizer_owned_enumeration ||
+      !result.factory.snapshot_derived || !result.factory.deterministic ||
+      result.factory.data_access_allowed || !result.factory.issues.empty()) {
+    result.diagnostics.push_back(
+        result.factory.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-DAG-PROFILE-FACTORY-V1"
+            : result.factory.issues.front().diagnostic_id);
+    return result;
+  }
+  result.complete_logical_dag_covered =
+      result.factory.inventory.inventory_complete &&
+      result.factory.inventory.receipts.size() >=
+          input.admission_request.logical_graph.nodes.size();
+  if (!result.complete_logical_dag_covered) {
+    result.diagnostics.push_back(
+        "QOW-DIAG-RELATIONAL-DAG-INCOMPLETE-COVERAGE-V1");
+    return result;
+  }
+
+  result.search = SearchCanonicalRelationalMemo(
+      input.admission_request, input.admission,
+      result.factory.inventory.catalog, result.factory.candidates,
+      input.search_policy);
+  if (!result.search.accepted || !result.search.selected ||
+      !result.search.issues.empty()) {
+    result.diagnostics.push_back(
+        result.search.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-DAG-SEARCH-V1"
+            : result.search.issues.front().diagnostic_id);
+    return result;
+  }
+  result.publication = PublishCanonicalPhysicalDag(
+      input.admission_request, input.admission,
+      result.factory.inventory.catalog, result.search,
+      result.factory.capability_catalog, input.publication_identity);
+  if (!result.publication.accepted || !result.publication.published ||
+      !result.publication.issues.empty()) {
+    result.diagnostics.push_back(
+        result.publication.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-DAG-PUBLICATION-V1"
+            : result.publication.issues.front().diagnostic_id);
+    return result;
+  }
+  result.accepted = true;
+  result.optimizer_owned = true;
+  result.physical_dag_published = true;
+  result.data_access_allowed = false;
+  return result;
+}
+
 RelationalPlanDecision PlanAggregate(const AggregatePlanningInput& input) {
   RelationalPlanDecision decision;
   if (RejectUnsafeProofOrMetadata(input.proof, input.property_metadata, &decision)) {
@@ -210,7 +263,7 @@ RelationalPlanDecision PlanAggregate(const AggregatePlanningInput& input) {
     decision.cost = CostFor(decision.access_kind, "query.aggregate");
     decision.cost.row_cost += input.input_rows;
     AddProofDiagnostics(input.proof, &decision);
-    Finish(&decision.cost);
+    FinalizeCostVector(&decision.cost);
     return decision;
   }
 
@@ -238,7 +291,7 @@ RelationalPlanDecision PlanAggregate(const AggregatePlanningInput& input) {
   }
   decision.cost.row_cost += input.input_rows;
   AddProofDiagnostics(input.proof, &decision);
-  Finish(&decision.cost);
+  FinalizeCostVector(&decision.cost);
   return decision;
 }
 
@@ -262,7 +315,7 @@ RelationalPlanDecision PlanWindow(const WindowPlanningInput& input) {
     decision.diagnostics.push_back("SB_OPT_WINDOW_FRAME_MATERIALIZATION_REQUIRED");
   }
   AddProofDiagnostics(input.proof, &decision);
-  Finish(&decision.cost);
+  FinalizeCostVector(&decision.cost);
   return decision;
 }
 
@@ -292,7 +345,7 @@ RelationalPlanDecision PlanSortLimit(const SortPlanningInput& input) {
                                  "SB_OPT_SORT",
                                  &decision);
   AddProofDiagnostics(input.proof, &decision);
-  Finish(&decision.cost);
+  FinalizeCostVector(&decision.cost);
   return decision;
 }
 
@@ -329,7 +382,7 @@ RelationalPlanDecision PlanSetOperation(const SetOperationPlanningInput& input) 
     }
   }
   AddProofDiagnostics(input.proof, &decision);
-  Finish(&decision.cost);
+  FinalizeCostVector(&decision.cost);
   return decision;
 }
 
@@ -363,7 +416,7 @@ RelationalPlanDecision PlanLocalMutation(const LocalMutationPlanningInput& input
   decision.access_kind = planner::PhysicalAccessKind::kNone;
   decision.cost = EstimateNodeCost(planner::MakeLogicalPlanNode(planner::LogicalPlanNodeKind::kDmlMutation, planner::PhysicalAccessKind::kNone, "dml." + input.mutation_kind, "mutation_command"));
   decision.diagnostics.push_back("SB_OPT_MUTATION_TRANSACTION_VISIBILITY_PROOF_ACCEPTED");
-  Finish(&decision.cost);
+  FinalizeCostVector(&decision.cost);
   return decision;
 }
 

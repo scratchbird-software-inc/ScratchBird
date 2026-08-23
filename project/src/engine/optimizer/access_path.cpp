@@ -190,10 +190,6 @@ std::vector<OptimizerMetricCostInput> MetricFeedbackForStatistics(const Optimize
   return feedback;
 }
 
-void Finish(CostVector* cost) {
-  cost->total_cost = cost->startup_cost + cost->row_cost + cost->io_cost + cost->memory_cost + cost->uncertainty_cost;
-}
-
 }  // namespace
 
 std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::LogicalPlanNode& node,
@@ -245,7 +241,7 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     table_scan.uncertainty_cost += (page_count - filespace_available_pages) * 100;
     table_scan.reason = "filespace_page_pressure";
   }
-  Finish(&table_scan);
+  FinalizeCostVector(&table_scan);
   table_scan = ApplyMetricFeedbackCost(std::move(table_scan), metric_feedback);
   auto table_scan_candidate = MakeCandidate("CAND-OPT-001", planner::PhysicalAccessKind::kTableScan, {"relation_uuid", "visibility_rules", "row_count", "page_count", "page_cache", "filespace_available_pages"}, table_scan, visible_count);
   AttachStatisticDiagnostics(&table_scan_candidate, statistics, object_uuid, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "filespace_available_pages"});
@@ -285,7 +281,7 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     auto index_lookup = EstimateBaseOperatorCost(environment, planner::PhysicalAccessKind::kScalarBtreeLookup, equality_rows, row_width_bytes, index_depth);
     index_lookup.io_cost += index_depth + index_leaf_pages / 128;
     index_lookup.uncertainty_cost += static_cast<std::uint64_t>(std::clamp(fragmentation, 0.0, 10.0) * 100.0);
-    Finish(&index_lookup);
+    FinalizeCostVector(&index_lookup);
     index_lookup = ApplyMetricFeedbackCost(std::move(index_lookup), metric_feedback);
     auto btree_candidate = MakeCandidate("CAND-OPT-004", planner::PhysicalAccessKind::kScalarBtreeLookup, {"index_uuid", "exact_key_descriptor", "index_exactness", "index_depth", "index_fragmentation_ratio"}, index_lookup, equality_rows);
     btree_candidate.statistics_diagnostics.push_back(equality_estimate.diagnostic_code);
@@ -296,7 +292,7 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     if (!HasDescriptor(node, "index.hash_candidate")) {
       hash_lookup.uncertainty_cost += 1000;
     }
-    Finish(&hash_lookup);
+    FinalizeCostVector(&hash_lookup);
     hash_lookup = ApplyMetricFeedbackCost(std::move(hash_lookup), metric_feedback);
     auto hash_candidate = MakeCandidate("CAND-OPT-HASH", planner::PhysicalAccessKind::kScalarHashLookup, {"index_uuid", "hash_key_descriptor", "hash_bucket_directory"}, hash_lookup, equality_rows);
     hash_candidate.statistics_diagnostics.push_back(equality_estimate.diagnostic_code);
@@ -306,7 +302,7 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     if (wants_covering || EstimateDoubleForObject(statistics, "index_visibility_coverage", object_uuid, 0.0) > 0.0) {
       auto covering = EstimateBaseOperatorCost(environment, planner::PhysicalAccessKind::kCoveringIndexScan, equality_rows, row_width_bytes, index_depth);
       covering.io_cost += index_depth;
-      Finish(&covering);
+      FinalizeCostVector(&covering);
       covering = ApplyMetricFeedbackCost(std::move(covering), metric_feedback);
       auto covering_candidate = MakeCandidate("CAND-OPT-006", planner::PhysicalAccessKind::kCoveringIndexScan, {"index_uuid", "projection_covered", "visibility_rules", "index_visibility_coverage"}, covering, equality_rows);
       covering_candidate.statistics_diagnostics.push_back(equality_estimate.diagnostic_code);
@@ -318,7 +314,7 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     const auto index_depth = EstimateUnsignedForObject(statistics, "index_depth", object_uuid, 3);
     auto covering = EstimateBaseOperatorCost(environment, planner::PhysicalAccessKind::kCoveringIndexScan, 1, row_width_bytes, index_depth);
     covering.io_cost += index_depth;
-    Finish(&covering);
+    FinalizeCostVector(&covering);
     covering = ApplyMetricFeedbackCost(std::move(covering), metric_feedback);
     auto covering_candidate = MakeCandidate("CAND-OPT-006", planner::PhysicalAccessKind::kCoveringIndexScan, {"index_uuid", "projection_covered", "visibility_rules", "index_visibility_coverage"}, covering, 1);
     AttachStatisticDiagnostics(&covering_candidate, statistics, object_uuid, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_visibility_coverage", "index_depth"});
