@@ -6235,6 +6235,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   const bool exact_ddl_alter_sequence_operation = operation.envelope.operation_id == "engine.op.ddl_alter_sequence" && operation.envelope.opcode_code == 1564 && operation.envelope.opcode == "SBLR_DDL_ALTER_SEQUENCE";
   const bool exact_ddl_drop_type_operation = operation.envelope.operation_id == "engine.op.ddl_drop_type" && operation.envelope.opcode_code == 1571 && operation.envelope.opcode == "SBLR_DDL_DROP_TYPE";
   const bool exact_ddl_drop_sequence_operation = operation.envelope.operation_id == "engine.op.ddl_drop_sequence" && operation.envelope.opcode_code == 1565 && operation.envelope.opcode == "SBLR_DDL_DROP_SEQUENCE";
+  const bool exact_ddl_drop_synonym_operation = operation.envelope.operation_id == "engine.op.ddl_drop_synonym" && operation.envelope.opcode_code == 1575 && operation.envelope.opcode == "SBLR_DDL_DROP_SYNONYM";
   const bool exact_ddl_alter_continuous_view_operation =
       !opcode_stream &&
       operation.envelope.operation_id == "engine.op.ddl_alter_continuous_view" &&
@@ -6260,7 +6261,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
       operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA";
   if (!operation.ok ||
       (!opcode_stream && !exact_ddl_create_table_as_query_operation && !exact_ddl_create_table_as_query_no_data_operation && !exact_ddl_create_continuous_view_operation && !exact_ddl_alter_continuous_view_operation && !exact_ddl_drop_continuous_view_operation && !exact_dml_async_insert_submit_operation && !exact_dml_async_insert_status_operation && !exact_dml_async_insert_cancel_operation && !exact_dml_counter_add_operation && !exact_dml_timeseries_schema_write_operation && !exact_ddl_alter_sequence_operation && !exact_ddl_drop_sequence_operation &&
-       !exact_ddl_drop_type_operation &&
+       !exact_ddl_drop_type_operation && !exact_ddl_drop_synonym_operation &&
        (operation.envelope.operation_id != "query.execute" ||
         operation.envelope.opcode_code != 0x1207 ||
         operation.envelope.opcode != "SBLR_QUERY_EXECUTE"))) {

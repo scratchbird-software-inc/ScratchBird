@@ -1130,7 +1130,7 @@ std::optional<std::string> FamilyForLegacyEnvelope(std::string_view encoded) {
 }
 
 std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
-  if (operation_id == "engine.op.ddl_refresh_materialized_view" || operation_id == "engine.op.ddl_drop_materialized_view" || operation_id == "engine.op.ddl_drop_package" || operation_id == "engine.op.ddl_alter_package") {
+  if (operation_id == "engine.op.ddl_refresh_materialized_view" || operation_id == "engine.op.ddl_drop_materialized_view" || operation_id == "engine.op.ddl_drop_package" || operation_id == "engine.op.ddl_drop_synonym" || operation_id == "engine.op.ddl_alter_package") {
     return "sblr.catalog.mutation.v3";
   }
   if (operation_id == "engine.op.ddl_drop_rewrite_rule" || operation_id == "engine.op.ddl_validate_constraint") {

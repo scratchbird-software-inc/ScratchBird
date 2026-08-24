@@ -157,7 +157,6 @@
 #include <cstdint>
 #include <limits>
 #include <sstream>
-#include <iostream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -718,7 +717,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::create_function_descriptor: { SblrDdlCreateFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateFunctionDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_function_descriptor: { SblrDdlDropFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropFunctionDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::create_package_descriptor: { SblrDdlCreatePackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreatePackageDescriptorV1(data,size,&operand,&detail,true); }
-    case SblrValueKind::create_synonym_descriptor: { SblrDdlCreateSynonymDescriptorV1 operand; std::string detail; const bool ok = DecodeSblrDdlCreateSynonymDescriptorV1(data,size,&operand,&detail,true); if (!ok) std::cerr << "SYNVAL size=" << size << " detail=" << detail << "\\n"; return ok; }
+    case SblrValueKind::create_synonym_descriptor: { SblrDdlCreateSynonymDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateSynonymDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_synonym_descriptor: { SblrDdlDropSynonymDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSynonymDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_package_descriptor: { SblrDdlDropPackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropPackageDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::alter_package_descriptor: { SblrDdlAlterPackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterPackageDescriptorV1(data,size,&operand,&detail,true); }
