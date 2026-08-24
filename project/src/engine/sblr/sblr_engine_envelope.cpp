@@ -730,6 +730,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::drop_fdw_descriptor: { SblrDdlDropFdwDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropFdwDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::security_create_user_descriptor: { SblrSecurityCreateUserDescriptorV1 operand; std::string detail; return DecodeSblrSecurityCreateUserDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::security_create_role_descriptor: { SblrSecCreateRoleDescriptorV1 operand; std::string detail; return DecodeSblrSecCreateRoleDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::security_drop_role_descriptor: { SblrSecDropRoleDescriptorV1 operand; std::string detail; return DecodeSblrSecDropRoleDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::alter_user_descriptor: { SblrSecAlterUserDescriptorV1 operand; std::string detail; return DecodeSblrSecAlterUserDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_foreign_table_descriptor: { SblrDdlDropForeignTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropForeignTableDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_synonym_descriptor: { SblrDdlDropSynonymDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSynonymDescriptorV1(data,size,&operand,&detail,true); }

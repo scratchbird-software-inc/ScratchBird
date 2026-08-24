@@ -296,6 +296,8 @@ constexpr std::uint32_t kSchemaCoordinateSecurityAlterUserRequestV1 = 7353;
 constexpr std::uint32_t kSchemaCoordinateSecurityAlterUserResultV1 = 7354;
 constexpr std::uint32_t kSchemaCoordinateSecurityCreateRoleRequestV1 = 7355;
 constexpr std::uint32_t kSchemaCoordinateSecurityCreateRoleResultV1 = 7356;
+constexpr std::uint32_t kSchemaCoordinateSecurityDropRoleRequestV1 = 7357;
+constexpr std::uint32_t kSchemaCoordinateSecurityDropRoleResultV1 = 7358;
 constexpr std::uint32_t kSchemaCoordinateSecurityAlterPrivilegeTemplateRequestV1 = 7229;
 constexpr std::uint32_t kSchemaCoordinateSecurityAlterPrivilegeTemplateResultV1 = 7230;
 constexpr std::uint32_t kSchemaCoordinateSecurityDropPrivilegeTemplateRequestV1 = 7231;
@@ -629,6 +631,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateSecurityAlterUserResult = 341,
   kCoordinateSecurityCreateRoleRequest = 342,
   kCoordinateSecurityCreateRoleResult = 343,
+  kCoordinateSecurityDropRoleRequest = 344,
+  kCoordinateSecurityDropRoleResult = 345,
   kCoordinateSecurityAlterPrivilegeTemplateRequest = 234,
   kCoordinateSecurityAlterPrivilegeTemplateResult = 235,
   kCoordinateSecurityDropPrivilegeTemplateRequest = 236,

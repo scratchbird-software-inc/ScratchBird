@@ -588,6 +588,7 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateSecurityCreateUser(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateSecurityAlterUser(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateSecurityCreateRole(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateSecurityDropRole(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateSecurityAlterPrivilegeTemplate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateSecurityDropPrivilegeTemplate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDatabaseCreateTemplateClone(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
