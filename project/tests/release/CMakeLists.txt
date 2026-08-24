@@ -1409,6 +1409,35 @@ set_tests_properties(public_optimizer_enterprise_inventory_gate PROPERTIES
   LABELS "public_release_correctness;optimizer;enterprise_manifest;model_family;native_optimization;exact_fallback;cluster_boundary;MGA"
 )
 
+# Independent production-front-door proof for optimizer-owned model-family
+# planning.  This is deliberately enrolled in the release correctness profile
+# instead of remaining reachable only through SB_BUILD_QOW_CLOSURE_TESTS.
+add_executable(public_optimizer_multimodel_sbsql_e2e_gate
+  ../optimizer/qow_ces05_multimodel_closure.cpp
+)
+target_compile_features(public_optimizer_multimodel_sbsql_e2e_gate PRIVATE
+  cxx_std_23)
+target_include_directories(public_optimizer_multimodel_sbsql_e2e_gate PRIVATE
+  "${PROJECT_SOURCE_DIR}/src")
+target_compile_definitions(public_optimizer_multimodel_sbsql_e2e_gate PRIVATE
+  SB_RCP080_PRODUCTION_QUERY_ROUTE=1
+  SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+target_link_libraries(public_optimizer_multimodel_sbsql_e2e_gate PRIVATE
+  sb_engine
+  sb_engine_sblr
+  sb_core_hash
+  sb_core_memory
+  sb_core_uuid
+  sb_storage_database
+  sbl_sbsql_parser_worker_core)
+add_test(
+  NAME public_optimizer_multimodel_sbsql_e2e_gate
+  COMMAND public_optimizer_multimodel_sbsql_e2e_gate
+)
+set_tests_properties(public_optimizer_multimodel_sbsql_e2e_gate PROPERTIES
+  LABELS "public_release_correctness;optimizer;model_family;native_optimization;exact_fallback;SBSQL_frontdoor;SBLR_dispatch;physical_dag;executor;post_state;MGA"
+)
+
 add_executable(public_optimizer_prepare_execute_metric_gate
   ../optimizer/qow_opt_009.cpp
 )
