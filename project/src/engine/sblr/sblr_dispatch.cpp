@@ -10596,7 +10596,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.result_shape.result_kind = "management_operation_result";
     result.api_result.evidence.push_back({"engine.op.ddl_validate_constraint", "executor_dispatch_admitted"});
   }
-  else if (op == "engine.op.security_create_privilege_template" || op == "engine.op.security_create_user" || op == "engine.op.sec_alter_user" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.ddl_alter_aggregate" || op == "engine.op.ddl_drop_aggregate") {
+  else if (op == "engine.op.security_create_privilege_template" || op == "engine.op.security_create_user" || op == "engine.op.sec_alter_user" || op == "engine.op.sec_create_role" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.ddl_alter_aggregate" || op == "engine.op.ddl_drop_aggregate") {
     result.accepted = true;
     result.dispatched_to_api = true;
     result.api_result.operation_id = op;
