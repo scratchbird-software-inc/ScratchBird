@@ -370,6 +370,8 @@ constexpr std::uint32_t kSchemaCoordinateGroupRequestV1 = 7147;
 constexpr std::uint32_t kSchemaCoordinateGroupResultV1 = 7148;
 constexpr std::uint32_t kSchemaCoordinateSecurityCreateGroupMappingRequestV1 = 7365;
 constexpr std::uint32_t kSchemaCoordinateSecurityCreateGroupMappingResultV1 = 7366;
+constexpr std::uint32_t kSchemaCoordinateSecurityDropGroupMappingRequestV1 = 7367;
+constexpr std::uint32_t kSchemaCoordinateSecurityDropGroupMappingResultV1 = 7368;
 constexpr std::uint32_t kSchemaCoordinateSortRequestV1 = 7149;
 constexpr std::uint32_t kSchemaCoordinateSortResultV1 = 7150;
 constexpr std::uint32_t kSchemaCoordinateLimitRequestV1 = 7151;
@@ -713,6 +715,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateGroupResult = 153,
   kCoordinateSecurityCreateGroupMappingRequest = 352,
   kCoordinateSecurityCreateGroupMappingResult = 353,
+  kCoordinateSecurityDropGroupMappingRequest = 354,
+  kCoordinateSecurityDropGroupMappingResult = 355,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,
   kCoordinateLimitRequest = 156,

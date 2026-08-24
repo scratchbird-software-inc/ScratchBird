@@ -144,6 +144,7 @@ enum class SblrValueKind : std::uint16_t {
   aggregate_descriptor = 69,
   group_descriptor = 70,
   security_create_group_mapping_descriptor = 170,
+  security_drop_group_mapping_descriptor = 171,
   sort_descriptor = 71,
   limit_descriptor = 72,
   window_descriptor = 73,
