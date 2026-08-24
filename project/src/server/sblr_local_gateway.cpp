@@ -45,6 +45,7 @@
 #include "engine/sblr/sblr_ddl_alter_function_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_function_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_package_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_synonym_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_package_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_synonym_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_package_runtime.hpp"
@@ -697,6 +698,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   const bool exact_ddl_create_package=request.root_opcode_code==1560&&request.root_opcode=="SBLR_DDL_CREATE_PACKAGE"&&request.root_operation_id=="engine.op.ddl_create_package"; bool exact_local_ddl_create_package=false;
   const bool exact_ddl_create_sequence=request.root_opcode_code==1671&&request.root_opcode=="SBLR_DDL_CREATE_SEQUENCE"&&request.root_operation_id=="engine.op.ddl_create_sequence"; bool exact_local_ddl_create_sequence=false;
   const bool exact_ddl_drop_package=request.root_opcode_code==1562&&request.root_opcode=="SBLR_DDL_DROP_PACKAGE"&&request.root_operation_id=="engine.op.ddl_drop_package"; bool exact_local_ddl_drop_package=false;
+  const bool exact_ddl_create_synonym=request.root_opcode_code==1574&&request.root_opcode=="SBLR_DDL_CREATE_SYNONYM"&&request.root_operation_id=="engine.op.ddl_create_synonym"; bool exact_local_ddl_create_synonym=false;
   const bool exact_ddl_drop_synonym=request.root_opcode_code==1575&&request.root_opcode=="SBLR_DDL_DROP_SYNONYM"&&request.root_operation_id=="engine.op.ddl_drop_synonym"; bool exact_local_ddl_drop_synonym=false;
   const bool exact_ddl_alter_package=request.root_opcode_code==1561&&request.root_opcode=="SBLR_DDL_ALTER_PACKAGE"&&request.root_operation_id=="engine.op.ddl_alter_package"; bool exact_local_ddl_alter_package=false;
   const bool exact_ddl_alter_sequence=request.root_opcode_code==1564&&request.root_opcode=="SBLR_DDL_ALTER_SEQUENCE"&&request.root_operation_id=="engine.op.ddl_alter_sequence"; bool exact_local_ddl_alter_sequence=false;
@@ -740,6 +742,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_sequence&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_sequence_descriptor"&&member.operands.front().name=="sequence"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_sequence_descriptor){scratchbird::engine::sblr::SblrDdlCreateSequenceDescriptorV1 operand;std::string detail;exact_local_ddl_create_sequence=scratchbird::engine::sblr::DecodeSblrDdlCreateSequenceDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if (exact_local_ddl_create_sequence) exact_local_ddl_create_schema = true;
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_package&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="drop_package_descriptor"&&member.operands.front().name=="package"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::drop_package_descriptor){scratchbird::engine::sblr::SblrDdlDropPackageDescriptorV1 operand;std::string detail;exact_local_ddl_drop_package=scratchbird::engine::sblr::DecodeSblrDdlDropPackageDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_synonym&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_synonym_descriptor"&&member.operands.front().name=="synonym"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_synonym_descriptor){scratchbird::engine::sblr::SblrDdlCreateSynonymDescriptorV1 operand;std::string detail;exact_local_ddl_create_synonym=scratchbird::engine::sblr::DecodeSblrDdlCreateSynonymDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_synonym&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="drop_synonym_descriptor"&&member.operands.front().name=="synonym"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::drop_package_descriptor){scratchbird::engine::sblr::SblrDdlDropSynonymDescriptorV1 operand;std::string detail;exact_local_ddl_drop_synonym=scratchbird::engine::sblr::DecodeSblrDdlDropSynonymDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if (exact_local_ddl_drop_synonym) exact_local_ddl_create_schema = true;
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_package&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="alter_package_descriptor"&&member.operands.front().name=="package"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::alter_package_descriptor){scratchbird::engine::sblr::SblrDdlAlterPackageDescriptorV1 operand;std::string detail;exact_local_ddl_alter_package=scratchbird::engine::sblr::DecodeSblrDdlAlterPackageDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
@@ -795,6 +798,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_local_ddl_alter_function) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_function) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_package) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_create_synonym) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_package) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_alter_package) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_alter_sequence || exact_local_ddl_drop_sequence) exact_local_ddl_create_schema = true;
@@ -859,6 +863,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_ddl_alter_function && !exact_local_ddl_alter_function) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_function && !exact_local_ddl_drop_function) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_create_package && !exact_local_ddl_create_package) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_create_synonym && !exact_local_ddl_create_synonym) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_package && !exact_local_ddl_drop_package) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_synonym && !exact_local_ddl_drop_synonym) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_alter_package && !exact_local_ddl_alter_package) return Refuse(request,"SBLR.OPERAND.INVALID");
