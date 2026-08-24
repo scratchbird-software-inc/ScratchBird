@@ -9,6 +9,7 @@
 #include "sblr_engine_envelope.hpp"
 #include "sblr_ddl_drop_sequence_runtime.hpp"
 #include "sblr_sec_create_role_runtime.hpp"
+#include "sblr_sec_drop_role_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
