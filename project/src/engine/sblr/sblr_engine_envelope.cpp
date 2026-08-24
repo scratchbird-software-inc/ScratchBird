@@ -13,6 +13,7 @@
 #include "sblr_sec_create_policy_runtime.hpp"
 #include "sblr_sec_drop_policy_runtime.hpp"
 #include "sblr_sec_alter_role_runtime.hpp"
+#include "sblr_sec_create_group_mapping_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
@@ -683,6 +684,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::timeseries_series_cardinality_policy_descriptor: { SblrDdlTimeseriesSeriesCardinalityPolicyDescriptorV1 operand; std::string detail; return DecodeSblrDdlTimeseriesSeriesCardinalityPolicyDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::timeseries_value_cache_descriptor: { SblrDdlCreateTimeseriesValueCacheDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateTimeseriesValueCacheDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::group_descriptor: { SblrGroupDescriptorV1 operand; std::string detail; return DecodeSblrGroupDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::security_create_group_mapping_descriptor: { SblrSecCreateGroupMappingDescriptorV1 operand; std::string detail; return DecodeSblrSecCreateGroupMappingDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::window_descriptor: { SblrWindowDescriptorV1 operand; std::string detail; return DecodeSblrWindowDescriptorV1(data,size,&operand,&detail,true); }
