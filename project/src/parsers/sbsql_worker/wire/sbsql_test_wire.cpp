@@ -20981,17 +20981,17 @@ PipelineResult SbsqlTestWireSession::RunSecurityAlterUserForWire() {
   auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
   if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
   namespace c = scratchbird::engine::sblr;
-  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid); if (!receipt) return result;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid); if (!receipt) { result.messages.diagnostics.push_back(MakeDiagnostic("SAU.IDENTITY", "ERROR", "SEC_ALTER_USER preliminary receipt UUID was invalid", "sbsql_sblr_alignment")); return result; }
   c::SblrSecAlterUserRequestV1 q; q.receipt = *receipt; q.occurrence = 1;
   auto coordinated = server_client_->CoordinateSecurityAlterUser(session_, c::EncodeSblrSecAlterUserRequestV1(q));
   result.messages = coordinated.messages; if (!coordinated.accepted) { if (result.messages.diagnostics.empty()) result.messages.diagnostics.push_back(MakeDiagnostic("SAU_TRACE.COORDINATE", "ERROR", "SEC_ALTER_USER coordination refused without diagnostic", "sbsql_sblr_alignment")); return result; }
   c::SblrSecAlterUserDescriptorV1 d; std::string detail;
-  if (!c::DecodeSblrSecAlterUserDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) return result;
-  auto operand = c::EncodeSblrSecAlterUserDescriptorV1(d, true); if (operand.empty()) return result;
+  if (!c::DecodeSblrSecAlterUserDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SAU.DESCRIPTOR", "ERROR", detail, "sbsql_sblr_alignment", {{"payload_bytes", std::to_string(coordinated.canonical_payload.size())}})); return result; }
+  auto operand = c::EncodeSblrSecAlterUserDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SAU.OPERAND", "ERROR", "SEC_ALTER_USER operand encoding returned empty", "sbsql_sblr_alignment")); return result; }
   BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.sec_alter_user";
   g_security_alter_user_operand = &operand;
   auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-  g_security_alter_user_operand = nullptr; if (!submission) return result;
+  g_security_alter_user_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SAU.SUBMISSION", "ERROR", "SEC_ALTER_USER canonical submission returned empty", "sbsql_sblr_alignment")); return result; }
   auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
   result.accepted = executed.accepted; result.messages = std::move(executed.messages);
   if (result.accepted) { c::SblrSecAlterUserResultV1 rr; if (!c::DecodeSblrSecAlterUserResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }

@@ -1070,7 +1070,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("engine.op.ddl_create_fdw", "SBLR_DDL_CREATE_FDW", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_fdw", "SBLR_DDL_DROP_FDW", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.security_create_user", "SBLR_SEC_CREATE_USER", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
-      CanonicalEntry("security.user.alter", "SBLR_SEC_ALTER_USER", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.sec_alter_user", "SBLR_SEC_ALTER_USER", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("security.role.create", "SBLR_SEC_CREATE_ROLE", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("security.grant", "SBLR_SEC_GRANT", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("security.revoke", "SBLR_SEC_REVOKE", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1879,6 +1879,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
                                                       std::string_view opcode) {
   SblrOpcodeValidationResult result;
   if (code == 1792 && operation_id == "engine.op.security_create_user" && opcode == "SBLR_SEC_CREATE_USER") { result.entry = LookupSblrOpcode("SBLR_SEC_CREATE_USER"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1793 && operation_id == "engine.op.sec_alter_user" && opcode == "SBLR_SEC_ALTER_USER") { result.entry = LookupSblrOpcode("SBLR_SEC_ALTER_USER"); result.ok = result.entry != nullptr; return result; }
   if (code == 1576 && operation_id == "engine.op.ddl_create_foreign_table" && opcode == "SBLR_DDL_CREATE_FOREIGN_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FOREIGN_TABLE"); result.ok = result.entry != nullptr; return result; }
   if (code == 1578 && operation_id == "engine.op.ddl_create_fdw" && opcode == "SBLR_DDL_CREATE_FDW") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FDW"); result.ok = result.entry != nullptr; return result; }
   if (code == 1579 && operation_id == "engine.op.ddl_drop_fdw" && opcode == "SBLR_DDL_DROP_FDW") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_FDW"); result.ok = result.entry != nullptr; return result; }
