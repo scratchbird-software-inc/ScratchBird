@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_engine_envelope.hpp"
+#include "sblr_ddl_drop_sequence_runtime.hpp"
+#include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
 #include "sblr_variable_runtime.hpp"
@@ -37,6 +39,7 @@
 #include "sblr_ddl_create_temporary_table_runtime.hpp"
 #include "sblr_ddl_drop_temporary_table_runtime.hpp"
 #include "sblr_ddl_rename_object_vector_runtime.hpp"
+#include "sblr_ddl_rename_object_runtime.hpp"
 #include "sblr_ddl_create_or_replace_srs_runtime.hpp"
 #include "sblr_ddl_drop_srs_runtime.hpp"
 #include "sblr_ddl_create_rewrite_rule_runtime.hpp"
@@ -77,6 +80,16 @@
 #include "sblr_ddl_alter_function_runtime.hpp"
 #include "sblr_ddl_drop_function_runtime.hpp"
 #include "sblr_ddl_create_package_runtime.hpp"
+#include "sblr_ddl_drop_package_runtime.hpp"
+#include "sblr_ddl_alter_package_runtime.hpp"
+#include "sblr_ddl_create_sequence_runtime.hpp"
+#include "sblr_ddl_alter_sequence_runtime.hpp"
+#include "sblr_ddl_create_materialized_view_runtime.hpp"
+#include "sblr_ddl_create_type_runtime.hpp"
+#include "sblr_ddl_alter_type_runtime.hpp"
+#include "sblr_ddl_drop_materialized_view_runtime.hpp"
+#include "sblr_ddl_drop_type_runtime.hpp"
+#include "sblr_ddl_refresh_materialized_view_runtime.hpp"
 #include "sblr_bulk_import_stream_runtime.hpp"
 #include "sblr_bulk_export_stream_runtime.hpp"
 #include "sblr_statement_batch_runtime.hpp"
@@ -128,6 +141,7 @@
 #include "sblr_ddl_alter_view_runtime.hpp"
 #include "sblr_ddl_create_schema_runtime.hpp"
 #include "sblr_ddl_create_table_runtime.hpp"
+#include "sblr_ddl_drop_table_runtime.hpp"
 #include "sblr_ddl_create_index_runtime.hpp"
 #include "sblr_ddl_drop_index_runtime.hpp"
 
@@ -684,6 +698,9 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::create_domain_descriptor: { SblrDdlCreateDomainDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateDomainDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::create_schema_descriptor: { SblrDdlCreateSchemaDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateSchemaDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::create_table_descriptor: { SblrDdlCreateTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateTableDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_table_descriptor: { SblrDdlDropTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropTableDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_table_as_query_with_data_descriptor: { SblrCreateTableAsQueryDescriptorV1 operand; std::string detail; return DecodeSblrCreateTableAsQueryDescriptorV1(data,size,&operand,&detail); }
+    case SblrValueKind::create_table_as_query_with_no_data_descriptor: { SblrCreateTableAsQueryDescriptorV1 operand; std::string detail; return DecodeSblrCreateTableAsQueryDescriptorV1(data,size,&operand,&detail); }
     case SblrValueKind::create_index_descriptor: { SblrDdlCreateIndexDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateIndexDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_index_descriptor: { SblrDdlDropIndexDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropIndexDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::alter_domain_descriptor: { SblrDdlAlterDomainDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterDomainDescriptorV1(data,size,&operand,&detail,true); }
@@ -698,9 +715,21 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::create_function_descriptor: { SblrDdlCreateFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateFunctionDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_function_descriptor: { SblrDdlDropFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropFunctionDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::create_package_descriptor: { SblrDdlCreatePackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreatePackageDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_package_descriptor: { SblrDdlDropPackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropPackageDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_package_descriptor: { SblrDdlAlterPackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterPackageDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_sequence_descriptor: { SblrDdlCreateSequenceDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateSequenceDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_sequence_descriptor: { SblrDdlAlterSequenceDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterSequenceDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_sequence_descriptor: { SblrDdlDropSequenceDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSequenceDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_materialized_view_descriptor: { SblrDdlCreateMaterializedViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateMaterializedViewDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_type_descriptor: { SblrDdlCreateTypeDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateTypeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_type_descriptor: { SblrDdlAlterTypeDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterTypeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_materialized_view_descriptor: { SblrDdlDropMaterializedViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropMaterializedViewDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_type_descriptor: { SblrDdlDropTypeDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropTypeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::refresh_materialized_view_descriptor: { SblrDdlRefreshMaterializedViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlRefreshMaterializedViewDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::create_temporary_table_descriptor: { SblrDdlCreateTemporaryTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateTemporaryTableDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_temporary_table_descriptor: { SblrDdlDropTemporaryTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropTemporaryTableDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::object_rename_vector_descriptor: { SblrDdlRenameObjectVectorDescriptorV1 operand; std::string detail; return DecodeSblrDdlRenameObjectVectorDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::rename_object_descriptor: { SblrDdlRenameObjectDescriptorV1 operand; std::string detail; return DecodeSblrDdlRenameObjectDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::spatial_reference_system_descriptor: { SblrDdlCreateOrReplaceSrsDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateOrReplaceSrsDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::spatial_reference_system_drop_descriptor: { SblrDdlDropSrsDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSrsDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::rewrite_rule_descriptor: { SblrDdlCreateRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }

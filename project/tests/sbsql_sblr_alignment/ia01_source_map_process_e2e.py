@@ -21,16 +21,17 @@ def main() -> int:
     parser.add_argument("--client", required=True)
     parser.add_argument("--operation", choices=("show-version", "show-wait-events", "show-object-detail", "source-map", "error-vector", "txn-begin", "txn-commit", "txn-rollback", "txn-savepoint", "txn-release-savepoint", "psql-autonomous-frame", "transaction-reservation-release", "temporary-instance-cleanup", "cursor-open", "cursor-fetch", "cursor-close", "read-by-key", "read-range", "read-stream", "result-set-pass", "access-cursor-open", "access-cursor-fetch", "access-cursor-close", "insert", "update", "delete", "merge", "table-truncate", "table-analyze", "bulk-import-stream", "bulk-export-stream", "statement-batch", "atomic-cas", "atomic-rmw", "advisory-lock", "advisory-lock-release", "function-call", "operator-call", "cast", "compare", "domain-operation", "udr-invoke", "procedure-invoke", "function-invoke", "aggregate-invoke", "sequence-nextval", "sequence-currval", "sequence-setval", "query-numeric", "advanced-datatype-family", "project", "aggregate", "group", "sort", "limit", "window", "return-result-set", "kv-structured-read", "kv-structured-mutate", "kv-structured-scan", "kv-structured-stream-read", "kv-structured-stream-append", "kv-structured-timeseries", "system-config-set", "ddl-create-domain", "ddl-alter-domain", "ddl-create-view", "ddl-alter-view", "ddl-drop-view", "ddl-create-trigger", "ddl-create-schema", "ddl-create-table", "ddl-create-index", "ddl-drop-index"),
                         default="source-map")
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-trigger"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-trigger", "ddl-refresh-materialized-view", "ddl-create-materialized-view", "ddl-drop-materialized-view", "ddl-drop-package", "ddl-alter-package", "ddl-alter-sequence", "ddl-drop-sequence", "ddl-create-type", "ddl-alter-type", "ddl-drop-type", "ddl-drop-table", "ddl-create-table-as-query-with-data", "ddl-create-table-as-query-with-no-data", "ddl-create-sequence"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-counter-add"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-timeseries-schema-write"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-timeseries-series-cardinality-policy"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-timeseries-value-cache"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-procedure"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule", "ddl-alter-rewrite-rule", "ddl-drop-rewrite-rule", "ddl-validate-constraint", "security-create-privilege-template", "security-alter-privilege-template", "security-drop-privilege-template", "database-create-template-clone", "ddl-create-aggregate", "ddl-alter-aggregate", "ddl-drop-aggregate", "ddl-purge-system-history", "ddl-set-index-optimizer-eligibility", "ddl-set-table-type-enforcement", "database-serialize-logical-snapshot"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule", "ddl-alter-rewrite-rule", "ddl-drop-rewrite-rule", "ddl-validate-constraint", "security-create-privilege-template", "security-alter-privilege-template", "security-drop-privilege-template", "database-create-template-clone", "ddl-create-aggregate", "ddl-alter-aggregate", "ddl-drop-aggregate", "ddl-purge-system-history", "ddl-set-index-optimizer-eligibility", "ddl-set-table-type-enforcement", "database-serialize-logical-snapshot"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "database-deserialize-logical-snapshot"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-macro", "ddl-create-dictionary", "ddl-drop-dictionary", "ddl-alter-dictionary", "ddl-create-continuous-view", "ddl-alter-continuous-view", "ddl-drop-continuous-view", "dml-async-insert-submit", "dml-async-insert-status", "dml-async-insert-cancel", "dml-counter-add", "ddl-drop-macro", "admin-register-external-relation-resolver", "admin-unregister-external-relation-resolver"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "alter-gpu-profile-disable"))
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args()
     work = allocate_work(Path(args.work_dir))
@@ -191,11 +192,29 @@ def main() -> int:
             expected = ("executor_id=engine.op.ddl_create_domain", "opcode=SBLR_DDL_CREATE_DOMAIN", "opcode_code=1542", "operand_descriptor_id=create_domain_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_create_domain_result_sha256=", "executor_availability_generation=")
         elif args.operation == "ddl-alter-domain":
             expected = ("executor_id=engine.op.ddl_alter_domain", "opcode=SBLR_DDL_ALTER_DOMAIN", "opcode_code=1547", "operand_descriptor_id=alter_domain_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_alter_domain_result_sha256=", "executor_availability_generation=")
+        elif args.operation == "ddl-create-sequence":
+            expected = ("executor_id=engine.op.ddl_create_sequence", "opcode=SBLR_DDL_CREATE_SEQUENCE", "opcode_code=1671", "operand_descriptor_id=create_sequence_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_create_sequence_result_sha256=", "executor_availability_generation=")
         elif args.operation == "ddl-create-view":
             expected = ()
         elif args.operation == "ddl-alter-view":
             expected = ()
         elif args.operation == "ddl-drop-view":
+            expected = ()
+        elif args.operation == "ddl-refresh-materialized-view":
+            expected = ()
+        elif args.operation == "ddl-create-materialized-view":
+            expected = ("executor_id=engine.op.ddl_create_materialized_view", "opcode=SBLR_DDL_CREATE_MATERIALIZED_VIEW", "opcode_code=1566", "operand_descriptor_id=create_materialized_view_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "executor_availability_generation=")
+        elif args.operation == "ddl-drop-materialized-view":
+            expected = ()
+        elif args.operation == "ddl-drop-package":
+            expected = ()
+        elif args.operation == "ddl-alter-package":
+            expected = ()
+        elif args.operation == "ddl-alter-sequence":
+            expected = ("executor_id=engine.op.ddl_alter_sequence", "opcode=SBLR_DDL_ALTER_SEQUENCE", "opcode_code=1564", "operand_descriptor_id=alter_sequence_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "executor_availability_generation=")
+        elif args.operation == "ddl-drop-sequence":
+            expected = ("executor_id=engine.op.ddl_drop_sequence", "opcode=SBLR_DDL_DROP_SEQUENCE", "opcode_code=1565", "operand_descriptor_id=drop_sequence_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "executor_availability_generation=")
+        elif args.operation == "ddl-create-type":
             expected = ()
         elif args.operation == "ddl-alter-rewrite-rule":
             expected = ("executor_id=engine.op.ddl_alter_rewrite_rule", "opcode=SBLR_DDL_ALTER_REWRITE_RULE", "opcode_code=1618", "operand_descriptor_id=rewrite_rule_alter_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_alter_rewrite_rule_result_sha256=", "executor_availability_generation=")
@@ -237,17 +256,21 @@ def main() -> int:
             expected = ()
         elif args.operation == "dml-timeseries-schema-write":
             expected = ()
+        elif args.operation == "alter-gpu-profile-disable":
+            expected = ()
         elif args.operation == "ddl-timeseries-series-cardinality-policy":
             expected = ()
         elif args.operation == "ddl-create-timeseries-value-cache":
             expected = ()
         elif args.operation == "ddl-drop-macro":
             expected = ()
+        elif args.operation in ("ddl-create-type", "ddl-alter-type", "ddl-drop-type"):
+            expected = ()
         elif args.operation == "admin-register-external-relation-resolver":
             expected = ()
         elif args.operation == "admin-unregister-external-relation-resolver":
             expected = ()
-        elif args.operation in ("ddl-create-trigger", "ddl-alter-trigger", "ddl-drop-trigger", "ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
+        elif args.operation in ("ddl-create-trigger", "ddl-alter-trigger", "ddl-drop-trigger", "ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
             expected = ()
         elif args.operation == "ddl-create-schema":
             expected = ("executor_id=engine.op.ddl_create_schema", "opcode=SBLR_DDL_CREATE_SCHEMA", "opcode_code=1536", "operand_descriptor_id=create_schema_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_create_schema_result_sha256=", "executor_availability_generation=")

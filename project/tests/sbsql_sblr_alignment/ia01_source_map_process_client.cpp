@@ -259,12 +259,42 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunKvStructuredTimeseriesForWire():begun; }()
                     : operation == "system-config-set"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSystemConfigSetForWire():begun; }()
+                    : operation == "alter-gpu-profile-disable"
+                          ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "ddl-create-domain"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDomainForWire():begun; }()
+                    : operation == "ddl-create-sequence"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateSequenceForWire():begun; }()
+                    : operation == "ddl-create-materialized-view"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateMaterializedViewForWire():begun; }()
                     : operation == "ddl-create-view"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateViewForWire():begun; }()
                     : operation == "ddl-drop-view"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropViewForWire():begun; }()
+                    : operation == "ddl-refresh-materialized-view"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlRefreshMaterializedViewForWire():begun; }()
+                    : operation == "ddl-drop-package"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropPackageForWire():begun; }()
+                    : operation == "ddl-alter-package"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterPackageForWire():begun; }()
+                    : operation == "ddl-alter-sequence"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterSequenceForWire():begun; }()
+                    : operation == "ddl-drop-sequence"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropSequenceForWire():begun; }()
+                    : operation == "ddl-drop-materialized-view"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropMaterializedViewForWire():begun; }()
+                    : operation == "ddl-create-type"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTypeForWire():begun; }()
+                    : operation == "ddl-create-table-as-query-with-data"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTableAsQueryWithDataForWire():begun; }()
+                    : operation == "ddl-create-table-as-query-with-no-data"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTableAsQueryWithNoDataForWire():begun; }()
+                    : operation == "ddl-alter-type"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterTypeForWire():begun; }()
+                    : operation == "ddl-drop-type"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropTypeForWire():begun; }()
+                    : operation == "ddl-drop-table"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropTableForWire():begun; }()
                     : operation == "ddl-create-trigger"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTriggerForWire():begun; }()
                     : operation == "ddl-alter-trigger"
@@ -289,6 +319,8 @@ int main(int argc, char** argv) {
                           ? session.RunDdlDropTemporaryTableForWire()
                     : operation == "ddl-rename-object-vector"
                           ? session.RunDdlRenameObjectVectorForWire()
+                    : operation == "ddl-rename-object"
+                          ? session.RunDdlRenameObjectForWire()
                     : operation == "ddl-create-or-replace-srs"
                           ? session.RunDdlCreateOrReplaceSrsForWire()
                     : operation == "ddl-drop-srs"
@@ -377,6 +409,10 @@ int main(int argc, char** argv) {
                           ? session.RunPipeline("BEGIN TRANSACTION", true)
                           : session.RunSourceMapForWire();
   if (!result.accepted) {
+    if (result.messages.diagnostics.empty())
+      std::cerr << "SBLR.DDL_CREATE_TYPE.EMPTY_FAILURE operation=" << operation
+                << " payload_bytes=" << result.sblr_payload.size()
+                << " result_bytes=" << result.server_result_payload.size() << '\n';
     for (const auto& diagnostic : result.messages.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
       for (const auto& field : diagnostic.fields)
@@ -426,6 +462,8 @@ int main(int argc, char** argv) {
                           ? "CSC-TEST-002661 DDL_CREATE_TEMPORARY_TABLE accepted\n"
                     : operation == "ddl-drop-temporary-table"
                           ? "CSC-TEST-002665 DDL_DROP_TEMPORARY_TABLE accepted\n"
+                    : operation == "alter-gpu-profile-disable"
+                          ? "CSC-TEST-002913 ALTER_GPU_PROFILE_DISABLE deterministic_refusal\n"
                     : operation == "insert"
                           ? "CSC-TEST-002421 INSERT accepted\n"
                     : operation == "update"

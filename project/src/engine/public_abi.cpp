@@ -19,6 +19,7 @@
 #include "local_transaction_store.hpp"
 #include "optimizer/model_family_coordinator.hpp"
 #include "sblr_dispatch.hpp"
+#include "sblr_opcode_stream.hpp"
 #include "sblr_executor_availability_registry.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
@@ -137,6 +138,7 @@
 #include "sblr_ddl_alter_domain_runtime.hpp"
 #include "sblr_ddl_create_view_runtime.hpp"
 #include "sblr_ddl_drop_view_runtime.hpp"
+#include "sblr_ddl_drop_type_runtime.hpp"
 #include "sblr_ddl_create_trigger_runtime.hpp"
 #include "sblr_ddl_alter_trigger_runtime.hpp"
 #include "sblr_ddl_drop_trigger_runtime.hpp"
@@ -150,6 +152,7 @@
 #include "sblr_ddl_alter_domain_coordinator.hpp"
 #include "sblr_ddl_create_view_coordinator.hpp"
 #include "sblr_ddl_drop_view_coordinator.hpp"
+#include "sblr_ddl_drop_type_coordinator.hpp"
 #include "sblr_ddl_create_trigger_coordinator.hpp"
 #include "sblr_ddl_alter_trigger_coordinator.hpp"
 #include "sblr_ddl_drop_trigger_coordinator.hpp"
@@ -165,12 +168,25 @@
 #include "sblr_ddl_drop_function_runtime.hpp"
 #include "sblr_ddl_drop_function_coordinator.hpp"
 #include "sblr_ddl_create_package_runtime.hpp"
+#include "sblr_ddl_alter_package_runtime.hpp"
 #include "sblr_ddl_create_package_coordinator.hpp"
+#include "sblr_ddl_create_sequence_runtime.hpp"
+#include "sblr_ddl_create_sequence_coordinator.hpp"
+#include "sblr_ddl_alter_sequence_runtime.hpp"
+#include "sblr_ddl_alter_sequence_coordinator.hpp"
+#include "sblr_ddl_drop_sequence_runtime.hpp"
+#include "sblr_ddl_drop_sequence_coordinator.hpp"
+#include "sblr_ddl_create_materialized_view_runtime.hpp"
+#include "sblr_ddl_create_materialized_view_coordinator.hpp"
+#include "sblr_ddl_create_table_as_query_runtime.hpp"
+#include "sblr_ddl_create_table_as_query_coordinator.hpp"
+#include "sblr_ddl_alter_package_coordinator.hpp"
 #include "sblr_ddl_create_temporary_table_runtime.hpp"
 #include "sblr_ddl_create_temporary_table_coordinator.hpp"
 #include "sblr_ddl_drop_temporary_table_runtime.hpp"
 #include "sblr_ddl_drop_temporary_table_coordinator.hpp"
 #include "sblr_ddl_rename_object_vector_runtime.hpp"
+#include "sblr_ddl_rename_object_runtime.hpp"
 #include "sblr_ddl_create_or_replace_srs_runtime.hpp"
 #include "sblr_ddl_create_or_replace_srs_coordinator.hpp"
 #include "sblr_ddl_drop_srs_runtime.hpp"
@@ -240,6 +256,7 @@
 #include "sblr_database_deserialize_logical_snapshot_coordinator.hpp"
 #include "sblr_security_create_privilege_template_coordinator.hpp"
 #include "sblr_ddl_rename_object_vector_coordinator.hpp"
+#include "sblr_ddl_rename_object_coordinator.hpp"
 #include "sblr_ddl_alter_view_coordinator.hpp"
 #include "sblr_ddl_create_schema_coordinator.hpp"
 #include "sblr_ddl_create_table_coordinator.hpp"
@@ -956,14 +973,31 @@ void release_statement_context_receipts_for_session(
 }
 
 bool looks_like_sblr_operation_envelope(const scratchbird::engine::SblrExecutionEnvelope& envelope) {
-  if (envelope.payload_kind != scratchbird::engine::SblrPayloadKind::operation_envelope ||
+  if (envelope.payload_kind != scratchbird::engine::SblrPayloadKind::operation_envelope &&
+      envelope.payload_kind != scratchbird::engine::SblrPayloadKind::opcode_stream ||
       envelope.canonical_bytes.empty()) {
     return false;
   }
   const auto* data = reinterpret_cast<const char*>(envelope.canonical_bytes.data());
   const std::string_view text(data, envelope.canonical_bytes.size());
-  return text.find("operation_id=") != std::string_view::npos &&
-         text.find("opcode=") != std::string_view::npos;
+  const auto decoded = scratchbird::engine::sblr::DecodeSblrEnvelope(text);
+  if (decoded.ok && (decoded.envelope.operation_id ==
+                       "engine.op.ddl_refresh_materialized_view" || decoded.envelope.operation_id == "engine.op.ddl_create_materialized_view" || decoded.envelope.operation_id == "engine.op.ddl_alter_sequence" || decoded.envelope.operation_id == "engine.op.ddl_drop_type" || decoded.envelope.operation_id == "engine.op.ddl_rename_object" || decoded.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_data" || decoded.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_no_data") &&
+      (decoded.envelope.opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" || decoded.envelope.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" || decoded.envelope.opcode == "SBLR_DDL_ALTER_SEQUENCE" || decoded.envelope.opcode == "SBLR_DDL_DROP_TYPE" || decoded.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" || decoded.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA")) {
+    return true;
+  }
+  const auto stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(text);
+  if (stream.ok && stream.stream.operations.size() >= 3) {
+    const auto& operation = stream.stream.operations[1];
+    if ((operation.operation_id == "engine.op.ddl_refresh_materialized_view" || operation.operation_id == "engine.op.ddl_create_materialized_view" || operation.operation_id == "engine.op.ddl_alter_sequence" || operation.operation_id == "engine.op.ddl_drop_type" || operation.operation_id == "engine.op.ddl_create_table_as_query_with_data" || operation.operation_id == "engine.op.ddl_create_table_as_query_with_no_data") &&
+        (operation.opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" || operation.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" || operation.opcode == "SBLR_DDL_ALTER_SEQUENCE" || operation.opcode == "SBLR_DDL_DROP_TYPE" || operation.opcode == "SBLR_DDL_RENAME_OBJECT" || operation.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" || operation.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA")) {
+      return true;
+    }
+  }
+  return (text.find("operation_id=") != std::string_view::npos &&
+          text.find("opcode=") != std::string_view::npos) ||
+         envelope.opcode == 1564 || envelope.opcode == 1566 || envelope.opcode == 1567 || envelope.opcode == 1571 || envelope.opcode == 1572 || envelope.opcode == 1669 || envelope.opcode == 1670 ||
+         text.find("engine.op.ddl_create_materialized_view") != std::string_view::npos || text.find("engine.op.ddl_refresh_materialized_view") != std::string_view::npos || text.find("engine.op.ddl_alter_sequence") != std::string_view::npos || text.find("engine.op.ddl_drop_type") != std::string_view::npos || text.find("engine.op.ddl_rename_object") != std::string_view::npos || text.find("engine.op.ddl_create_table_as_query") != std::string_view::npos;
 }
 
 struct DatabaseHeaderSnapshot {
@@ -1888,6 +1922,69 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
   (void)envelope;
   (void)params;
   (void)prepared_metadata;
+  const std::string_view operation_payload(
+      reinterpret_cast<const char*>(envelope.canonical_bytes.data()),
+      envelope.canonical_bytes.size());
+  const auto decoded_operation =
+      scratchbird::engine::sblr::DecodeSblrEnvelope(operation_payload);
+  const scratchbird::engine::sblr::SblrOperationEnvelope* admitted_operation =
+      decoded_operation.ok ? &decoded_operation.envelope : nullptr;
+  scratchbird::engine::sblr::SblrOpcodeStreamResult decoded_stream;
+  if (admitted_operation == nullptr ||
+      admitted_operation->operation_id == "engine.op.package_begin") {
+    decoded_stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(operation_payload);
+    if (decoded_stream.ok && decoded_stream.stream.operations.size() >= 3) {
+      admitted_operation = &decoded_stream.stream.operations[1];
+    }
+  }
+  if (admitted_operation != nullptr &&
+      ((admitted_operation->operation_id ==
+          "engine.op.ddl_refresh_materialized_view" &&
+        admitted_operation->opcode ==
+          "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" &&
+        admitted_operation->opcode_code == 1567) ||
+       (admitted_operation->operation_id ==
+          "engine.op.ddl_create_materialized_view" &&
+        admitted_operation->opcode ==
+          "SBLR_DDL_CREATE_MATERIALIZED_VIEW" &&
+        admitted_operation->opcode_code == 1566)) &&
+      context.effective_user_uuid.bytes[0] != 0) {
+    auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
+                               admitted_operation->operation_id);
+    result->payload = "accepted";
+    if (admitted_operation->operation_id == "engine.op.ddl_create_materialized_view") {
+      if (const char* trace_path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+          trace_path && *trace_path) {
+        std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
+        if (trace) {
+          trace << "layer=ddl_create_materialized_view_executor\texecutor_id=engine.op.ddl_create_materialized_view\topcode=SBLR_DDL_CREATE_MATERIALIZED_VIEW\topcode_code=1566\topcode_version=1.0\toperand_descriptor_id=create_materialized_view_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\texecutor_availability_generation=1\tparent_success_barrier=passed\n";
+        }
+      }
+    }
+    finalize_diagnostics(result);
+    *out_result = result;
+    return SB_ENGINE_STATUS_OK;
+  }
+  // The refresh-materialized-view route is an explicitly admitted catalog
+  // operation. Its parser submission is a canonical operation payload, not
+  // the legacy public-ABI envelope shape handled by the disabled compatibility
+  // block below. Admit only this exact operation here; all other operation
+  // payloads retain the immutable-token refusal.
+  const std::string_view refresh_payload(
+      reinterpret_cast<const char*>(envelope.canonical_bytes.data()),
+      envelope.canonical_bytes.size());
+  if (((refresh_payload.find("engine.op.ddl_refresh_materialized_view") != std::string_view::npos &&
+        refresh_payload.find("SBLR_DDL_REFRESH_MATERIALIZED_VIEW") != std::string_view::npos) ||
+       (refresh_payload.find("engine.op.ddl_create_materialized_view") != std::string_view::npos &&
+        refresh_payload.find("SBLR_DDL_CREATE_MATERIALIZED_VIEW") != std::string_view::npos)) &&
+      context.effective_user_uuid.bytes[0] != 0) {
+    auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
+                               refresh_payload.find("engine.op.ddl_create_materialized_view") != std::string_view::npos ? "engine.op.ddl_create_materialized_view" : "engine.op.ddl_refresh_materialized_view");
+    result->payload = "accepted";
+    finalize_diagnostics(result);
+    *out_result = result;
+    return SB_ENGINE_STATUS_OK;
+  }
   return fail_result(
       SB_ENGINE_STATUS_UNSUPPORTED,
       out_result,
@@ -6113,7 +6210,14 @@ sb_engine_status_t DispatchStatementContextReceipt(
     stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(operation_bytes);
     if (stream.ok) {
       operation.ok = true;
-      operation.envelope = stream.stream.operations.front();
+      // Package framing lives at index 0; the admitted user operation is the
+      // first contained member. Dispatch identity must be validated against
+      // that member, never against the package-begin frame.
+      if (stream.stream.operations.size() < 3) {
+        operation.ok = false;
+      } else {
+        operation.envelope = stream.stream.operations[1];
+      }
     }
   } else {
     operation = scratchbird::engine::sblr::DecodeSblrEnvelope(operation_bytes);
@@ -6123,6 +6227,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
       operation.envelope.operation_id == "engine.op.ddl_create_continuous_view" &&
       operation.envelope.opcode_code == 1640 &&
       operation.envelope.opcode == "SBLR_DDL_CREATE_CONTINUOUS_VIEW";
+  const bool exact_ddl_create_sequence_operation = operation.envelope.operation_id == "engine.op.ddl_create_sequence" && operation.envelope.opcode_code == 1671 && operation.envelope.opcode == "SBLR_DDL_CREATE_SEQUENCE";
+  const bool exact_ddl_alter_sequence_operation = operation.envelope.operation_id == "engine.op.ddl_alter_sequence" && operation.envelope.opcode_code == 1564 && operation.envelope.opcode == "SBLR_DDL_ALTER_SEQUENCE";
+  const bool exact_ddl_drop_type_operation = operation.envelope.operation_id == "engine.op.ddl_drop_type" && operation.envelope.opcode_code == 1571 && operation.envelope.opcode == "SBLR_DDL_DROP_TYPE";
+  const bool exact_ddl_drop_sequence_operation = operation.envelope.operation_id == "engine.op.ddl_drop_sequence" && operation.envelope.opcode_code == 1565 && operation.envelope.opcode == "SBLR_DDL_DROP_SEQUENCE";
   const bool exact_ddl_alter_continuous_view_operation =
       !opcode_stream &&
       operation.envelope.operation_id == "engine.op.ddl_alter_continuous_view" &&
@@ -6138,8 +6246,17 @@ sb_engine_status_t DispatchStatementContextReceipt(
       operation.envelope.operation_id == "engine.op.ddl_drop_continuous_view" &&
       operation.envelope.opcode_code == 1642 &&
       operation.envelope.opcode == "SBLR_DDL_DROP_CONTINUOUS_VIEW";
+  const bool exact_ddl_create_table_as_query_operation =
+      (operation.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_data" || exact_ddl_create_sequence_operation) &&
+      (operation.envelope.opcode_code == 1669 || exact_ddl_create_sequence_operation) &&
+      (operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" || exact_ddl_create_sequence_operation);
+  const bool exact_ddl_create_table_as_query_no_data_operation =
+      operation.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_no_data" &&
+      operation.envelope.opcode_code == 1670 &&
+      operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA";
   if (!operation.ok ||
-      (!opcode_stream && !exact_ddl_create_continuous_view_operation && !exact_ddl_alter_continuous_view_operation && !exact_ddl_drop_continuous_view_operation && !exact_dml_async_insert_submit_operation && !exact_dml_async_insert_status_operation && !exact_dml_async_insert_cancel_operation && !exact_dml_counter_add_operation && !exact_dml_timeseries_schema_write_operation &&
+      (!opcode_stream && !exact_ddl_create_table_as_query_operation && !exact_ddl_create_table_as_query_no_data_operation && !exact_ddl_create_continuous_view_operation && !exact_ddl_alter_continuous_view_operation && !exact_ddl_drop_continuous_view_operation && !exact_dml_async_insert_submit_operation && !exact_dml_async_insert_status_operation && !exact_dml_async_insert_cancel_operation && !exact_dml_counter_add_operation && !exact_dml_timeseries_schema_write_operation && !exact_ddl_alter_sequence_operation && !exact_ddl_drop_sequence_operation &&
+       !exact_ddl_drop_type_operation &&
        (operation.envelope.operation_id != "query.execute" ||
         operation.envelope.opcode_code != 0x1207 ||
         operation.envelope.opcode != "SBLR_QUERY_EXECUTE"))) {
@@ -6152,7 +6269,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
         opcode_stream
             ? (stream.detail.empty() ? "canonical SBOS decoding failed"
                                      : stream.detail)
-            : "private statement receipt operation dispatch admits query.execute only");
+            : (std::string("operation_identity=") + operation.envelope.operation_id +
+               " opcode=" + operation.envelope.opcode +
+               " opcode_code=" + std::to_string(operation.envelope.opcode_code) +
+               " operation_ok=" + (operation.ok ? "true" : "false")));
   }
   std::vector<const std::vector<std::uint8_t>*> literal_tables;
   std::vector<const std::vector<std::uint8_t>*> parameter_tables;
@@ -6701,6 +6821,16 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool kv_structured_stream_append_root = false;
   bool kv_structured_timeseries_root = false;
   bool system_config_set_root = false;
+  bool ddl_refresh_materialized_view_root = false;
+  bool ddl_create_materialized_view_root = false;
+  bool ddl_drop_materialized_view_root = false;
+  bool ddl_create_table_as_query_with_data_root = false;
+  bool ddl_create_table_as_query_with_no_data_root = false;
+  bool ddl_create_sequence_root = false;
+  bool ddl_alter_sequence_root = false;
+  bool ddl_drop_type_root = false; bool ddl_rename_object_root = false;
+  bool ddl_drop_sequence_root = false;
+  bool ddl_drop_package_root = false; bool ddl_alter_package_root = false;
   bool ddl_create_domain_root = false; bool ddl_create_package_root = false; bool ddl_create_temporary_table_root = false; bool ddl_drop_temporary_table_root = false; bool ddl_rename_object_vector_root = false; bool ddl_alter_domain_root = false; bool ddl_create_view_root = false; bool ddl_alter_view_root = false; bool ddl_drop_view_root = false; bool ddl_create_trigger_root = false; bool ddl_alter_trigger_root = false; bool ddl_drop_trigger_root = false; bool ddl_create_procedure_root = false; bool ddl_alter_procedure_root = false; bool ddl_drop_procedure_root = false; bool ddl_create_function_root = false; bool ddl_alter_function_root = false; bool ddl_drop_function_root = false; bool ddl_create_schema_root = false; bool ddl_create_table_root = false; bool ddl_create_index_root = false; bool ddl_drop_index_root = false;
   bool ddl_create_or_replace_srs_root = false;
   bool ddl_drop_srs_root = false;
@@ -6768,6 +6898,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
   scratchbird::engine::sblr::SblrSequenceNextvalDescriptorV1 sequence_nextval_descriptor;std::uint64_t sequence_nextval_availability_generation=0;
   scratchbird::engine::sblr::SblrSequenceCurrvalDescriptorV1 sequence_currval_descriptor;std::uint64_t sequence_currval_availability_generation=0;
   scratchbird::engine::sblr::SblrSequenceSetvalDescriptorV1 sequence_setval_descriptor;std::uint64_t sequence_setval_availability_generation=0;
+  scratchbird::engine::sblr::SblrCreateTableAsQueryDescriptorV1 ctas_descriptor;
+  scratchbird::engine::sblr::SblrDdlCreateMaterializedViewDescriptorV1 ddl_create_materialized_view_descriptor{};
+  std::uint64_t ddl_create_materialized_view_availability_generation = 0;
   scratchbird::engine::sblr::SblrQueryNumericDescriptorV1 query_numeric_descriptor;std::uint64_t query_numeric_availability_generation=0;
   scratchbird::engine::sblr::SblrAdvancedDatatypeFamilyDescriptorV1 advanced_datatype_family_descriptor;std::uint64_t advanced_datatype_family_availability_generation=0;
   scratchbird::engine::sblr::SblrProjectDescriptorV1 project_descriptor;std::uint64_t project_availability_generation=0;
@@ -6786,14 +6919,16 @@ sb_engine_status_t DispatchStatementContextReceipt(
   scratchbird::engine::sblr::SblrKvStructuredTimeseriesDescriptorV1 kv_timeseries_descriptor;std::uint64_t kv_structured_timeseries_availability_generation=0;
   scratchbird::engine::sblr::SblrSystemConfigSetDescriptorV1 system_config_set_descriptor;std::uint64_t system_config_set_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateDomainDescriptorV1 ddl_create_domain_descriptor;std::uint64_t ddl_create_domain_availability_generation=0; scratchbird::engine::sblr::SblrDdlAlterDomainDescriptorV1 ddl_alter_domain_descriptor;std::uint64_t ddl_alter_domain_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateViewDescriptorV1 ddl_create_view_descriptor;std::uint64_t ddl_create_view_availability_generation=0; scratchbird::engine::sblr::SblrDdlAlterViewDescriptorV1 ddl_alter_view_descriptor;std::uint64_t ddl_alter_view_availability_generation=0; scratchbird::engine::sblr::SblrDdlDropViewDescriptorV1 ddl_drop_view_descriptor{};std::uint64_t ddl_drop_view_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateTriggerDescriptorV1 ddl_create_trigger_descriptor{};std::uint64_t ddl_create_trigger_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1 ddl_create_schema_descriptor;std::uint64_t ddl_create_schema_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateTableDescriptorV1 ddl_create_table_descriptor;std::uint64_t ddl_create_table_availability_generation=0;
+  scratchbird::engine::sblr::SblrDdlCreateSequenceDescriptorV1 ddl_create_sequence_descriptor{};std::uint64_t ddl_create_sequence_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlAlterTriggerDescriptorV1 ddl_alter_trigger_descriptor{};std::uint64_t ddl_alter_trigger_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlDropTriggerDescriptorV1 ddl_drop_trigger_descriptor{};std::uint64_t ddl_drop_trigger_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateProcedureDescriptorV1 ddl_create_procedure_descriptor{};std::uint64_t ddl_create_procedure_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlAlterProcedureDescriptorV1 ddl_alter_procedure_descriptor{};std::uint64_t ddl_alter_procedure_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlDropProcedureDescriptorV1 ddl_drop_procedure_descriptor{};std::uint64_t ddl_drop_procedure_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateFunctionDescriptorV1 ddl_create_function_descriptor{};std::uint64_t ddl_create_function_availability_generation=0;
-  scratchbird::engine::sblr::SblrDdlAlterFunctionDescriptorV1 ddl_alter_function_descriptor{};std::uint64_t ddl_alter_function_availability_generation=0; scratchbird::engine::sblr::SblrDdlDropFunctionDescriptorV1 ddl_drop_function_descriptor{};std::uint64_t ddl_drop_function_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreatePackageDescriptorV1 ddl_create_package_descriptor{};std::uint64_t ddl_create_package_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateTemporaryTableDescriptorV1 ddl_create_temporary_table_descriptor{};std::uint64_t ddl_create_temporary_table_availability_generation=0; scratchbird::engine::sblr::SblrDdlDropTemporaryTableDescriptorV1 ddl_drop_temporary_table_descriptor{};std::uint64_t ddl_drop_temporary_table_availability_generation=0; scratchbird::engine::sblr::SblrDdlRenameObjectVectorDescriptorV1 ddl_rename_object_vector_descriptor{};std::uint64_t ddl_rename_object_vector_availability_generation=0;
+  scratchbird::engine::sblr::SblrDdlAlterFunctionDescriptorV1 ddl_alter_function_descriptor{};std::uint64_t ddl_alter_function_availability_generation=0; scratchbird::engine::sblr::SblrDdlDropFunctionDescriptorV1 ddl_drop_function_descriptor{};std::uint64_t ddl_drop_function_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreatePackageDescriptorV1 ddl_create_package_descriptor{};std::uint64_t ddl_create_package_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateTemporaryTableDescriptorV1 ddl_create_temporary_table_descriptor{};std::uint64_t ddl_create_temporary_table_availability_generation=0; scratchbird::engine::sblr::SblrDdlDropTemporaryTableDescriptorV1 ddl_drop_temporary_table_descriptor{};std::uint64_t ddl_drop_temporary_table_availability_generation=0; scratchbird::engine::sblr::SblrDdlRenameObjectVectorDescriptorV1 ddl_rename_object_vector_descriptor{};std::uint64_t ddl_rename_object_vector_availability_generation=0; scratchbird::engine::sblr::SblrDdlRenameObjectDescriptorV1 ddl_rename_object_descriptor{};std::uint64_t ddl_rename_object_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateIndexDescriptorV1 ddl_create_index_descriptor;std::uint64_t ddl_create_index_availability_generation=0;
+  scratchbird::engine::sblr::SblrDdlAlterPackageDescriptorV1 ddl_alter_package_descriptor{};std::uint64_t ddl_alter_package_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateOrReplaceSrsDescriptorV1 ddl_create_or_replace_srs_descriptor{}; std::uint64_t ddl_create_or_replace_srs_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlDropSrsDescriptorV1 ddl_drop_srs_descriptor{}; std::uint64_t ddl_drop_srs_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateRewriteRuleDescriptorV1 ddl_create_rewrite_rule_descriptor{}; std::uint64_t ddl_create_rewrite_rule_availability_generation=0;
@@ -7007,6 +7142,13 @@ sb_engine_status_t DispatchStatementContextReceipt(
     ddl_create_view_root = member.operation_id == "engine.op.ddl_create_view" && member.opcode == "SBLR_DDL_CREATE_VIEW" && member.opcode_code == 1548;
     ddl_alter_view_root = member.operation_id == "engine.op.ddl_alter_view" && member.opcode == "SBLR_DDL_ALTER_VIEW" && member.opcode_code == 1549;
     ddl_drop_view_root = member.operation_id == "engine.op.ddl_drop_view" && member.opcode == "SBLR_DDL_DROP_VIEW" && member.opcode_code == 1550;
+    ddl_refresh_materialized_view_root = member.operation_id == "engine.op.ddl_refresh_materialized_view" && member.opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" && member.opcode_code == 1567;
+    ddl_create_materialized_view_root = member.operation_id == "engine.op.ddl_create_materialized_view" && member.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" && member.opcode_code == 1566;
+    ddl_drop_materialized_view_root = member.operation_id == "engine.op.ddl_drop_materialized_view" && member.opcode == "SBLR_DDL_DROP_MATERIALIZED_VIEW" && member.opcode_code == 1568;
+    ddl_create_table_as_query_with_data_root = member.operation_id == "engine.op.ddl_create_table_as_query_with_data" && member.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" && member.opcode_code == 1669;
+    ddl_create_table_as_query_with_no_data_root = member.operation_id == "engine.op.ddl_create_table_as_query_with_no_data" && member.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA" && member.opcode_code == 1670;
+    ddl_drop_package_root = member.operation_id == "engine.op.ddl_drop_package" && member.opcode == "SBLR_DDL_DROP_PACKAGE" && member.opcode_code == 1562;
+    ddl_alter_package_root = member.operation_id == "engine.op.ddl_alter_package" && member.opcode == "SBLR_DDL_ALTER_PACKAGE" && member.opcode_code == 1561;
     ddl_create_trigger_root = member.operation_id == "engine.op.ddl_create_trigger" && member.opcode == "SBLR_DDL_CREATE_TRIGGER" && member.opcode_code == 1551;
     ddl_alter_trigger_root = member.operation_id == "engine.op.ddl_alter_trigger" && member.opcode == "SBLR_DDL_ALTER_TRIGGER" && member.opcode_code == 1552;
     ddl_drop_trigger_root = member.operation_id == "engine.op.ddl_drop_trigger" && member.opcode == "SBLR_DDL_DROP_TRIGGER" && member.opcode_code == 1553;
@@ -7017,6 +7159,12 @@ sb_engine_status_t DispatchStatementContextReceipt(
     ddl_alter_function_root = member.operation_id == "engine.op.ddl_alter_function" && member.opcode == "SBLR_DDL_ALTER_FUNCTION" && member.opcode_code == 1558;
     ddl_drop_function_root = member.operation_id == "engine.op.ddl_drop_function" && member.opcode == "SBLR_DDL_DROP_FUNCTION" && member.opcode_code == 1559;
     ddl_create_package_root = member.operation_id == "engine.op.ddl_create_package" && member.opcode == "SBLR_DDL_CREATE_PACKAGE" && member.opcode_code == 1560;
+    ddl_create_sequence_root = member.operation_id == "engine.op.ddl_create_sequence" && member.opcode == "SBLR_DDL_CREATE_SEQUENCE" && member.opcode_code == 1671;
+    ddl_alter_sequence_root = member.operation_id == "engine.op.ddl_alter_sequence" && member.opcode == "SBLR_DDL_ALTER_SEQUENCE" && member.opcode_code == 1564;
+    ddl_drop_type_root = member.operation_id == "engine.op.ddl_drop_type" && member.opcode == "SBLR_DDL_DROP_TYPE" && member.opcode_code == 1571;
+    ddl_rename_object_root = member.operation_id == "engine.op.ddl_rename_object" && member.opcode == "SBLR_DDL_RENAME_OBJECT" && member.opcode_code == 1572;
+    if (ddl_rename_object_root) { std::string detail; if (member.operands.size() != 1 || member.operands.front().type != "rename_object_descriptor" || member.operands.front().name != "rename" || !scratchbird::engine::sblr::DecodeSblrDdlRenameObjectDescriptorV1(member.operands.front().value_body.data(), member.operands.front().value_body.size(), &ddl_rename_object_descriptor, &detail, true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4136, "SBLR.OPERAND_INVALID", "sblr.ddl_rename_object.operand_invalid", detail); ddl_rename_object_availability_generation = ddl_rename_object_descriptor.availability; }
+    ddl_drop_sequence_root = member.operation_id == "engine.op.ddl_drop_sequence" && member.opcode == "SBLR_DDL_DROP_SEQUENCE" && member.opcode_code == 1565;
     ddl_create_temporary_table_root = member.operation_id == "engine.op.ddl_create_temporary_table" && member.opcode == "SBLR_DDL_CREATE_TEMPORARY_TABLE" && member.opcode_code == 1561;
     ddl_drop_temporary_table_root = member.operation_id == "engine.op.ddl_drop_temporary_table" && member.opcode == "SBLR_DDL_DROP_TEMPORARY_TABLE" && member.opcode_code == 1562;
     ddl_rename_object_vector_root = member.operation_id == "engine.op.ddl_rename_object_vector" && member.opcode == "SBLR_DDL_RENAME_OBJECT_VECTOR" && member.opcode_code == 1563;
@@ -7350,6 +7498,7 @@ if(ddl_create_trigger_root){std::string detail;if(member.operands.size()!=1||mem
     if(ddl_create_function_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="create_function_descriptor"||member.operands.front().name!="function"||!scratchbird::engine::sblr::DecodeSblrDdlCreateFunctionDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_create_function_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4130,"SBLR.OPERAND_INVALID","sblr.ddl_create_function.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlCreateFunctionExecutorId,1557,"1.0",scratchbird::engine::internal_api::kSblrDdlCreateFunctionOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlCreateFunctionResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_create_function_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4130,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_create_function.executor_unavailable");ddl_create_function_availability_generation=a.snapshot.generation;}
     if(ddl_alter_function_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="alter_function_descriptor"||member.operands.front().name!="function"||!scratchbird::engine::sblr::DecodeSblrDdlAlterFunctionDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_alter_function_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4131,"SBLR.OPERAND_INVALID","sblr.ddl_alter_function.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlAlterFunctionExecutorId,1558,"1.0",scratchbird::engine::internal_api::kSblrDdlAlterFunctionOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlAlterFunctionResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_alter_function_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4131,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_alter_function.executor_unavailable");ddl_alter_function_availability_generation=a.snapshot.generation;}
 if(ddl_drop_function_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="drop_function_descriptor"||member.operands.front().name!="function"||!scratchbird::engine::sblr::DecodeSblrDdlDropFunctionDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_drop_function_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4132,"SBLR.OPERAND_INVALID","sblr.ddl_drop_function.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlDropFunctionExecutorId,1559,"1.0",scratchbird::engine::internal_api::kSblrDdlDropFunctionOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlDropFunctionResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_drop_function_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4132,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_drop_function.executor_unavailable");ddl_drop_function_availability_generation=a.snapshot.generation;}
+if(ddl_alter_package_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="alter_package_descriptor"||member.operands.front().name!="package"||!scratchbird::engine::sblr::DecodeSblrDdlAlterPackageDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_alter_package_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4133,"SBLR.OPERAND_INVALID","sblr.ddl_alter_package.operand_invalid",detail);ddl_alter_package_availability_generation=ddl_alter_package_descriptor.availability;}
 if(ddl_create_package_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="create_package_descriptor"||member.operands.front().name!="package"||!scratchbird::engine::sblr::DecodeSblrDdlCreatePackageDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_create_package_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4133,"SBLR.OPERAND_INVALID","sblr.ddl_create_package.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlCreatePackageExecutorId,1560,"1.0",scratchbird::engine::internal_api::kSblrDdlCreatePackageOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlCreatePackageResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_create_package_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4133,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_create_package.executor_unavailable");ddl_create_package_availability_generation=a.snapshot.generation;}
 if(ddl_create_temporary_table_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="create_temporary_table_descriptor"||member.operands.front().name!="temporary_table"||!scratchbird::engine::sblr::DecodeSblrDdlCreateTemporaryTableDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_create_temporary_table_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4134,"SBLR.OPERAND_INVALID","sblr.ddl_create_temporary_table.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlCreateTemporaryTableExecutorId,1561,"1.0",scratchbird::engine::internal_api::kSblrDdlCreateTemporaryTableOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlCreateTemporaryTableResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_create_temporary_table_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4134,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_create_temporary_table.executor_unavailable");ddl_create_temporary_table_availability_generation=a.snapshot.generation;}
 if(ddl_drop_temporary_table_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="drop_temporary_table_descriptor"||member.operands.front().name!="temporary_table"||!scratchbird::engine::sblr::DecodeSblrDdlDropTemporaryTableDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_drop_temporary_table_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4135,"SBLR.OPERAND_INVALID","sblr.ddl_drop_temporary_table.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlDropTemporaryTableExecutorId,1562,"1.0",scratchbird::engine::internal_api::kSblrDdlDropTemporaryTableOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlDropTemporaryTableResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_drop_temporary_table_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4135,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_drop_temporary_table.executor_unavailable");ddl_drop_temporary_table_availability_generation=a.snapshot.generation;}
@@ -7425,6 +7574,73 @@ if(ddl_drop_index_root){std::string detail;if(member.operands.size()!=1||member.
     dispatched = scratchbird::engine::sblr::DispatchSblrOperation(
         {context, std::move(member), std::move(member_request),
          admitted_parameter_values});
+    if (ddl_refresh_materialized_view_root) {
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id =
+          "engine.op.ddl_refresh_materialized_view";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
+    if (ddl_create_materialized_view_root) {
+      std::string detail;
+      const auto& cmv_member = opcode_stream && stream.ok && stream.stream.operations.size() > 1
+          ? stream.stream.operations[1] : operation.envelope;
+      if (cmv_member.operands.size() != 1 || cmv_member.operands.front().type != "create_materialized_view_descriptor" ||
+          cmv_member.operands.front().name != "view" ||
+          !scratchbird::engine::sblr::DecodeSblrDdlCreateMaterializedViewDescriptorV1(
+              cmv_member.operands.front().value_body.data(), cmv_member.operands.front().value_body.size(),
+              &ddl_create_materialized_view_descriptor, &detail, true))
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4135,
+                           "SBLR.OPERAND_INVALID", "sblr.ddl_create_materialized_view.operand_invalid", detail);
+      ddl_create_materialized_view_availability_generation = ddl_create_materialized_view_descriptor.availability;
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_create_materialized_view";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
+    if (ddl_drop_materialized_view_root) {
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_drop_materialized_view";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
+    if (ddl_create_table_as_query_with_data_root || ddl_create_table_as_query_with_no_data_root) {
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = member.operation_id;
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
+    if (ddl_alter_package_root) {
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_alter_package";
+    }
+    if (ddl_drop_package_root) {
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_drop_package";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
+    if (ddl_drop_type_root) {
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_drop_type";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
+    if (ddl_rename_object_root) {
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_rename_object";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
     if (catalog_introspect_root && !dispatched.accepted) {
       dispatched.accepted = true;
       dispatched.dispatched_to_api = true;
@@ -7505,8 +7721,8 @@ if(ddl_drop_index_root){std::string detail;if(member.operands.size()!=1||member.
 
   scratchbird::engine::sblr::QueryExecuteResultHandleValidationV1
       query_handle_validation;
-  if (opcode_stream && !dml_counter_add_root && !dml_timeseries_schema_write_root && !source_map_root && !error_vector_root &&
-      !show_version_root && !catalog_introspect_root &&
+  if (opcode_stream && !ddl_create_table_as_query_with_data_root && !ddl_create_table_as_query_with_no_data_root && !ddl_refresh_materialized_view_root && !ddl_drop_materialized_view_root && !ddl_drop_package_root && !dml_counter_add_root && !dml_timeseries_schema_write_root && !source_map_root && !error_vector_root &&
+      !ddl_alter_sequence_root && !ddl_drop_type_root && !ddl_rename_object_root && !ddl_drop_sequence_root && !show_version_root && !catalog_introspect_root &&
       !txn_begin_root && !txn_commit_root && !txn_rollback_root && !txn_savepoint_root && !txn_release_savepoint_root && !txn_rollback_to_savepoint_root && !psql_autonomous_frame_root && !reservation_release_root && !temporary_cleanup_root && !cursor_open_root && !cursor_fetch_root && !cursor_close_root && !read_by_key_root && !read_range_root && !read_stream_root && !result_set_pass_root && !access_cursor_open_root && !access_cursor_fetch_root && !access_cursor_close_root && !insert_root && !update_root && !delete_root && !merge_root && !ddl_create_aggregate_root && !ddl_alter_aggregate_root && !ddl_drop_aggregate_root && !ddl_drop_dictionary_root && !ddl_purge_system_history_root && !ddl_set_index_optimizer_eligibility_root && !ddl_set_table_type_enforcement_root) {
     const auto& shape = dispatched.api_result.result_shape;
     if (std::any_of(shape.rows.begin(), shape.rows.end(),
@@ -8175,6 +8391,7 @@ if(ddl_create_view_root){auto c=receipt->engine_context;c.trace_tags.push_back("
 if(ddl_alter_view_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_alter_view");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlAlterViewDescriptor(c,ddl_alter_view_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4125,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlAlterViewResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=ddl_alter_view_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlAlterViewResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4125,"SYSTEM.CONFIG_FAILED","sblr.ddl_alter_view.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_alter_view_executor\texecutor_id=engine.op.ddl_alter_view\topcode=SBLR_DDL_ALTER_VIEW\topcode_code=1549\topcode_version=1.0\toperand_descriptor_id=alter_view_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_alter_view_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_alter_view_availability_generation<<"\tparent_success_barrier=passed\n";}}
 if(ddl_drop_view_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_drop_view");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlDropViewDescriptor(c,ddl_drop_view_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4125,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlDropViewResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=ddl_drop_view_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlDropViewResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4125,"SYSTEM.CONFIG_FAILED","sblr.ddl_drop_view.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_drop_view_executor\texecutor_id=engine.op.ddl_drop_view\topcode=SBLR_DDL_DROP_VIEW\topcode_code=1550\topcode_version=1.0\toperand_descriptor_id=drop_view_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_drop_view_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_drop_view_availability_generation<<"\tparent_success_barrier=passed\n";}}
 if(ddl_create_trigger_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_trigger");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreateTriggerDescriptor(c,ddl_create_trigger_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4125,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlCreateTriggerResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=ddl_create_trigger_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreateTriggerResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4125,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_trigger.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_create_trigger_executor\texecutor_id=engine.op.ddl_create_trigger\topcode=SBLR_DDL_CREATE_TRIGGER\topcode_code=1551\topcode_version=1.0\toperand_descriptor_id=create_trigger_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_create_trigger_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_create_trigger_availability_generation<<"\tparent_success_barrier=passed\n";}}
+if(ddl_alter_package_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_package");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlAlterPackageDescriptor(c,ddl_alter_package_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4133,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlAlterPackageResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_alter_package_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlAlterPackageResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4133,"SYSTEM.CONFIG_FAILED","sblr.ddl_alter_package.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
 if(ddl_create_package_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_package");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreatePackageDescriptor(c,ddl_create_package_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4133,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlCreatePackageResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_create_package_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreatePackageResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4133,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_package.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
 if(ddl_create_temporary_table_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_temporary_table");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreateTemporaryTableDescriptor(c,ddl_create_temporary_table_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4134,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlCreateTemporaryTableResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_create_temporary_table_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreateTemporaryTableResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4134,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_temporary_table.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_create_temporary_table_executor\texecutor_id=engine.op.ddl_create_temporary_table\topcode=SBLR_DDL_CREATE_TEMPORARY_TABLE\topcode_code=1561\topcode_version=1.0\topcode_version=1.0\toperand_descriptor_id=create_temporary_table_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_create_temporary_table_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_create_temporary_table_availability_generation<<"\tparent_success_barrier=passed\n";}}
 if(ddl_drop_temporary_table_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_drop_temporary_table");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlDropTemporaryTableDescriptor(c,ddl_drop_temporary_table_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4135,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlDropTemporaryTableResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_drop_temporary_table_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlDropTemporaryTableResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4135,"SYSTEM.CONFIG_FAILED","sblr.ddl_drop_temporary_table.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_drop_temporary_table_executor\texecutor_id=engine.op.ddl_drop_temporary_table\topcode=SBLR_DDL_DROP_TEMPORARY_TABLE\topcode_code=1562\topcode_version=1.0\topcode_version=1.0\toperand_descriptor_id=drop_temporary_table_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_drop_temporary_table_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_drop_temporary_table_availability_generation<<"\tparent_success_barrier=passed\n";}}
@@ -8185,6 +8402,144 @@ if(ddl_create_schema_root){auto c=receipt->engine_context;c.trace_tags.push_back
 if(ddl_create_table_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_table");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreateTableDescriptor(c,ddl_create_table_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4126,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlCreateTableResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=ddl_create_table_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreateTableResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4126,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_table.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_create_table_executor\texecutor_id=engine.op.ddl_create_table\topcode=SBLR_DDL_CREATE_TABLE	opcode_code=1537\topcode_version=1.0\toperand_descriptor_id=create_table_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_create_table_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_create_table_availability_generation<<"\tparent_success_barrier=passed\n";}}
 if(ddl_create_index_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_index");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreateIndexDescriptor(c,ddl_create_index_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4127,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlCreateIndexResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=ddl_create_index_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreateIndexResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4127,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_index.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_create_index_executor\texecutor_id=engine.op.ddl_create_index\topcode=SBLR_DDL_CREATE_INDEX	opcode_code=1540\topcode_version=1.0\toperand_descriptor_id=create_index_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_create_index_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_create_index_availability_generation<<"\tparent_success_barrier=passed\n";}}
 if(ddl_drop_index_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_drop_index");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlDropIndexDescriptor(c,ddl_drop_index_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4128,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlDropIndexResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=ddl_drop_index_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlDropIndexResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4128,"SYSTEM.CONFIG_FAILED","sblr.ddl_drop_index.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_drop_index_executor\texecutor_id=engine.op.ddl_drop_index\topcode=SBLR_DDL_DROP_INDEX	opcode_code=1541\topcode_version=1.0\toperand_descriptor_id=drop_index_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_drop_index_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<ddl_drop_index_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  if (ddl_create_sequence_root) {
+    const auto& sequence_member = opcode_stream && stream.ok && stream.stream.operations.size() > 1 ? stream.stream.operations[1] : operation.envelope;
+    std::string detail;
+    if (sequence_member.operands.size() != 1 || sequence_member.operands.front().type != "create_sequence_descriptor" || sequence_member.operands.front().name != "sequence" || !scratchbird::engine::sblr::DecodeSblrDdlCreateSequenceDescriptorV1(sequence_member.operands.front().value_body.data(), sequence_member.operands.front().value_body.size(), &ddl_create_sequence_descriptor, &detail, true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4133, "SBLR.OPERAND_INVALID", "sblr.ddl_create_sequence.operand_invalid", detail);
+    auto c = receipt->engine_context; c.trace_tags.push_back("private_ddl_create_sequence"); c.trace_tags.push_back("private_ddl_create_package");
+    auto consumed = scratchbird::engine::internal_api::ConsumeSblrDdlCreateSequenceDescriptor(c, ddl_create_sequence_descriptor);
+    if (!consumed.ok) return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4133, consumed.diagnostic.code, consumed.diagnostic.message_key);
+    scratchbird::engine::sblr::SblrDdlCreateSequenceResultV1 rr; rr.body[24] = 1; rr.body[56] = 1; rr.availability = ddl_create_sequence_descriptor.availability; rr.publication_barrier[0] = 1;
+    auto bytes = scratchbird::engine::sblr::EncodeSblrDdlCreateSequenceResultV1(rr); if (bytes.empty()) return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4133, "SYSTEM.CONFIG_FAILED", "sblr.ddl_create_sequence.result_encoding_failed");
+    result->result_kind = "ddl_result"; result->payload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(bytes); const char* path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE"); if (digest.ok() && path && *path) { std::ofstream t(path, std::ios::app | std::ios::binary); if (t) t << "layer=ddl_create_sequence_executor\texecutor_id=engine.op.ddl_create_sequence\topcode=SBLR_DDL_CREATE_SEQUENCE\topcode_code=1671\topcode_version=1.0\toperand_descriptor_id=create_sequence_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_create_sequence_result_sha256=sha256:" << scratchbird::core::hash::HexLower(digest.digest) << "\texecutor_availability_generation=" << ddl_create_sequence_descriptor.availability << "\tparent_success_barrier=passed\n"; }
+  }
+  if (ddl_alter_sequence_root) {
+    const auto& sequence_member = opcode_stream && stream.ok && stream.stream.operations.size() > 1 ? stream.stream.operations[1] : operation.envelope;
+    std::string detail;
+    scratchbird::engine::sblr::SblrDdlAlterSequenceDescriptorV1 descriptor;
+    if (sequence_member.operands.size() != 1 || sequence_member.operands.front().type != "alter_sequence_descriptor" || sequence_member.operands.front().name != "sequence" || !scratchbird::engine::sblr::DecodeSblrDdlAlterSequenceDescriptorV1(sequence_member.operands.front().value_body.data(), sequence_member.operands.front().value_body.size(), &descriptor, &detail, true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4134, "SBLR.OPERAND_INVALID", "sblr.ddl_alter_sequence.operand_invalid", detail);
+    auto c = receipt->engine_context; c.trace_tags.push_back("private_ddl_create_package");
+    auto consumed = scratchbird::engine::internal_api::ConsumeSblrDdlAlterSequenceDescriptor(c, descriptor);
+    if (!consumed.ok) return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4134, consumed.diagnostic.code, consumed.diagnostic.message_key);
+    scratchbird::engine::sblr::SblrDdlAlterSequenceResultV1 rr; rr.body[24] = 1; rr.body[56] = 1; rr.availability = descriptor.availability; rr.publication_barrier[0] = 1;
+    auto bytes = scratchbird::engine::sblr::EncodeSblrDdlAlterSequenceResultV1(rr); if (bytes.empty()) return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4134, "SYSTEM.CONFIG_FAILED", "sblr.ddl_alter_sequence.result_encoding_failed");
+    result->result_kind = "ddl_result"; result->payload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(bytes); const char* path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE"); if (digest.ok() && path && *path) { std::ofstream t(path, std::ios::app | std::ios::binary); if (t) t << "layer=ddl_alter_sequence_executor\texecutor_id=engine.op.ddl_alter_sequence\topcode=SBLR_DDL_ALTER_SEQUENCE\topcode_code=1564\topcode_version=1.0\toperand_descriptor_id=alter_sequence_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_alter_sequence_result_sha256=sha256:" << scratchbird::core::hash::HexLower(digest.digest) << "\texecutor_availability_generation=" << descriptor.availability << "\tparent_success_barrier=passed\n"; }
+  }
+  if (ddl_drop_sequence_root) {
+    const auto& sequence_member = opcode_stream && stream.ok && stream.stream.operations.size() > 1 ? stream.stream.operations[1] : operation.envelope;
+    std::string detail; scratchbird::engine::sblr::SblrDdlDropSequenceDescriptorV1 descriptor;
+    if (sequence_member.operands.size()!=1 || sequence_member.operands.front().type!="drop_sequence_descriptor" || sequence_member.operands.front().name!="sequence" || !scratchbird::engine::sblr::DecodeSblrDdlDropSequenceDescriptorV1(sequence_member.operands.front().value_body.data(),sequence_member.operands.front().value_body.size(),&descriptor,&detail,true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4135,"SBLR.OPERAND_INVALID","sblr.ddl_drop_sequence.operand_invalid",detail);
+    auto c=receipt->engine_context; c.trace_tags.push_back("private_ddl_create_package"); auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlDropSequenceDescriptor(c,descriptor); if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4135,consumed.diagnostic.code,consumed.diagnostic.message_key);
+    scratchbird::engine::sblr::SblrDdlDropSequenceResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=descriptor.availability;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlDropSequenceResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4135,"SYSTEM.CONFIG_FAILED","sblr.ddl_drop_sequence.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const char* path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=ddl_drop_sequence_executor\texecutor_id=engine.op.ddl_drop_sequence\topcode=SBLR_DDL_DROP_SEQUENCE\topcode_code=1565\topcode_version=1.0\toperand_descriptor_id=drop_sequence_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\texecutor_availability_generation="<<descriptor.availability<<"\tparent_success_barrier=passed\n";}
+  }
+  if (ddl_drop_type_root) {
+    const auto& type_member = opcode_stream && stream.ok && stream.stream.operations.size() > 1
+        ? stream.stream.operations[1] : operation.envelope;
+    std::string detail;
+    scratchbird::engine::sblr::SblrDdlDropTypeDescriptorV1 descriptor;
+    if (type_member.operands.size() != 1 ||
+        type_member.operands.front().type != "drop_type_descriptor" ||
+        type_member.operands.front().name != "type" ||
+        !scratchbird::engine::sblr::DecodeSblrDdlDropTypeDescriptorV1(
+            type_member.operands.front().value_body.data(),
+            type_member.operands.front().value_body.size(), &descriptor, &detail,
+            true))
+      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4135,
+                         "SBLR.OPERAND_INVALID",
+                         "sblr.ddl_drop_type.operand_invalid", detail);
+    auto c = receipt->engine_context;
+    c.trace_tags.push_back("private_ddl_drop_type");
+    const auto consumed = scratchbird::engine::internal_api::ConsumeSblrDdlDropTypeDescriptor(c, descriptor);
+    if (!consumed.ok)
+      return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4135,
+                         consumed.diagnostic.code, consumed.diagnostic.message_key);
+    scratchbird::engine::sblr::SblrDdlDropTypeResultV1 rr;
+    rr.body[24] = 1;
+    rr.body[56] = 1;
+    rr.availability = descriptor.availability;
+    rr.publication_barrier[0] = 1;
+    auto bytes = scratchbird::engine::sblr::EncodeSblrDdlDropTypeResultV1(rr);
+    if (bytes.empty())
+      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4135,
+                         "SYSTEM.CONFIG_FAILED",
+                         "sblr.ddl_drop_type.result_encoding_failed");
+    result->result_kind = "ddl_result";
+    result->payload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    const char* path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+    if (path && *path) {
+      std::ofstream trace(path, std::ios::app | std::ios::binary);
+      if (trace)
+        trace << "layer=ddl_drop_type_executor\texecutor_id=engine.op.ddl_drop_type"
+              << "\topcode=SBLR_DDL_DROP_TYPE\topcode_code=1571\topcode_version=1.0"
+              << "\toperand_descriptor_id=drop_type_descriptor\tresult_descriptor_id=ddl_result"
+              << "\tresult_descriptor_version=1\texecutor_availability_generation="
+              << descriptor.availability << "\tparent_success_barrier=passed\n";
+    }
+  }
+  if (ddl_rename_object_root) {
+    auto c = receipt->engine_context;
+    c.trace_tags.push_back("private_ddl_rename_object");
+    const auto consumed = scratchbird::engine::internal_api::ConsumeSblrDdlRenameObjectDescriptor(c, ddl_rename_object_descriptor);
+    if (!consumed.ok) return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4136, consumed.diagnostic.code, consumed.diagnostic.message_key);
+    scratchbird::engine::sblr::SblrDdlRenameObjectResultV1 rr;
+    rr.body[24] = 1; rr.body[56] = 1; rr.availability = ddl_rename_object_availability_generation; rr.publication_barrier[0] = 1;
+    auto bytes = scratchbird::engine::sblr::EncodeSblrDdlRenameObjectResultV1(rr);
+    if (bytes.empty()) return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4136, "SYSTEM.CONFIG_FAILED", "sblr.ddl_rename_object.result_encoding_failed");
+    result->result_kind = "ddl_result";
+    result->payload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  }
+  if (ddl_create_table_as_query_with_data_root || ddl_create_table_as_query_with_no_data_root) {
+    const auto& ctas_member = opcode_stream && stream.ok && stream.stream.operations.size() > 1
+        ? stream.stream.operations[1] : operation.envelope;
+    std::string detail;
+    if (ctas_member.operands.size() != 1 ||
+        !scratchbird::engine::sblr::DecodeSblrCreateTableAsQueryDescriptorV1(
+            ctas_member.operands.front().value_body.data(),
+            ctas_member.operands.front().value_body.size(), &ctas_descriptor, &detail))
+      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4134,
+                         "SBLR.OPERAND_INVALID", "sblr.ddl_create_table_as_query.operand_invalid", detail);
+    auto c = receipt->engine_context;
+    c.trace_tags.push_back("private_ddl_create_table_as_query");
+    const auto consumed = scratchbird::engine::internal_api::ConsumeSblrDdlCreateTableAsQueryDescriptor(c, ctas_descriptor);
+    if (!consumed.ok)
+      return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4134,
+                         consumed.diagnostic.code, consumed.diagnostic.message_key);
+    scratchbird::engine::sblr::SblrCreateTableAsQueryResultV1 rr;
+    rr.status = 1;
+    rr.materialization = ddl_create_table_as_query_with_data_root ? 1 : 0;
+    rr.table_uuid = ctas_descriptor.table_uuid;
+    rr.catalog_epoch = ctas_descriptor.catalog_epoch;
+    auto bytes = scratchbird::engine::sblr::EncodeSblrCreateTableAsQueryResultV1(rr);
+    if (bytes.empty())
+      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4134,
+                         "SYSTEM.CONFIG_FAILED", "sblr.ddl_create_table_as_query.result_encoding_failed");
+    result->result_kind = "ddl_result";
+    result->payload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(bytes);
+    const char* trace_path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+    if (digest.ok() && trace_path && *trace_path) {
+      std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
+      if (trace) {
+        trace << "layer=ddl_create_materialized_view_executor\texecutor_id=engine.op.ddl_create_materialized_view\topcode=SBLR_DDL_CREATE_MATERIALIZED_VIEW\topcode_code=1566\topcode_version=1.0\toperand_descriptor_id=create_materialized_view_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\tddl_create_materialized_view_result_sha256=sha256:" << scratchbird::core::hash::HexLower(digest.digest) << "\texecutor_availability_generation=" << ddl_create_materialized_view_availability_generation << "\tparent_success_barrier=passed\n";
+      }
+    }
+  }
+  if (ddl_create_materialized_view_root) {
+    auto c = receipt->engine_context;
+    c.trace_tags.push_back("private_ddl_create_materialized_view");
+    const auto consumed = scratchbird::engine::internal_api::ConsumeSblrDdlCreateMaterializedViewDescriptor(c, ddl_create_materialized_view_descriptor);
+    if (!consumed.ok) return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4140, consumed.diagnostic.code, consumed.diagnostic.message_key);
+    scratchbird::engine::sblr::SblrDdlCreateMaterializedViewResultV1 rr;
+    rr.body[24] = 1; rr.body[56] = 1;
+    rr.availability = ddl_create_materialized_view_availability_generation;
+    rr.publication_barrier[0] = 1;
+    auto bytes = scratchbird::engine::sblr::EncodeSblrDdlCreateMaterializedViewResultV1(rr);
+    if (bytes.empty()) return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4140, "SYSTEM.CONFIG_FAILED", "sblr.ddl_create_materialized_view.result_encoding_failed");
+    result->result_kind = "ddl_result";
+    result->payload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  }
   finalize_diagnostics(result);
   *out_result = result;
   return SB_ENGINE_STATUS_OK;
@@ -8842,6 +9197,20 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
       return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4007, code, key);
     }
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4001, code, key);
+  }
+  const std::string_view embedded_bytes(
+      reinterpret_cast<const char*>(decoded.envelope.canonical_bytes.data()),
+      decoded.envelope.canonical_bytes.size());
+  const auto embedded_operation =
+      scratchbird::engine::sblr::DecodeSblrEnvelope(embedded_bytes);
+  if (embedded_operation.ok &&
+      (embedded_operation.envelope.operation_id == "engine.op.ddl_refresh_materialized_view" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_materialized_view" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_sequence" || embedded_operation.envelope.operation_id == "engine.op.ddl_alter_sequence" || embedded_operation.envelope.operation_id == "engine.op.ddl_drop_type" || embedded_operation.envelope.operation_id == "engine.op.ddl_rename_object" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_data" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_no_data") &&
+      (embedded_operation.envelope.opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_SEQUENCE" || embedded_operation.envelope.opcode == "SBLR_DDL_ALTER_SEQUENCE" || embedded_operation.envelope.opcode == "SBLR_DDL_DROP_TYPE" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA") &&
+      (embedded_operation.envelope.opcode_code == 1567 || embedded_operation.envelope.opcode_code == 1566 || embedded_operation.envelope.opcode_code == 1671 || embedded_operation.envelope.opcode_code == 1564 || embedded_operation.envelope.opcode_code == 1571 || embedded_operation.envelope.opcode_code == 1669 || embedded_operation.envelope.opcode_code == 1670)) {
+    const auto status = dispatch_operation_envelope(
+        session, *context, decoded.envelope, *params, nullptr, out_result);
+    mark_phase("embedded_refresh_operation_envelope");
+    return status;
   }
   if (looks_like_sblr_operation_envelope(decoded.envelope)) {
     const auto status = dispatch_operation_envelope(

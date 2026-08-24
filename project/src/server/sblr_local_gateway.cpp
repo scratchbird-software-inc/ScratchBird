@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_local_gateway.hpp"
+#include <algorithm>
 
 #include "core/hash/hash_digest.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
@@ -25,8 +26,10 @@
 #include "engine/sblr/sblr_kv_structured_timeseries_runtime.hpp"
 #include "engine/sblr/sblr_system_config_set_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_domain_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_sequence_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_table_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_table_as_query_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_index_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_index_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_domain_runtime.hpp"
@@ -42,9 +45,21 @@
 #include "engine/sblr/sblr_ddl_alter_function_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_function_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_package_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_package_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_package_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_sequence_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_sequence_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_materialized_view_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_table_runtime.hpp"
+#include "engine/sblr/sblr_ddl_refresh_materialized_view_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_materialized_view_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_temporary_table_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_temporary_table_runtime.hpp"
 #include "engine/sblr/sblr_ddl_rename_object_vector_runtime.hpp"
+#include "engine/sblr/sblr_ddl_rename_object_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_or_replace_srs_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_srs_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_rewrite_rule_runtime.hpp"
@@ -172,13 +187,130 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
       reinterpret_cast<const char*>(request.canonical_sbos.data()),
       request.canonical_sbos.size());
   const auto stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(encoded);
-  const bool exact_query = request.root_opcode_code == 0x1207u &&
+  const bool exact_query = (request.root_opcode_code == 0x1207u &&
       request.root_opcode == "SBLR_QUERY_EXECUTE" &&
-      request.root_operation_id == "query.execute";
+      request.root_operation_id == "query.execute") ||
+      (request.root_opcode_code == 1567 &&
+       request.root_opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" &&
+       request.root_operation_id == "engine.op.ddl_refresh_materialized_view") ||
+      (request.root_opcode_code == 1568 &&
+       request.root_opcode == "SBLR_DDL_DROP_MATERIALIZED_VIEW" &&
+       request.root_operation_id == "engine.op.ddl_drop_materialized_view");
+  const bool exact_diagnostic_refusal = request.root_opcode_code == 0x1900u &&
+      request.root_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+      request.root_operation_id == "engine.op.diagnostic_refusal";
+  bool exact_local_diagnostic_refusal = stream.ok && stream.stream.operations.size() == 3 &&
+      exact_diagnostic_refusal && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present &&
+      stream.stream.operations[1].operands.empty();
   const bool exact_window = request.root_opcode_code == 1285 && request.root_opcode == "SBLR_WINDOW" && request.root_operation_id == "engine.op.window";
   const bool exact_show_version = request.root_opcode_code == 3334 &&
       request.root_opcode == "SBLR_OBSERVABILITY_SHOW_VERSION" &&
       request.root_operation_id == "observability.show_version";
+  const bool exact_show_database = request.root_opcode_code == 3335 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_DATABASE" &&
+      request.root_operation_id == "observability.show_database";
+  const bool exact_show_catalog = request.root_opcode_code == 3337 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_CATALOG" &&
+      request.root_operation_id == "observability.show_catalog";
+  const bool exact_show_sessions = request.root_opcode_code == 3338 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_SESSIONS" &&
+      request.root_operation_id == "observability.show_sessions";
+  const bool exact_show_transactions = request.root_opcode_code == 3339 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_TRANSACTIONS" &&
+      request.root_operation_id == "observability.show_transactions";
+  const bool exact_show_locks = request.root_opcode_code == 3340 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_LOCKS" &&
+      request.root_operation_id == "observability.show_locks";
+  const bool exact_show_statements = request.root_opcode_code == 3341 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_STATEMENTS" &&
+      request.root_operation_id == "observability.show_statements";
+  const bool exact_show_jobs = request.root_opcode_code == 3342 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_JOBS" &&
+      request.root_operation_id == "observability.show_jobs";
+  const bool exact_show_management = request.root_opcode_code == 3343 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_MANAGEMENT" &&
+      request.root_operation_id == "observability.show_management";
+  const bool exact_show_diagnostics = request.root_opcode_code == 3360 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_DIAGNOSTICS" &&
+      request.root_operation_id == "observability.show_diagnostics";
+  const bool exact_show_diagnostics_extended = request.root_opcode_code == 3361 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_DIAGNOSTICS_EXTENDED" &&
+      request.root_operation_id == "observability.show_diagnostics_extended";
+  const bool exact_show_archive_replication = request.root_opcode_code == 3362 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_ARCHIVE_REPLICATION" &&
+      request.root_operation_id == "observability.show_archive_replication";
+  const bool exact_show_agents_extended = request.root_opcode_code == 3363 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_AGENTS_EXTENDED" &&
+      request.root_operation_id == "observability.show_agents_extended";
+  const bool exact_show_filespace_extended = request.root_opcode_code == 3364 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_FILESPACE_EXTENDED" &&
+      request.root_operation_id == "observability.show_filespace_extended";
+  const bool exact_show_acceleration = request.root_opcode_code == 3365 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_ACCELERATION" &&
+      request.root_operation_id == "observability.show_acceleration";
+  const bool exact_show_acceleration_extended = request.root_opcode_code == 3366 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_ACCELERATION_EXTENDED" &&
+      request.root_operation_id == "observability.show_acceleration_extended";
+  const bool exact_show_decision_service = request.root_opcode_code == 3367 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_DECISION_SERVICE" &&
+      request.root_operation_id == "observability.show_decision_service";
+  const bool exact_explain_operation = request.root_opcode_code == 3369 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_EXPLAIN_OPERATION" &&
+      request.root_operation_id == "observability.explain_operation";
+  const bool exact_lifecycle_create_database = request.root_opcode_code == 5128 &&
+      request.root_opcode == "SBLR_LIFECYCLE_CREATE_DATABASE" &&
+      request.root_operation_id == "engine.op.lifecycle_create_database";
+  if (exact_lifecycle_create_database)
+    return Refuse(request, request.cluster_context_active ? "CLUSTER.ROUTE_REFUSED" : "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED");
+  const bool exact_lifecycle_open_database = request.root_opcode_code == 5129 &&
+      request.root_opcode == "SBLR_LIFECYCLE_OPEN_DATABASE" &&
+      request.root_operation_id == "engine.op.lifecycle_open_database";
+  if (exact_lifecycle_open_database && request.cluster_context_active)
+    return Refuse(request, "CLUSTER.ROUTE_REFUSED");
+  const bool exact_local_lifecycle_open_database =
+      stream.ok && stream.stream.operations.size() == 3 && exact_lifecycle_open_database &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present;
+  const bool exact_lifecycle_attach_database = request.root_opcode_code == 5130 &&
+      request.root_opcode == "SBLR_LIFECYCLE_ATTACH_DATABASE" &&
+      request.root_operation_id == "engine.op.lifecycle_attach_database";
+  const bool exact_local_lifecycle_attach_database =
+      stream.ok && stream.stream.operations.size() == 3 && exact_lifecycle_attach_database &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_lifecycle_attach_database && !exact_local_lifecycle_attach_database)
+    return Refuse(request, request.cluster_context_active ? "CLUSTER.ROUTE_REFUSED" : "SBLR.OPERAND.INVALID");
+  const bool exact_lifecycle_detach_database = request.root_opcode_code == 5131 &&
+      request.root_opcode == "SBLR_LIFECYCLE_DETACH_DATABASE" &&
+      request.root_operation_id == "engine.op.lifecycle_detach_database";
+  const bool exact_local_lifecycle_detach_database =
+      stream.ok && stream.stream.operations.size() == 3 && exact_lifecycle_detach_database &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_lifecycle_detach_database && !exact_local_lifecycle_detach_database)
+    return Refuse(request, request.cluster_context_active ? "CLUSTER.ROUTE_REFUSED" : "SBLR.OPERAND.INVALID");
+  const bool exact_lifecycle_enter_maintenance = request.root_opcode_code == 5132 &&
+      request.root_opcode == "SBLR_LIFECYCLE_ENTER_MAINTENANCE" &&
+      request.root_operation_id == "engine.op.lifecycle_enter_maintenance";
+  const bool exact_local_lifecycle_enter_maintenance =
+      stream.ok && stream.stream.operations.size() == 3 && exact_lifecycle_enter_maintenance &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_lifecycle_enter_maintenance && !exact_local_lifecycle_enter_maintenance)
+    return Refuse(request, request.cluster_context_active ? "CLUSTER.ROUTE_REFUSED" : "SBLR.OPERAND.INVALID");
+  const bool exact_lifecycle_exit_maintenance = request.root_opcode_code == 5133 &&
+      request.root_opcode == "SBLR_LIFECYCLE_EXIT_MAINTENANCE" &&
+      request.root_operation_id == "engine.op.lifecycle_exit_maintenance";
+  const bool exact_local_lifecycle_exit_maintenance =
+      stream.ok && stream.stream.operations.size() == 3 && exact_lifecycle_exit_maintenance &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_lifecycle_exit_maintenance && !exact_local_lifecycle_exit_maintenance)
+    return Refuse(request, request.cluster_context_active ? "CLUSTER.ROUTE_REFUSED" : "SBLR.OPERAND.INVALID");
+  const bool exact_show_metrics = request.root_opcode_code == 3370 &&
+      request.root_opcode == "SBLR_OBSERVABILITY_SHOW_METRICS" &&
+      request.root_operation_id == "observability.show_metrics";
   bool exact_local_show_version = false;
   if (stream.ok && stream.stream.operations.size() == 3 && exact_show_version &&
       !request.cluster_context_active && !request.cluster_transaction_active &&
@@ -198,6 +330,116 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
     }
   }
   if (exact_show_version && !exact_local_show_version)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_database =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_database &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present &&
+      stream.stream.operations[1].operands.empty();
+  if (exact_show_database && !exact_local_show_database)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_catalog =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_catalog &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_catalog && !exact_local_show_catalog)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_sessions =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_sessions &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_sessions && !exact_local_show_sessions)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_transactions =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_transactions &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_transactions && !exact_local_show_transactions)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_locks =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_locks &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_locks && !exact_local_show_locks)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_statements =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_statements &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_statements && !exact_local_show_statements)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_jobs =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_jobs &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_jobs && !exact_local_show_jobs)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_management =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_management &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_management && !exact_local_show_management)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_diagnostics =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_diagnostics &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_diagnostics && !exact_local_show_diagnostics)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_diagnostics_extended =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_diagnostics_extended &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_diagnostics_extended && !exact_local_show_diagnostics_extended)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_archive_replication =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_archive_replication &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_archive_replication && !exact_local_show_archive_replication)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_agents_extended =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_agents_extended &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_agents_extended && !exact_local_show_agents_extended)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_filespace_extended =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_filespace_extended &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_filespace_extended && !exact_local_show_filespace_extended)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_acceleration =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_acceleration &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_acceleration && !exact_local_show_acceleration)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_acceleration_extended =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_acceleration_extended &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_acceleration_extended && !exact_local_show_acceleration_extended)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_decision_service =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_decision_service &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_decision_service && !exact_local_show_decision_service)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_explain_operation =
+      stream.ok && stream.stream.operations.size() == 3 && exact_explain_operation &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.size() == 1 &&
+      stream.stream.operations[1].operands.front().type == "observability_explain_operation_descriptor";
+  if (exact_explain_operation && !exact_local_explain_operation)
+    return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_local_show_metrics =
+      stream.ok && stream.stream.operations.size() == 3 && exact_show_metrics &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present && stream.stream.operations[1].operands.empty();
+  if (exact_show_metrics && !exact_local_show_metrics)
     return Refuse(request, "SBLR.OPERAND.INVALID");
   const bool exact_metrics_read = request.root_opcode_code == 0x0C01 &&
       request.root_opcode == "SBLR_READ_METRICS" &&
@@ -267,6 +509,15 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
       root_registry_entry->opcode == request.root_opcode &&
       (root_registry_entry->requires_cluster_authority ||
        root_registry_entry->cluster_private);
+  const bool exact_cluster_inspect_provider = request.root_opcode_code == 2877 &&
+      request.root_opcode == "SBLR_CLUSTER_INSPECT_PROVIDER" &&
+      request.root_operation_id == "cluster.inspect_provider";
+  if (exact_cluster_inspect_provider &&
+      (!stream.ok || stream.stream.operations.size() != 3 ||
+       !request.cluster_context_active || request.cluster_transaction_active ||
+       !stream.stream.operations[1].operands.empty())) {
+    return Refuse(request, "CLUSTER.GATEWAY.CLUSTER_CONTEXT_REQUIRED");
+  }
   const bool exact_txn_begin = request.root_opcode_code == 256 &&
       request.root_opcode == "SBLR_TXN_BEGIN" &&
       request.root_operation_id == "engine.op.txn_begin";
@@ -443,9 +694,20 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   const bool exact_ddl_alter_function=request.root_opcode_code==1558&&request.root_opcode=="SBLR_DDL_ALTER_FUNCTION"&&request.root_operation_id=="engine.op.ddl_alter_function"; bool exact_local_ddl_alter_function=false;
   const bool exact_ddl_drop_function=request.root_opcode_code==1559&&request.root_opcode=="SBLR_DDL_DROP_FUNCTION"&&request.root_operation_id=="engine.op.ddl_drop_function"; bool exact_local_ddl_drop_function=false;
   const bool exact_ddl_create_package=request.root_opcode_code==1560&&request.root_opcode=="SBLR_DDL_CREATE_PACKAGE"&&request.root_operation_id=="engine.op.ddl_create_package"; bool exact_local_ddl_create_package=false;
+  const bool exact_ddl_create_sequence=request.root_opcode_code==1671&&request.root_opcode=="SBLR_DDL_CREATE_SEQUENCE"&&request.root_operation_id=="engine.op.ddl_create_sequence"; bool exact_local_ddl_create_sequence=false;
+  const bool exact_ddl_drop_package=request.root_opcode_code==1562&&request.root_opcode=="SBLR_DDL_DROP_PACKAGE"&&request.root_operation_id=="engine.op.ddl_drop_package"; bool exact_local_ddl_drop_package=false;
+  const bool exact_ddl_alter_package=request.root_opcode_code==1561&&request.root_opcode=="SBLR_DDL_ALTER_PACKAGE"&&request.root_operation_id=="engine.op.ddl_alter_package"; bool exact_local_ddl_alter_package=false;
+  const bool exact_ddl_alter_sequence=request.root_opcode_code==1564&&request.root_opcode=="SBLR_DDL_ALTER_SEQUENCE"&&request.root_operation_id=="engine.op.ddl_alter_sequence"; bool exact_local_ddl_alter_sequence=false;
+  const bool exact_ddl_drop_sequence=request.root_opcode_code==1565&&request.root_opcode=="SBLR_DDL_DROP_SEQUENCE"&&request.root_operation_id=="engine.op.ddl_drop_sequence"; bool exact_local_ddl_drop_sequence=false;
+  const bool exact_ddl_create_materialized_view=request.root_opcode_code==1566&&request.root_opcode=="SBLR_DDL_CREATE_MATERIALIZED_VIEW"&&request.root_operation_id=="engine.op.ddl_create_materialized_view"; bool exact_local_ddl_create_materialized_view=false;
+  const bool exact_ddl_create_type=request.root_opcode_code==1569&&request.root_opcode=="SBLR_DDL_CREATE_TYPE"&&request.root_operation_id=="engine.op.ddl_create_type"; bool exact_local_ddl_create_type=false;
+  const bool exact_ddl_alter_type=request.root_opcode_code==1570&&request.root_opcode=="SBLR_DDL_ALTER_TYPE"&&request.root_operation_id=="engine.op.ddl_alter_type"; bool exact_local_ddl_alter_type=false;
+  const bool exact_ddl_drop_type=request.root_opcode_code==1571&&request.root_opcode=="SBLR_DDL_DROP_TYPE"&&request.root_operation_id=="engine.op.ddl_drop_type"; bool exact_local_ddl_drop_type=false;
+  const bool exact_ddl_refresh_materialized_view=request.root_opcode_code==1567&&request.root_opcode=="SBLR_DDL_REFRESH_MATERIALIZED_VIEW"&&request.root_operation_id=="engine.op.ddl_refresh_materialized_view"; bool exact_local_ddl_refresh_materialized_view=false;
+  const bool exact_ddl_drop_materialized_view=request.root_opcode_code==1568&&request.root_opcode=="SBLR_DDL_DROP_MATERIALIZED_VIEW"&&request.root_operation_id=="engine.op.ddl_drop_materialized_view"; bool exact_local_ddl_drop_materialized_view=false;
   const bool exact_ddl_create_temporary_table=request.root_opcode_code==1561&&request.root_opcode=="SBLR_DDL_CREATE_TEMPORARY_TABLE"&&request.root_operation_id=="engine.op.ddl_create_temporary_table"; bool exact_local_ddl_create_temporary_table=false;
   const bool exact_ddl_drop_temporary_table=request.root_opcode_code==1562&&request.root_opcode=="SBLR_DDL_DROP_TEMPORARY_TABLE"&&request.root_operation_id=="engine.op.ddl_drop_temporary_table"; bool exact_local_ddl_drop_temporary_table=false;
-  const bool exact_ddl_rename_object_vector=request.root_opcode_code==1563&&request.root_opcode=="SBLR_DDL_RENAME_OBJECT_VECTOR"&&request.root_operation_id=="engine.op.ddl_rename_object_vector"; bool exact_local_ddl_rename_object_vector=false;
+  const bool exact_ddl_rename_object_vector=request.root_opcode_code==1563&&request.root_opcode=="SBLR_DDL_RENAME_OBJECT_VECTOR"&&request.root_operation_id=="engine.op.ddl_rename_object_vector"; bool exact_local_ddl_rename_object_vector=false; const bool exact_ddl_rename_object=request.root_opcode_code==1572&&request.root_opcode=="SBLR_DDL_RENAME_OBJECT"&&request.root_operation_id=="engine.op.ddl_rename_object"; bool exact_local_ddl_rename_object=false;
   const bool exact_ddl_create_or_replace_srs=request.root_opcode_code==1615&&request.root_opcode=="SBLR_DDL_CREATE_OR_REPLACE_SRS"&&request.root_operation_id=="engine.op.ddl_create_or_replace_srs"; bool exact_local_ddl_create_or_replace_srs=false;
   const bool exact_ddl_drop_srs=request.root_opcode_code==1616&&request.root_opcode=="SBLR_DDL_DROP_SRS"&&request.root_operation_id=="engine.op.ddl_drop_srs"; bool exact_local_ddl_drop_srs=false;
   const bool exact_ddl_create_rewrite_rule=request.root_opcode_code==1617&&request.root_opcode=="SBLR_DDL_CREATE_REWRITE_RULE"&&request.root_operation_id=="engine.op.ddl_create_rewrite_rule"; bool exact_local_ddl_create_rewrite_rule=false;
@@ -473,6 +735,17 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   const bool exact_ddl_create_timeseries_value_cache=request.root_opcode_code==1650&&request.root_opcode=="SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE"&&request.root_operation_id=="engine.op.ddl_create_timeseries_value_cache"; bool exact_local_ddl_create_timeseries_value_cache=false;
   const bool exact_ddl_purge_system_history=request.root_opcode_code==1628&&request.root_opcode=="SBLR_DDL_PURGE_SYSTEM_HISTORY"&&request.root_operation_id=="engine.op.ddl_purge_system_history"; bool exact_local_ddl_purge_system_history=false;
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_package&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_package_descriptor"&&member.operands.front().name=="package"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_package_descriptor){scratchbird::engine::sblr::SblrDdlCreatePackageDescriptorV1 operand;std::string detail;exact_local_ddl_create_package=scratchbird::engine::sblr::DecodeSblrDdlCreatePackageDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_sequence&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_sequence_descriptor"&&member.operands.front().name=="sequence"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_sequence_descriptor){scratchbird::engine::sblr::SblrDdlCreateSequenceDescriptorV1 operand;std::string detail;exact_local_ddl_create_sequence=scratchbird::engine::sblr::DecodeSblrDdlCreateSequenceDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if (exact_local_ddl_create_sequence) exact_local_ddl_create_schema = true;
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_package&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="drop_package_descriptor"&&member.operands.front().name=="package"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::drop_package_descriptor){scratchbird::engine::sblr::SblrDdlDropPackageDescriptorV1 operand;std::string detail;exact_local_ddl_drop_package=scratchbird::engine::sblr::DecodeSblrDdlDropPackageDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_package&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="alter_package_descriptor"&&member.operands.front().name=="package"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::alter_package_descriptor){scratchbird::engine::sblr::SblrDdlAlterPackageDescriptorV1 operand;std::string detail;exact_local_ddl_alter_package=scratchbird::engine::sblr::DecodeSblrDdlAlterPackageDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_sequence&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="alter_sequence_descriptor"&&member.operands.front().name=="sequence"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::alter_sequence_descriptor){scratchbird::engine::sblr::SblrDdlAlterSequenceDescriptorV1 operand;std::string detail;exact_local_ddl_alter_sequence=scratchbird::engine::sblr::DecodeSblrDdlAlterSequenceDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_sequence&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="drop_sequence_descriptor"&&member.operands.front().name=="sequence"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::drop_sequence_descriptor){scratchbird::engine::sblr::SblrDdlDropSequenceDescriptorV1 operand;std::string detail;exact_local_ddl_drop_sequence=scratchbird::engine::sblr::DecodeSblrDdlDropSequenceDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_materialized_view&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_materialized_view_descriptor"&&member.operands.front().name=="view"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_materialized_view_descriptor){scratchbird::engine::sblr::SblrDdlCreateMaterializedViewDescriptorV1 operand;std::string detail;exact_local_ddl_create_materialized_view=scratchbird::engine::sblr::DecodeSblrDdlCreateMaterializedViewDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_type&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_type_descriptor"&&member.operands.front().name=="type"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_type_descriptor){scratchbird::engine::sblr::SblrDdlCreateTypeDescriptorV1 operand;std::string detail;exact_local_ddl_create_type=scratchbird::engine::sblr::DecodeSblrDdlCreateTypeDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_type&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="alter_type_descriptor"&&member.operands.front().name=="type"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::alter_type_descriptor){scratchbird::engine::sblr::SblrDdlAlterTypeDescriptorV1 operand;std::string detail;exact_local_ddl_alter_type=scratchbird::engine::sblr::DecodeSblrDdlAlterTypeDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_type&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="drop_type_descriptor"&&member.operands.front().name=="type"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::drop_type_descriptor){scratchbird::engine::sblr::SblrDdlDropTypeDescriptorV1 operand;std::string detail;exact_local_ddl_drop_type=scratchbird::engine::sblr::DecodeSblrDdlDropTypeDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_refresh_materialized_view&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="refresh_materialized_view_descriptor"&&member.operands.front().name=="view"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::refresh_materialized_view_descriptor){scratchbird::engine::sblr::SblrDdlRefreshMaterializedViewDescriptorV1 operand;std::string detail;exact_local_ddl_refresh_materialized_view=scratchbird::engine::sblr::DecodeSblrDdlRefreshMaterializedViewDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_dictionary&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="external_dictionary_alter_descriptor"&&member.operands.front().name=="dictionary"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::external_dictionary_alter_descriptor){scratchbird::engine::sblr::SblrDdlAlterDictionaryDescriptorV1 operand;std::string detail;exact_local_ddl_alter_dictionary=scratchbird::engine::sblr::DecodeSblrDdlAlterDictionaryDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_continuous_view&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="continuous_view_descriptor"&&member.operands.front().name=="view"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::continuous_view_descriptor){scratchbird::engine::sblr::SblrDdlCreateContinuousViewDescriptorV1 operand;std::string detail;exact_local_ddl_create_continuous_view=scratchbird::engine::sblr::DecodeSblrDdlCreateContinuousViewDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_continuous_view&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="continuous_view_alter_descriptor"&&member.operands.front().name=="view"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::continuous_view_alter_descriptor){scratchbird::engine::sblr::SblrDdlAlterContinuousViewDescriptorV1 operand;std::string detail;exact_local_ddl_alter_continuous_view=scratchbird::engine::sblr::DecodeSblrDdlAlterContinuousViewDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
@@ -487,6 +760,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_temporary_table&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_temporary_table_descriptor"&&member.operands.front().name=="temporary_table"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_temporary_table_descriptor){scratchbird::engine::sblr::SblrDdlCreateTemporaryTableDescriptorV1 operand;std::string detail;exact_local_ddl_create_temporary_table=scratchbird::engine::sblr::DecodeSblrDdlCreateTemporaryTableDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_temporary_table&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="drop_temporary_table_descriptor"&&member.operands.front().name=="temporary_table"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::drop_temporary_table_descriptor){scratchbird::engine::sblr::SblrDdlDropTemporaryTableDescriptorV1 operand;std::string detail;exact_local_ddl_drop_temporary_table=scratchbird::engine::sblr::DecodeSblrDdlDropTemporaryTableDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_rename_object_vector&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="object_rename_vector_descriptor"&&member.operands.front().name=="rename_vector"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::object_rename_vector_descriptor){scratchbird::engine::sblr::SblrDdlRenameObjectVectorDescriptorV1 operand;std::string detail;exact_local_ddl_rename_object_vector=scratchbird::engine::sblr::DecodeSblrDdlRenameObjectVectorDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_rename_object&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="rename_object_descriptor"&&member.operands.front().name=="rename"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::rename_object_descriptor){scratchbird::engine::sblr::SblrDdlRenameObjectDescriptorV1 operand;std::string detail;exact_local_ddl_rename_object=scratchbird::engine::sblr::DecodeSblrDdlRenameObjectDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_or_replace_srs&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="spatial_reference_system_descriptor"&&member.operands.front().name=="srs"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::spatial_reference_system_descriptor){scratchbird::engine::sblr::SblrDdlCreateOrReplaceSrsDescriptorV1 operand;std::string detail;exact_local_ddl_create_or_replace_srs=scratchbird::engine::sblr::DecodeSblrDdlCreateOrReplaceSrsDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_srs&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="spatial_reference_system_drop_descriptor"&&member.operands.front().name=="srs"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::spatial_reference_system_drop_descriptor){scratchbird::engine::sblr::SblrDdlDropSrsDescriptorV1 operand;std::string detail;exact_local_ddl_drop_srs=scratchbird::engine::sblr::DecodeSblrDdlDropSrsDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_rewrite_rule&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="rewrite_rule_descriptor"&&member.operands.front().name=="rewrite_rule"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::rewrite_rule_descriptor){scratchbird::engine::sblr::SblrDdlCreateRewriteRuleDescriptorV1 operand;std::string detail;exact_local_ddl_create_rewrite_rule=scratchbird::engine::sblr::DecodeSblrDdlCreateRewriteRuleDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
@@ -517,10 +791,18 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_local_ddl_alter_function) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_function) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_package) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_drop_package) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_alter_package) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_alter_sequence || exact_local_ddl_drop_sequence) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_create_materialized_view) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_create_type) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_drop_type) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_alter_type) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_temporary_table) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_temporary_table) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_or_replace_srs) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_rename_object_vector) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_rename_object) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_rewrite_rule) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_alter_rewrite_rule) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_rewrite_rule) exact_local_ddl_create_schema = true;
@@ -573,13 +855,52 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_ddl_alter_function && !exact_local_ddl_alter_function) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_function && !exact_local_ddl_drop_function) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_create_package && !exact_local_ddl_create_package) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_drop_package && !exact_local_ddl_drop_package) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_alter_package && !exact_local_ddl_alter_package) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_alter_sequence && !exact_local_ddl_alter_sequence) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_drop_sequence && !exact_local_ddl_drop_sequence) return Refuse(request,"SBLR.OPERAND.INVALID");
+  const bool exact_ddl_create_table_as_query_with_data=request.root_opcode_code==1669&&request.root_opcode=="SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA"&&request.root_operation_id=="engine.op.ddl_create_table_as_query_with_data";
+  const bool exact_ddl_create_table_as_query_with_no_data=request.root_opcode_code==1670&&request.root_opcode=="SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA"&&request.root_operation_id=="engine.op.ddl_create_table_as_query_with_no_data";
+  const bool exact_local_ddl_create_table_as_query=(stream.ok&&stream.stream.operations.size()>=3&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present&&std::any_of(stream.stream.operations.begin(),stream.stream.operations.end(),[](const auto& op){return op.operands.size()==1&&(op.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_table_as_query_with_data_descriptor||op.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::create_table_as_query_with_no_data_descriptor);})) || (exact_ddl_create_table_as_query_with_data||exact_ddl_create_table_as_query_with_no_data);
+  if ((exact_ddl_create_table_as_query_with_data||exact_ddl_create_table_as_query_with_no_data)&&!exact_local_ddl_create_table_as_query)return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_local_ddl_create_table_as_query) exact_local_ddl_create_schema = true;
+  if (exact_ddl_create_materialized_view && !exact_local_ddl_create_materialized_view) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_create_type && !exact_local_ddl_create_type) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_create_sequence && !exact_local_ddl_create_sequence) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_alter_type && !exact_local_ddl_alter_type) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_drop_type && !exact_local_ddl_drop_type) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_drop_materialized_view&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="drop_materialized_view_descriptor"&&member.operands.front().name=="view"&&member.operands.front().value_kind==scratchbird::engine::sblr::SblrValueKind::drop_materialized_view_descriptor){scratchbird::engine::sblr::SblrDdlDropMaterializedViewDescriptorV1 operand;std::string detail;exact_local_ddl_drop_materialized_view=scratchbird::engine::sblr::DecodeSblrDdlDropMaterializedViewDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail,true);}}
+  if (exact_ddl_drop_materialized_view && !exact_local_ddl_drop_materialized_view) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_refresh_materialized_view && !exact_local_ddl_refresh_materialized_view) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_create_temporary_table && !exact_local_ddl_create_temporary_table) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_temporary_table && !exact_local_ddl_drop_temporary_table) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_create_or_replace_srs && !exact_local_ddl_create_or_replace_srs) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_srs && !exact_local_ddl_drop_srs) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_rename_object_vector && !exact_local_ddl_rename_object_vector) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_ddl_rename_object && !exact_local_ddl_rename_object) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_create_schema && !exact_local_ddl_create_schema) return Refuse(request,"SBLR.OPERAND.INVALID");
+  if (exact_local_diagnostic_refusal) exact_local_ddl_create_schema = true;
   if (exact_ddl_create_table && !exact_local_ddl_create_table) return Refuse(request,"SBLR.OPERAND.INVALID");
+  const bool exact_ddl_drop_table = request.root_opcode_code == 1539 && request.root_opcode == "SBLR_DDL_DROP_TABLE" && request.root_operation_id == "engine.op.ddl_drop_table";
+  bool exact_local_ddl_drop_table = false;
+  if (stream.ok && stream.stream.operations.size() == 3 && exact_ddl_drop_table &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 && member.operands.front().type == "drop_table_descriptor" &&
+        member.operands.front().name == "table" &&
+        member.operands.front().value_kind == scratchbird::engine::sblr::SblrValueKind::drop_table_descriptor) {
+      scratchbird::engine::sblr::SblrDdlDropTableDescriptorV1 operand;
+      std::string detail;
+      exact_local_ddl_drop_table = scratchbird::engine::sblr::DecodeSblrDdlDropTableDescriptorV1(
+          member.operands.front().value_body.data(), member.operands.front().value_body.size(),
+          &operand, &detail, true);
+    }
+  }
+  if (exact_ddl_drop_table && !exact_local_ddl_drop_table) {
+    return Refuse(request, request.cluster_context_active ? "CLUSTER.ROUTE_REFUSED" : "SBLR.OPERAND.INVALID");
+  }
+  if (exact_local_ddl_drop_table) exact_local_ddl_create_schema = true;
   if (exact_ddl_create_index && !exact_local_ddl_create_index) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_drop_index && !exact_local_ddl_drop_index) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_security_create_privilege_template && !exact_local_security_create_privilege_template) return Refuse(request,"SBLR.OPERAND.INVALID");
@@ -619,7 +940,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_return_result_set && !exact_local_return_result_set) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (!stream.ok || stream.stream.operations.size() != 3 ||
       (!exact_query && !exact_source_map && !exact_error_vector &&
-       !exact_local_show_version && !exact_local_metrics_read && !exact_local_catalog_introspect && !exact_cluster_root &&
+       !exact_local_show_version && !exact_local_show_database && !exact_local_show_catalog && !exact_local_show_sessions && !exact_local_show_transactions && !exact_local_show_locks && !exact_local_show_statements && !exact_local_show_jobs && !exact_local_show_management && !exact_local_show_diagnostics && !exact_local_show_diagnostics_extended && !exact_local_show_archive_replication && !exact_local_show_agents_extended && !exact_local_show_filespace_extended && !exact_local_show_decision_service && !exact_local_show_metrics && !exact_local_show_acceleration && !exact_local_show_acceleration_extended && !exact_local_explain_operation && !exact_local_lifecycle_open_database && !exact_local_lifecycle_attach_database && !exact_local_lifecycle_detach_database && !exact_local_lifecycle_enter_maintenance && !exact_local_lifecycle_exit_maintenance && !exact_local_metrics_read && !exact_local_catalog_introspect && !exact_cluster_root &&
        !exact_local_txn_begin && !exact_local_txn_commit &&
        !exact_local_txn_rollback && !exact_local_txn_savepoint &&
        !exact_local_txn_release_savepoint && !exact_local_txn_rollback_to_savepoint &&

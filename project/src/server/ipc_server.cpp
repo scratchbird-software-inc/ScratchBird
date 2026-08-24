@@ -3403,8 +3403,17 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropIndexRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterDomainRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateViewRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateMaterializedViewRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterViewRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropViewRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlRefreshMaterializedViewRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropMaterializedViewRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTypeRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterTypeRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropTypeRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTableAsQueryWithDataRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTableAsQueryWithNoDataRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropTableRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTriggerRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterTriggerRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropTriggerRequest) ||
@@ -3415,9 +3424,14 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterFunctionRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropFunctionRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreatePackageRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropPackageRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterPackageRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterSequenceRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropSequenceRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTemporaryTableRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropTemporaryTableRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlRenameObjectVectorRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlRenameObjectRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateOrReplaceSrsRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropSrsRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateRewriteRuleRequest) ||
@@ -4009,8 +4023,17 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==184&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropIndexRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropIndex(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==186&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterDomainRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterDomain(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==188&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateView(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateMaterializedViewRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateMaterializedViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateMaterializedView(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==190&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterView(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==192&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropView(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlRefreshMaterializedViewRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlRefreshMaterializedViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlRefreshMaterializedView(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropMaterializedViewRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropMaterializedViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropMaterializedView(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTypeRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateTypeRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateType(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterTypeRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterTypeRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterType(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropTypeRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropTypeRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropType(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropTableRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropTableRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropTable(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTableAsQueryWithDataRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateTableAsQueryWithDataRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateTableAsQueryWithData(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTableAsQueryWithNoDataRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateTableAsQueryWithNoDataRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateTableAsQueryWithNoData(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==194&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateTriggerRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateTrigger(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==196&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterTriggerRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterTrigger(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==198&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropTriggerRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropTrigger(session_registry,engine_state,frame)));return true;}
@@ -4021,9 +4044,14 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==208&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterFunctionRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterFunction(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==210&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropFunctionRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropFunction(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==212&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreatePackageRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreatePackage(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropPackageRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropPackageRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropPackage(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterPackageRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterPackageRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterPackage(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterSequenceRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterSequenceRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterSequence(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropSequenceRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropSequenceRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropSequence(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==214&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateTemporaryTableRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateTemporaryTable(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==216&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropTemporaryTableRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropTemporaryTable(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==218&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlRenameObjectVectorRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlRenameObjectVector(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==230&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlRenameObjectRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlRenameObject(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==220&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateOrReplaceSrsRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateOrReplaceSrs(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==222&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropSrsRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropSrs(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==224&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateRewriteRuleRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateRewriteRule(session_registry,engine_state,frame)));return true;}
