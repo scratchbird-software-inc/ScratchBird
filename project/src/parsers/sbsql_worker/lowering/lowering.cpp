@@ -27193,6 +27193,11 @@ void PopulateConstraintDdlAuthority(SblrEnvelope* envelope, const ConstraintDdlI
 void PopulateSynonymDdlAuthority(SblrEnvelope* envelope, const SynonymDdlInfo& info) {
   if (!info.active || !info.valid) return;
   envelope->operation_id = info.operation_id;
+  envelope->sblr_opcode = info.create ? "SBLR_DDL_CREATE_SYNONYM" : "SBLR_DDL_DROP_OBJECT";
+  envelope->engine_api_operation_id = info.operation_id;
+  envelope->engine_api_function = info.create ? "EngineCreateSynonym" : "EngineDropObject";
+  envelope->operation_family = "sblr.catalog.mutation.v3";
+  envelope->sblr_operation_key = "sblr.catalog.mutation.v3";
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps, "authority.server.resolve_name_registry_public");
   AppendIfMissing(&envelope->required_authority_steps, "authority.engine.catalog_synonym_descriptor_required");
