@@ -97,6 +97,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_drop_fdw_runtime.cpp
   sblr_sec_alter_user_runtime.cpp
   sblr_sec_drop_role_runtime.cpp
+  sblr_sec_create_role_runtime.cpp
   sblr_security_create_user_runtime.cpp
   sblr_ddl_drop_foreign_table_runtime.cpp
   sblr_ddl_drop_package_runtime.cpp
