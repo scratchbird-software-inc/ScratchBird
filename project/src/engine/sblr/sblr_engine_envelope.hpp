@@ -173,6 +173,7 @@ enum class SblrValueKind : std::uint16_t {
   drop_procedure_descriptor = 96,
   create_function_descriptor = 97,
   alter_function_descriptor = 98, drop_function_descriptor = 99, create_synonym_descriptor = 156, create_foreign_table_descriptor = 160, create_fdw_descriptor = 161, drop_foreign_table_descriptor = 159, drop_fdw_descriptor = 162, security_create_user_descriptor = 163, create_package_descriptor = 100, create_temporary_table_descriptor = 101,
+  alter_user_descriptor = 164,
   drop_temporary_table_descriptor = 102,
   drop_package_descriptor = 142,
   alter_package_descriptor = 150,

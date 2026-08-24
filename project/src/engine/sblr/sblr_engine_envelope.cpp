@@ -47,6 +47,7 @@
 #include "sblr_ddl_drop_rewrite_rule_runtime.hpp"
 #include "sblr_ddl_validate_constraint_runtime.hpp"
 #include "sblr_security_create_privilege_template_runtime.hpp"
+#include "sblr_sec_alter_user_runtime.hpp"
 #include "sblr_security_alter_privilege_template_runtime.hpp"
 #include "sblr_security_drop_privilege_template_runtime.hpp"
 #include "sblr_database_create_template_clone_runtime.hpp"
@@ -727,6 +728,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::create_fdw_descriptor: { SblrDdlCreateFdwDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateFdwDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_fdw_descriptor: { SblrDdlDropFdwDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropFdwDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::security_create_user_descriptor: { SblrSecurityCreateUserDescriptorV1 operand; std::string detail; return DecodeSblrSecurityCreateUserDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_user_descriptor: { SblrSecAlterUserDescriptorV1 operand; std::string detail; return DecodeSblrSecAlterUserDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_foreign_table_descriptor: { SblrDdlDropForeignTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropForeignTableDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_synonym_descriptor: { SblrDdlDropSynonymDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSynonymDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_package_descriptor: { SblrDdlDropPackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropPackageDescriptorV1(data,size,&operand,&detail,true); }
