@@ -27354,7 +27354,7 @@ void PopulateIndexTemplateDdlAuthority(SblrEnvelope* envelope, const IndexTempla
 void PopulateCommentOnDdlAuthority(SblrEnvelope* envelope, const CommentOnDdlInfo& info) {
   if (!info.active || !info.valid) return;
   envelope->operation_id = "ddl.comment_on_object";
-  envelope->sblr_opcode = "SBLR_DDL_COMMENT_ON_OBJECT";
+  envelope->sblr_opcode = "SBLR_DDL_COMMENT_ON";
   envelope->engine_api_operation_id = "ddl.comment_on_object";
   envelope->operation_family = "sblr.catalog.mutation.v3";
   envelope->sblr_operation_key = "sblr.catalog.mutation.v3";
@@ -48390,7 +48390,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
   }
   if (envelope.payload.find("\"catalog_envelope_kind\":\"comment_on_object_ddl\"") != std::string::npos) {
     if (envelope.operation_id != "ddl.comment_on_object" ||
-        envelope.sblr_opcode != "SBLR_DDL_COMMENT_ON_OBJECT") {
+        envelope.sblr_opcode != "SBLR_DDL_COMMENT_ON") {
       AddVerifierError(&result.messages, "SBSQL.SBLR.COMMENT_ON_OPERATION_INVALID",
                        "COMMENT ON SBLR must use ddl.comment_on_object and SBLR_DDL_COMMENT_ON_OBJECT");
     }

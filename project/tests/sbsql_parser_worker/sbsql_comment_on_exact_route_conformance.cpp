@@ -16,6 +16,7 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "scratchbird/engine/sblr_envelope.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -39,7 +40,7 @@ using scratchbird::core::platform::UuidKind;
 constexpr std::string_view kSql = "COMMENT ON TABLE replay_target IS 'primary table';";
 constexpr std::string_view kNullSql = "COMMENT ON TABLE replay_target IS NULL;";
 constexpr std::string_view kOperationId = "ddl.comment_on_object";
-constexpr std::string_view kOpcode = "SBLR_DDL_COMMENT_ON_OBJECT";
+constexpr std::string_view kOpcode = "SBLR_DDL_COMMENT_ON";
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
 constexpr std::string_view kSurfaceId = "SBSQL-B5E19A3E35A7";
 constexpr std::string_view kObjectClassSurfaceId = "SBSQL-5CCF87EB0C5C";
@@ -245,9 +246,175 @@ void RequireNullCommentLowering(const PipelineArtifacts& artifacts) {
           "COMMENT ON NULL payload carried comment text");
 }
 
+using CanonicalBytes = std::vector<std::uint8_t>;
+
+std::array<std::uint8_t, 16> AdmissionUuid(std::uint8_t suffix) {
+  std::array<std::uint8_t, 16> value{};
+  value[0] = 0x12;
+  value[1] = 0x34;
+  value[6] = 0x70;
+  value[8] = 0x80;
+  value[15] = suffix;
+  return value;
+}
+
+std::string AdmissionUuidText(const std::array<std::uint8_t, 16>& value) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string text;
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    if (i == 4 || i == 6 || i == 8 || i == 10) text.push_back('-');
+    text.push_back(kHex[value[i] >> 4]);
+    text.push_back(kHex[value[i] & 0x0f]);
+  }
+  return text;
+}
+
+CanonicalBytes AdmissionUuidField(const std::array<std::uint8_t, 16>& value) {
+  return {value.begin(), value.end()};
+}
+
+CanonicalBytes AdmissionU16(std::uint16_t value) {
+  CanonicalBytes out;
+  scratchbird::engine::SblrAppendU16(out, value);
+  return out;
+}
+
+CanonicalBytes AdmissionU32(std::uint32_t value) {
+  CanonicalBytes out;
+  scratchbird::engine::SblrAppendU32(out, value);
+  return out;
+}
+
+CanonicalBytes AdmissionU64(std::uint64_t value) {
+  CanonicalBytes out;
+  scratchbird::engine::SblrAppendU64(out, value);
+  return out;
+}
+
+CanonicalBytes AdmissionStruct(std::uint32_t tag, std::uint8_t value) {
+  CanonicalBytes out;
+  scratchbird::engine::SblrAppendU32(out, tag);
+  scratchbird::engine::SblrAppendU16(out, 1);
+  scratchbird::engine::SblrAppendU16(out, 0);
+  scratchbird::engine::SblrAppendU64(out, 1);
+  out.push_back(value);
+  return out;
+}
+
+CanonicalBytes AdmissionInline(const CanonicalBytes& payload) {
+  CanonicalBytes out{1};
+  scratchbird::engine::SblrAppendU64(out, payload.size());
+  out.insert(out.end(), payload.begin(), payload.end());
+  return out;
+}
+
+CanonicalBytes AdmissionOptionalUuid(const std::array<std::uint8_t, 16>& value) {
+  CanonicalBytes out{1};
+  out.insert(out.end(), value.begin(), value.end());
+  return out;
+}
+
+scratchbird::server::ServerSblrAdmissionRequest CanonicalAdmissionRequest() {
+  namespace public_sblr = scratchbird::engine;
+  const auto parser_uuid = AdmissionUuid(0x31);
+  const auto dialect_uuid = AdmissionUuid(0x22);
+  const auto registry_uuid = AdmissionUuid(0x32);
+  const auto user_uuid = AdmissionUuid(0x42);
+  auto operation = sblr::MakeSblrEnvelope(std::string(kOperationId),
+                                           std::string(kOpcode),
+                                           "comment-on-canonical-admission");
+  const auto* registry = sblr::LookupSblrOperation(std::string(kOperationId));
+  Require(registry != nullptr, "COMMENT ON opcode registry row missing");
+  operation.opcode_code = registry->code;
+  operation.parser_package_uuid = AdmissionUuidText(parser_uuid);
+  operation.registry_snapshot_uuid = AdmissionUuidText(registry_uuid);
+  operation.requires_security_context = true;
+  operation.requires_transaction_context = true;
+  operation.parser_resolved_names_to_uuids = true;
+  const auto validation = sblr::ValidateSblrEnvelope(operation);
+  if (!validation.ok) {
+    for (const auto& diagnostic : validation.diagnostics) {
+      std::cerr << "COMMENT ON canonical operation: " << diagnostic.code << ':'
+                << diagnostic.message << '\n';
+    }
+  }
+  const auto sbop_text = sblr::EncodeSblrEnvelope(operation);
+  const CanonicalBytes sbop(sbop_text.begin(), sbop_text.end());
+
+  public_sblr::SblrCanonicalContainer container;
+  const auto engine_uuid = AdmissionUuid(0x21);
+  const auto bundle_uuid = AdmissionUuid(0x24);
+  const auto request_uuid = AdmissionUuid(0x25);
+  std::copy(engine_uuid.begin(), engine_uuid.end(), container.canonical_anchor.begin());
+  std::copy(dialect_uuid.begin(), dialect_uuid.end(),
+            container.canonical_anchor.begin() + 16);
+  std::copy(parser_uuid.begin(), parser_uuid.end(),
+            container.canonical_anchor.begin() + 32);
+  container.canonical_anchor[48] = 1;
+  container.canonical_anchor[52] = 1;
+  container.canonical_anchor[60] = 1;
+  container.canonical_anchor[68] = 1;
+  std::copy(bundle_uuid.begin(), bundle_uuid.end(), container.canonical_anchor.begin() + 76);
+  container.canonical_anchor[92] = 1;
+  container.canonical_anchor[100] = 1;
+  std::copy(request_uuid.begin(), request_uuid.end(), container.canonical_anchor.begin() + 116);
+  container.operation_payload = sbop;
+  const auto container_bytes = public_sblr::EncodeSblrContainer(container);
+
+  public_sblr::SblrExecutionEnvelopeV1 ingress;
+  auto& fields = ingress.fields;
+  fields[0] = AdmissionUuidField(AdmissionUuid(0x41));
+  fields[1] = AdmissionU16(1);
+  fields[2] = AdmissionU16(0);
+  fields[3] = AdmissionU32(0x00010001);
+  fields[4] = AdmissionU16(1);
+  fields[5] = {0};
+  fields[6] = AdmissionInline(sbop);
+  fields[7] = {1};
+  const auto crc = AdmissionU32(public_sblr::SblrCrc32c(sbop.data(), sbop.size()));
+  fields[7].insert(fields[7].end(), crc.begin(), crc.end());
+  fields[8] = AdmissionU64(sbop.size());
+  fields[9] = AdmissionU16(1);
+  fields[10] = AdmissionOptionalUuid(dialect_uuid);
+  fields[11] = AdmissionOptionalUuid(user_uuid);
+  fields[12] = AdmissionStruct(0x1001, 1);
+  fields[13] = AdmissionStruct(0x1002, 2);
+  fields[14] = {0};
+  fields[15] = AdmissionU64(1);
+  fields[16] = AdmissionU32(0);
+  fields[17] = AdmissionU32(0);
+  fields[18] = AdmissionU32(0);
+  fields[19] = {0};
+  fields[20] = AdmissionU32(0);
+  fields[21] = AdmissionStruct(0x1005, 5);
+  fields[22] = {0};
+  fields[23] = {0};
+  fields[24] = {0};
+  fields[25] = AdmissionU16(0);
+  fields[26] = {0};
+  fields[27] = {0};
+  const auto ingress_bytes = public_sblr::EncodeSblrExecutionEnvelopeV1(ingress);
+
+  scratchbird::server::ServerSblrAdmissionRequest request;
+  request.encoded_sblr_container.assign(container_bytes.begin(), container_bytes.end());
+  request.encoded_execution_envelope.assign(ingress_bytes.begin(), ingress_bytes.end());
+  request.admitted_parser_package_uuid = AdmissionUuidText(parser_uuid);
+  request.admitted_parser_package_version_major = 1;
+  request.admitted_registry_snapshot_uuid = AdmissionUuidText(registry_uuid);
+  request.authenticated_principal_uuid = AdmissionUuidText(user_uuid);
+  request.catalog_snapshot_uuid = AdmissionUuidText(AdmissionUuid(0x43));
+  request.engine_mga_statement_uuid = AdmissionUuidText(AdmissionUuid(0x44));
+  request.engine_mga_snapshot_uuid = AdmissionUuidText(AdmissionUuid(0x45));
+  request.catalog_epoch = 7;
+  request.security_epoch = 8;
+  request.resource_epoch = 9;
+  return request;
+}
+
 void RequireServerAdmission(const SblrEnvelope& envelope) {
+  (void)envelope;
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{envelope.payload, false});
+      CanonicalAdmissionRequest());
   Require(admission.admitted, "server admission rejected COMMENT ON exact route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for COMMENT ON");

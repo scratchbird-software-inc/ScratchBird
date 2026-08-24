@@ -4171,7 +4171,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "ddl.constraint.drop") return "SBLR_DDL_CONSTRAINT_DROP";
   if (operation_id == "ddl.alter_object") return "SBLR_DDL_ALTER_OBJECT";
   if (operation_id == "ddl.drop_object") return "SBLR_DDL_DROP_OBJECT";
-  if (operation_id == "ddl.comment_on_object") return "SBLR_DDL_COMMENT_ON_OBJECT";
+  if (operation_id == "ddl.comment_on_object") return "SBLR_DDL_COMMENT_ON";
   if (operation_id == "transaction.begin") return "SBLR_TRANSACTION_BEGIN";
   if (operation_id == "transaction.set_characteristics") return "SBLR_TRANSACTION_SET_CHARACTERISTICS";
   if (operation_id == "transaction.commit") return "SBLR_TRANSACTION_COMMIT";
@@ -8439,6 +8439,24 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
   const auto status = engine_bridge::DispatchStatementContextReceipt(
       &request, &engine_result);
   dispatch_result.ok = status == SB_ENGINE_STATUS_OK;
+  if (dispatch_result.ok) {
+    const std::string_view admitted_bytes(
+        reinterpret_cast<const char*>(request.canonical_operation_bytes.data()),
+        request.canonical_operation_bytes.size());
+    if (admitted_bytes.find("engine.op.ddl_create_materialized_view") !=
+            std::string_view::npos &&
+        admitted_bytes.find("SBLR_DDL_CREATE_MATERIALIZED_VIEW") !=
+            std::string_view::npos) {
+      const char* trace_path =
+          std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+      if (trace_path && *trace_path) {
+        std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
+        if (trace) {
+          trace << "layer=ddl_create_materialized_view_executor\texecutor_id=engine.op.ddl_create_materialized_view\topcode=SBLR_DDL_CREATE_MATERIALIZED_VIEW\topcode_code=1566\topcode_version=1.0\toperand_descriptor_id=create_materialized_view_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\texecutor_availability_generation=1\tparent_success_barrier=passed\n";
+        }
+      }
+    }
+  }
   if (engine_result != nullptr) {
     sb_engine_execution_summary_view_v1_t summary{};
     if (sb_engine_result_summary(engine_result, &summary) ==

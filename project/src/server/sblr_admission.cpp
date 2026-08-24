@@ -503,12 +503,14 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
 bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
   return IsClusterOperationId(operation_id) ||
          operation_id == "engine.op.ddl_drop_rewrite_rule" ||
+         operation_id == "ddl.comment_on_object" ||
          operation_id == "engine.op.ddl_validate_constraint" ||
          IsPublicExactOperationId(operation_id) ||
          StartsWith(operation_id, "bridge.") ||
          StartsWith(operation_id, "index.") ||
          StartsWith(operation_id, "lifecycle.") ||
          StartsWith(operation_id, "transaction.") ||
+         StartsWith(operation_id, "observability.") ||
          operation_id == "dml.select_rows" ||
          operation_id == "dml.insert_rows" ||
          operation_id == "dml.update_rows" ||
@@ -1128,6 +1130,9 @@ std::optional<std::string> FamilyForLegacyEnvelope(std::string_view encoded) {
 }
 
 std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
+  if (operation_id == "engine.op.ddl_refresh_materialized_view" || operation_id == "engine.op.ddl_drop_materialized_view" || operation_id == "engine.op.ddl_drop_package" || operation_id == "engine.op.ddl_alter_package") {
+    return "sblr.catalog.mutation.v3";
+  }
   if (operation_id == "engine.op.ddl_drop_rewrite_rule" || operation_id == "engine.op.ddl_validate_constraint") {
     return "sblr.catalog.mutation.v3";
   }
@@ -2077,7 +2082,8 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   ServerSblrAdmissionResult result;
   result.admitted = true;
   result.requires_public_abi_dispatch =
-      opcode_stream || operation.envelope.operation_id == "query.execute";
+      opcode_stream || operation.envelope.operation_id == "query.execute" ||
+      RequiresEnginePublicAbiDispatch(operation.envelope.operation_id);
   const auto& published_operation =
       opcode_stream ? decoded_stream.stream.operations[1]
                     : operation.envelope;
@@ -2091,7 +2097,11 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                   "The published operation must bind the contained root registry row.",
                   "published_root_opcode_registry_identity_mismatch");
   }
-  result.operation_family = published_opcode->family;
+  const auto resolved_published_family =
+      FamilyForOperationId(published_opcode->operation_id);
+  result.operation_family = resolved_published_family.has_value()
+                                ? *resolved_published_family
+                                : published_opcode->family;
   result.operation_id = published_opcode->operation_id;
   result.admission_token = std::move(token);
   return result;
