@@ -806,6 +806,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_local_ddl_create_package) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_synonym) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_foreign_table) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_drop_foreign_table) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_package) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_alter_package) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_alter_sequence || exact_local_ddl_drop_sequence) exact_local_ddl_create_schema = true;

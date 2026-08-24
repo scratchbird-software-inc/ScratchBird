@@ -1066,7 +1066,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("engine.op.ddl_rename_object", "SBLR_DDL_RENAME_OBJECT", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_create_synonym", "SBLR_DDL_CREATE_SYNONYM", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_create_foreign_table", "SBLR_DDL_CREATE_FOREIGN_TABLE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
-      CanonicalEntry("ddl.foreign_table.drop", "SBLR_DDL_DROP_FOREIGN_TABLE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_drop_foreign_table", "SBLR_DDL_DROP_FOREIGN_TABLE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.fdw.create", "SBLR_DDL_CREATE_FDW", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.fdw.drop", "SBLR_DDL_DROP_FDW", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("security.user.create", "SBLR_SEC_CREATE_USER", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1879,6 +1879,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
                                                       std::string_view opcode) {
   SblrOpcodeValidationResult result;
   if (code == 1576 && operation_id == "engine.op.ddl_create_foreign_table" && opcode == "SBLR_DDL_CREATE_FOREIGN_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FOREIGN_TABLE"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1577 && operation_id == "engine.op.ddl_drop_foreign_table" && opcode == "SBLR_DDL_DROP_FOREIGN_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_FOREIGN_TABLE"); result.ok = result.entry != nullptr; return result; }
   if (code == 1574 && operation_id == "engine.op.ddl_create_synonym" && opcode == "SBLR_DDL_CREATE_SYNONYM") {
     result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_SYNONYM");
     result.ok = result.entry != nullptr;
