@@ -38,6 +38,12 @@ static_assert(
     !CarriesPrepareMgaAuthority<cache::CanonicalPreparedPhysicalPlan>);
 static_assert(
     !CarriesPrepareMgaAuthority<cache::CanonicalPreparedPhysicalNode>);
+static_assert(!CarriesPrepareMgaAuthority<
+              cache::CanonicalPreparedMetricCoordinatorReceipt>);
+static_assert(!CarriesPrepareMgaAuthority<
+              cache::CanonicalPreparedMetricCollectionReceipt>);
+static_assert(!CarriesPrepareMgaAuthority<
+              cache::CanonicalPreparedLegPlanReceipt>);
 static_assert(!CarriesPreparedParameterValue<
               cache::CanonicalPreparedPlanParameterDescriptor>);
 

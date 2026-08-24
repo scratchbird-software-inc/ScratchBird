@@ -1388,7 +1388,30 @@ add_test(
   COMMAND public_optimizer_foundation_contract_gate
 )
 set_tests_properties(public_optimizer_foundation_contract_gate PROPERTIES
-  LABELS "public_release_correctness;optimizer;profile_factory;physical_properties;cost_vector;cross_join;relational_dag;MGA"
+  LABELS "public_release_correctness;optimizer;profile_factory;physical_properties;cost_vector;cross_join;relational_dag;prepare_metrics;MGA"
+)
+
+add_executable(public_optimizer_prepare_execute_metric_gate
+  ../optimizer/qow_opt_009.cpp
+)
+target_compile_features(public_optimizer_prepare_execute_metric_gate PRIVATE
+  cxx_std_23)
+target_compile_definitions(public_optimizer_prepare_execute_metric_gate PRIVATE
+  SB_QOW_PLAN_API_SOURCE_FILE="${PROJECT_SOURCE_DIR}/src/engine/internal_api/query/plan_api.cpp"
+)
+target_link_libraries(public_optimizer_prepare_execute_metric_gate PRIVATE
+  sb_engine_optimizer_contract_only
+  sb_engine_internal_api
+  sb_engine_executor
+  sb_core_index
+  sb_storage_page
+)
+add_test(
+  NAME public_optimizer_prepare_execute_metric_gate
+  COMMAND public_optimizer_prepare_execute_metric_gate
+)
+set_tests_properties(public_optimizer_prepare_execute_metric_gate PROPERTIES
+  LABELS "public_release_correctness;optimizer;prepare;execute;prepare_metrics;dependency_chain;metric_receipts;MGA"
 )
 
 add_executable(public_cluster_projection_authority_guard_gate

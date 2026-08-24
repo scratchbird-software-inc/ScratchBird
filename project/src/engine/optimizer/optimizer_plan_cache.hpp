@@ -14,6 +14,7 @@
 #include "result_cursor_plan_memory_governance.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <condition_variable>
 #include <cstdint>
@@ -48,6 +49,7 @@ enum class CanonicalPreparedPlanDependencyKind : std::uint8_t {
   kDatatype,
   kDomain,
   kCollation,
+  kMetricSnapshot,
 };
 
 struct CanonicalPreparedPlanParameterDescriptor {
@@ -220,6 +222,92 @@ struct CanonicalPreparedExplainEvidence {
   bool benchmark_authority_claimed{false};
 };
 
+// Immutable PREPARE-time evidence for the bounded model-family metric
+// collector. Metrics are advisory planning inputs only: none of these records
+// carries a statement snapshot, transaction handle, visibility decision, or
+// execution/finality authority.
+struct CanonicalPreparedMetricValue {
+  std::string metric_id;
+  std::string unit_id;
+  std::uint64_t unsigned_value{0};
+  std::string source_snapshot_uuid;
+  std::uint64_t source_generation{0};
+
+  bool operator==(const CanonicalPreparedMetricValue&) const = default;
+};
+
+struct CanonicalPreparedMetricCollectionReceipt {
+  std::uint16_t abi_version{1};
+  std::uint16_t stable_leg_ordinal{0};
+  std::uint32_t dependency_wave{0};
+  std::string leg_uuid;
+  std::string family_id;
+  std::vector<std::string> dependency_leg_uuids;
+  std::vector<std::string> required_metric_ids;
+  std::string metric_snapshot_uuid;
+  std::uint64_t metric_snapshot_generation{0};
+  std::uint64_t started_at_monotonic_ns{0};
+  std::uint64_t completed_at_monotonic_ns{0};
+  std::vector<CanonicalPreparedMetricValue> metrics;
+  std::string collection_receipt_uuid;
+  std::string dependency_definition_digest;
+  bool collected{false};
+  bool cancelled{false};
+  bool timed_out{false};
+  bool cleanup_complete{false};
+  bool advisory_only{true};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_visibility_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+};
+
+struct CanonicalPreparedLegPlanReceipt {
+  std::uint16_t abi_version{1};
+  std::uint16_t stable_leg_ordinal{0};
+  std::string leg_uuid;
+  std::string family_id;
+  std::vector<std::string> dependency_leg_uuids;
+  std::string metric_collection_receipt_uuid;
+  std::string selected_leg_plan_uuid;
+  std::string selected_alternative_uuid;
+  std::string family_local_cost_vector_uuid;
+  std::vector<std::string> retained_alternative_uuids;
+  std::uint64_t estimated_output_rows{0};
+  std::string planning_receipt_uuid;
+  bool planned{false};
+  bool family_local_selection{true};
+  bool cross_family_cost_comparison_performed{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_visibility_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+};
+
+struct CanonicalPreparedMetricCoordinatorReceipt {
+  std::uint16_t abi_version{1};
+  std::string coordinator_policy_uuid;
+  std::uint64_t coordinator_policy_generation{0};
+  std::string bound_sblr_tree_uuid;
+  std::string route_snapshot_uuid;
+  std::uint64_t route_epoch{0};
+  std::uint64_t route_generation{0};
+  std::string cluster_scope_id;
+  std::uint16_t metric_thread_budget{0};
+  std::uint16_t maximum_observed_concurrency{0};
+  std::uint64_t timeout_ns{0};
+  std::string dependency_chain_receipt_uuid;
+  bool all_workers_joined{false};
+  bool transient_state_cleaned{false};
+  bool dependency_chain_acyclic{false};
+  bool no_cross_family_cost_comparison{true};
+  bool execute_metric_recollection_forbidden{true};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_visibility_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+};
+
 struct CanonicalPreparedPhysicalPlan {
   std::uint16_t abi_version{1};
   std::string prepared_plan_uuid;
@@ -253,8 +341,14 @@ struct CanonicalPreparedPhysicalPlan {
   std::vector<CanonicalPreparedPlanDependency> dependencies;
   std::vector<CanonicalPreparedPhysicalNode> nodes;
   std::optional<CanonicalPreparedExplainEvidence> explain_evidence;
+  std::optional<CanonicalPreparedMetricCoordinatorReceipt>
+      prepare_metric_coordinator_receipt;
+  std::vector<CanonicalPreparedMetricCollectionReceipt>
+      prepare_metric_collection_receipts;
+  std::vector<CanonicalPreparedLegPlanReceipt> prepare_leg_plan_receipts;
   bool immutable_physical_identity_retained{false};
   bool complete_cost_vectors_retained{false};
+  bool prepare_metric_receipts_retained{false};
   bool parameter_values_retained{false};
   bool prepare_statement_authority_retained{false};
   bool execution_authority_granted{false};
@@ -270,6 +364,11 @@ struct CanonicalPreparePhysicalPlanRequest {
   std::vector<CanonicalPreparedPlanResultDescriptor> result_descriptors;
   std::vector<CanonicalPreparedPlanDependency> dependencies;
   std::optional<CanonicalPreparedExplainEvidence> explain_evidence;
+  std::optional<CanonicalPreparedMetricCoordinatorReceipt>
+      prepare_metric_coordinator_receipt;
+  std::vector<CanonicalPreparedMetricCollectionReceipt>
+      prepare_metric_collection_receipts;
+  std::vector<CanonicalPreparedLegPlanReceipt> prepare_leg_plan_receipts;
   bool engine_prepare_authorized{false};
   bool parameter_values_supplied{false};
   bool parser_execution_authority_claimed{false};
@@ -291,6 +390,7 @@ struct CanonicalPreparePhysicalPlanResult {
   bool complete_parameter_typing_retained{false};
   bool complete_dependency_generations_retained{false};
   bool result_schema_retained{false};
+  bool prepare_metric_receipts_retained{false};
   bool parameter_values_retained{false};
   bool prepare_statement_authority_retained{false};
   bool execution_authority_granted{false};
@@ -364,7 +464,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   };
   const auto known_dependency_kind = [](const auto kind) {
     return kind >= CanonicalPreparedPlanDependencyKind::kObject &&
-           kind <= CanonicalPreparedPlanDependencyKind::kCollation;
+           kind <= CanonicalPreparedPlanDependencyKind::kMetricSnapshot;
   };
 
   if (!request.engine_prepare_authorized || request.parameter_values_supplied ||
@@ -638,6 +738,222 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
     previous_dependency_key = key;
   }
 
+  const bool has_prepare_metric_evidence =
+      request.prepare_metric_coordinator_receipt.has_value() ||
+      !request.prepare_metric_collection_receipts.empty() ||
+      !request.prepare_leg_plan_receipts.empty();
+  if (has_prepare_metric_evidence) {
+    if (!request.prepare_metric_coordinator_receipt.has_value() ||
+        request.prepare_metric_collection_receipts.empty() ||
+        request.prepare_metric_collection_receipts.size() !=
+            request.prepare_leg_plan_receipts.size() ||
+        request.prepare_metric_collection_receipts.size() > 8) {
+      return refuse("prepare_metric_receipt_coverage");
+    }
+    const auto& coordinator =
+        *request.prepare_metric_coordinator_receipt;
+    if (coordinator.abi_version != 1 ||
+        !canonical_uuid(coordinator.coordinator_policy_uuid) ||
+        coordinator.coordinator_policy_generation == 0 ||
+        coordinator.bound_sblr_tree_uuid != dag.bound_sblr_tree_uuid ||
+        coordinator.route_snapshot_uuid != dag.route_snapshot_uuid ||
+        coordinator.route_epoch != dag.route_epoch ||
+        coordinator.route_generation != dag.route_generation ||
+        coordinator.cluster_scope_id.empty() ||
+        coordinator.metric_thread_budget == 0 ||
+        coordinator.metric_thread_budget > 64 ||
+        coordinator.maximum_observed_concurrency == 0 ||
+        coordinator.maximum_observed_concurrency >
+            coordinator.metric_thread_budget ||
+        coordinator.maximum_observed_concurrency >
+            request.prepare_metric_collection_receipts.size() ||
+        coordinator.timeout_ns == 0 ||
+        !canonical_uuid(coordinator.dependency_chain_receipt_uuid) ||
+        !coordinator.all_workers_joined ||
+        !coordinator.transient_state_cleaned ||
+        !coordinator.dependency_chain_acyclic ||
+        !coordinator.no_cross_family_cost_comparison ||
+        !coordinator.execute_metric_recollection_forbidden ||
+        coordinator.parser_execution_authority_claimed ||
+        coordinator.transaction_visibility_authority_claimed ||
+        coordinator.transaction_finality_authority_claimed ||
+        coordinator.recovery_authority_claimed) {
+      return refuse("prepare_metric_coordinator_receipt");
+    }
+
+    static constexpr std::array<std::string_view, 8> kKnownFamilies = {
+        "relational", "document", "graph", "time_series",
+        "text_search", "vector", "spatial", "key_value"};
+    const auto required_metric_ids = [](const std::string_view family_id) {
+      if (family_id == "relational") {
+        return std::vector<std::string>{
+            "available_memory_bytes", "filespace_available_bytes",
+            "index_coverage_basis_points", "page_density_basis_points",
+            "row_count", "version_chain_depth"};
+      }
+      if (family_id == "document") {
+        return std::vector<std::string>{
+            "average_document_bytes", "document_count",
+            "document_index_coverage_basis_points"};
+      }
+      if (family_id == "graph") {
+        return std::vector<std::string>{
+            "adjacency_edge_count", "connectivity_density_basis_points",
+            "vertex_count"};
+      }
+      if (family_id == "time_series") {
+        return std::vector<std::string>{"retention_horizon_ns",
+                                        "sample_count", "series_count"};
+      }
+      if (family_id == "text_search") {
+        return std::vector<std::string>{"document_frequency_count",
+                                        "search_index_generation",
+                                        "term_count"};
+      }
+      if (family_id == "vector") {
+        return std::vector<std::string>{
+            "approximate_neighbor_count", "precision_basis_points",
+            "recall_basis_points", "vector_index_state"};
+      }
+      if (family_id == "spatial") {
+        return std::vector<std::string>{
+            "geometry_count", "spatial_index_coverage_basis_points",
+            "spatial_partition_count"};
+      }
+      if (family_id == "key_value") {
+        return std::vector<std::string>{"key_count", "tombstone_count",
+                                        "value_bytes"};
+      }
+      return std::vector<std::string>{};
+    };
+    std::unordered_set<std::string> completed_leg_uuids;
+    std::unordered_set<std::string> family_ids;
+    std::unordered_set<std::string> metric_snapshot_uuids;
+    std::map<std::string, std::uint32_t> completed_dependency_waves;
+    for (std::size_t index = 0;
+         index < request.prepare_metric_collection_receipts.size(); ++index) {
+      const auto& metric = request.prepare_metric_collection_receipts[index];
+      const auto& leg = request.prepare_leg_plan_receipts[index];
+      if (metric.abi_version != 1 || leg.abi_version != 1 ||
+          metric.stable_leg_ordinal != index + 1 ||
+          leg.stable_leg_ordinal != metric.stable_leg_ordinal ||
+          metric.leg_uuid != leg.leg_uuid ||
+          metric.family_id != leg.family_id ||
+          metric.dependency_leg_uuids != leg.dependency_leg_uuids ||
+          !canonical_uuid(metric.leg_uuid) ||
+          !std::ranges::contains(kKnownFamilies,
+                                std::string_view(metric.family_id)) ||
+          !family_ids.insert(metric.family_id).second ||
+          metric.required_metric_ids != required_metric_ids(metric.family_id) ||
+          metric.required_metric_ids.empty() || metric.metrics.empty() ||
+          !canonical_uuid(metric.metric_snapshot_uuid) ||
+          !metric_snapshot_uuids.insert(metric.metric_snapshot_uuid).second ||
+          metric.metric_snapshot_generation == 0 ||
+          metric.started_at_monotonic_ns == 0 ||
+          metric.completed_at_monotonic_ns <
+              metric.started_at_monotonic_ns ||
+          !canonical_uuid(metric.collection_receipt_uuid) ||
+          !digest(metric.dependency_definition_digest) ||
+          !metric.collected || metric.cancelled || metric.timed_out ||
+          !metric.cleanup_complete || !metric.advisory_only ||
+          metric.parser_execution_authority_claimed ||
+          metric.transaction_visibility_authority_claimed ||
+          metric.transaction_finality_authority_claimed ||
+          metric.recovery_authority_claimed ||
+          leg.metric_collection_receipt_uuid !=
+              metric.collection_receipt_uuid ||
+          !canonical_uuid(leg.selected_leg_plan_uuid) ||
+          !canonical_uuid(leg.selected_alternative_uuid) ||
+          !canonical_uuid(leg.family_local_cost_vector_uuid) ||
+          leg.retained_alternative_uuids.empty() ||
+          !std::ranges::all_of(leg.retained_alternative_uuids,
+                               [&](const auto& alternative_uuid) {
+                                 return canonical_uuid(alternative_uuid);
+                               }) ||
+          !std::ranges::contains(leg.retained_alternative_uuids,
+                                leg.selected_alternative_uuid) ||
+          !canonical_uuid(leg.planning_receipt_uuid) || !leg.planned ||
+          !leg.family_local_selection ||
+          leg.cross_family_cost_comparison_performed ||
+          leg.parser_execution_authority_claimed ||
+          leg.transaction_visibility_authority_claimed ||
+          leg.transaction_finality_authority_claimed ||
+          leg.recovery_authority_claimed) {
+        return refuse("prepare_metric_leg_receipt");
+      }
+      if (!std::ranges::is_sorted(metric.dependency_leg_uuids) ||
+          std::ranges::adjacent_find(metric.dependency_leg_uuids) !=
+              metric.dependency_leg_uuids.end() ||
+          std::ranges::any_of(metric.dependency_leg_uuids,
+                              [&](const auto& dependency_uuid) {
+                                const auto dependency_wave =
+                                    completed_dependency_waves.find(
+                                        dependency_uuid);
+                                return !completed_leg_uuids.contains(
+                                           dependency_uuid) ||
+                                       dependency_wave ==
+                                           completed_dependency_waves.end() ||
+                                       dependency_wave->second >=
+                                           metric.dependency_wave;
+                              }) ||
+          !std::ranges::is_sorted(metric.required_metric_ids) ||
+          std::ranges::adjacent_find(metric.required_metric_ids) !=
+              metric.required_metric_ids.end() ||
+          !std::ranges::is_sorted(
+              metric.metrics, {}, &CanonicalPreparedMetricValue::metric_id) ||
+          std::ranges::adjacent_find(
+              metric.metrics, {},
+              &CanonicalPreparedMetricValue::metric_id) !=
+              metric.metrics.end() ||
+          !std::ranges::is_sorted(leg.retained_alternative_uuids) ||
+          std::ranges::adjacent_find(leg.retained_alternative_uuids) !=
+              leg.retained_alternative_uuids.end()) {
+        return refuse("prepare_metric_leg_order");
+      }
+      for (const auto& required : metric.required_metric_ids) {
+        if (required.empty() ||
+            std::ranges::none_of(metric.metrics, [&](const auto& value) {
+              return value.metric_id == required;
+            })) {
+          return refuse("prepare_metric_required_coverage");
+        }
+      }
+      for (const auto& value : metric.metrics) {
+        if (value.metric_id.empty() || value.unit_id.empty() ||
+            !canonical_uuid(value.source_snapshot_uuid) ||
+            value.source_generation == 0) {
+          return refuse("prepare_metric_value");
+        }
+      }
+      completed_leg_uuids.insert(metric.leg_uuid);
+      completed_dependency_waves.emplace(metric.leg_uuid,
+                                         metric.dependency_wave);
+    }
+    const auto metric_dependencies =
+        std::ranges::count_if(request.dependencies, [](const auto& dependency) {
+          return dependency.dependency_kind ==
+                 CanonicalPreparedPlanDependencyKind::kMetricSnapshot;
+        });
+    if (metric_dependencies !=
+        request.prepare_metric_collection_receipts.size()) {
+      return refuse("prepare_metric_dependency_signature");
+    }
+    for (const auto& metric : request.prepare_metric_collection_receipts) {
+      const auto dependency = std::ranges::find_if(
+          request.dependencies, [&](const auto& item) {
+            return item.dependency_kind ==
+                       CanonicalPreparedPlanDependencyKind::kMetricSnapshot &&
+                   item.dependency_uuid == metric.metric_snapshot_uuid &&
+                   item.generation == metric.metric_snapshot_generation &&
+                   item.definition_digest ==
+                       metric.dependency_definition_digest;
+          });
+      if (dependency == request.dependencies.end()) {
+        return refuse("prepare_metric_dependency_signature");
+      }
+    }
+  }
+
   auto prepared = std::make_shared<CanonicalPreparedPhysicalPlan>();
   prepared->prepared_plan_uuid = request.prepared_plan_uuid;
   prepared->prepare_generation = request.prepare_generation;
@@ -669,6 +985,11 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   prepared->result_descriptors = request.result_descriptors;
   prepared->dependencies = request.dependencies;
   prepared->explain_evidence = request.explain_evidence;
+  prepared->prepare_metric_coordinator_receipt =
+      request.prepare_metric_coordinator_receipt;
+  prepared->prepare_metric_collection_receipts =
+      request.prepare_metric_collection_receipts;
+  prepared->prepare_leg_plan_receipts = request.prepare_leg_plan_receipts;
   prepared->nodes.reserve(dag.nodes.size());
   for (const auto& node : dag.nodes) {
     prepared->nodes.push_back(
@@ -697,6 +1018,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   }
   prepared->immutable_physical_identity_retained = true;
   prepared->complete_cost_vectors_retained = true;
+  prepared->prepare_metric_receipts_retained = has_prepare_metric_evidence;
   prepared->parameter_values_retained = false;
   prepared->prepare_statement_authority_retained = false;
   prepared->execution_authority_granted = false;
@@ -713,6 +1035,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   result.complete_parameter_typing_retained = true;
   result.complete_dependency_generations_retained = true;
   result.result_schema_retained = true;
+  result.prepare_metric_receipts_retained = has_prepare_metric_evidence;
   result.parameter_values_retained = false;
   result.prepare_statement_authority_retained = false;
   result.execution_authority_granted = false;
@@ -829,6 +1152,7 @@ struct CanonicalExecutablePlanCacheKey {
   std::vector<CanonicalExecutablePlanGeneration> index_generations;
   std::vector<CanonicalExecutablePlanGeneration> filespace_generations;
   std::vector<CanonicalExecutablePlanGeneration> route_generations;
+  std::vector<CanonicalExecutablePlanGeneration> metric_generations;
   std::vector<CanonicalExecutablePlanCapabilityGeneration>
       capability_generations;
 
@@ -931,7 +1255,10 @@ struct CanonicalExecutablePlanCacheHitReceipt {
   bool immutable_stored_plan_unchanged{false};
   bool fresh_engine_mga_statement_bound{false};
   bool parameter_values_retained{false};
+  bool prepare_metric_receipts_retained{false};
+  bool metric_recollection_performed{false};
   bool structural_no_optimizer_search_planner_or_fallback_route{false};
+  std::uint64_t metric_collector_invocation_count{0};
   std::uint64_t optimizer_invocation_count{0};
   std::uint64_t search_invocation_count{0};
   std::uint64_t planner_invocation_count{0};
@@ -1140,6 +1467,9 @@ inline bool CanonicalExecutablePlanKeyMatchesPreparedPlan(
                                                      true) ||
       !CanonicalExecutablePlanGenerationVectorValid(key.route_generations,
                                                      false) ||
+      !CanonicalExecutablePlanGenerationVectorValid(
+          key.metric_generations,
+          !plan.prepare_metric_receipts_retained) ||
       !CanonicalExecutablePlanCapabilityVectorValid(key.capability_generations,
                                                      plan)) {
     return false;
@@ -1162,7 +1492,10 @@ inline bool CanonicalExecutablePlanKeyMatchesPreparedPlan(
                                    {CanonicalPreparedPlanDependencyKind::kIndex}) ||
       key.filespace_generations != CanonicalExecutablePlanDependencyProjection(
                                        plan.dependencies,
-                                       {CanonicalPreparedPlanDependencyKind::kFilespace})) {
+                                       {CanonicalPreparedPlanDependencyKind::kFilespace}) ||
+      key.metric_generations != CanonicalExecutablePlanDependencyProjection(
+                                    plan.dependencies,
+                                    {CanonicalPreparedPlanDependencyKind::kMetricSnapshot})) {
     return false;
   }
   const auto descriptor_dependencies =
@@ -1438,6 +1771,8 @@ CanonicalExecutablePlanFirstDependencyMismatch(
       stored.statistics_generation != current.statistics_generation ||
       stored.statistics_generations != current.statistics_generations)
     return mismatch("statistics_generations");
+  if (stored.metric_generations != current.metric_generations)
+    return mismatch("prepare_metric_generations");
   if (stored.capability_snapshot_uuid != current.capability_snapshot_uuid ||
       stored.capability_generations != current.capability_generations)
     return mismatch("capability_generations");
@@ -1741,6 +2076,10 @@ class CanonicalExecutablePlanCache {
     result.receipt.immutable_stored_plan_unchanged = true;
     result.receipt.fresh_engine_mga_statement_bound = true;
     result.receipt.parameter_values_retained = false;
+    result.receipt.prepare_metric_receipts_retained =
+        entry->prepared_plan->prepare_metric_receipts_retained;
+    result.receipt.metric_recollection_performed = false;
+    result.receipt.metric_collector_invocation_count = 0;
     result.receipt
         .structural_no_optimizer_search_planner_or_fallback_route = true;
     result.receipt.mga_statement_context = current.statement_context;
@@ -2034,7 +2373,10 @@ struct CanonicalExecutablePlanHitExecutionResult {
   bool reprepare_required{false};
   bool automatic_replan_attempted{false};
   bool parameter_values_retained{false};
+  bool prepare_metric_receipts_retained{false};
+  bool metric_recollection_performed{false};
   bool structural_no_optimizer_search_planner_or_fallback_route{false};
+  std::uint64_t metric_collector_invocation_count{0};
   std::uint64_t optimizer_invocation_count{0};
   std::uint64_t search_invocation_count{0};
   std::uint64_t planner_invocation_count{0};

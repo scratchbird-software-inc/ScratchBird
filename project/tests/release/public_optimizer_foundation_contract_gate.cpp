@@ -8,17 +8,21 @@
 
 #include "cost_model.hpp"
 #include "join_planner_full.hpp"
+#include "optimizer_prepare_metric_collector.hpp"
 #include "query/plan_api.hpp"
 #include "relational_planner.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace exec = scratchbird::engine::executor;
@@ -832,6 +836,293 @@ bool ValidateTypedPhysicalPropertyCarrier() {
       "typed SBLR property carrier omitted or weakened a physical domain");
 }
 
+opt::CanonicalPreparePhysicalPlanRequest PreparedRequest(
+    const exec::TypedPhysicalNodeDag& dag, const std::uint64_t identity) {
+  opt::CanonicalPreparePhysicalPlanRequest request;
+  request.prepared_plan_uuid = Uuid(identity);
+  request.prepare_generation = identity;
+  request.parameter_shape_uuid = Uuid(identity + 1);
+  request.result_schema_uuid = Uuid(identity + 2);
+  request.selected_physical_dag = dag;
+  const auto root = std::ranges::find_if(dag.nodes, [&](const auto& node) {
+    return node.physical_node_id == dag.root_physical_node_id;
+  });
+  if (root != dag.nodes.end()) {
+    for (std::size_t index = 0; index < root->output_descriptor_ids.size();
+         ++index) {
+      opt::CanonicalPreparedPlanResultDescriptor descriptor;
+      descriptor.ordinal = static_cast<std::uint32_t>(index + 1);
+      descriptor.descriptor_id = root->output_descriptor_ids[index];
+      descriptor.name_utf8 = "result_" + std::to_string(index + 1);
+      descriptor.descriptor_uuid = Uuid(identity + 10 + index);
+      descriptor.type_uuid = Uuid(identity + 30 + index);
+      descriptor.type_modifier_digest = std::string(64, 'a');
+      request.result_descriptors.push_back(std::move(descriptor));
+    }
+  }
+  request.dependencies = {
+      {opt::CanonicalPreparedPlanDependencyKind::kObject, Uuid(identity + 50),
+       identity + 50, std::string(64, 'b')},
+      {opt::CanonicalPreparedPlanDependencyKind::kDatatype,
+       Uuid(identity + 51), identity + 51, std::string(64, 'c')},
+  };
+  request.engine_prepare_authorized = true;
+  return request;
+}
+
+opt::CanonicalPrepareMetricLegRequest MetricLeg(
+    const std::uint64_t identity, std::string family,
+    std::vector<std::string> dependencies,
+    std::atomic<std::uint64_t>* collector_calls,
+    std::atomic<std::uint64_t>* planner_calls,
+    std::atomic<std::uint64_t>* cleanup_calls,
+    std::atomic<bool>* dependency_proof = nullptr) {
+  opt::CanonicalPrepareMetricLegRequest leg;
+  leg.leg_uuid = Uuid(identity);
+  leg.family_id = std::move(family);
+  leg.dependency_leg_uuids = std::move(dependencies);
+  std::ranges::sort(leg.dependency_leg_uuids);
+  leg.required_metric_ids =
+      opt::CanonicalRequiredPrepareMetricIdsForFamily(leg.family_id);
+  leg.collect_metrics = [identity, collector_calls](const auto& context) {
+    ++*collector_calls;
+    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    opt::CanonicalPrepareMetricCollectionOutput output;
+    if (context.cancellation_requested()) return output;
+    output.collected = true;
+    output.metric_snapshot_uuid = Uuid(identity + 100);
+    output.metric_snapshot_generation = identity + 100;
+    for (std::size_t index = 0;
+         index < context.required_metric_ids.size(); ++index) {
+      output.metrics.push_back(
+          {context.required_metric_ids[index], "canonical_units",
+           identity + index, Uuid(identity + 200 + index),
+           identity + 200 + index});
+    }
+    return output;
+  };
+  leg.plan_leg = [identity, planner_calls, dependency_proof](
+                     const auto& context) {
+    ++*planner_calls;
+    if (dependency_proof != nullptr) {
+      dependency_proof->store(
+          context.completed_dependency_plans.size() == 2 &&
+          std::ranges::all_of(context.completed_dependency_plans,
+                              [](const auto& receipt) {
+                                return receipt.planned &&
+                                       !receipt.planning_receipt_uuid.empty();
+                              }));
+    }
+    opt::CanonicalPrepareLegPlanningOutput output;
+    output.planned = true;
+    output.selected_leg_plan_uuid = Uuid(identity + 300);
+    output.selected_alternative_uuid = Uuid(identity + 301);
+    output.family_local_cost_vector_uuid = Uuid(identity + 302);
+    output.retained_alternative_uuids = {Uuid(identity + 301),
+                                         Uuid(identity + 303)};
+    output.estimated_output_rows = identity;
+    return output;
+  };
+  leg.cleanup_transient_state = [cleanup_calls] {
+    ++*cleanup_calls;
+    return true;
+  };
+  return leg;
+}
+
+opt::CanonicalPrepareWithMetricCollectionRequest MetricPrepareRequest(
+    opt::CanonicalPreparePhysicalPlanRequest prepared,
+    std::atomic<std::uint64_t>* collector_calls,
+    std::atomic<std::uint64_t>* planner_calls,
+    std::atomic<std::uint64_t>* cleanup_calls,
+    std::atomic<std::uint64_t>* assembler_calls,
+    std::atomic<bool>* dependency_proof) {
+  opt::CanonicalPrepareWithMetricCollectionRequest request;
+  request.coordinator_policy_uuid = Uuid(900);
+  request.coordinator_policy_generation = 41;
+  request.bound_sblr_tree_uuid =
+      prepared.selected_physical_dag.bound_sblr_tree_uuid;
+  request.route_snapshot_uuid =
+      prepared.selected_physical_dag.route_snapshot_uuid;
+  request.route_epoch = prepared.selected_physical_dag.route_epoch;
+  request.route_generation =
+      prepared.selected_physical_dag.route_generation;
+  request.cluster_scope_id = "local_only";
+  request.metric_thread_budget = 2;
+  request.timeout_ns = 2'000'000'000ULL;
+  request.legs = {
+      MetricLeg(910, "relational", {}, collector_calls, planner_calls,
+                cleanup_calls),
+      MetricLeg(920, "vector", {}, collector_calls, planner_calls,
+                cleanup_calls),
+      MetricLeg(930, "graph", {Uuid(910), Uuid(920)}, collector_calls,
+                planner_calls, cleanup_calls, dependency_proof),
+  };
+  request.assemble_selected_plan =
+      [prepared = std::move(prepared), assembler_calls](
+          const auto&, const auto& metrics, const auto& plans) mutable {
+        ++*assembler_calls;
+        if (metrics.size() != 3 || plans.size() != 3) {
+          prepared.engine_prepare_authorized = false;
+        }
+        return prepared;
+      };
+  request.engine_prepare_authorized = true;
+  request.global_security_admitted = true;
+  request.global_mga_admitted = true;
+  return request;
+}
+
+bool ValidatePrepareMetricCollectionOrchestration() {
+  const auto planned = opt::PlanCanonicalRelationalDag(PlanningInput());
+  if (!planned.accepted) {
+    return Require(false, "metric PREPARE fixture could not publish a DAG");
+  }
+  std::atomic<std::uint64_t> collector_calls{0};
+  std::atomic<std::uint64_t> planner_calls{0};
+  std::atomic<std::uint64_t> cleanup_calls{0};
+  std::atomic<std::uint64_t> assembler_calls{0};
+  std::atomic<bool> dependency_proof{false};
+  auto request = MetricPrepareRequest(
+      PreparedRequest(planned.publication.physical_dag, 1000),
+      &collector_calls, &planner_calls, &cleanup_calls, &assembler_calls,
+      &dependency_proof);
+  opt::CanonicalPreparedPlanStore store;
+  const auto first = opt::PrepareCanonicalPhysicalPlanWithMetricCollection(
+      request, &store);
+  const auto stored = store.Find(Uuid(1000));
+  const auto calls_before_execute = collector_calls.load();
+  std::vector<opt::CanonicalPreparedPhysicalNode> execute_nodes;
+  if (stored) execute_nodes = stored->nodes;
+  bool passed = Require(
+      first.accepted && first.metrics_collected && first.legs_planned &&
+          first.prepared && first.persisted && first.all_workers_joined &&
+          first.transient_state_cleaned &&
+          first.maximum_observed_concurrency == 2 &&
+          first.metric_collector_invocation_count == 3 &&
+          first.leg_planner_invocation_count == 3 &&
+          first.cleanup_invocation_count == 3 && collector_calls == 3 &&
+          planner_calls == 3 && cleanup_calls == 3 && assembler_calls == 1 &&
+          dependency_proof && stored &&
+          stored->prepare_metric_receipts_retained &&
+          stored->prepare_metric_coordinator_receipt.has_value() &&
+          stored->prepare_metric_collection_receipts.size() == 3 &&
+          stored->prepare_leg_plan_receipts.size() == 3 &&
+          stored->prepare_metric_coordinator_receipt
+              ->execute_metric_recollection_forbidden &&
+          execute_nodes.size() == stored->nodes.size() &&
+          collector_calls.load() == calls_before_execute,
+      "bounded PREPARE metrics were not retained or EXECUTE recollected them");
+
+  auto replay_request = MetricPrepareRequest(
+      PreparedRequest(planned.publication.physical_dag, 1100),
+      &collector_calls, &planner_calls, &cleanup_calls, &assembler_calls,
+      &dependency_proof);
+  opt::CanonicalPreparedPlanStore replay_store;
+  const auto replay = opt::PrepareCanonicalPhysicalPlanWithMetricCollection(
+      replay_request, &replay_store);
+  passed &= Require(
+      replay.accepted &&
+          replay.metric_receipts.size() == first.metric_receipts.size() &&
+          replay.leg_plan_receipts.size() == first.leg_plan_receipts.size() &&
+          std::ranges::equal(
+              replay.metric_receipts, first.metric_receipts,
+              {}, &opt::CanonicalPreparedMetricCollectionReceipt::collection_receipt_uuid,
+              &opt::CanonicalPreparedMetricCollectionReceipt::collection_receipt_uuid) &&
+          std::ranges::equal(
+              replay.leg_plan_receipts, first.leg_plan_receipts,
+              {}, &opt::CanonicalPreparedLegPlanReceipt::planning_receipt_uuid,
+              &opt::CanonicalPreparedLegPlanReceipt::planning_receipt_uuid),
+      "identical PREPARE inputs produced nondeterministic metric receipts");
+
+  std::atomic<bool> cancel{false};
+  std::atomic<std::uint64_t> cancelled_cleanup{0};
+  auto cancelled_request = MetricPrepareRequest(
+      PreparedRequest(planned.publication.physical_dag, 1200),
+      &collector_calls, &planner_calls, &cancelled_cleanup, &assembler_calls,
+      &dependency_proof);
+  cancelled_request.legs.resize(1);
+  cancelled_request.legs.front().collect_metrics = [](const auto& context) {
+    while (!context.cancellation_requested()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return opt::CanonicalPrepareMetricCollectionOutput{};
+  };
+  cancelled_request.cancellation_requested = [&] { return cancel.load(); };
+  opt::CanonicalPreparedPlanStore cancelled_store;
+  std::thread cancel_thread([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    cancel = true;
+  });
+  const auto cancelled =
+      opt::PrepareCanonicalPhysicalPlanWithMetricCollection(
+          cancelled_request, &cancelled_store);
+  cancel_thread.join();
+  passed &= Require(
+      !cancelled.accepted && cancelled.cancelled &&
+          cancelled.all_workers_joined && cancelled.transient_state_cleaned &&
+          cancelled_cleanup == 1 && cancelled_store.Size() == 0,
+      "cancelled PREPARE leaked a worker, transient state, or plan");
+
+  std::atomic<std::uint64_t> timeout_cleanup{0};
+  auto timeout_request = MetricPrepareRequest(
+      PreparedRequest(planned.publication.physical_dag, 1300),
+      &collector_calls, &planner_calls, &timeout_cleanup, &assembler_calls,
+      &dependency_proof);
+  timeout_request.legs.resize(1);
+  timeout_request.timeout_ns = 2'000'000;
+  timeout_request.legs.front().collect_metrics = [](const auto& context) {
+    while (!context.cancellation_requested()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return opt::CanonicalPrepareMetricCollectionOutput{};
+  };
+  opt::CanonicalPreparedPlanStore timeout_store;
+  const auto timed_out = opt::PrepareCanonicalPhysicalPlanWithMetricCollection(
+      timeout_request, &timeout_store);
+  passed &= Require(
+      !timed_out.accepted && timed_out.timed_out &&
+          timed_out.all_workers_joined && timed_out.transient_state_cleaned &&
+          timeout_cleanup == 1 && timeout_store.Size() == 0,
+      "timed-out PREPARE leaked a worker, transient state, or plan");
+
+  auto cleanup_refusal_request = MetricPrepareRequest(
+      PreparedRequest(planned.publication.physical_dag, 1350),
+      &collector_calls, &planner_calls, &cleanup_calls, &assembler_calls,
+      &dependency_proof);
+  cleanup_refusal_request.legs.resize(1);
+  cleanup_refusal_request.legs.front().cleanup_transient_state = [] {
+    return false;
+  };
+  opt::CanonicalPreparedPlanStore cleanup_refusal_store;
+  const auto cleanup_refused =
+      opt::PrepareCanonicalPhysicalPlanWithMetricCollection(
+          cleanup_refusal_request, &cleanup_refusal_store);
+  passed &= Require(
+      !cleanup_refused.accepted && cleanup_refused.all_workers_joined &&
+          !cleanup_refused.transient_state_cleaned &&
+          cleanup_refused.cleanup_invocation_count == 1 &&
+          !cleanup_refused.issues.empty() &&
+          cleanup_refused.issues.front().field_id ==
+              "prepare_metric_cleanup" &&
+          cleanup_refusal_store.Size() == 0,
+      "failed PREPARE cleanup was accepted or reported complete");
+
+  auto cyclic_request = request;
+  cyclic_request.legs[0].dependency_leg_uuids = {Uuid(930)};
+  opt::CanonicalPreparedPlanStore cyclic_store;
+  const auto cyclic = opt::PrepareCanonicalPhysicalPlanWithMetricCollection(
+      cyclic_request, &cyclic_store);
+  passed &= Require(
+      !cyclic.accepted && !cyclic.issues.empty() &&
+          cyclic.issues.front().field_id ==
+              "prepare_metric_dependency_chain" &&
+          cyclic.metric_collector_invocation_count == 0 &&
+          cyclic_store.Size() == 0,
+      "cyclic PREPARE dependency chain reached a collector");
+  return passed;
+}
+
 }  // namespace
 
 int main() {
@@ -839,6 +1130,7 @@ int main() {
                       ValidateCompleteKindFactoryCoverage() &&
                       ValidateCostVectorBookkeeping() &&
                       ValidateCrossJoinSemantics() &&
-                      ValidateTypedPhysicalPropertyCarrier();
+                      ValidateTypedPhysicalPropertyCarrier() &&
+                      ValidatePrepareMetricCollectionOrchestration();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

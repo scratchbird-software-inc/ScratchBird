@@ -9,9 +9,11 @@
 #define QOW_OPT_016_FIXTURE_ONLY
 #include "qow_opt_016.cpp"
 #include "optimizer_plan_cache.hpp"
+#include "optimizer_prepare_metric_collector.hpp"
 #include "query/plan_api.hpp"
 
 #include <cstdlib>
+#include <atomic>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -213,6 +215,8 @@ cache::CanonicalExecutablePlanCacheKey CacheKey009(
        std::string(64, 'a')}};
   key.route_generations = {
       {plan.route_snapshot_uuid, plan.route_generation, std::string(64, 'b')}};
+  key.metric_generations = Project009(
+      plan, {cache::CanonicalPreparedPlanDependencyKind::kMetricSnapshot});
 
   for (const auto& node : plan.nodes) {
     key.capability_generations.push_back(
@@ -277,13 +281,79 @@ struct Fixture009 {
   std::shared_ptr<const cache::CanonicalPreparedPhysicalPlan> prepared_plan;
   cache::CanonicalExecutablePlanCacheKey key;
   api::EngineTypedValue parameter_value;
+  std::atomic<std::uint64_t> metric_collector_invocations{0};
+  std::atomic<std::uint64_t> metric_planner_invocations{0};
+  std::atomic<std::uint64_t> metric_cleanup_invocations{0};
   bool ready{false};
 
-  Fixture009() {
-    const auto prepared = cache::PrepareCanonicalPhysicalPlan(
-        PrepareRequest009(), &prepared_store);
-    if (!prepared.accepted || !prepared.prepared_plan) return;
-    prepared_plan = prepared.prepared_plan;
+  explicit Fixture009(const bool with_prepare_metrics = false) {
+    if (with_prepare_metrics) {
+      auto base = PrepareRequest009();
+      cache::CanonicalPrepareWithMetricCollectionRequest metric_request;
+      metric_request.coordinator_policy_uuid = Uuid(990);
+      metric_request.coordinator_policy_generation = 30;
+      metric_request.bound_sblr_tree_uuid =
+          base.selected_physical_dag.bound_sblr_tree_uuid;
+      metric_request.route_snapshot_uuid =
+          base.selected_physical_dag.route_snapshot_uuid;
+      metric_request.route_epoch = base.selected_physical_dag.route_epoch;
+      metric_request.route_generation =
+          base.selected_physical_dag.route_generation;
+      metric_request.cluster_scope_id = "local_only";
+      metric_request.metric_thread_budget = 1;
+      metric_request.timeout_ns = 1'000'000'000ULL;
+      cache::CanonicalPrepareMetricLegRequest leg;
+      leg.leg_uuid = Uuid(991);
+      leg.family_id = "relational";
+      leg.required_metric_ids =
+          cache::CanonicalRequiredPrepareMetricIdsForFamily(leg.family_id);
+      leg.collect_metrics = [this](const auto& context) {
+        ++metric_collector_invocations;
+        cache::CanonicalPrepareMetricCollectionOutput output;
+        output.collected = true;
+        output.metric_snapshot_uuid = Uuid(992);
+        output.metric_snapshot_generation = 31;
+        for (std::size_t index = 0;
+             index < context.required_metric_ids.size(); ++index) {
+          output.metrics.push_back(
+              {context.required_metric_ids[index], "canonical_units",
+               index + 1, Uuid(993 + index), 40 + index});
+        }
+        return output;
+      };
+      leg.plan_leg = [this](const auto&) {
+        ++metric_planner_invocations;
+        cache::CanonicalPrepareLegPlanningOutput output;
+        output.planned = true;
+        output.selected_leg_plan_uuid = Uuid(1000);
+        output.selected_alternative_uuid = Uuid(1001);
+        output.family_local_cost_vector_uuid = Uuid(1002);
+        output.retained_alternative_uuids = {Uuid(1001), Uuid(1003)};
+        output.estimated_output_rows = 1;
+        return output;
+      };
+      leg.cleanup_transient_state = [this] {
+        ++metric_cleanup_invocations;
+        return true;
+      };
+      metric_request.legs = {std::move(leg)};
+      metric_request.assemble_selected_plan =
+          [base = std::move(base)](const auto&, const auto&,
+                                   const auto&) mutable { return base; };
+      metric_request.engine_prepare_authorized = true;
+      metric_request.global_security_admitted = true;
+      metric_request.global_mga_admitted = true;
+      const auto prepared =
+          cache::PrepareCanonicalPhysicalPlanWithMetricCollection(
+              metric_request, &prepared_store);
+      if (!prepared.accepted || !prepared.prepare_result.prepared_plan) return;
+      prepared_plan = prepared.prepare_result.prepared_plan;
+    } else {
+      const auto prepared = cache::PrepareCanonicalPhysicalPlan(
+          PrepareRequest009(), &prepared_store);
+      if (!prepared.accepted || !prepared.prepared_plan) return;
+      prepared_plan = prepared.prepared_plan;
+    }
     key = CacheKey009(*prepared_plan);
     cache::CanonicalExecutablePlanCacheAdmissionRequest admission;
     admission.key = key;
@@ -520,6 +590,44 @@ bool ValidateExecutableHit009() {
           fixture.executable_cache.Size() == 1,
       "execution copy or transient parameter mutated the stored plan");
   return passed;
+}
+
+bool ValidatePrepareMetricExecuteReuse009() {
+  Fixture009 fixture(true);
+  if (!Require009(fixture.ready,
+                  "metric PREPARE fixture cache admission failed")) {
+    return false;
+  }
+  const auto collectors_before_execute =
+      fixture.metric_collector_invocations.load();
+  std::size_t executor_invocations = 0;
+  bool every_executor_received_fresh_context = true;
+  const auto result = api::ExecuteCanonicalExecutablePlanCacheHit(
+      ExecutionRequest009(&fixture, fixture.key, FreshStatement009(1450),
+                          &executor_invocations,
+                          &every_executor_received_fresh_context));
+  return Require009(
+      result.accepted && result.cache_hit &&
+          result.exact_selected_nodes_executed &&
+          result.canonical_result_published &&
+          result.prepare_metric_receipts_retained &&
+          !result.metric_recollection_performed &&
+          result.metric_collector_invocation_count == 0 &&
+          result.checkout.receipt.prepare_metric_receipts_retained &&
+          !result.checkout.receipt.metric_recollection_performed &&
+          result.checkout.receipt.metric_collector_invocation_count == 0 &&
+          fixture.metric_collector_invocations.load() ==
+              collectors_before_execute &&
+          collectors_before_execute == 1 &&
+          fixture.metric_planner_invocations == 1 &&
+          fixture.metric_cleanup_invocations == 1 &&
+          fixture.prepared_plan->prepare_metric_collection_receipts.size() ==
+              1 &&
+          fixture.prepared_plan->prepare_leg_plan_receipts.size() == 1 &&
+          fixture.key.metric_generations.size() == 1 &&
+          executor_invocations == fixture.prepared_plan->nodes.size() &&
+          every_executor_received_fresh_context,
+      "EXECUTE recollected PREPARE metrics or changed the stored plan");
 }
 
 using KeyMutation009 =
@@ -911,6 +1019,7 @@ bool ValidateProductionRouteIsolation009() {
 int main() {
   bool passed = true;
   passed &= ValidateExecutableHit009();
+  passed &= ValidatePrepareMetricExecuteReuse009();
   passed &= ValidateExactKeyRefusals009();
   passed &= ValidateAuthorityParameterAndSchemaRefusals009();
   passed &= ValidateAdmissionIsolationAndNoReplan009();

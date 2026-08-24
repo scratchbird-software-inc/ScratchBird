@@ -5725,6 +5725,10 @@ ExecuteCanonicalExecutablePlanCacheHit(
     result.reprepare_required = reprepare_required;
     result.automatic_replan_attempted = false;
     result.parameter_values_retained = false;
+    result.prepare_metric_receipts_retained =
+        result.checkout.receipt.prepare_metric_receipts_retained;
+    result.metric_recollection_performed = false;
+    result.metric_collector_invocation_count = 0;
     result.structural_no_optimizer_search_planner_or_fallback_route = true;
     result.optimizer_invocation_count = 0;
     result.search_invocation_count = 0;
@@ -5910,6 +5914,10 @@ ExecuteCanonicalExecutablePlanCacheHit(
   result.reprepare_required = false;
   result.automatic_replan_attempted = false;
   result.parameter_values_retained = false;
+  result.prepare_metric_receipts_retained =
+      plan.prepare_metric_receipts_retained;
+  result.metric_recollection_performed = false;
+  result.metric_collector_invocation_count = 0;
   result.structural_no_optimizer_search_planner_or_fallback_route = true;
   result.optimizer_invocation_count = 0;
   result.search_invocation_count = 0;
@@ -6451,7 +6459,7 @@ RenderCanonicalStoredPlanExplain(
     if (dependency.dependency_kind <
             cache::CanonicalPreparedPlanDependencyKind::kObject ||
         dependency.dependency_kind >
-            cache::CanonicalPreparedPlanDependencyKind::kCollation ||
+            cache::CanonicalPreparedPlanDependencyKind::kMetricSnapshot ||
         !canonical_uuid(dependency.dependency_uuid) ||
         dependency.generation == 0 ||
         !cache::CanonicalExecutablePlanDigest(

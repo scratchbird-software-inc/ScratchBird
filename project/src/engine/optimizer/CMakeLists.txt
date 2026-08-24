@@ -6,6 +6,8 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+find_package(Threads REQUIRED)
+
 if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPT-005-V1
   # QOW-CMAKE-OPT-011-V1
@@ -23,6 +25,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     add_library(sb_qow_canonical_candidate_legality STATIC
       optimizer_contract.cpp
       optimizer_profile_factory.cpp
+      optimizer_prepare_metric_collector.cpp
       model_family_coordinator.cpp
     )
     target_compile_features(sb_qow_canonical_candidate_legality PUBLIC
@@ -41,6 +44,8 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     target_link_libraries(sb_qow_canonical_candidate_legality PUBLIC
       sb_qow_canonical_logical_graph
       sb_engine_executor
+      sb_core_hash
+      Threads::Threads
     )
   endif()
   # QOW-CMAKE-OPT-006-CATALOG-V1
@@ -162,6 +167,7 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     nosql_approx_filter_decision.cpp
     nosql_statistics_advisor.cpp
     optimizer_plan_cache.cpp
+    optimizer_prepare_metric_collector.cpp
     optimizer_production_analyze.cpp
     optimizer_relational_operator_enterprise.cpp
     predicate_normalization.cpp
@@ -209,6 +215,8 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     sb_engine_plan_shapes
     sb_engine_nosql_provider_contract
     sb_storage_page
+    sb_core_hash
+    Threads::Threads
   )
 endif()
 
