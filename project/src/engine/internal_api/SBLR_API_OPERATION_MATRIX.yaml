@@ -21,6 +21,21 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
     executor_readiness_status: mapped_ready
+  - operation_id: engine.op.ddl_create_fdw
+    opcode: SBLR_DDL_CREATE_FDW
+    opcode_code: 1578
+    operand_descriptor: create_fdw_descriptor
+    result_descriptor: ddl_result
+    required_transaction_context: true
+    required_security_context: true
+    accepts_names: false
+    uuid_binding: required_before_engine_call
+    result_shape: canonical_engine_api_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: bound_fdw_catalog_mutation
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENT_REQUEST_PAGE_RELOCATION
     opcode_status: opcode_registered
     api_operation_id: agents.request_page_relocation
@@ -526,6 +541,7 @@ entries:
       - No database-file, security-catalog, or first-principal bootstrap authority is serialized or executed by this operation.
   - sblr_operation: SBLR_DDL_CREATE_SCHEMA
     opcode_status: opcode_registered
+    opcode_code: 1536
     api_operation_id: ddl.create_schema
     scope_status: noncluster_required
     closure_slice: NCE-1101
@@ -541,8 +557,225 @@ entries:
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
     executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_DROP_TABLE
+    opcode_status: opcode_registered
+    opcode_code: 1539
+    api_operation_id: engine.op.ddl_drop_table
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineDropTable
+    request_type: DropTableRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: drop_table_descriptor
+    bound_object_uuid_inputs: table_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_DROP_INDEX
+    opcode_status: opcode_registered
+    opcode_code: 1541
+    api_operation_id: engine.op.ddl_drop_index
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineDropIndex
+    request_type: DropIndexRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: drop_index_descriptor
+    bound_object_uuid_inputs: index_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_ALTER_TRIGGER
+    opcode_status: opcode_registered
+    opcode_code: 1552
+    api_operation_id: engine.op.ddl_alter_trigger
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineAlterTrigger
+    request_type: AlterTriggerRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: alter_trigger_descriptor
+    bound_object_uuid_inputs: trigger_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_ALTER_FUNCTION
+    opcode_status: opcode_registered
+    opcode_code: 1558
+    api_operation_id: engine.op.ddl_alter_function
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineAlterFunction
+    request_type: AlterFunctionRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: alter_function_descriptor
+    bound_object_uuid_inputs: function_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_CREATE_PACKAGE
+    opcode_status: opcode_registered
+    opcode_code: 1560
+    api_operation_id: engine.op.ddl_create_package
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineCreatePackage
+    request_type: CreatePackageRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: create_package_descriptor
+    bound_object_uuid_inputs: package_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_DROP_PACKAGE
+    opcode_status: opcode_registered
+    opcode_code: 1562
+    api_operation_id: engine.op.ddl_drop_package
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineDropPackage
+    request_type: DropPackageRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: drop_package_descriptor
+    bound_object_uuid_inputs: package_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_ALTER_SEQUENCE
+    opcode_status: opcode_registered
+    opcode_code: 1564
+    api_operation_id: engine.op.ddl_alter_sequence
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineAlterSequence
+    request_type: AlterSequenceRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: alter_sequence_descriptor
+    bound_object_uuid_inputs: sequence_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_CREATE_MATERIALIZED_VIEW
+    opcode_status: opcode_registered
+    opcode_code: 1566
+    api_operation_id: engine.op.ddl_create_materialized_view
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineCreateMaterializedView
+    request_type: CreateMaterializedViewRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: create_materialized_view_descriptor
+    bound_object_uuid_inputs: materialized_view_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_CREATE_TYPE
+    opcode_status: opcode_registered
+    opcode_code: 1569
+    api_operation_id: engine.op.ddl_create_type
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineCreateType
+    request_type: CreateTypeRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: create_type_descriptor
+    bound_object_uuid_inputs: type_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_ALTER_TYPE
+    opcode_status: opcode_registered
+    opcode_code: 1570
+    api_operation_id: engine.op.ddl_alter_type
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineAlterType
+    request_type: AlterTypeRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: alter_type_descriptor
+    bound_object_uuid_inputs: type_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_CREATE_PROCEDURE
+    opcode_status: opcode_registered
+    opcode_code: 1554
+    api_operation_id: engine.op.ddl_create_procedure
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineCreateProcedure
+    request_type: CreateProcedureRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: create_procedure_descriptor
+    bound_object_uuid_inputs: procedure_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_DROP_PROCEDURE
+    opcode_status: opcode_registered
+    opcode_code: 1556
+    api_operation_id: engine.op.ddl_drop_procedure
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineDropProcedure
+    request_type: DropProcedureRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: drop_procedure_descriptor
+    bound_object_uuid_inputs: procedure_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_TABLE
     opcode_status: opcode_registered
+    opcode_code: 1537
     api_operation_id: ddl.create_table
     scope_status: noncluster_required
     closure_slice: NCE-1101
@@ -560,7 +793,8 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_INDEX
     opcode_status: opcode_registered
-    api_operation_id: ddl.create_index
+    opcode_code: 1540
+    api_operation_id: engine.op.ddl_create_index
     scope_status: noncluster_required
     closure_slice: SBSFC-020R-QP
     api_function_name: EngineCreateIndex
@@ -609,8 +843,45 @@ entries:
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
     executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_ALTER_DOMAIN
+    opcode_status: opcode_registered
+    opcode_code: 1547
+    api_operation_id: engine.op.ddl_alter_domain
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineAlterDomain
+    request_type: AlterDomainRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: alter_domain_descriptor
+    bound_object_uuid_inputs: domain_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_ALTER_VIEW
+    opcode_status: opcode_registered
+    opcode_code: 1549
+    api_operation_id: engine.op.ddl_alter_view
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    api_function_name: EngineAlterView
+    request_type: AlterViewRequest
+    result_type: DdlResult
+    required_transaction_context: true
+    required_descriptor_inputs: alter_view_descriptor
+    bound_object_uuid_inputs: view_uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_DOMAIN
     opcode_status: opcode_registered
+    opcode_code: 1542
     api_operation_id: ddl.create_domain
     scope_status: noncluster_required
     closure_slice: SBSFC-020R-QO
@@ -628,7 +899,80 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_SEQUENCE
     opcode_status: opcode_registered
-    api_operation_id: ddl.create_sequence
+    opcode_code: 1671
+    api_operation_id: engine.op.ddl_create_sequence
+  - sblr_operation: SBLR_DDL_DROP_SEQUENCE
+    opcode_status: opcode_registered
+    opcode_code: 1565
+    api_operation_id: engine.op.ddl_drop_sequence
+  - sblr_operation: SBLR_DDL_REFRESH_MATERIALIZED_VIEW
+    opcode_status: opcode_registered
+    opcode_code: 1567
+    api_operation_id: engine.op.ddl_refresh_materialized_view
+  - sblr_operation: SBLR_DDL_DROP_MATERIALIZED_VIEW
+    opcode_status: opcode_registered
+    opcode_code: 1568
+    api_operation_id: engine.op.ddl_drop_materialized_view
+  - sblr_operation: SBLR_DDL_DROP_TYPE
+    opcode_status: opcode_registered
+    opcode_code: 1571
+    api_operation_id: engine.op.ddl_drop_type
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-RC
+    api_function_name: EngineDropType
+    request_type: EngineDropTypeRequest
+    result_type: EngineDropTypeResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: route_pending
+    executor_readiness_status: route_pending
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-RB
+    api_function_name: EngineDropMaterializedView
+    request_type: EngineDropMaterializedViewRequest
+    result_type: EngineDropMaterializedViewResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: route_pending
+    executor_readiness_status: route_pending
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-RA
+    api_function_name: EngineRefreshMaterializedView
+    request_type: EngineRefreshMaterializedViewRequest
+    result_type: EngineRefreshMaterializedViewResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: route_pending
+    executor_readiness_status: route_pending
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QZ
+    api_function_name: EngineDropSequence
+    request_type: EngineDropSequenceRequest
+    result_type: EngineDropSequenceResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
     scope_status: noncluster_required
     closure_slice: SBSFC-020R-QM
     api_function_name: EngineCreateSequence
@@ -645,7 +989,8 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_VIEW
     opcode_status: opcode_registered
-    api_operation_id: ddl.create_view
+    opcode_code: 1548
+    api_operation_id: engine.op.ddl_create_view
     scope_status: noncluster_required
     closure_slice: SBSFC-020R-QN
     api_function_name: EngineCreateView
@@ -660,6 +1005,60 @@ entries:
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
     executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_DROP_VIEW
+    opcode_status: opcode_registered
+    opcode_code: 1550
+    api_operation_id: engine.op.ddl_drop_view
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QP
+    api_function_name: EngineDropView
+    request_type: EngineDropViewRequest
+    result_type: EngineDropViewResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_DROP_SCHEMA
+    opcode_status: opcode_registered
+    opcode_code: 1544
+    api_operation_id: engine.op.ddl_drop_schema
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QR
+    api_function_name: EngineDropSchema
+    request_type: EngineDropSchemaRequest
+    result_type: EngineDropSchemaResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: exact_profile_refusal
+    executor_readiness_status: mapped_refusal
+  - sblr_operation: SBLR_DDL_ALTER_TABLE
+    opcode_status: opcode_registered
+    opcode_code: 1538
+    api_operation_id: engine.op.ddl_alter_table
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QT
+    api_function_name: EngineAlterTable
+    request_type: EngineAlterTableRequest
+    result_type: EngineAlterTableResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: exact_profile_refusal
+    executor_readiness_status: mapped_refusal
   - sblr_operation: SBLR_DDL_CREATE_SYNONYM
     opcode_status: opcode_registered
     api_operation_id: ddl.create_synonym
@@ -696,7 +1095,44 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_FUNCTION
     opcode_status: opcode_registered
-    api_operation_id: ddl.create_function
+    opcode_code: 1557
+    api_operation_id: engine.op.ddl_create_function
+  - sblr_operation: SBLR_DDL_DROP_FUNCTION
+    opcode_status: opcode_registered
+    opcode_code: 1559
+    api_operation_id: engine.op.ddl_drop_function
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QX
+    api_function_name: EngineDropFunction
+    request_type: EngineDropFunctionRequest
+    result_type: EngineDropFunctionResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_ALTER_PACKAGE
+    opcode_status: opcode_registered
+    opcode_code: 1561
+    api_operation_id: engine.op.ddl_alter_package
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QY
+    api_function_name: EngineAlterPackage
+    request_type: EngineAlterPackageRequest
+    result_type: EngineAlterPackageResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
     scope_status: noncluster_required
     closure_slice: NCE-1101
     api_function_name: EngineCreateFunction
@@ -730,12 +1166,49 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_TRIGGER
     opcode_status: opcode_registered
-    api_operation_id: ddl.create_trigger
+    opcode_code: 1551
+    api_operation_id: engine.op.ddl_create_trigger
     scope_status: noncluster_required
     closure_slice: NCE-1101
     api_function_name: EngineCreateTrigger
     request_type: EngineCreateTriggerRequest
     result_type: EngineCreateTriggerResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_ALTER_PROCEDURE
+    opcode_status: opcode_registered
+    opcode_code: 1555
+    api_operation_id: engine.op.ddl_alter_procedure
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QW
+    api_function_name: EngineAlterProcedure
+    request_type: EngineAlterProcedureRequest
+    result_type: EngineAlterProcedureResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_ddl
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_DDL_DROP_TRIGGER
+    opcode_status: opcode_registered
+    opcode_code: 1553
+    api_operation_id: engine.op.ddl_drop_trigger
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QV
+    api_function_name: EngineDropTrigger
+    request_type: EngineDropTriggerRequest
+    result_type: EngineDropTriggerResult
     required_transaction_context: true
     required_descriptor_inputs: descriptor_envelope_or_none
     bound_object_uuid_inputs: uuid_resolved_before_engine_call
@@ -1632,7 +2105,10 @@ entries:
     executor_readiness_status: sblr_callable
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_VERSION
     opcode_status: opcode_registered
+    opcode_code: 0x0D06
     api_operation_id: observability.show_version
+    operand_contract: observability_show_version_descriptor
+    result_contract: observability_show_version_result
     scope_status: noncluster_required
     closure_slice: NCE-1001
     api_function_name: EngineShowVersion
@@ -1649,7 +2125,10 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_DATABASE
     opcode_status: opcode_registered
+    opcode_code: 0x0D07
     api_operation_id: observability.show_database
+    operand_contract: observability_show_database_descriptor
+    result_contract: observability_show_database_result
     scope_status: noncluster_required
     closure_slice: NCE-1001
     api_function_name: EngineShowDatabase
@@ -1665,8 +2144,11 @@ entries:
     current_implementation_status: behavior_implemented
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_SYSTEM
+    opcode_code: 0x0D08
     opcode_status: opcode_registered
     api_operation_id: observability.show_system
+    operand_contract: observability_show_system_descriptor
+    result_contract: observability_show_system_result
     scope_status: noncluster_required
     closure_slice: NCE-1001
     api_function_name: EngineShowSystem
@@ -1683,6 +2165,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_CATALOG
     opcode_status: opcode_registered
+    opcode_code: 3337
     api_operation_id: observability.show_catalog
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1700,6 +2183,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_SESSIONS
     opcode_status: opcode_registered
+    opcode_code: 3338
     api_operation_id: observability.show_sessions
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1717,6 +2201,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_TRANSACTIONS
     opcode_status: opcode_registered
+    opcode_code: 3339
     api_operation_id: observability.show_transactions
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1734,6 +2219,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_LOCKS
     opcode_status: opcode_registered
+    opcode_code: 3340
     api_operation_id: observability.show_locks
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1751,6 +2237,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_STATEMENTS
     opcode_status: opcode_registered
+    opcode_code: 3341
     api_operation_id: observability.show_statements
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1768,6 +2255,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_JOBS
     opcode_status: opcode_registered
+    opcode_code: 3342
     api_operation_id: observability.show_jobs
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1785,6 +2273,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_MANAGEMENT
     opcode_status: opcode_registered
+    opcode_code: 3343
     api_operation_id: observability.show_management
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1802,6 +2291,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_DIAGNOSTICS
     opcode_status: opcode_registered
+    opcode_code: 3360
     api_operation_id: observability.show_diagnostics
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1819,6 +2309,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_DIAGNOSTICS_EXTENDED
     opcode_status: opcode_registered
+    opcode_code: 3361
     api_operation_id: observability.show_diagnostics_extended
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1836,6 +2327,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_ARCHIVE_REPLICATION
     opcode_status: opcode_registered
+    opcode_code: 3362
     api_operation_id: observability.show_archive_replication
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1853,6 +2345,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_AGENTS_EXTENDED
     opcode_status: opcode_registered
+    opcode_code: 3363
     api_operation_id: observability.show_agents_extended
     scope_status: noncluster_required
     closure_slice: SBSFC-024R-I
@@ -1870,6 +2363,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_FILESPACE_EXTENDED
     opcode_status: opcode_registered
+    opcode_code: 3364
     api_operation_id: observability.show_filespace_extended
     scope_status: noncluster_required
     closure_slice: SBSFC-024R-I
@@ -1887,6 +2381,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_DECISION_SERVICE
     opcode_status: opcode_registered
+    opcode_code: 3367
     api_operation_id: observability.show_decision_service
     scope_status: noncluster_required
     closure_slice: SBSFC-024R-I
@@ -1938,6 +2433,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_METRICS
     opcode_status: opcode_registered
+    opcode_code: 3370
     api_operation_id: observability.show_metrics
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -1955,6 +2451,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_EXPLAIN_OPERATION
     opcode_status: opcode_registered
+    opcode_code: 3369
     api_operation_id: observability.explain_operation
     scope_status: noncluster_required
     closure_slice: NCE-1001
@@ -2072,6 +2569,24 @@ entries:
     security_authority_family: management_control
     current_implementation_status: behavior_implemented
     executor_readiness_status: not_sblr_callable
+  - sblr_operation: SBLR_SYSTEM_CONFIG_SET
+    opcode_status: opcode_registered
+    opcode_code: 5125
+    api_operation_id: engine.op.system_config_set
+    scope_status: noncluster_required
+    closure_slice: PRIORITY-D-CLOSURE
+    api_function_name: EngineSystemConfigSet
+    request_type: SystemConfigSetRequest
+    result_type: ManagementResult
+    required_transaction_context: true
+    required_descriptor_inputs: system_config_set_descriptor
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: sysarch_management
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_CREATE_DATABASE
     opcode_status: opcode_registered
     api_operation_id: lifecycle.create_database
@@ -2094,6 +2609,7 @@ entries:
     executor_readiness_status: exact_refusal
   - sblr_operation: SBLR_LIFECYCLE_OPEN_DATABASE
     opcode_status: opcode_registered
+    opcode_code: 5129
     api_operation_id: lifecycle.open_database
     scope_status: noncluster_required
     closure_slice: DBLC-002
@@ -2114,6 +2630,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_ATTACH_DATABASE
     opcode_status: opcode_registered
+    opcode_code: 5130
     api_operation_id: lifecycle.attach_database
     scope_status: noncluster_required
     closure_slice: DBLC-002
@@ -2134,6 +2651,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_DETACH_DATABASE
     opcode_status: opcode_registered
+    opcode_code: 5131
     api_operation_id: lifecycle.detach_database
     scope_status: noncluster_required
     closure_slice: DBLC-002
@@ -2154,6 +2672,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_ENTER_MAINTENANCE
     opcode_status: opcode_registered
+    opcode_code: 5132
     api_operation_id: lifecycle.enter_maintenance
     scope_status: noncluster_required
     closure_slice: DBLC-002
@@ -2174,6 +2693,7 @@ entries:
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_EXIT_MAINTENANCE
     opcode_status: opcode_registered
+    opcode_code: 5133
     api_operation_id: lifecycle.exit_maintenance
     scope_status: noncluster_required
     closure_slice: DBLC-002
@@ -2428,6 +2948,7 @@ entries:
     executor_readiness_status: cluster_provider_boundary_mapped
   - sblr_operation: SBLR_CLUSTER_INSPECT_PROVIDER
     opcode_status: opcode_registered
+    opcode_code: 2877
     api_operation_id: cluster.inspect_provider
     scope_status: noncluster_required
     closure_slice: cluster_provider_boundary

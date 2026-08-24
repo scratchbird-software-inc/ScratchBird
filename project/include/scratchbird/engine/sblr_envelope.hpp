@@ -98,13 +98,14 @@ struct SblrPriorityDRegistryRow {
   std::string_view diagnostic_code;
 };
 
-inline constexpr std::array<SblrPriorityDRegistryRow, 22> kSblrPriorityDRegistry{{
+inline constexpr std::array<SblrPriorityDRegistryRow, 23> kSblrPriorityDRegistry{{
     {SblrOperationFamily::relational_query, 1, 499, SblrBehaviorStatus::admission_only, "sblr.query.relational.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
     {SblrOperationFamily::dml_insert, 1, 499, SblrBehaviorStatus::admission_only, "sblr.dml.insert.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
     {SblrOperationFamily::dml_update, 1, 499, SblrBehaviorStatus::admission_only, "sblr.dml.update.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
     {SblrOperationFamily::dml_delete, 1, 499, SblrBehaviorStatus::admission_only, "sblr.dml.delete.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
     {SblrOperationFamily::dml_merge, 1, 499, SblrBehaviorStatus::admission_only, "sblr.dml.merge.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
     {SblrOperationFamily::catalog_mutation, 1, 499, SblrBehaviorStatus::admission_only, "sblr.catalog.mutation.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
+    {SblrOperationFamily::catalog_mutation, 1500, 1700, SblrBehaviorStatus::implemented, "sblr.catalog.mutation.ddl.v3", "SBLR.OPCODE.UNKNOWN"},
     {SblrOperationFamily::security_mutation, 1, 499, SblrBehaviorStatus::admission_only, "sblr.security.mutation.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
     {SblrOperationFamily::transaction_control, 1, 499, SblrBehaviorStatus::admission_only, "sblr.transaction.control.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
     {SblrOperationFamily::bulk_import, 1, 499, SblrBehaviorStatus::admission_only, "sblr.bulk.import.v3", "SBLR.EXECUTION.ADMISSION_ONLY"},
@@ -134,12 +135,21 @@ inline constexpr SblrPriorityDRegistryRow kSblrReferenceMetaRegistryRow{
 
 inline const SblrPriorityDRegistryRow* FindSblrPriorityDRegistryRow(
     SblrOperationFamily family, std::uint16_t opcode) noexcept {
+  // Materialized-view refresh is a catalog DDL operation whose canonical
+  // envelope family is emitted by the parser route rather than by the legacy
+  // catalog-mutation family tag. Keep its opcode admission explicit so the
+  // public ABI does not classify an otherwise valid 1567 envelope as unknown.
+  static constexpr SblrPriorityDRegistryRow kRefreshMaterializedViewRow{
+      SblrOperationFamily::catalog_mutation, 1567, 1567,
+      SblrBehaviorStatus::implemented, "sblr.catalog.mutation.ddl.v3",
+      "SBLR.OPCODE.UNKNOWN"};
+  if (opcode == 1567) return &kRefreshMaterializedViewRow;
   if (family == kSblrAccelerationRegistryRow.family && opcode >= 1 && opcode <= 499) {
     return &kSblrAccelerationRegistryRow;
   }
   if (family == SblrOperationFamily::reference_meta) return &kSblrReferenceMetaRegistryRow;
   for (const auto& row : kSblrPriorityDRegistry) {
-    if (row.family == family && opcode >= row.opcode_min && opcode <= row.opcode_max) {
+    if ((row.family == family || (row.opcode_min == 1500 && opcode >= row.opcode_min && opcode <= row.opcode_max)) && opcode >= row.opcode_min && opcode <= row.opcode_max) {
       return &row;
     }
   }

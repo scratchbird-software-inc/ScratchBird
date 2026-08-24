@@ -1126,6 +1126,7 @@ SessionOperationResult HandleCoordinateDdlDropFunction(ServerSessionRegistry*,co
 SessionOperationResult HandleCoordinateDdlCreatePackage(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateSynonym(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateForeignTable(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDdlCreateFdw(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropForeignTable(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropSynonym(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropPackage(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

@@ -327,8 +327,10 @@ int main(int argc, char** argv) {
                           ? session.RunDdlRenameObjectForWire()
                     : operation == "ddl-create-synonym"
                           ? session.RunDdlCreateSynonymForWire()
-                          : operation == "ddl-create-foreign-table"
+                    : operation == "ddl-create-foreign-table"
                                 ? session.RunDdlCreateForeignTableForWire()
+                    : operation == "ddl-create-fdw"
+                                ? session.RunDdlCreateFdwForWire()
                     : operation == "ddl-create-or-replace-srs"
                           ? session.RunDdlCreateOrReplaceSrsForWire()
                     : operation == "ddl-drop-srs"
