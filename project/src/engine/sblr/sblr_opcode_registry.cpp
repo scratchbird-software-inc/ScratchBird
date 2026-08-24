@@ -603,6 +603,7 @@ void ApplyIa01SemanticContract(SblrOpcodeEntry* entry) {
       {"SBLR_DDL_CREATE_PROCEDURE", "create_procedure_descriptor", "ddl_result", "engine.op.ddl_create_procedure"},
       {"SBLR_DDL_CREATE_PACKAGE", "create_package_descriptor", "ddl_result", "engine.op.ddl_create_package"},
       {"SBLR_DDL_DROP_PACKAGE", "drop_package_descriptor", "ddl_result", "engine.op.ddl_drop_package"},
+      {"SBLR_DDL_DROP_SYNONYM", "drop_package_descriptor", "ddl_result", "engine.op.ddl_drop_synonym"},
       {"SBLR_DDL_ALTER_SEQUENCE", "alter_sequence_descriptor", "ddl_result", "engine.op.ddl_alter_sequence"},
       {"SBLR_DDL_CREATE_MATERIALIZED_VIEW", "create_materialized_view_descriptor", "ddl_result", "engine.op.ddl_create_materialized_view"},
       {"SBLR_DDL_CREATE_TYPE", "create_type_descriptor", "ddl_result", "engine.op.ddl_create_type"},
@@ -627,6 +628,7 @@ void ApplyIa01SemanticContract(SblrOpcodeEntry* entry) {
       {"SBLR_DDL_CREATE_PACKAGE", "create_package_descriptor", "ddl_result", "engine.op.ddl_create_package"},
       {"SBLR_DDL_ALTER_PACKAGE", "alter_package_descriptor", "ddl_result", "engine.op.ddl_alter_package"},
       {"SBLR_DDL_DROP_PACKAGE", "drop_package_descriptor", "ddl_result", "engine.op.ddl_drop_package"},
+      {"SBLR_DDL_DROP_SYNONYM", "drop_package_descriptor", "ddl_result", "engine.op.ddl_drop_synonym"},
       {"SBLR_DDL_ALTER_TRIGGER", "alter_trigger_descriptor", "ddl_result", "engine.op.ddl_alter_trigger"},
       {"SBLR_DDL_DROP_TRIGGER", "drop_trigger_descriptor", "ddl_result", "engine.op.ddl_drop_trigger"},
       {"SBLR_OBSERVABILITY_SHOW_VERSION", "observability_show_version_descriptor", "observability_show_version_result", "observability.show_version"},
@@ -1052,6 +1054,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("engine.op.ddl_create_table_as_query_with_no_data", "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_alter_package", "SBLR_DDL_ALTER_PACKAGE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_package", "SBLR_DDL_DROP_PACKAGE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_drop_synonym", "SBLR_DDL_DROP_SYNONYM", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_alter_sequence", "SBLR_DDL_ALTER_SEQUENCE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_sequence", "SBLR_DDL_DROP_SEQUENCE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_create_materialized_view", "SBLR_DDL_CREATE_MATERIALIZED_VIEW", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1061,6 +1064,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("engine.op.ddl_alter_type", "SBLR_DDL_ALTER_TYPE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_type", "SBLR_DDL_DROP_TYPE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_rename_object", "SBLR_DDL_RENAME_OBJECT", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_create_synonym", "SBLR_DDL_CREATE_SYNONYM", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.synonym.drop", "SBLR_DDL_DROP_SYNONYM", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.foreign_table.create", "SBLR_DDL_CREATE_FOREIGN_TABLE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.foreign_table.drop", "SBLR_DDL_DROP_FOREIGN_TABLE", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1876,6 +1880,11 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
                                                       std::string_view operation_id,
                                                       std::string_view opcode) {
   SblrOpcodeValidationResult result;
+  if (code == 1574 && operation_id == "engine.op.ddl_create_synonym" && opcode == "SBLR_DDL_CREATE_SYNONYM") {
+    result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_SYNONYM");
+    result.ok = result.entry != nullptr;
+    return result;
+  }
   if (code == 3369 && operation_id == "observability.explain_operation" && opcode == "SBLR_OBSERVABILITY_EXPLAIN_OPERATION") {
     result.entry = LookupSblrOpcode("SBLR_OBSERVABILITY_EXPLAIN_OPERATION");
     result.ok = result.entry != nullptr;
@@ -2008,6 +2017,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
   if (code == 1559 && operation_id == "engine.op.ddl_drop_function" && opcode == "SBLR_DDL_DROP_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_FUNCTION"); result.ok = result.entry != nullptr; return result; }
   if (code == 1560 && operation_id == "engine.op.ddl_create_package" && opcode == "SBLR_DDL_CREATE_PACKAGE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_PACKAGE"); result.ok = result.entry != nullptr; }
   if (code == 1562 && operation_id == "engine.op.ddl_drop_package" && opcode == "SBLR_DDL_DROP_PACKAGE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_PACKAGE"); result.ok = result.entry != nullptr; }
+  if (code == 1575 && operation_id == "engine.op.ddl_drop_synonym" && opcode == "SBLR_DDL_DROP_SYNONYM") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_SYNONYM"); result.ok = result.entry != nullptr; }
   if (code == 1564 && operation_id == "engine.op.ddl_alter_sequence" && opcode == "SBLR_DDL_ALTER_SEQUENCE") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_SEQUENCE"); result.ok = result.entry != nullptr; }
   if (code == 1565 && operation_id == "engine.op.ddl_drop_sequence" && opcode == "SBLR_DDL_DROP_SEQUENCE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_SEQUENCE"); result.ok = result.entry != nullptr; }
   if (code == 1566 && operation_id == "engine.op.ddl_create_materialized_view" && opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_MATERIALIZED_VIEW"); result.ok = result.entry != nullptr; }
@@ -2087,6 +2097,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnve
   if (envelope.opcode_code == 1558 && envelope.operation_id == "engine.op.ddl_alter_function" && envelope.opcode == "SBLR_DDL_ALTER_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_FUNCTION"); result.ok = result.entry != nullptr; return result; }
   if (envelope.opcode_code == 1560 && envelope.operation_id == "engine.op.ddl_create_package" && envelope.opcode == "SBLR_DDL_CREATE_PACKAGE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_PACKAGE"); result.ok = result.entry != nullptr; }
   if (envelope.opcode_code == 1562 && envelope.operation_id == "engine.op.ddl_drop_package" && envelope.opcode == "SBLR_DDL_DROP_PACKAGE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_PACKAGE"); result.ok = result.entry != nullptr; }
+  if (envelope.opcode_code == 1575 && envelope.operation_id == "engine.op.ddl_drop_synonym" && envelope.opcode == "SBLR_DDL_DROP_SYNONYM") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_SYNONYM"); result.ok = result.entry != nullptr; }
   if (envelope.opcode_code == 1564 && envelope.operation_id == "engine.op.ddl_alter_sequence" && envelope.opcode == "SBLR_DDL_ALTER_SEQUENCE") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_SEQUENCE"); result.ok = result.entry != nullptr; return result; }
   if (envelope.opcode_code == 1565 && envelope.operation_id == "engine.op.ddl_drop_sequence" && envelope.opcode == "SBLR_DDL_DROP_SEQUENCE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_SEQUENCE"); result.ok = result.entry != nullptr; return result; }
   if (envelope.opcode_code == 1566 && envelope.operation_id == "engine.op.ddl_create_materialized_view" && envelope.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_MATERIALIZED_VIEW"); result.ok = result.entry != nullptr; }

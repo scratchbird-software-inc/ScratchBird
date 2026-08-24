@@ -168,8 +168,12 @@
 #include "sblr_ddl_drop_function_runtime.hpp"
 #include "sblr_ddl_drop_function_coordinator.hpp"
 #include "sblr_ddl_create_package_runtime.hpp"
+#include "sblr_ddl_create_synonym_runtime.hpp"
 #include "sblr_ddl_alter_package_runtime.hpp"
 #include "sblr_ddl_create_package_coordinator.hpp"
+#include "sblr_ddl_create_synonym_coordinator.hpp"
+#include "sblr_ddl_drop_synonym_runtime.hpp"
+#include "sblr_ddl_drop_synonym_coordinator.hpp"
 #include "sblr_ddl_create_sequence_runtime.hpp"
 #include "sblr_ddl_create_sequence_coordinator.hpp"
 #include "sblr_ddl_alter_sequence_runtime.hpp"
@@ -6828,9 +6832,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool ddl_create_table_as_query_with_no_data_root = false;
   bool ddl_create_sequence_root = false;
   bool ddl_alter_sequence_root = false;
-  bool ddl_drop_type_root = false; bool ddl_rename_object_root = false;
+  bool ddl_drop_type_root = false; bool ddl_rename_object_root = false; bool ddl_create_synonym_root = false;
   bool ddl_drop_sequence_root = false;
-  bool ddl_drop_package_root = false; bool ddl_alter_package_root = false;
+  bool ddl_drop_package_root = false; bool ddl_drop_synonym_root = false; bool ddl_alter_package_root = false;
   bool ddl_create_domain_root = false; bool ddl_create_package_root = false; bool ddl_create_temporary_table_root = false; bool ddl_drop_temporary_table_root = false; bool ddl_rename_object_vector_root = false; bool ddl_alter_domain_root = false; bool ddl_create_view_root = false; bool ddl_alter_view_root = false; bool ddl_drop_view_root = false; bool ddl_create_trigger_root = false; bool ddl_alter_trigger_root = false; bool ddl_drop_trigger_root = false; bool ddl_create_procedure_root = false; bool ddl_alter_procedure_root = false; bool ddl_drop_procedure_root = false; bool ddl_create_function_root = false; bool ddl_alter_function_root = false; bool ddl_drop_function_root = false; bool ddl_create_schema_root = false; bool ddl_create_table_root = false; bool ddl_create_index_root = false; bool ddl_drop_index_root = false;
   bool ddl_create_or_replace_srs_root = false;
   bool ddl_drop_srs_root = false;
@@ -6920,6 +6924,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   scratchbird::engine::sblr::SblrSystemConfigSetDescriptorV1 system_config_set_descriptor;std::uint64_t system_config_set_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateDomainDescriptorV1 ddl_create_domain_descriptor;std::uint64_t ddl_create_domain_availability_generation=0; scratchbird::engine::sblr::SblrDdlAlterDomainDescriptorV1 ddl_alter_domain_descriptor;std::uint64_t ddl_alter_domain_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateViewDescriptorV1 ddl_create_view_descriptor;std::uint64_t ddl_create_view_availability_generation=0; scratchbird::engine::sblr::SblrDdlAlterViewDescriptorV1 ddl_alter_view_descriptor;std::uint64_t ddl_alter_view_availability_generation=0; scratchbird::engine::sblr::SblrDdlDropViewDescriptorV1 ddl_drop_view_descriptor{};std::uint64_t ddl_drop_view_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateTriggerDescriptorV1 ddl_create_trigger_descriptor{};std::uint64_t ddl_create_trigger_availability_generation=0; scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1 ddl_create_schema_descriptor;std::uint64_t ddl_create_schema_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateTableDescriptorV1 ddl_create_table_descriptor;std::uint64_t ddl_create_table_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateSequenceDescriptorV1 ddl_create_sequence_descriptor{};std::uint64_t ddl_create_sequence_availability_generation=0;
+  scratchbird::engine::sblr::SblrDdlCreateSynonymDescriptorV1 ddl_create_synonym_descriptor{};std::uint64_t ddl_create_synonym_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlAlterTriggerDescriptorV1 ddl_alter_trigger_descriptor{};std::uint64_t ddl_alter_trigger_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlDropTriggerDescriptorV1 ddl_drop_trigger_descriptor{};std::uint64_t ddl_drop_trigger_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlCreateProcedureDescriptorV1 ddl_create_procedure_descriptor{};std::uint64_t ddl_create_procedure_availability_generation=0;
@@ -7148,6 +7153,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
     ddl_create_table_as_query_with_data_root = member.operation_id == "engine.op.ddl_create_table_as_query_with_data" && member.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" && member.opcode_code == 1669;
     ddl_create_table_as_query_with_no_data_root = member.operation_id == "engine.op.ddl_create_table_as_query_with_no_data" && member.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA" && member.opcode_code == 1670;
     ddl_drop_package_root = member.operation_id == "engine.op.ddl_drop_package" && member.opcode == "SBLR_DDL_DROP_PACKAGE" && member.opcode_code == 1562;
+    ddl_drop_synonym_root = member.operation_id == "engine.op.ddl_drop_synonym" && member.opcode == "SBLR_DDL_DROP_SYNONYM" && member.opcode_code == 1575;
     ddl_alter_package_root = member.operation_id == "engine.op.ddl_alter_package" && member.opcode == "SBLR_DDL_ALTER_PACKAGE" && member.opcode_code == 1561;
     ddl_create_trigger_root = member.operation_id == "engine.op.ddl_create_trigger" && member.opcode == "SBLR_DDL_CREATE_TRIGGER" && member.opcode_code == 1551;
     ddl_alter_trigger_root = member.operation_id == "engine.op.ddl_alter_trigger" && member.opcode == "SBLR_DDL_ALTER_TRIGGER" && member.opcode_code == 1552;
@@ -7163,6 +7169,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
     ddl_alter_sequence_root = member.operation_id == "engine.op.ddl_alter_sequence" && member.opcode == "SBLR_DDL_ALTER_SEQUENCE" && member.opcode_code == 1564;
     ddl_drop_type_root = member.operation_id == "engine.op.ddl_drop_type" && member.opcode == "SBLR_DDL_DROP_TYPE" && member.opcode_code == 1571;
     ddl_rename_object_root = member.operation_id == "engine.op.ddl_rename_object" && member.opcode == "SBLR_DDL_RENAME_OBJECT" && member.opcode_code == 1572;
+    ddl_create_synonym_root = member.operation_id == "engine.op.ddl_create_synonym" && member.opcode == "SBLR_DDL_CREATE_SYNONYM" && member.opcode_code == 1574;
+    if (ddl_create_synonym_root) { std::string detail; if (member.operands.size() != 1 || member.operands.front().type != "create_synonym_descriptor" || member.operands.front().name != "synonym" || !scratchbird::engine::sblr::DecodeSblrDdlCreateSynonymDescriptorV1(member.operands.front().value_body.data(), member.operands.front().value_body.size(), &ddl_create_synonym_descriptor, &detail, true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4136, "SBLR.OPERAND_INVALID", "sblr.ddl_create_synonym.operand_invalid", detail); ddl_create_synonym_availability_generation = ddl_create_synonym_descriptor.availability; }
     if (ddl_rename_object_root) { std::string detail; if (member.operands.size() != 1 || member.operands.front().type != "rename_object_descriptor" || member.operands.front().name != "rename" || !scratchbird::engine::sblr::DecodeSblrDdlRenameObjectDescriptorV1(member.operands.front().value_body.data(), member.operands.front().value_body.size(), &ddl_rename_object_descriptor, &detail, true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4136, "SBLR.OPERAND_INVALID", "sblr.ddl_rename_object.operand_invalid", detail); ddl_rename_object_availability_generation = ddl_rename_object_descriptor.availability; }
     ddl_drop_sequence_root = member.operation_id == "engine.op.ddl_drop_sequence" && member.opcode == "SBLR_DDL_DROP_SEQUENCE" && member.opcode_code == 1565;
     ddl_create_temporary_table_root = member.operation_id == "engine.op.ddl_create_temporary_table" && member.opcode == "SBLR_DDL_CREATE_TEMPORARY_TABLE" && member.opcode_code == 1561;
@@ -7627,6 +7635,14 @@ if(ddl_drop_index_root){std::string detail;if(member.operands.size()!=1||member.
       dispatched.api_result.operation_id = "engine.op.ddl_drop_package";
       dispatched.api_result.result_shape.result_kind = "ddl_result";
     }
+    if (ddl_drop_synonym_root) {
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_drop_synonym";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
+    if (ddl_create_synonym_root) { dispatched.accepted=true; dispatched.dispatched_to_api=true; dispatched.api_result.ok=true; dispatched.api_result.operation_id="engine.op.ddl_create_synonym"; dispatched.api_result.result_shape.result_kind="ddl_result"; }
     if (ddl_drop_type_root) {
       dispatched.accepted = true;
       dispatched.dispatched_to_api = true;
@@ -7722,7 +7738,7 @@ if(ddl_drop_index_root){std::string detail;if(member.operands.size()!=1||member.
   scratchbird::engine::sblr::QueryExecuteResultHandleValidationV1
       query_handle_validation;
   if (opcode_stream && !ddl_create_table_as_query_with_data_root && !ddl_create_table_as_query_with_no_data_root && !ddl_refresh_materialized_view_root && !ddl_drop_materialized_view_root && !ddl_drop_package_root && !dml_counter_add_root && !dml_timeseries_schema_write_root && !source_map_root && !error_vector_root &&
-      !ddl_alter_sequence_root && !ddl_drop_type_root && !ddl_rename_object_root && !ddl_drop_sequence_root && !show_version_root && !catalog_introspect_root &&
+      !ddl_alter_sequence_root && !ddl_drop_type_root && !ddl_rename_object_root && !ddl_create_synonym_root && !ddl_drop_sequence_root && !ddl_drop_synonym_root && !show_version_root && !catalog_introspect_root &&
       !txn_begin_root && !txn_commit_root && !txn_rollback_root && !txn_savepoint_root && !txn_release_savepoint_root && !txn_rollback_to_savepoint_root && !psql_autonomous_frame_root && !reservation_release_root && !temporary_cleanup_root && !cursor_open_root && !cursor_fetch_root && !cursor_close_root && !read_by_key_root && !read_range_root && !read_stream_root && !result_set_pass_root && !access_cursor_open_root && !access_cursor_fetch_root && !access_cursor_close_root && !insert_root && !update_root && !delete_root && !merge_root && !ddl_create_aggregate_root && !ddl_alter_aggregate_root && !ddl_drop_aggregate_root && !ddl_drop_dictionary_root && !ddl_purge_system_history_root && !ddl_set_index_optimizer_eligibility_root && !ddl_set_table_type_enforcement_root) {
     const auto& shape = dispatched.api_result.result_shape;
     if (std::any_of(shape.rows.begin(), shape.rows.end(),
@@ -8478,6 +8494,7 @@ if(ddl_drop_index_root){auto c=receipt->engine_context;c.trace_tags.push_back("p
               << descriptor.availability << "\tparent_success_barrier=passed\n";
     }
   }
+  if (ddl_create_synonym_root) { auto c=receipt->engine_context; c.trace_tags.push_back("private_ddl_create_synonym"); auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreateSynonymDescriptor(c,ddl_create_synonym_descriptor); if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4136,consumed.diagnostic.code,consumed.diagnostic.message_key); scratchbird::engine::sblr::SblrDdlCreateSynonymResultV1 rr; rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_create_synonym_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreateSynonymResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4136,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_synonym.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size()); }
   if (ddl_rename_object_root) {
     auto c = receipt->engine_context;
     c.trace_tags.push_back("private_ddl_rename_object");
