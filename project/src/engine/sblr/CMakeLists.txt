@@ -75,6 +75,8 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_create_domain_runtime.cpp
   sblr_ddl_create_schema_runtime.cpp
   sblr_ddl_create_table_runtime.cpp
+  sblr_ddl_drop_table_runtime.cpp
+  sblr_ddl_create_table_as_query_runtime.cpp
   sblr_ddl_create_index_runtime.cpp
   sblr_ddl_drop_index_runtime.cpp
   sblr_ddl_alter_domain_runtime.cpp
@@ -89,6 +91,19 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_create_function_runtime.cpp
   sblr_ddl_alter_function_runtime.cpp
   sblr_ddl_create_package_runtime.cpp
+  sblr_ddl_create_synonym_runtime.cpp
+  sblr_ddl_drop_package_runtime.cpp
+  sblr_ddl_drop_synonym_runtime.cpp
+  sblr_ddl_alter_package_runtime.cpp
+  sblr_ddl_create_sequence_runtime.cpp
+  sblr_ddl_drop_sequence_runtime.cpp
+  sblr_ddl_alter_sequence_runtime.cpp
+  sblr_ddl_create_materialized_view_runtime.cpp
+  sblr_ddl_create_type_runtime.cpp
+  sblr_ddl_alter_type_runtime.cpp
+  sblr_ddl_drop_materialized_view_runtime.cpp
+  sblr_ddl_drop_type_runtime.cpp
+  sblr_ddl_refresh_materialized_view_runtime.cpp
   sblr_ddl_create_temporary_table_runtime.cpp
   sblr_ddl_drop_temporary_table_runtime.cpp
   sblr_ddl_rename_object_vector_runtime.cpp
