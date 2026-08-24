@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -582,6 +583,14 @@ bool ValidateOptimizerOwnedPlanning() {
       scan_candidate != first.factory.candidates.end() &&
           scan_candidate->cost_terms.cpu_units == 100 &&
           scan_candidate->cost_terms.cache_units == 1 &&
+          scan_candidate->cost_terms.cache_miss_units == 1 &&
+          scan_candidate->cost_terms.memory_allocation_units == 64 &&
+          scan_candidate->cost_terms.memory_grant_opportunity_units == 64 &&
+          scan_candidate->cost_terms.mga_version_traversal_units == 100 &&
+          scan_candidate->cost_terms.mga_visibility_check_units == 100 &&
+          scan_candidate->cost_terms.complete_dimension_vector &&
+          scan_candidate->cost_terms.scalarization_policy_id ==
+              "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1" &&
           scan_candidate->cost_terms.mga_visibility_checks_expected == 100 &&
           scan_candidate->statistics_snapshot_uuid == Uuid(7) &&
           scan_candidate->statistics_generation == 35,
@@ -595,7 +604,13 @@ bool ValidateOptimizerOwnedPlanning() {
           physical_scan->implementation_id == "scan.index.btree.v1" &&
           physical_scan->retained_cost.cpu_units == 100 &&
           physical_scan->retained_cost.page_read_random_units == 2 &&
-          physical_scan->retained_cost.cache_units == 1,
+          physical_scan->retained_cost.cache_units == 1 &&
+          physical_scan->retained_cost.cache_miss_units == 1 &&
+          physical_scan->retained_cost.memory_allocation_units == 64 &&
+          physical_scan->retained_cost.mga_visibility_check_units == 100 &&
+          physical_scan->retained_cost.complete_dimension_vector &&
+          physical_scan->retained_cost.scalarization_policy_id ==
+              "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1",
       "published DAG lost the selected multidimensional cost vector");
   return passed;
 }
@@ -813,17 +828,20 @@ bool ValidateCompleteKindFactoryCoverage() {
   const auto result = opt::PlanCanonicalRelationalDag(input);
   bool has_match = false;
   bool has_table_function = false;
+  bool complete_cost_vectors = true;
   for (const auto& candidate : result.factory.candidates) {
     has_match |= candidate.logical_node_id == 16 &&
                  candidate.cost_terms.predicate_evaluation_units != 0;
     has_table_function |= candidate.logical_node_id == 15 &&
                           candidate.cost_terms.udr_invocation_units != 0;
+    complete_cost_vectors &=
+        candidate.cost_terms.complete_dimension_vector;
   }
   if (!input.admission.admitted || !result.accepted ||
       result.factory.inventory.candidate_count != 17 ||
       result.factory.candidates.size() != 17 ||
       result.publication.physical_dag.nodes.size() != 17 || !has_match ||
-      !has_table_function) {
+      !has_table_function || !complete_cost_vectors) {
     std::cerr << "PUBLIC-OPTIMIZER-FOUNDATION-CONTRACT: complete_kind_refusal=";
     if (!input.admission.issues.empty()) {
       const auto& issue = input.admission.issues.front();
@@ -849,7 +867,8 @@ bool ValidateCompleteKindFactoryCoverage() {
                 << ",published="
                 << result.publication.physical_dag.nodes.size()
                 << ",match=" << has_match
-                << ",table_function=" << has_table_function;
+                << ",table_function=" << has_table_function
+                << ",complete_cost_vectors=" << complete_cost_vectors;
     }
     std::cerr << '\n';
   }
@@ -859,7 +878,12 @@ bool ValidateCompleteKindFactoryCoverage() {
           result.factory.inventory.candidate_count == 17 &&
           result.factory.candidates.size() == 17 &&
           result.publication.physical_dag.nodes.size() == 17 && has_match &&
-          has_table_function,
+          has_table_function && complete_cost_vectors &&
+          std::ranges::all_of(result.publication.physical_dag.nodes,
+                              [](const auto& node) {
+                                return node.retained_cost
+                                    .complete_dimension_vector;
+                              }),
       "optimizer factory did not enumerate/cost every logical node family");
 }
 
@@ -882,6 +906,29 @@ bool ValidateCostVectorBookkeeping() {
   left.udr_invocation_units = 47;
   left.mga_units = 53;
   left.index_maintenance_units = 59;
+  left.cache_residency_benefit_units = 1;
+  left.spill_read_units = 61;
+  left.temp_space_pressure_units = 67;
+  left.decompression_units = 71;
+  left.decryption_units = 73;
+  left.expression_evaluation_units = 79;
+  left.domain_cast_units = 83;
+  left.datatype_conversion_units = 89;
+  left.collation_comparison_units = 97;
+  left.mga_version_traversal_units = 101;
+  left.archive_fetch_units = 103;
+  left.garbage_retention_pressure_units = 107;
+  left.lock_latch_wait_risk_units = 109;
+  left.network_latency_units = 113;
+  left.remote_execution_startup_units = 127;
+  left.cluster_coordination_units = 131;
+  left.repartition_units = 137;
+  left.broadcast_units = 139;
+  left.replica_staleness_risk_units = 149;
+  left.quorum_availability_risk_units = 151;
+  left.donor_compatibility_enforcement_units = 157;
+  left.result_ordering_enforcement_units = 163;
+  left.plan_instability_penalty = 167;
   left.confidence = opt::CostConfidence::kHigh;
   opt::FinalizeCostVector(&left);
   const auto initial_cpu = left.cpu_units;
@@ -903,18 +950,58 @@ bool ValidateCostVectorBookkeeping() {
   right.cpu_units = 61;
   right.random_io_units = 67;
   right.page_write_units = 71;
+  right.expression_evaluation_units = 73;
+  right.plan_instability_penalty = 79;
   right.confidence = opt::CostConfidence::kMedium;
   opt::AccumulateCostVector(&left, right);
   const auto json = opt::SerializeCostVectorToJson(left);
+  exec::PhysicalCostVectorReceipt valid_physical_cost;
+  valid_physical_cost.scalarization_policy_id =
+      "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1";
+  valid_physical_cost.cpu_units = 5;
+  valid_physical_cost.cache_residency_benefit_units = 2;
+  valid_physical_cost.complete_dimension_vector = true;
+  std::uint64_t physical_scalar = 0;
+  const bool valid_physical_scalar = exec::ComputePhysicalCostVectorScalarScore(
+      valid_physical_cost, &physical_scalar);
+  const auto valid_physical_scalar_value = physical_scalar;
+  auto unknown_policy_cost = valid_physical_cost;
+  unknown_policy_cost.scalarization_policy_id = "unknown.policy.v1";
+  const bool unknown_policy_refused =
+      !exec::ComputePhysicalCostVectorScalarScore(unknown_policy_cost,
+                                                  &physical_scalar);
+  auto overflowing_cost = valid_physical_cost;
+  overflowing_cost.cache_residency_benefit_units = 0;
+  overflowing_cost.cpu_units = std::numeric_limits<std::uint64_t>::max();
+  overflowing_cost.page_read_sequential_units = 1;
+  const bool overflow_refused =
+      !exec::ComputePhysicalCostVectorScalarScore(overflowing_cost,
+                                                  &physical_scalar);
   return Require(
       initial_cpu == 2 && initial_total != 0 &&
           legacy_updated_cpu == legacy_initial_cpu + 100 &&
           legacy.cpu_units == legacy_updated_cpu && left.cpu_units == 63 &&
           left.random_io_units == 72 && left.page_write_units == 78 &&
+          left.expression_evaluation_units == 152 &&
+          left.plan_instability_penalty == 246 &&
+          left.complete_dimension_vector &&
           left.total_cost > initial_total &&
+          valid_physical_scalar && valid_physical_scalar_value == 3 &&
+          unknown_policy_refused && overflow_refused &&
           json.find("\"page_write_units\": 78") != std::string::npos &&
           json.find("\"vector_distance_units\": 37") != std::string::npos &&
-          json.find("\"mga_units\": 53") != std::string::npos,
+          json.find("\"mga_units\": 53") != std::string::npos &&
+          json.find("\"garbage_retention_pressure_units\": 107") !=
+              std::string::npos &&
+          json.find("\"result_ordering_enforcement_units\": 163") !=
+              std::string::npos &&
+          json.find("\"plan_instability_penalty\": 246") !=
+              std::string::npos &&
+          json.find("\"complete_dimension_vector\": true") !=
+              std::string::npos &&
+          json.find(
+              "\"scalarization_policy_id\": \"optimizer.complete-unit-sum-minus-cache-benefit.v1\"") !=
+              std::string::npos,
       "cost dimensions were overwritten, collapsed, or omitted from explain JSON");
 }
 
@@ -1050,6 +1137,13 @@ bool ValidateModelFamilyOptimizerOwnedProfiles() {
           .metrics.predicate_evaluations;
     const auto changed_metric_inventory =
         opt::BuildModelFamilyAlternativeProfilesV1(changed_metric_request);
+    std::uint64_t retained_model_score = 0;
+    const bool retained_model_cost_exact =
+        native.physical_dag.nodes.size() == 1 &&
+        exec::ComputePhysicalCostVectorScalarScore(
+            native.physical_dag.nodes.front().retained_cost,
+            &retained_model_score) &&
+        retained_model_score == native.selected_candidate.cost.scalar_score;
     passed &= Require(
         inventory.accepted && inventory.optimizer_owned_enumeration &&
             !inventory.data_access_allowed && inventory.candidates.size() == 2 &&
@@ -1068,16 +1162,34 @@ bool ValidateModelFamilyOptimizerOwnedProfiles() {
                 (family.family_id == "spatial" ? 2 : 0) &&
             native.selected_candidate.cost.mga_units == 2 &&
             native.selected_candidate.cost.memory_grant_units == 512 &&
+            native.selected_candidate.cost.memory_allocation_units == 512 &&
+            native.selected_candidate.cost.memory_grant_opportunity_units ==
+                512 &&
+            native.selected_candidate.cost.mga_visibility_check_units == 2 &&
+            native.selected_candidate.cost.complete_dimension_vector &&
             native.selected_candidate.cost.scalar_score != 0 &&
+            native.physical_dag.nodes.size() == 1 &&
+            native.physical_dag.nodes.front()
+                .retained_cost.complete_dimension_vector &&
+            native.physical_dag.nodes.front()
+                    .retained_cost.memory_allocation_units == 512 &&
+            native.physical_dag.nodes.front().retained_cost.scalar_score ==
+                native.selected_candidate.cost.scalar_score &&
+            retained_model_cost_exact &&
             native.selected_candidate.cost.scalarization_policy_id ==
-                "model-family.local-unit-sum.v1" &&
+                "model-family.complete-unit-sum-minus-cache-benefit.v1" &&
             native.selected_candidate.cost.calibration_profile_uuid ==
                 request.capability_snapshots.front()
                     .metrics.calibration_profile_uuid &&
             native.selected_cost_explain_json.find(
                 "\"memory_grant_units\":512") != std::string::npos &&
             native.selected_cost_explain_json.find(
-                "\"scalarization_policy_id\":\"model-family.local-unit-sum.v1\"") !=
+                "\"memory_allocation_units\":512") != std::string::npos &&
+            native.selected_cost_explain_json.find(
+                "\"complete_dimension_vector\":true") !=
+                std::string::npos &&
+            native.selected_cost_explain_json.find(
+                "\"scalarization_policy_id\":\"model-family.complete-unit-sum-minus-cache-benefit.v1\"") !=
                 std::string::npos &&
             native.candidate_inventory_receipt_uuid ==
                 inventory.candidate_inventory_receipt_uuid &&

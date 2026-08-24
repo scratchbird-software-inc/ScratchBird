@@ -624,10 +624,15 @@ opt::CanonicalOptimizerSearchCandidateInput Candidate(
   candidate.model_family_id = "relational.local.v1";
   candidate.cost_terms.cost_vector_uuid = Uuid(500 + ordinal);
   candidate.cost_terms.calibration_profile_uuid = Uuid(600);
+  candidate.cost_terms.scalarization_policy_id =
+      "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1";
   candidate.cost_terms.cpu_units = score;
   candidate.cost_terms.page_read_sequential_units = ordinal;
   candidate.cost_terms.memory_bytes_required = 100 + ordinal;
   if (ordinal == 1) candidate.cost_terms.mga_visibility_checks_expected = 1;
+  candidate.cost_terms.memory_allocation_units = 100 + ordinal;
+  if (ordinal == 1) candidate.cost_terms.mga_visibility_check_units = 1;
+  candidate.cost_terms.complete_dimension_vector = true;
   candidate.cost_terms.confidence = opt::CostConfidence::kExact;
   candidate.semantic_preserving = true;
   candidate.transformation_preconditions_satisfied = true;

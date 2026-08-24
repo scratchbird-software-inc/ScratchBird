@@ -409,6 +409,8 @@ BuildCanonicalOptimizerAlternativeProfiles(
     cost.cost_vector_uuid =
         DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
     cost.calibration_profile_uuid = calibration_profile_uuid;
+    cost.scalarization_policy_id =
+        "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1";
     cost.cpu_units = SaturatingMultiply(estimated_rows,
                                         CpuMultiplier(node->node_kind));
     if (node->node_kind ==
@@ -458,6 +460,8 @@ BuildCanonicalOptimizerAlternativeProfiles(
     if (node->node_kind == Kind::kTableFunctionInvoke) {
       cost.udr_invocation_units = estimated_rows;
     }
+    cost.expression_evaluation_units = SaturatingMultiply(
+        estimated_rows, node->bound_expression_ids.size());
     if (HasCostlyProperty(
             *node, properties_by_uuid,
             planner::CanonicalLogicalPropertyKind::kDistribution) ||
@@ -473,6 +477,29 @@ BuildCanonicalOptimizerAlternativeProfiles(
     }
     if (HasCostlyProperty(
             *node, properties_by_uuid,
+            planner::CanonicalLogicalPropertyKind::kDistribution)) {
+      cost.repartition_units = estimated_rows;
+      cost.cluster_coordination_units = 1;
+    }
+    if (HasCostlyProperty(*node, properties_by_uuid,
+                          planner::CanonicalLogicalPropertyKind::kLocality)) {
+      cost.remote_execution_startup_units = 1;
+    }
+    if (HasCostlyProperty(*node, properties_by_uuid,
+                          planner::CanonicalLogicalPropertyKind::kOrdering) ||
+        HasCostlyProperty(
+            *node, properties_by_uuid,
+            planner::CanonicalLogicalPropertyKind::kVectorOrdering) ||
+        HasCostlyProperty(
+            *node, properties_by_uuid,
+            planner::CanonicalLogicalPropertyKind::kTextScoreOrdering) ||
+        HasCostlyProperty(
+            *node, properties_by_uuid,
+            planner::CanonicalLogicalPropertyKind::kTimeOrdering)) {
+      cost.result_ordering_enforcement_units = estimated_rows;
+    }
+    if (HasCostlyProperty(
+            *node, properties_by_uuid,
             planner::CanonicalLogicalPropertyKind::kSecurityVisibility)) {
       cost.encryption_units = estimated_rows;
       cost.mga_units = SaturatingAdd(cost.mga_units, estimated_rows);
@@ -481,6 +508,22 @@ BuildCanonicalOptimizerAlternativeProfiles(
         confidence == CostConfidence::kLow) {
       cost.uncertainty_penalty = 1;
     }
+    // Preserve the Core cost dimensions independently.  The older aggregate
+    // fields remain populated for compatible readers, but complete vectors are
+    // scalarized and published from these exact terms.
+    cost.cache_miss_units = cost.cache_units;
+    cost.memory_allocation_units = cost.memory_bytes_required;
+    cost.memory_grant_opportunity_units = cost.memory_grant_units;
+    cost.spill_write_units = cost.spill_bytes_expected;
+    cost.spill_read_units = cost.spill_units;
+    cost.mga_version_traversal_units = cost.mga_units;
+    cost.mga_visibility_check_units =
+        cost.mga_visibility_checks_expected;
+    cost.archive_fetch_units = cost.archive_fetches_expected;
+    cost.network_latency_units = cost.network_units;
+    cost.network_bandwidth_units = cost.network_bytes_expected;
+    cost.plan_instability_penalty = cost.risk_penalty;
+    cost.complete_dimension_vector = true;
     cost.confidence = confidence;
     candidate.semantic_preserving = true;
     candidate.transformation_preconditions_satisfied = true;

@@ -14051,11 +14051,66 @@ std::optional<std::uint64_t> BoundOperatorLocalPhysicalDagCopyMemoryBytes(
         !add_string(node.transformation_rule_id) ||
         !add_string_vector(node.enforced_property_uuids) ||
         !add_string(node.retained_cost.cost_vector_uuid) ||
-        !add_string(node.retained_cost.calibration_profile_uuid)) {
+        !add_string(node.retained_cost.calibration_profile_uuid) ||
+        !add_string(node.retained_cost.scalarization_policy_id)) {
       return std::nullopt;
     }
   }
   return bytes;
+}
+
+bool RebindOperatorLocalPhysicalMemoryGrant(
+    exec::PhysicalNodeRecord* node,
+    exec::TypedPhysicalNodeDag* dag,
+    const std::uint64_t rebound_memory_bytes,
+    std::string* detail) {
+  if (node == nullptr || dag == nullptr || detail == nullptr ||
+      rebound_memory_bytes == 0 ||
+      node->retained_cost.memory_bytes_required !=
+          node->memory_bytes_required ||
+      dag->selected_scalar_score < node->retained_cost.scalar_score) {
+    if (detail != nullptr) {
+      *detail = "operator-local retained memory cost cannot be rebound";
+    }
+    return false;
+  }
+  const auto previous_memory_bytes = node->memory_bytes_required;
+  const auto previous_scalar_score = node->retained_cost.scalar_score;
+  auto rebound_cost = node->retained_cost;
+  rebound_cost.memory_bytes_required = rebound_memory_bytes;
+  if (!rebound_cost.complete_dimension_vector &&
+      rebound_cost.memory_grant_units == previous_memory_bytes) {
+    rebound_cost.memory_grant_units = rebound_memory_bytes;
+  }
+  std::uint64_t rebound_scalar_score = 0;
+  if (!exec::ComputePhysicalCostVectorScalarScore(
+          rebound_cost, &rebound_scalar_score)) {
+    *detail = "operator-local rebound cost scalar overflows";
+    return false;
+  }
+  // The complete Core dimensions describe the selected alternative's cost;
+  // a smaller callback-local grant changes only the resource envelope. Legacy
+  // vectors included the envelope directly in their scalar and therefore need
+  // a scalar rebind until every old producer publishes a complete vector.
+  if (rebound_cost.complete_dimension_vector &&
+      rebound_scalar_score != previous_scalar_score) {
+    *detail = "operator-local complete cost changed with its grant envelope";
+    return false;
+  }
+  const auto unbound_dag_score = dag->selected_scalar_score -
+                                 previous_scalar_score;
+  std::uint64_t rebound_dag_score = 0;
+  if (!CheckedAdd(unbound_dag_score, rebound_scalar_score,
+                  &rebound_dag_score)) {
+    *detail = "operator-local rebound selected cost scalar overflows";
+    return false;
+  }
+  rebound_cost.scalar_score = rebound_scalar_score;
+  node->memory_bytes_required = rebound_memory_bytes;
+  node->retained_cost = std::move(rebound_cost);
+  dag->selected_scalar_score = rebound_dag_score;
+  detail->clear();
+  return true;
 }
 
 bool BuildStrictUnaryOperatorLocalPhysicalDag(
@@ -14187,21 +14242,12 @@ bool BuildStrictUnaryOperatorLocalPhysicalDag(
     *detail = "dispatcher callback memory exceeds the published unary grant";
     return false;
   }
-  const auto memory_delta =
-      root->memory_bytes_required - *selected_bound;
-  if (root->retained_cost.memory_bytes_required !=
-          root->memory_bytes_required ||
-      root->retained_cost.scalar_score < memory_delta ||
-      operator_dag->selected_scalar_score < memory_delta) {
+  if (!RebindOperatorLocalPhysicalMemoryGrant(
+          &*root, operator_dag, *selected_bound, detail)) {
     *operator_dag = {};
     *callback_memory_bound = 0;
-    *detail = "operator-local unary retained cost cannot be rebound";
     return false;
   }
-  root->memory_bytes_required = *selected_bound;
-  root->retained_cost.memory_bytes_required = *selected_bound;
-  root->retained_cost.scalar_score -= memory_delta;
-  operator_dag->selected_scalar_score -= memory_delta;
   *callback_memory_bound = *selected_bound;
   detail->clear();
   return true;
@@ -14336,20 +14382,12 @@ bool BuildStrictBinaryOperatorLocalPhysicalDag(
     *detail = "dispatcher callback memory exceeds the published binary grant";
     return false;
   }
-  const auto memory_delta = root->memory_bytes_required - *selected_bound;
-  if (root->retained_cost.memory_bytes_required !=
-          root->memory_bytes_required ||
-      root->retained_cost.scalar_score < memory_delta ||
-      operator_dag->selected_scalar_score < memory_delta) {
+  if (!RebindOperatorLocalPhysicalMemoryGrant(
+          &*root, operator_dag, *selected_bound, detail)) {
     *operator_dag = {};
     *callback_memory_bound = 0;
-    *detail = "operator-local binary retained cost cannot be rebound";
     return false;
   }
-  root->memory_bytes_required = *selected_bound;
-  root->retained_cost.memory_bytes_required = *selected_bound;
-  root->retained_cost.scalar_score -= memory_delta;
-  operator_dag->selected_scalar_score -= memory_delta;
   *callback_memory_bound = *selected_bound;
   detail->clear();
   return true;
@@ -15053,27 +15091,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                                    " callback memory exceeds its published grant";
           return step;
         }
-        const auto memory_delta =
-            bounded_operator_node->memory_bytes_required -
-            *selected_node_memory_bound;
-        if (bounded_operator_node->retained_cost.memory_bytes_required !=
-                bounded_operator_node->memory_bytes_required ||
-            bounded_operator_node->retained_cost.scalar_score <
-                memory_delta ||
-            key_request.physical_dag.selected_scalar_score < memory_delta) {
+        if (!RebindOperatorLocalPhysicalMemoryGrant(
+                &*bounded_operator_node, &key_request.physical_dag,
+                *selected_node_memory_bound, &operator_dag_detail)) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "SBLR.PLAN_TREE.RESOURCE_LIMIT";
           step.diagnostic.detail = active_operation_name +
-                                   " retained cost cannot be rebound";
+                                   " " + operator_dag_detail;
           return step;
         }
-        bounded_operator_node->memory_bytes_required =
-            *selected_node_memory_bound;
-        bounded_operator_node->retained_cost.memory_bytes_required =
-            *selected_node_memory_bound;
-        bounded_operator_node->retained_cost.scalar_score -= memory_delta;
-        key_request.physical_dag.selected_scalar_score -= memory_delta;
         key_request.selected_physical_node_id = node.physical_node_id;
         key_request.borrowed_left_batch = &left_batch;
         key_request.borrowed_right_batch = &right_batch;
@@ -34800,8 +34827,12 @@ ExecuteCanonicalObjectFreeValuesQuery(
   candidate.model_family_id = "relational.local.v1";
   candidate.cost_terms.cost_vector_uuid = cost_vector_uuid;
   candidate.cost_terms.calibration_profile_uuid = calibration_uuid;
+  candidate.cost_terms.scalarization_policy_id =
+      "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1";
   candidate.cost_terms.cpu_units = materialized.batch.rows.size();
   candidate.cost_terms.memory_bytes_required = memory_bytes;
+  candidate.cost_terms.memory_allocation_units = memory_bytes;
+  candidate.cost_terms.complete_dimension_vector = true;
   candidate.cost_terms.confidence = opt::CostConfidence::kExact;
   candidate.semantic_preserving = true;
   candidate.transformation_preconditions_satisfied = true;
@@ -41559,6 +41590,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   account_string(node.retained_cost.cost_vector_uuid) &&
                   account_string(
                       node.retained_cost.calibration_profile_uuid) &&
+                  account_string(
+                      node.retained_cost.scalarization_policy_id) &&
                   account_string_vector(node.required_property_uuids) &&
                   account_string_vector(node.delivered_property_uuids) &&
                   account_string_vector(node.enforced_property_uuids) &&

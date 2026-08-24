@@ -551,39 +551,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
     std::unordered_set<std::uint32_t> selected_logical_nodes;
     const auto same_cost = [](const executor::PhysicalCostVectorReceipt& left,
                               const executor::PhysicalCostVectorReceipt& right) {
-      return left.cost_vector_uuid == right.cost_vector_uuid &&
-             left.calibration_profile_uuid == right.calibration_profile_uuid &&
-             left.scalar_score == right.scalar_score &&
-             left.cpu_units == right.cpu_units &&
-             left.page_read_sequential_units ==
-                 right.page_read_sequential_units &&
-             left.page_read_random_units == right.page_read_random_units &&
-             left.page_write_units == right.page_write_units &&
-             left.memory_bytes_required == right.memory_bytes_required &&
-             left.spill_bytes_expected == right.spill_bytes_expected &&
-             left.network_bytes_expected == right.network_bytes_expected &&
-             left.mga_visibility_checks_expected ==
-                 right.mga_visibility_checks_expected &&
-             left.archive_fetches_expected == right.archive_fetches_expected &&
-             left.uncertainty_penalty == right.uncertainty_penalty &&
-             left.risk_penalty == right.risk_penalty &&
-             left.cache_units == right.cache_units &&
-             left.memory_grant_units == right.memory_grant_units &&
-             left.spill_units == right.spill_units &&
-             left.network_units == right.network_units &&
-             left.compression_units == right.compression_units &&
-             left.encryption_units == right.encryption_units &&
-             left.predicate_evaluation_units ==
-                 right.predicate_evaluation_units &&
-             left.vector_distance_units == right.vector_distance_units &&
-             left.text_scoring_units == right.text_scoring_units &&
-             left.spatial_evaluation_units ==
-                 right.spatial_evaluation_units &&
-             left.udr_invocation_units == right.udr_invocation_units &&
-             left.mga_units == right.mga_units &&
-             left.index_maintenance_units ==
-                 right.index_maintenance_units &&
-             left.confidence == right.confidence;
+      return left == right;
     };
     std::string previous_candidate_key;
     for (const auto& candidate : explain.candidates) {

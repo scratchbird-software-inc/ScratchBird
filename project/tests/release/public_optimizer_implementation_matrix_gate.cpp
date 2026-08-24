@@ -955,6 +955,10 @@ void ApplyModelFamilyProof(
                         inventory.candidates.front().cost.mga_units == 4 &&
                         inventory.candidates.front().cost.memory_grant_units ==
                             512 &&
+                        inventory.candidates.front()
+                                .cost.memory_allocation_units == 512 &&
+                        inventory.candidates.front()
+                                .cost.complete_dimension_vector &&
                         inventory.candidates.front().cost.scalar_score != 0;
   row->selectable = planned.accepted && planned.selected;
   row->physical_node_emitted =
@@ -965,7 +969,7 @@ void ApplyModelFamilyProof(
       !planned.selected_candidate.cost.cost_vector_uuid.empty() &&
       !planned.candidate_inventory_receipt_uuid.empty() &&
       planned.selected_cost_explain_json.find(
-          "\"scalarization_policy_id\":\"model-family.local-unit-sum.v1\"") !=
+          "\"scalarization_policy_id\":\"model-family.complete-unit-sum-minus-cache-benefit.v1\"") !=
           std::string::npos &&
       planned.selected_cost_explain_json.find(
           "\"memory_grant_units\":512") != std::string::npos;

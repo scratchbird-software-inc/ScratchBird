@@ -6226,38 +6226,7 @@ RenderCanonicalStoredPlanExplain(
   }
   const auto same_cost = [](const metric::PhysicalCostVectorReceipt& left,
                             const metric::PhysicalCostVectorReceipt& right) {
-    return left.cost_vector_uuid == right.cost_vector_uuid &&
-           left.calibration_profile_uuid == right.calibration_profile_uuid &&
-           left.scalar_score == right.scalar_score &&
-           left.cpu_units == right.cpu_units &&
-           left.page_read_sequential_units ==
-               right.page_read_sequential_units &&
-           left.page_read_random_units == right.page_read_random_units &&
-           left.page_write_units == right.page_write_units &&
-           left.memory_bytes_required == right.memory_bytes_required &&
-           left.spill_bytes_expected == right.spill_bytes_expected &&
-           left.network_bytes_expected == right.network_bytes_expected &&
-           left.mga_visibility_checks_expected ==
-               right.mga_visibility_checks_expected &&
-           left.archive_fetches_expected == right.archive_fetches_expected &&
-           left.uncertainty_penalty == right.uncertainty_penalty &&
-           left.risk_penalty == right.risk_penalty &&
-           left.cache_units == right.cache_units &&
-           left.memory_grant_units == right.memory_grant_units &&
-           left.spill_units == right.spill_units &&
-           left.network_units == right.network_units &&
-           left.compression_units == right.compression_units &&
-           left.encryption_units == right.encryption_units &&
-           left.predicate_evaluation_units ==
-               right.predicate_evaluation_units &&
-           left.vector_distance_units == right.vector_distance_units &&
-           left.text_scoring_units == right.text_scoring_units &&
-           left.spatial_evaluation_units ==
-               right.spatial_evaluation_units &&
-           left.udr_invocation_units == right.udr_invocation_units &&
-           left.mga_units == right.mga_units &&
-           left.index_maintenance_units == right.index_maintenance_units &&
-           left.confidence == right.confidence;
+    return left == right;
   };
   std::unordered_set<std::uint64_t> physical_ids;
   std::unordered_set<std::uint32_t> logical_ids;
@@ -6277,14 +6246,6 @@ RenderCanonicalStoredPlanExplain(
       });
     };
     std::uint64_t retained_scalar_score = 0;
-    const auto add_cost = [&](const std::uint64_t term) {
-      if (term > std::numeric_limits<std::uint64_t>::max() -
-                     retained_scalar_score) {
-        return false;
-      }
-      retained_scalar_score += term;
-      return true;
-    };
     const auto& cost = node.retained_cost;
     const bool causal_counter_overflow =
         node.publication_ordinal >
@@ -6312,33 +6273,12 @@ RenderCanonicalStoredPlanExplain(
         !canonical_uuid(node.cost_vector_uuid) ||
         cost.cost_vector_uuid != node.cost_vector_uuid ||
         !canonical_uuid(cost.calibration_profile_uuid) ||
+        !cost.complete_dimension_vector ||
         cost.confidence > 3 ||
         cost.memory_bytes_required != node.memory_bytes_required ||
         cost.spill_bytes_expected != node.spill_bytes_expected ||
-        !add_cost(cost.cpu_units) ||
-        !add_cost(cost.page_read_sequential_units) ||
-        !add_cost(cost.page_read_random_units) ||
-        !add_cost(cost.page_write_units) ||
-        !add_cost(cost.memory_bytes_required) ||
-        !add_cost(cost.spill_bytes_expected) ||
-        !add_cost(cost.network_bytes_expected) ||
-        !add_cost(cost.mga_visibility_checks_expected) ||
-        !add_cost(cost.archive_fetches_expected) ||
-        !add_cost(cost.uncertainty_penalty) ||
-        !add_cost(cost.risk_penalty) ||
-        !add_cost(cost.cache_units) ||
-        !add_cost(cost.memory_grant_units) ||
-        !add_cost(cost.spill_units) ||
-        !add_cost(cost.network_units) ||
-        !add_cost(cost.compression_units) ||
-        !add_cost(cost.encryption_units) ||
-        !add_cost(cost.predicate_evaluation_units) ||
-        !add_cost(cost.vector_distance_units) ||
-        !add_cost(cost.text_scoring_units) ||
-        !add_cost(cost.spatial_evaluation_units) ||
-        !add_cost(cost.udr_invocation_units) ||
-        !add_cost(cost.mga_units) ||
-        !add_cost(cost.index_maintenance_units) ||
+        !metric::ComputePhysicalCostVectorScalarScore(
+            cost, &retained_scalar_score) ||
         retained_scalar_score != cost.scalar_score ||
         (node.node_kind == metric::PhysicalNodeKind::kScan &&
          cost.mga_visibility_checks_expected == 0) ||

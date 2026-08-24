@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <string>
@@ -187,6 +188,7 @@ struct PhysicalAdmissionEvidence {
 struct PhysicalCostVectorReceipt {
   std::string cost_vector_uuid;
   std::string calibration_profile_uuid;
+  std::string scalarization_policy_id;
   std::uint64_t scalar_score{0};
   std::uint64_t cpu_units{0};
   std::uint64_t page_read_sequential_units{0};
@@ -212,8 +214,144 @@ struct PhysicalCostVectorReceipt {
   std::uint64_t udr_invocation_units{0};
   std::uint64_t mga_units{0};
   std::uint64_t index_maintenance_units{0};
+  std::uint64_t cache_miss_units{0};
+  std::uint64_t cache_residency_benefit_units{0};
+  std::uint64_t memory_allocation_units{0};
+  std::uint64_t memory_grant_opportunity_units{0};
+  std::uint64_t spill_write_units{0};
+  std::uint64_t spill_read_units{0};
+  std::uint64_t temp_space_pressure_units{0};
+  std::uint64_t decompression_units{0};
+  std::uint64_t decryption_units{0};
+  std::uint64_t expression_evaluation_units{0};
+  std::uint64_t domain_cast_units{0};
+  std::uint64_t datatype_conversion_units{0};
+  std::uint64_t collation_comparison_units{0};
+  std::uint64_t mga_version_traversal_units{0};
+  std::uint64_t mga_visibility_check_units{0};
+  std::uint64_t archive_fetch_units{0};
+  std::uint64_t garbage_retention_pressure_units{0};
+  std::uint64_t lock_latch_wait_risk_units{0};
+  std::uint64_t network_latency_units{0};
+  std::uint64_t network_bandwidth_units{0};
+  std::uint64_t remote_execution_startup_units{0};
+  std::uint64_t cluster_coordination_units{0};
+  std::uint64_t repartition_units{0};
+  std::uint64_t broadcast_units{0};
+  std::uint64_t replica_staleness_risk_units{0};
+  std::uint64_t quorum_availability_risk_units{0};
+  std::uint64_t donor_compatibility_enforcement_units{0};
+  std::uint64_t result_ordering_enforcement_units{0};
+  std::uint64_t plan_instability_penalty{0};
+  bool complete_dimension_vector{false};
   std::uint8_t confidence{0};
+
+  bool operator==(const PhysicalCostVectorReceipt&) const = default;
 };
+
+inline bool ComputePhysicalCostVectorScalarScore(
+    const PhysicalCostVectorReceipt& cost,
+    std::uint64_t* scalar_score) {
+  if (scalar_score == nullptr) return false;
+  if (cost.complete_dimension_vector &&
+      cost.scalarization_policy_id !=
+          "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1" &&
+      cost.scalarization_policy_id !=
+          "model-family.complete-unit-sum-minus-cache-benefit.v1") {
+    return false;
+  }
+  *scalar_score = 0;
+  const auto add = [&](const std::uint64_t value) {
+    if (value > std::numeric_limits<std::uint64_t>::max() - *scalar_score) {
+      return false;
+    }
+    *scalar_score += value;
+    return true;
+  };
+  const auto add_all = [&](std::initializer_list<std::uint64_t> values) {
+    for (const auto value : values) {
+      if (!add(value)) return false;
+    }
+    return true;
+  };
+  const bool accepted = cost.complete_dimension_vector
+      ? add_all({
+            cost.cpu_units,
+            cost.page_read_sequential_units,
+            cost.page_read_random_units,
+            cost.page_write_units,
+            cost.cache_miss_units,
+            cost.memory_allocation_units,
+            cost.memory_grant_opportunity_units,
+            cost.spill_write_units,
+            cost.spill_read_units,
+            cost.temp_space_pressure_units,
+            cost.compression_units,
+            cost.decompression_units,
+            cost.encryption_units,
+            cost.decryption_units,
+            cost.predicate_evaluation_units,
+            cost.expression_evaluation_units,
+            cost.udr_invocation_units,
+            cost.vector_distance_units,
+            cost.text_scoring_units,
+            cost.spatial_evaluation_units,
+            cost.domain_cast_units,
+            cost.datatype_conversion_units,
+            cost.collation_comparison_units,
+            cost.mga_version_traversal_units,
+            cost.mga_visibility_check_units,
+            cost.archive_fetch_units,
+            cost.garbage_retention_pressure_units,
+            cost.index_maintenance_units,
+            cost.lock_latch_wait_risk_units,
+            cost.network_latency_units,
+            cost.network_bandwidth_units,
+            cost.remote_execution_startup_units,
+            cost.cluster_coordination_units,
+            cost.repartition_units,
+            cost.broadcast_units,
+            cost.replica_staleness_risk_units,
+            cost.quorum_availability_risk_units,
+            cost.donor_compatibility_enforcement_units,
+            cost.result_ordering_enforcement_units,
+            cost.uncertainty_penalty,
+            cost.plan_instability_penalty,
+        })
+      : add_all({
+            cost.cpu_units,
+            cost.page_read_sequential_units,
+            cost.page_read_random_units,
+            cost.page_write_units,
+            cost.memory_bytes_required,
+            cost.spill_bytes_expected,
+            cost.network_bytes_expected,
+            cost.mga_visibility_checks_expected,
+            cost.archive_fetches_expected,
+            cost.uncertainty_penalty,
+            cost.risk_penalty,
+            cost.cache_units,
+            cost.memory_grant_units,
+            cost.spill_units,
+            cost.network_units,
+            cost.compression_units,
+            cost.encryption_units,
+            cost.predicate_evaluation_units,
+            cost.vector_distance_units,
+            cost.text_scoring_units,
+            cost.spatial_evaluation_units,
+            cost.udr_invocation_units,
+            cost.mga_units,
+            cost.index_maintenance_units,
+        });
+  if (!accepted) return false;
+  if (cost.complete_dimension_vector) {
+    *scalar_score = *scalar_score >= cost.cache_residency_benefit_units
+                        ? *scalar_score - cost.cache_residency_benefit_units
+                        : 0;
+  }
+  return true;
+}
 
 struct PhysicalNodeRecord {
   std::uint64_t physical_node_id{0};
@@ -595,66 +733,69 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
       if (complete_optimizer_publication) {
         const auto& cost = node.retained_cost;
         std::uint64_t retained_scalar_score = 0;
-        const auto add_cost = [&](const std::uint64_t term) {
-          return checked_add(retained_scalar_score, term,
-                             &retained_scalar_score);
-        };
         std::uint64_t expected_causal_counter = 0;
-        if (node.physical_node_id != node.relational_node_id ||
-            !valid_implementation_id(node.logical_semantic_variant_id) ||
-            node.publication_ordinal >= dag.published_node_count ||
-            !publication_ordinals.insert(node.publication_ordinal).second ||
-            !checked_add(dag.first_causal_counter_id,
-                         node.publication_ordinal,
-                         &expected_causal_counter) ||
-            node.causal_counter_id != expected_causal_counter ||
-            !canonical_uuid(node.transformation_uuid) ||
-            !valid_implementation_id(node.transformation_rule_id) ||
-            !valid_properties(node.enforced_property_uuids,
-                              &enforced_properties) ||
-            !std::ranges::all_of(
-                node.enforced_property_uuids,
-                [&](const auto& property_uuid) {
-                  return delivered_properties.contains(property_uuid);
-                }) ||
-            cost.cost_vector_uuid != node.cost_vector_uuid ||
-            !canonical_uuid(cost.calibration_profile_uuid) ||
-            cost.confidence > 3 ||
-            cost.memory_bytes_required != node.memory_bytes_required ||
-            cost.spill_bytes_expected != node.spill_bytes_expected ||
-            !add_cost(cost.cpu_units) ||
-            !add_cost(cost.page_read_sequential_units) ||
-            !add_cost(cost.page_read_random_units) ||
-            !add_cost(cost.page_write_units) ||
-            !add_cost(cost.memory_bytes_required) ||
-            !add_cost(cost.spill_bytes_expected) ||
-            !add_cost(cost.network_bytes_expected) ||
-            !add_cost(cost.mga_visibility_checks_expected) ||
-            !add_cost(cost.archive_fetches_expected) ||
-            !add_cost(cost.uncertainty_penalty) ||
-            !add_cost(cost.risk_penalty) ||
-            !add_cost(cost.cache_units) ||
-            !add_cost(cost.memory_grant_units) ||
-            !add_cost(cost.spill_units) ||
-            !add_cost(cost.network_units) ||
-            !add_cost(cost.compression_units) ||
-            !add_cost(cost.encryption_units) ||
-            !add_cost(cost.predicate_evaluation_units) ||
-            !add_cost(cost.vector_distance_units) ||
-            !add_cost(cost.text_scoring_units) ||
-            !add_cost(cost.spatial_evaluation_units) ||
-            !add_cost(cost.udr_invocation_units) ||
-            !add_cost(cost.mga_units) ||
-            !add_cost(cost.index_maintenance_units) ||
-            retained_scalar_score != cost.scalar_score ||
-            !checked_add(retained_selected_scalar_score,
-                         cost.scalar_score,
-                         &retained_selected_scalar_score) ||
-            (node.node_kind == PhysicalNodeKind::kScan &&
-             cost.mga_visibility_checks_expected == 0)) {
+        std::string publication_field;
+        if (node.physical_node_id != node.relational_node_id) {
+          publication_field = "physical_relational_node_identity";
+        } else if (!valid_implementation_id(
+                       node.logical_semantic_variant_id)) {
+          publication_field = "logical_semantic_variant_id";
+        } else if (node.publication_ordinal >= dag.published_node_count) {
+          publication_field = "publication_ordinal_range";
+        } else if (!publication_ordinals.insert(node.publication_ordinal)
+                        .second) {
+          publication_field = "publication_ordinal_uniqueness";
+        } else if (!checked_add(dag.first_causal_counter_id,
+                                node.publication_ordinal,
+                                &expected_causal_counter) ||
+                   node.causal_counter_id != expected_causal_counter) {
+          publication_field = "causal_counter_identity";
+        } else if (!canonical_uuid(node.transformation_uuid)) {
+          publication_field = "transformation_uuid";
+        } else if (!valid_implementation_id(node.transformation_rule_id)) {
+          publication_field = "transformation_rule_id";
+        } else if (!valid_properties(node.enforced_property_uuids,
+                                     &enforced_properties)) {
+          publication_field = "enforced_property_identity";
+        } else if (!std::ranges::all_of(
+                       node.enforced_property_uuids,
+                       [&](const auto& property_uuid) {
+                         return delivered_properties.contains(property_uuid);
+                       })) {
+          publication_field = "enforced_property_delivery";
+        } else if (cost.cost_vector_uuid != node.cost_vector_uuid) {
+          publication_field = "cost_vector_uuid";
+        } else if (!canonical_uuid(cost.calibration_profile_uuid)) {
+          publication_field = "calibration_profile_uuid";
+        } else if (!cost.complete_dimension_vector) {
+          publication_field = "complete_dimension_vector";
+        } else if (cost.confidence > 3) {
+          publication_field = "cost_confidence";
+        } else if (cost.memory_bytes_required !=
+                   node.memory_bytes_required) {
+          publication_field = "cost_memory_bytes_required";
+        } else if (cost.spill_bytes_expected != node.spill_bytes_expected) {
+          publication_field = "cost_spill_bytes_expected";
+        } else if (!ComputePhysicalCostVectorScalarScore(
+                       cost, &retained_scalar_score)) {
+          publication_field = "cost_scalar_score_overflow";
+        } else if (retained_scalar_score != cost.scalar_score) {
+          publication_field =
+              "cost_scalar_score.retained_" +
+              std::to_string(cost.scalar_score) + ".recomputed_" +
+              std::to_string(retained_scalar_score);
+        } else if (!checked_add(retained_selected_scalar_score,
+                                cost.scalar_score,
+                                &retained_selected_scalar_score)) {
+          publication_field = "selected_scalar_score_overflow";
+        } else if (node.node_kind == PhysicalNodeKind::kScan &&
+                   cost.mga_visibility_checks_expected == 0) {
+          publication_field = "scan_mga_visibility_cost";
+        }
+        if (!publication_field.empty()) {
           return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
                         node.physical_node_id,
-                        "complete_selected_node_contract");
+                        std::move(publication_field));
         }
       }
     }

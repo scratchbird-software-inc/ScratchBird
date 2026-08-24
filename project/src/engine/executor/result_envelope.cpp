@@ -243,6 +243,7 @@ bool PhysicalNodeRecordEqual(const PhysicalNodeRecord& left,
          left.memory_bytes_required == right.memory_bytes_required &&
          left.spill_bytes_expected == right.spill_bytes_expected &&
          left.engine_capability_validated == right.engine_capability_validated &&
+         left.retained_cost == right.retained_cost &&
          PhysicalMgaStatementContextEqual(left.mga_statement_context,
                                           right.mga_statement_context);
 }

@@ -42,6 +42,8 @@ std::string JsonEscape(std::string_view input) {
 
 void FinalizeCostVector(CostVector* cost) {
   if (cost == nullptr) return;
+  cost->scalarization_policy_id =
+      "optimizer.complete-unit-sum-minus-cache-benefit.v1";
   // Preserve independently supplied CPU work while replacing, rather than
   // accumulating, the compatibility projection from legacy startup/row
   // fields. Legacy costers frequently adjust row_cost after obtaining an
@@ -72,29 +74,72 @@ void FinalizeCostVector(CostVector* cost) {
   cost->memory_grant_bytes =
       std::max(cost->memory_grant_bytes, cost->memory_cost);
 
+  if (!cost->complete_dimension_vector) {
+    // Project legacy aggregate terms exactly once into the normative vector.
+    // The aggregate fields remain available for compatibility and diagnostics,
+    // but are not separately scalarized after this projection.
+    cost->cache_miss_units =
+        std::max(cost->cache_miss_units, cost->cache_units);
+    cost->memory_allocation_units =
+        std::max(cost->memory_allocation_units, cost->memory_grant_bytes);
+    cost->spill_write_units =
+        std::max(cost->spill_write_units, cost->spill_units);
+    cost->network_bandwidth_units =
+        std::max(cost->network_bandwidth_units, cost->network_units);
+    cost->mga_visibility_check_units =
+        std::max(cost->mga_visibility_check_units, cost->mga_units);
+    cost->complete_dimension_vector = true;
+  }
+
   std::uint64_t total = 0;
   const std::uint64_t dimensions[] = {
       cost->cpu_units,
       cost->sequential_io_units,
       cost->random_io_units,
       cost->page_write_units,
-      cost->cache_units,
-      cost->memory_grant_bytes,
-      cost->spill_units,
-      cost->network_units,
+      cost->cache_miss_units,
+      cost->memory_allocation_units,
+      cost->memory_grant_opportunity_units,
+      cost->spill_write_units,
+      cost->spill_read_units,
+      cost->temp_space_pressure_units,
       cost->compression_units,
+      cost->decompression_units,
       cost->encryption_units,
+      cost->decryption_units,
       cost->predicate_evaluation_units,
+      cost->expression_evaluation_units,
       cost->vector_distance_units,
       cost->text_scoring_units,
       cost->spatial_evaluation_units,
       cost->udr_invocation_units,
-      cost->mga_units,
+      cost->domain_cast_units,
+      cost->datatype_conversion_units,
+      cost->collation_comparison_units,
+      cost->mga_version_traversal_units,
+      cost->mga_visibility_check_units,
+      cost->archive_fetch_units,
+      cost->garbage_retention_pressure_units,
       cost->index_maintenance_units,
-      cost->uncertainty_cost};
+      cost->lock_latch_wait_risk_units,
+      cost->network_latency_units,
+      cost->network_bandwidth_units,
+      cost->remote_execution_startup_units,
+      cost->cluster_coordination_units,
+      cost->repartition_units,
+      cost->broadcast_units,
+      cost->replica_staleness_risk_units,
+      cost->quorum_availability_risk_units,
+      cost->donor_compatibility_enforcement_units,
+      cost->result_ordering_enforcement_units,
+      cost->uncertainty_cost,
+      cost->plan_instability_penalty};
   for (const auto dimension : dimensions) {
     total = SaturatingAdd(total, dimension);
   }
+  total = total >= cost->cache_residency_benefit_units
+              ? total - cost->cache_residency_benefit_units
+              : 0;
   cost->total_cost = total;
 }
 
@@ -171,6 +216,85 @@ void AccumulateCostVector(CostVector* destination, const CostVector& source) {
   destination->index_maintenance_units = SaturatingAdd(
       destination->index_maintenance_units,
       finalized_source.index_maintenance_units);
+  destination->cache_miss_units = SaturatingAdd(
+      destination->cache_miss_units, finalized_source.cache_miss_units);
+  destination->cache_residency_benefit_units = SaturatingAdd(
+      destination->cache_residency_benefit_units,
+      finalized_source.cache_residency_benefit_units);
+  destination->memory_allocation_units = SaturatingAdd(
+      destination->memory_allocation_units,
+      finalized_source.memory_allocation_units);
+  destination->memory_grant_opportunity_units = SaturatingAdd(
+      destination->memory_grant_opportunity_units,
+      finalized_source.memory_grant_opportunity_units);
+  destination->spill_write_units = SaturatingAdd(
+      destination->spill_write_units, finalized_source.spill_write_units);
+  destination->spill_read_units = SaturatingAdd(
+      destination->spill_read_units, finalized_source.spill_read_units);
+  destination->temp_space_pressure_units = SaturatingAdd(
+      destination->temp_space_pressure_units,
+      finalized_source.temp_space_pressure_units);
+  destination->decompression_units = SaturatingAdd(
+      destination->decompression_units, finalized_source.decompression_units);
+  destination->decryption_units = SaturatingAdd(
+      destination->decryption_units, finalized_source.decryption_units);
+  destination->expression_evaluation_units = SaturatingAdd(
+      destination->expression_evaluation_units,
+      finalized_source.expression_evaluation_units);
+  destination->domain_cast_units = SaturatingAdd(
+      destination->domain_cast_units, finalized_source.domain_cast_units);
+  destination->datatype_conversion_units = SaturatingAdd(
+      destination->datatype_conversion_units,
+      finalized_source.datatype_conversion_units);
+  destination->collation_comparison_units = SaturatingAdd(
+      destination->collation_comparison_units,
+      finalized_source.collation_comparison_units);
+  destination->mga_version_traversal_units = SaturatingAdd(
+      destination->mga_version_traversal_units,
+      finalized_source.mga_version_traversal_units);
+  destination->mga_visibility_check_units = SaturatingAdd(
+      destination->mga_visibility_check_units,
+      finalized_source.mga_visibility_check_units);
+  destination->archive_fetch_units = SaturatingAdd(
+      destination->archive_fetch_units, finalized_source.archive_fetch_units);
+  destination->garbage_retention_pressure_units = SaturatingAdd(
+      destination->garbage_retention_pressure_units,
+      finalized_source.garbage_retention_pressure_units);
+  destination->lock_latch_wait_risk_units = SaturatingAdd(
+      destination->lock_latch_wait_risk_units,
+      finalized_source.lock_latch_wait_risk_units);
+  destination->network_latency_units = SaturatingAdd(
+      destination->network_latency_units,
+      finalized_source.network_latency_units);
+  destination->network_bandwidth_units = SaturatingAdd(
+      destination->network_bandwidth_units,
+      finalized_source.network_bandwidth_units);
+  destination->remote_execution_startup_units = SaturatingAdd(
+      destination->remote_execution_startup_units,
+      finalized_source.remote_execution_startup_units);
+  destination->cluster_coordination_units = SaturatingAdd(
+      destination->cluster_coordination_units,
+      finalized_source.cluster_coordination_units);
+  destination->repartition_units = SaturatingAdd(
+      destination->repartition_units, finalized_source.repartition_units);
+  destination->broadcast_units = SaturatingAdd(
+      destination->broadcast_units, finalized_source.broadcast_units);
+  destination->replica_staleness_risk_units = SaturatingAdd(
+      destination->replica_staleness_risk_units,
+      finalized_source.replica_staleness_risk_units);
+  destination->quorum_availability_risk_units = SaturatingAdd(
+      destination->quorum_availability_risk_units,
+      finalized_source.quorum_availability_risk_units);
+  destination->donor_compatibility_enforcement_units = SaturatingAdd(
+      destination->donor_compatibility_enforcement_units,
+      finalized_source.donor_compatibility_enforcement_units);
+  destination->result_ordering_enforcement_units = SaturatingAdd(
+      destination->result_ordering_enforcement_units,
+      finalized_source.result_ordering_enforcement_units);
+  destination->plan_instability_penalty = SaturatingAdd(
+      destination->plan_instability_penalty,
+      finalized_source.plan_instability_penalty);
+  destination->complete_dimension_vector = true;
   destination->selectable =
       destination->selectable && finalized_source.selectable;
   if (destination->rejection_reason.empty() &&
@@ -326,6 +450,8 @@ bool IsBetterCost(const CostVector& left, const CostVector& right) {
 std::string SerializeCostVectorToJson(const CostVector& cost) {
   std::ostringstream out;
   out << "{\n";
+  out << "  \"scalarization_policy_id\": \""
+      << JsonEscape(cost.scalarization_policy_id) << "\",\n";
   out << "  \"startup_cost\": " << cost.startup_cost << ",\n";
   out << "  \"row_cost\": " << cost.row_cost << ",\n";
   out << "  \"io_cost\": " << cost.io_cost << ",\n";
@@ -347,6 +473,57 @@ std::string SerializeCostVectorToJson(const CostVector& cost) {
   out << "  \"udr_invocation_units\": " << cost.udr_invocation_units << ",\n";
   out << "  \"mga_units\": " << cost.mga_units << ",\n";
   out << "  \"index_maintenance_units\": " << cost.index_maintenance_units << ",\n";
+  out << "  \"cache_miss_units\": " << cost.cache_miss_units << ",\n";
+  out << "  \"cache_residency_benefit_units\": "
+      << cost.cache_residency_benefit_units << ",\n";
+  out << "  \"memory_allocation_units\": "
+      << cost.memory_allocation_units << ",\n";
+  out << "  \"memory_grant_opportunity_units\": "
+      << cost.memory_grant_opportunity_units << ",\n";
+  out << "  \"spill_write_units\": " << cost.spill_write_units << ",\n";
+  out << "  \"spill_read_units\": " << cost.spill_read_units << ",\n";
+  out << "  \"temp_space_pressure_units\": "
+      << cost.temp_space_pressure_units << ",\n";
+  out << "  \"decompression_units\": " << cost.decompression_units << ",\n";
+  out << "  \"decryption_units\": " << cost.decryption_units << ",\n";
+  out << "  \"expression_evaluation_units\": "
+      << cost.expression_evaluation_units << ",\n";
+  out << "  \"domain_cast_units\": " << cost.domain_cast_units << ",\n";
+  out << "  \"datatype_conversion_units\": "
+      << cost.datatype_conversion_units << ",\n";
+  out << "  \"collation_comparison_units\": "
+      << cost.collation_comparison_units << ",\n";
+  out << "  \"mga_version_traversal_units\": "
+      << cost.mga_version_traversal_units << ",\n";
+  out << "  \"mga_visibility_check_units\": "
+      << cost.mga_visibility_check_units << ",\n";
+  out << "  \"archive_fetch_units\": " << cost.archive_fetch_units << ",\n";
+  out << "  \"garbage_retention_pressure_units\": "
+      << cost.garbage_retention_pressure_units << ",\n";
+  out << "  \"lock_latch_wait_risk_units\": "
+      << cost.lock_latch_wait_risk_units << ",\n";
+  out << "  \"network_latency_units\": "
+      << cost.network_latency_units << ",\n";
+  out << "  \"network_bandwidth_units\": "
+      << cost.network_bandwidth_units << ",\n";
+  out << "  \"remote_execution_startup_units\": "
+      << cost.remote_execution_startup_units << ",\n";
+  out << "  \"cluster_coordination_units\": "
+      << cost.cluster_coordination_units << ",\n";
+  out << "  \"repartition_units\": " << cost.repartition_units << ",\n";
+  out << "  \"broadcast_units\": " << cost.broadcast_units << ",\n";
+  out << "  \"replica_staleness_risk_units\": "
+      << cost.replica_staleness_risk_units << ",\n";
+  out << "  \"quorum_availability_risk_units\": "
+      << cost.quorum_availability_risk_units << ",\n";
+  out << "  \"donor_compatibility_enforcement_units\": "
+      << cost.donor_compatibility_enforcement_units << ",\n";
+  out << "  \"result_ordering_enforcement_units\": "
+      << cost.result_ordering_enforcement_units << ",\n";
+  out << "  \"plan_instability_penalty\": "
+      << cost.plan_instability_penalty << ",\n";
+  out << "  \"complete_dimension_vector\": "
+      << (cost.complete_dimension_vector ? "true" : "false") << ",\n";
   out << "  \"uncertainty_cost\": " << cost.uncertainty_cost << ",\n";
   out << "  \"total_cost\": " << cost.total_cost << ",\n";
   out << "  \"reason\": \"" << JsonEscape(cost.reason) << "\",\n";

@@ -227,6 +227,7 @@ void FingerprintCost(std::ostringstream& out,
                      const exec::PhysicalCostVectorReceipt& cost) {
   FingerprintString(out, cost.cost_vector_uuid);
   FingerprintString(out, cost.calibration_profile_uuid);
+  FingerprintString(out, cost.scalarization_policy_id);
   FingerprintU64(out, cost.scalar_score);
   FingerprintU64(out, cost.cpu_units);
   FingerprintU64(out, cost.page_read_sequential_units);
@@ -239,6 +240,49 @@ void FingerprintCost(std::ostringstream& out,
   FingerprintU64(out, cost.archive_fetches_expected);
   FingerprintU64(out, cost.uncertainty_penalty);
   FingerprintU64(out, cost.risk_penalty);
+  FingerprintU64(out, cost.cache_units);
+  FingerprintU64(out, cost.memory_grant_units);
+  FingerprintU64(out, cost.spill_units);
+  FingerprintU64(out, cost.network_units);
+  FingerprintU64(out, cost.compression_units);
+  FingerprintU64(out, cost.encryption_units);
+  FingerprintU64(out, cost.predicate_evaluation_units);
+  FingerprintU64(out, cost.vector_distance_units);
+  FingerprintU64(out, cost.text_scoring_units);
+  FingerprintU64(out, cost.spatial_evaluation_units);
+  FingerprintU64(out, cost.udr_invocation_units);
+  FingerprintU64(out, cost.mga_units);
+  FingerprintU64(out, cost.index_maintenance_units);
+  FingerprintU64(out, cost.cache_miss_units);
+  FingerprintU64(out, cost.cache_residency_benefit_units);
+  FingerprintU64(out, cost.memory_allocation_units);
+  FingerprintU64(out, cost.memory_grant_opportunity_units);
+  FingerprintU64(out, cost.spill_write_units);
+  FingerprintU64(out, cost.spill_read_units);
+  FingerprintU64(out, cost.temp_space_pressure_units);
+  FingerprintU64(out, cost.decompression_units);
+  FingerprintU64(out, cost.decryption_units);
+  FingerprintU64(out, cost.expression_evaluation_units);
+  FingerprintU64(out, cost.domain_cast_units);
+  FingerprintU64(out, cost.datatype_conversion_units);
+  FingerprintU64(out, cost.collation_comparison_units);
+  FingerprintU64(out, cost.mga_version_traversal_units);
+  FingerprintU64(out, cost.mga_visibility_check_units);
+  FingerprintU64(out, cost.archive_fetch_units);
+  FingerprintU64(out, cost.garbage_retention_pressure_units);
+  FingerprintU64(out, cost.lock_latch_wait_risk_units);
+  FingerprintU64(out, cost.network_latency_units);
+  FingerprintU64(out, cost.network_bandwidth_units);
+  FingerprintU64(out, cost.remote_execution_startup_units);
+  FingerprintU64(out, cost.cluster_coordination_units);
+  FingerprintU64(out, cost.repartition_units);
+  FingerprintU64(out, cost.broadcast_units);
+  FingerprintU64(out, cost.replica_staleness_risk_units);
+  FingerprintU64(out, cost.quorum_availability_risk_units);
+  FingerprintU64(out, cost.donor_compatibility_enforcement_units);
+  FingerprintU64(out, cost.result_ordering_enforcement_units);
+  FingerprintU64(out, cost.plan_instability_penalty);
+  FingerprintBool(out, cost.complete_dimension_vector);
   FingerprintU64(out, cost.confidence);
 }
 

@@ -80,84 +80,120 @@ std::string JsonEscape(const std::string_view value) {
 
 bool CandidateScore(const ModelFamilyCandidateV1& candidate,
                     std::uint64_t* score) {
-  *score = 0;
-  const bool complete =
-         Add(candidate.cost.startup_units, score) &&
-         Add(candidate.cost.cpu_units, score) &&
-         Add(candidate.cost.sequential_read_units, score) &&
-         Add(candidate.cost.random_read_units, score) &&
-         Add(candidate.cost.page_write_units, score) &&
-         Add(candidate.cost.cache_units, score) &&
-         Add(candidate.cost.memory_bytes_required, score) &&
-         Add(candidate.cost.memory_grant_units, score) &&
-         Add(candidate.cost.spill_units, score) &&
-         Add(candidate.cost.network_units, score) &&
-         Add(candidate.cost.compression_units, score) &&
-         Add(candidate.cost.encryption_units, score) &&
-         Add(candidate.cost.predicate_evaluation_units, score) &&
-         Add(candidate.cost.vector_distance_units, score) &&
-         Add(candidate.cost.text_scoring_units, score) &&
-         Add(candidate.cost.spatial_evaluation_units, score) &&
-         Add(candidate.cost.udr_invocation_units, score) &&
-         Add(candidate.cost.mga_units, score) &&
-         Add(candidate.cost.index_maintenance_units, score) &&
-         Add(candidate.cost.uncertainty_penalty, score) &&
-         Add(candidate.cost.risk_penalty, score);
+  const auto scalar_score = ScalarizeModelFamilyCostVectorV1(candidate.cost);
+  if (!scalar_score.has_value()) return false;
+  *score = *scalar_score;
   const bool optimizer_owned =
       !candidate.candidate_inventory_receipt_uuid.empty();
-  return complete &&
-         (!optimizer_owned ||
+  return !optimizer_owned ||
           (candidate.cost.scalarization_policy_id ==
-               "model-family.local-unit-sum.v1" &&
-           candidate.cost.scalar_score == *score));
+               "model-family.complete-unit-sum-minus-cache-benefit.v1" &&
+           candidate.cost.complete_dimension_vector &&
+           candidate.cost.scalar_score == *score);
+}
+
+void RetainModelFamilyCostVector(
+    const ModelFamilyCostVectorV1& source,
+    scratchbird::engine::executor::PhysicalCostVectorReceipt* retained) {
+  if (retained == nullptr) return;
+  retained->cost_vector_uuid = source.cost_vector_uuid;
+  retained->calibration_profile_uuid = source.calibration_profile_uuid;
+  retained->scalarization_policy_id = source.scalarization_policy_id;
+  retained->scalar_score = source.scalar_score;
+  retained->cpu_units = source.cpu_units;
+  retained->page_read_sequential_units = source.sequential_read_units;
+  retained->page_read_random_units = source.random_read_units;
+  retained->page_write_units = source.page_write_units;
+  retained->memory_bytes_required = source.memory_bytes_required;
+  retained->spill_bytes_expected = source.spill_units;
+  retained->network_bytes_expected = source.network_units;
+  retained->mga_visibility_checks_expected = source.mga_units;
+  retained->archive_fetches_expected = source.archive_fetch_units;
+  retained->uncertainty_penalty = source.uncertainty_penalty;
+  retained->risk_penalty = source.risk_penalty;
+  retained->cache_units = source.cache_units;
+  retained->memory_grant_units = source.memory_grant_units;
+  retained->spill_units = source.spill_units;
+  retained->network_units = source.network_units;
+  retained->compression_units = source.compression_units;
+  retained->encryption_units = source.encryption_units;
+  retained->predicate_evaluation_units =
+      source.predicate_evaluation_units;
+  retained->vector_distance_units = source.vector_distance_units;
+  retained->text_scoring_units = source.text_scoring_units;
+  retained->spatial_evaluation_units = source.spatial_evaluation_units;
+  retained->udr_invocation_units = source.udr_invocation_units;
+  retained->mga_units = source.mga_units;
+  retained->index_maintenance_units = source.index_maintenance_units;
+  retained->cache_miss_units = source.cache_miss_units;
+  retained->cache_residency_benefit_units =
+      source.cache_residency_benefit_units;
+  retained->memory_allocation_units = source.memory_allocation_units;
+  retained->memory_grant_opportunity_units =
+      source.memory_grant_opportunity_units;
+  retained->spill_write_units = source.spill_write_units;
+  retained->spill_read_units = source.spill_read_units;
+  retained->temp_space_pressure_units = source.temp_space_pressure_units;
+  retained->decompression_units = source.decompression_units;
+  retained->decryption_units = source.decryption_units;
+  retained->expression_evaluation_units = source.expression_evaluation_units;
+  retained->domain_cast_units = source.domain_cast_units;
+  retained->datatype_conversion_units = source.datatype_conversion_units;
+  retained->collation_comparison_units = source.collation_comparison_units;
+  retained->mga_version_traversal_units =
+      source.mga_version_traversal_units;
+  retained->mga_visibility_check_units = source.mga_visibility_check_units;
+  retained->archive_fetch_units = source.archive_fetch_units;
+  retained->garbage_retention_pressure_units =
+      source.garbage_retention_pressure_units;
+  retained->lock_latch_wait_risk_units = source.lock_latch_wait_risk_units;
+  retained->network_latency_units = source.network_latency_units;
+  retained->network_bandwidth_units = source.network_bandwidth_units;
+  retained->remote_execution_startup_units =
+      source.remote_execution_startup_units;
+  retained->cluster_coordination_units = source.cluster_coordination_units;
+  retained->repartition_units = source.repartition_units;
+  retained->broadcast_units = source.broadcast_units;
+  retained->replica_staleness_risk_units =
+      source.replica_staleness_risk_units;
+  retained->quorum_availability_risk_units =
+      source.quorum_availability_risk_units;
+  retained->donor_compatibility_enforcement_units =
+      source.donor_compatibility_enforcement_units;
+  retained->result_ordering_enforcement_units =
+      source.result_ordering_enforcement_units;
+  retained->plan_instability_penalty = source.plan_instability_penalty;
+  retained->complete_dimension_vector = source.complete_dimension_vector;
+  retained->confidence = source.confidence_basis_points >= 9500
+                             ? 0
+                             : source.confidence_basis_points >= 8500
+                                   ? 1
+                                   : source.confidence_basis_points >= 7000
+                                         ? 2
+                                         : 3;
 }
 
 bool DependencyCostValid(const ModelFamilyCostVectorV1& cost) {
   const bool optimizer_owned = !cost.scalarization_policy_id.empty();
+  const auto scalar_score = ScalarizeModelFamilyCostVectorV1(cost);
   return CanonicalUuid(cost.cost_vector_uuid) &&
          CanonicalUuid(cost.provenance_uuid) &&
          cost.provenance_generation != 0 &&
          cost.confidence_basis_points != 0 &&
          cost.confidence_basis_points <= 10'000 &&
+         scalar_score.has_value() &&
          (!optimizer_owned ||
           (CanonicalUuid(cost.property_snapshot_uuid) &&
            CanonicalUuid(cost.calibration_profile_uuid) &&
            cost.scalarization_policy_id ==
-               "model-family.local-unit-sum.v1"));
+               "model-family.complete-unit-sum-minus-cache-benefit.v1" &&
+           cost.complete_dimension_vector &&
+           cost.scalar_score == *scalar_score));
 }
 
 bool DependencyCostEqual(const ModelFamilyCostVectorV1& left,
                          const ModelFamilyCostVectorV1& right) {
-  return left.cost_vector_uuid == right.cost_vector_uuid &&
-         left.provenance_uuid == right.provenance_uuid &&
-         left.property_snapshot_uuid == right.property_snapshot_uuid &&
-         left.calibration_profile_uuid == right.calibration_profile_uuid &&
-         left.scalarization_policy_id == right.scalarization_policy_id &&
-         left.provenance_generation == right.provenance_generation &&
-         left.confidence_basis_points == right.confidence_basis_points &&
-         left.scalar_score == right.scalar_score &&
-         left.startup_units == right.startup_units &&
-         left.cpu_units == right.cpu_units &&
-         left.sequential_read_units == right.sequential_read_units &&
-         left.random_read_units == right.random_read_units &&
-         left.page_write_units == right.page_write_units &&
-         left.cache_units == right.cache_units &&
-         left.memory_bytes_required == right.memory_bytes_required &&
-         left.memory_grant_units == right.memory_grant_units &&
-         left.spill_units == right.spill_units &&
-         left.network_units == right.network_units &&
-         left.compression_units == right.compression_units &&
-         left.encryption_units == right.encryption_units &&
-         left.predicate_evaluation_units ==
-             right.predicate_evaluation_units &&
-         left.vector_distance_units == right.vector_distance_units &&
-         left.text_scoring_units == right.text_scoring_units &&
-         left.spatial_evaluation_units == right.spatial_evaluation_units &&
-         left.udr_invocation_units == right.udr_invocation_units &&
-         left.mga_units == right.mga_units &&
-         left.index_maintenance_units == right.index_maintenance_units &&
-         left.uncertainty_penalty == right.uncertainty_penalty &&
-         left.risk_penalty == right.risk_penalty;
+  return left == right;
 }
 
 bool DependencyAlternativeLess(
@@ -348,6 +384,102 @@ bool ExactOrderedOperationChain(const std::string_view family_id,
 
 }  // namespace
 
+std::optional<std::uint64_t> ScalarizeModelFamilyCostVectorV1(
+    const ModelFamilyCostVectorV1& cost) {
+  if (cost.complete_dimension_vector &&
+      cost.scalarization_policy_id !=
+          "model-family.complete-unit-sum-minus-cache-benefit.v1") {
+    return std::nullopt;
+  }
+  std::uint64_t score = 0;
+  const auto add = [&](const std::uint64_t value) {
+    if (value > std::numeric_limits<std::uint64_t>::max() - score) {
+      return false;
+    }
+    score += value;
+    return true;
+  };
+  const std::uint64_t complete_dimensions[] = {
+      cost.cpu_units,
+      cost.sequential_read_units,
+      cost.random_read_units,
+      cost.page_write_units,
+      cost.cache_miss_units,
+      cost.memory_allocation_units,
+      cost.memory_grant_opportunity_units,
+      cost.spill_write_units,
+      cost.spill_read_units,
+      cost.temp_space_pressure_units,
+      cost.compression_units,
+      cost.decompression_units,
+      cost.encryption_units,
+      cost.decryption_units,
+      cost.predicate_evaluation_units,
+      cost.expression_evaluation_units,
+      cost.udr_invocation_units,
+      cost.vector_distance_units,
+      cost.text_scoring_units,
+      cost.spatial_evaluation_units,
+      cost.domain_cast_units,
+      cost.datatype_conversion_units,
+      cost.collation_comparison_units,
+      cost.mga_version_traversal_units,
+      cost.mga_visibility_check_units,
+      cost.archive_fetch_units,
+      cost.garbage_retention_pressure_units,
+      cost.index_maintenance_units,
+      cost.lock_latch_wait_risk_units,
+      cost.network_latency_units,
+      cost.network_bandwidth_units,
+      cost.remote_execution_startup_units,
+      cost.cluster_coordination_units,
+      cost.repartition_units,
+      cost.broadcast_units,
+      cost.replica_staleness_risk_units,
+      cost.quorum_availability_risk_units,
+      cost.donor_compatibility_enforcement_units,
+      cost.result_ordering_enforcement_units,
+      cost.uncertainty_penalty,
+      cost.plan_instability_penalty,
+  };
+  const std::uint64_t legacy_dimensions[] = {
+      cost.startup_units,
+      cost.cpu_units,
+      cost.sequential_read_units,
+      cost.random_read_units,
+      cost.page_write_units,
+      cost.cache_units,
+      cost.memory_bytes_required,
+      cost.memory_grant_units,
+      cost.spill_units,
+      cost.network_units,
+      cost.compression_units,
+      cost.encryption_units,
+      cost.predicate_evaluation_units,
+      cost.vector_distance_units,
+      cost.text_scoring_units,
+      cost.spatial_evaluation_units,
+      cost.udr_invocation_units,
+      cost.mga_units,
+      cost.index_maintenance_units,
+      cost.uncertainty_penalty,
+      cost.risk_penalty,
+  };
+  if (cost.complete_dimension_vector) {
+    for (const auto dimension : complete_dimensions) {
+      if (!add(dimension)) return std::nullopt;
+    }
+    score = score >= cost.cache_residency_benefit_units
+                ? score - cost.cache_residency_benefit_units
+                : 0;
+  } else {
+    for (const auto dimension : legacy_dimensions) {
+      if (!add(dimension)) return std::nullopt;
+    }
+  }
+  return score;
+}
+
 std::string SerializeModelFamilyCostVectorToJsonV1(
     const ModelFamilyCostVectorV1& cost) {
   std::ostringstream out;
@@ -383,8 +515,58 @@ std::string SerializeModelFamilyCostVectorToJsonV1(
       << ",\"mga_units\":" << cost.mga_units
       << ",\"index_maintenance_units\":"
       << cost.index_maintenance_units
+      << ",\"cache_miss_units\":" << cost.cache_miss_units
+      << ",\"cache_residency_benefit_units\":"
+      << cost.cache_residency_benefit_units
+      << ",\"memory_allocation_units\":"
+      << cost.memory_allocation_units
+      << ",\"memory_grant_opportunity_units\":"
+      << cost.memory_grant_opportunity_units
+      << ",\"spill_write_units\":" << cost.spill_write_units
+      << ",\"spill_read_units\":" << cost.spill_read_units
+      << ",\"temp_space_pressure_units\":"
+      << cost.temp_space_pressure_units
+      << ",\"decompression_units\":" << cost.decompression_units
+      << ",\"decryption_units\":" << cost.decryption_units
+      << ",\"expression_evaluation_units\":"
+      << cost.expression_evaluation_units
+      << ",\"domain_cast_units\":" << cost.domain_cast_units
+      << ",\"datatype_conversion_units\":"
+      << cost.datatype_conversion_units
+      << ",\"collation_comparison_units\":"
+      << cost.collation_comparison_units
+      << ",\"mga_version_traversal_units\":"
+      << cost.mga_version_traversal_units
+      << ",\"mga_visibility_check_units\":"
+      << cost.mga_visibility_check_units
+      << ",\"archive_fetch_units\":" << cost.archive_fetch_units
+      << ",\"garbage_retention_pressure_units\":"
+      << cost.garbage_retention_pressure_units
+      << ",\"lock_latch_wait_risk_units\":"
+      << cost.lock_latch_wait_risk_units
+      << ",\"network_latency_units\":" << cost.network_latency_units
+      << ",\"network_bandwidth_units\":"
+      << cost.network_bandwidth_units
+      << ",\"remote_execution_startup_units\":"
+      << cost.remote_execution_startup_units
+      << ",\"cluster_coordination_units\":"
+      << cost.cluster_coordination_units
+      << ",\"repartition_units\":" << cost.repartition_units
+      << ",\"broadcast_units\":" << cost.broadcast_units
+      << ",\"replica_staleness_risk_units\":"
+      << cost.replica_staleness_risk_units
+      << ",\"quorum_availability_risk_units\":"
+      << cost.quorum_availability_risk_units
+      << ",\"donor_compatibility_enforcement_units\":"
+      << cost.donor_compatibility_enforcement_units
+      << ",\"result_ordering_enforcement_units\":"
+      << cost.result_ordering_enforcement_units
       << ",\"uncertainty_penalty\":" << cost.uncertainty_penalty
-      << ",\"risk_penalty\":" << cost.risk_penalty << '}';
+      << ",\"risk_penalty\":" << cost.risk_penalty
+      << ",\"plan_instability_penalty\":"
+      << cost.plan_instability_penalty
+      << ",\"complete_dimension_vector\":"
+      << (cost.complete_dimension_vector ? "true" : "false") << '}';
   return out.str();
 }
 
@@ -682,6 +864,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
                    : spatial_family ? "logical_spatial_source_v1"
                    : columnar_family ? "logical_columnar_source_v1"
                                       : "logical_document_source_v1";
+  RetainModelFamilyCostVector(selected->cost, &node.retained_cost);
   dag.nodes.push_back(std::move(node));
   dag.bound_sblr_tree_uuid = request.bound_sblr_tree_uuid;
   dag.catalog_epoch_uuid = request.catalog_epoch_uuid;

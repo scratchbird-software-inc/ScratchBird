@@ -1245,6 +1245,9 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     if (!canonical_uuid(terms.cost_vector_uuid) ||
         !cost_vector_uuids.insert(terms.cost_vector_uuid).second ||
         !canonical_uuid(terms.calibration_profile_uuid) ||
+        !terms.complete_dimension_vector ||
+        terms.scalarization_policy_id !=
+            "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1" ||
         (calibration_profile_uuid.has_value() &&
          terms.calibration_profile_uuid != *calibration_profile_uuid) ||
         terms.confidence == CostConfidence::kUnknown ||
@@ -1333,33 +1336,62 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
         return checked_add(scalar_score, term, &scalar_score);
       };
       const auto& terms = candidate.cost_terms;
-      if (!add_term(terms.cpu_units) ||
-          !add_term(terms.page_read_sequential_units) ||
-          !add_term(terms.page_read_random_units) ||
-          !add_term(terms.page_write_units) ||
-          !add_term(terms.memory_bytes_required) ||
-          !add_term(terms.spill_bytes_expected) ||
-          !add_term(terms.network_bytes_expected) ||
-          !add_term(terms.mga_visibility_checks_expected) ||
-          !add_term(terms.archive_fetches_expected) ||
-          !add_term(terms.uncertainty_penalty) ||
-          !add_term(terms.risk_penalty) ||
-          !add_term(terms.cache_units) ||
-          !add_term(terms.memory_grant_units) ||
-          !add_term(terms.spill_units) ||
-          !add_term(terms.network_units) ||
-          !add_term(terms.compression_units) ||
-          !add_term(terms.encryption_units) ||
-          !add_term(terms.predicate_evaluation_units) ||
-          !add_term(terms.vector_distance_units) ||
-          !add_term(terms.text_scoring_units) ||
-          !add_term(terms.spatial_evaluation_units) ||
-          !add_term(terms.udr_invocation_units) ||
-          !add_term(terms.mga_units) ||
-          !add_term(terms.index_maintenance_units)) {
+      const auto add_terms = [&](std::initializer_list<std::uint64_t> values) {
+        for (const auto value : values) {
+          if (!add_term(value)) return false;
+        }
+        return true;
+      };
+      const bool complete_vector_ok = add_terms({
+                    terms.cpu_units,
+                    terms.page_read_sequential_units,
+                    terms.page_read_random_units,
+                    terms.page_write_units,
+                    terms.cache_miss_units,
+                    terms.memory_allocation_units,
+                    terms.memory_grant_opportunity_units,
+                    terms.spill_write_units,
+                    terms.spill_read_units,
+                    terms.temp_space_pressure_units,
+                    terms.compression_units,
+                    terms.decompression_units,
+                    terms.encryption_units,
+                    terms.decryption_units,
+                    terms.predicate_evaluation_units,
+                    terms.expression_evaluation_units,
+                    terms.udr_invocation_units,
+                    terms.vector_distance_units,
+                    terms.text_scoring_units,
+                    terms.spatial_evaluation_units,
+                    terms.domain_cast_units,
+                    terms.datatype_conversion_units,
+                    terms.collation_comparison_units,
+                    terms.mga_version_traversal_units,
+                    terms.mga_visibility_check_units,
+                    terms.archive_fetch_units,
+                    terms.garbage_retention_pressure_units,
+                    terms.index_maintenance_units,
+                    terms.lock_latch_wait_risk_units,
+                    terms.network_latency_units,
+                    terms.network_bandwidth_units,
+                    terms.remote_execution_startup_units,
+                    terms.cluster_coordination_units,
+                    terms.repartition_units,
+                    terms.broadcast_units,
+                    terms.replica_staleness_risk_units,
+                    terms.quorum_availability_risk_units,
+                    terms.donor_compatibility_enforcement_units,
+                    terms.result_ordering_enforcement_units,
+                    terms.uncertainty_penalty,
+                    terms.plan_instability_penalty,
+                });
+      if (!complete_vector_ok) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1", node_id,
                       candidate.alternative_uuid, "scalar_score");
       }
+      scalar_score = scalar_score >= terms.cache_residency_benefit_units
+                         ? scalar_score - terms.cache_residency_benefit_units
+                         : 0;
       group.candidates.push_back(
           {candidate.alternative_uuid, candidate.transformation_uuid,
            candidate.transformation_rule_id, {terms, scalar_score}});
@@ -1774,6 +1806,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
                                   const CanonicalOptimizerCostTerms& right) {
     return left.cost_vector_uuid == right.cost_vector_uuid &&
            left.calibration_profile_uuid == right.calibration_profile_uuid &&
+           left.scalarization_policy_id == right.scalarization_policy_id &&
            left.cpu_units == right.cpu_units &&
            left.page_read_sequential_units ==
                right.page_read_sequential_units &&
@@ -1802,6 +1835,53 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
            left.udr_invocation_units == right.udr_invocation_units &&
            left.mga_units == right.mga_units &&
            left.index_maintenance_units == right.index_maintenance_units &&
+           left.cache_miss_units == right.cache_miss_units &&
+           left.cache_residency_benefit_units ==
+               right.cache_residency_benefit_units &&
+           left.memory_allocation_units == right.memory_allocation_units &&
+           left.memory_grant_opportunity_units ==
+               right.memory_grant_opportunity_units &&
+           left.spill_write_units == right.spill_write_units &&
+           left.spill_read_units == right.spill_read_units &&
+           left.temp_space_pressure_units ==
+               right.temp_space_pressure_units &&
+           left.decompression_units == right.decompression_units &&
+           left.decryption_units == right.decryption_units &&
+           left.expression_evaluation_units ==
+               right.expression_evaluation_units &&
+           left.domain_cast_units == right.domain_cast_units &&
+           left.datatype_conversion_units ==
+               right.datatype_conversion_units &&
+           left.collation_comparison_units ==
+               right.collation_comparison_units &&
+           left.mga_version_traversal_units ==
+               right.mga_version_traversal_units &&
+           left.mga_visibility_check_units ==
+               right.mga_visibility_check_units &&
+           left.archive_fetch_units == right.archive_fetch_units &&
+           left.garbage_retention_pressure_units ==
+               right.garbage_retention_pressure_units &&
+           left.lock_latch_wait_risk_units ==
+               right.lock_latch_wait_risk_units &&
+           left.network_latency_units == right.network_latency_units &&
+           left.network_bandwidth_units == right.network_bandwidth_units &&
+           left.remote_execution_startup_units ==
+               right.remote_execution_startup_units &&
+           left.cluster_coordination_units ==
+               right.cluster_coordination_units &&
+           left.repartition_units == right.repartition_units &&
+           left.broadcast_units == right.broadcast_units &&
+           left.replica_staleness_risk_units ==
+               right.replica_staleness_risk_units &&
+           left.quorum_availability_risk_units ==
+               right.quorum_availability_risk_units &&
+           left.donor_compatibility_enforcement_units ==
+               right.donor_compatibility_enforcement_units &&
+           left.result_ordering_enforcement_units ==
+               right.result_ordering_enforcement_units &&
+           left.plan_instability_penalty == right.plan_instability_penalty &&
+           left.complete_dimension_vector ==
+               right.complete_dimension_vector &&
            left.confidence == right.confidence;
   };
   const auto physical_kind = [](const auto logical_kind)
@@ -2326,6 +2406,8 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     physical.retained_cost.cost_vector_uuid = terms.cost_vector_uuid;
     physical.retained_cost.calibration_profile_uuid =
         terms.calibration_profile_uuid;
+    physical.retained_cost.scalarization_policy_id =
+        terms.scalarization_policy_id;
     physical.retained_cost.scalar_score = selection.cost.scalar_score;
     physical.retained_cost.cpu_units = terms.cpu_units;
     physical.retained_cost.page_read_sequential_units =
@@ -2363,6 +2445,57 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     physical.retained_cost.mga_units = terms.mga_units;
     physical.retained_cost.index_maintenance_units =
         terms.index_maintenance_units;
+    physical.retained_cost.cache_miss_units = terms.cache_miss_units;
+    physical.retained_cost.cache_residency_benefit_units =
+        terms.cache_residency_benefit_units;
+    physical.retained_cost.memory_allocation_units =
+        terms.memory_allocation_units;
+    physical.retained_cost.memory_grant_opportunity_units =
+        terms.memory_grant_opportunity_units;
+    physical.retained_cost.spill_write_units = terms.spill_write_units;
+    physical.retained_cost.spill_read_units = terms.spill_read_units;
+    physical.retained_cost.temp_space_pressure_units =
+        terms.temp_space_pressure_units;
+    physical.retained_cost.decompression_units = terms.decompression_units;
+    physical.retained_cost.decryption_units = terms.decryption_units;
+    physical.retained_cost.expression_evaluation_units =
+        terms.expression_evaluation_units;
+    physical.retained_cost.domain_cast_units = terms.domain_cast_units;
+    physical.retained_cost.datatype_conversion_units =
+        terms.datatype_conversion_units;
+    physical.retained_cost.collation_comparison_units =
+        terms.collation_comparison_units;
+    physical.retained_cost.mga_version_traversal_units =
+        terms.mga_version_traversal_units;
+    physical.retained_cost.mga_visibility_check_units =
+        terms.mga_visibility_check_units;
+    physical.retained_cost.archive_fetch_units = terms.archive_fetch_units;
+    physical.retained_cost.garbage_retention_pressure_units =
+        terms.garbage_retention_pressure_units;
+    physical.retained_cost.lock_latch_wait_risk_units =
+        terms.lock_latch_wait_risk_units;
+    physical.retained_cost.network_latency_units =
+        terms.network_latency_units;
+    physical.retained_cost.network_bandwidth_units =
+        terms.network_bandwidth_units;
+    physical.retained_cost.remote_execution_startup_units =
+        terms.remote_execution_startup_units;
+    physical.retained_cost.cluster_coordination_units =
+        terms.cluster_coordination_units;
+    physical.retained_cost.repartition_units = terms.repartition_units;
+    physical.retained_cost.broadcast_units = terms.broadcast_units;
+    physical.retained_cost.replica_staleness_risk_units =
+        terms.replica_staleness_risk_units;
+    physical.retained_cost.quorum_availability_risk_units =
+        terms.quorum_availability_risk_units;
+    physical.retained_cost.donor_compatibility_enforcement_units =
+        terms.donor_compatibility_enforcement_units;
+    physical.retained_cost.result_ordering_enforcement_units =
+        terms.result_ordering_enforcement_units;
+    physical.retained_cost.plan_instability_penalty =
+        terms.plan_instability_penalty;
+    physical.retained_cost.complete_dimension_vector =
+        terms.complete_dimension_vector;
     physical.retained_cost.confidence =
         static_cast<std::uint8_t>(terms.confidence);
     physical.memory_bytes_required =
@@ -2374,39 +2507,58 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     dag.nodes.push_back(std::move(physical));
   }
 
-  // Preserve a field-exact refusal before the shared ABI collapses retained
-  // cost inconsistencies into its generic complete-node diagnostic.
+  // Preserve field-exact refusals before the shared ABI collapses publication
+  // inconsistencies into its generic complete-node diagnostic.
+  std::uint64_t retained_selected_score = 0;
+  std::unordered_set<std::uint64_t> publication_ordinals;
+  const auto valid_publication_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 128 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return (ch >= 'a' && ch <= 'z') ||
+                    (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                    ch == '-';
+           });
+  };
   for (const auto& node : dag.nodes) {
     std::uint64_t retained_score = 0;
-    const auto add_retained = [&](const std::uint64_t term) {
-      return checked_add(retained_score, term, &retained_score);
-    };
     const auto& cost = node.retained_cost;
-    if (!add_retained(cost.cpu_units) ||
-        !add_retained(cost.page_read_sequential_units) ||
-        !add_retained(cost.page_read_random_units) ||
-        !add_retained(cost.page_write_units) ||
-        !add_retained(cost.memory_bytes_required) ||
-        !add_retained(cost.spill_bytes_expected) ||
-        !add_retained(cost.network_bytes_expected) ||
-        !add_retained(cost.mga_visibility_checks_expected) ||
-        !add_retained(cost.archive_fetches_expected) ||
-        !add_retained(cost.uncertainty_penalty) ||
-        !add_retained(cost.risk_penalty) ||
-        !add_retained(cost.cache_units) ||
-        !add_retained(cost.memory_grant_units) ||
-        !add_retained(cost.spill_units) ||
-        !add_retained(cost.network_units) ||
-        !add_retained(cost.compression_units) ||
-        !add_retained(cost.encryption_units) ||
-        !add_retained(cost.predicate_evaluation_units) ||
-        !add_retained(cost.vector_distance_units) ||
-        !add_retained(cost.text_scoring_units) ||
-        !add_retained(cost.spatial_evaluation_units) ||
-        !add_retained(cost.udr_invocation_units) ||
-        !add_retained(cost.mga_units) ||
-        !add_retained(cost.index_maintenance_units) ||
-        retained_score != cost.scalar_score) {
+    if (node.physical_node_id != node.relational_node_id ||
+        !valid_publication_id(node.logical_semantic_variant_id) ||
+        node.publication_ordinal >= dag.published_node_count ||
+        !publication_ordinals.insert(node.publication_ordinal).second ||
+        node.causal_counter_id !=
+            dag.first_causal_counter_id + node.publication_ordinal ||
+        !canonical_uuid(node.transformation_uuid) ||
+        !valid_publication_id(node.transformation_rule_id) ||
+        !canonical_uuid(cost.calibration_profile_uuid)) {
+      return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                    node.relational_node_id,
+                    node.selected_alternative_uuid,
+                    node.executor_capability_uuid,
+                    "retained_publication_identity");
+    }
+    std::unordered_set<std::string> delivered_properties(
+        node.delivered_property_uuids.begin(),
+        node.delivered_property_uuids.end());
+    std::unordered_set<std::string> enforced_properties;
+    if (!std::ranges::all_of(
+            node.enforced_property_uuids,
+            [&](const auto& property_uuid) {
+              return canonical_uuid(property_uuid) &&
+                     enforced_properties.insert(property_uuid).second &&
+                     delivered_properties.contains(property_uuid);
+            })) {
+      return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                    node.relational_node_id,
+                    node.selected_alternative_uuid,
+                    node.executor_capability_uuid,
+                    "retained_enforced_property_binding");
+    }
+    if (!executor::ComputePhysicalCostVectorScalarScore(cost,
+                                                        &retained_score) ||
+        retained_score != cost.scalar_score ||
+        !checked_add(retained_selected_score, cost.scalar_score,
+                     &retained_selected_score)) {
       return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
                     node.relational_node_id,
                     node.selected_alternative_uuid,
@@ -2414,6 +2566,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
                     "retained_cost_scalar_score");
     }
     if (cost.cost_vector_uuid != node.cost_vector_uuid ||
+        !cost.complete_dimension_vector ||
         cost.memory_bytes_required != node.memory_bytes_required ||
         cost.spill_bytes_expected != node.spill_bytes_expected ||
         static_cast<std::uint8_t>(cost.confidence) > 3 ||
@@ -2425,6 +2578,10 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
                     node.executor_capability_uuid,
                     "retained_cost_node_binding");
     }
+  }
+  if (retained_selected_score != dag.selected_scalar_score) {
+    return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION", 0, {}, {},
+                  "retained_selected_scalar_score");
   }
 
   const auto dag_validation = executor::ValidateTypedPhysicalNodeDag(dag);

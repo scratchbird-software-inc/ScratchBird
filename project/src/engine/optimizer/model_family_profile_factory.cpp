@@ -191,19 +191,23 @@ ModelFamilyCostVectorV1 CostFromSnapshot(
   const auto& metric = snapshot.metrics;
   ModelFamilyCostVectorV1 cost;
   const auto route = ModelFamilyAlternativeRouteClassNameV1(snapshot.route_class);
+  constexpr std::string_view kScalarizationPolicy =
+      "model-family.complete-unit-sum-minus-cache-benefit.v1";
   cost.cost_vector_uuid = DerivedUuid(
       identity_scope, "model-family.cost." + std::string(family_id) + "." +
                           route + "." + snapshot.provider_uuid + "." +
                           snapshot.capability_uuid + "." +
-                          std::to_string(ordinal));
+                          std::to_string(ordinal) + "." +
+                          std::string(kScalarizationPolicy));
   cost.provenance_uuid = metric.statistics_snapshot_uuid;
   cost.property_snapshot_uuid = metric.property_snapshot_uuid;
   cost.calibration_profile_uuid = metric.calibration_profile_uuid;
-  cost.scalarization_policy_id = "model-family.local-unit-sum.v1";
+  cost.scalarization_policy_id = kScalarizationPolicy;
   cost.provenance_generation = metric.statistics_generation;
   cost.confidence_basis_points = metric.confidence_basis_points;
   cost.startup_units = metric.startup_events;
-  cost.cpu_units = metric.estimated_rows;
+  cost.cpu_units = SaturatingAdd(metric.estimated_rows,
+                                 metric.startup_events);
   cost.cpu_units = SaturatingAdd(cost.cpu_units,
                                  metric.predicate_evaluations);
   cost.cpu_units = SaturatingAdd(cost.cpu_units,
@@ -233,6 +237,14 @@ ModelFamilyCostVectorV1 CostFromSnapshot(
   cost.uncertainty_penalty = SaturatingAdd(
       metric.uncertainty_events, 10'000 - metric.confidence_basis_points);
   cost.risk_penalty = metric.risk_events;
+  cost.cache_miss_units = metric.cache_operations;
+  cost.memory_allocation_units = metric.working_set_bytes;
+  cost.memory_grant_opportunity_units = metric.memory_grant_units;
+  cost.spill_write_units = metric.spill_bytes;
+  cost.network_bandwidth_units = metric.network_bytes;
+  cost.mga_visibility_check_units = metric.mga_rechecks;
+  cost.plan_instability_penalty = metric.risk_events;
+  cost.complete_dimension_vector = true;
   return cost;
 }
 
@@ -264,43 +276,10 @@ std::string SnapshotReceiptSeed(
       << metric.spatial_evaluations << '|' << metric.udr_invocations << '|'
       << metric.mga_rechecks << '|'
       << metric.index_maintenance_operations << '|'
-      << metric.uncertainty_events << '|' << metric.risk_events;
+      << metric.uncertainty_events << '|' << metric.risk_events << '|'
+      << "model-family.complete-unit-sum-minus-cache-benefit.v1" << '|'
+      << "complete-dimension-vector-v1";
   return out.str();
-}
-
-std::optional<std::uint64_t> ScalarizeCost(
-    const ModelFamilyCostVectorV1& cost) {
-  std::uint64_t score = 0;
-  const std::uint64_t dimensions[] = {
-      cost.startup_units,
-      cost.cpu_units,
-      cost.sequential_read_units,
-      cost.random_read_units,
-      cost.page_write_units,
-      cost.cache_units,
-      cost.memory_bytes_required,
-      cost.memory_grant_units,
-      cost.spill_units,
-      cost.network_units,
-      cost.compression_units,
-      cost.encryption_units,
-      cost.predicate_evaluation_units,
-      cost.vector_distance_units,
-      cost.text_scoring_units,
-      cost.spatial_evaluation_units,
-      cost.udr_invocation_units,
-      cost.mga_units,
-      cost.index_maintenance_units,
-      cost.uncertainty_penalty,
-      cost.risk_penalty,
-  };
-  for (const auto dimension : dimensions) {
-    if (dimension > std::numeric_limits<std::uint64_t>::max() - score) {
-      return std::nullopt;
-    }
-    score += dimension;
-  }
-  return score;
 }
 
 }  // namespace
@@ -403,7 +382,7 @@ ModelFamilyProfileFactoryResultV1 BuildModelFamilyAlternativeProfilesV1(
     candidate.local_scope = snapshot.local_scope;
     candidate.cost = CostFromSnapshot(request.identity_scope, logical.family_id,
                                       ordinal, snapshot);
-    const auto scalar_score = ScalarizeCost(candidate.cost);
+    const auto scalar_score = ScalarizeModelFamilyCostVectorV1(candidate.cost);
     if (!scalar_score.has_value()) {
       return refuse("SB_MODEL_PROFILE_FACTORY_COST_OVERFLOW_V1",
                     "model-family scalarization exceeded uint64 range");

@@ -40,8 +40,40 @@ struct ModelFamilyCostVectorV1 {
   std::uint64_t udr_invocation_units{0};
   std::uint64_t mga_units{0};
   std::uint64_t index_maintenance_units{0};
+  std::uint64_t cache_miss_units{0};
+  std::uint64_t cache_residency_benefit_units{0};
+  std::uint64_t memory_allocation_units{0};
+  std::uint64_t memory_grant_opportunity_units{0};
+  std::uint64_t spill_write_units{0};
+  std::uint64_t spill_read_units{0};
+  std::uint64_t temp_space_pressure_units{0};
+  std::uint64_t decompression_units{0};
+  std::uint64_t decryption_units{0};
+  std::uint64_t expression_evaluation_units{0};
+  std::uint64_t domain_cast_units{0};
+  std::uint64_t datatype_conversion_units{0};
+  std::uint64_t collation_comparison_units{0};
+  std::uint64_t mga_version_traversal_units{0};
+  std::uint64_t mga_visibility_check_units{0};
+  std::uint64_t archive_fetch_units{0};
+  std::uint64_t garbage_retention_pressure_units{0};
+  std::uint64_t lock_latch_wait_risk_units{0};
+  std::uint64_t network_latency_units{0};
+  std::uint64_t network_bandwidth_units{0};
+  std::uint64_t remote_execution_startup_units{0};
+  std::uint64_t cluster_coordination_units{0};
+  std::uint64_t repartition_units{0};
+  std::uint64_t broadcast_units{0};
+  std::uint64_t replica_staleness_risk_units{0};
+  std::uint64_t quorum_availability_risk_units{0};
+  std::uint64_t donor_compatibility_enforcement_units{0};
+  std::uint64_t result_ordering_enforcement_units{0};
   std::uint64_t uncertainty_penalty{0};
   std::uint64_t risk_penalty{0};
+  std::uint64_t plan_instability_penalty{0};
+  bool complete_dimension_vector{false};
+
+  bool operator==(const ModelFamilyCostVectorV1&) const = default;
 };
 
 enum class ModelFamilyAlternativeRouteClassV1 : std::uint8_t {
@@ -139,6 +171,9 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request);
 
 std::string SerializeModelFamilyCostVectorToJsonV1(
+    const ModelFamilyCostVectorV1& cost);
+
+std::optional<std::uint64_t> ScalarizeModelFamilyCostVectorV1(
     const ModelFamilyCostVectorV1& cost);
 
 struct MultilegDescriptorProfileV1 {

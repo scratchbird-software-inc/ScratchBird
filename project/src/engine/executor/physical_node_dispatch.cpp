@@ -295,7 +295,8 @@ bool PhysicalNodeCopyLiveBytes(const PhysicalNodeRecord& node,
          add_string(node.transformation_rule_id) &&
          add_strings(node.enforced_property_uuids) &&
          add_string(node.retained_cost.cost_vector_uuid) &&
-         add_string(node.retained_cost.calibration_profile_uuid);
+         add_string(node.retained_cost.calibration_profile_uuid) &&
+         add_string(node.retained_cost.scalarization_policy_id);
 }
 
 bool DispatchStepMetadataLiveBytes(
