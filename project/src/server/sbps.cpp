@@ -516,6 +516,10 @@ bool IsKnownMessageType(std::uint16_t message_type) {
     case 305:
     case 330:
     case 331:
+    case 340:
+    case 341:
+    case 342:
+    case 343:
     case 332:
     case 333:
       return true;
