@@ -99,6 +99,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_sec_drop_role_runtime.cpp
   sblr_sec_create_role_runtime.cpp
   sblr_sec_alter_role_runtime.cpp
+  sblr_sec_create_group_mapping_runtime.cpp
   sblr_sec_create_policy_runtime.cpp
   sblr_sec_drop_policy_runtime.cpp
   sblr_security_create_user_runtime.cpp
