@@ -1077,6 +1077,7 @@ SessionOperationResult HandleCoordinateSecurityCreatePolicy(ServerSessionRegistr
 SessionOperationResult HandleCoordinateSecurityDropPolicy(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityDropPolicy(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityDropRole(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateSecurityAlterRole(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityAlterPrivilegeTemplate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityDropPrivilegeTemplate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDatabaseCreateTemplateClone(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

@@ -12,6 +12,7 @@
 #include "sblr_sec_drop_role_runtime.hpp"
 #include "sblr_sec_create_policy_runtime.hpp"
 #include "sblr_sec_drop_policy_runtime.hpp"
+#include "sblr_sec_alter_role_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
@@ -736,6 +737,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::security_drop_role_descriptor: { SblrSecDropRoleDescriptorV1 operand; std::string detail; return DecodeSblrSecDropRoleDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::security_create_policy_descriptor: { SblrSecCreatePolicyDescriptorV1 operand; std::string detail; return DecodeSblrSecCreatePolicyDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::security_drop_policy_descriptor: { SblrSecDropPolicyDescriptorV1 operand; std::string detail; return DecodeSblrSecDropPolicyDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::security_alter_role_descriptor: { SblrSecAlterRoleDescriptorV1 operand; std::string detail; return DecodeSblrSecAlterRoleDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::alter_user_descriptor: { SblrSecAlterUserDescriptorV1 operand; std::string detail; return DecodeSblrSecAlterUserDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_foreign_table_descriptor: { SblrDdlDropForeignTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropForeignTableDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_synonym_descriptor: { SblrDdlDropSynonymDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSynonymDescriptorV1(data,size,&operand,&detail,true); }

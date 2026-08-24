@@ -4202,6 +4202,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "security.policy.drop" ||
       operation_id == "security.policy.lifecycle_drop") return "SBLR_SECURITY_POLICY_DROP";
   if (operation_id == "engine.op.sec_drop_policy") return "SBLR_SEC_DROP_POLICY";
+  if (operation_id == "engine.op.sec_alter_role") return "SBLR_SEC_ALTER_ROLE";
   if (operation_id == "security.mask.drop") return "SBLR_SECURITY_MASK_DROP";
   if (operation_id == "security.rls.drop") return "SBLR_SECURITY_RLS_DROP";
   if (operation_id == "security.policy.attach") return "SBLR_SECURITY_POLICY_ATTACH";
@@ -4491,6 +4492,7 @@ bool OperationNeedsTransactionContext(std::string_view operation_id) {
          operation_id == "security.policy.alter" ||
          operation_id == "security.policy.drop" ||
          operation_id == "engine.op.sec_drop_policy" ||
+         operation_id == "engine.op.sec_alter_role" ||
          operation_id == "security.policy.lifecycle_drop" ||
          operation_id == "security.mask.drop" ||
          operation_id == "security.rls.drop" ||

@@ -1077,7 +1077,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("security.group_mapping.create", "SBLR_SEC_CREATE_GROUP_MAPPING", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("security.policy.lifecycle_alter", "SBLR_SEC_ALTER_POLICY", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("security.user.drop", "SBLR_SEC_DROP_USER", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
-      CanonicalEntry("security.role.alter", "SBLR_SEC_ALTER_ROLE", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.sec_alter_role", "SBLR_SEC_ALTER_ROLE", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.sec_drop_role", "SBLR_SEC_DROP_ROLE", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.sec_create_policy", "SBLR_SEC_CREATE_POLICY", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.sec_drop_policy", "SBLR_SEC_DROP_POLICY", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1878,6 +1878,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
                                                       std::string_view operation_id,
                                                       std::string_view opcode) {
   SblrOpcodeValidationResult result;
+  if (code == 1800 && operation_id == "engine.op.sec_alter_role" && opcode == "SBLR_SEC_ALTER_ROLE") { result.entry = LookupSblrOpcode("SBLR_SEC_ALTER_ROLE"); result.ok = result.entry != nullptr; return result; }
   if (code == 1792 && operation_id == "engine.op.security_create_user" && opcode == "SBLR_SEC_CREATE_USER") { result.entry = LookupSblrOpcode("SBLR_SEC_CREATE_USER"); result.ok = result.entry != nullptr; return result; }
   if (code == 1793 && operation_id == "engine.op.sec_alter_user" && opcode == "SBLR_SEC_ALTER_USER") { result.entry = LookupSblrOpcode("SBLR_SEC_ALTER_USER"); result.ok = result.entry != nullptr; return result; }
   if (code == 1576 && operation_id == "engine.op.ddl_create_foreign_table" && opcode == "SBLR_DDL_CREATE_FOREIGN_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FOREIGN_TABLE"); result.ok = result.entry != nullptr; return result; }

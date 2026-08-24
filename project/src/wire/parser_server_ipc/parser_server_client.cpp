@@ -330,6 +330,8 @@ constexpr std::uint32_t kSchemaCoordinateSecurityCreatePolicyRequestV1 = 7359;
 constexpr std::uint32_t kSchemaCoordinateSecurityCreatePolicyResultV1 = 7360;
 constexpr std::uint32_t kSchemaCoordinateSecurityDropPolicyRequestV1 = 7361;
 constexpr std::uint32_t kSchemaCoordinateSecurityDropPolicyResultV1 = 7362;
+constexpr std::uint32_t kSchemaCoordinateSecurityAlterRoleRequestV1 = 7363;
+constexpr std::uint32_t kSchemaCoordinateSecurityAlterRoleResultV1 = 7364;
 constexpr std::uint32_t kSchemaCoordinateSecurityAlterPrivilegeTemplateRequestV1 = 7229;
 constexpr std::uint32_t kSchemaCoordinateSecurityAlterPrivilegeTemplateResultV1 = 7230;
 constexpr std::uint32_t kSchemaCoordinateSecurityDropPrivilegeTemplateRequestV1 = 7231;
@@ -670,6 +672,8 @@ constexpr std::uint16_t kMessageCoordinateSecurityCreatePolicyRequest = 346;
 constexpr std::uint16_t kMessageCoordinateSecurityCreatePolicyResult = 347;
 constexpr std::uint16_t kMessageCoordinateSecurityDropPolicyRequest = 348;
 constexpr std::uint16_t kMessageCoordinateSecurityDropPolicyResult = 349;
+constexpr std::uint16_t kMessageCoordinateSecurityAlterRoleRequest = 350;
+constexpr std::uint16_t kMessageCoordinateSecurityAlterRoleResult = 351;
 constexpr std::uint16_t kMessageCoordinateSecurityAlterPrivilegeTemplateRequest = 234;
 constexpr std::uint16_t kMessageCoordinateSecurityAlterPrivilegeTemplateResult = 235;
 constexpr std::uint16_t kMessageCoordinateSecurityDropPrivilegeTemplateRequest = 236;
@@ -7430,5 +7434,6 @@ ServerVariableBindingResult SbpsClient::CoordinateDdlDropSynonym(const ParserSes
 
 ServerVariableBindingResult SbpsClient::CoordinateSecurityCreatePolicy(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityCreatePolicyRequest,kSchemaCoordinateSecurityCreatePolicyRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityCreatePolicyResult||f.header.schema_id!=kSchemaCoordinateSecurityCreatePolicyResultV1||f.payload.size()!=488||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 ServerVariableBindingResult SbpsClient::CoordinateSecurityDropPolicy(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityDropPolicyRequest,kSchemaCoordinateSecurityDropPolicyRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityDropPolicyResult||f.header.schema_id!=kSchemaCoordinateSecurityDropPolicyResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
+ServerVariableBindingResult SbpsClient::CoordinateSecurityAlterRole(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityAlterRoleRequest,kSchemaCoordinateSecurityAlterRoleRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityAlterRoleResult||f.header.schema_id!=kSchemaCoordinateSecurityAlterRoleResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 
 } // namespace scratchbird::parser::ipc
