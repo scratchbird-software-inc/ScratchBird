@@ -4197,6 +4197,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "security.privilege.revoke") return "SBLR_SECURITY_PRIVILEGE_REVOKE";
   if (operation_id == "security.session.set_role") return "SBLR_SECURITY_SESSION_SET_ROLE";
   if (operation_id == "security.policy.create") return "SBLR_SECURITY_POLICY_CREATE";
+  if (operation_id == "engine.op.sec_create_policy") return "SBLR_SEC_CREATE_POLICY";
   if (operation_id == "security.policy.alter") return "SBLR_SECURITY_POLICY_ALTER";
   if (operation_id == "security.policy.drop" ||
       operation_id == "security.policy.lifecycle_drop") return "SBLR_SECURITY_POLICY_DROP";
@@ -4485,6 +4486,7 @@ bool OperationNeedsTransactionContext(std::string_view operation_id) {
          operation_id == "security.principal.create" ||
          operation_id == "security.principal.alter" ||
          operation_id == "security.policy.create" ||
+         operation_id == "engine.op.sec_create_policy" ||
          operation_id == "security.policy.alter" ||
          operation_id == "security.policy.drop" ||
          operation_id == "security.policy.lifecycle_drop" ||

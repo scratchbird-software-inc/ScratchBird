@@ -644,6 +644,7 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "security.principal.create" ||
          operation_id == "security.principal.alter" ||
          operation_id == "security.policy.create" ||
+         operation_id == "engine.op.sec_create_policy" ||
          operation_id == "security.policy.alter" ||
          operation_id == "security.policy.drop" ||
          operation_id == "security.policy.lifecycle_drop" ||
