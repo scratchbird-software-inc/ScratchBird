@@ -436,10 +436,12 @@ add_library(sb_engine_internal_api
   sblr_ddl_create_domain_coordinator.cpp
   sblr_ddl_create_schema_coordinator.cpp
   sblr_ddl_create_table_coordinator.cpp
+  sblr_ddl_create_table_as_query_coordinator.cpp
   sblr_ddl_create_index_coordinator.cpp
   sblr_ddl_drop_index_coordinator.cpp
   sblr_ddl_alter_domain_coordinator.cpp
   sblr_ddl_create_view_coordinator.cpp
+  sblr_ddl_create_materialized_view_coordinator.cpp
   sblr_ddl_alter_view_coordinator.cpp
   sblr_ddl_drop_view_coordinator.cpp
   sblr_ddl_create_trigger_coordinator.cpp
@@ -450,6 +452,17 @@ add_library(sb_engine_internal_api
   sblr_ddl_create_function_coordinator.cpp
   sblr_ddl_alter_function_coordinator.cpp
   sblr_ddl_create_package_coordinator.cpp
+  sblr_sec_alter_user_coordinator.cpp
+  sblr_ddl_drop_package_coordinator.cpp
+  sblr_ddl_alter_package_coordinator.cpp
+  sblr_ddl_alter_sequence_coordinator.cpp
+  sblr_ddl_drop_sequence_coordinator.cpp
+  sblr_ddl_drop_materialized_view_coordinator.cpp
+  sblr_ddl_drop_table_coordinator.cpp
+  sblr_ddl_create_type_coordinator.cpp
+  sblr_ddl_alter_type_coordinator.cpp
+  sblr_ddl_drop_type_coordinator.cpp
+  sblr_ddl_refresh_materialized_view_coordinator.cpp
   sblr_ddl_create_temporary_table_coordinator.cpp
   sblr_ddl_drop_temporary_table_coordinator.cpp
   sblr_ddl_rename_object_vector_coordinator.cpp
@@ -537,6 +550,7 @@ target_compile_features(sb_engine_internal_api PUBLIC cxx_std_20)
 find_package(OpenSSL REQUIRED)
 
 target_link_libraries(sb_engine_internal_api PUBLIC
+  sb_sblr_parameter_wire_codec
   sb_core_datatypes
   sb_core_hash
   sb_core_agents
