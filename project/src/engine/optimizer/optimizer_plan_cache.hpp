@@ -11,6 +11,7 @@
 #include "../executor/descriptor_value_runtime.hpp"
 #include "../executor/physical_node_abi.hpp"
 #include "optimizer_request.hpp"
+#include "optimizer_planning_context.hpp"
 #include "result_cursor_plan_memory_governance.hpp"
 
 #include <algorithm>
@@ -50,6 +51,7 @@ enum class CanonicalPreparedPlanDependencyKind : std::uint8_t {
   kDomain,
   kCollation,
   kMetricSnapshot,
+  kContinuationContext,
 };
 
 struct CanonicalPreparedPlanParameterDescriptor {
@@ -346,9 +348,11 @@ struct CanonicalPreparedPhysicalPlan {
   std::vector<CanonicalPreparedMetricCollectionReceipt>
       prepare_metric_collection_receipts;
   std::vector<CanonicalPreparedLegPlanReceipt> prepare_leg_plan_receipts;
+  std::optional<CanonicalPlannerContinuationReceipt> continuation_receipt;
   bool immutable_physical_identity_retained{false};
   bool complete_cost_vectors_retained{false};
   bool prepare_metric_receipts_retained{false};
+  bool continuation_context_retained{false};
   bool parameter_values_retained{false};
   bool prepare_statement_authority_retained{false};
   bool execution_authority_granted{false};
@@ -369,6 +373,7 @@ struct CanonicalPreparePhysicalPlanRequest {
   std::vector<CanonicalPreparedMetricCollectionReceipt>
       prepare_metric_collection_receipts;
   std::vector<CanonicalPreparedLegPlanReceipt> prepare_leg_plan_receipts;
+  std::optional<CanonicalPlannerContinuationReceipt> continuation_receipt;
   bool engine_prepare_authorized{false};
   bool parameter_values_supplied{false};
   bool parser_execution_authority_claimed{false};
@@ -391,6 +396,7 @@ struct CanonicalPreparePhysicalPlanResult {
   bool complete_dependency_generations_retained{false};
   bool result_schema_retained{false};
   bool prepare_metric_receipts_retained{false};
+  bool continuation_context_retained{false};
   bool parameter_values_retained{false};
   bool prepare_statement_authority_retained{false};
   bool execution_authority_granted{false};
@@ -464,7 +470,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   };
   const auto known_dependency_kind = [](const auto kind) {
     return kind >= CanonicalPreparedPlanDependencyKind::kObject &&
-           kind <= CanonicalPreparedPlanDependencyKind::kMetricSnapshot;
+           kind <= CanonicalPreparedPlanDependencyKind::kContinuationContext;
   };
 
   if (!request.engine_prepare_authorized || request.parameter_values_supplied ||
@@ -723,19 +729,60 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   if (request.dependencies.empty()) {
     return refuse("generation_qualified_dependencies");
   }
-  std::string previous_dependency_key;
+  std::uint8_t previous_dependency_kind{0};
+  std::string previous_dependency_uuid;
   for (const auto& dependency : request.dependencies) {
-    const auto key =
-        std::to_string(static_cast<std::uint8_t>(dependency.dependency_kind)) +
-        ":" + dependency.dependency_uuid;
+    const auto kind =
+        static_cast<std::uint8_t>(dependency.dependency_kind);
     if (!known_dependency_kind(dependency.dependency_kind) ||
         !canonical_uuid(dependency.dependency_uuid) ||
         dependency.generation == 0 ||
         !digest(dependency.definition_digest) ||
-        (!previous_dependency_key.empty() && key <= previous_dependency_key)) {
+        (previous_dependency_kind != 0 &&
+         (kind < previous_dependency_kind ||
+          (kind == previous_dependency_kind &&
+           dependency.dependency_uuid <= previous_dependency_uuid)))) {
       return refuse("generation_qualified_dependencies");
     }
-    previous_dependency_key = key;
+    previous_dependency_kind = kind;
+    previous_dependency_uuid = dependency.dependency_uuid;
+  }
+
+  std::optional<CanonicalPlannerContinuationReceipt>
+      verified_continuation_receipt;
+  if (request.continuation_receipt.has_value()) {
+    verified_continuation_receipt = request.continuation_receipt;
+    auto& continuation = *verified_continuation_receipt;
+    const auto dependency_count = std::ranges::count_if(
+        request.dependencies, [](const auto& dependency) {
+          return dependency.dependency_kind ==
+                 CanonicalPreparedPlanDependencyKind::kContinuationContext;
+        });
+    const auto dependency = std::ranges::find_if(
+        request.dependencies, [&](const auto& item) {
+          return item.dependency_kind ==
+                     CanonicalPreparedPlanDependencyKind::kContinuationContext &&
+                 item.dependency_uuid ==
+                     continuation.context.authority.context_uuid &&
+                 item.generation ==
+                     continuation.context.authority.generation &&
+                 item.definition_digest ==
+                     continuation.context.authority.dependency_signature;
+        });
+    if (!CanonicalPlannerContinuationReceiptValid(continuation) ||
+        continuation.context.result_schema_uuid != request.result_schema_uuid ||
+        continuation.bound_sblr_tree_uuid != dag.bound_sblr_tree_uuid ||
+        dependency_count != 1 || dependency == request.dependencies.end() ||
+        !ValidateCanonicalContinuationPhysicalRoot(&continuation, dag)) {
+      return refuse("continuation_resumable_plan_receipt");
+    }
+  } else if (std::ranges::any_of(
+                 request.dependencies, [](const auto& dependency) {
+                   return dependency.dependency_kind ==
+                          CanonicalPreparedPlanDependencyKind::
+                              kContinuationContext;
+                 })) {
+    return refuse("orphan_continuation_dependency");
   }
 
   const bool has_prepare_metric_evidence =
@@ -990,6 +1037,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   prepared->prepare_metric_collection_receipts =
       request.prepare_metric_collection_receipts;
   prepared->prepare_leg_plan_receipts = request.prepare_leg_plan_receipts;
+  prepared->continuation_receipt = verified_continuation_receipt;
   prepared->nodes.reserve(dag.nodes.size());
   for (const auto& node : dag.nodes) {
     prepared->nodes.push_back(
@@ -1019,6 +1067,8 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   prepared->immutable_physical_identity_retained = true;
   prepared->complete_cost_vectors_retained = true;
   prepared->prepare_metric_receipts_retained = has_prepare_metric_evidence;
+  prepared->continuation_context_retained =
+      verified_continuation_receipt.has_value();
   prepared->parameter_values_retained = false;
   prepared->prepare_statement_authority_retained = false;
   prepared->execution_authority_granted = false;
@@ -1036,6 +1086,8 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   result.complete_dependency_generations_retained = true;
   result.result_schema_retained = true;
   result.prepare_metric_receipts_retained = has_prepare_metric_evidence;
+  result.continuation_context_retained =
+      verified_continuation_receipt.has_value();
   result.parameter_values_retained = false;
   result.prepare_statement_authority_retained = false;
   result.execution_authority_granted = false;
@@ -1139,6 +1191,7 @@ struct CanonicalExecutablePlanCacheKey {
   std::uint64_t route_generation{0};
   std::uint64_t memory_budget_bytes{0};
   bool spill_allowed{false};
+  std::optional<CanonicalPlannerContinuationReceipt> continuation_receipt;
 
   std::vector<CanonicalPreparedPlanParameterDescriptor> parameters;
   std::vector<CanonicalPreparedPlanResultDescriptor> result_descriptors;
@@ -1153,6 +1206,7 @@ struct CanonicalExecutablePlanCacheKey {
   std::vector<CanonicalExecutablePlanGeneration> filespace_generations;
   std::vector<CanonicalExecutablePlanGeneration> route_generations;
   std::vector<CanonicalExecutablePlanGeneration> metric_generations;
+  std::vector<CanonicalExecutablePlanGeneration> continuation_generations;
   std::vector<CanonicalExecutablePlanCapabilityGeneration>
       capability_generations;
 
@@ -1231,6 +1285,8 @@ struct CanonicalExecutablePlanCacheAdmissionResult {
 struct CanonicalExecutablePlanCacheLookupRequest {
   CanonicalExecutablePlanCacheKey current_key;
   std::vector<CanonicalExecutablePlanParameterBinding> parameter_bindings;
+  std::optional<CanonicalPlannerContinuationReplayRequest>
+      continuation_replay;
   executor::CanonicalExecutionMgaAuthority mga_authority;
   bool engine_lookup_authorized{false};
   bool engine_security_revalidated{false};
@@ -1257,12 +1313,15 @@ struct CanonicalExecutablePlanCacheHitReceipt {
   bool parameter_values_retained{false};
   bool prepare_metric_receipts_retained{false};
   bool metric_recollection_performed{false};
+  bool continuation_replay_performed{false};
   bool structural_no_optimizer_search_planner_or_fallback_route{false};
   std::uint64_t metric_collector_invocation_count{0};
   std::uint64_t optimizer_invocation_count{0};
   std::uint64_t search_invocation_count{0};
   std::uint64_t planner_invocation_count{0};
   std::uint64_t uncached_fallback_invocation_count{0};
+  std::optional<CanonicalPlannerContinuationReplayReceipt>
+      continuation_replay_receipt;
   executor::PhysicalMgaStatementContext mga_statement_context;
 };
 
@@ -1430,6 +1489,7 @@ inline bool CanonicalExecutablePlanKeyMatchesPreparedPlan(
       key.route_generation != plan.route_generation ||
       key.memory_budget_bytes != plan.memory_budget_bytes ||
       key.spill_allowed != plan.spill_allowed ||
+      key.continuation_receipt != plan.continuation_receipt ||
       key.parameters != plan.parameters ||
       key.result_descriptors != plan.result_descriptors ||
       key.physical_dependencies != plan.dependencies ||
@@ -1444,6 +1504,12 @@ inline bool CanonicalExecutablePlanKeyMatchesPreparedPlan(
                            }) ||
       !plan.immutable_physical_identity_retained ||
       !plan.complete_cost_vectors_retained || plan.parameter_values_retained ||
+      plan.continuation_context_retained !=
+          plan.continuation_receipt.has_value() ||
+      (plan.continuation_receipt.has_value() &&
+       (!CanonicalPlannerContinuationReceiptValid(
+            *plan.continuation_receipt) ||
+        !plan.continuation_receipt->physical_root_delivery_validated)) ||
       plan.prepare_statement_authority_retained ||
       plan.execution_authority_granted) {
     return false;
@@ -1470,6 +1536,9 @@ inline bool CanonicalExecutablePlanKeyMatchesPreparedPlan(
       !CanonicalExecutablePlanGenerationVectorValid(
           key.metric_generations,
           !plan.prepare_metric_receipts_retained) ||
+      !CanonicalExecutablePlanGenerationVectorValid(
+          key.continuation_generations,
+          !plan.continuation_context_retained) ||
       !CanonicalExecutablePlanCapabilityVectorValid(key.capability_generations,
                                                      plan)) {
     return false;
@@ -1496,6 +1565,12 @@ inline bool CanonicalExecutablePlanKeyMatchesPreparedPlan(
       key.metric_generations != CanonicalExecutablePlanDependencyProjection(
                                     plan.dependencies,
                                     {CanonicalPreparedPlanDependencyKind::kMetricSnapshot})) {
+    return false;
+  }
+  if (key.continuation_generations !=
+      CanonicalExecutablePlanDependencyProjection(
+          plan.dependencies,
+          {CanonicalPreparedPlanDependencyKind::kContinuationContext})) {
     return false;
   }
   const auto descriptor_dependencies =
@@ -1747,6 +1822,9 @@ CanonicalExecutablePlanFirstDependencyMismatch(
       stored.plan_policy_profile_uuid != current.plan_policy_profile_uuid) {
     return mismatch("policy_generation", true);
   }
+  if (stored.continuation_receipt != current.continuation_receipt) {
+    return mismatch("continuation_identity", true);
+  }
   if (stored.database_uuid != current.database_uuid)
     return mismatch("database_uuid");
   if (stored.engine_format_generation != current.engine_format_generation)
@@ -1773,6 +1851,8 @@ CanonicalExecutablePlanFirstDependencyMismatch(
     return mismatch("statistics_generations");
   if (stored.metric_generations != current.metric_generations)
     return mismatch("prepare_metric_generations");
+  if (stored.continuation_generations != current.continuation_generations)
+    return mismatch("continuation_generation", true);
   if (stored.capability_snapshot_uuid != current.capability_snapshot_uuid ||
       stored.capability_generations != current.capability_generations)
     return mismatch("capability_generations");
@@ -1997,6 +2077,8 @@ class CanonicalExecutablePlanCache {
       return refuse("fresh_engine_mga_statement_authority", false);
     }
     std::shared_ptr<const CanonicalExecutablePlanCacheEntry> entry;
+    std::optional<CanonicalPlannerContinuationReplayReceipt>
+        pending_continuation_replay;
     {
       std::lock_guard lock(mutex_);
       const auto found = states_.find(request.current_key.prepared_plan_uuid);
@@ -2018,6 +2100,26 @@ class CanonicalExecutablePlanCache {
                                                  : mismatch->field_id,
                       true,
                       "QOW-DIAG-OPT-010-DEPENDENCY-REFUSAL-V1");
+      }
+      const auto& expected_continuation =
+          state->entry->prepared_plan->continuation_receipt;
+      if (expected_continuation.has_value() !=
+          request.continuation_replay.has_value()) {
+        return refuse(expected_continuation.has_value()
+                          ? "continuation_replay_required"
+                          : "unexpected_continuation_replay",
+                      false,
+                      "QOW-DIAG-OPT-CONTINUATION-REPLAY-REFUSAL-V1");
+      }
+      if (expected_continuation.has_value()) {
+        CanonicalPlannerContinuationReplayReceipt replay_receipt;
+        if (!CanonicalPlannerContinuationReplayMatches(
+                *expected_continuation, *request.continuation_replay,
+                &replay_receipt)) {
+          return refuse("continuation_replay_identity", false,
+                        "QOW-DIAG-OPT-CONTINUATION-REPLAY-REFUSAL-V1");
+        }
+        pending_continuation_replay = std::move(replay_receipt);
       }
       entry = state->entry;
     }
@@ -2060,6 +2162,27 @@ class CanonicalExecutablePlanCache {
                         authority_validation.diagnostic_code,
                     false);
     }
+    if (pending_continuation_replay.has_value()) {
+      std::lock_guard lock(mutex_);
+      const auto found = states_.find(request.current_key.prepared_plan_uuid);
+      if (found == states_.end() || !found->second ||
+          !found->second->entry ||
+          found->second->status != CanonicalExecutablePlanStatus::kValid ||
+          found->second->entry != entry ||
+          CanonicalExecutablePlanFirstDependencyMismatch(
+              found->second->entry->key, request.current_key)
+              .has_value()) {
+        return refuse("continuation_replay_dependency_changed", true,
+                      "QOW-DIAG-OPT-CONTINUATION-REPLAY-REFUSAL-V1");
+      }
+      if (!found->second->consumed_continuation_replay_identities
+               .insert(pending_continuation_replay->replay_identity)
+               .second) {
+        return refuse("continuation_replay_consumed", false,
+                      "QOW-DIAG-OPT-CONTINUATION-REPLAY-REFUSAL-V1");
+      }
+      pending_continuation_replay->consumed_once = true;
+    }
     result.accepted = true;
     result.hit = true;
     result.entry = entry;
@@ -2079,6 +2202,10 @@ class CanonicalExecutablePlanCache {
     result.receipt.prepare_metric_receipts_retained =
         entry->prepared_plan->prepare_metric_receipts_retained;
     result.receipt.metric_recollection_performed = false;
+    result.receipt.continuation_replay_performed =
+        pending_continuation_replay.has_value();
+    result.receipt.continuation_replay_receipt =
+        std::move(pending_continuation_replay);
     result.receipt.metric_collector_invocation_count = 0;
     result.receipt
         .structural_no_optimizer_search_planner_or_fallback_route = true;
@@ -2332,6 +2459,8 @@ class CanonicalExecutablePlanCache {
     std::string replacement_prepared_plan_uuid;
     std::shared_ptr<const CanonicalExecutablePlanCacheEntry> replacement_entry;
     std::string reprepare_failure_field;
+    std::unordered_set<std::string>
+        consumed_continuation_replay_identities;
     std::condition_variable condition;
   };
 
@@ -2375,12 +2504,15 @@ struct CanonicalExecutablePlanHitExecutionResult {
   bool parameter_values_retained{false};
   bool prepare_metric_receipts_retained{false};
   bool metric_recollection_performed{false};
+  bool continuation_replay_performed{false};
   bool structural_no_optimizer_search_planner_or_fallback_route{false};
   std::uint64_t metric_collector_invocation_count{0};
   std::uint64_t optimizer_invocation_count{0};
   std::uint64_t search_invocation_count{0};
   std::uint64_t planner_invocation_count{0};
   std::uint64_t uncached_fallback_invocation_count{0};
+  std::optional<CanonicalPlannerContinuationReplayReceipt>
+      continuation_replay_receipt;
   std::string selected_plan_uuid;
   std::uint64_t executed_root_physical_node_id{0};
   std::string result_schema_uuid;

@@ -44,6 +44,16 @@ static_assert(!CarriesPrepareMgaAuthority<
               cache::CanonicalPreparedMetricCollectionReceipt>);
 static_assert(!CarriesPrepareMgaAuthority<
               cache::CanonicalPreparedLegPlanReceipt>);
+static_assert(!CarriesPrepareMgaAuthority<
+              cache::CanonicalPlannerContextAuthority>);
+static_assert(!CarriesPrepareMgaAuthority<
+              cache::CanonicalPlannerContinuationContext>);
+static_assert(!CarriesPrepareMgaAuthority<
+              cache::CanonicalPlannerContinuationReceipt>);
+static_assert(!CarriesPrepareMgaAuthority<
+              cache::CanonicalPlannerWhatIfContext>);
+static_assert(!CarriesPrepareMgaAuthority<
+              cache::CanonicalPlannerWhatIfReceipt>);
 static_assert(!CarriesPreparedParameterValue<
               cache::CanonicalPreparedPlanParameterDescriptor>);
 

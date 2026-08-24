@@ -24,6 +24,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   if(NOT TARGET sb_qow_canonical_candidate_legality)
     add_library(sb_qow_canonical_candidate_legality STATIC
       optimizer_contract.cpp
+      optimizer_planning_context.cpp
       optimizer_profile_factory.cpp
       optimizer_prepare_metric_collector.cpp
       model_family_coordinator.cpp
@@ -167,6 +168,7 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     nosql_approx_filter_decision.cpp
     nosql_statistics_advisor.cpp
     optimizer_plan_cache.cpp
+    optimizer_planning_context.cpp
     optimizer_prepare_metric_collector.cpp
     optimizer_production_analyze.cpp
     optimizer_relational_operator_enterprise.cpp

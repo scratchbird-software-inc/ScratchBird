@@ -5729,6 +5729,10 @@ ExecuteCanonicalExecutablePlanCacheHit(
         result.checkout.receipt.prepare_metric_receipts_retained;
     result.metric_recollection_performed = false;
     result.metric_collector_invocation_count = 0;
+    result.continuation_replay_performed =
+        result.checkout.receipt.continuation_replay_performed;
+    result.continuation_replay_receipt =
+        result.checkout.receipt.continuation_replay_receipt;
     result.structural_no_optimizer_search_planner_or_fallback_route = true;
     result.optimizer_invocation_count = 0;
     result.search_invocation_count = 0;
@@ -5918,6 +5922,10 @@ ExecuteCanonicalExecutablePlanCacheHit(
       plan.prepare_metric_receipts_retained;
   result.metric_recollection_performed = false;
   result.metric_collector_invocation_count = 0;
+  result.continuation_replay_performed =
+      result.checkout.receipt.continuation_replay_performed;
+  result.continuation_replay_receipt =
+      result.checkout.receipt.continuation_replay_receipt;
   result.structural_no_optimizer_search_planner_or_fallback_route = true;
   result.optimizer_invocation_count = 0;
   result.search_invocation_count = 0;
@@ -6450,24 +6458,28 @@ RenderCanonicalStoredPlanExplain(
   if (plan.dependencies.empty()) {
     return refuse("stored_dependency_evidence");
   }
-  std::string previous_dependency;
+  std::uint8_t previous_dependency_kind{0};
+  std::string previous_dependency_uuid;
   for (const auto& dependency : plan.dependencies) {
-    const auto key =
-        std::to_string(static_cast<std::uint8_t>(
-            dependency.dependency_kind)) +
-        ":" + dependency.dependency_uuid;
+    const auto kind =
+        static_cast<std::uint8_t>(dependency.dependency_kind);
     if (dependency.dependency_kind <
             cache::CanonicalPreparedPlanDependencyKind::kObject ||
         dependency.dependency_kind >
-            cache::CanonicalPreparedPlanDependencyKind::kMetricSnapshot ||
+            cache::CanonicalPreparedPlanDependencyKind::
+                kContinuationContext ||
         !canonical_uuid(dependency.dependency_uuid) ||
         dependency.generation == 0 ||
         !cache::CanonicalExecutablePlanDigest(
             dependency.definition_digest) ||
-        (!previous_dependency.empty() && key <= previous_dependency)) {
+        (previous_dependency_kind != 0 &&
+         (kind < previous_dependency_kind ||
+          (kind == previous_dependency_kind &&
+           dependency.dependency_uuid <= previous_dependency_uuid)))) {
       return refuse("stored_dependency_evidence");
     }
-    previous_dependency = key;
+    previous_dependency_kind = kind;
+    previous_dependency_uuid = dependency.dependency_uuid;
   }
   for (std::size_t index = 0; index < evidence.stages.size(); ++index) {
     const auto& stage = evidence.stages[index];

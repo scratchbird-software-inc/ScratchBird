@@ -198,6 +198,17 @@ void ApplyMemoryAndSpillDiagnostics(std::uint64_t bytes,
 RelationalDagPlanningResult PlanCanonicalRelationalDag(
     const RelationalDagPlanningInput& input) {
   RelationalDagPlanningResult result;
+  result.planning_context = ValidateCanonicalPlannerContexts(
+      input.admission_request.logical_graph,
+      input.admission_request.logical_properties, input.continuation_context,
+      input.what_if_context);
+  if (!result.planning_context.accepted) {
+    result.diagnostics.push_back(
+        result.planning_context.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-DAG-PLANNING-CONTEXT-V1"
+            : result.planning_context.issues.front().diagnostic_id);
+    return result;
+  }
   result.factory = BuildCanonicalOptimizerAlternativeProfiles(
       input.admission_request, input.admission, input.executor_availability,
       input.identity_scope, input.calibration_profile_uuid);
@@ -233,6 +244,15 @@ RelationalDagPlanningResult PlanCanonicalRelationalDag(
             : result.search.issues.front().diagnostic_id);
     return result;
   }
+  if (result.planning_context.what_if_planning) {
+    result.accepted = true;
+    result.optimizer_owned = true;
+    result.physical_dag_published = false;
+    result.cache_admission_allowed = false;
+    result.execution_allowed = false;
+    result.data_access_allowed = false;
+    return result;
+  }
   result.publication = PublishCanonicalPhysicalDag(
       input.admission_request, input.admission,
       result.factory.inventory.catalog, result.search,
@@ -245,9 +265,21 @@ RelationalDagPlanningResult PlanCanonicalRelationalDag(
             : result.publication.issues.front().diagnostic_id);
     return result;
   }
+  if (result.planning_context.continuation_planning) {
+    auto& receipt = *result.planning_context.continuation_receipt;
+    if (!ValidateCanonicalContinuationPhysicalRoot(
+            &receipt, result.publication.physical_dag)) {
+      result.diagnostics.push_back(
+          "QOW-DIAG-RELATIONAL-DAG-CONTINUATION-PROPERTIES-V1");
+      return result;
+    }
+  }
   result.accepted = true;
   result.optimizer_owned = true;
   result.physical_dag_published = true;
+  result.cache_admission_allowed =
+      result.planning_context.cache_admission_allowed;
+  result.execution_allowed = result.planning_context.execution_allowed;
   result.data_access_allowed = false;
   return result;
 }

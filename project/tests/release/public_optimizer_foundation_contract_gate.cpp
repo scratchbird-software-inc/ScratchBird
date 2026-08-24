@@ -599,6 +599,214 @@ bool ValidateOptimizerOwnedPlanning() {
   return passed;
 }
 
+opt::CanonicalPlannerContextAuthority PlanningContextAuthority(
+    const std::uint64_t identity, const std::string& invalid_state_behavior) {
+  opt::CanonicalPlannerContextAuthority authority;
+  authority.context_uuid = Uuid(identity);
+  authority.generation = identity + 1;
+  authority.authority_uuid = Uuid(identity + 2);
+  authority.authority_generation = identity + 3;
+  authority.confidence_basis_points = 10'000;
+  authority.dependency_signature = std::string(64, 'd');
+  authority.invalid_state_behavior_id = invalid_state_behavior;
+  authority.engine_owned = true;
+  return authority;
+}
+
+bool ValidateContinuationAndWhatIfPlanningContexts() {
+  auto continuation_input = PlanningInput();
+  const auto ordering = std::ranges::find_if(
+      continuation_input.admission_request.logical_properties.properties,
+      [](const auto& property) {
+        return property.property_kind ==
+               plan::CanonicalLogicalPropertyKind::kOrdering;
+      });
+  const auto materialization = std::ranges::find_if(
+      continuation_input.admission_request.logical_properties.properties,
+      [](const auto& property) {
+        return property.property_kind ==
+               plan::CanonicalLogicalPropertyKind::kMaterialization;
+      });
+  const auto rewindability = std::ranges::find_if(
+      continuation_input.admission_request.logical_properties.properties,
+      [](const auto& property) {
+        return property.property_kind ==
+               plan::CanonicalLogicalPropertyKind::kRewindability;
+      });
+  if (ordering ==
+          continuation_input.admission_request.logical_properties.properties
+              .end() ||
+      materialization ==
+          continuation_input.admission_request.logical_properties.properties
+              .end() ||
+      rewindability ==
+          continuation_input.admission_request.logical_properties.properties
+              .end()) {
+    return Require(false, "resumable property fixture is incomplete");
+  }
+  materialization->materialization_kind =
+      plan::CanonicalLogicalMaterializationKind::kMaterialized;
+  rewindability->rewindability_kind =
+      plan::CanonicalLogicalRewindabilityKind::kRewindable;
+  continuation_input.admission = opt::AdmitCanonicalOptimizerPlanningRequest(
+      continuation_input.admission_request);
+  continuation_input.executor_availability =
+      ExecutorAvailability(continuation_input.admission_request);
+
+  opt::CanonicalPlannerContinuationContext continuation;
+  continuation.authority = PlanningContextAuthority(
+      810, "reject_continuation_plan");
+  continuation.prepared_statement_uuid = Uuid(813);
+  continuation.prepared_statement_generation = 814;
+  continuation.cursor_uuid = Uuid(815);
+  continuation.cursor_generation = 816;
+  continuation.continuation_token_uuid = Uuid(817);
+  continuation.continuation_token_generation = 818;
+  continuation.resume_boundary_uuid = Uuid(819);
+  continuation.resume_boundary_generation = 820;
+  continuation.result_schema_uuid = Uuid(821);
+  continuation.required_ordering_property_uuid = ordering->property_uuid;
+  continuation.required_materialization_property_uuid =
+      materialization->property_uuid;
+  continuation.required_rewindability_property_uuid =
+      rewindability->property_uuid;
+  continuation.cursor_mode = opt::CanonicalPlannerCursorMode::kScrollable;
+  continuation.holdability =
+      opt::CanonicalPlannerCursorHoldability::kHoldable;
+  continuation.continuation_requested = true;
+  continuation_input.continuation_context = continuation;
+
+  const auto continued = opt::PlanCanonicalRelationalDag(continuation_input);
+  if (!continued.accepted || !continued.physical_dag_published ||
+      !continued.planning_context.continuation_receipt.has_value() ||
+      (continued.planning_context.continuation_receipt.has_value() &&
+       !continued.planning_context.continuation_receipt
+            ->physical_root_delivery_validated)) {
+    std::cerr << "PUBLIC-OPTIMIZER-FOUNDATION-CONTRACT: continuation_refusal=";
+    if (!continued.planning_context.issues.empty()) {
+      std::cerr << continued.planning_context.issues.front().diagnostic_id << ':'
+                << continued.planning_context.issues.front().field_id;
+    } else if (!continued.factory.issues.empty()) {
+      std::cerr << continued.factory.issues.front().diagnostic_id << ':'
+                << continued.factory.issues.front().field_id;
+    } else if (!continued.search.issues.empty()) {
+      std::cerr << continued.search.issues.front().diagnostic_id << ':'
+                << continued.search.issues.front().field_id;
+    } else if (!continued.publication.issues.empty()) {
+      std::cerr << continued.publication.issues.front().diagnostic_id << ':'
+                << continued.publication.issues.front().field_id;
+    } else if (!continued.diagnostics.empty()) {
+      std::cerr << continued.diagnostics.front();
+    } else {
+      std::cerr << "accepted=" << continued.accepted
+                << ",published=" << continued.physical_dag_published
+                << ",receipt="
+                << continued.planning_context.continuation_receipt.has_value();
+    }
+    std::cerr << '\n';
+  }
+  bool passed = Require(
+      continued.accepted && continued.optimizer_owned &&
+          continued.physical_dag_published &&
+          continued.cache_admission_allowed && continued.execution_allowed &&
+          !continued.data_access_allowed &&
+          continued.planning_context.continuation_planning &&
+          continued.planning_context.continuation_receipt.has_value() &&
+          continued.planning_context.continuation_receipt
+              ->physical_root_delivery_validated &&
+          continued.planning_context.continuation_receipt->resumable_plan,
+      "continuation planning did not enforce and publish resumable properties");
+
+  auto missing_physical_delivery = continued.publication.physical_dag;
+  auto continuation_receipt =
+      *continued.planning_context.continuation_receipt;
+  const auto physical_root = std::ranges::find_if(
+      missing_physical_delivery.nodes, [&](const auto& node) {
+        return node.physical_node_id ==
+               missing_physical_delivery.root_physical_node_id;
+      });
+  if (physical_root != missing_physical_delivery.nodes.end()) {
+    std::erase(physical_root->delivered_property_uuids,
+               continuation.required_rewindability_property_uuid);
+  }
+  passed &= Require(
+      !opt::ValidateCanonicalContinuationPhysicalRoot(
+          &continuation_receipt, missing_physical_delivery),
+      "continuation physical root omitted a resumable delivery");
+
+  auto missing_property = continuation_input;
+  missing_property.continuation_context->required_rewindability_property_uuid =
+      Uuid(899);
+  const auto missing = opt::PlanCanonicalRelationalDag(missing_property);
+  passed &= Require(
+      !missing.accepted && !missing.planning_context.accepted &&
+          !missing.planning_context.issues.empty() &&
+          missing.planning_context.issues.front().field_id ==
+              "continuation_resumable_properties",
+      "missing continuation property did not fail closed before enumeration");
+
+  auto normal_input = PlanningInput();
+  const auto normal_before = opt::PlanCanonicalRelationalDag(normal_input);
+  auto what_if_input = normal_input;
+  opt::CanonicalPlannerWhatIfContext what_if;
+  what_if.authority = PlanningContextAuthority(
+      830, "advisory_only_no_normal_plan_influence");
+  what_if.policy_uuid = Uuid(833);
+  what_if.policy_generation = 834;
+  what_if.hypotheses = {
+      {opt::CanonicalPlannerWhatIfHypothesisKind::kIndex, Uuid(835), 836,
+       std::string(64, '1')},
+      {opt::CanonicalPlannerWhatIfHypothesisKind::kStatistics, Uuid(837), 838,
+       std::string(64, '2')},
+      {opt::CanonicalPlannerWhatIfHypothesisKind::kPolicy, Uuid(839), 840,
+       std::string(64, '3')},
+  };
+  what_if.enabled = true;
+  what_if_input.what_if_context = what_if;
+  const auto advisory = opt::PlanCanonicalRelationalDag(what_if_input);
+  const auto normal_after = opt::PlanCanonicalRelationalDag(normal_input);
+  passed &= Require(
+      normal_before.accepted && advisory.accepted && advisory.optimizer_owned &&
+          advisory.complete_logical_dag_covered && advisory.search.accepted &&
+          advisory.search.selected && advisory.diagnostics.empty() &&
+          !advisory.physical_dag_published &&
+          !advisory.cache_admission_allowed && !advisory.execution_allowed &&
+          !advisory.data_access_allowed &&
+          advisory.planning_context.what_if_planning &&
+          advisory.planning_context.what_if_receipt.has_value() &&
+          advisory.planning_context.what_if_receipt->advisory_plan_only &&
+          advisory.planning_context.what_if_receipt
+              ->physical_publication_forbidden &&
+          advisory.planning_context.what_if_receipt
+              ->cache_admission_forbidden &&
+          advisory.planning_context.what_if_receipt->execution_forbidden &&
+          normal_after.accepted &&
+          normal_before.search.selected_plan_signature ==
+              normal_after.search.selected_plan_signature,
+      "what-if planning escaped advisory isolation or influenced normal planning");
+
+  auto forged_what_if = what_if_input;
+  forged_what_if.what_if_context->normal_plan_influence_permitted = true;
+  const auto forged = opt::PlanCanonicalRelationalDag(forged_what_if);
+  passed &= Require(
+      !forged.accepted && !forged.planning_context.accepted &&
+          !forged.planning_context.issues.empty() &&
+          forged.planning_context.issues.front().field_id ==
+              "what_if_isolation",
+      "what-if normal-plan influence carrier was admitted");
+
+  auto coexistent = what_if_input;
+  coexistent.continuation_context = continuation;
+  const auto refused_coexistence = opt::PlanCanonicalRelationalDag(coexistent);
+  passed &= Require(
+      !refused_coexistence.accepted &&
+          !refused_coexistence.planning_context.issues.empty() &&
+          refused_coexistence.planning_context.issues.front().field_id ==
+              "continuation_what_if_isolation",
+      "continuation and what-if contexts were admitted together");
+  return passed;
+}
+
 bool ValidateCompleteKindFactoryCoverage() {
   const auto input = CompleteKindPlanningInput();
   const auto result = opt::PlanCanonicalRelationalDag(input);
@@ -1127,6 +1335,7 @@ bool ValidatePrepareMetricCollectionOrchestration() {
 
 int main() {
   const bool passed = ValidateOptimizerOwnedPlanning() &&
+                      ValidateContinuationAndWhatIfPlanningContexts() &&
                       ValidateCompleteKindFactoryCoverage() &&
                       ValidateCostVectorBookkeeping() &&
                       ValidateCrossJoinSemantics() &&

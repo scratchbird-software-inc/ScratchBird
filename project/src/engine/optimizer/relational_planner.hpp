@@ -9,10 +9,12 @@
 #pragma once
 
 #include "logical_plan.hpp"
+#include "optimizer_planning_context.hpp"
 #include "optimizer_profile_factory.hpp"
 #include "physical_plan.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -101,6 +103,8 @@ struct RelationalDagPlanningInput {
   CanonicalOptimizerPhysicalPublicationIdentity publication_identity;
   std::string identity_scope;
   std::string calibration_profile_uuid;
+  std::optional<CanonicalPlannerContinuationContext> continuation_context;
+  std::optional<CanonicalPlannerWhatIfContext> what_if_context;
 };
 
 struct RelationalDagPlanningResult {
@@ -109,6 +113,9 @@ struct RelationalDagPlanningResult {
   bool complete_logical_dag_covered{false};
   bool physical_dag_published{false};
   bool data_access_allowed{false};
+  bool cache_admission_allowed{false};
+  bool execution_allowed{false};
+  CanonicalPlannerContextValidationResult planning_context;
   CanonicalOptimizerProfileFactoryResult factory;
   CanonicalOptimizerSearchResult search;
   CanonicalOptimizerPhysicalPublicationResult publication;

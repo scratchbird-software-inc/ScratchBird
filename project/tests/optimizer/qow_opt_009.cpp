@@ -12,8 +12,9 @@
 #include "optimizer_prepare_metric_collector.hpp"
 #include "query/plan_api.hpp"
 
-#include <cstdlib>
+#include <array>
 #include <atomic>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -22,6 +23,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -91,7 +93,8 @@ cache::CanonicalPreparedPlanResultDescriptor ResultDescriptor009(
   return descriptor;
 }
 
-cache::CanonicalPreparePhysicalPlanRequest PrepareRequest009() {
+cache::CanonicalPreparePhysicalPlanRequest PrepareRequest009(
+    const bool with_continuation = false) {
   cache::CanonicalPreparePhysicalPlanRequest request;
   request.prepared_plan_uuid = Uuid(950);
   request.prepare_generation = 7;
@@ -127,6 +130,65 @@ cache::CanonicalPreparePhysicalPlanRequest PrepareRequest009() {
       {cache::CanonicalPreparedPlanDependencyKind::kCollation, Uuid(977), 18,
        std::string(64, '8')},
   };
+  if (with_continuation) {
+    const std::array resumable_properties = {Uuid(1400), Uuid(1401),
+                                             Uuid(1402)};
+    const auto root = std::ranges::find_if(
+        request.selected_physical_dag.nodes, [&](const auto& node) {
+          return node.physical_node_id ==
+                 request.selected_physical_dag.root_physical_node_id;
+        });
+    if (root != request.selected_physical_dag.nodes.end()) {
+      root->required_property_uuids.insert(
+          root->required_property_uuids.end(), resumable_properties.begin(),
+          resumable_properties.end());
+      root->delivered_property_uuids.insert(
+          root->delivered_property_uuids.end(), resumable_properties.begin(),
+          resumable_properties.end());
+
+      cache::CanonicalPlannerContinuationContext context;
+      context.authority.context_uuid = Uuid(1410);
+      context.authority.generation = 1411;
+      context.authority.authority_uuid = Uuid(1412);
+      context.authority.authority_generation = 1413;
+      context.authority.confidence_basis_points = 10'000;
+      context.authority.dependency_signature = std::string(64, 'd');
+      context.authority.invalid_state_behavior_id =
+          "reject_continuation_plan";
+      context.authority.engine_owned = true;
+      context.prepared_statement_uuid = request.prepared_plan_uuid;
+      context.prepared_statement_generation = request.prepare_generation;
+      context.cursor_uuid = Uuid(1414);
+      context.cursor_generation = 1415;
+      context.continuation_token_uuid = Uuid(1416);
+      context.continuation_token_generation = 1417;
+      context.resume_boundary_uuid = Uuid(1418);
+      context.resume_boundary_generation = 1419;
+      context.result_schema_uuid = request.result_schema_uuid;
+      context.required_ordering_property_uuid = resumable_properties[0];
+      context.required_materialization_property_uuid = resumable_properties[1];
+      context.required_rewindability_property_uuid = resumable_properties[2];
+      context.cursor_mode = cache::CanonicalPlannerCursorMode::kScrollable;
+      context.holdability =
+          cache::CanonicalPlannerCursorHoldability::kHoldable;
+      context.continuation_requested = true;
+
+      cache::CanonicalPlannerContinuationReceipt receipt;
+      receipt.context = context;
+      receipt.bound_sblr_tree_uuid =
+          request.selected_physical_dag.bound_sblr_tree_uuid;
+      receipt.root_logical_node_id = root->relational_node_id;
+      receipt.ordering_requirement_validated = true;
+      receipt.materialization_requirement_validated = true;
+      receipt.rewindability_requirement_validated = true;
+      receipt.resumable_plan = true;
+      request.continuation_receipt = std::move(receipt);
+      request.dependencies.push_back(
+          {cache::CanonicalPreparedPlanDependencyKind::kContinuationContext,
+           context.authority.context_uuid, context.authority.generation,
+           context.authority.dependency_signature});
+    }
+  }
   request.engine_prepare_authorized = true;
   return request;
 }
@@ -188,6 +250,7 @@ cache::CanonicalExecutablePlanCacheKey CacheKey009(
   key.route_generation = plan.route_generation;
   key.memory_budget_bytes = plan.memory_budget_bytes;
   key.spill_allowed = plan.spill_allowed;
+  key.continuation_receipt = plan.continuation_receipt;
   key.parameters = plan.parameters;
   key.result_descriptors = plan.result_descriptors;
   key.physical_dependencies = plan.dependencies;
@@ -217,6 +280,8 @@ cache::CanonicalExecutablePlanCacheKey CacheKey009(
       {plan.route_snapshot_uuid, plan.route_generation, std::string(64, 'b')}};
   key.metric_generations = Project009(
       plan, {cache::CanonicalPreparedPlanDependencyKind::kMetricSnapshot});
+  key.continuation_generations = Project009(
+      plan, {cache::CanonicalPreparedPlanDependencyKind::kContinuationContext});
 
   for (const auto& node : plan.nodes) {
     key.capability_generations.push_back(
@@ -286,9 +351,10 @@ struct Fixture009 {
   std::atomic<std::uint64_t> metric_cleanup_invocations{0};
   bool ready{false};
 
-  explicit Fixture009(const bool with_prepare_metrics = false) {
+  explicit Fixture009(const bool with_prepare_metrics = false,
+                      const bool with_continuation = false) {
     if (with_prepare_metrics) {
-      auto base = PrepareRequest009();
+      auto base = PrepareRequest009(with_continuation);
       cache::CanonicalPrepareWithMetricCollectionRequest metric_request;
       metric_request.coordinator_policy_uuid = Uuid(990);
       metric_request.coordinator_policy_generation = 30;
@@ -346,12 +412,24 @@ struct Fixture009 {
       const auto prepared =
           cache::PrepareCanonicalPhysicalPlanWithMetricCollection(
               metric_request, &prepared_store);
-      if (!prepared.accepted || !prepared.prepare_result.prepared_plan) return;
+      if (!prepared.accepted || !prepared.prepare_result.prepared_plan) {
+        if (!prepared.issues.empty()) {
+          std::cerr << "QOW-TEST-OPT-009-V1: metric_prepare_refusal="
+                    << prepared.issues.front().field_id << '\n';
+        }
+        return;
+      }
       prepared_plan = prepared.prepare_result.prepared_plan;
     } else {
       const auto prepared = cache::PrepareCanonicalPhysicalPlan(
-          PrepareRequest009(), &prepared_store);
-      if (!prepared.accepted || !prepared.prepared_plan) return;
+          PrepareRequest009(with_continuation), &prepared_store);
+      if (!prepared.accepted || !prepared.prepared_plan) {
+        if (!prepared.issues.empty()) {
+          std::cerr << "QOW-TEST-OPT-009-V1: prepare_refusal="
+                    << prepared.issues.front().field_id << '\n';
+        }
+        return;
+      }
       prepared_plan = prepared.prepared_plan;
     }
     key = CacheKey009(*prepared_plan);
@@ -359,7 +437,13 @@ struct Fixture009 {
     admission.key = key;
     admission.engine_cache_admission_authorized = true;
     const auto admitted = executable_cache.Admit(prepared_store, admission);
-    if (!admitted.accepted || !admitted.entry) return;
+    if (!admitted.accepted || !admitted.entry) {
+      if (!admitted.issues.empty()) {
+        std::cerr << "QOW-TEST-OPT-009-V1: cache_admission_refusal="
+                  << admitted.issues.front().field_id << '\n';
+      }
+      return;
+    }
     parameter_value.descriptor.descriptor_uuid.canonical =
         prepared_plan->parameters.front().descriptor_uuid;
     parameter_value.descriptor.descriptor_kind = "scalar";
@@ -476,6 +560,14 @@ cache::CanonicalExecutablePlanHitExecutionRequest ExecutionRequest009(
   request.lookup.engine_policy_revalidated = true;
   request.lookup.engine_authorization_revalidated = true;
   request.lookup.authorization_revalidation_receipt_uuid = Uuid(1300);
+  if (fixture->prepared_plan->continuation_receipt.has_value()) {
+    cache::CanonicalPlannerContinuationReplayRequest replay;
+    replay.context = fixture->prepared_plan->continuation_receipt->context;
+    replay.engine_replay_authorized = true;
+    replay.cursor_state_revalidated = true;
+    replay.continuation_state_revalidated = true;
+    request.lookup.continuation_replay = std::move(replay);
+  }
   request.engine_execution_authorized = true;
   request.result_publication_request =
       Publication009(*fixture->prepared_plan, context);
@@ -628,6 +720,148 @@ bool ValidatePrepareMetricExecuteReuse009() {
           executor_invocations == fixture.prepared_plan->nodes.size() &&
           every_executor_received_fresh_context,
       "EXECUTE recollected PREPARE metrics or changed the stored plan");
+}
+
+bool ValidateContinuationReplayAndInvalidation009() {
+  Fixture009 fixture(false, true);
+  if (!Require009(fixture.ready,
+                  "continuation fixture cache admission failed")) {
+    return false;
+  }
+  std::size_t first_invocations = 0;
+  bool first_fresh = true;
+  const auto first = api::ExecuteCanonicalExecutablePlanCacheHit(
+      ExecutionRequest009(&fixture, fixture.key, FreshStatement009(1500),
+                          &first_invocations, &first_fresh));
+  bool passed = Require009(
+      first.accepted && first.cache_hit &&
+          first.exact_selected_nodes_executed &&
+          first.canonical_result_published &&
+          first.continuation_replay_performed &&
+          first.continuation_replay_receipt.has_value() &&
+          first.continuation_replay_receipt->identity_revalidated &&
+          first.continuation_replay_receipt->dependency_revalidated &&
+          first.continuation_replay_receipt->consumed_once &&
+          !first.continuation_replay_receipt->optimizer_reinvoked &&
+          first.continuation_replay_receipt->prepared_statement_uuid ==
+              fixture.prepared_plan->prepared_plan_uuid &&
+          first.continuation_replay_receipt->prepared_statement_generation ==
+              fixture.prepared_plan->prepare_generation &&
+          fixture.prepared_plan->continuation_context_retained &&
+          fixture.prepared_plan->continuation_receipt.has_value() &&
+          fixture.prepared_plan->continuation_receipt
+              ->physical_root_delivery_validated &&
+          fixture.key.continuation_generations.size() == 1 && first_fresh &&
+          first_invocations == fixture.prepared_plan->nodes.size() &&
+          first.optimizer_invocation_count == 0 &&
+          first.search_invocation_count == 0 &&
+          first.planner_invocation_count == 0,
+      "first continuation replay did not execute the retained resumable plan");
+
+  std::size_t duplicate_invocations = 0;
+  bool duplicate_fresh = true;
+  const auto duplicate = api::ExecuteCanonicalExecutablePlanCacheHit(
+      ExecutionRequest009(&fixture, fixture.key, FreshStatement009(1510),
+                          &duplicate_invocations, &duplicate_fresh));
+  passed &= Require009(
+      !duplicate.accepted && !duplicate.exact_selected_nodes_executed &&
+          !duplicate.canonical_result_published &&
+          !duplicate.reprepare_required && duplicate_invocations == 0 &&
+          duplicate.dispatch.executed_steps.empty() &&
+          duplicate.optimizer_invocation_count == 0 &&
+          duplicate.search_invocation_count == 0 &&
+          duplicate.planner_invocation_count == 0 &&
+          !duplicate.checkout.issues.empty() &&
+          duplicate.checkout.issues.front().field_id ==
+              "continuation_replay_consumed",
+      "duplicate continuation replay reached an executor or replanner");
+
+  Fixture009 concurrent_fixture(false, true);
+  if (!Require009(concurrent_fixture.ready,
+                  "concurrent-replay fixture cache admission failed")) {
+    return false;
+  }
+  std::array<cache::CanonicalExecutablePlanHitExecutionResult, 2>
+      concurrent_results;
+  std::array<std::size_t, 2> concurrent_invocations{};
+  std::array<bool, 2> concurrent_fresh{true, true};
+  std::array<std::thread, 2> workers;
+  for (std::size_t index = 0; index < workers.size(); ++index) {
+    workers[index] = std::thread([&, index] {
+      concurrent_results[index] =
+          api::ExecuteCanonicalExecutablePlanCacheHit(ExecutionRequest009(
+              &concurrent_fixture, concurrent_fixture.key,
+              FreshStatement009(1540 + index * 10),
+              &concurrent_invocations[index], &concurrent_fresh[index]));
+    });
+  }
+  for (auto& worker : workers) worker.join();
+  const auto accepted_replays = std::ranges::count_if(
+      concurrent_results, [](const auto& result) { return result.accepted; });
+  const auto consumed_refusals = std::ranges::count_if(
+      concurrent_results, [](const auto& result) {
+        return !result.accepted && !result.checkout.issues.empty() &&
+               result.checkout.issues.front().field_id ==
+                   "continuation_replay_consumed";
+      });
+  passed &= Require009(
+      accepted_replays == 1 && consumed_refusals == 1 &&
+          concurrent_invocations[0] + concurrent_invocations[1] ==
+              concurrent_fixture.prepared_plan->nodes.size() &&
+          std::ranges::all_of(concurrent_results, [](const auto& result) {
+            return result.optimizer_invocation_count == 0 &&
+                   result.search_invocation_count == 0 &&
+                   result.planner_invocation_count == 0;
+          }),
+      "concurrent continuation replay was not consumed atomically once");
+
+  Fixture009 missing_fixture(false, true);
+  if (!Require009(missing_fixture.ready,
+                  "missing-replay fixture cache admission failed")) {
+    return false;
+  }
+  std::size_t missing_invocations = 0;
+  bool missing_fresh = true;
+  auto missing_request = ExecutionRequest009(
+      &missing_fixture, missing_fixture.key, FreshStatement009(1520),
+      &missing_invocations, &missing_fresh);
+  missing_request.lookup.continuation_replay.reset();
+  const auto missing =
+      api::ExecuteCanonicalExecutablePlanCacheHit(missing_request);
+  passed &= Require009(
+      !missing.accepted && !missing.reprepare_required &&
+          missing_invocations == 0 && !missing.checkout.issues.empty() &&
+          missing.checkout.issues.front().field_id ==
+              "continuation_replay_required",
+      "continuation plan executed without a replay context");
+
+  Fixture009 drift_fixture(false, true);
+  if (!Require009(drift_fixture.ready,
+                  "continuation-drift fixture cache admission failed")) {
+    return false;
+  }
+  auto drifted_key = drift_fixture.key;
+  ++drifted_key.continuation_generations.front().generation;
+  std::size_t drift_invocations = 0;
+  bool drift_fresh = true;
+  const auto drifted = api::ExecuteCanonicalExecutablePlanCacheHit(
+      ExecutionRequest009(&drift_fixture, drifted_key,
+                          FreshStatement009(1530), &drift_invocations,
+                          &drift_fresh));
+  passed &= Require009(
+      !drifted.accepted && drifted.reprepare_required &&
+          drift_invocations == 0 &&
+          drifted.dispatch.executed_steps.empty() &&
+          drifted.optimizer_invocation_count == 0 &&
+          drifted.search_invocation_count == 0 &&
+          drifted.planner_invocation_count == 0 &&
+          !drifted.checkout.issues.empty() &&
+          drifted.checkout.issues.front().diagnostic_id ==
+              "QOW-DIAG-OPT-010-DEPENDENCY-REFUSAL-V1" &&
+          drifted.checkout.issues.front().field_id == "protected_generation" &&
+          drift_fixture.executable_cache.Size() == 0,
+      "continuation generation drift did not invalidate before execution");
+  return passed;
 }
 
 using KeyMutation009 =
@@ -1020,6 +1254,7 @@ int main() {
   bool passed = true;
   passed &= ValidateExecutableHit009();
   passed &= ValidatePrepareMetricExecuteReuse009();
+  passed &= ValidateContinuationReplayAndInvalidation009();
   passed &= ValidateExactKeyRefusals009();
   passed &= ValidateAuthorityParameterAndSchemaRefusals009();
   passed &= ValidateAdmissionIsolationAndNoReplan009();
