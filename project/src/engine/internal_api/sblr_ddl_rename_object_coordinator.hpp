@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sblr_ddl_rename_object_vector_coordinator.hpp"
+#include "engine/sblr/sblr_ddl_rename_object_runtime.hpp"
 
 namespace scratchbird::engine::internal_api {
 using SblrDdlRenameObjectCoordinationResult = SblrDdlRenameObjectVectorCoordinationResult;
