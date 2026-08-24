@@ -456,6 +456,7 @@ add_library(sb_engine_internal_api
   sblr_sec_drop_role_coordinator.cpp
   sblr_sec_create_role_coordinator.cpp
   sblr_sec_alter_role_coordinator.cpp
+  sblr_sec_create_group_mapping_coordinator.cpp
   sblr_sec_create_policy_coordinator.cpp
   sblr_sec_drop_policy_coordinator.cpp
   sblr_ddl_drop_package_coordinator.cpp
