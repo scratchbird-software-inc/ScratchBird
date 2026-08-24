@@ -18,6 +18,7 @@
 #include "parsers/sbsql_worker/cache/sblr_template_cache.hpp"
 #include "parsers/sbsql_worker/metrics/parser_metrics.hpp"
 #include "parsers/sbsql_worker/wire/sbsql_test_wire.hpp"
+#include "resource_seed_pack.hpp"
 #include "server_engine_bridge/statement_context.hpp"
 #include "session_registry.hpp"
 #include "sbps.hpp"
@@ -53,6 +54,7 @@ namespace dt = scratchbird::core::datatypes;
 namespace ipc = scratchbird::parser::ipc;
 namespace nosql = scratchbird::engine::internal_api::nosql;
 namespace platform = scratchbird::core::platform;
+namespace resources = scratchbird::core::resources;
 namespace sbps = scratchbird::server::sbps;
 namespace server = scratchbird::server;
 namespace uuid = scratchbird::core::uuid;
@@ -125,6 +127,8 @@ struct Fixture {
   platform::TypedUuid columnar_relation_uuid;
   platform::TypedUuid spatial_crs_uuid;
   std::uint64_t resource_epoch = 1;
+  std::string utf8_charset_uuid;
+  std::string utf8_default_collation_uuid;
   std::uint64_t salt = 0;
 
   Fixture() = default;
@@ -144,6 +148,9 @@ struct Fixture {
         columnar_relation_uuid(other.columnar_relation_uuid),
         spatial_crs_uuid(other.spatial_crs_uuid),
         resource_epoch(other.resource_epoch),
+        utf8_charset_uuid(std::move(other.utf8_charset_uuid)),
+        utf8_default_collation_uuid(
+            std::move(other.utf8_default_collation_uuid)),
         salt(other.salt) {
     other.directory.clear();
   }
@@ -212,6 +219,17 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
       created.state.resource_seed_catalog.resource_epoch == 0
           ? 1
           : created.state.resource_seed_catalog.resource_epoch;
+  if (const auto* utf8 = resources::FindResourceSeedCharset(
+          created.state.resource_seed_catalog, "UTF8");
+      utf8 != nullptr) {
+    fixture.utf8_charset_uuid = utf8->resource_uuid;
+    fixture.utf8_default_collation_uuid = utf8->default_collation_uuid;
+  }
+  if (credentialed_full_route) {
+    Require(!fixture.utf8_charset_uuid.empty() &&
+                !fixture.utf8_default_collation_uuid.empty(),
+            "statement-context UTF8 resource authority is unavailable");
+  }
   if (!credentialed_full_route) {
     const auto empty_inventory =
         db::PersistLocalTransactionInventoryToDatabase(
@@ -481,7 +499,10 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   text_column.names.push_back(PrimaryName("text_value"));
   text_column.descriptor.descriptor_kind = "scalar";
   text_column.descriptor.canonical_type_name = "text";
-  text_column.descriptor.encoded_descriptor = "type=text";
+  text_column.descriptor.encoded_descriptor =
+      "type=text;character_length=256;charset_uuid=" +
+      fixture->utf8_charset_uuid +
+      ";collation_uuid=" + fixture->utf8_default_collation_uuid;
   text_column.nullable = true;
   table.table_columns.push_back(std::move(text_column));
   RequireEngineOk(api::EngineCreateTable(table),
@@ -816,7 +837,8 @@ void PrintMessages(const sbsql::MessageVectorSet& messages) {
 }
 
 void VerifyFullParserServerRoute(const Fixture& fixture,
-                                 const bool join_tail_proof_only) {
+                                 const bool join_tail_proof_only,
+                                 const bool table_function_proof_only = false) {
   constexpr std::string_view kSourceFreeNativeSelect =
       "SELECT key_a,COUNT(*),SUM(amount) FROM (VALUES (1,5), (1,7)) "
       "AS input(key_a,amount) GROUP BY key_a;";
@@ -889,7 +911,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 !parser.session().transaction_uuid.empty(),
             "full parser-server route authentication/attach failed");
 
-    if (!join_tail_proof_only) {
+    if (!join_tail_proof_only && !table_function_proof_only) {
       auto source_free = parser.RunPipeline(kSourceFreeNativeSelect, true);
       if (!source_free.accepted) PrintMessages(source_free.messages);
       Require(source_free.accepted &&
@@ -938,6 +960,81 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
             const std::vector<sbsql::PreparedParameterWireValue>& values) {
           return parser.RunDirectParameterizedForWire(sql, values);
         };
+
+    if (!join_tail_proof_only) {
+      auto generate_series = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("1"), text_parameter("5"), text_parameter("2")});
+      if (!generate_series.accepted) {
+        PrintMessages(generate_series.messages);
+      }
+      Require(
+          generate_series.accepted &&
+              generate_series.server_operation_id == "query.execute" &&
+              generate_series.server_cursor_uuid.empty() &&
+              generate_series.server_row_count == 3 &&
+              generate_series.server_result_payload.find(
+                  "generate_series=1") != std::string::npos &&
+              generate_series.server_result_payload.find(
+                  "generate_series=5") != std::string::npos,
+          "generate_series did not complete the independent SBSQL parser, "
+          "bound SBLR, optimizer, physical source, and executor route");
+
+      auto generate_series_default_step = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?);",
+          {text_parameter("3"), text_parameter("5")});
+      if (!generate_series_default_step.accepted) {
+        PrintMessages(generate_series_default_step.messages);
+      }
+      Require(generate_series_default_step.accepted &&
+                  generate_series_default_step.server_row_count == 3 &&
+                  generate_series_default_step.server_result_payload.find(
+                      "generate_series=3") != std::string::npos &&
+                  generate_series_default_step.server_result_payload.find(
+                      "generate_series=5") != std::string::npos,
+              "generate_series default step did not preserve inclusive int64 semantics");
+
+      auto generate_series_descending = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("5"), text_parameter("1"), text_parameter("-2")});
+      if (!generate_series_descending.accepted) {
+        PrintMessages(generate_series_descending.messages);
+      }
+      Require(generate_series_descending.accepted &&
+                  generate_series_descending.server_row_count == 3 &&
+                  generate_series_descending.server_result_payload.find(
+                      "generate_series=5") != std::string::npos &&
+                  generate_series_descending.server_result_payload.find(
+                      "generate_series=1") != std::string::npos,
+              "generate_series descending step did not preserve inclusive int64 semantics");
+
+      auto generate_series_empty = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("1"), text_parameter("5"), text_parameter("-1")});
+      Require(generate_series_empty.accepted &&
+                  generate_series_empty.server_row_count == 0,
+              "generate_series incompatible direction did not publish an empty rowset");
+
+      auto generate_series_zero_step = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("1"), text_parameter("5"), text_parameter("0")});
+      Require(!generate_series_zero_step.accepted,
+              "generate_series admitted a zero step");
+
+      auto generate_series_overflow = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("1"), text_parameter("10001"),
+           text_parameter("1")});
+      Require(!generate_series_overflow.accepted,
+              "generate_series exceeded its bounded 10000-row profile");
+
+      auto generate_series_literal =
+          parser.RunPipeline("SELECT * FROM generate_series(1, 5, 2);", true);
+      Require(!generate_series_literal.accepted,
+              "generate_series admitted parser-authored literal arguments");
+    }
+
+    if (!table_function_proof_only) {
 
     auto joined_literal_parameter_tail = run_direct_parameterized(
         "SELECT l.integer_value FROM "
@@ -1011,8 +1108,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(!unsupported_literal_pair.accepted,
             "joined two-literal FILTER/LIMIT exceeded the bounded mixed-tail "
             "profile");
+    }
 
-    if (!join_tail_proof_only) {
+    if (!join_tail_proof_only && !table_function_proof_only) {
     auto three_way_join_limit = parser.RunPipeline(
         "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS JOIN "
         "qow_packet7.qow_packet7_join_relation AS r CROSS JOIN "
@@ -3138,14 +3236,20 @@ int main(int argc, char** argv) {
   const bool join_tail_proof_only =
       argc == 2 &&
       std::string_view(argv[1]) == "--join-tail-proof-only";
-  Require(argc == 1 || join_tail_proof_only,
+  const bool table_function_proof_only =
+      argc == 2 &&
+      std::string_view(argv[1]) == "--table-function-proof-only";
+  Require(argc == 1 || join_tail_proof_only || table_function_proof_only,
           "unsupported qow live statement-context regression argument");
-  if (join_tail_proof_only) {
+  if (join_tail_proof_only || table_function_proof_only) {
     auto bootstrap_fixture = CreateFixture();
     auto full_route_fixture = CreateFixture(true);
     CreateObjectBackedRelation(&full_route_fixture);
-    VerifyFullParserServerRoute(full_route_fixture, true);
-    std::cout << "qow_join_tail_literal_filter_parameter_limit=passed\n";
+    VerifyFullParserServerRoute(full_route_fixture, join_tail_proof_only,
+                                table_function_proof_only);
+    std::cout << (join_tail_proof_only
+                      ? "qow_join_tail_literal_filter_parameter_limit=passed\n"
+                      : "qow_table_function_generate_series=passed\n");
     return EXIT_SUCCESS;
   }
 

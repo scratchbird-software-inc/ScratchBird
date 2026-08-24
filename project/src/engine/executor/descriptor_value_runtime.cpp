@@ -2484,15 +2484,38 @@ Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
   }
   if (value.state !=
           scratchbird::engine::internal_api::EngineValueState::value ||
-      value.is_null || !value.binary_value.empty()) {
+      value.is_null ||
+      (value.encoded_value.empty() == value.binary_value.empty())) {
     result.diagnostic = ErrorDiagnostic(
         "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-        "int64 decode received a non-value sentinel or auxiliary binary "
-        "payload");
+        "int64 decode received a non-value sentinel or ambiguous payload");
     return result;
   }
   if (!IsInt64Type(value.descriptor)) {
     result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_VALUE_DESCRIPTOR_MISMATCH", value.descriptor.canonical_type_name);
+    return result;
+  }
+  if (!value.binary_value.empty()) {
+    if (CanonicalDescriptorTypeId(value.descriptor) !=
+            CanonicalTypeId::int64 ||
+        value.binary_value.size() != sizeof(std::int64_t)) {
+      result.diagnostic = ErrorDiagnostic(
+          "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+          "binary int64 payload is not the exact canonical width");
+      return result;
+    }
+    std::uint64_t encoded = 0;
+    for (std::size_t index = 0; index < value.binary_value.size(); ++index) {
+      encoded |= static_cast<std::uint64_t>(value.binary_value[index])
+                 << (index * 8U);
+    }
+    if ((encoded & (std::uint64_t{1} << 63U)) == 0) {
+      result.value = static_cast<std::int64_t>(encoded);
+    } else {
+      result.value =
+          -1 - static_cast<std::int64_t>(~encoded);
+    }
+    result.diagnostic = OkDiagnostic();
     return result;
   }
   if (!ParseBoundedSignedIntegerStrict(value.descriptor,

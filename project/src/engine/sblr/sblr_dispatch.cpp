@@ -1323,6 +1323,36 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       }
       continue;
     }
+    if (operand.type == "relational_table_function_v1") {
+      if (operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "table function argument transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t node_id = 0;
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &node_id)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed table function node id";
+        return decoded;
+      }
+      const auto node = std::ranges::find_if(
+          decoded.request.relational_dag.nodes, [&](const auto& candidate) {
+            return candidate.node_id == node_id;
+          });
+      if (node == decoded.request.relational_dag.nodes.end() ||
+          node->node_kind != api::RelationalDagNodeKind::kTableFunctionInvoke ||
+          !node->argument_expression_ids.empty() ||
+          !ParseRelationalHandleList(operand.value,
+                                     &node->argument_expression_ids) ||
+          node->argument_expression_ids.empty()) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "invalid table function argument binding";
+        return decoded;
+      }
+      continue;
+    }
     if (operand.type == "relational_descriptor_v1") {
       if (decoded.request.relational_dag.descriptors.size() >= 524288 ||
           operand.value.size() > 65536) {

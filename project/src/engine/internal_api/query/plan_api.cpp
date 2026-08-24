@@ -56,6 +56,11 @@
 
 namespace scratchbird::engine::internal_api {
 
+namespace {
+constexpr std::string_view kGenerateSeriesFunctionUuid =
+    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+}
+
 // QOW-SOURCE-RCP080-EXACT-KEY-VALUE-OWNED-CLOSURE-V1
 // The key/value predicate is part of the model source's owned semantics, not
 // a disposable filter.  Prove the ordered public-output prefix and the exact
@@ -2528,11 +2533,13 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       }
     }
     const bool has_planning_fields = !node.bound_expression_ids.empty() ||
+                                     !node.argument_expression_ids.empty() ||
                                      !node.required_object_uuids.empty() ||
                                      !node.semantic_variant_id.empty() ||
                                      !node.required_property_uuids.empty() ||
                                      !node.delivered_property_uuids.empty();
     if (!add_planning_references(node.bound_expression_ids.size()) ||
+        !add_planning_references(node.argument_expression_ids.size()) ||
         !add_planning_references(node.required_object_uuids.size()) ||
         !add_planning_references(node.required_property_uuids.size()) ||
         !add_planning_references(node.delivered_property_uuids.size())) {
@@ -2571,6 +2578,23 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                       "bound_expression_ids");
       }
+    }
+    std::unordered_set<std::uint32_t> argument_expression_ids;
+    for (const auto expression_id : node.argument_expression_ids) {
+      if (expression_id == 0 || !expressions_by_id.contains(expression_id) ||
+          !argument_expression_ids.insert(expression_id).second) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "argument_expression_ids");
+      }
+    }
+    if (node.node_kind == RelationalDagNodeKind::kTableFunctionInvoke) {
+      if (!planning_wire || node.argument_expression_ids.empty()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "table_function_argument_expression_ids");
+      }
+    } else if (!node.argument_expression_ids.empty()) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "unexpected_argument_expression_ids");
     }
     std::unordered_set<std::string> required_object_uuids;
     for (const auto& object_uuid : node.required_object_uuids) {
@@ -2878,6 +2902,46 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   }
 
   std::unordered_set<std::uint32_t> assigned_values_row_ids;
+  const auto exact_values_literal_descriptor =
+      [&](const RelationalExpressionRecord& expression,
+          const std::uint32_t output_descriptor_id) {
+    const auto expression_descriptor =
+        descriptors_by_id.find(expression.result_descriptor_id);
+    const auto output_descriptor =
+        descriptors_by_id.find(output_descriptor_id);
+    return expression.expression_kind == RelationalExpressionKind::kLiteral &&
+           expression.literal_kind == RelationalLiteralKind::kNumeric &&
+           expression.child_expression_ids.empty() &&
+           !expression.function_uuid.has_value() &&
+           !expression.bound_name_uuid.has_value() &&
+           !expression.operator_name.has_value() &&
+           !expression.literal_or_parameter_ref.has_value() &&
+           expression.literal_typed_value_v1.has_value() &&
+           !expression.parameter_typed_value_v1.has_value() &&
+           expression_descriptor != descriptors_by_id.end() &&
+           output_descriptor != descriptors_by_id.end() &&
+           expression.literal_typed_value_v1->descriptor_uuid ==
+               expression_descriptor->second->descriptor_uuid &&
+           expression.literal_typed_value_v1->descriptor_generation != 0 &&
+           expression.literal_typed_value_v1->value_state == "value" &&
+           !expression.literal_typed_value_v1->canonical_value_bytes.empty() &&
+           expression_descriptor->second->type_uuid ==
+               output_descriptor->second->type_uuid &&
+           expression_descriptor->second->nullability ==
+               RelationalNullability::kNonNull &&
+           output_descriptor->second->nullability ==
+               RelationalNullability::kNonNull &&
+           !expression_descriptor->second->collation_uuid.has_value() &&
+           !output_descriptor->second->collation_uuid.has_value() &&
+           !expression_descriptor->second->timezone_profile_id.has_value() &&
+           !output_descriptor->second->timezone_profile_id.has_value() &&
+           !expression_descriptor->second->width.has_value() &&
+           !expression_descriptor->second->precision.has_value() &&
+           !expression_descriptor->second->scale.has_value() &&
+           !output_descriptor->second->width.has_value() &&
+           !output_descriptor->second->precision.has_value() &&
+           !output_descriptor->second->scale.has_value();
+  };
   for (const auto& node : dag.nodes) {
     std::vector<const RelationalOutputRecord*> node_outputs;
     for (const auto& output : dag.outputs) {
@@ -2919,6 +2983,81 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         }
       }
     }
+    if (node.node_kind == RelationalDagNodeKind::kTableFunctionInvoke) {
+      const auto function_expression =
+          node.bound_expression_ids.size() == 1
+              ? expressions_by_id.find(node.bound_expression_ids.front())
+              : expressions_by_id.end();
+      const auto output_descriptor =
+          node.output_descriptor_ids.size() == 1
+              ? descriptors_by_id.find(node.output_descriptor_ids.front())
+              : descriptors_by_id.end();
+      bool exact_arguments = node.argument_expression_ids.size() == 2 ||
+                             node.argument_expression_ids.size() == 3;
+      for (const auto argument_id : node.argument_expression_ids) {
+        const auto argument = expressions_by_id.find(argument_id);
+        const auto descriptor =
+            argument == expressions_by_id.end()
+                ? descriptors_by_id.end()
+                : descriptors_by_id.find(
+                      argument->second->result_descriptor_id);
+        exact_arguments =
+            exact_arguments && argument != expressions_by_id.end() &&
+            argument->second->expression_kind ==
+                RelationalExpressionKind::kParameter &&
+            argument->second->child_expression_ids.empty() &&
+            !argument->second->literal_kind.has_value() &&
+            !argument->second->function_uuid.has_value() &&
+            !argument->second->bound_name_uuid.has_value() &&
+            !argument->second->operator_name.has_value() &&
+            !argument->second->literal_or_parameter_ref.has_value() &&
+            !argument->second->literal_typed_value_v1.has_value() &&
+            argument->second->parameter_typed_value_v1.has_value() &&
+            argument->second->parameter_typed_value_v1->value_state ==
+                "value" &&
+            argument->second->parameter_typed_value_v1
+                    ->canonical_value_bytes.size() == 8 &&
+            descriptor != descriptors_by_id.end() &&
+            descriptor->second->nullability ==
+                RelationalNullability::kNonNull &&
+            output_descriptor != descriptors_by_id.end() &&
+            descriptor->second->type_uuid ==
+                output_descriptor->second->type_uuid;
+      }
+      if (!exact_arguments || !node.input_node_ids.empty() || node.shareable ||
+          node.semantic_variant_id !=
+              "table-function.generate-series.v1" ||
+          node.required_object_uuids !=
+              std::vector<std::string>{
+                  std::string(kGenerateSeriesFunctionUuid)} ||
+          !node.required_property_uuids.empty() ||
+          !node.delivered_property_uuids.empty() ||
+          node.output_descriptor_ids.size() != 1 || node_outputs.size() != 1 ||
+          output_descriptor == descriptors_by_id.end() ||
+          output_descriptor->second->nullability !=
+              RelationalNullability::kNonNull ||
+          function_expression == expressions_by_id.end() ||
+          function_expression->second->expression_kind !=
+              RelationalExpressionKind::kFunctionCall ||
+          function_expression->second->function_uuid !=
+              std::string(kGenerateSeriesFunctionUuid) ||
+          function_expression->second->child_expression_ids !=
+              node.argument_expression_ids ||
+          function_expression->second->result_descriptor_id !=
+              node.output_descriptor_ids.front() ||
+          function_expression->second->bound_name_uuid.has_value() ||
+          function_expression->second->literal_kind.has_value() ||
+          function_expression->second->operator_name.has_value() ||
+          function_expression->second->literal_or_parameter_ref.has_value() ||
+          function_expression->second->literal_typed_value_v1.has_value() ||
+          function_expression->second->parameter_typed_value_v1.has_value() ||
+          node_outputs.front()->expression_id !=
+              function_expression->second->expression_id ||
+          node_outputs.front()->output_name_utf8 != "generate_series") {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "table_function_generate_series_descriptor");
+      }
+    }
     if (node.node_kind != RelationalDagNodeKind::kValues) {
       if (!node.values_row_ids.empty()) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
@@ -2945,7 +3084,9 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         const auto* expression =
             expressions_by_id.at(row->second->expression_ids[ordinal]);
         if (expression->result_descriptor_id !=
-            node.output_descriptor_ids[ordinal]) {
+                node.output_descriptor_ids[ordinal] &&
+            !exact_values_literal_descriptor(
+                *expression, node.output_descriptor_ids[ordinal])) {
           return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                         "values_row_descriptor_ids");
         }
@@ -4768,6 +4909,7 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     logical_node.input_logical_node_ids = node.input_node_ids;
     logical_node.output_descriptor_ids = node.output_descriptor_ids;
     logical_node.bound_expression_ids = node.bound_expression_ids;
+    logical_node.argument_expression_ids = node.argument_expression_ids;
     logical_node.origin_relational_node_ids = {node.node_id};
     logical_node.required_object_uuids = node.required_object_uuids;
     logical_node.semantic_variant_id = node.semantic_variant_id;

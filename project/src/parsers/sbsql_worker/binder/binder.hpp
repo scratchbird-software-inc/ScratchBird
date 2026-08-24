@@ -252,6 +252,7 @@ struct BoundRelationAstRecord {
   std::vector<std::uint32_t> aggregate_expression_ids;
   std::vector<std::uint32_t> predicate_expression_ids;
   std::vector<std::uint32_t> limit_expression_ids;
+  std::vector<std::uint32_t> table_function_argument_expression_ids;
   std::vector<std::uint32_t> window_invocation_ids;
   std::vector<BoundOrderingAstTerm> ordering_terms;
   std::vector<std::uint32_t> bound_expression_ids;

@@ -1097,6 +1097,13 @@ if(TARGET sb_engine AND TARGET sb_engine_internal_api AND
     qow_join_tail_literal_filter_parameter_limit_v1 PROPERTIES
     LABELS "qow_closure;QOW-101;RCP-080;join_tail;literal_filter;parameter_limit;canonical_mga_statement_context;mga_transaction_regression;development_candidate"
   )
+  add_test(NAME qow_table_function_generate_series_e2e_v1
+    COMMAND qow_live_server_statement_context_regression
+      --table-function-proof-only)
+  set_tests_properties(
+    qow_table_function_generate_series_e2e_v1 PROPERTIES
+    LABELS "release_profile;optimizer;table_function_invoke;generate_series;sbsql_e2e;canonical_mga_statement_context;mga_transaction_regression"
+  )
 endif()
 
 add_executable(sbp_sbsql_pipeline_probe parser_pipeline_probe.cpp)

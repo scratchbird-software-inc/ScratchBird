@@ -296,6 +296,7 @@ struct RelationalDagNode {
   bool shareable{false};
   std::vector<std::uint32_t> values_row_ids;
   std::vector<std::uint32_t> bound_expression_ids;
+  std::vector<std::uint32_t> argument_expression_ids;
   std::vector<std::string> required_object_uuids;
   std::string semantic_variant_id;
   std::vector<std::string> required_property_uuids;

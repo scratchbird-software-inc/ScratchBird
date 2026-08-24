@@ -405,6 +405,91 @@ bool IsBoundedSignedIntegerType(const std::string_view type_name) {
          type_id == dt::CanonicalTypeId::int64;
 }
 
+unsigned BoundedSignedIntegerTypeRank(const std::string_view type_name) {
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      std::string(type_name));
+  switch (type_id) {
+    case dt::CanonicalTypeId::int8: return 1;
+    case dt::CanonicalTypeId::int16: return 2;
+    case dt::CanonicalTypeId::int32: return 3;
+    case dt::CanonicalTypeId::int64: return 4;
+    default: return 0;
+  }
+}
+
+bool LosslessBoundedSignedComparisonTypes(
+    const std::string_view left, const std::string_view right,
+    std::string* common_type) {
+  if (common_type == nullptr) return false;
+  const auto left_rank = BoundedSignedIntegerTypeRank(left);
+  const auto right_rank = BoundedSignedIntegerTypeRank(right);
+  if (left_rank == 0 || right_rank == 0) return false;
+  *common_type = std::string(left_rank >= right_rank ? left : right);
+  return true;
+}
+
+bool PromoteBoundedSignedComparisonValues(
+    api::EngineTypedValue* left, api::EngineTypedValue* right,
+    std::string* refusal_detail) {
+  if (left == nullptr || right == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  if (SameCanonicalType(left->descriptor.canonical_type_name,
+                        right->descriptor.canonical_type_name)) {
+    return true;
+  }
+  std::string common_type;
+  if (!LosslessBoundedSignedComparisonTypes(
+          left->descriptor.canonical_type_name,
+          right->descriptor.canonical_type_name, &common_type)) {
+    *refusal_detail =
+        "comparison operands have no lossless signed-integer promotion";
+    return false;
+  }
+  const auto target_type = dt::CanonicalTypeIdFromStableName(common_type);
+  const auto left_rank =
+      BoundedSignedIntegerTypeRank(left->descriptor.canonical_type_name);
+  const auto right_rank =
+      BoundedSignedIntegerTypeRank(right->descriptor.canonical_type_name);
+  const auto& target_descriptor =
+      left_rank >= right_rank ? left->descriptor : right->descriptor;
+  const auto promote = [&](api::EngineTypedValue* value) {
+    const auto source_type = dt::CanonicalTypeIdFromStableName(
+        value->descriptor.canonical_type_name);
+    if (source_type == target_type) return true;
+    if (value->isSqlNull()) {
+      if (!value->encoded_value.empty() || !value->binary_value.empty()) {
+        return false;
+      }
+      value->descriptor = target_descriptor;
+      return true;
+    }
+    if (value->state != api::EngineValueState::value || value->is_null ||
+        value->encoded_value.empty() || !value->binary_value.empty()) {
+      return false;
+    }
+    dt::DatatypeCastRequest request;
+    request.value.type_id = source_type;
+    request.value.encoded_value = value->encoded_value;
+    request.target_type_id = target_type;
+    request.explicit_cast = false;
+    const auto widened = dt::CastDatatypeValue(request);
+    if (!widened.ok() || widened.value.is_null) return false;
+    value->descriptor = target_descriptor;
+    value->encoded_value = widened.value.encoded_value;
+    value->binary_value.clear();
+    value->is_null = false;
+    value->state = api::EngineValueState::value;
+    return true;
+  };
+  if (!promote(left) || !promote(right)) {
+    *refusal_detail =
+        "lossless signed-integer comparison promotion failed";
+    return false;
+  }
+  return true;
+}
+
 std::string TypedUuidText(const scratchbird::core::platform::TypedUuid& uuid) {
   if (!uuid.valid()) return {};
   std::ostringstream out;
@@ -436,9 +521,41 @@ bool SamePersistedRowDescriptor(
     return false;
   }
 
+  static const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  std::string bound_type_name;
+  if (core_manifest.ok()) {
+    const auto row = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
+          return TypedUuidText(candidate.descriptor_uuid) == bound.type_uuid;
+        });
+    if (row != core_manifest.manifest.descriptor_rows.end()) {
+      bound_type_name = row->stable_name;
+    } else {
+      const auto int64_row = std::ranges::find_if(
+          core_manifest.manifest.descriptor_rows, [](const auto& candidate) {
+            return candidate.stable_name == "int64";
+          });
+      if (int64_row != core_manifest.manifest.descriptor_rows.end()) {
+        const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+            "019d0000-0000-7000-8000-00000000d701",
+            core_manifest.manifest.catalog_epoch, 1,
+            TypedUuidText(int64_row->descriptor_uuid),
+            int64_row->descriptor_epoch);
+        if (identity.ok && identity.row.type_uuid == bound.type_uuid) {
+          bound_type_name = int64_row->stable_name;
+        }
+      }
+    }
+  }
+  if (bound_type_name.empty() ||
+      !SameCanonicalType(bound_type_name, actual.canonical_type_name)) {
+    return false;
+  }
+
   bool canonical_seen = false;
   bool type_uuid_seen = false;
   bool nullability_seen = false;
+  bool charset_seen = false;
   bool collation_seen = false;
   bool timezone_seen = false;
   bool width_seen = false;
@@ -515,12 +632,15 @@ bool SamePersistedRowDescriptor(
                                  &collation_seen)) {
         return false;
       }
+    } else if (key == "charset_uuid") {
+      if (charset_seen || !IsCanonicalUuid(value)) return false;
+      charset_seen = true;
     } else if (key == "timezone_profile_id") {
       if (!exact_string_optional(value, bound.timezone_profile_id,
                                  &timezone_seen)) {
         return false;
       }
-    } else if (key == "width") {
+    } else if (key == "width" || key == "character_length") {
       if (!exact_u32_optional(value, bound.width, &width_seen)) return false;
     } else if (key == "precision") {
       if (!exact_u32_optional(value, bound.precision, &precision_seen)) {
@@ -537,7 +657,7 @@ bool SamePersistedRowDescriptor(
     if (start == actual.encoded_descriptor.size()) return false;
   }
 
-  return type_uuid_seen && nullability_seen &&
+  return (canonical_seen || type_uuid_seen) &&
          collation_seen == bound.collation_uuid.has_value() &&
          timezone_seen == bound.timezone_profile_id.has_value() &&
          width_seen == bound.width.has_value() &&
@@ -1264,10 +1384,19 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
                     left_type != dt::CanonicalTypeId::unknown &&
                     result_type == dt::CanonicalTypeId::boolean;
         } else {
+          std::string common_type;
+          const bool exact_type_match =
+              SameCanonicalType(left.canonical_type_name,
+                                right.canonical_type_name);
+          const bool lossless_signed_promotion =
+              LosslessBoundedSignedComparisonTypes(
+                  left.canonical_type_name, right.canonical_type_name,
+                  &common_type);
           bounded = result_type == dt::CanonicalTypeId::boolean &&
-                    SameCanonicalType(left.canonical_type_name,
-                                      right.canonical_type_name) &&
-                    IsAdmittedComparisonType(left.canonical_type_name);
+                    (exact_type_match || lossless_signed_promotion) &&
+                    IsAdmittedComparisonType(
+                        exact_type_match ? left.canonical_type_name
+                                         : common_type);
         }
         break;
       }
@@ -1614,7 +1743,28 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     if (!SamePersistedRowDescriptor(*descriptor->second, value->descriptor,
                                     effective_nullability)) {
       *refusal_detail =
-          "materialized row value lost its full canonical descriptor identity";
+          "materialized row value lost its full canonical descriptor identity:" +
+          std::string("identity=") +
+          (api::QowCanonicalDescriptorIdentityV1(value->descriptor) ? "1"
+                                                                    : "0") +
+          ":uuid=" +
+          (value->descriptor.descriptor_uuid.canonical ==
+                   descriptor->second->descriptor_uuid
+               ? "1"
+               : "0") +
+          ":scalar=" +
+          (value->descriptor.descriptor_kind == "scalar" ? "1" : "0") +
+          ":type=" + value->descriptor.canonical_type_name +
+          ":collation=" +
+          (descriptor->second->collation_uuid.has_value() ? "1" : "0") +
+          ":timezone=" +
+          (descriptor->second->timezone_profile_id.has_value() ? "1" : "0") +
+          ":width=" +
+          (descriptor->second->width.has_value() ? "1" : "0") +
+          ":precision=" +
+          (descriptor->second->precision.has_value() ? "1" : "0") +
+          ":scale=" +
+          (descriptor->second->scale.has_value() ? "1" : "0");
       return false;
     }
     if (value->state == api::EngineValueState::sql_null) {
@@ -2189,10 +2339,12 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
           *refusal_detail = "comparison operand descriptors have no bound type";
           return leave(false);
         }
-        const std::string operand_type =
+        std::string operand_type =
             left_type == "null" ? right_type : left_type;
         if (right_type != "null" &&
-            !SameCanonicalType(right_type, operand_type)) {
+            !SameCanonicalType(right_type, operand_type) &&
+            !LosslessBoundedSignedComparisonTypes(
+                operand_type, right_type, &operand_type)) {
           *refusal_detail = "comparison operands have incompatible types";
           return leave(false);
         }
@@ -3047,12 +3199,24 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     }
     const std::string operand_type =
         left_type == "null" ? right_type : left_type;
+    const std::string_view left_expected =
+        left_type == "null" ? std::string_view{operand_type}
+                            : std::string_view{left_type};
+    const std::string_view right_expected =
+        right_type == "null" ? std::string_view{operand_type}
+                             : std::string_view{right_type};
     api::EngineTypedValue left;
     api::EngineTypedValue right;
-    if (!EvaluateInternal(expression.child_expression_ids[0], operand_type, &left,
+    if (!EvaluateInternal(expression.child_expression_ids[0], left_expected, &left,
                           refusal_detail) ||
-        !EvaluateInternal(expression.child_expression_ids[1], operand_type, &right,
+        !EvaluateInternal(expression.child_expression_ids[1], right_expected, &right,
                           refusal_detail)) {
+      return false;
+    }
+    if (!PromoteBoundedSignedComparisonValues(
+            &left, &right, refusal_detail) &&
+        !SameCanonicalType(left.descriptor.canonical_type_name,
+                           right.descriptor.canonical_type_name)) {
       return false;
     }
     api::EngineCanonicalExpressionOperation scalar_operation =

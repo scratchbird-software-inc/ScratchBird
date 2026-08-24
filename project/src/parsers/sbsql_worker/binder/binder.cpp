@@ -22,6 +22,9 @@
 namespace scratchbird::parser::sbsql {
 namespace {
 
+constexpr std::string_view kGenerateSeriesFunctionUuid =
+    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+
 std::string ToLowerAscii(std::string value) {
   for (auto& ch : value) {
     if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
@@ -638,10 +641,24 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                             "descriptor binding contains an invalid typed field");
       return RefusedBoundAst(std::move(bound));
     }
-    if (!descriptor_by_id.emplace(descriptor.descriptor_id, &descriptor).second ||
-        !descriptor_uuids.emplace(descriptor.descriptor_uuid).second) {
+    const auto descriptor_id_inserted =
+        descriptor_by_id.emplace(descriptor.descriptor_id, &descriptor).second;
+    const auto descriptor_uuid_inserted =
+        descriptor_uuids.emplace(descriptor.descriptor_uuid).second;
+    if (!descriptor_id_inserted || !descriptor_uuid_inserted) {
+      const auto prior_descriptor = std::ranges::find_if(
+          context.descriptors, [&](const auto& candidate) {
+            return &candidate != &descriptor &&
+                   candidate.descriptor_uuid == descriptor.descriptor_uuid;
+          });
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
-                            "descriptor IDs and UUID handles must be unique");
+                            "descriptor IDs and UUID handles must be unique:" +
+                                std::to_string(descriptor.descriptor_id) + ":" +
+                                descriptor.descriptor_uuid + ":prior=" +
+                                (prior_descriptor == context.descriptors.end()
+                                     ? std::string("absent")
+                                     : std::to_string(
+                                           prior_descriptor->descriptor_id)));
       return RefusedBoundAst(std::move(bound));
     }
   }
@@ -649,6 +666,195 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
                           "typed relational binding requires descriptor handles");
     return RefusedBoundAst(std::move(bound));
+  }
+
+  const auto table_function_relation = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind ==
+               NativeRelationAstKind::kTableFunctionInvoke;
+      });
+  if (table_function_relation != ast.relations.end()) {
+    const auto& relation = *table_function_relation;
+    const auto argument_count =
+        relation.table_function_argument_expression_ids.size();
+    const auto output_expression_id =
+        static_cast<std::uint32_t>(argument_count + 1);
+    const auto output_ast = std::ranges::find_if(
+        ast.expressions, [&](const auto& expression) {
+          return expression.expression_id ==
+                 relation.output_expression_ids.front();
+        });
+    const auto relation_binding = std::ranges::find_if(
+        context.relations, [&](const auto& candidate) {
+          return candidate.relation_id == relation.relation_id;
+        });
+    const auto output_binding = std::ranges::find_if(
+        context.outputs, [&](const auto& output) {
+          return output.relation_id == relation.relation_id;
+        });
+    const auto function_binding = std::ranges::find_if(
+        context.expressions, [&](const auto& expression) {
+          return expression.expression_id == output_expression_id;
+        });
+    bool exact_arguments = argument_count == 2 || argument_count == 3;
+    std::vector<const NativeExpressionBindingInput*> argument_bindings;
+    argument_bindings.reserve(argument_count);
+    for (std::size_t ordinal = 0; exact_arguments && ordinal < argument_count;
+         ++ordinal) {
+      const auto expression_id =
+          relation.table_function_argument_expression_ids[ordinal];
+      const auto ast_argument = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      const auto binding = std::ranges::find_if(
+          context.expressions, [&](const auto& expression) {
+            return expression.expression_id == ordinal + 1;
+          });
+      const auto descriptor =
+          binding == context.expressions.end()
+              ? descriptor_by_id.end()
+              : descriptor_by_id.find(binding->descriptor_id);
+      exact_arguments =
+          ast_argument != ast.expressions.end() &&
+          ast_argument->expression_kind == NativeExpressionAstKind::kParameter &&
+          !ast_argument->literal_kind.has_value() &&
+          ast_argument->child_expression_ids.empty() &&
+          ast_argument->structural_literal_occurrence_id == 0 &&
+          ast_argument->structural_parameter_occurrence_id == ordinal + 1 &&
+          ast_argument->structural_variable_occurrence_id == 0 &&
+          expression_id == ordinal + 1 && binding != context.expressions.end() &&
+          binding->structural_literal_occurrence_id == 0 &&
+          binding->structural_parameter_occurrence_id == ordinal + 1 &&
+          binding->structural_variable_occurrence_id == 0 &&
+          !binding->function_uuid.has_value() &&
+          !binding->bound_name_uuid.has_value() &&
+          descriptor != descriptor_by_id.end() &&
+          descriptor->second->nullability == BoundNullability::kNonNull &&
+          descriptor->second->canonical_type_name == "int64" &&
+          !descriptor->second->collation_uuid.has_value() &&
+          !descriptor->second->timezone_profile_id.has_value();
+      if (exact_arguments) argument_bindings.push_back(&*binding);
+    }
+    const auto output_descriptor = descriptor_by_id.find(1);
+    if (ast.relations.size() != 1 || ast.root_relation_id != 1 ||
+        relation.relation_id != 1 || !relation.input_relation_ids.empty() ||
+        !relation.relation_source_ids.empty() || !relation.values_row_ids.empty() ||
+        relation.output_expression_ids.size() != 1 ||
+        relation.table_function_name.size() != 1 ||
+        relation.table_function_name.front().quoted ||
+        CanonicalIdentifierKey(relation.table_function_name.front()) !=
+            "generate_series" ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.predicate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() ||
+        !relation.window_invocation_ids.empty() ||
+        !relation.ordering_terms.empty() || !exact_arguments ||
+        output_ast == ast.expressions.end() ||
+        output_ast->expression_kind != NativeExpressionAstKind::kWildcard ||
+        output_ast->spelling != "*" ||
+        ast.expressions.size() != argument_count + 1 ||
+        !ast.catalog_relation_sources.empty() ||
+        !ast.model_object_resolution_requests.empty() ||
+        !ast.values_rows.empty() || !ast.grouping_sets.empty() ||
+        !ast.window_definitions.empty() || !ast.window_invocations.empty() ||
+        context.catalog_relations.size() != 0 || context.descriptors.size() !=
+            argument_count + 1 ||
+        context.expressions.size() != argument_count + 1 ||
+        context.outputs.size() != 1 || context.relations.size() != 1 ||
+        relation_binding == context.relations.end() ||
+        relation_binding->semantic_variant_id !=
+            "table-function.generate-series.v1" ||
+        output_binding == context.outputs.end() ||
+        output_binding->output_id != 1 ||
+        output_binding->expression_id != output_expression_id ||
+        output_binding->output_name_utf8 != "generate_series" ||
+        output_binding->descriptor_id != 1 || !output_binding->visible ||
+        output_binding->ordinal != 0 ||
+        function_binding == context.expressions.end() ||
+        function_binding->descriptor_id != 1 ||
+        function_binding->function_uuid !=
+            std::string(kGenerateSeriesFunctionUuid) ||
+        function_binding->bound_name_uuid.has_value() ||
+        function_binding->structural_literal_occurrence_id != 0 ||
+        function_binding->structural_parameter_occurrence_id != 0 ||
+        function_binding->structural_variable_occurrence_id != 0 ||
+        output_descriptor == descriptor_by_id.end() ||
+        output_descriptor->second->nullability != BoundNullability::kNonNull ||
+        output_descriptor->second->canonical_type_name != "int64" ||
+        output_descriptor->second->collation_uuid.has_value() ||
+        output_descriptor->second->timezone_profile_id.has_value()) {
+      AddBoundAstDiagnostic(
+          &bound, "QOW-DIAG-BOUNDAST-RELATION",
+          "table function binding context is not the exact engine-issued generate_series profile");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    bound.descriptors.reserve(context.descriptors.size());
+    for (const auto& descriptor : context.descriptors) {
+      BoundDescriptorAstRecord record;
+      record.descriptor_id = descriptor.descriptor_id;
+      record.descriptor_uuid = descriptor.descriptor_uuid;
+      record.type_uuid = descriptor.type_uuid;
+      record.nullability = descriptor.nullability;
+      record.collation_uuid = descriptor.collation_uuid;
+      record.timezone_profile_id = descriptor.timezone_profile_id;
+      record.width_precision_scale = descriptor.width_precision_scale;
+      record.canonical_type_name = descriptor.canonical_type_name;
+      record.element_profile = descriptor.element_profile;
+      bound.descriptors.push_back(std::move(record));
+    }
+    std::ranges::sort(bound.descriptors, {},
+                      &BoundDescriptorAstRecord::descriptor_id);
+
+    for (std::size_t ordinal = 0; ordinal < argument_count; ++ordinal) {
+      BoundExpressionAstRecord expression;
+      expression.expression_id = static_cast<std::uint32_t>(ordinal + 1);
+      expression.expression_kind = NativeExpressionAstKind::kParameter;
+      expression.result_descriptor_id =
+          argument_bindings[ordinal]->descriptor_id;
+      expression.structural_parameter_occurrence_id = ordinal + 1;
+      bound.expressions.push_back(std::move(expression));
+    }
+    BoundExpressionAstRecord function_expression;
+    function_expression.expression_id = output_expression_id;
+    function_expression.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    function_expression.child_expression_ids =
+        relation.table_function_argument_expression_ids;
+    function_expression.result_descriptor_id = 1;
+    function_expression.bound_function_uuid =
+        std::string(kGenerateSeriesFunctionUuid);
+    bound.expressions.push_back(std::move(function_expression));
+
+    bound.outputs.push_back(
+        {1, relation.relation_id, output_expression_id, "generate_series", 1,
+         true, 0});
+    BoundRelationAstRecord bound_relation;
+    bound_relation.relation_id = relation.relation_id;
+    bound_relation.relation_kind = NativeRelationAstKind::kTableFunctionInvoke;
+    bound_relation.output_expression_ids = {output_expression_id};
+    bound_relation.table_function_argument_expression_ids =
+        relation.table_function_argument_expression_ids;
+    bound_relation.bound_expression_ids = {output_expression_id};
+    bound_relation.semantic_variant_id =
+        "table-function.generate-series.v1";
+    bound_relation.bound_object_uuid =
+        std::string(kGenerateSeriesFunctionUuid);
+    bound.relations.push_back(std::move(bound_relation));
+
+    BoundScopeAstRecord scope;
+    scope.scope_id = 1;
+    scope.visible_relation_ids = {relation.relation_id};
+    scope.visible_projection_ids = {1};
+    scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    bound.scopes.push_back(std::move(scope));
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = relation.relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
   }
 
   const bool has_catalog_relation_ast = std::ranges::any_of(
@@ -4033,7 +4239,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           {descriptor.descriptor_id, descriptor.descriptor_uuid,
            descriptor.type_uuid, descriptor.nullability,
            descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale});
+           descriptor.width_precision_scale, descriptor.canonical_type_name,
+           descriptor.element_profile});
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -4678,7 +4885,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           {descriptor.descriptor_id, descriptor.descriptor_uuid,
            descriptor.type_uuid, descriptor.nullability,
            descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale});
+           descriptor.width_precision_scale, descriptor.canonical_type_name,
+           descriptor.element_profile});
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -5072,7 +5280,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           {descriptor.descriptor_id, descriptor.descriptor_uuid,
            descriptor.type_uuid, descriptor.nullability,
            descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale});
+           descriptor.width_precision_scale, descriptor.canonical_type_name,
+           descriptor.element_profile});
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -5398,7 +5607,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           {descriptor.descriptor_id, descriptor.descriptor_uuid,
            descriptor.type_uuid, descriptor.nullability,
            descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale});
+           descriptor.width_precision_scale, descriptor.canonical_type_name,
+           descriptor.element_profile});
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -9586,11 +9796,61 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             direct_expression == context.expressions.end() ||
             direct_expression->descriptor_id !=
                 expected_direct_descriptor_id ||
+            direct_expression->structural_literal_occurrence_id !=
+                global_aggregate_direct_literal
+                    ->structural_literal_occurrence_id ||
+            direct_expression->structural_parameter_occurrence_id !=
+                global_aggregate_direct_literal
+                    ->structural_parameter_occurrence_id ||
+            direct_expression->structural_variable_occurrence_id !=
+                global_aggregate_direct_literal
+                    ->structural_variable_occurrence_id ||
             direct_expression->function_uuid.has_value() ||
             direct_expression->bound_name_uuid.has_value()) {
           AddBoundAstDiagnostic(
               &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-              "catalog STRING_AGG separator binding is incomplete");
+              "catalog aggregate direct-argument binding is incomplete:" +
+                  std::string("family=") +
+                  ((aggregate_string_agg || aggregate_listagg) ? "text"
+                                                                : "numeric") +
+                  ":descriptor=" +
+                  (direct_descriptor != descriptor_by_id.end() ? "1" : "0") +
+                  ":nonnull=" +
+                  (direct_descriptor != descriptor_by_id.end() &&
+                           direct_descriptor->second->nullability ==
+                               BoundNullability::kNonNull
+                       ? "1"
+                       : "0") +
+                  ":facets=" +
+                  (direct_descriptor != descriptor_by_id.end() &&
+                           !direct_descriptor->second->collation_uuid.has_value() &&
+                           !direct_descriptor->second->timezone_profile_id.has_value() &&
+                           !direct_descriptor->second->width_precision_scale.width.has_value() &&
+                           !direct_descriptor->second->width_precision_scale.precision.has_value() &&
+                           !direct_descriptor->second->width_precision_scale.scale.has_value()
+                       ? "1"
+                       : "0") +
+                  ":expression=" +
+                  (direct_expression != context.expressions.end() ? "1" : "0") +
+                  ":descriptor-id=" +
+                  (direct_expression != context.expressions.end() &&
+                           direct_expression->descriptor_id ==
+                               expected_direct_descriptor_id
+                       ? "1"
+                       : "0") +
+                  ":occurrences=" +
+                  (direct_expression != context.expressions.end() &&
+                           direct_expression->structural_literal_occurrence_id ==
+                               global_aggregate_direct_literal
+                                   ->structural_literal_occurrence_id &&
+                           direct_expression->structural_parameter_occurrence_id ==
+                               global_aggregate_direct_literal
+                                   ->structural_parameter_occurrence_id &&
+                           direct_expression->structural_variable_occurrence_id ==
+                               global_aggregate_direct_literal
+                                   ->structural_variable_occurrence_id
+                       ? "1"
+                       : "0"));
           return RefusedBoundAst(std::move(bound));
         }
         if (aggregate_listagg) {
@@ -9679,8 +9939,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           filter_literal->expression_kind == NativeExpressionAstKind::kVariable;
       const auto literal_binding = std::ranges::find_if(
           context.expressions, [&](const auto& candidate) {
-            return candidate.expression_id == filter_literal->expression_id &&
-                   (parameter_leaf
+            return (parameter_leaf
                         ? candidate.structural_parameter_occurrence_id ==
                               filter_literal->structural_parameter_occurrence_id
                         : variable_leaf
@@ -9689,7 +9948,19 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                         : candidate.structural_literal_occurrence_id ==
                               filter_literal->structural_literal_occurrence_id);
           });
+      const auto literal_binding_count = std::ranges::count_if(
+          context.expressions, [&](const auto& candidate) {
+            return parameter_leaf
+                       ? candidate.structural_parameter_occurrence_id ==
+                             filter_literal->structural_parameter_occurrence_id
+                   : variable_leaf
+                       ? candidate.structural_variable_occurrence_id ==
+                             filter_literal->structural_variable_occurrence_id
+                       : candidate.structural_literal_occurrence_id ==
+                             filter_literal->structural_literal_occurrence_id;
+          });
       if (literal_binding == context.expressions.end() ||
+          literal_binding_count != 1 ||
           (parameter_leaf
                ? filter_literal->structural_parameter_occurrence_id == 0
                : variable_leaf
@@ -9731,7 +10002,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (context.expressions.size() !=
               column_count + (aggregate_composition ? 1 : 0) +
                   aggregate_direct_descriptor_count +
-                  (filter_composition ? 1 : 0) ||
+                  (filter_composition ? 1 : 0) +
+                  (limit_composition
+                       ? limit_relation->limit_expression_ids.size()
+                       : 0) ||
           visible_column_count == 0 ||
           context.outputs.size() != expected_output_count) {
         AddBoundAstDiagnostic(
@@ -9812,6 +10086,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           literal.result_descriptor_id = direct_binding->descriptor_id;
           literal.literal_or_parameter_ref =
               global_aggregate_direct_literal->spelling;
+          literal.structural_literal_occurrence_id =
+              global_aggregate_direct_literal
+                  ->structural_literal_occurrence_id;
+          literal.structural_parameter_occurrence_id =
+              global_aggregate_direct_literal
+                  ->structural_parameter_occurrence_id;
+          literal.structural_variable_occurrence_id =
+              global_aggregate_direct_literal
+                  ->structural_variable_occurrence_id;
           bound.expressions.push_back(std::move(literal));
         }
         BoundExpressionAstRecord bound_expression;
@@ -9960,8 +10243,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound.relations.push_back(std::move(bound_relation));
     if (filter_composition) {
       BoundExpressionAstRecord literal;
-      literal.expression_id =
-          filter_literal->expression_id;
+      literal.expression_id = negotiated_literal_binding->expression_id;
       literal.expression_kind = filter_literal->expression_kind;
       literal.literal_kind = filter_literal->literal_kind;
       literal.result_descriptor_id = negotiated_literal_binding->descriptor_id;
@@ -9979,7 +10261,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
       BoundExpressionAstRecord predicate;
       predicate.expression_id =
-          filter_predicate->expression_id;
+          static_cast<std::uint32_t>(bound.expressions.size() + 1);
       predicate.expression_kind = NativeExpressionAstKind::kBinary;
       predicate.result_descriptor_id = boolean_descriptor->descriptor_id;
       predicate.child_expression_ids = {
@@ -10073,14 +10355,38 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id == ast_expression_id;
             });
-        BoundExpressionAstRecord bound_expression;
-        bound_expression.expression_id =
+        const auto negotiated_expression = std::ranges::find_if(
+            context.expressions, [&](const auto& candidate) {
+              return ast_expression != ast.expressions.end() &&
+                     candidate.structural_literal_occurrence_id ==
+                         ast_expression->structural_literal_occurrence_id &&
+                     candidate.structural_literal_occurrence_id != 0;
+            });
+        const auto expected_expression_id =
             static_cast<std::uint32_t>(bound.expressions.size() + 1);
+        if (ast_expression == ast.expressions.end() ||
+            negotiated_expression == context.expressions.end() ||
+            negotiated_expression->expression_id != expected_expression_id ||
+            negotiated_expression->descriptor_id !=
+                numeric_descriptor->descriptor_id ||
+            negotiated_expression->function_uuid.has_value() ||
+            negotiated_expression->bound_name_uuid.has_value() ||
+            negotiated_expression->structural_parameter_occurrence_id != 0 ||
+            negotiated_expression->structural_variable_occurrence_id != 0) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog LIMIT literal lacks its exact negotiated binding");
+          return RefusedBoundAst(std::move(bound));
+        }
+        BoundExpressionAstRecord bound_expression;
+        bound_expression.expression_id = expected_expression_id;
         bound_expression.expression_kind = NativeExpressionAstKind::kLiteral;
         bound_expression.literal_kind = NativeLiteralAstKind::kNumeric;
         bound_expression.result_descriptor_id =
             numeric_descriptor->descriptor_id;
         bound_expression.literal_or_parameter_ref = ast_expression->spelling;
+        bound_expression.structural_literal_occurrence_id =
+            ast_expression->structural_literal_occurrence_id;
         bound_limit_expression_ids.push_back(bound_expression.expression_id);
         bound.expressions.push_back(std::move(bound_expression));
       }
@@ -10119,6 +10425,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       record.collation_uuid = descriptor.collation_uuid;
       record.timezone_profile_id = descriptor.timezone_profile_id;
       record.width_precision_scale = descriptor.width_precision_scale;
+      record.canonical_type_name = descriptor.canonical_type_name;
+      record.element_profile = descriptor.element_profile;
       bound.descriptors.push_back(std::move(record));
     }
     std::ranges::sort(bound.descriptors,
@@ -11974,6 +12282,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     record.collation_uuid = descriptor.collation_uuid;
     record.timezone_profile_id = descriptor.timezone_profile_id;
     record.width_precision_scale = descriptor.width_precision_scale;
+    record.canonical_type_name = descriptor.canonical_type_name;
+    record.element_profile = descriptor.element_profile;
     bound.descriptors.push_back(std::move(record));
   }
   std::ranges::sort(bound.descriptors,

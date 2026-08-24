@@ -31,6 +31,21 @@
 namespace scratchbird::parser::sbsql {
 namespace {
 
+constexpr std::string_view kGenerateSeriesFunctionUuid =
+    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+
+unsigned BoundedSignedIntegerTypeRank(const std::string_view type_name) {
+  constexpr std::array<std::string_view, 4> kTypes{
+      "int8", "int16", "int32", "int64"};
+  for (std::size_t ordinal = 0; ordinal < kTypes.size(); ++ordinal) {
+    if (type_name == kTypes[ordinal] ||
+        (type_name == "integer" && kTypes[ordinal] == "int32")) {
+      return static_cast<unsigned>(ordinal + 1);
+    }
+  }
+  return 0;
+}
+
 bool ParseFixedTimeSeriesIntervalNs(const std::string_view encoded,
                                     std::int64_t* interval_ns) {
   if (interval_ns == nullptr || encoded.empty()) return false;
@@ -33074,6 +33089,196 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
+  const auto table_function_relation = std::ranges::find_if(
+      native.relations, [](const auto& relation) {
+        return relation.relation_kind ==
+               NativeRelationAstKind::kTableFunctionInvoke;
+      });
+  if (table_function_relation != native.relations.end()) {
+    const auto& relation = *table_function_relation;
+    const auto argument_count =
+        relation.table_function_argument_expression_ids.size();
+    const auto output_expression_id =
+        static_cast<std::uint32_t>(argument_count + 1);
+    std::unordered_map<std::uint32_t, const BoundDescriptorAstRecord*>
+        descriptors_by_id;
+    for (const auto& descriptor : native.descriptors) {
+      descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor);
+    }
+    std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
+        expressions_by_id;
+    for (const auto& expression : native.expressions) {
+      expressions_by_id.emplace(expression.expression_id, &expression);
+    }
+    const auto output_expression = expressions_by_id.find(output_expression_id);
+    const auto output_descriptor = descriptors_by_id.find(1);
+    bool exact_arguments = argument_count == 2 || argument_count == 3;
+    for (std::size_t ordinal = 0; exact_arguments && ordinal < argument_count;
+         ++ordinal) {
+      const auto argument_id =
+          relation.table_function_argument_expression_ids[ordinal];
+      const auto argument = expressions_by_id.find(argument_id);
+      const auto descriptor =
+          argument == expressions_by_id.end()
+              ? descriptors_by_id.end()
+              : descriptors_by_id.find(argument->second->result_descriptor_id);
+      exact_arguments =
+          argument_id == ordinal + 1 && argument != expressions_by_id.end() &&
+          argument->second->expression_kind ==
+              NativeExpressionAstKind::kParameter &&
+          !argument->second->literal_kind.has_value() &&
+          argument->second->child_expression_ids.empty() &&
+          !argument->second->bound_function_uuid.has_value() &&
+          !argument->second->bound_name_uuid.has_value() &&
+          !argument->second->canonical_operator_name.has_value() &&
+          !argument->second->literal_or_parameter_ref.has_value() &&
+          argument->second->structural_literal_occurrence_id == 0 &&
+          argument->second->structural_parameter_occurrence_id == ordinal + 1 &&
+          argument->second->structural_variable_occurrence_id == 0 &&
+          descriptor != descriptors_by_id.end() &&
+          descriptor->second->nullability == BoundNullability::kNonNull &&
+          descriptor->second->canonical_type_name == "int64" &&
+          !descriptor->second->collation_uuid.has_value() &&
+          !descriptor->second->timezone_profile_id.has_value() &&
+          !descriptor->second->width_precision_scale.width.has_value() &&
+          !descriptor->second->width_precision_scale.precision.has_value() &&
+          !descriptor->second->width_precision_scale.scale.has_value();
+    }
+    const bool exact_output =
+        output_expression != expressions_by_id.end() &&
+        output_expression->second->expression_kind ==
+            NativeExpressionAstKind::kFunctionCall &&
+        output_expression->second->child_expression_ids ==
+            relation.table_function_argument_expression_ids &&
+        output_expression->second->result_descriptor_id == 1 &&
+        output_expression->second->bound_function_uuid ==
+            std::string(kGenerateSeriesFunctionUuid) &&
+        !output_expression->second->bound_name_uuid.has_value() &&
+        !output_expression->second->literal_kind.has_value() &&
+        !output_expression->second->canonical_operator_name.has_value() &&
+        !output_expression->second->literal_or_parameter_ref.has_value() &&
+        output_expression->second->structural_literal_occurrence_id == 0 &&
+        output_expression->second->structural_parameter_occurrence_id == 0 &&
+        output_expression->second->structural_variable_occurrence_id == 0 &&
+        output_descriptor != descriptors_by_id.end() &&
+        output_descriptor->second->nullability == BoundNullability::kNonNull &&
+        output_descriptor->second->canonical_type_name == "int64" &&
+        !output_descriptor->second->collation_uuid.has_value() &&
+        !output_descriptor->second->timezone_profile_id.has_value() &&
+        !output_descriptor->second->width_precision_scale.width.has_value() &&
+        !output_descriptor->second->width_precision_scale.precision.has_value() &&
+        !output_descriptor->second->width_precision_scale.scale.has_value();
+    if (native.relations.size() != 1 || native.root_relation_id != 1 ||
+        native.root_scope_id != 1 || native.scopes.size() != 1 ||
+        relation.relation_id != 1 || !relation.input_relation_ids.empty() ||
+        !relation.values_row_ids.empty() ||
+        relation.output_expression_ids !=
+            std::vector<std::uint32_t>{output_expression_id} ||
+        relation.bound_expression_ids !=
+            std::vector<std::uint32_t>{output_expression_id} ||
+        relation.semantic_variant_id !=
+            "table-function.generate-series.v1" ||
+        relation.bound_object_uuid !=
+            std::string(kGenerateSeriesFunctionUuid) ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.predicate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() ||
+        !relation.window_invocation_ids.empty() ||
+        !relation.ordering_terms.empty() || !exact_arguments || !exact_output ||
+        native.descriptors.size() != argument_count + 1 ||
+        native.expressions.size() != argument_count + 1 ||
+        native.outputs.size() != 1 || !native.values_rows.empty() ||
+        !native.grouping_sets.empty() || !native.window_definitions.empty() ||
+        !native.window_invocations.empty() ||
+        !native.catalog_relation_sources.empty() ||
+        native.outputs.front().output_id != 1 ||
+        native.outputs.front().relation_id != relation.relation_id ||
+        native.outputs.front().expression_id != output_expression_id ||
+        native.outputs.front().descriptor_id != 1 ||
+        native.outputs.front().output_name_utf8 != "generate_series" ||
+        !native.outputs.front().visible || native.outputs.front().ordinal != 0 ||
+        native.scopes.front().scope_id != 1 ||
+        native.scopes.front().parent_scope_id.has_value() ||
+        native.scopes.front().visible_relation_ids !=
+            std::vector<std::uint32_t>{1} ||
+        native.scopes.front().visible_projection_ids !=
+            std::vector<std::uint32_t>{1} ||
+        native.scopes.front().catalog_epoch_uuid.empty()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "table function BoundAST is not the exact generate_series descriptor");
+      return envelope;
+    }
+
+    envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
+    envelope.operands.push_back(
+        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_catalog_epoch_uuid",
+         native.scopes.front().catalog_epoch_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_security_context_uuid",
+         native.security_context_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_uuid", native.statement_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_owning_transaction_uuid",
+         native.owning_transaction_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_snapshot_uuid",
+         native.statement_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_metadata_snapshot_uuid",
+         native.statement_metadata_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uint64", "relational_local_transaction_id",
+         std::to_string(native.local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+         std::to_string(
+             native.snapshot_visible_through_local_transaction_id)});
+    envelope.operands.push_back({"uint32", "relational_root_node_id", "1"});
+    for (const auto& descriptor : native.descriptors) {
+      envelope.operands.push_back(
+          {"relational_descriptor_v1",
+           std::to_string(descriptor.descriptor_id),
+           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+               std::to_string(
+                   static_cast<std::uint8_t>(descriptor.nullability) + 1) +
+               "|-|-|-|-|-"});
+    }
+    for (const auto& expression : native.expressions) {
+      envelope.operands.push_back(
+          {"relational_expression_v1",
+           std::to_string(expression.expression_id),
+           std::to_string(static_cast<std::uint8_t>(
+                              expression.expression_kind) +
+                          1) +
+               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
+               "|" + std::to_string(expression.result_descriptor_id) + "|" +
+               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
+               "|-|-|-|-"});
+    }
+    envelope.operands.push_back(
+        {"relational_output_v1", "1",
+         "1|" + std::to_string(output_expression_id) +
+             "|1|1|0|" + EncodeCanonicalHex("generate_series")});
+    envelope.operands.push_back(
+        {"relational_node_v1", "1", "17|0|-|1|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", "1",
+         EncodeCanonicalHex("table-function.generate-series.v1") + "|" +
+             std::to_string(output_expression_id) + "|" +
+             std::string(kGenerateSeriesFunctionUuid) + "|-|-"});
+    envelope.operands.push_back(
+        {"relational_table_function_v1", "1",
+         JoinCanonicalHandleList(
+             relation.table_function_argument_expression_ids)});
+    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+    return envelope;
+  }
+
   const auto spatial_columnar_source = std::ranges::find_if(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kSpatial ||
@@ -36324,9 +36529,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
 
   std::unordered_set<std::uint32_t> descriptor_ids;
+  std::unordered_map<std::uint32_t, const BoundDescriptorAstRecord*>
+      native_descriptors_by_id;
   for (const auto& descriptor : native.descriptors) {
     if (descriptor.descriptor_id == 0 ||
-        !descriptor_ids.insert(descriptor.descriptor_id).second) {
+        !descriptor_ids.insert(descriptor.descriptor_id).second ||
+        !native_descriptors_by_id
+             .emplace(descriptor.descriptor_id, &descriptor)
+             .second) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed descriptor handles must be nonzero and unique");
@@ -36375,6 +36585,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool operator_expression =
         expression.expression_kind == NativeExpressionAstKind::kUnary ||
         expression.expression_kind == NativeExpressionAstKind::kBinary;
+    const bool exact_external_parameter =
+        parameter && !expression.literal_or_parameter_ref.has_value() &&
+        expression.structural_literal_occurrence_id == 0 &&
+        expression.structural_parameter_occurrence_id != 0 &&
+        expression.structural_variable_occurrence_id == 0;
     const bool functionless_model_operation =
         functionless_model_operation_roots.contains(expression.expression_id);
     if (literal != expression.literal_kind.has_value() ||
@@ -36385,7 +36600,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             expression.bound_name_uuid.has_value() ||
         (operator_expression || functionless_model_operation) !=
             expression.canonical_operator_name.has_value() ||
-        (literal || parameter) !=
+        (literal || (parameter && !exact_external_parameter)) !=
             expression.literal_or_parameter_ref.has_value() ||
         (variable && expression.literal_or_parameter_ref.has_value())) {
       AddNativeRelationalLoweringError(
@@ -37083,6 +37298,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 return item.descriptor_id ==
                        predicate->second->result_descriptor_id;
               });
+    const auto identifier_signed_rank =
+        identifier_descriptor == native.descriptors.end()
+            ? 0U
+            : BoundedSignedIntegerTypeRank(
+                  identifier_descriptor->canonical_type_name);
+    const auto operand_signed_rank =
+        literal_descriptor == native.descriptors.end()
+            ? 0U
+            : BoundedSignedIntegerTypeRank(
+                  literal_descriptor->canonical_type_name);
+    const bool exact_lossless_signed_comparison =
+        identifier_signed_rank != 0 && operand_signed_rank == 4 &&
+        identifier_signed_rank <= operand_signed_rank;
     std::uint64_t parsed = 0;
     const bool literal_leaf =
         literal != nullptr &&
@@ -37141,7 +37369,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         identifier_descriptor == native.descriptors.end() ||
         literal_descriptor == native.descriptors.end() ||
         predicate_descriptor == native.descriptors.end() ||
-        identifier_descriptor->type_uuid != literal_descriptor->type_uuid ||
+        !exact_lossless_signed_comparison ||
         predicate_descriptor->nullability != BoundNullability::kNullable ||
         identifier_descriptor->collation_uuid.has_value() ||
         literal_descriptor->collation_uuid.has_value() ||
@@ -37151,7 +37379,28 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         predicate_descriptor->timezone_profile_id.has_value()) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-          "typed catalog WHERE comparison binding is not descriptor exact");
+          "typed catalog WHERE comparison binding is not descriptor exact:" +
+              std::string("operator=") + (accepted_operator ? "1" : "0") +
+              ":identifier=" + (identifier != nullptr ? "1" : "0") +
+              ":operand=" + (literal != nullptr ? "1" : "0") +
+              ":identifier_descriptor=" +
+              (identifier_descriptor != native.descriptors.end() ? "1" : "0") +
+              ":operand_descriptor=" +
+              (literal_descriptor != native.descriptors.end() ? "1" : "0") +
+              ":predicate_descriptor=" +
+              (predicate_descriptor != native.descriptors.end() ? "1" : "0") +
+              ":type_match=" +
+              (exact_lossless_signed_comparison ? "1" : "0") +
+              ":identifier_type=" +
+              (identifier_descriptor == native.descriptors.end()
+                   ? std::string("<absent>")
+                   : identifier_descriptor->canonical_type_name) +
+              ":identifier_rank=" + std::to_string(identifier_signed_rank) +
+              ":operand_type=" +
+              (literal_descriptor == native.descriptors.end()
+                   ? std::string("<absent>")
+                   : literal_descriptor->canonical_type_name) +
+              ":operand_rank=" + std::to_string(operand_signed_rank));
       return envelope;
     }
     if (catalog_filter_input_relation == nullptr ||
@@ -37413,6 +37662,46 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   if (values_relation != nullptr) {
     const auto& values_outputs =
         outputs_by_relation.at(values_relation->relation_id);
+    const auto exact_values_literal_descriptor =
+        [&](const BoundExpressionAstRecord& expression,
+            const std::uint32_t output_descriptor_id) {
+      const auto expression_descriptor =
+          native_descriptors_by_id.find(expression.result_descriptor_id);
+      const auto output_descriptor =
+          native_descriptors_by_id.find(output_descriptor_id);
+      return expression.expression_kind ==
+                 NativeExpressionAstKind::kLiteral &&
+             expression.literal_kind == NativeLiteralAstKind::kNumeric &&
+             expression.structural_literal_occurrence_id != 0 &&
+             expression.child_expression_ids.empty() &&
+             !expression.bound_function_uuid.has_value() &&
+             !expression.bound_name_uuid.has_value() &&
+             !expression.canonical_operator_name.has_value() &&
+             expression_descriptor != native_descriptors_by_id.end() &&
+             output_descriptor != native_descriptors_by_id.end() &&
+             expression_descriptor->second->type_uuid ==
+                 output_descriptor->second->type_uuid &&
+             expression_descriptor->second->nullability ==
+                 BoundNullability::kNonNull &&
+             output_descriptor->second->nullability ==
+                 BoundNullability::kNonNull &&
+             !expression_descriptor->second->collation_uuid.has_value() &&
+             !output_descriptor->second->collation_uuid.has_value() &&
+             !expression_descriptor->second->timezone_profile_id.has_value() &&
+             !output_descriptor->second->timezone_profile_id.has_value() &&
+             !expression_descriptor->second->width_precision_scale.width
+                  .has_value() &&
+             !expression_descriptor->second->width_precision_scale.precision
+                  .has_value() &&
+             !expression_descriptor->second->width_precision_scale.scale
+                  .has_value() &&
+             !output_descriptor->second->width_precision_scale.width
+                  .has_value() &&
+             !output_descriptor->second->width_precision_scale.precision
+                  .has_value() &&
+             !output_descriptor->second->width_precision_scale.scale
+                  .has_value();
+    };
     for (const auto& row : native.values_rows) {
       if (row.expression_ids.size() != values_outputs.size()) {
         AddNativeRelationalLoweringError(
@@ -37422,9 +37711,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
       for (std::size_t ordinal = 0; ordinal < row.expression_ids.size();
            ++ordinal) {
-        if (expressions_by_id.at(row.expression_ids[ordinal])
-                ->result_descriptor_id !=
-            values_outputs[ordinal]->descriptor_id) {
+        const auto* expression =
+            expressions_by_id.at(row.expression_ids[ordinal]);
+        if (expression->result_descriptor_id !=
+                values_outputs[ordinal]->descriptor_id &&
+            !exact_values_literal_descriptor(
+                *expression, values_outputs[ordinal]->descriptor_id)) {
           AddNativeRelationalLoweringError(
               &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
               "typed VALUES expression descriptor differs from its output column");
@@ -40968,30 +41260,32 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          emitted_outputs_by_relation.at(relation.relation_id)) {
       output_descriptor_ids.push_back(output->descriptor_id);
     }
-    const auto node_kind =
-        relation.relation_kind == NativeRelationAstKind::kValues
-            ? 13
-            : (relation.relation_kind == NativeRelationAstKind::kAggregate
-                   ? 5
-                   : (relation.relation_kind ==
-                              NativeRelationAstKind::kCatalogSource
-                          ? 1
-                          : (relation.relation_kind ==
-                                     NativeRelationAstKind::kJoin
-                                 ? 4
-                          : (relation.relation_kind ==
-                                     NativeRelationAstKind::kLimit
-                                 ? 7
-                                 : (relation.relation_kind ==
-                                            NativeRelationAstKind::kProject
-                                        ? 3
-                                        : (relation.relation_kind ==
-                                               NativeRelationAstKind::kSort
-                                               ? 6
-                                               : (relation.relation_kind ==
-                                                          NativeRelationAstKind::kWindow
-                                                      ? 8
-                                                      : 2)))))));
+    const auto node_kind = [&]() -> std::uint8_t {
+      switch (relation.relation_kind) {
+        case NativeRelationAstKind::kCatalogSource:
+          return 1;
+        case NativeRelationAstKind::kFilter:
+        case NativeRelationAstKind::kQualify:
+          return 2;
+        case NativeRelationAstKind::kProject:
+          return 3;
+        case NativeRelationAstKind::kJoin:
+          return 4;
+        case NativeRelationAstKind::kAggregate:
+          return 5;
+        case NativeRelationAstKind::kSort:
+          return 6;
+        case NativeRelationAstKind::kLimit:
+          return 7;
+        case NativeRelationAstKind::kWindow:
+          return 8;
+        case NativeRelationAstKind::kValues:
+          return 13;
+        case NativeRelationAstKind::kTableFunctionInvoke:
+          return 17;
+      }
+      return 0;
+    }();
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          std::to_string(node_kind) + "|0|" +
@@ -41029,6 +41323,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                          ? join_property_uuids(
                                window_delivered_property_uuids)
                          : "-"))});
+    if (!relation.table_function_argument_expression_ids.empty()) {
+      envelope.operands.push_back(
+          {"relational_table_function_v1",
+           std::to_string(relation.relation_id),
+           JoinCanonicalHandleList(
+               relation.table_function_argument_expression_ids)});
+    }
   }
   if (catalog_sort_relation != nullptr ||
       normalize_catalog_ranking) {
@@ -42810,6 +43111,7 @@ struct ParsedRelationalNode {
   bool binding_present{false};
   std::string semantic_variant_id;
   std::vector<std::uint32_t> bound_expression_ids;
+  std::vector<std::uint32_t> argument_expression_ids;
   std::vector<std::string> required_object_uuids;
   std::vector<std::string> required_property_uuids;
   std::vector<std::string> delivered_property_uuids;
@@ -43945,6 +44247,32 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       node->binding_present = true;
       continue;
     }
+    if (operand.type == "relational_table_function_v1") {
+      std::uint64_t node_id = 0;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          node_id == 0) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "table function node id is malformed",
+                                     "table_function_record");
+      }
+      const auto node = std::ranges::find_if(
+          graph->nodes, [&](const auto& candidate) {
+            return candidate.id == node_id;
+          });
+      if (node == graph->nodes.end() || node->kind != 17 ||
+          !node->argument_expression_ids.empty() ||
+          !ParseCanonicalRelationalHandleList(
+              operand.value, &node->argument_expression_ids) ||
+          node->argument_expression_ids.empty()) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "table function argument binding is invalid or out of order",
+            "table_function_record", static_cast<std::uint32_t>(node_id));
+      }
+      continue;
+    }
     return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                  "query.execute contains an unknown operand",
                                  "unknown_operand");
@@ -43990,6 +44318,25 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
 RelationalGraphVerification ValidateCanonicalRelationalGraph(
     const ParsedRelationalGraph& graph,
     RelationalGraphVerification result) {
+  std::unordered_set<std::uint32_t> expression_ids;
+  for (const auto& expression : graph.expressions) {
+    expression_ids.insert(expression.id);
+  }
+  for (const auto& node : graph.nodes) {
+    std::unordered_set<std::uint32_t> arguments;
+    const bool arguments_are_exact = std::ranges::all_of(
+        node.argument_expression_ids, [&](const auto expression_id) {
+          return expression_id != 0 && expression_ids.contains(expression_id) &&
+                 arguments.insert(expression_id).second;
+        });
+    if (!arguments_are_exact ||
+        (node.kind == 17) != !node.argument_expression_ids.empty()) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "table function argument bindings are incomplete or misplaced",
+          "table_function_argument_expression_ids", node.id);
+    }
+  }
   const ParsedRelationalNode* document_source_node = nullptr;
   const ParsedRelationalNode* document_expand_node = nullptr;
   const ParsedRelationalNode* time_series_aggregate_node = nullptr;
@@ -44556,8 +44903,9 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
             expression.operator_name.has_value() ||
         (expression.operator_name.has_value() &&
          expression.operator_name->empty()) ||
-        (literal || parameter) !=
-            expression.literal_or_parameter_ref.has_value() ||
+        (literal && !expression.literal_or_parameter_ref.has_value()) ||
+        (!literal && !parameter &&
+         expression.literal_or_parameter_ref.has_value()) ||
         (expression.literal_or_parameter_ref.has_value() &&
          expression.literal_or_parameter_ref->empty()) ||
         ((literal || parameter || identifier) &&
@@ -46065,6 +46413,36 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
 
   std::unordered_set<std::uint32_t> assigned_rows;
   std::unordered_set<std::uint32_t> referenced_descriptors;
+  const auto exact_values_literal_descriptor =
+      [&](const ParsedRelationalExpression& expression,
+          const std::uint32_t output_descriptor_id) {
+    const auto expression_descriptor =
+        descriptors.find(expression.descriptor_id);
+    const auto output_descriptor = descriptors.find(output_descriptor_id);
+    return expression.kind == 1 && expression.literal_kind == 1 &&
+           expression.literal_or_parameter_ref.has_value() &&
+           !expression.literal_or_parameter_ref->empty() &&
+           expression.child_ids.empty() &&
+           !expression.function_uuid.has_value() &&
+           !expression.bound_name_uuid.has_value() &&
+           !expression.operator_name.has_value() &&
+           expression_descriptor != descriptors.end() &&
+           output_descriptor != descriptors.end() &&
+           expression_descriptor->second->type_uuid ==
+               output_descriptor->second->type_uuid &&
+           expression_descriptor->second->nullability == 1 &&
+           output_descriptor->second->nullability == 1 &&
+           !expression_descriptor->second->collation_uuid.has_value() &&
+           !output_descriptor->second->collation_uuid.has_value() &&
+           !expression_descriptor->second->timezone_profile_id.has_value() &&
+           !output_descriptor->second->timezone_profile_id.has_value() &&
+           !expression_descriptor->second->width.has_value() &&
+           !expression_descriptor->second->precision.has_value() &&
+           !expression_descriptor->second->scale.has_value() &&
+           !output_descriptor->second->width.has_value() &&
+           !output_descriptor->second->precision.has_value() &&
+           !output_descriptor->second->scale.has_value();
+  };
   for (const auto& expression : graph.expressions) {
     referenced_descriptors.insert(expression.descriptor_id);
   }
@@ -46119,8 +46497,11 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       }
       for (std::size_t ordinal = 0;
            ordinal < row->second->expression_ids.size(); ++ordinal) {
-        if (expressions.at(row->second->expression_ids[ordinal])
-                ->descriptor_id != node.output_descriptor_ids[ordinal]) {
+        const auto* expression =
+            expressions.at(row->second->expression_ids[ordinal]);
+        if (expression->descriptor_id != node.output_descriptor_ids[ordinal] &&
+            !exact_values_literal_descriptor(
+                *expression, node.output_descriptor_ids[ordinal])) {
           return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                        "VALUES row descriptor is invalid",
                                        "values_row_descriptor_ids", node.id);

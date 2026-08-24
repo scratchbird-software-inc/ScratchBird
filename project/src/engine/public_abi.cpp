@@ -3305,8 +3305,15 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "engine.statement_context.materialized_context_incomplete",
         "statement_numeric_descriptor_type");
   }
-  const auto numeric_type_uuid = scratchbird::core::uuid::UuidToString(
+  const auto int64_descriptor_uuid = scratchbird::core::uuid::UuidToString(
       int64_row->descriptor_uuid.value);
+  const auto int64_identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          "019d0000-0000-7000-8000-00000000d701",
+          core_manifest.manifest.catalog_epoch, 1, int64_descriptor_uuid,
+          int64_row->descriptor_epoch);
+  const auto numeric_type_uuid =
+      int64_identity.ok ? int64_identity.row.type_uuid : std::string{};
   const auto boolean_type_uuid = scratchbird::core::uuid::UuidToString(
       boolean_row->descriptor_uuid.value);
   std::string text_type_uuid;

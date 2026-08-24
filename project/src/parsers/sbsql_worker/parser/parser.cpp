@@ -269,6 +269,10 @@ class NativeRelationalParser final {
       return ParseDocumentModelSelect();
     }
     if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
+        LooksLikeBoundedTableFunctionSelect()) {
+      return ParseTableFunctionSelect();
+    }
+    if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
         LooksLikeSupportedGroupingQuery()) {
       return ParseGroupedAggregateSelect();
     }
@@ -342,6 +346,110 @@ class NativeRelationalParser final {
     }
     relation.output_expression_ids =
         document_.values_rows.front().expression_ids;
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
+  }
+
+  bool LooksLikeBoundedTableFunctionSelect() const {
+    if (tokens_.size() < 9 || !IsWord(*tokens_[0], "SELECT") ||
+        tokens_[1]->text != "*" || !IsWord(*tokens_[2], "FROM") ||
+        !IsWord(*tokens_[3], "GENERATE_SERIES") ||
+        tokens_[4]->text != "(") {
+      return false;
+    }
+    std::size_t cursor = 5;
+    std::size_t parameter_count = 0;
+    while (cursor < tokens_.size() && parameter_count < 3) {
+      if (tokens_[cursor]->kind != TokenKind::kParameter) return false;
+      ++parameter_count;
+      ++cursor;
+      if (cursor >= tokens_.size() || tokens_[cursor]->text == ")") break;
+      if (tokens_[cursor]->text != ",") return false;
+      ++cursor;
+    }
+    if ((parameter_count != 2 && parameter_count != 3) ||
+        cursor >= tokens_.size() || tokens_[cursor]->text != ")") {
+      return false;
+    }
+    ++cursor;
+    if (cursor < tokens_.size() && tokens_[cursor]->text == ";") ++cursor;
+    return cursor == tokens_.size();
+  }
+
+  NativeRelationalAstDocument ParseTableFunctionSelect() {
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded",
+             "table function query token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select = Consume();
+    const Token& wildcard_token = Consume();
+    Consume();  // FROM
+    const Token& function_name = Consume();
+    Consume();  // (
+
+    std::vector<std::uint32_t> argument_expression_ids;
+    while (!AtEnd() && !AtSymbol(")")) {
+      const auto argument_id = ParseExpression(0, 0);
+      if (!argument_id.has_value()) return FinishRefusal();
+      const auto& argument = document_.expressions[*argument_id - 1];
+      if (argument.expression_kind != NativeExpressionAstKind::kParameter ||
+          argument.literal_kind.has_value() ||
+          !argument.child_expression_ids.empty()) {
+        Refuse("table_function_argument_profile_unsupported",
+               "generate_series requires structural parameter arguments");
+        return FinishRefusal();
+      }
+      argument_expression_ids.push_back(*argument_id);
+      if (AtSymbol(")")) break;
+      if (!AtSymbol(",")) {
+        Refuse("table_function_argument_separator_expected",
+               "generate_series arguments must be comma separated");
+        return FinishRefusal();
+      }
+      Consume();
+    }
+    if ((argument_expression_ids.size() != 2 &&
+         argument_expression_ids.size() != 3) ||
+        !AtSymbol(")")) {
+      Refuse("table_function_arity_invalid",
+             "generate_series requires two or three arguments");
+      return FinishRefusal();
+    }
+    const Token& close = Consume();
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("table_function_tail_unsupported",
+             "generate_series does not admit aliases or query tails in this profile");
+      return FinishRefusal();
+    }
+
+    NativeExpressionAstNode wildcard;
+    wildcard.expression_id = NextExpressionId();
+    wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+    wildcard.spelling = wildcard_token.text;
+    wildcard.range = TokenSourceRange(wildcard_token);
+    const auto wildcard_expression_id = wildcard.expression_id;
+    document_.expressions.push_back(std::move(wildcard));
+
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kTableFunctionInvoke;
+    relation.output_expression_ids = {wildcard_expression_id};
+    relation.table_function_name = {
+        {function_name.text, function_name.quoted,
+         TokenSourceRange(function_name)}};
+    relation.table_function_argument_expression_ids =
+        std::move(argument_expression_ids);
+    relation.range = Span(select, close);
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
     document_.status = NativeRelationalParseStatus::kAccepted;

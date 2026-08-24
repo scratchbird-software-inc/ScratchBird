@@ -15,6 +15,7 @@
 #include "datatype_operations.hpp"
 #include "engine/executor/executor_foundation.hpp"
 #include "engine/executor/model_family_executor.hpp"
+#include "engine/functions/registry/function_seed_registry.hpp"
 #include "engine/optimizer/model_family_coordinator.hpp"
 #include "engine/optimizer/optimizer_contract.hpp"
 #include "engine/optimizer/relational_planner.hpp"
@@ -69,12 +70,18 @@ namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
 namespace dt = scratchbird::core::datatypes;
 namespace exec = scratchbird::engine::executor;
+namespace fn = scratchbird::engine::functions;
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
 namespace {
 
 constexpr std::string_view kValuesImplementationId =
     "values.materialize.canonical.v1";
+constexpr std::string_view kGenerateSeriesFunctionId =
+    "sb.rowset.generate_series";
+constexpr std::string_view kGenerateSeriesFunctionUuid =
+    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+constexpr std::size_t kGenerateSeriesMaximumRowCount = 10000;
 
 bool CanonicalUuidText(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
@@ -2401,6 +2408,8 @@ struct PreparedGlobalAggregateRoot {
 
 std::string ExactCanonicalCoreDatatypeUuidV1(
     std::string_view stable_name);
+std::string ExactCanonicalCoreDatatypeTypeUuidV1(
+    std::string_view stable_name);
 std::string ExactCanonicalInt64TypeUuidV1();
 
 std::optional<std::string> Rcp079DescriptorField(
@@ -2447,14 +2456,33 @@ bool RevalidatePreparedAggregateValueBindings(
       return false;
     }
     const auto& column = input_batch.columns[receipt.value_column];
-    const auto expected_nullability =
-        receipt.nullable ? std::string_view("nullable")
-                         : std::string_view("non_null");
-    if (receipt.canonical_type_name != "int64" ||
+    const auto canonical_type_id = dt::CanonicalTypeIdFromStableName(
+        receipt.canonical_type_name);
+    const auto canonical_stable_name = [&]() -> std::string_view {
+      switch (canonical_type_id) {
+        case dt::CanonicalTypeId::int8:
+          return "int8";
+        case dt::CanonicalTypeId::int16:
+          return "int16";
+        case dt::CanonicalTypeId::int32:
+          return "int32";
+        case dt::CanonicalTypeId::int64:
+          return "int64";
+        default:
+          return {};
+      }
+    }();
+    const auto canonical_type_uuid = canonical_stable_name.empty()
+                                         ? std::string{}
+                                         : (canonical_stable_name == "int64"
+                                                ? ExactCanonicalCoreDatatypeTypeUuidV1(
+                                                      canonical_stable_name)
+                                                : ExactCanonicalCoreDatatypeUuidV1(
+                                                      canonical_stable_name));
+    if (canonical_stable_name.empty() || canonical_type_uuid.empty() ||
+        receipt.type_uuid != canonical_type_uuid ||
         receipt.descriptor_uuid.empty() || receipt.type_uuid.empty() ||
-        receipt.encoded_descriptor !=
-            "type_uuid=" + receipt.type_uuid +
-                ";nullability=" + std::string(expected_nullability) ||
+        receipt.encoded_descriptor.empty() ||
         column.descriptor_id != receipt.descriptor_id ||
         column.nullable != receipt.nullable ||
         column.descriptor.descriptor_uuid.canonical !=
@@ -2464,8 +2492,47 @@ bool RevalidatePreparedAggregateValueBindings(
             receipt.canonical_type_name ||
         column.descriptor.encoded_descriptor !=
             receipt.encoded_descriptor ||
+        !exec::IsCanonicalBoundedSignedIntegerDescriptor(
+            column.descriptor) ||
         !api::QowCanonicalDescriptorIdentityV1(column.descriptor)) {
-      *detail = "aggregate exact int64 value binding drifted";
+      *detail =
+          "aggregate exact bounded-signed value binding drifted:" +
+          std::string("stable=") +
+          (!canonical_stable_name.empty() ? "1" : "0") +
+          ":type_uuid=" +
+          (receipt.type_uuid == canonical_type_uuid ? "1" : "0") +
+          ":receipt_descriptor=" +
+          (!receipt.descriptor_uuid.empty() ? "1" : "0") +
+          ":receipt_encoded=" +
+          (!receipt.encoded_descriptor.empty() ? "1" : "0") +
+          ":column_id=" +
+          (column.descriptor_id == receipt.descriptor_id ? "1" : "0") +
+          ":column_nullability=" +
+          (column.nullable == receipt.nullable ? "1" : "0") +
+          ":column_uuid=" +
+          (column.descriptor.descriptor_uuid.canonical ==
+                   receipt.descriptor_uuid
+               ? "1"
+               : "0") +
+          ":column_kind=" +
+          (column.descriptor.descriptor_kind == "scalar" ? "1" : "0") +
+          ":column_type=" +
+          (column.descriptor.canonical_type_name ==
+                   receipt.canonical_type_name
+               ? "1"
+               : "0") +
+          ":column_encoded=" +
+          (column.descriptor.encoded_descriptor ==
+                   receipt.encoded_descriptor
+               ? "1"
+               : "0") +
+          ":bounded_signed=" +
+          (exec::IsCanonicalBoundedSignedIntegerDescriptor(column.descriptor)
+               ? "1"
+               : "0") +
+          ":identity=" +
+          (api::QowCanonicalDescriptorIdentityV1(column.descriptor) ? "1"
+                                                                    : "0");
       return false;
     }
   }
@@ -3379,8 +3446,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       function == exec::CanonicalAggregateFunction::regr_sxx ||
       function == exec::CanonicalAggregateFunction::regr_sxy ||
       function == exec::CanonicalAggregateFunction::regr_syy;
-  const bool requires_exact_core_int64_input =
-      is_avg || is_statistical || is_pair_statistical;
+  const bool requires_bounded_signed_input =
+      is_avg || is_statistical || is_pair_statistical ||
+      function == exec::CanonicalAggregateFunction::approx_median;
   const bool is_string_agg =
       function == exec::CanonicalAggregateFunction::string_agg;
   const auto string_aggregate_profile =
@@ -3476,7 +3544,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::string core_int64_type_uuid;
   std::string core_real64_result_type_uuid;
   std::string core_boolean_type_uuid;
-  if (uses_exact_core_int64_result ||
+  if (uses_exact_core_int64_result || requires_bounded_signed_input ||
       has_widened_independent_order_argument) {
     const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
     if (!core_manifest.ok()) {
@@ -3505,7 +3573,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         return result;
       }
       bounded_signed_source_type_uuids[index] =
-          scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
+          stable_name == "int64"
+              ? ExactCanonicalInt64TypeUuidV1()
+              : scratchbird::core::uuid::UuidToString(
+                    row->descriptor_uuid.value);
       if (bounded_signed_source_type_uuids[index].empty()) {
         result.detail =
             "global bounded-signed aggregate/order core datatype identity is "
@@ -3514,9 +3585,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       }
     }
   }
-  if (uses_exact_core_int64_result ||
-      requires_exact_core_int64_input) {
-    core_int64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("int64");
+  if (uses_exact_core_int64_result || requires_bounded_signed_input) {
+    core_int64_type_uuid = ExactCanonicalInt64TypeUuidV1();
     if (core_int64_type_uuid.empty()) {
       result.detail =
           "global aggregate core int64 datatype identity is unavailable";
@@ -3709,18 +3779,30 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         [&](const std::uint32_t expression_descriptor_id,
             const std::size_t value_column,
             const std::string_view input_type) {
-          const auto source_type =
-              std::ranges::find(kBoundedSignedTypeNames, input_type);
           const auto source_descriptor = std::ranges::find_if(
               dag.descriptors, [&](const auto& candidate) {
                 return candidate.descriptor_id == expression_descriptor_id;
               });
           const auto& source_column = input.batch.columns[value_column];
-          const auto source_index = static_cast<std::size_t>(std::distance(
-              kBoundedSignedTypeNames.begin(), source_type));
-          return source_type != kBoundedSignedTypeNames.end() &&
+          const auto source_type_id = dt::CanonicalTypeIdFromStableName(
+              std::string(input_type));
+          const auto source_index = [&]() -> std::optional<std::size_t> {
+            switch (source_type_id) {
+              case dt::CanonicalTypeId::int8:
+                return 0;
+              case dt::CanonicalTypeId::int16:
+                return 1;
+              case dt::CanonicalTypeId::int32:
+                return 2;
+              case dt::CanonicalTypeId::int64:
+                return 3;
+              default:
+                return std::nullopt;
+            }
+          }();
+          return source_index.has_value() &&
                  source_descriptor != dag.descriptors.end() &&
-                 source_index < bounded_signed_source_type_uuids.size() &&
+                 *source_index < bounded_signed_source_type_uuids.size() &&
                  source_descriptor->descriptor_uuid ==
                      source_column.descriptor.descriptor_uuid.canonical &&
                  source_descriptor->descriptor_uuid !=
@@ -3730,7 +3812,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                  source_descriptor->descriptor_uuid !=
                      descriptor->descriptor_uuid &&
                  source_descriptor->type_uuid ==
-                     bounded_signed_source_type_uuids[source_index] &&
+                     bounded_signed_source_type_uuids[*source_index] &&
                  source_descriptor->nullability ==
                      (source_column.nullable
                           ? api::RelationalNullability::kNullable
@@ -3744,67 +3826,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                  exec::IsCanonicalBoundedSignedIntegerDescriptor(
                      source_column.descriptor) &&
                  api::QowCanonicalDescriptorIdentityV1(
-                     source_column.descriptor) &&
-                 source_column.descriptor.encoded_descriptor ==
-                     "type_uuid=" +
-                         bounded_signed_source_type_uuids[source_index] +
-                         ";nullability=" +
-                         (source_column.nullable ? "nullable" : "non_null");
-        };
-    const auto exact_core_int64_input =
-        [&](const std::uint32_t expression_descriptor_id,
-            const std::size_t value_column,
-            PreparedAggregateValueBindingReceipt* receipt) {
-          if (receipt == nullptr || core_int64_type_uuid.empty() ||
-              value_column >= input.batch.columns.size()) {
-            return false;
-          }
-          const auto source_descriptor = std::ranges::find_if(
-              dag.descriptors, [&](const auto& candidate) {
-                return candidate.descriptor_id == expression_descriptor_id;
-              });
-          const auto& source_column = input.batch.columns[value_column];
-          const auto expected_nullability =
-              source_column.nullable ? std::string_view("nullable")
-                                     : std::string_view("non_null");
-          if (source_descriptor == dag.descriptors.end() ||
-              source_descriptor->descriptor_uuid !=
-                  source_column.descriptor.descriptor_uuid.canonical ||
-              source_descriptor->descriptor_uuid ==
-                  source_descriptor->type_uuid ||
-              source_descriptor->descriptor_uuid ==
-                  aggregate->function_uuid ||
-              source_descriptor->descriptor_uuid ==
-                  descriptor->descriptor_uuid ||
-              source_descriptor->type_uuid != core_int64_type_uuid ||
-              source_descriptor->nullability !=
-                  (source_column.nullable
-                       ? api::RelationalNullability::kNullable
-                       : api::RelationalNullability::kNonNull) ||
-              source_descriptor->collation_uuid.has_value() ||
-              source_descriptor->timezone_profile_id.has_value() ||
-              source_descriptor->width.has_value() ||
-              source_descriptor->precision.has_value() ||
-              source_descriptor->scale.has_value() ||
-              source_column.descriptor.descriptor_kind != "scalar" ||
-              source_column.descriptor.canonical_type_name != "int64" ||
-              !api::QowCanonicalDescriptorIdentityV1(
-                  source_column.descriptor) ||
-              source_column.descriptor.encoded_descriptor !=
-                  "type_uuid=" + core_int64_type_uuid +
-                      ";nullability=" +
-                      std::string(expected_nullability)) {
-            return false;
-          }
-          *receipt = PreparedAggregateValueBindingReceipt{
-              value_column,
-              expression_descriptor_id,
-              source_descriptor->descriptor_uuid,
-              source_descriptor->type_uuid,
-              source_column.nullable,
-              source_column.descriptor.canonical_type_name,
-              source_column.descriptor.encoded_descriptor};
-          return true;
+                     source_column.descriptor);
         };
     const auto exact_boolean_input =
         [&](const std::uint32_t expression_descriptor_id,
@@ -3839,11 +3861,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                  source_column.descriptor.descriptor_kind == "scalar" &&
                  source_column.descriptor.canonical_type_name == "boolean" &&
                  api::QowCanonicalDescriptorIdentityV1(
-                     source_column.descriptor) &&
-                 source_column.descriptor.encoded_descriptor ==
-                     "type_uuid=" + core_boolean_type_uuid +
-                         ";nullability=" +
-                         (source_column.nullable ? "nullable" : "non_null");
+                     source_column.descriptor);
         };
     for (std::size_t argument_ordinal = 0;
          argument_ordinal < expression->child_expression_ids.size();
@@ -3862,6 +3880,26 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
               return argument != dag.expressions.end() &&
                      candidate.descriptor_id == argument->result_descriptor_id;
             });
+        const bool exact_typed_literal = [&]() {
+          if (argument == dag.expressions.end() ||
+              !argument->literal_typed_value_v1.has_value() ||
+              argument->parameter_typed_value_v1.has_value() ||
+              direct_descriptor == dag.descriptors.end()) {
+            return false;
+          }
+          const auto& typed = *argument->literal_typed_value_v1;
+          const auto digest =
+              scratchbird::core::hash::ComputeSha256Digest(
+                  typed.canonical_value_bytes);
+          return typed.descriptor_uuid ==
+                     direct_descriptor->descriptor_uuid &&
+                 typed.descriptor_generation != 0 &&
+                 typed.value_state == "value" &&
+                 typed.canonical_value_bytes.size() == 8 &&
+                 (typed.canonical_value_bytes.back() & 0x80U) == 0 &&
+                 digest.ok() &&
+                 digest.digest == typed.canonical_value_sha256;
+        }();
         const bool exact_literal =
             argument != dag.expressions.end() &&
             argument->expression_kind ==
@@ -3871,7 +3909,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             !argument->function_uuid.has_value() &&
             argument->literal_kind == api::RelationalLiteralKind::kNumeric &&
             !argument->operator_name.has_value() &&
-            argument->literal_or_parameter_ref.has_value() &&
+            !argument->literal_or_parameter_ref.has_value() &&
+            exact_typed_literal &&
             direct_descriptor != dag.descriptors.end() &&
             direct_descriptor->nullability ==
                 api::RelationalNullability::kNonNull &&
@@ -4208,25 +4247,34 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         }
         continue;
       }
-      if (requires_exact_core_int64_input) {
-        PreparedAggregateValueBindingReceipt receipt;
-        if (!exact_core_int64_input(argument->result_descriptor_id,
-                                    value_column, &receipt)) {
+      if (requires_bounded_signed_input) {
+        if (!exact_bounded_signed_argument) {
           if (is_avg) {
             result.detail =
-                "global AVG input must be one exact core int64 column";
+                "global AVG input must be one exact core bounded-signed column";
           } else if (is_statistical) {
             result.detail =
-                "global unary statistical input must be one exact core int64 "
-                "column";
+                "global unary statistical input must be one exact core "
+                "bounded-signed column";
           } else if (is_pair_statistical) {
             result.detail =
-                "global pair statistical inputs must each be exact core int64 "
-                "columns";
+                "global pair statistical inputs must each be exact core "
+                "bounded-signed columns";
           }
           return result;
         }
-        result.exact_value_binding_receipts.push_back(std::move(receipt));
+        const auto source_descriptor = std::ranges::find_if(
+            dag.descriptors, [&](const auto& candidate) {
+              return candidate.descriptor_id ==
+                     argument->result_descriptor_id;
+            });
+        const auto& source_column = input.batch.columns[value_column];
+        result.exact_value_binding_receipts.push_back(
+            {value_column, argument->result_descriptor_id,
+             source_descriptor->descriptor_uuid,
+             source_descriptor->type_uuid, source_column.nullable,
+             source_column.descriptor.canonical_type_name,
+             source_column.descriptor.encoded_descriptor});
       }
       result.value_columns.push_back(value_column);
       result.value_descriptor_ids.push_back(argument->result_descriptor_id);
@@ -4257,11 +4305,6 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           input_type != "text") {
         result.detail =
             "global JSON_OBJECT_AGG key must be a canonical text column";
-        return result;
-      }
-      if (is_approx_median && input_type != "int64") {
-        result.detail =
-            "global APPROX_MEDIAN input must be a canonical int64 column";
         return result;
       }
       if (is_approx_top_k && input_type != "text") {
@@ -4516,8 +4559,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
         "grouped COUNT/SUM grouping-set expansion has an unused key";
     return result;
   }
-  const auto core_int64_key_type_uuid =
-      ExactCanonicalCoreDatatypeUuidV1("int64");
+  const auto core_int64_key_type_uuid = ExactCanonicalInt64TypeUuidV1();
   if (!CanonicalUuidText(core_int64_key_type_uuid)) {
     result.detail =
         "grouped COUNT/SUM core int64 key identity is unavailable";
@@ -4695,8 +4737,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
   result.result_bindings.push_back(result.sum.result_bindings.front());
 
   if (profile.projects_grouping_metadata) {
-    const auto grouping_int64_type_uuid =
-        ExactCanonicalCoreDatatypeUuidV1("int64");
+    const auto grouping_int64_type_uuid = ExactCanonicalInt64TypeUuidV1();
     if (!CanonicalUuidText(grouping_int64_type_uuid)) {
       result.detail = "GROUPING metadata core int64 identity is not exact";
       return result;
@@ -7449,11 +7490,45 @@ std::string ExactCanonicalCoreDatatypeUuidV1(
 }
 
 std::string ExactCanonicalInt64TypeUuidV1() {
-  const auto descriptor_uuid = ExactCanonicalCoreDatatypeUuidV1("int64");
+  return ExactCanonicalCoreDatatypeTypeUuidV1("int64");
+}
+
+unsigned ExactBoundedSignedIntegerTypeRankV1(
+    const std::string_view type_uuid) {
+  constexpr std::array<std::string_view, 4> kTypes{
+      "int8", "int16", "int32", "int64"};
+  for (std::size_t ordinal = 0; ordinal < kTypes.size(); ++ordinal) {
+    if (type_uuid == ExactCanonicalCoreDatatypeTypeUuidV1(kTypes[ordinal])) {
+      return static_cast<unsigned>(ordinal + 1);
+    }
+  }
+  return 0;
+}
+
+std::string ExactCanonicalCoreDatatypeTypeUuidV1(
+    const std::string_view stable_name) {
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (count != 1 || found == manifest.manifest.descriptor_rows.end() ||
+      !found->descriptor_uuid.valid()) {
+    return {};
+  }
+  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
+      found->descriptor_uuid.value);
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701", 1, 1,
-      descriptor_uuid, 1);
-  return identity.ok ? identity.row.type_uuid : std::string{};
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      found->descriptor_epoch);
+  // Core rows that have a registered codec identity carry a distinct type
+  // UUID (notably int64).  Older core rows still use their catalog descriptor
+  // UUID as the exact type identity until their codec row is registered.
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 bool ExactCanonicalScalarWindowOperandV1(
@@ -10735,6 +10810,44 @@ bool EncodeCanonicalScalarEqualityKey(
   return true;
 }
 
+bool DecodeCanonicalInt64Scalar(const api::EngineTypedValue& value,
+                                std::int64_t* decoded,
+                                std::string* refusal_detail) {
+  if (decoded == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  const bool textual = !value.encoded_value.empty();
+  const bool binary = !value.binary_value.empty();
+  if (value.state != api::EngineValueState::value || value.is_null ||
+      value.descriptor.canonical_type_name != "int64" || textual == binary) {
+    *refusal_detail = "scalar is not a non-NULL canonical int64 value";
+    return false;
+  }
+  if (textual) {
+    const auto [end, error] = std::from_chars(
+        value.encoded_value.data(), value.encoded_value.data() +
+                                       value.encoded_value.size(),
+        *decoded);
+    if (error != std::errc{} ||
+        end != value.encoded_value.data() + value.encoded_value.size()) {
+      *refusal_detail = "scalar is outside exact int64 admission";
+      return false;
+    }
+  } else {
+    if (value.binary_value.size() != sizeof(std::int64_t)) {
+      *refusal_detail = "scalar binary int64 payload is malformed";
+      return false;
+    }
+    std::uint64_t encoded = 0;
+    for (std::size_t index = 0; index < sizeof(encoded); ++index) {
+      encoded |= static_cast<std::uint64_t>(value.binary_value[index])
+                 << (index * 8);
+    }
+    *decoded = std::bit_cast<std::int64_t>(encoded);
+  }
+  return true;
+}
+
 bool EvaluateNonNegativeRowBound(
     CanonicalRelationalExpressionRuntime* runtime,
     const std::uint32_t expression_id,
@@ -10750,34 +10863,9 @@ bool EvaluateNonNegativeRowBound(
           refusal_detail)) {
     return false;
   }
-  const bool textual = !value.encoded_value.empty();
-  const bool binary = !value.binary_value.empty();
-  if (value.state != api::EngineValueState::value || value.is_null ||
-      value.descriptor.canonical_type_name != "int64" || textual == binary) {
-    *refusal_detail = "row bound is not a non-NULL canonical int64 value";
-    return false;
-  }
   std::int64_t decoded = 0;
-  if (textual) {
-    const auto [end, error] = std::from_chars(
-        value.encoded_value.data(),
-        value.encoded_value.data() + value.encoded_value.size(), decoded);
-    if (error != std::errc{} ||
-        end != value.encoded_value.data() + value.encoded_value.size()) {
-      *refusal_detail = "row bound is outside exact int64 admission";
-      return false;
-    }
-  } else {
-    if (value.binary_value.size() != sizeof(std::int64_t)) {
-      *refusal_detail = "row bound binary int64 payload is malformed";
-      return false;
-    }
-    std::uint64_t encoded = 0;
-    for (std::size_t index = 0; index < sizeof(encoded); ++index) {
-      encoded |= static_cast<std::uint64_t>(value.binary_value[index])
-                 << (index * 8);
-    }
-    decoded = std::bit_cast<std::int64_t>(encoded);
+  if (!DecodeCanonicalInt64Scalar(value, &decoded, refusal_detail)) {
+    return false;
   }
   if (decoded < 0) {
     *refusal_detail = "row bound is negative or outside exact int64 admission";
@@ -10818,6 +10906,47 @@ MaterializedValues MaterializeValues(
   for (const auto& row : dag.values_rows) rows.emplace(row.row_id, &row);
   CanonicalRelationalExpressionRuntime expression_runtime(
       dag, expression_services);
+  const auto exact_values_literal_descriptor =
+      [&](const api::RelationalExpressionRecord& expression,
+          const std::uint32_t output_descriptor_id) {
+    const auto expression_descriptor =
+        descriptors.find(expression.result_descriptor_id);
+    const auto output_descriptor = descriptors.find(output_descriptor_id);
+    return expression.expression_kind ==
+               api::RelationalExpressionKind::kLiteral &&
+           expression.literal_kind ==
+               api::RelationalLiteralKind::kNumeric &&
+           expression.child_expression_ids.empty() &&
+           !expression.function_uuid.has_value() &&
+           !expression.bound_name_uuid.has_value() &&
+           !expression.operator_name.has_value() &&
+           !expression.literal_or_parameter_ref.has_value() &&
+           expression.literal_typed_value_v1.has_value() &&
+           !expression.parameter_typed_value_v1.has_value() &&
+           expression_descriptor != descriptors.end() &&
+           output_descriptor != descriptors.end() &&
+           expression.literal_typed_value_v1->descriptor_uuid ==
+               expression_descriptor->second->descriptor_uuid &&
+           expression.literal_typed_value_v1->descriptor_generation != 0 &&
+           expression.literal_typed_value_v1->value_state == "value" &&
+           !expression.literal_typed_value_v1->canonical_value_bytes.empty() &&
+           expression_descriptor->second->type_uuid ==
+               output_descriptor->second->type_uuid &&
+           expression_descriptor->second->nullability ==
+               api::RelationalNullability::kNonNull &&
+           output_descriptor->second->nullability ==
+               api::RelationalNullability::kNonNull &&
+           !expression_descriptor->second->collation_uuid.has_value() &&
+           !output_descriptor->second->collation_uuid.has_value() &&
+           !expression_descriptor->second->timezone_profile_id.has_value() &&
+           !output_descriptor->second->timezone_profile_id.has_value() &&
+           !expression_descriptor->second->width.has_value() &&
+           !expression_descriptor->second->precision.has_value() &&
+           !expression_descriptor->second->scale.has_value() &&
+           !output_descriptor->second->width.has_value() &&
+           !output_descriptor->second->precision.has_value() &&
+           !output_descriptor->second->scale.has_value();
+  };
 
   std::vector<const api::RelationalOutputRecord*> outputs;
   for (const auto& output : dag.outputs) {
@@ -10841,8 +10970,11 @@ MaterializedValues MaterializeValues(
       const auto expression =
           expressions.find(row->second->expression_ids[column]);
       if (expression == expressions.end() ||
-          expression->second->result_descriptor_id !=
-              node_it->output_descriptor_ids[column]) {
+          (expression->second->result_descriptor_id !=
+               node_it->output_descriptor_ids[column] &&
+           !exact_values_literal_descriptor(
+               *expression->second,
+               node_it->output_descriptor_ids[column]))) {
         result.detail =
             "live VALUES expression result descriptor is not column-bound";
         return result;
@@ -10965,6 +11097,30 @@ MaterializedValues MaterializeValues(
         result.batch = {};
         result.result_bindings.clear();
         return result;
+      }
+      if (!value.binary_value.empty()) {
+        std::int64_t decoded = 0;
+        if (!DecodeCanonicalInt64Scalar(value, &decoded, &result.detail)) {
+          result.batch = {};
+          result.result_bindings.clear();
+          return result;
+        }
+        value.encoded_value = std::to_string(decoded);
+        value.binary_value.clear();
+      }
+      if (value.descriptor.descriptor_uuid.canonical !=
+          result.batch.columns[column].descriptor.descriptor_uuid.canonical) {
+        auto rebound = api::QowPreserveCanonicalDescriptorAfterScalarV1(
+            result.batch.columns[column].descriptor, std::move(value));
+        if (rebound.descriptor.descriptor_uuid.canonical !=
+            result.batch.columns[column].descriptor.descriptor_uuid.canonical) {
+          result.batch = {};
+          result.result_bindings.clear();
+          result.detail =
+              "live VALUES literal could not adopt its column descriptor";
+          return result;
+        }
+        value = std::move(rebound);
       }
       tuple.values.push_back(std::move(value));
     }
@@ -11370,12 +11526,17 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
   return result;
 }
 
-exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveMaterializedSourceRegistration(
     std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches,
     std::string capability_uuid,
     std::string diagnostic_id,
     std::string operation_name,
-    const bool strict_dispatcher_memory = false) {
+    const exec::PhysicalNodeKind node_kind,
+    std::string implementation_id,
+    std::string payload_name,
+    const bool strict_dispatcher_memory,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority) {
   std::uint64_t registration_retained_bytes =
       strict_dispatcher_memory
           ? sizeof(std::unordered_map<std::uint64_t,
@@ -11399,7 +11560,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
                          &map_storage_bytes) ||
         !account_bytes(map_storage_bytes) ||
         !account_bytes(diagnostic_id.capacity() + 1) ||
-        !account_bytes(operation_name.capacity() + 1)) {
+        !account_bytes(operation_name.capacity() + 1) ||
+        !account_bytes(payload_name.capacity() + 1)) {
       registration_retained_bytes = 0;
     }
     for (const auto& [node_id, batch] : batches) {
@@ -11428,8 +11590,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
     }
   }
   exec::CanonicalPhysicalExecutorRegistration registration;
-  registration.node_kind = exec::PhysicalNodeKind::kValues;
-  registration.implementation_id = std::string(kValuesImplementationId);
+  registration.node_kind = node_kind;
+  registration.implementation_id = std::move(implementation_id);
   registration.executor_capability_uuid = std::move(capability_uuid);
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
@@ -11439,7 +11601,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
   registration.execute =
       [batches = std::move(batches), diagnostic_id = std::move(diagnostic_id),
        operation_name = std::move(operation_name), strict_dispatcher_memory,
-       batch_memory_bytes = std::move(batch_memory_bytes)](
+       payload_name = std::move(payload_name),
+       batch_memory_bytes = std::move(batch_memory_bytes),
+       borrowed_mga_authority](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -11453,6 +11617,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
         const auto batch = batches.find(node.relational_node_id);
         const auto batch_memory =
             batch_memory_bytes.find(node.relational_node_id);
+        if (borrowed_mga_authority != nullptr) {
+          const auto before = exec::RevalidateCanonicalExecutionMgaAuthority(
+              *borrowed_mga_authority, dag);
+          if (!before.ok) {
+            step.diagnostic = before;
+            return step;
+          }
+          step.mga_statement_context =
+              borrowed_mga_authority->statement_context;
+        }
         if (!node.input_physical_node_ids.empty() || !inputs.empty() ||
             batch == batches.end() ||
             (strict_dispatcher_memory &&
@@ -11468,11 +11642,21 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
           step.diagnostic.detail =
               strict_dispatcher_memory && batch != batches.end()
                   ? operation_name +
-                        " VALUES output exceeds the dispatcher callback "
+                        " " + payload_name +
+                        " output exceeds the dispatcher callback "
                         "allowance"
                   : operation_name +
-                        " VALUES executor input or payload identity differs";
+                        " " + payload_name +
+                        " executor input or payload identity differs";
           return step;
+        }
+        if (borrowed_mga_authority != nullptr) {
+          const auto after = exec::RevalidateCanonicalExecutionMgaAuthority(
+              *borrowed_mga_authority, dag);
+          if (!after.ok) {
+            step.diagnostic = after;
+            return step;
+          }
         }
         step.result_handle_id = node.physical_node_id;
         step.output_row_count = batch->second.rows.size();
@@ -11481,6 +11665,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
         return step;
       };
   return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
+    std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches,
+    std::string capability_uuid,
+    std::string diagnostic_id,
+    std::string operation_name,
+    const bool strict_dispatcher_memory = false) {
+  return MakeLiveMaterializedSourceRegistration(
+      std::move(batches), std::move(capability_uuid),
+      std::move(diagnostic_id), std::move(operation_name),
+      exec::PhysicalNodeKind::kValues,
+      std::string(kValuesImplementationId), "VALUES",
+      strict_dispatcher_memory, nullptr);
 }
 
 bool BuildOperatorLocalPhysicalDag(
@@ -35597,11 +35795,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           identifier_descriptor == dag.descriptors.end() ||
           literal_descriptor == dag.descriptors.end() ||
           predicate_descriptor == dag.descriptors.end() ||
-          identifier_descriptor->type_uuid !=
-              ExactCanonicalInt64TypeUuidV1() ||
+          ExactBoundedSignedIntegerTypeRankV1(
+              identifier_descriptor->type_uuid) == 0 ||
           literal_descriptor->type_uuid !=
               ExactCanonicalInt64TypeUuidV1() ||
-          identifier_descriptor->type_uuid != literal_descriptor->type_uuid ||
           literal_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
           predicate_descriptor->nullability !=
@@ -57925,9 +58122,8 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
       canonical_type.manifest.descriptor_rows.size() != 1 ||
       !canonical_type.manifest.descriptor_rows.front()
            .descriptor_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          canonical_type.manifest.descriptor_rows.front()
-              .descriptor_uuid.value) != *type_uuid ||
+      ExactCanonicalCoreDatatypeTypeUuidV1(
+          persisted.value_descriptor.canonical_type_name) != *type_uuid ||
       persisted.value_descriptor.descriptor_uuid.canonical == *type_uuid ||
       !encoded_type_name.has_value() ||
       *encoded_type_name !=
@@ -58065,9 +58261,8 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
               canonical_type.manifest.descriptor_rows.size() == 1 &&
               canonical_type.manifest.descriptor_rows.front()
                   .descriptor_uuid.valid()
-          ? scratchbird::core::uuid::UuidToString(
-                canonical_type.manifest.descriptor_rows.front()
-                    .descriptor_uuid.value)
+          ? ExactCanonicalCoreDatatypeTypeUuidV1(
+                persisted.value_descriptor.canonical_type_name)
           : std::string{};
   if (!type_uuid.has_value() ||
       !CanonicalUuidText(std::string(*type_uuid)) ||
@@ -60488,11 +60683,21 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
     api::EngineDescriptor engine_descriptor;
     if (spatial && ordinal < persisted.columns.size()) {
       const auto& column = persisted.columns[ordinal];
+      // A standalone spatial source publishes the persisted column descriptor
+      // identity.  A captured multileg source instead publishes the exact
+      // statement-scoped V10 allocation that the enclosing coordinator has
+      // already preflighted.  Both retain the persisted column/type/name
+      // authority; only the result-carrier descriptor UUID differs.
+      const bool exact_descriptor_identity =
+          leg_capture == nullptr
+              ? descriptor->descriptor_uuid ==
+                    column.value_descriptor.descriptor_uuid.canonical
+              : CanonicalUuidText(descriptor->descriptor_uuid) &&
+                    descriptor->descriptor_uuid != descriptor->type_uuid;
       if (output_expression->bound_name_uuid !=
               std::optional<std::string>(column.column_uuid.canonical) ||
           outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
-          descriptor->descriptor_uuid !=
-              column.value_descriptor.descriptor_uuid.canonical ||
+          !exact_descriptor_identity ||
           descriptor->type_uuid != spatial_type_uuids[ordinal] ||
           descriptor->nullability != api::RelationalNullability::kNonNull ||
           descriptor->collation_uuid.has_value() ||
@@ -60501,6 +60706,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       "spatial base output differs from persisted type authority");
       }
       engine_descriptor = column.value_descriptor;
+      if (leg_capture != nullptr) {
+        engine_descriptor.descriptor_uuid.canonical =
+            descriptor->descriptor_uuid;
+      }
       engine_descriptor.descriptor_kind = "scalar";
       engine_descriptor.encoded_descriptor =
           "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
@@ -62794,6 +63003,332 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
 }
 #endif
 
+#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalGenerateSeriesTableFunctionQuery(
+    const CanonicalCurrentHeapExecutionRequest& input) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& dag = input.relational_dag;
+  if (dag.nodes.size() != 1 || dag.root_node_id == 0 ||
+      dag.nodes.front().node_id != dag.root_node_id ||
+      dag.nodes.front().node_kind !=
+          api::RelationalDagNodeKind::kTableFunctionInvoke) {
+    return result;
+  }
+  result.profile_matched = true;
+  CanonicalObjectFreeValuesExecutionRequest response_context;
+  response_context.context = input.context;
+  response_context.relational_dag = input.relational_dag;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result = Failure(response_context, std::move(diagnostic_id),
+                                std::move(detail));
+    return result;
+  };
+
+  const auto& node = dag.nodes.front();
+  if (dag.wire_version != 2 ||
+      node.semantic_variant_id !=
+          "table-function.generate-series.v1" ||
+      node.required_object_uuids !=
+          std::vector<std::string>{
+              std::string(kGenerateSeriesFunctionUuid)} ||
+      !node.input_node_ids.empty() || node.shareable ||
+      (node.argument_expression_ids.size() != 2 &&
+       node.argument_expression_ids.size() != 3) ||
+      node.output_descriptor_ids.size() != 1 || dag.outputs.size() != 1 ||
+      dag.outputs.front().relation_node_id != node.node_id ||
+      dag.outputs.front().descriptor_id != node.output_descriptor_ids.front() ||
+      dag.outputs.front().output_name_utf8 != "generate_series" ||
+      !dag.outputs.front().visible || dag.outputs.front().ordinal != 0 ||
+      !node.required_property_uuids.empty() ||
+      !node.delivered_property_uuids.empty() || !dag.properties.empty()) {
+    return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-PROFILE-V1",
+                  "generate_series runtime profile is not exact");
+  }
+
+  const auto package = fn::BuildStandardFunctionSeedPackage();
+  const auto* registry_entry =
+      package.registry.Lookup(kGenerateSeriesFunctionId);
+  if (registry_entry == nullptr ||
+      registry_entry->function_uuid != kGenerateSeriesFunctionUuid ||
+      registry_entry->family != "rowset.table" ||
+      registry_entry->short_name != "generate_series" ||
+      registry_entry->implementation_state !=
+          fn::FunctionImplementationState::implemented_behavior ||
+      registry_entry->package_state != fn::FunctionPackageState::core ||
+      !registry_entry->catalog_visible) {
+    return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-REGISTRY-V1",
+                  "generate_series engine function registry identity is unavailable");
+  }
+
+  const auto admission = api::BuildCanonicalCurrentHeapOptimizerAdmission(
+      {input.context, input.relational_dag});
+  if (!admission.built || !admission.admission.admitted ||
+      !admission.admission.planning_allowed ||
+      admission.admission.data_access_allowed) {
+    return refuse(
+        admission.issue.diagnostic_id.empty()
+            ? "QOW-DIAG-QRY-004-TABLE-FUNCTION-ADMISSION-V1"
+            : admission.issue.diagnostic_id,
+        admission.issue.field_id.empty()
+            ? "generate_series optimizer admission failed"
+            : admission.issue.field_id);
+  }
+  result.optimizer_admitted = true;
+  result.optimizer_admission_degraded =
+      admission.admission.degraded_for_unknown_statistics;
+  result.optimizer_benchmark_clean_ready =
+      admission.admission.benchmark_clean_ready;
+  result.optimizer_admission_stage_count =
+      admission.admission.evidence.size();
+
+  CanonicalRelationalExpressionRuntime expression_runtime(dag, {});
+  std::vector<std::int64_t> arguments;
+  arguments.reserve(node.argument_expression_ids.size());
+  for (const auto expression_id : node.argument_expression_ids) {
+    api::EngineTypedValue value;
+    std::string detail;
+    if (!expression_runtime.EvaluateForConsumer(
+            expression_id, "int64",
+            api::EngineCanonicalExpressionConsumer::projection, &value,
+            &detail)) {
+      return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-ARGUMENT-V1",
+                    detail.empty()
+                        ? "generate_series argument is not an authenticated int64 parameter"
+                        : detail);
+    }
+    std::int64_t decoded = 0;
+    if (!DecodeCanonicalInt64Scalar(value, &decoded, &detail)) {
+      return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-ARGUMENT-V1",
+                    detail);
+    }
+    arguments.push_back(decoded);
+  }
+  const std::int64_t start = arguments[0];
+  const std::int64_t stop = arguments[1];
+  const std::int64_t step = arguments.size() == 3 ? arguments[2] : 1;
+  if (step == 0) {
+    return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-ARGUMENT-V1",
+                  "generate_series step must not be zero");
+  }
+
+  const auto output_descriptor = std::ranges::find_if(
+      dag.descriptors, [&](const auto& descriptor) {
+        return descriptor.descriptor_id ==
+               node.output_descriptor_ids.front();
+      });
+  if (output_descriptor == dag.descriptors.end() ||
+      output_descriptor->nullability !=
+          api::RelationalNullability::kNonNull ||
+      output_descriptor->width.has_value() ||
+      output_descriptor->precision.has_value() ||
+      output_descriptor->scale.has_value() ||
+      output_descriptor->collation_uuid.has_value() ||
+      output_descriptor->timezone_profile_id.has_value()) {
+    return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-DESCRIPTOR-V1",
+                  "generate_series output descriptor is not exact");
+  }
+  api::EngineDescriptor engine_descriptor;
+  engine_descriptor.descriptor_uuid.canonical =
+      output_descriptor->descriptor_uuid;
+  engine_descriptor.descriptor_kind = "scalar";
+  engine_descriptor.canonical_type_name = "int64";
+  engine_descriptor.encoded_descriptor =
+      "type_uuid=" + output_descriptor->type_uuid +
+      ";nullability=non_null";
+  exec::DescriptorBatch batch;
+  batch.columns.push_back(
+      {"generate_series", engine_descriptor, false,
+       output_descriptor->descriptor_id});
+  const bool forward = step > 0;
+  std::int64_t current = start;
+  while ((forward && current <= stop) || (!forward && current >= stop)) {
+    if (batch.rows.size() >= kGenerateSeriesMaximumRowCount) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    "generate_series exceeds the bounded 10000-row runtime profile");
+    }
+    api::EngineTypedValue value;
+    value.descriptor = engine_descriptor;
+    value.encoded_value = std::to_string(current);
+    value.state = api::EngineValueState::value;
+    value.is_null = false;
+    batch.rows.push_back({{std::move(value)}});
+    if (current == stop ||
+        (step > 0 &&
+         current > std::numeric_limits<std::int64_t>::max() - step) ||
+        (step < 0 &&
+         current < std::numeric_limits<std::int64_t>::min() - step)) {
+      break;
+    }
+    const auto next = static_cast<std::int64_t>(current + step);
+    if ((step > 0 && next > stop) || (step < 0 && next < stop)) break;
+    current = next;
+  }
+  const auto batch_validation =
+      exec::ValidateCanonicalDescriptorBatch(batch,
+                                             node.output_descriptor_ids);
+  const auto value_validation = exec::ValidateDescriptorBatch(batch);
+  std::uint64_t batch_memory_bytes = 0;
+  if (!batch_validation.ok || !value_validation.ok ||
+      !RuntimeMaterializedBatchMemoryBytes(batch, &batch_memory_bytes) ||
+      batch_memory_bytes == 0 ||
+      batch_memory_bytes > input.context.optimizer_memory_budget_bytes) {
+    return refuse(
+        !batch_validation.ok
+            ? batch_validation.diagnostic_code
+            : (!value_validation.ok
+                   ? value_validation.diagnostic_code
+                   : "SBLR.PLAN_TREE.RESOURCE_LIMIT"),
+        !batch_validation.ok
+            ? batch_validation.detail
+            : (!value_validation.ok
+                   ? value_validation.detail
+                   : "generate_series materialization exceeds the optimizer memory budget"));
+  }
+  const auto generated_row_count = batch.rows.size();
+
+  CanonicalObjectFreeValuesExecutionRequest planning_request{
+      input.context, input.relational_dag, admission.request,
+      admission.admission};
+  const auto& graph = admission.request.logical_graph;
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+  const auto capability_uuid =
+      DerivedCanonicalUuid(identity_scope,
+                           "table-function.generate-series.capability");
+  LivePhysicalNodeProfile profile;
+  profile.logical_node_id = node.node_id;
+  profile.implementation_id = "table-function.generate-series.v1";
+  profile.capability_uuid = capability_uuid;
+  profile.logical_node_kind =
+      plan::CanonicalLogicalRelationalNodeKind::kTableFunctionInvoke;
+  profile.physical_node_kind = exec::PhysicalNodeKind::kTableFunctionInvoke;
+  profile.transformation_rule_id =
+      "canonical.table-function.generate-series.v1";
+  profile.estimated_rows = std::max<std::size_t>(1, generated_row_count);
+  profile.memory_bytes_required = batch_memory_bytes;
+  profile.minimum_input_count = 0;
+  profile.maximum_input_count = 0;
+  profile.udr_invocation_units =
+      std::max<std::uint64_t>(1, generated_row_count);
+  std::vector<LivePhysicalNodeProfile> profiles;
+  profiles.push_back(std::move(profile));
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "generate_series runtime memory receipt is incomplete");
+  }
+  auto physical = PlanAndPublishLivePhysicalDag(
+      planning_request, profiles,
+      "table-function.generate-series.selected-plan",
+      "generate_series table function");
+  if (!physical.ok) {
+    return refuse(physical.diagnostic_id, physical.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = physical.physical_dag.nodes.size();
+  result.selected_plan_uuid = physical.physical_dag.selected_plan_uuid;
+
+  api::CanonicalOptimizerSelectedExecutionRequest selected;
+  selected.pre_access_statistics_snapshot_uuid =
+      physical.physical_dag.statistics_snapshot_uuid;
+  selected.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(input.context,
+                                          physical.physical_dag);
+  selected.selected_physical_dag = std::move(physical.physical_dag);
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches;
+  batches.emplace(node.node_id, std::move(batch));
+  selected.available_executors.push_back(
+      MakeLiveMaterializedSourceRegistration(
+          std::move(batches), capability_uuid,
+          "QOW-DIAG-QRY-004-TABLE-FUNCTION-EXECUTOR-V1",
+          "generate_series table function",
+          exec::PhysicalNodeKind::kTableFunctionInvoke,
+          "table-function.generate-series.v1", "TABLE_FUNCTION_INVOKE",
+          true, &selected.mga_authority));
+  selected.engine_execution_authorized = true;
+  selected.runtime_limits.maximum_rows_per_batch =
+      kGenerateSeriesMaximumRowCount;
+  selected.runtime_limits.maximum_columns_per_batch = 1;
+  selected.runtime_limits.maximum_cells_per_batch =
+      kGenerateSeriesMaximumRowCount;
+  selected.runtime_limits.maximum_total_materialized_rows =
+      kGenerateSeriesMaximumRowCount;
+  selected.runtime_limits.maximum_total_materialized_cells =
+      kGenerateSeriesMaximumRowCount;
+  selected.result_publication_request.statement_uuid =
+      input.context.statement_uuid.canonical;
+  selected.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  selected.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + input.context.current_monotonic_ns,
+          "table-function.generate-series.execution-attempt");
+  selected.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  selected.result_publication_request.transaction_effect_evidence_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" +
+              std::to_string(input.context.local_transaction_id) + ":" +
+              std::to_string(
+                  input.context.snapshot_visible_through_local_transaction_id),
+          "table-function.generate-series.transaction-effect-unchanged");
+  selected.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, generated_row_count);
+  exec::CanonicalResultColumnBinding binding;
+  binding.physical_column_ordinal = 0;
+  binding.visible = true;
+  binding.published_descriptor = exec::CanonicalResultColumnDescriptor{
+      0, "generate_series", output_descriptor->descriptor_uuid,
+      output_descriptor->type_uuid,
+      exec::CanonicalResultNullability::kNonNull, std::nullopt,
+      std::nullopt};
+  selected.result_publication_request.column_bindings.push_back(
+      std::move(binding));
+
+  const auto execution = ExecuteSelectedWithMgaGuard(
+      input.context, selected, physical.ordinary_runtime_memory_receipts);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published ||
+      !execution.runtime_actuals.accepted ||
+      execution.dispatch.executed_steps.size() != 1 ||
+      !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-QRY-004-TABLE-FUNCTION-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "generate_series selected physical DAG did not complete"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = true;
+  result.canonical_result_published = true;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(planning_request, execution);
+  result.api_result.evidence.push_back(
+      {"canonical.table_function",
+       "SBSQL_GENERATE_SERIES_TO_OPTIMIZER_TO_PHYSICAL_SOURCE_V1"});
+  return result;
+}
+#endif
+
 // QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
 CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const CanonicalCurrentHeapExecutionRequest& input) {
@@ -62803,6 +63338,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   return result;
 #else
   const auto& dag = input.relational_dag;
+  if (dag.nodes.size() == 1 &&
+      dag.nodes.front().node_kind ==
+          api::RelationalDagNodeKind::kTableFunctionInvoke) {
+    return ExecuteCanonicalGenerateSeriesTableFunctionQuery(input);
+  }
   if (std::ranges::any_of(dag.nodes, [](const auto& node) {
         return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
                node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1" ||
@@ -63183,6 +63723,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         input_outputs.size() !=
             aggregate_input_node->output_descriptor_ids.size() ||
         admission.current_relation_projection_type_names.size() !=
+            input_outputs.size() ||
+        admission.current_relation_projection_descriptors.size() !=
             input_outputs.size()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
                     "object-backed global aggregate profile is not exact");
@@ -63199,17 +63741,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
                       "object-backed aggregate input descriptor is unresolved");
       }
-      api::EngineDescriptor engine_descriptor;
-      engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
-      engine_descriptor.descriptor_kind = "scalar";
       const auto persisted_type_name =
           admission.current_relation_projection_type_names[ordinal];
-      engine_descriptor.canonical_type_name = persisted_type_name;
-      engine_descriptor.encoded_descriptor =
-          "type_uuid=" + descriptor->type_uuid + ";nullability=" +
-          (descriptor->nullability == api::RelationalNullability::kNullable
-               ? "nullable"
-               : "non_null");
+      const auto& engine_descriptor =
+          admission.current_relation_projection_descriptors[ordinal];
+      if (engine_descriptor.descriptor_uuid.canonical !=
+              descriptor->descriptor_uuid ||
+          engine_descriptor.descriptor_kind != "scalar" ||
+          engine_descriptor.canonical_type_name != persisted_type_name ||
+          !api::QowCanonicalDescriptorIdentityV1(engine_descriptor)) {
+        return refuse(
+            "QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
+            "object-backed aggregate persisted input descriptor drifted");
+      }
       planning_input.batch.columns.push_back(
           {input_outputs[ordinal]->output_name_utf8, engine_descriptor,
            descriptor->nullability == api::RelationalNullability::kNullable,
@@ -63238,9 +63782,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          plan::CanonicalLogicalRelationalNodeKind::kAggregate,
          exec::PhysicalNodeKind::kAggregate,
          aggregate_profile.transformation_id, 1,
-         aggregate_profile.count_star
-             ? planning_request.optimizer_request.resource.memory_budget_bytes
-             : 1024,
+         planning_request.optimizer_request.resource.memory_budget_bytes,
          1, 1});
   }
   std::vector<plan::CanonicalLogicalPropertyOrderingTerm> heap_order_terms;
@@ -64249,8 +64791,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       selected.available_executors.push_back(
           MakeLiveHeapFilterRegistration(
               filter_node->bound_expression_ids.front(), filter_row_binding,
-              input.relational_dag, {}, filter_capability_uuid,
-              maximum_output_rows, input.context));
+              {}, {}, filter_capability_uuid, maximum_output_rows, {},
+              api::EngineCanonicalExpressionConsumer::filter,
+              api::EnginePredicateConsumer::filter, &input.relational_dag,
+              &input.context, selected.borrowed_mga_authority));
     }
     if (aggregate_composition) {
       const auto aggregate_profile =
@@ -64261,24 +64805,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             MakeLiveCountStarRegistration(
                 prepared_heap_aggregate.result_column,
                 aggregate_capability_uuid, maximum_output_rows,
-                input.context));
+                input.context, &input.context,
+                selected.borrowed_mga_authority));
       } else {
         selected.available_executors.push_back(
             MakeLiveAggregateRegistryRegistration(
                 prepared_heap_aggregate, aggregate_capability_uuid,
-                maximum_output_rows, 0, input.context));
+                maximum_output_rows, 0, input.context, true));
       }
     }
     if (sort_composition) {
       selected.available_executors.push_back(
-          MakeLiveHeapSortRegistration(
+          MakeLiveSortRegistration(
               heap_descriptor_order_terms,
               DerivedCanonicalUuid(identity_scope + ":" + ordering_property_uuid,
                                    "heap-sort.deterministic-tie"),
               sort_capability_uuid, maximum_output_rows,
               std::max<std::size_t>(
                   1, static_cast<std::size_t>(maximum_pair_comparisons_u64)),
-              input.context));
+              {}, &input.context, selected.borrowed_mga_authority));
     }
     if (window_composition) {
       if (prepared_heap_aggregate_window.has_value() &&
@@ -64347,26 +64892,30 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         selected.available_executors.push_back(
             MakeLiveRowNumberRegistration(
                 *prepared_heap_row_number, window_order_evidence_uuid,
-                window_capability_uuid, maximum_output_rows, input.context));
+                window_capability_uuid, maximum_output_rows, {},
+                &input.context, selected.borrowed_mga_authority));
       }
     }
     if (project_composition) {
       selected.available_executors.push_back(
           MakeLiveHeapProjectRegistration(
               projected_columns, project_capability_uuid,
-              maximum_output_rows, input.context));
+              maximum_output_rows, {}, &input.context,
+              selected.borrowed_mga_authority));
     }
     if (cte_composition) {
       selected.available_executors.push_back(
           MakeLiveNonrecursiveCteRegistration(
               cte_implementation_id, cte_capability_uuid,
-              maximum_output_rows, input.context));
+              maximum_output_rows, {}, &input.context,
+              selected.borrowed_mga_authority));
     }
     if (limit_composition) {
       selected.available_executors.push_back(
           MakeLiveLimitRegistration(
               limit_implementation_id, limit_capability_uuid, row_limit,
-              row_offset, false, maximum_output_rows, input.context));
+              row_offset, false, maximum_output_rows, {}, &input.context,
+              selected.borrowed_mga_authority));
     }
     selected.engine_execution_authorized = true;
     selected.result_publication_request.statement_uuid =

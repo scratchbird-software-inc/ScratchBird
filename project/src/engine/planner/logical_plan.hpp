@@ -208,6 +208,7 @@ struct CanonicalLogicalRelationalNode {
   std::vector<std::uint32_t> input_logical_node_ids;
   std::vector<std::uint32_t> output_descriptor_ids;
   std::vector<std::uint32_t> bound_expression_ids;
+  std::vector<std::uint32_t> argument_expression_ids;
   std::vector<std::uint32_t> origin_relational_node_ids;
   std::vector<std::string> required_object_uuids;
   std::string semantic_variant_id;
@@ -618,6 +619,20 @@ ValidateCanonicalLogicalRelationalGraph(
                       node.logical_node_id, "bound_expression_ids");
       }
     }
+    std::unordered_set<std::uint32_t> argument_expression_ids;
+    for (const auto expression_id : node.argument_expression_ids) {
+      if (expression_id == 0 ||
+          !argument_expression_ids.insert(expression_id).second) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                      node.logical_node_id, "argument_expression_ids");
+      }
+    }
+    if ((node.node_kind ==
+             CanonicalLogicalRelationalNodeKind::kTableFunctionInvoke) !=
+        !node.argument_expression_ids.empty()) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.logical_node_id,
+                    "table_function_argument_expression_ids");
+    }
     std::unordered_set<std::uint32_t> origin_ids;
     for (const auto origin_id : node.origin_relational_node_ids) {
       if (origin_id == 0 || !origin_ids.insert(origin_id).second) {
@@ -643,6 +658,7 @@ ValidateCanonicalLogicalRelationalGraph(
     if (!add_bound_references(node.input_logical_node_ids.size()) ||
         !add_bound_references(node.output_descriptor_ids.size()) ||
         !add_bound_references(node.bound_expression_ids.size()) ||
+        !add_bound_references(node.argument_expression_ids.size()) ||
         !add_bound_references(node.origin_relational_node_ids.size()) ||
         !add_bound_references(node.required_object_uuids.size())) {
       return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
