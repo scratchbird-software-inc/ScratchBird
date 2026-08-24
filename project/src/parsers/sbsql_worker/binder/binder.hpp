@@ -238,6 +238,33 @@ struct BoundWindowInvocationAstRecord {
   std::vector<std::uint32_t> argument_expression_ids;
 };
 
+struct BoundRowPatternVariableAstRecord {
+  std::string canonical_name_key;
+  std::uint32_t minimum_occurrences{1};
+  std::optional<std::uint32_t> maximum_occurrences;
+  bool reluctant{false};
+  std::optional<std::uint32_t> define_expression_id;
+  bool define_always_true{false};
+};
+
+struct BoundRowPatternAstRecord {
+  std::uint32_t pattern_id{0};
+  std::uint32_t relation_id{0};
+  std::vector<std::uint32_t> partition_expression_ids;
+  std::vector<BoundOrderingAstTerm> ordering_terms;
+  std::vector<BoundRowPatternVariableAstRecord> variables;
+  std::vector<std::uint32_t> measure_expression_ids;
+  NativeRowPatternRowsPerMatch rows_per_match{
+      NativeRowPatternRowsPerMatch::kOne};
+  NativeRowPatternAfterMatchSkip after_match_skip{
+      NativeRowPatternAfterMatchSkip::kToNextRow};
+  std::optional<std::string> skip_target_key;
+  std::uint32_t maximum_partition_rows{0};
+  std::uint32_t maximum_active_states{0};
+  std::uint32_t maximum_output_rows{0};
+  bool stable_row_identity_tie_break_allowed{false};
+};
+
 struct BoundRelationAstRecord {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
@@ -503,6 +530,7 @@ struct BoundNativeRelationalDocument {
   std::vector<BoundGroupingSetAstRecord> grouping_sets;
   std::vector<BoundWindowDefinitionAstRecord> window_definitions;
   std::vector<BoundWindowInvocationAstRecord> window_invocations;
+  std::vector<BoundRowPatternAstRecord> row_patterns;
   std::vector<BoundOutputAstRecord> outputs;
   std::vector<BoundRelationAstRecord> relations;
   std::vector<BoundCatalogRelationSourceAstRecord> catalog_relation_sources;

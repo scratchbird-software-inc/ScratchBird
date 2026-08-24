@@ -33094,6 +33094,260 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return relation.relation_kind ==
                NativeRelationAstKind::kTableFunctionInvoke;
       });
+  const auto match_recognize_relation = std::ranges::find_if(
+      native.relations, [](const auto& relation) {
+        return relation.relation_kind ==
+               NativeRelationAstKind::kMatchRecognize;
+      });
+  if (match_recognize_relation != native.relations.end()) {
+    constexpr std::string_view kMatchPartitionPropertyUuid =
+        "019dffbb-f000-7e2c-b437-ebbbc2d4f360";
+    constexpr std::string_view kMatchOrderingPropertyUuid =
+        "019dffbb-f000-7e2c-b437-ebbbc2d4f361";
+    if (table_function_relation == native.relations.end() ||
+        native.row_patterns.size() != 1) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "MATCH_RECOGNIZE requires one exact source and row-pattern descriptor");
+      return envelope;
+    }
+    const auto& source = *table_function_relation;
+    const auto& match = *match_recognize_relation;
+    const auto& pattern = native.row_patterns.front();
+    const auto argument_count =
+        source.table_function_argument_expression_ids.size();
+    const auto output_expression_id =
+        static_cast<std::uint32_t>(argument_count + 1);
+    std::unordered_map<std::uint32_t, const BoundDescriptorAstRecord*>
+        descriptors_by_id;
+    for (const auto& descriptor : native.descriptors) {
+      descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor);
+    }
+    std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
+        expressions_by_id;
+    for (const auto& expression : native.expressions) {
+      expressions_by_id.emplace(expression.expression_id, &expression);
+    }
+    bool exact_arguments = argument_count == 2 || argument_count == 3;
+    for (std::size_t ordinal = 0; exact_arguments && ordinal < argument_count;
+         ++ordinal) {
+      const auto argument_id =
+          source.table_function_argument_expression_ids[ordinal];
+      const auto argument = expressions_by_id.find(argument_id);
+      const auto descriptor =
+          argument == expressions_by_id.end()
+              ? descriptors_by_id.end()
+              : descriptors_by_id.find(argument->second->result_descriptor_id);
+      exact_arguments =
+          argument_id == ordinal + 1 && argument != expressions_by_id.end() &&
+          argument->second->expression_kind ==
+              NativeExpressionAstKind::kParameter &&
+          !argument->second->literal_kind.has_value() &&
+          argument->second->child_expression_ids.empty() &&
+          !argument->second->bound_function_uuid.has_value() &&
+          !argument->second->bound_name_uuid.has_value() &&
+          !argument->second->canonical_operator_name.has_value() &&
+          !argument->second->literal_or_parameter_ref.has_value() &&
+          argument->second->structural_literal_occurrence_id == 0 &&
+          argument->second->structural_parameter_occurrence_id == ordinal + 1 &&
+          argument->second->structural_variable_occurrence_id == 0 &&
+          descriptor != descriptors_by_id.end() &&
+          descriptor->second->nullability == BoundNullability::kNonNull &&
+          descriptor->second->canonical_type_name == "int64" &&
+          !descriptor->second->collation_uuid.has_value() &&
+          !descriptor->second->timezone_profile_id.has_value();
+    }
+    const auto output_expression = expressions_by_id.find(output_expression_id);
+    const auto output_descriptor = descriptors_by_id.find(1);
+    const bool exact_output_expression =
+        output_expression != expressions_by_id.end() &&
+        output_expression->second->expression_kind ==
+            NativeExpressionAstKind::kFunctionCall &&
+        output_expression->second->child_expression_ids ==
+            source.table_function_argument_expression_ids &&
+        output_expression->second->result_descriptor_id == 1 &&
+        output_expression->second->bound_function_uuid ==
+            std::string(kGenerateSeriesFunctionUuid) &&
+        !output_expression->second->bound_name_uuid.has_value() &&
+        !output_expression->second->literal_kind.has_value() &&
+        !output_expression->second->canonical_operator_name.has_value() &&
+        !output_expression->second->literal_or_parameter_ref.has_value() &&
+        output_descriptor != descriptors_by_id.end() &&
+        output_descriptor->second->nullability == BoundNullability::kNonNull &&
+        output_descriptor->second->canonical_type_name == "int64";
+    const bool exact_pattern =
+        pattern.pattern_id == 1 && pattern.relation_id == match.relation_id &&
+        pattern.partition_expression_ids ==
+            std::vector<std::uint32_t>{output_expression_id} &&
+        pattern.ordering_terms.size() == 1 &&
+        pattern.ordering_terms.front().expression_id == output_expression_id &&
+        pattern.ordering_terms.front().direction ==
+            NativeSortDirection::kAscending &&
+        pattern.ordering_terms.front().null_placement ==
+            NativeNullPlacement::kNullsLast &&
+        pattern.variables.size() == 1 &&
+        pattern.variables.front().canonical_name_key == "a" &&
+        pattern.variables.front().minimum_occurrences == 1 &&
+        !pattern.variables.front().maximum_occurrences.has_value() &&
+        !pattern.variables.front().reluctant &&
+        !pattern.variables.front().define_expression_id.has_value() &&
+        pattern.variables.front().define_always_true &&
+        pattern.measure_expression_ids.empty() &&
+        pattern.rows_per_match == NativeRowPatternRowsPerMatch::kAll &&
+        pattern.after_match_skip ==
+            NativeRowPatternAfterMatchSkip::kPastLastRow &&
+        !pattern.skip_target_key.has_value() &&
+        pattern.maximum_partition_rows == 10000 &&
+        pattern.maximum_active_states == 2 &&
+        pattern.maximum_output_rows == 10000 &&
+        pattern.stable_row_identity_tie_break_allowed;
+    if (native.relations.size() != 2 || native.root_relation_id != 2 ||
+        native.root_scope_id != 1 || native.scopes.size() != 1 ||
+        source.relation_id != 1 || match.relation_id != 2 ||
+        source.relation_kind != NativeRelationAstKind::kTableFunctionInvoke ||
+        match.relation_kind != NativeRelationAstKind::kMatchRecognize ||
+        !source.input_relation_ids.empty() ||
+        source.output_expression_ids !=
+            std::vector<std::uint32_t>{output_expression_id} ||
+        source.bound_expression_ids !=
+            std::vector<std::uint32_t>{output_expression_id} ||
+        source.semantic_variant_id !=
+            "table-function.generate-series.v1" ||
+        source.bound_object_uuid !=
+            std::string(kGenerateSeriesFunctionUuid) ||
+        match.input_relation_ids != std::vector<std::uint32_t>{1} ||
+        match.output_expression_ids != source.output_expression_ids ||
+        match.bound_expression_ids != source.bound_expression_ids ||
+        match.semantic_variant_id !=
+            "match-recognize.a-plus.true.all-rows.v1" ||
+        match.bound_object_uuid.has_value() || !exact_arguments ||
+        !exact_output_expression || !exact_pattern ||
+        native.descriptors.size() != argument_count + 1 ||
+        native.expressions.size() != argument_count + 1 ||
+        native.outputs.size() != 2 || !native.values_rows.empty() ||
+        !native.grouping_sets.empty() || !native.window_definitions.empty() ||
+        !native.window_invocations.empty() ||
+        !native.catalog_relation_sources.empty() ||
+        native.outputs[0].output_id != 1 ||
+        native.outputs[0].relation_id != source.relation_id ||
+        native.outputs[1].output_id != 2 ||
+        native.outputs[1].relation_id != match.relation_id ||
+        native.outputs[0].expression_id != output_expression_id ||
+        native.outputs[1].expression_id != output_expression_id ||
+        native.outputs[0].descriptor_id != 1 ||
+        native.outputs[1].descriptor_id != 1 ||
+        native.outputs[0].output_name_utf8 != "generate_series" ||
+        native.outputs[1].output_name_utf8 != "generate_series" ||
+        !native.outputs[0].visible || !native.outputs[1].visible ||
+        native.outputs[0].ordinal != 0 || native.outputs[1].ordinal != 0 ||
+        native.scopes.front().scope_id != 1 ||
+        native.scopes.front().parent_scope_id.has_value() ||
+        native.scopes.front().visible_relation_ids !=
+            std::vector<std::uint32_t>{2} ||
+        native.scopes.front().visible_projection_ids !=
+            std::vector<std::uint32_t>{2}) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "MATCH_RECOGNIZE BoundAST is outside the exact bounded descriptor");
+      return envelope;
+    }
+
+    envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
+    envelope.operands.push_back(
+        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_catalog_epoch_uuid",
+         native.scopes.front().catalog_epoch_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_security_context_uuid",
+         native.security_context_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_uuid", native.statement_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_owning_transaction_uuid",
+         native.owning_transaction_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_snapshot_uuid",
+         native.statement_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_metadata_snapshot_uuid",
+         native.statement_metadata_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uint64", "relational_local_transaction_id",
+         std::to_string(native.local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+         std::to_string(
+             native.snapshot_visible_through_local_transaction_id)});
+    envelope.operands.push_back({"uint32", "relational_root_node_id", "2"});
+    for (const auto& descriptor : native.descriptors) {
+      envelope.operands.push_back(
+          {"relational_descriptor_v1",
+           std::to_string(descriptor.descriptor_id),
+           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+               std::to_string(
+                   static_cast<std::uint8_t>(descriptor.nullability) + 1) +
+               "|-|-|-|-|-"});
+    }
+    for (const auto& expression : native.expressions) {
+      envelope.operands.push_back(
+          {"relational_expression_v1",
+           std::to_string(expression.expression_id),
+           std::to_string(static_cast<std::uint8_t>(
+                              expression.expression_kind) +
+                          1) +
+               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
+               "|" + std::to_string(expression.result_descriptor_id) + "|" +
+               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
+               "|-|-|-|-"});
+    }
+    envelope.operands.push_back(
+        {"relational_output_v1", "1",
+         "1|" + std::to_string(output_expression_id) +
+             "|1|1|0|" + EncodeCanonicalHex("generate_series")});
+    envelope.operands.push_back(
+        {"relational_output_v1", "2",
+         "2|" + std::to_string(output_expression_id) +
+             "|1|1|0|" + EncodeCanonicalHex("generate_series")});
+    envelope.operands.push_back(
+        {"relational_node_v1", "1", "17|0|-|1|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", "1",
+         EncodeCanonicalHex("table-function.generate-series.v1") + "|" +
+             std::to_string(output_expression_id) + "|" +
+             std::string(kGenerateSeriesFunctionUuid) + "|-|-"});
+    envelope.operands.push_back(
+        {"relational_table_function_v1", "1",
+         JoinCanonicalHandleList(
+             source.table_function_argument_expression_ids)});
+    envelope.operands.push_back(
+        {"relational_node_v1", "2", "16|0|1|1|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", "2",
+         EncodeCanonicalHex(
+             "match-recognize.a-plus.true.all-rows.v1") +
+             "|" + std::to_string(output_expression_id) + "|-|" +
+             std::string(kMatchPartitionPropertyUuid) + "," +
+             std::string(kMatchOrderingPropertyUuid) + "|" +
+             std::string(kMatchPartitionPropertyUuid) + "," +
+             std::string(kMatchOrderingPropertyUuid)});
+    envelope.operands.push_back(
+        {"relational_row_pattern_v1", "2",
+         "1|" + std::to_string(output_expression_id) + "|" +
+             std::to_string(output_expression_id) +
+             ":1:2:-|61:1:-:0:-:1|-|2|1|-|10000|2|10000|1"});
+    envelope.operands.push_back(
+        {"relational_property_v1",
+         std::string(kMatchPartitionPropertyUuid),
+         "3|2|" + std::to_string(output_expression_id) + "|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_property_v1",
+         std::string(kMatchOrderingPropertyUuid),
+         "1|2|-|" + std::to_string(output_expression_id) +
+             ":1:2:-|-|-"});
+    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+    return envelope;
+  }
   if (table_function_relation != native.relations.end()) {
     const auto& relation = *table_function_relation;
     const auto argument_count =
@@ -43101,6 +43355,31 @@ struct ParsedRelationalWindowInvocation {
   std::vector<std::uint32_t> argument_expression_ids;
 };
 
+struct ParsedRelationalRowPatternVariable {
+  std::string canonical_name_key;
+  std::uint32_t minimum_occurrences{0};
+  std::optional<std::uint32_t> maximum_occurrences;
+  bool reluctant{false};
+  std::optional<std::uint32_t> define_expression_id;
+  bool define_always_true{false};
+};
+
+struct ParsedRelationalRowPattern {
+  std::uint32_t id{0};
+  std::uint32_t node_id{0};
+  std::vector<std::uint32_t> partition_expression_ids;
+  std::vector<ParsedRelationalOrderingTerm> ordering_terms;
+  std::vector<ParsedRelationalRowPatternVariable> variables;
+  std::vector<std::uint32_t> measure_expression_ids;
+  std::uint8_t rows_per_match{0};
+  std::uint8_t after_match_skip{0};
+  std::optional<std::string> skip_target_key;
+  std::uint32_t maximum_partition_rows{0};
+  std::uint32_t maximum_active_states{0};
+  std::uint32_t maximum_output_rows{0};
+  bool stable_row_identity_tie_break_allowed{false};
+};
+
 struct ParsedRelationalNode {
   std::uint32_t id{0};
   std::uint8_t kind{0};
@@ -43139,6 +43418,7 @@ struct ParsedRelationalGraph {
   std::vector<ParsedRelationalGroupingSet> grouping_sets;
   std::vector<ParsedRelationalWindowDefinition> window_definitions;
   std::vector<ParsedRelationalWindowInvocation> window_invocations;
+  std::vector<ParsedRelationalRowPattern> row_patterns;
   std::vector<ParsedRelationalProperty> properties;
   std::vector<ParsedRelationalNode> nodes;
 };
@@ -43223,6 +43503,26 @@ bool SplitCanonicalRelationalFields(
     if (separator == std::string_view::npos) return false;
     (*fields)[index] = encoded.substr(start, separator - start);
     start = separator + 1;
+  }
+  return false;
+}
+
+template <std::size_t FieldCount>
+bool SplitCanonicalRelationalSubfields(
+    const std::string_view encoded, const char separator,
+    std::array<std::string_view, FieldCount>* fields) {
+  if (fields == nullptr || encoded.empty()) return false;
+  std::size_t start = 0;
+  for (std::size_t index = 0; index < FieldCount; ++index) {
+    const auto next = encoded.find(separator, start);
+    if (index + 1 == FieldCount) {
+      if (next != std::string_view::npos) return false;
+      (*fields)[index] = encoded.substr(start);
+      return true;
+    }
+    if (next == std::string_view::npos) return false;
+    (*fields)[index] = encoded.substr(start, next - start);
+    start = next + 1;
   }
   return false;
 }
@@ -44273,6 +44573,97 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       }
       continue;
     }
+    if (operand.type == "relational_row_pattern_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t node_id = 0;
+      std::uint64_t pattern_id = 0;
+      std::uint64_t rows_per_match = 0;
+      std::uint64_t after_match_skip = 0;
+      std::uint64_t maximum_partition_rows = 0;
+      std::uint64_t maximum_active_states = 0;
+      std::uint64_t maximum_output_rows = 0;
+      std::array<std::string_view, 12> fields{};
+      ParsedRelationalRowPattern pattern;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &pattern_id) ||
+          !ParseCanonicalRelationalHandleList(
+              fields[1], &pattern.partition_expression_ids) ||
+          !ParseCanonicalRelationalOrderingTerms(
+              fields[2], &pattern.ordering_terms) ||
+          !ParseCanonicalRelationalHandleList(
+              fields[4], &pattern.measure_expression_ids) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[5], std::numeric_limits<std::uint8_t>::max(),
+              &rows_per_match) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[6], std::numeric_limits<std::uint8_t>::max(),
+              &after_match_skip) ||
+          !DecodeOptionalCanonicalRelationalHex(
+              fields[7], &pattern.skip_target_key) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[8], std::numeric_limits<std::uint32_t>::max(),
+              &maximum_partition_rows) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[9], std::numeric_limits<std::uint32_t>::max(),
+              &maximum_active_states) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[10], std::numeric_limits<std::uint32_t>::max(),
+              &maximum_output_rows) ||
+          (fields[11] != "0" && fields[11] != "1")) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "row-pattern descriptor is malformed",
+                                     "row_pattern_record");
+      }
+      std::array<std::string_view, 6> variable_fields{};
+      std::uint64_t minimum_occurrences = 0;
+      ParsedRelationalRowPatternVariable variable;
+      if (!SplitCanonicalRelationalSubfields(
+              fields[3], ':', &variable_fields) ||
+          !DecodeCanonicalRelationalHex(
+              variable_fields[0], &variable.canonical_name_key) ||
+          !ParseCanonicalRelationalUnsigned(
+              variable_fields[1],
+              std::numeric_limits<std::uint32_t>::max(),
+              &minimum_occurrences) ||
+          !ParseOptionalCanonicalRelationalU32(
+              variable_fields[2], &variable.maximum_occurrences) ||
+          (variable_fields[3] != "0" && variable_fields[3] != "1") ||
+          !ParseOptionalCanonicalRelationalU32(
+              variable_fields[4], &variable.define_expression_id) ||
+          (variable_fields[5] != "0" && variable_fields[5] != "1")) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "row-pattern variable is malformed",
+                                     "row_pattern_variable");
+      }
+      pattern.id = static_cast<std::uint32_t>(pattern_id);
+      pattern.node_id = static_cast<std::uint32_t>(node_id);
+      pattern.rows_per_match = static_cast<std::uint8_t>(rows_per_match);
+      pattern.after_match_skip = static_cast<std::uint8_t>(after_match_skip);
+      pattern.maximum_partition_rows =
+          static_cast<std::uint32_t>(maximum_partition_rows);
+      pattern.maximum_active_states =
+          static_cast<std::uint32_t>(maximum_active_states);
+      pattern.maximum_output_rows =
+          static_cast<std::uint32_t>(maximum_output_rows);
+      pattern.stable_row_identity_tie_break_allowed = fields[11] == "1";
+      variable.minimum_occurrences =
+          static_cast<std::uint32_t>(minimum_occurrences);
+      variable.reluctant = variable_fields[3] == "1";
+      variable.define_always_true = variable_fields[5] == "1";
+      pattern.variables.push_back(std::move(variable));
+      graph->row_patterns.push_back(std::move(pattern));
+      continue;
+    }
     return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                  "query.execute contains an unknown operand",
                                  "unknown_operand");
@@ -44336,6 +44727,87 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "table function argument bindings are incomplete or misplaced",
           "table_function_argument_expression_ids", node.id);
     }
+  }
+  std::unordered_set<std::uint32_t> row_pattern_node_ids;
+  for (const auto& pattern : graph.row_patterns) {
+    const auto node = std::ranges::find_if(
+        graph.nodes, [&](const auto& candidate) {
+          return candidate.id == pattern.node_id;
+        });
+    const auto input =
+        node == graph.nodes.end() || node->input_ids.size() != 1
+            ? graph.nodes.end()
+            : std::ranges::find_if(graph.nodes, [&](const auto& candidate) {
+                return candidate.id == node->input_ids.front();
+              });
+    const auto source_outputs =
+        input == graph.nodes.end()
+            ? std::vector<const ParsedRelationalOutput*>{}
+            : [&]() {
+                std::vector<const ParsedRelationalOutput*> outputs;
+                for (const auto& output : graph.outputs) {
+                  if (output.node_id == input->id) outputs.push_back(&output);
+                }
+                std::ranges::sort(outputs, {},
+                                  &ParsedRelationalOutput::ordinal);
+                return outputs;
+              }();
+    std::vector<const ParsedRelationalOutput*> match_outputs;
+    for (const auto& output : graph.outputs) {
+      if (output.node_id == pattern.node_id) match_outputs.push_back(&output);
+    }
+    std::ranges::sort(match_outputs, {}, &ParsedRelationalOutput::ordinal);
+    const bool exact_lineage =
+        source_outputs.size() == match_outputs.size() &&
+        std::ranges::equal(
+            source_outputs, match_outputs, [](const auto* source,
+                                              const auto* output) {
+              return source->expression_id == output->expression_id &&
+                     source->descriptor_id == output->descriptor_id &&
+                     source->name_utf8 == output->name_utf8 &&
+                     source->visible == output->visible &&
+                     source->ordinal == output->ordinal;
+            });
+    if (pattern.id != 1 || pattern.node_id == 0 ||
+        !row_pattern_node_ids.insert(pattern.node_id).second ||
+        node == graph.nodes.end() || node->kind != 16 ||
+        input == graph.nodes.end() || input->kind != 17 ||
+        node->semantic_variant_id !=
+            "match-recognize.a-plus.true.all-rows.v1" ||
+        pattern.partition_expression_ids.size() != 1 ||
+        pattern.ordering_terms.size() != 1 ||
+        pattern.partition_expression_ids.front() !=
+            pattern.ordering_terms.front().expression_id ||
+        !expression_ids.contains(pattern.partition_expression_ids.front()) ||
+        pattern.ordering_terms.front().direction != 1 ||
+        pattern.ordering_terms.front().null_placement != 2 ||
+        pattern.ordering_terms.front().collation_uuid.has_value() ||
+        pattern.variables.size() != 1 ||
+        pattern.variables.front().canonical_name_key != "a" ||
+        pattern.variables.front().minimum_occurrences != 1 ||
+        pattern.variables.front().maximum_occurrences.has_value() ||
+        pattern.variables.front().reluctant ||
+        pattern.variables.front().define_expression_id.has_value() ||
+        !pattern.variables.front().define_always_true ||
+        !pattern.measure_expression_ids.empty() || pattern.rows_per_match != 2 ||
+        pattern.after_match_skip != 1 || pattern.skip_target_key.has_value() ||
+        pattern.maximum_partition_rows != 10000 ||
+        pattern.maximum_active_states != 2 ||
+        pattern.maximum_output_rows != 10000 ||
+        !pattern.stable_row_identity_tie_break_allowed || !exact_lineage) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "MATCH_RECOGNIZE descriptor or immediate-input lineage is invalid",
+          "row_pattern_descriptor", pattern.node_id);
+    }
+  }
+  if (row_pattern_node_ids.size() !=
+      static_cast<std::size_t>(std::ranges::count_if(
+          graph.nodes, [](const auto& node) { return node.kind == 16; }))) {
+    return RefuseRelationalGraph(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "MATCH_RECOGNIZE nodes require exact row-pattern descriptors",
+        "row_pattern_coverage");
   }
   const ParsedRelationalNode* document_source_node = nullptr;
   const ParsedRelationalNode* document_expand_node = nullptr;

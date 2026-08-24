@@ -379,17 +379,18 @@ opt::RelationalDagPlanningInput CompleteKindPlanningInput() {
            "pivot.bound.v1"),
       node(14, plan::CanonicalLogicalRelationalNodeKind::kUnpivot, {13},
            "unpivot.bound.v1"),
-      node(15, plan::CanonicalLogicalRelationalNodeKind::kMatchRecognize,
-           {14}, "match-recognize.bound.v1"),
-      node(16,
+      node(15,
            plan::CanonicalLogicalRelationalNodeKind::kTableFunctionInvoke,
-           {15}, "table-function.bound.v1"),
+           {}, "table-function.bound.v1"),
+      node(16, plan::CanonicalLogicalRelationalNodeKind::kMatchRecognize,
+           {15}, "match-recognize.bound.v1"),
       node(17, plan::CanonicalLogicalRelationalNodeKind::kSetOperation,
-           {16, 2}, "set-operation.union-all.v1"),
+           {16, 14}, "set-operation.union-all.v1"),
   };
   graph.nodes[1].shareable = true;
   graph.nodes[0].required_object_uuids = {Uuid(601)};
-  graph.nodes[15].required_object_uuids = {Uuid(602)};
+  graph.nodes[14].required_object_uuids = {Uuid(602)};
+  graph.nodes[14].argument_expression_ids = {2015, 2016};
   auto sort_ordering =
       Property(30, plan::CanonicalLogicalPropertyKind::kOrdering);
   sort_ordering.origin_logical_node_id = 7;
@@ -600,9 +601,9 @@ bool ValidateCompleteKindFactoryCoverage() {
   bool has_match = false;
   bool has_table_function = false;
   for (const auto& candidate : result.factory.candidates) {
-    has_match |= candidate.logical_node_id == 15 &&
+    has_match |= candidate.logical_node_id == 16 &&
                  candidate.cost_terms.predicate_evaluation_units != 0;
-    has_table_function |= candidate.logical_node_id == 16 &&
+    has_table_function |= candidate.logical_node_id == 15 &&
                           candidate.cost_terms.udr_invocation_units != 0;
   }
   if (!input.admission.admitted || !result.accepted ||

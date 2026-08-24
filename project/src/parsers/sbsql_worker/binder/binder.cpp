@@ -489,6 +489,7 @@ BoundNativeRelationalDocument RefusedBoundAst(
   document.grouping_sets.clear();
   document.window_definitions.clear();
   document.window_invocations.clear();
+  document.row_patterns.clear();
   document.outputs.clear();
   document.relations.clear();
   document.catalog_relation_sources.clear();
@@ -673,6 +674,278 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return relation.relation_kind ==
                NativeRelationAstKind::kTableFunctionInvoke;
       });
+  const auto match_recognize_relation = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind ==
+               NativeRelationAstKind::kMatchRecognize;
+      });
+  if (match_recognize_relation != ast.relations.end()) {
+    if (table_function_relation == ast.relations.end() ||
+        ast.row_patterns.size() != 1) {
+      AddBoundAstDiagnostic(
+          &bound, "QOW-DIAG-BOUNDAST-ROW-PATTERN",
+          "MATCH_RECOGNIZE requires one exact table-function input and row-pattern descriptor");
+      return RefusedBoundAst(std::move(bound));
+    }
+    const auto& source = *table_function_relation;
+    const auto& match = *match_recognize_relation;
+    const auto& pattern = ast.row_patterns.front();
+    const auto argument_count =
+        source.table_function_argument_expression_ids.size();
+    const auto output_expression_id =
+        static_cast<std::uint32_t>(argument_count + 1);
+    const auto exact_identifier = [&](const std::uint32_t expression_id) {
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == expression_id;
+          });
+      return expression != ast.expressions.end() &&
+             expression->expression_kind ==
+                 NativeExpressionAstKind::kIdentifier &&
+             expression->qualified_identifier.size() == 1 &&
+             CanonicalIdentifierKey(expression->qualified_identifier.front()) ==
+                 "generate_series" &&
+             CanonicalIdentifierKey(NativeIdentifierAstNode{
+                 expression->spelling, false, expression->range}) ==
+                 "generate_series" &&
+             !expression->literal_kind.has_value() &&
+             expression->child_expression_ids.empty() &&
+             expression->operator_name.empty() &&
+             expression->structural_literal_occurrence_id == 0 &&
+             expression->structural_parameter_occurrence_id == 0 &&
+             expression->structural_variable_occurrence_id == 0;
+    };
+    bool exact_arguments = argument_count == 2 || argument_count == 3;
+    std::vector<const NativeExpressionBindingInput*> argument_bindings;
+    for (std::size_t ordinal = 0; exact_arguments && ordinal < argument_count;
+         ++ordinal) {
+      const auto expression_id =
+          source.table_function_argument_expression_ids[ordinal];
+      const auto ast_argument = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      const auto binding = std::ranges::find_if(
+          context.expressions, [&](const auto& expression) {
+            return expression.expression_id == ordinal + 1;
+          });
+      const auto descriptor =
+          binding == context.expressions.end()
+              ? descriptor_by_id.end()
+              : descriptor_by_id.find(binding->descriptor_id);
+      exact_arguments =
+          ast_argument != ast.expressions.end() &&
+          ast_argument->expression_kind == NativeExpressionAstKind::kParameter &&
+          !ast_argument->literal_kind.has_value() &&
+          ast_argument->child_expression_ids.empty() &&
+          ast_argument->structural_literal_occurrence_id == 0 &&
+          ast_argument->structural_parameter_occurrence_id == ordinal + 1 &&
+          ast_argument->structural_variable_occurrence_id == 0 &&
+          expression_id == ordinal + 1 && binding != context.expressions.end() &&
+          binding->structural_literal_occurrence_id == 0 &&
+          binding->structural_parameter_occurrence_id == ordinal + 1 &&
+          binding->structural_variable_occurrence_id == 0 &&
+          !binding->function_uuid.has_value() &&
+          !binding->bound_name_uuid.has_value() &&
+          descriptor != descriptor_by_id.end() &&
+          descriptor->second->nullability == BoundNullability::kNonNull &&
+          descriptor->second->canonical_type_name == "int64" &&
+          !descriptor->second->collation_uuid.has_value() &&
+          !descriptor->second->timezone_profile_id.has_value();
+      if (exact_arguments) argument_bindings.push_back(&*binding);
+    }
+    const auto function_binding = std::ranges::find_if(
+        context.expressions, [&](const auto& expression) {
+          return expression.expression_id == output_expression_id;
+        });
+    const auto source_output = std::ranges::find_if(
+        context.outputs, [&](const auto& output) {
+          return output.relation_id == source.relation_id;
+        });
+    const auto match_output = std::ranges::find_if(
+        context.outputs, [&](const auto& output) {
+          return output.relation_id == match.relation_id;
+        });
+    const auto source_binding = std::ranges::find_if(
+        context.relations, [&](const auto& relation) {
+          return relation.relation_id == source.relation_id;
+        });
+    const auto match_binding = std::ranges::find_if(
+        context.relations, [&](const auto& relation) {
+          return relation.relation_id == match.relation_id;
+        });
+    const auto output_descriptor = descriptor_by_id.find(1);
+    const bool exact_pattern =
+        pattern.pattern_id == 1 && pattern.relation_id == match.relation_id &&
+        pattern.partition_expression_ids.size() == 1 &&
+        exact_identifier(pattern.partition_expression_ids.front()) &&
+        pattern.ordering_terms.size() == 1 &&
+        exact_identifier(pattern.ordering_terms.front().expression_id) &&
+        pattern.ordering_terms.front().direction ==
+            NativeSortDirection::kAscending &&
+        pattern.ordering_terms.front().null_placement ==
+            NativeNullPlacement::kNullsLast &&
+        pattern.variables.size() == 1 &&
+        CanonicalIdentifierKey(pattern.variables.front().name) == "a" &&
+        pattern.variables.front().minimum_occurrences == 1 &&
+        !pattern.variables.front().maximum_occurrences.has_value() &&
+        !pattern.variables.front().reluctant &&
+        !pattern.variables.front().define_expression_id.has_value() &&
+        pattern.variables.front().define_always_true &&
+        pattern.measure_expression_ids.empty() &&
+        pattern.rows_per_match == NativeRowPatternRowsPerMatch::kAll &&
+        pattern.after_match_skip ==
+            NativeRowPatternAfterMatchSkip::kPastLastRow &&
+        !pattern.skip_target.has_value() &&
+        pattern.maximum_partition_rows == 10000 &&
+        pattern.maximum_active_states == 2 &&
+        pattern.maximum_output_rows == 10000 &&
+        pattern.stable_row_identity_tie_break_allowed;
+    if (ast.relations.size() != 2 || ast.root_relation_id != 2 ||
+        source.relation_id != 1 || match.relation_id != 2 ||
+        source.relation_kind != NativeRelationAstKind::kTableFunctionInvoke ||
+        match.relation_kind != NativeRelationAstKind::kMatchRecognize ||
+        !source.input_relation_ids.empty() ||
+        source.table_function_name.size() != 1 ||
+        CanonicalIdentifierKey(source.table_function_name.front()) !=
+            "generate_series" ||
+        match.input_relation_ids != std::vector<std::uint32_t>{1} ||
+        source.output_expression_ids.size() != 1 ||
+        match.output_expression_ids != source.output_expression_ids ||
+        !exact_arguments || !exact_pattern ||
+        ast.expressions.size() != argument_count + 3 ||
+        !ast.catalog_relation_sources.empty() ||
+        !ast.model_object_resolution_requests.empty() ||
+        !ast.values_rows.empty() || !ast.grouping_sets.empty() ||
+        !ast.window_definitions.empty() || !ast.window_invocations.empty() ||
+        context.catalog_relations.size() != 0 ||
+        context.descriptors.size() != argument_count + 1 ||
+        context.expressions.size() != argument_count + 1 ||
+        context.outputs.size() != 2 || context.relations.size() != 2 ||
+        source_binding == context.relations.end() ||
+        source_binding->semantic_variant_id !=
+            "table-function.generate-series.v1" ||
+        match_binding == context.relations.end() ||
+        match_binding->semantic_variant_id !=
+            "match-recognize.a-plus.true.all-rows.v1" ||
+        source_output == context.outputs.end() ||
+        match_output == context.outputs.end() ||
+        source_output->output_id != 1 || match_output->output_id != 2 ||
+        source_output->expression_id != output_expression_id ||
+        match_output->expression_id != output_expression_id ||
+        source_output->descriptor_id != 1 || match_output->descriptor_id != 1 ||
+        source_output->output_name_utf8 != "generate_series" ||
+        match_output->output_name_utf8 != "generate_series" ||
+        !source_output->visible || !match_output->visible ||
+        source_output->ordinal != 0 || match_output->ordinal != 0 ||
+        function_binding == context.expressions.end() ||
+        function_binding->descriptor_id != 1 ||
+        function_binding->function_uuid !=
+            std::string(kGenerateSeriesFunctionUuid) ||
+        output_descriptor == descriptor_by_id.end() ||
+        output_descriptor->second->nullability != BoundNullability::kNonNull ||
+        output_descriptor->second->canonical_type_name != "int64") {
+      AddBoundAstDiagnostic(
+          &bound, "QOW-DIAG-BOUNDAST-ROW-PATTERN",
+          "MATCH_RECOGNIZE binding context is not the exact engine-issued bounded profile");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    bound.descriptors.reserve(context.descriptors.size());
+    for (const auto& descriptor : context.descriptors) {
+      BoundDescriptorAstRecord record;
+      record.descriptor_id = descriptor.descriptor_id;
+      record.descriptor_uuid = descriptor.descriptor_uuid;
+      record.type_uuid = descriptor.type_uuid;
+      record.nullability = descriptor.nullability;
+      record.collation_uuid = descriptor.collation_uuid;
+      record.timezone_profile_id = descriptor.timezone_profile_id;
+      record.width_precision_scale = descriptor.width_precision_scale;
+      record.canonical_type_name = descriptor.canonical_type_name;
+      record.element_profile = descriptor.element_profile;
+      bound.descriptors.push_back(std::move(record));
+    }
+    std::ranges::sort(bound.descriptors, {},
+                      &BoundDescriptorAstRecord::descriptor_id);
+    for (std::size_t ordinal = 0; ordinal < argument_count; ++ordinal) {
+      BoundExpressionAstRecord expression;
+      expression.expression_id = static_cast<std::uint32_t>(ordinal + 1);
+      expression.expression_kind = NativeExpressionAstKind::kParameter;
+      expression.result_descriptor_id =
+          argument_bindings[ordinal]->descriptor_id;
+      expression.structural_parameter_occurrence_id = ordinal + 1;
+      bound.expressions.push_back(std::move(expression));
+    }
+    BoundExpressionAstRecord function_expression;
+    function_expression.expression_id = output_expression_id;
+    function_expression.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    function_expression.child_expression_ids =
+        source.table_function_argument_expression_ids;
+    function_expression.result_descriptor_id = 1;
+    function_expression.bound_function_uuid =
+        std::string(kGenerateSeriesFunctionUuid);
+    bound.expressions.push_back(std::move(function_expression));
+    bound.outputs.push_back(
+        {1, source.relation_id, output_expression_id, "generate_series", 1,
+         true, 0});
+    bound.outputs.push_back(
+        {2, match.relation_id, output_expression_id, "generate_series", 1,
+         true, 0});
+
+    BoundRelationAstRecord bound_source;
+    bound_source.relation_id = source.relation_id;
+    bound_source.relation_kind = NativeRelationAstKind::kTableFunctionInvoke;
+    bound_source.output_expression_ids = {output_expression_id};
+    bound_source.table_function_argument_expression_ids =
+        source.table_function_argument_expression_ids;
+    bound_source.bound_expression_ids = {output_expression_id};
+    bound_source.semantic_variant_id =
+        "table-function.generate-series.v1";
+    bound_source.bound_object_uuid =
+        std::string(kGenerateSeriesFunctionUuid);
+    bound.relations.push_back(std::move(bound_source));
+
+    BoundRelationAstRecord bound_match;
+    bound_match.relation_id = match.relation_id;
+    bound_match.relation_kind = NativeRelationAstKind::kMatchRecognize;
+    bound_match.input_relation_ids = {source.relation_id};
+    bound_match.output_expression_ids = {output_expression_id};
+    bound_match.bound_expression_ids = {output_expression_id};
+    bound_match.semantic_variant_id =
+        "match-recognize.a-plus.true.all-rows.v1";
+    bound.relations.push_back(std::move(bound_match));
+
+    BoundRowPatternAstRecord bound_pattern;
+    bound_pattern.pattern_id = 1;
+    bound_pattern.relation_id = match.relation_id;
+    bound_pattern.partition_expression_ids = {output_expression_id};
+    bound_pattern.ordering_terms.push_back(
+        {output_expression_id, NativeSortDirection::kAscending,
+         NativeNullPlacement::kNullsLast});
+    bound_pattern.variables.push_back(
+        {"a", 1, std::nullopt, false, std::nullopt, true});
+    bound_pattern.rows_per_match = NativeRowPatternRowsPerMatch::kAll;
+    bound_pattern.after_match_skip =
+        NativeRowPatternAfterMatchSkip::kPastLastRow;
+    bound_pattern.maximum_partition_rows = 10000;
+    bound_pattern.maximum_active_states = 2;
+    bound_pattern.maximum_output_rows = 10000;
+    bound_pattern.stable_row_identity_tie_break_allowed = true;
+    bound.row_patterns.push_back(std::move(bound_pattern));
+
+    BoundScopeAstRecord scope;
+    scope.scope_id = 1;
+    scope.visible_relation_ids = {match.relation_id};
+    scope.visible_projection_ids = {2};
+    scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    bound.scopes.push_back(std::move(scope));
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = match.relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
+  }
   if (table_function_relation != ast.relations.end()) {
     const auto& relation = *table_function_relation;
     const auto argument_count =

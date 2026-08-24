@@ -1104,6 +1104,13 @@ if(TARGET sb_engine AND TARGET sb_engine_internal_api AND
     qow_table_function_generate_series_e2e_v1 PROPERTIES
     LABELS "release_profile;optimizer;table_function_invoke;generate_series;sbsql_e2e;canonical_mga_statement_context;mga_transaction_regression"
   )
+  add_test(NAME qow_match_recognize_generate_series_e2e_v1
+    COMMAND qow_live_server_statement_context_regression
+      --match-recognize-proof-only)
+  set_tests_properties(
+    qow_match_recognize_generate_series_e2e_v1 PROPERTIES
+    LABELS "release_profile;optimizer;match_recognize;row_pattern;generate_series;sbsql_e2e;canonical_mga_statement_context;mga_transaction_regression"
+  )
 endif()
 
 add_executable(sbp_sbsql_pipeline_probe parser_pipeline_probe.cpp)

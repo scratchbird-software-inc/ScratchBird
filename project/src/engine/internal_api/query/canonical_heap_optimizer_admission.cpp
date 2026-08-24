@@ -1750,6 +1750,172 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
   return result;
 }
 
+CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
+    const CanonicalHeapOptimizerAdmissionRequest& request,
+    const plan::CanonicalMgaStatementContext& canonical_mga,
+    const std::uint64_t admitted_at_monotonic_ns) {
+  constexpr std::string_view kFunctionUuid =
+      "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+  const auto& context = request.context;
+  const auto& relational = request.relational_dag;
+  const auto source = std::ranges::find_if(
+      relational.nodes, [](const auto& node) {
+        return node.node_kind == RelationalDagNodeKind::kTableFunctionInvoke;
+      });
+  const auto match = std::ranges::find_if(
+      relational.nodes, [](const auto& node) {
+        return node.node_kind == RelationalDagNodeKind::kMatchRecognize;
+      });
+  if (relational.nodes.size() != 2 || source == relational.nodes.end() ||
+      match == relational.nodes.end() ||
+      relational.root_node_id != match->node_id ||
+      source->required_object_uuids !=
+          std::vector<std::string>{std::string(kFunctionUuid)} ||
+      source->semantic_variant_id != "table-function.generate-series.v1" ||
+      !source->input_node_ids.empty() ||
+      match->input_node_ids != std::vector<std::uint32_t>{source->node_id} ||
+      match->semantic_variant_id !=
+          "match-recognize.a-plus.true.all-rows.v1" ||
+      !match->required_object_uuids.empty() ||
+      match->required_property_uuids.size() != 2 ||
+      match->delivered_property_uuids != match->required_property_uuids ||
+      relational.row_patterns.size() != 1 || relational.properties.size() != 2) {
+    return Refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-PROFILE-V1",
+                  "exact_match_recognize_typed_dag");
+  }
+
+  CanonicalRelationalPlanningScope planning_scope;
+  planning_scope.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  planning_scope.security_context_uuid =
+      context.authorization_context.authority_uuid.canonical;
+  planning_scope.statement_uuid = context.statement_uuid.canonical;
+  planning_scope.owning_transaction_uuid = context.transaction_uuid.canonical;
+  planning_scope.statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  planning_scope.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  planning_scope.local_transaction_id = context.local_transaction_id;
+  planning_scope.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+  planning_scope.metadata_snapshot_engine_owned =
+      context.statement_metadata_snapshot_engine_owned;
+  planning_scope.authorization_context_engine_owned =
+      context.authorization_context.present;
+  auto logical = PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
+      relational, planning_scope);
+  if (!logical.accepted || logical.logical_graph.nodes.size() != 2 ||
+      logical.property_catalog.properties.size() != 2) {
+    if (!logical.issues.empty()) {
+      return Refuse(logical.issues.front().diagnostic_id,
+                    logical.issues.front().field_id);
+    }
+    return Refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-PROFILE-V1",
+                  "match_recognize_logical_bridge");
+  }
+  auto registered_mga = canonical_mga;
+  registered_mga.current = false;
+  if (!plan::CanonicalMgaStatementContextEqual(
+          logical.logical_graph.mga_statement_context, registered_mga) ||
+      !plan::CanonicalMgaStatementContextEqual(
+          logical.property_catalog.mga_statement_context, registered_mga)) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-MGA-SNAPSHOT-V1",
+                  "match_recognize_statement_snapshot_carriage");
+  }
+  logical.logical_graph.mga_statement_context = canonical_mga;
+  logical.property_catalog.mga_statement_context = canonical_mga;
+
+  const auto authorization = EvaluateMaterializedAuthorization(
+      context, context.authorization_context, "EXECUTE",
+      std::string(kFunctionUuid));
+  if (!authorization.authorized || authorization.denied ||
+      authorization.policy_recheck_required ||
+      !authorization.diagnostics.empty()) {
+    return Refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-SECURITY-V1",
+                  authorization.diagnostics.empty()
+                      ? "execute_authorization"
+                      : authorization.diagnostics.front().detail);
+  }
+
+  opt::CanonicalNativeObjectAdmissionContext admission_context;
+  admission_context.statement_uuid = context.statement_uuid.canonical;
+  admission_context.catalog_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  admission_context.security_context_uuid =
+      context.authorization_context.authority_uuid.canonical;
+  admission_context.catalog_generation = context.catalog_generation_id;
+  admission_context.authorization_catalog_generation =
+      context.authorization_context.catalog_generation_id;
+  admission_context.security_epoch = context.authorization_context.security_epoch;
+  admission_context.policy_epoch = context.authorization_context.policy_epoch;
+  admission_context.resource_epoch = context.resource_epoch;
+  admission_context.capability_snapshot_uuid =
+      context.optimizer_capability_snapshot_uuid.canonical;
+  admission_context.resource_snapshot_uuid =
+      context.optimizer_resource_snapshot_uuid.canonical;
+  admission_context.route_snapshot_uuid =
+      context.optimizer_route_snapshot_uuid.canonical;
+  admission_context.route_epoch = context.optimizer_route_epoch;
+  admission_context.route_generation = context.optimizer_route_generation;
+  admission_context.memory_budget_bytes = context.optimizer_memory_budget_bytes;
+  admission_context.maximum_candidate_count =
+      context.optimizer_maximum_candidate_count;
+  admission_context.maximum_memo_groups = context.optimizer_maximum_memo_groups;
+  admission_context.maximum_search_steps =
+      context.optimizer_maximum_search_steps;
+  admission_context.maximum_planning_time_ns =
+      context.optimizer_maximum_planning_time_ns;
+  admission_context.spill_allowed = context.optimizer_spill_allowed;
+  admission_context.local_transaction_id = context.local_transaction_id;
+  admission_context.statement_snapshot_id =
+      context.snapshot_visible_through_local_transaction_id;
+  admission_context.mga_statement_context = canonical_mga;
+  admission_context.admitted_at_monotonic_ns = admitted_at_monotonic_ns;
+  admission_context.metadata_snapshot_engine_owned = true;
+  admission_context.authorization_context_engine_owned = true;
+  admission_context.catalog_object_uuids = {std::string(kFunctionUuid)};
+  admission_context.authorized_object_uuids = {std::string(kFunctionUuid)};
+  admission_context.catalog_object_evidence_engine_owned = true;
+  admission_context.authorization_object_evidence_engine_owned = true;
+  auto built = opt::BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
+      logical.logical_graph, logical.property_catalog, admission_context);
+  if (!built.built || !built.admission.admitted ||
+      !built.admission.planning_allowed ||
+      !built.admission.degraded_for_unknown_statistics ||
+      built.admission.benchmark_clean_ready ||
+      built.admission.data_access_allowed ||
+      built.request.statistics.node_estimates.size() != 2) {
+    return Refuse(
+        built.diagnostic_id.empty()
+            ? "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-ADMISSION-V1"
+            : built.diagnostic_id,
+        built.field_id.empty() ? "match_recognize_unknown_statistics_admission"
+                               : built.field_id);
+  }
+  const auto output_descriptor = std::ranges::find_if(
+      relational.descriptors, [&](const auto& descriptor) {
+        return descriptor.descriptor_id ==
+               match->output_descriptor_ids.front();
+      });
+  if (output_descriptor == relational.descriptors.end()) {
+    return Refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-PROFILE-V1",
+                  "match_recognize_output_descriptor");
+  }
+  EngineDescriptor projected;
+  projected.descriptor_uuid.canonical = output_descriptor->descriptor_uuid;
+  projected.descriptor_kind = "scalar";
+  projected.canonical_type_name = "int64";
+  projected.encoded_descriptor =
+      "type_uuid=" + output_descriptor->type_uuid +
+      ";nullability=non_null";
+  CanonicalHeapOptimizerAdmissionResult result;
+  result.built = true;
+  result.request = std::move(built.request);
+  result.admission = std::move(built.admission);
+  result.current_relation_projection_type_names = {"int64"};
+  result.current_relation_projection_descriptors = {std::move(projected)};
+  return result;
+}
+
 }  // namespace
 
 CanonicalHeapOptimizerAdmissionResult
@@ -1830,6 +1996,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       relational.nodes.size() > 68) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "bounded_heap_scan_composition");
+  }
+  if (relational.nodes.size() == 2 &&
+      std::ranges::any_of(relational.nodes, [](const auto& node) {
+        return node.node_kind == RelationalDagNodeKind::kMatchRecognize;
+      })) {
+    return BuildCanonicalMatchRecognizeAdmission(
+        request, canonical_mga, admitted_at_monotonic_ns);
   }
   if (relational.nodes.size() == 1 &&
       relational.nodes.front().node_kind ==

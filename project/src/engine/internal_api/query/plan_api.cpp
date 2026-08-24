@@ -2901,6 +2901,92 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     }
   }
 
+  std::unordered_set<std::uint32_t> row_pattern_node_ids;
+  for (const auto& pattern : dag.row_patterns) {
+    const auto node = nodes_by_id.find(pattern.relation_node_id);
+    const auto input =
+        node == nodes_by_id.end() || node->second->input_node_ids.size() != 1
+            ? nodes_by_id.end()
+            : nodes_by_id.find(node->second->input_node_ids.front());
+    if (!add_planning_references(pattern.partition_expression_ids.size()) ||
+        !add_planning_references(pattern.ordering_terms.size()) ||
+        !add_planning_references(pattern.measure_expression_ids.size()) ||
+        pattern.pattern_id != 1 || pattern.relation_node_id == 0 ||
+        !row_pattern_node_ids.insert(pattern.relation_node_id).second ||
+        node == nodes_by_id.end() ||
+        node->second->node_kind != RelationalDagNodeKind::kMatchRecognize ||
+        input == nodes_by_id.end() ||
+        input->second->node_kind !=
+            RelationalDagNodeKind::kTableFunctionInvoke ||
+        node->second->semantic_variant_id !=
+            "match-recognize.a-plus.true.all-rows.v1" ||
+        pattern.partition_expression_ids.size() != 1 ||
+        pattern.ordering_terms.size() != 1 ||
+        pattern.partition_expression_ids.front() !=
+            pattern.ordering_terms.front().expression_id ||
+        !expressions_by_id.contains(pattern.partition_expression_ids.front()) ||
+        std::ranges::find(node->second->bound_expression_ids,
+                          pattern.partition_expression_ids.front()) ==
+            node->second->bound_expression_ids.end() ||
+        pattern.ordering_terms.front().direction !=
+            RelationalPropertySortDirection::kAscending ||
+        pattern.ordering_terms.front().null_placement !=
+            RelationalPropertyNullPlacement::kNullsLast ||
+        !pattern.ordering_terms.front().collation_uuid.empty() ||
+        pattern.variables.size() != 1 ||
+        pattern.variables.front().canonical_name_key != "a" ||
+        pattern.variables.front().minimum_occurrences != 1 ||
+        pattern.variables.front().maximum_occurrences.has_value() ||
+        pattern.variables.front().reluctant ||
+        pattern.variables.front().define_expression_id.has_value() ||
+        !pattern.variables.front().define_always_true ||
+        !pattern.measure_expression_ids.empty() ||
+        pattern.rows_per_match != RelationalRowPatternRowsPerMatch::kAll ||
+        pattern.after_match_skip !=
+            RelationalRowPatternAfterMatchSkip::kPastLastRow ||
+        pattern.skip_target_key.has_value() ||
+        pattern.maximum_partition_rows != 10000 ||
+        pattern.maximum_active_states != 2 ||
+        pattern.maximum_output_rows != 10000 ||
+        !pattern.stable_row_identity_tie_break_allowed) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    pattern.relation_node_id, "row_pattern_descriptor");
+    }
+    std::vector<const RelationalOutputRecord*> input_outputs;
+    std::vector<const RelationalOutputRecord*> pattern_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == input->second->node_id) {
+        input_outputs.push_back(&output);
+      } else if (output.relation_node_id == node->second->node_id) {
+        pattern_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(input_outputs, {}, &RelationalOutputRecord::ordinal);
+    std::ranges::sort(pattern_outputs, {}, &RelationalOutputRecord::ordinal);
+    if (input_outputs.size() != pattern_outputs.size() ||
+        !std::ranges::equal(
+            input_outputs, pattern_outputs,
+            [](const auto* source, const auto* output) {
+              return source->visible && output->visible &&
+                     source->ordinal == output->ordinal &&
+                     source->expression_id == output->expression_id &&
+                     source->descriptor_id == output->descriptor_id &&
+                     source->output_name_utf8 == output->output_name_utf8;
+            })) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    pattern.relation_node_id, "row_pattern_output_lineage");
+    }
+  }
+  if (row_pattern_node_ids.size() !=
+      static_cast<std::size_t>(std::ranges::count_if(
+          dag.nodes, [](const auto& node) {
+            return node.node_kind ==
+                   RelationalDagNodeKind::kMatchRecognize;
+          }))) {
+    return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                  "row_pattern_record_coverage");
+  }
+
   std::unordered_set<std::uint32_t> assigned_values_row_ids;
   const auto exact_values_literal_descriptor =
       [&](const RelationalExpressionRecord& expression,
@@ -3879,6 +3965,62 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
                       property.origin_node_id, "unknown_property_dependency");
       }
+    }
+  }
+
+  for (const auto& node : dag.nodes) {
+    if (node.node_kind != RelationalDagNodeKind::kMatchRecognize) continue;
+    const auto pattern = std::ranges::find_if(
+        dag.row_patterns, [&](const auto& candidate) {
+          return candidate.relation_node_id == node.node_id;
+        });
+    if (pattern == dag.row_patterns.end() ||
+        node.required_property_uuids.size() != 2 ||
+        node.delivered_property_uuids != node.required_property_uuids) {
+      return refuse("QOW-DIAG-ROW-PATTERN-PROPERTY-V1", node.node_id,
+                    "row_pattern_property_coverage");
+    }
+    const RelationalPropertyRecord* partition = nullptr;
+    const RelationalPropertyRecord* ordering = nullptr;
+    for (const auto& property_uuid : node.required_property_uuids) {
+      const auto property = properties_by_uuid.find(property_uuid);
+      if (property == properties_by_uuid.end() ||
+          property->second->origin_node_id != node.node_id) {
+        return refuse("QOW-DIAG-ROW-PATTERN-PROPERTY-V1", node.node_id,
+                      "row_pattern_property_origin");
+      }
+      if (property->second->property_kind ==
+          RelationalPropertyKind::kPartitioning) {
+        if (partition != nullptr) {
+          return refuse("QOW-DIAG-ROW-PATTERN-PROPERTY-V1", node.node_id,
+                        "row_pattern_partition_property");
+        }
+        partition = property->second;
+      } else if (property->second->property_kind ==
+                 RelationalPropertyKind::kOrdering) {
+        if (ordering != nullptr) {
+          return refuse("QOW-DIAG-ROW-PATTERN-PROPERTY-V1", node.node_id,
+                        "row_pattern_ordering_property");
+        }
+        ordering = property->second;
+      } else {
+        return refuse("QOW-DIAG-ROW-PATTERN-PROPERTY-V1", node.node_id,
+                      "row_pattern_property_kind");
+      }
+    }
+    if (partition == nullptr || ordering == nullptr ||
+        partition->expression_ids != pattern->partition_expression_ids ||
+        ordering->ordering_terms.size() != pattern->ordering_terms.size() ||
+        !std::ranges::equal(
+            ordering->ordering_terms, pattern->ordering_terms,
+            [](const auto& left, const auto& right) {
+              return left.expression_id == right.expression_id &&
+                     left.direction == right.direction &&
+                     left.null_placement == right.null_placement &&
+                     left.collation_uuid == right.collation_uuid;
+            })) {
+      return refuse("QOW-DIAG-ROW-PATTERN-PROPERTY-V1", node.node_id,
+                    "row_pattern_property_shape");
     }
   }
 

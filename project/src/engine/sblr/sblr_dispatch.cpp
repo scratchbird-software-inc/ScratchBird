@@ -711,6 +711,26 @@ bool SplitRelationalFields(
   return false;
 }
 
+template <std::size_t FieldCount>
+bool SplitRelationalSubfields(
+    const std::string_view encoded, const char separator,
+    std::array<std::string_view, FieldCount>* fields) {
+  if (fields == nullptr || encoded.empty()) return false;
+  std::size_t start = 0;
+  for (std::size_t index = 0; index < fields->size(); ++index) {
+    const auto next = encoded.find(separator, start);
+    if (index + 1 == fields->size()) {
+      if (next != std::string_view::npos) return false;
+      (*fields)[index] = encoded.substr(start);
+      return true;
+    }
+    if (next == std::string_view::npos) return false;
+    (*fields)[index] = encoded.substr(start, next - start);
+    start = next + 1;
+  }
+  return false;
+}
+
 bool DecodeCanonicalHex(std::string_view encoded, std::string* value) {
   if (value == nullptr || encoded.size() % 2 != 0) return false;
   value->clear();
@@ -1351,6 +1371,106 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
         decoded.detail = "invalid table function argument binding";
         return decoded;
       }
+      continue;
+    }
+    if (operand.type == "relational_row_pattern_v1") {
+      if (decoded.request.relational_dag.row_patterns.size() >= 131072 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "row-pattern descriptor transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t node_id = 0;
+      std::uint64_t pattern_id = 0;
+      std::uint64_t rows_per_match = 0;
+      std::uint64_t after_match_skip = 0;
+      std::uint64_t maximum_partition_rows = 0;
+      std::uint64_t maximum_active_states = 0;
+      std::uint64_t maximum_output_rows = 0;
+      std::array<std::string_view, 12> fields{};
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &pattern_id) ||
+          !ParseCanonicalUnsigned(
+              fields[5], std::numeric_limits<std::uint8_t>::max(),
+              &rows_per_match) ||
+          !ParseCanonicalUnsigned(
+              fields[6], std::numeric_limits<std::uint8_t>::max(),
+              &after_match_skip) ||
+          !ParseCanonicalUnsigned(
+              fields[8], std::numeric_limits<std::uint32_t>::max(),
+              &maximum_partition_rows) ||
+          !ParseCanonicalUnsigned(
+              fields[9], std::numeric_limits<std::uint32_t>::max(),
+              &maximum_active_states) ||
+          !ParseCanonicalUnsigned(
+              fields[10], std::numeric_limits<std::uint32_t>::max(),
+              &maximum_output_rows) ||
+          (fields[11] != "0" && fields[11] != "1")) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed row-pattern descriptor";
+        return decoded;
+      }
+      const auto node = std::ranges::find_if(
+          decoded.request.relational_dag.nodes, [&](const auto& candidate) {
+            return candidate.node_id == node_id;
+          });
+      api::RelationalRowPatternRecord pattern;
+      pattern.pattern_id = static_cast<std::uint32_t>(pattern_id);
+      pattern.relation_node_id = static_cast<std::uint32_t>(node_id);
+      pattern.rows_per_match =
+          static_cast<api::RelationalRowPatternRowsPerMatch>(rows_per_match);
+      pattern.after_match_skip =
+          static_cast<api::RelationalRowPatternAfterMatchSkip>(
+              after_match_skip);
+      pattern.maximum_partition_rows =
+          static_cast<std::uint32_t>(maximum_partition_rows);
+      pattern.maximum_active_states =
+          static_cast<std::uint32_t>(maximum_active_states);
+      pattern.maximum_output_rows =
+          static_cast<std::uint32_t>(maximum_output_rows);
+      pattern.stable_row_identity_tie_break_allowed = fields[11] == "1";
+      std::array<std::string_view, 6> variable_fields{};
+      std::uint64_t minimum_occurrences = 0;
+      std::optional<std::uint32_t> maximum_occurrences;
+      std::optional<std::uint32_t> define_expression_id;
+      api::RelationalRowPatternVariableRecord variable;
+      if (node == decoded.request.relational_dag.nodes.end() ||
+          node->node_kind != api::RelationalDagNodeKind::kMatchRecognize ||
+          !ParseRelationalHandleList(fields[1],
+                                     &pattern.partition_expression_ids) ||
+          !ParseRelationalOrderingTerms(fields[2], &pattern.ordering_terms) ||
+          !SplitRelationalSubfields(fields[3], ':', &variable_fields) ||
+          !DecodeCanonicalHex(variable_fields[0],
+                              &variable.canonical_name_key) ||
+          !ParseCanonicalUnsigned(
+              variable_fields[1], std::numeric_limits<std::uint32_t>::max(),
+              &minimum_occurrences) ||
+          !ParseOptionalCanonicalU32(variable_fields[2],
+                                     &maximum_occurrences) ||
+          (variable_fields[3] != "0" && variable_fields[3] != "1") ||
+          !ParseOptionalCanonicalU32(variable_fields[4],
+                                     &define_expression_id) ||
+          (variable_fields[5] != "0" && variable_fields[5] != "1") ||
+          !ParseRelationalHandleList(fields[4],
+                                     &pattern.measure_expression_ids) ||
+          !DecodeOptionalCanonicalHex(fields[7], &pattern.skip_target_key)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "invalid or out-of-order row-pattern binding";
+        return decoded;
+      }
+      variable.minimum_occurrences =
+          static_cast<std::uint32_t>(minimum_occurrences);
+      variable.maximum_occurrences = maximum_occurrences;
+      variable.reluctant = variable_fields[3] == "1";
+      variable.define_expression_id = define_expression_id;
+      variable.define_always_true = variable_fields[5] == "1";
+      pattern.variables.push_back(std::move(variable));
+      decoded.request.relational_dag.row_patterns.push_back(std::move(pattern));
       continue;
     }
     if (operand.type == "relational_descriptor_v1") {

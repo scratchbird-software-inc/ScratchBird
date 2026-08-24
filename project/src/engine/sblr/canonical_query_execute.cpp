@@ -17495,6 +17495,230 @@ void BindLiveCancellationFailure(
   }
 }
 
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveMatchRecognizeRegistration(
+    std::string capability_uuid,
+    const std::size_t maximum_partition_rows,
+    const std::size_t maximum_active_states,
+    const std::size_t maximum_output_rows,
+    const api::EngineRequestContext* borrowed_mga_context,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority) {
+  const bool strict_dispatcher_memory =
+      borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
+  const std::uint64_t registration_retained_bytes =
+      strict_dispatcher_memory ? 8 * sizeof(void*) + 512 : 0;
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kMatchRecognize;
+  registration.implementation_id =
+      "match-recognize.partition-order.a-plus.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 =
+      strict_dispatcher_memory;
+  registration.retained_live_memory_bytes_v1 =
+      registration_retained_bytes;
+  registration.execute =
+      [maximum_partition_rows, maximum_active_states, maximum_output_rows,
+       borrowed_mga_context, borrowed_mga_authority,
+       strict_dispatcher_memory](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        const auto* cancellation_policy = FindLiveCancellationPolicy(dag);
+        if (!strict_dispatcher_memory || cancellation_policy == nullptr ||
+            maximum_partition_rows == 0 || maximum_active_states < 1 ||
+            maximum_output_rows == 0 ||
+            node.input_physical_node_ids.size() != 1 || inputs.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
+            !inputs.front().materialized_output_batch.has_value()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-INPUT-V1";
+          step.diagnostic.detail =
+              "MATCH_RECOGNIZE did not receive its exact bounded input";
+          return step;
+        }
+        const auto before = exec::RevalidateCanonicalExecutionMgaAuthority(
+            *borrowed_mga_authority, dag);
+        if (!before.ok) {
+          step.diagnostic = before;
+          return step;
+        }
+        step.mga_statement_context = borrowed_mga_authority->statement_context;
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
+        const auto canonical_input = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, node.output_descriptor_ids);
+        const auto value_input = exec::ValidateDescriptorBatch(input_batch);
+        if (!canonical_input.ok || !value_input.ok ||
+            input_batch.columns.size() != 1 ||
+            input_batch.rows.size() > maximum_output_rows ||
+            input_batch.rows.size() > maximum_partition_rows) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-INPUT-V1";
+          step.diagnostic.detail =
+              !canonical_input.ok
+                  ? canonical_input.detail
+                  : (!value_input.ok
+                         ? value_input.detail
+                         : "MATCH_RECOGNIZE input exceeds its row-pattern budget");
+          return step;
+        }
+        std::uint64_t order_workspace_bytes = 0;
+        if (!CheckedMultiply(
+                input_batch.rows.size(),
+                sizeof(std::pair<std::int64_t, std::size_t>),
+                &order_workspace_bytes) ||
+            !CheckedAdd(order_workspace_bytes, 64 * 1024,
+                        &order_workspace_bytes)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "MATCH_RECOGNIZE ordering workspace overflows";
+          return step;
+        }
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::size_t callback_memory_bound = 0;
+        std::string scope_detail;
+        if (!BuildStrictUnaryOperatorLocalPhysicalDag(
+                dag, node, input_batch, 1, order_workspace_bytes,
+                &operator_dag, &callback_memory_bound, &scope_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail = "MATCH_RECOGNIZE " + scope_detail;
+          return step;
+        }
+        LiveCancellationProbeState cancellation_state =
+            LiveCancellationProbeState::kRunning;
+        const auto poll_cancellation = [&]() {
+          return PollLiveCancellationProbe(
+              borrowed_mga_context->query_cancellation_requested,
+              &cancellation_state);
+        };
+        std::vector<std::pair<std::int64_t, std::size_t>> order;
+        order.reserve(input_batch.rows.size());
+        for (std::size_t ordinal = 0; ordinal < input_batch.rows.size();
+             ++ordinal) {
+          if (poll_cancellation()) break;
+          if (input_batch.rows[ordinal].values.size() != 1) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-INPUT-V1";
+            step.diagnostic.detail =
+                "MATCH_RECOGNIZE input row width changed";
+            return step;
+          }
+          std::int64_t key = 0;
+          std::string decode_detail;
+          if (!DecodeCanonicalInt64Scalar(
+                  input_batch.rows[ordinal].values.front(), &key,
+                  &decode_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-INPUT-V1";
+            step.diagnostic.detail = decode_detail;
+            return step;
+          }
+          order.emplace_back(key, ordinal);
+        }
+        std::ranges::sort(order, [](const auto& left, const auto& right) {
+          return left.first < right.first ||
+                 (left.first == right.first && left.second < right.second);
+        });
+        poll_cancellation();
+        if (cancellation_state != LiveCancellationProbeState::kRunning) {
+          exec::DescriptorRuntimeDiagnostic diagnostic;
+          diagnostic.ok = false;
+          diagnostic.diagnostic_code =
+              cancellation_state == LiveCancellationProbeState::kCancelled
+                  ? "SB_MODEL_EXECUTION_CANCELLED_V1"
+                  : "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+          diagnostic.detail =
+              cancellation_state == LiveCancellationProbeState::kCancelled
+                  ? "MATCH_RECOGNIZE execution was cancelled"
+                  : "MATCH_RECOGNIZE cancellation probe failed";
+          BindLiveCancellationFailure(std::move(diagnostic),
+                                      cancellation_policy, &step);
+          return step;
+        }
+        exec::DescriptorBatch output_batch;
+        output_batch.columns = input_batch.columns;
+        output_batch.rows.reserve(order.size());
+        std::size_t partition_count = 0;
+        std::size_t partition_row_count = 0;
+        std::optional<std::int64_t> previous_key;
+        for (const auto& [key, ordinal] : order) {
+          if (!previous_key.has_value() || *previous_key != key) {
+            ++partition_count;
+            partition_row_count = 0;
+            previous_key = key;
+          }
+          ++partition_row_count;
+          if (partition_row_count > maximum_partition_rows ||
+              maximum_active_states < 1 ||
+              output_batch.rows.size() >= maximum_output_rows) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "MATCH_RECOGNIZE pattern budget was exceeded";
+            return step;
+          }
+          output_batch.rows.push_back(input_batch.rows[ordinal]);
+        }
+        const auto canonical_output =
+            exec::ValidateCanonicalDescriptorBatch(
+                output_batch, node.output_descriptor_ids);
+        const auto value_output = exec::ValidateDescriptorBatch(output_batch);
+        std::uint64_t output_memory_bytes = 0;
+        if (!canonical_output.ok || !value_output.ok ||
+            output_batch.rows.size() != input_batch.rows.size() ||
+            partition_count > maximum_output_rows ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                output_batch, &output_memory_bytes) ||
+            output_memory_bytes == 0 ||
+            output_memory_bytes > callback_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-OUTPUT-V1";
+          step.diagnostic.detail =
+              !canonical_output.ok
+                  ? canonical_output.detail
+                  : (!value_output.ok
+                         ? value_output.detail
+                         : "MATCH_RECOGNIZE output receipt is invalid");
+          return step;
+        }
+        const auto after = exec::RevalidateCanonicalExecutionMgaAuthority(
+            *borrowed_mga_authority, operator_dag);
+        if (!after.ok) {
+          step.diagnostic = after;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = output_batch.rows.size();
+        step.materialized_output_batch = std::move(output_batch);
+        step.mga_statement_context = borrowed_mga_authority->statement_context;
+        step.data_access_observation_known = true;
+        step.data_access_observed = false;
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
     std::string deterministic_tie_evidence_uuid,
@@ -63004,6 +63228,107 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
 #endif
 
 #if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+bool MaterializeCanonicalGenerateSeriesBatch(
+    const api::TypedRelationalDag& dag, const api::RelationalDagNode& node,
+    const api::EngineRequestContext& context, exec::DescriptorBatch* batch,
+    std::string* detail) {
+  if (batch == nullptr || detail == nullptr ||
+      (node.argument_expression_ids.size() != 2 &&
+       node.argument_expression_ids.size() != 3) ||
+      node.output_descriptor_ids.size() != 1) {
+    return false;
+  }
+  CanonicalRelationalExpressionRuntime expression_runtime(dag, {});
+  std::vector<std::int64_t> arguments;
+  arguments.reserve(node.argument_expression_ids.size());
+  for (const auto expression_id : node.argument_expression_ids) {
+    api::EngineTypedValue value;
+    if (!expression_runtime.EvaluateForConsumer(
+            expression_id, "int64",
+            api::EngineCanonicalExpressionConsumer::projection, &value,
+            detail)) {
+      return false;
+    }
+    std::int64_t decoded = 0;
+    if (!DecodeCanonicalInt64Scalar(value, &decoded, detail)) return false;
+    arguments.push_back(decoded);
+  }
+  const std::int64_t start = arguments[0];
+  const std::int64_t stop = arguments[1];
+  const std::int64_t step = arguments.size() == 3 ? arguments[2] : 1;
+  if (step == 0) {
+    *detail = "generate_series step must not be zero";
+    return false;
+  }
+  const auto output_descriptor = std::ranges::find_if(
+      dag.descriptors, [&](const auto& descriptor) {
+        return descriptor.descriptor_id ==
+               node.output_descriptor_ids.front();
+      });
+  if (output_descriptor == dag.descriptors.end() ||
+      output_descriptor->nullability !=
+          api::RelationalNullability::kNonNull ||
+      output_descriptor->width.has_value() ||
+      output_descriptor->precision.has_value() ||
+      output_descriptor->scale.has_value() ||
+      output_descriptor->collation_uuid.has_value() ||
+      output_descriptor->timezone_profile_id.has_value()) {
+    *detail = "generate_series output descriptor is not exact";
+    return false;
+  }
+  api::EngineDescriptor engine_descriptor;
+  engine_descriptor.descriptor_uuid.canonical =
+      output_descriptor->descriptor_uuid;
+  engine_descriptor.descriptor_kind = "scalar";
+  engine_descriptor.canonical_type_name = "int64";
+  engine_descriptor.encoded_descriptor =
+      "type_uuid=" + output_descriptor->type_uuid +
+      ";nullability=non_null";
+  batch->columns.push_back(
+      {"generate_series", engine_descriptor, false,
+       output_descriptor->descriptor_id});
+  const bool forward = step > 0;
+  std::int64_t current = start;
+  while ((forward && current <= stop) || (!forward && current >= stop)) {
+    if (batch->rows.size() >= kGenerateSeriesMaximumRowCount) {
+      *detail = "generate_series exceeds the bounded 10000-row runtime profile";
+      return false;
+    }
+    api::EngineTypedValue value;
+    value.descriptor = engine_descriptor;
+    value.encoded_value = std::to_string(current);
+    value.state = api::EngineValueState::value;
+    value.is_null = false;
+    batch->rows.push_back({{std::move(value)}});
+    if (current == stop ||
+        (step > 0 &&
+         current > std::numeric_limits<std::int64_t>::max() - step) ||
+        (step < 0 &&
+         current < std::numeric_limits<std::int64_t>::min() - step)) {
+      break;
+    }
+    const auto next = static_cast<std::int64_t>(current + step);
+    if ((step > 0 && next > stop) || (step < 0 && next < stop)) break;
+    current = next;
+  }
+  const auto batch_validation = exec::ValidateCanonicalDescriptorBatch(
+      *batch, node.output_descriptor_ids);
+  const auto value_validation = exec::ValidateDescriptorBatch(*batch);
+  std::uint64_t batch_memory_bytes = 0;
+  if (!batch_validation.ok || !value_validation.ok ||
+      !RuntimeMaterializedBatchMemoryBytes(*batch, &batch_memory_bytes) ||
+      batch_memory_bytes == 0 ||
+      batch_memory_bytes > context.optimizer_memory_budget_bytes) {
+    *detail = !batch_validation.ok
+                  ? batch_validation.detail
+                  : (!value_validation.ok
+                         ? value_validation.detail
+                         : "generate_series materialization exceeds the optimizer memory budget");
+    return false;
+  }
+  return true;
+}
+
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalGenerateSeriesTableFunctionQuery(
     const CanonicalCurrentHeapExecutionRequest& input) {
@@ -63092,110 +63417,25 @@ ExecuteCanonicalGenerateSeriesTableFunctionQuery(
   result.optimizer_admission_stage_count =
       admission.admission.evidence.size();
 
-  CanonicalRelationalExpressionRuntime expression_runtime(dag, {});
-  std::vector<std::int64_t> arguments;
-  arguments.reserve(node.argument_expression_ids.size());
-  for (const auto expression_id : node.argument_expression_ids) {
-    api::EngineTypedValue value;
-    std::string detail;
-    if (!expression_runtime.EvaluateForConsumer(
-            expression_id, "int64",
-            api::EngineCanonicalExpressionConsumer::projection, &value,
-            &detail)) {
-      return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-ARGUMENT-V1",
-                    detail.empty()
-                        ? "generate_series argument is not an authenticated int64 parameter"
-                        : detail);
-    }
-    std::int64_t decoded = 0;
-    if (!DecodeCanonicalInt64Scalar(value, &decoded, &detail)) {
-      return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-ARGUMENT-V1",
-                    detail);
-    }
-    arguments.push_back(decoded);
-  }
-  const std::int64_t start = arguments[0];
-  const std::int64_t stop = arguments[1];
-  const std::int64_t step = arguments.size() == 3 ? arguments[2] : 1;
-  if (step == 0) {
+  exec::DescriptorBatch batch;
+  std::uint64_t batch_memory_bytes = 0;
+  std::string materialization_detail;
+  if (!MaterializeCanonicalGenerateSeriesBatch(
+          dag, node, input.context, &batch, &materialization_detail) ||
+      !RuntimeMaterializedBatchMemoryBytes(batch, &batch_memory_bytes) ||
+      batch_memory_bytes == 0) {
     return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-ARGUMENT-V1",
-                  "generate_series step must not be zero");
+                  materialization_detail.empty()
+                      ? "generate_series materialization failed"
+                      : materialization_detail);
   }
+  const auto generated_row_count = batch.rows.size();
 
   const auto output_descriptor = std::ranges::find_if(
       dag.descriptors, [&](const auto& descriptor) {
         return descriptor.descriptor_id ==
                node.output_descriptor_ids.front();
       });
-  if (output_descriptor == dag.descriptors.end() ||
-      output_descriptor->nullability !=
-          api::RelationalNullability::kNonNull ||
-      output_descriptor->width.has_value() ||
-      output_descriptor->precision.has_value() ||
-      output_descriptor->scale.has_value() ||
-      output_descriptor->collation_uuid.has_value() ||
-      output_descriptor->timezone_profile_id.has_value()) {
-    return refuse("QOW-DIAG-QRY-004-TABLE-FUNCTION-DESCRIPTOR-V1",
-                  "generate_series output descriptor is not exact");
-  }
-  api::EngineDescriptor engine_descriptor;
-  engine_descriptor.descriptor_uuid.canonical =
-      output_descriptor->descriptor_uuid;
-  engine_descriptor.descriptor_kind = "scalar";
-  engine_descriptor.canonical_type_name = "int64";
-  engine_descriptor.encoded_descriptor =
-      "type_uuid=" + output_descriptor->type_uuid +
-      ";nullability=non_null";
-  exec::DescriptorBatch batch;
-  batch.columns.push_back(
-      {"generate_series", engine_descriptor, false,
-       output_descriptor->descriptor_id});
-  const bool forward = step > 0;
-  std::int64_t current = start;
-  while ((forward && current <= stop) || (!forward && current >= stop)) {
-    if (batch.rows.size() >= kGenerateSeriesMaximumRowCount) {
-      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                    "generate_series exceeds the bounded 10000-row runtime profile");
-    }
-    api::EngineTypedValue value;
-    value.descriptor = engine_descriptor;
-    value.encoded_value = std::to_string(current);
-    value.state = api::EngineValueState::value;
-    value.is_null = false;
-    batch.rows.push_back({{std::move(value)}});
-    if (current == stop ||
-        (step > 0 &&
-         current > std::numeric_limits<std::int64_t>::max() - step) ||
-        (step < 0 &&
-         current < std::numeric_limits<std::int64_t>::min() - step)) {
-      break;
-    }
-    const auto next = static_cast<std::int64_t>(current + step);
-    if ((step > 0 && next > stop) || (step < 0 && next < stop)) break;
-    current = next;
-  }
-  const auto batch_validation =
-      exec::ValidateCanonicalDescriptorBatch(batch,
-                                             node.output_descriptor_ids);
-  const auto value_validation = exec::ValidateDescriptorBatch(batch);
-  std::uint64_t batch_memory_bytes = 0;
-  if (!batch_validation.ok || !value_validation.ok ||
-      !RuntimeMaterializedBatchMemoryBytes(batch, &batch_memory_bytes) ||
-      batch_memory_bytes == 0 ||
-      batch_memory_bytes > input.context.optimizer_memory_budget_bytes) {
-    return refuse(
-        !batch_validation.ok
-            ? batch_validation.diagnostic_code
-            : (!value_validation.ok
-                   ? value_validation.diagnostic_code
-                   : "SBLR.PLAN_TREE.RESOURCE_LIMIT"),
-        !batch_validation.ok
-            ? batch_validation.detail
-            : (!value_validation.ok
-                   ? value_validation.detail
-                   : "generate_series materialization exceeds the optimizer memory budget"));
-  }
-  const auto generated_row_count = batch.rows.size();
 
   CanonicalObjectFreeValuesExecutionRequest planning_request{
       input.context, input.relational_dag, admission.request,
@@ -63327,6 +63567,338 @@ ExecuteCanonicalGenerateSeriesTableFunctionQuery(
        "SBSQL_GENERATE_SERIES_TO_OPTIMIZER_TO_PHYSICAL_SOURCE_V1"});
   return result;
 }
+
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(
+    const CanonicalCurrentHeapExecutionRequest& input) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& dag = input.relational_dag;
+  const auto source = std::ranges::find_if(dag.nodes, [](const auto& node) {
+    return node.node_kind ==
+           api::RelationalDagNodeKind::kTableFunctionInvoke;
+  });
+  const auto match = std::ranges::find_if(dag.nodes, [](const auto& node) {
+    return node.node_kind == api::RelationalDagNodeKind::kMatchRecognize;
+  });
+  if (dag.nodes.size() != 2 || source == dag.nodes.end() ||
+      match == dag.nodes.end() || dag.root_node_id != match->node_id) {
+    return result;
+  }
+  result.profile_matched = true;
+  CanonicalObjectFreeValuesExecutionRequest response_context;
+  response_context.context = input.context;
+  response_context.relational_dag = input.relational_dag;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result = Failure(response_context, std::move(diagnostic_id),
+                                std::move(detail));
+    return result;
+  };
+  constexpr std::string_view kFunctionUuid =
+      "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+  const auto& pattern = dag.row_patterns.empty()
+                            ? api::RelationalRowPatternRecord{}
+                            : dag.row_patterns.front();
+  const auto source_output = std::ranges::find_if(
+      dag.outputs, [&](const auto& output) {
+        return output.relation_node_id == source->node_id;
+      });
+  const auto match_output = std::ranges::find_if(
+      dag.outputs, [&](const auto& output) {
+        return output.relation_node_id == match->node_id;
+      });
+  if (dag.wire_version != 2 ||
+      source->semantic_variant_id !=
+          "table-function.generate-series.v1" ||
+      source->required_object_uuids !=
+          std::vector<std::string>{std::string(kFunctionUuid)} ||
+      !source->input_node_ids.empty() || source->shareable ||
+      (source->argument_expression_ids.size() != 2 &&
+       source->argument_expression_ids.size() != 3) ||
+      source->output_descriptor_ids.size() != 1 ||
+      match->semantic_variant_id !=
+          "match-recognize.a-plus.true.all-rows.v1" ||
+      match->input_node_ids !=
+          std::vector<std::uint32_t>{source->node_id} ||
+      match->shareable || !match->required_object_uuids.empty() ||
+      match->output_descriptor_ids != source->output_descriptor_ids ||
+      match->required_property_uuids.size() != 2 ||
+      match->delivered_property_uuids != match->required_property_uuids ||
+      dag.row_patterns.size() != 1 || dag.properties.size() != 2 ||
+      pattern.pattern_id != 1 || pattern.relation_node_id != match->node_id ||
+      pattern.partition_expression_ids.size() != 1 ||
+      pattern.ordering_terms.size() != 1 ||
+      pattern.partition_expression_ids.front() !=
+          pattern.ordering_terms.front().expression_id ||
+      pattern.ordering_terms.front().direction !=
+          api::RelationalPropertySortDirection::kAscending ||
+      pattern.ordering_terms.front().null_placement !=
+          api::RelationalPropertyNullPlacement::kNullsLast ||
+      !pattern.ordering_terms.front().collation_uuid.empty() ||
+      pattern.variables.size() != 1 ||
+      pattern.variables.front().canonical_name_key != "a" ||
+      pattern.variables.front().minimum_occurrences != 1 ||
+      pattern.variables.front().maximum_occurrences.has_value() ||
+      pattern.variables.front().reluctant ||
+      pattern.variables.front().define_expression_id.has_value() ||
+      !pattern.variables.front().define_always_true ||
+      !pattern.measure_expression_ids.empty() ||
+      pattern.rows_per_match !=
+          api::RelationalRowPatternRowsPerMatch::kAll ||
+      pattern.after_match_skip !=
+          api::RelationalRowPatternAfterMatchSkip::kPastLastRow ||
+      pattern.skip_target_key.has_value() ||
+      pattern.maximum_partition_rows != kGenerateSeriesMaximumRowCount ||
+      pattern.maximum_active_states != 2 ||
+      pattern.maximum_output_rows != kGenerateSeriesMaximumRowCount ||
+      !pattern.stable_row_identity_tie_break_allowed ||
+      dag.outputs.size() != 2 || source_output == dag.outputs.end() ||
+      match_output == dag.outputs.end() || !source_output->visible ||
+      !match_output->visible || source_output->ordinal != 0 ||
+      match_output->ordinal != 0 ||
+      source_output->expression_id != match_output->expression_id ||
+      source_output->descriptor_id != match_output->descriptor_id ||
+      source_output->output_name_utf8 != "generate_series" ||
+      match_output->output_name_utf8 != source_output->output_name_utf8) {
+    return refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-PROFILE-V1",
+                  "MATCH_RECOGNIZE runtime profile is not exact");
+  }
+  const auto package = fn::BuildStandardFunctionSeedPackage();
+  const auto* registry_entry =
+      package.registry.Lookup(kGenerateSeriesFunctionId);
+  if (registry_entry == nullptr ||
+      registry_entry->function_uuid != kFunctionUuid ||
+      registry_entry->family != "rowset.table" ||
+      registry_entry->short_name != "generate_series" ||
+      registry_entry->implementation_state !=
+          fn::FunctionImplementationState::implemented_behavior ||
+      registry_entry->package_state != fn::FunctionPackageState::core ||
+      !registry_entry->catalog_visible) {
+    return refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-REGISTRY-V1",
+                  "generate_series row-pattern source is unavailable");
+  }
+  const auto admission = api::BuildCanonicalCurrentHeapOptimizerAdmission(
+      {input.context, input.relational_dag});
+  if (!admission.built || !admission.admission.admitted ||
+      !admission.admission.planning_allowed ||
+      admission.admission.data_access_allowed) {
+    return refuse(
+        admission.issue.diagnostic_id.empty()
+            ? "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-ADMISSION-V1"
+            : admission.issue.diagnostic_id,
+        admission.issue.field_id.empty()
+            ? "MATCH_RECOGNIZE optimizer admission failed"
+            : admission.issue.field_id);
+  }
+  result.optimizer_admitted = true;
+  result.optimizer_admission_degraded =
+      admission.admission.degraded_for_unknown_statistics;
+  result.optimizer_benchmark_clean_ready =
+      admission.admission.benchmark_clean_ready;
+  result.optimizer_admission_stage_count =
+      admission.admission.evidence.size();
+
+  exec::DescriptorBatch source_batch;
+  std::string materialization_detail;
+  std::uint64_t source_batch_memory_bytes = 0;
+  if (!MaterializeCanonicalGenerateSeriesBatch(
+          dag, *source, input.context, &source_batch,
+          &materialization_detail) ||
+      !RuntimeMaterializedBatchMemoryBytes(
+          source_batch, &source_batch_memory_bytes) ||
+      source_batch_memory_bytes == 0) {
+    return refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-SOURCE-V1",
+                  materialization_detail.empty()
+                      ? "MATCH_RECOGNIZE source materialization failed"
+                      : materialization_detail);
+  }
+  const auto generated_row_count = source_batch.rows.size();
+  const auto output_descriptor = std::ranges::find_if(
+      dag.descriptors, [&](const auto& descriptor) {
+        return descriptor.descriptor_id ==
+               match->output_descriptor_ids.front();
+      });
+  if (output_descriptor == dag.descriptors.end() ||
+      input.context.optimizer_memory_budget_bytes == 0) {
+    return refuse("QOW-DIAG-QRY-004-MATCH-RECOGNIZE-DESCRIPTOR-V1",
+                  "MATCH_RECOGNIZE output descriptor or memory grant is absent");
+  }
+
+  CanonicalObjectFreeValuesExecutionRequest planning_request{
+      input.context, input.relational_dag, admission.request,
+      admission.admission};
+  const auto& graph = admission.request.logical_graph;
+  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
+                              input.context.statement_uuid.canonical;
+  const auto source_capability_uuid = DerivedCanonicalUuid(
+      identity_scope, "table-function.generate-series.capability");
+  const auto match_capability_uuid = DerivedCanonicalUuid(
+      identity_scope, "match-recognize.a-plus.capability");
+  std::vector<LivePhysicalNodeProfile> profiles;
+  LivePhysicalNodeProfile source_profile;
+  source_profile.logical_node_id = source->node_id;
+  source_profile.implementation_id = "table-function.generate-series.v1";
+  source_profile.capability_uuid = source_capability_uuid;
+  source_profile.logical_node_kind =
+      plan::CanonicalLogicalRelationalNodeKind::kTableFunctionInvoke;
+  source_profile.physical_node_kind =
+      exec::PhysicalNodeKind::kTableFunctionInvoke;
+  source_profile.transformation_rule_id =
+      "canonical.table-function.generate-series.v1";
+  source_profile.estimated_rows = std::max<std::size_t>(1,
+                                                        generated_row_count);
+  source_profile.memory_bytes_required = source_batch_memory_bytes;
+  source_profile.minimum_input_count = 0;
+  source_profile.maximum_input_count = 0;
+  source_profile.udr_invocation_units =
+      std::max<std::uint64_t>(1, generated_row_count);
+  profiles.push_back(std::move(source_profile));
+  LivePhysicalNodeProfile match_profile;
+  match_profile.logical_node_id = match->node_id;
+  match_profile.implementation_id =
+      "match-recognize.partition-order.a-plus.v1";
+  match_profile.capability_uuid = match_capability_uuid;
+  match_profile.logical_node_kind =
+      plan::CanonicalLogicalRelationalNodeKind::kMatchRecognize;
+  match_profile.physical_node_kind =
+      exec::PhysicalNodeKind::kMatchRecognize;
+  match_profile.transformation_rule_id =
+      "canonical.match-recognize.partition-order.a-plus.v1";
+  match_profile.estimated_rows =
+      std::max<std::size_t>(1, generated_row_count);
+  match_profile.memory_bytes_required =
+      input.context.optimizer_memory_budget_bytes;
+  match_profile.minimum_input_count = 1;
+  match_profile.maximum_input_count = 1;
+  match_profile.required_property_uuids = match->required_property_uuids;
+  match_profile.delivered_property_uuids = match->delivered_property_uuids;
+  match_profile.supported_property_kinds = {
+      plan::CanonicalLogicalPropertyKind::kPartitioning,
+      plan::CanonicalLogicalPropertyKind::kOrdering};
+  match_profile.memory_grant_units =
+      input.context.optimizer_memory_budget_bytes;
+  match_profile.predicate_evaluation_units =
+      std::max<std::uint64_t>(1, generated_row_count);
+  match_profile.runtime_peak_from_callback_batches = true;
+  profiles.push_back(std::move(match_profile));
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "MATCH_RECOGNIZE runtime memory receipts are incomplete");
+  }
+  auto physical = PlanAndPublishLivePhysicalDag(
+      planning_request, profiles, "match-recognize.selected-plan",
+      "MATCH_RECOGNIZE");
+  if (!physical.ok) {
+    return refuse(physical.diagnostic_id, physical.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = physical.physical_dag.nodes.size();
+  result.selected_plan_uuid = physical.physical_dag.selected_plan_uuid;
+
+  api::CanonicalOptimizerSelectedExecutionRequest selected;
+  selected.pre_access_statistics_snapshot_uuid =
+      physical.physical_dag.statistics_snapshot_uuid;
+  selected.mga_authority = BuildCanonicalExecutionMgaAuthority(
+      input.context, physical.physical_dag);
+  selected.selected_physical_dag = std::move(physical.physical_dag);
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> source_batches;
+  source_batches.emplace(source->node_id, std::move(source_batch));
+  selected.available_executors.push_back(
+      MakeLiveMaterializedSourceRegistration(
+          std::move(source_batches), source_capability_uuid,
+          "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-SOURCE-V1",
+          "MATCH_RECOGNIZE generate_series source",
+          exec::PhysicalNodeKind::kTableFunctionInvoke,
+          "table-function.generate-series.v1", "TABLE_FUNCTION_INVOKE", true,
+          &selected.mga_authority));
+  selected.available_executors.push_back(
+      MakeLiveMatchRecognizeRegistration(
+          match_capability_uuid, pattern.maximum_partition_rows,
+          pattern.maximum_active_states, pattern.maximum_output_rows,
+          &input.context, &selected.mga_authority));
+  selected.engine_execution_authorized = true;
+  selected.runtime_limits.maximum_rows_per_batch =
+      kGenerateSeriesMaximumRowCount;
+  selected.runtime_limits.maximum_columns_per_batch = 1;
+  selected.runtime_limits.maximum_cells_per_batch =
+      kGenerateSeriesMaximumRowCount;
+  selected.runtime_limits.maximum_total_materialized_rows =
+      kGenerateSeriesMaximumRowCount;
+  selected.runtime_limits.maximum_total_materialized_cells =
+      kGenerateSeriesMaximumRowCount;
+  selected.result_publication_request.statement_uuid =
+      input.context.statement_uuid.canonical;
+  selected.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  selected.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + input.context.current_monotonic_ns,
+          "match-recognize.execution-attempt");
+  selected.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  selected.result_publication_request.transaction_effect_evidence_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" +
+              std::to_string(input.context.local_transaction_id) + ":" +
+              std::to_string(
+                  input.context.snapshot_visible_through_local_transaction_id),
+          "match-recognize.transaction-effect-unchanged");
+  selected.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, generated_row_count);
+  exec::CanonicalResultColumnBinding binding;
+  binding.physical_column_ordinal = 0;
+  binding.visible = true;
+  binding.published_descriptor = exec::CanonicalResultColumnDescriptor{
+      0, "generate_series", output_descriptor->descriptor_uuid,
+      output_descriptor->type_uuid,
+      exec::CanonicalResultNullability::kNonNull, std::nullopt,
+      std::nullopt};
+  selected.result_publication_request.column_bindings.push_back(
+      std::move(binding));
+
+  const auto execution = ExecuteSelectedWithMgaGuard(
+      input.context, selected, physical.ordinary_runtime_memory_receipts);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published ||
+      !execution.runtime_actuals.accepted ||
+      execution.dispatch.executed_steps.size() != 2 ||
+      !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-QRY-004-MATCH-RECOGNIZE-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "MATCH_RECOGNIZE selected physical DAG did not complete"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = true;
+  result.canonical_result_published = true;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(planning_request, execution);
+  result.api_result.evidence.push_back(
+      {"canonical.match_recognize",
+       "SBSQL_GENERATE_SERIES_TO_MATCH_RECOGNIZE_A_PLUS_ALL_ROWS_V1"});
+  result.api_result.evidence.push_back(
+      {"canonical.match_recognize.stable_tie_break", "source_row_ordinal"});
+  return result;
+}
 #endif
 
 // QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
@@ -63338,6 +63910,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   return result;
 #else
   const auto& dag = input.relational_dag;
+  if (std::ranges::any_of(dag.nodes, [](const auto& node) {
+        return node.node_kind ==
+               api::RelationalDagNodeKind::kMatchRecognize;
+      })) {
+    return ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(input);
+  }
   if (dag.nodes.size() == 1 &&
       dag.nodes.front().node_kind ==
           api::RelationalDagNodeKind::kTableFunctionInvoke) {

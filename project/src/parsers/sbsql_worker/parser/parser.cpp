@@ -269,6 +269,10 @@ class NativeRelationalParser final {
       return ParseDocumentModelSelect();
     }
     if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
+        LooksLikeBoundedMatchRecognizeSelect()) {
+      return ParseMatchRecognizeSelect();
+    }
+    if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
         LooksLikeBoundedTableFunctionSelect()) {
       return ParseTableFunctionSelect();
     }
@@ -376,6 +380,236 @@ class NativeRelationalParser final {
     ++cursor;
     if (cursor < tokens_.size() && tokens_[cursor]->text == ";") ++cursor;
     return cursor == tokens_.size();
+  }
+
+  bool LooksLikeBoundedMatchRecognizeSelect() const {
+    if (tokens_.size() < 10 || !IsWord(*tokens_[0], "SELECT") ||
+        tokens_[1]->text != "*" || !IsWord(*tokens_[2], "FROM") ||
+        !IsWord(*tokens_[3], "GENERATE_SERIES") ||
+        tokens_[4]->text != "(") {
+      return false;
+    }
+    return std::ranges::any_of(tokens_, [](const auto* token) {
+      return IsWord(*token, "MATCH_RECOGNIZE");
+    });
+  }
+
+  NativeRelationalAstDocument ParseMatchRecognizeSelect() {
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded",
+             "MATCH_RECOGNIZE query token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select = Consume();
+    const Token& wildcard_token = Consume();
+    Consume();  // FROM
+    const Token& function_name = Consume();
+    Consume();  // (
+    std::vector<std::uint32_t> argument_expression_ids;
+    while (!AtEnd() && !AtSymbol(")")) {
+      const auto argument_id = ParseExpression(0, 0);
+      if (!argument_id.has_value()) return FinishRefusal();
+      const auto& argument = document_.expressions[*argument_id - 1];
+      if (argument.expression_kind != NativeExpressionAstKind::kParameter ||
+          argument.literal_kind.has_value() ||
+          !argument.child_expression_ids.empty()) {
+        Refuse("match_recognize_source_argument_profile_unsupported",
+               "MATCH_RECOGNIZE generate_series requires structural parameters");
+        return FinishRefusal();
+      }
+      argument_expression_ids.push_back(*argument_id);
+      if (AtSymbol(")")) break;
+      if (!AtSymbol(",")) {
+        Refuse("match_recognize_source_argument_separator_expected",
+               "generate_series arguments must be comma separated");
+        return FinishRefusal();
+      }
+      Consume();
+    }
+    if ((argument_expression_ids.size() != 2 &&
+         argument_expression_ids.size() != 3) ||
+        !AtSymbol(")")) {
+      Refuse("match_recognize_source_arity_invalid",
+             "MATCH_RECOGNIZE generate_series requires two or three arguments");
+      return FinishRefusal();
+    }
+    const Token& function_close = Consume();
+    if (!RequireWord("MATCH_RECOGNIZE", "match_recognize_clause_required",
+                     "generate_series row-pattern query requires MATCH_RECOGNIZE") ||
+        !RequireSymbol("(", "match_recognize_open_required",
+                       "MATCH_RECOGNIZE requires an opening parenthesis") ||
+        !RequireWord("PARTITION", "match_recognize_partition_required",
+                     "MATCH_RECOGNIZE requires PARTITION BY") ||
+        !RequireWord("BY", "match_recognize_partition_by_required",
+                     "MATCH_RECOGNIZE PARTITION requires BY")) {
+      return FinishRefusal();
+    }
+    const auto partition_expression_id = ParseExpression(0, 0);
+    if (!partition_expression_id.has_value() ||
+        document_.expressions[*partition_expression_id - 1].expression_kind !=
+            NativeExpressionAstKind::kIdentifier ||
+        ToLowerAscii(document_.expressions[*partition_expression_id - 1]
+                         .spelling) != "generate_series") {
+      Refuse("match_recognize_partition_profile_unsupported",
+             "bounded MATCH_RECOGNIZE partitions by generate_series");
+      return FinishRefusal();
+    }
+    if (!RequireWord("ORDER", "match_recognize_order_required",
+                     "MATCH_RECOGNIZE requires ORDER BY") ||
+        !RequireWord("BY", "match_recognize_order_by_required",
+                     "MATCH_RECOGNIZE ORDER requires BY")) {
+      return FinishRefusal();
+    }
+    const auto order_expression_id = ParseExpression(0, 0);
+    if (!order_expression_id.has_value() ||
+        document_.expressions[*order_expression_id - 1].expression_kind !=
+            NativeExpressionAstKind::kIdentifier ||
+        ToLowerAscii(document_.expressions[*order_expression_id - 1]
+                         .spelling) != "generate_series") {
+      Refuse("match_recognize_order_profile_unsupported",
+             "bounded MATCH_RECOGNIZE orders by generate_series");
+      return FinishRefusal();
+    }
+    if (!AtEnd() && IsWord(Current(), "ASC")) Consume();
+    if (!RequireWord("ALL", "match_recognize_all_rows_required",
+                     "bounded MATCH_RECOGNIZE requires ALL ROWS PER MATCH") ||
+        !RequireWord("ROWS", "match_recognize_rows_required",
+                     "MATCH_RECOGNIZE ALL requires ROWS") ||
+        !RequireWord("PER", "match_recognize_per_required",
+                     "MATCH_RECOGNIZE ROWS requires PER") ||
+        !RequireWord("MATCH", "match_recognize_match_required",
+                     "MATCH_RECOGNIZE ROWS PER requires MATCH") ||
+        !RequireWord("AFTER", "match_recognize_after_required",
+                     "bounded MATCH_RECOGNIZE requires AFTER MATCH SKIP") ||
+        !RequireWord("MATCH", "match_recognize_after_match_required",
+                     "MATCH_RECOGNIZE AFTER requires MATCH") ||
+        !RequireWord("SKIP", "match_recognize_skip_required",
+                     "MATCH_RECOGNIZE AFTER MATCH requires SKIP") ||
+        !RequireWord("PAST", "match_recognize_skip_past_required",
+                     "bounded MATCH_RECOGNIZE skips PAST LAST ROW") ||
+        !RequireWord("LAST", "match_recognize_skip_last_required",
+                     "MATCH_RECOGNIZE SKIP PAST requires LAST ROW") ||
+        !RequireWord("ROW", "match_recognize_skip_row_required",
+                     "MATCH_RECOGNIZE SKIP PAST LAST requires ROW") ||
+        !RequireWord("PATTERN", "match_recognize_pattern_required",
+                     "MATCH_RECOGNIZE requires PATTERN") ||
+        !RequireSymbol("(", "match_recognize_pattern_open_required",
+                       "MATCH_RECOGNIZE PATTERN requires an opening parenthesis")) {
+      return FinishRefusal();
+    }
+    if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+      Refuse("match_recognize_pattern_variable_required",
+             "bounded MATCH_RECOGNIZE PATTERN requires one variable");
+      return FinishRefusal();
+    }
+    const Token& pattern_variable = Consume();
+    if (!AtSymbol("+")) {
+      Refuse("match_recognize_quantifier_required",
+             "bounded MATCH_RECOGNIZE requires the A+ quantifier");
+      return FinishRefusal();
+    }
+    Consume();
+    if (!RequireSymbol(")", "match_recognize_pattern_close_required",
+                       "MATCH_RECOGNIZE PATTERN is not closed") ||
+        !RequireWord("DEFINE", "match_recognize_define_required",
+                     "MATCH_RECOGNIZE requires DEFINE")) {
+      return FinishRefusal();
+    }
+    if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+      Refuse("match_recognize_define_variable_required",
+             "MATCH_RECOGNIZE DEFINE requires the pattern variable");
+      return FinishRefusal();
+    }
+    const Token& define_variable = Consume();
+    if (!SameIdentifier(
+            NativeIdentifierAstNode{pattern_variable.text,
+                                    pattern_variable.quoted,
+                                    TokenSourceRange(pattern_variable)},
+            define_variable) ||
+        !RequireWord("AS", "match_recognize_define_as_required",
+                     "MATCH_RECOGNIZE DEFINE requires AS") ||
+        AtEnd() || Current().kind != TokenKind::kBooleanLiteral ||
+        !IsWord(Current(), "TRUE")) {
+      Refuse("match_recognize_define_profile_unsupported",
+             "bounded MATCH_RECOGNIZE requires DEFINE A AS TRUE");
+      return FinishRefusal();
+    }
+    const Token& define_true = Consume();
+    if (!RequireSymbol(")", "match_recognize_close_required",
+                       "MATCH_RECOGNIZE is not closed")) {
+      return FinishRefusal();
+    }
+    const Token& clause_close = Previous();
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("match_recognize_tail_unsupported",
+             "bounded MATCH_RECOGNIZE does not admit trailing clauses");
+      return FinishRefusal();
+    }
+
+    NativeExpressionAstNode wildcard;
+    wildcard.expression_id = NextExpressionId();
+    wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+    wildcard.spelling = wildcard_token.text;
+    wildcard.range = TokenSourceRange(wildcard_token);
+    const auto wildcard_expression_id = wildcard.expression_id;
+    document_.expressions.push_back(std::move(wildcard));
+
+    NativeRelationAstNode source;
+    source.relation_id = 1;
+    source.relation_kind = NativeRelationAstKind::kTableFunctionInvoke;
+    source.output_expression_ids = {wildcard_expression_id};
+    source.table_function_name = {
+        {function_name.text, function_name.quoted,
+         TokenSourceRange(function_name)}};
+    source.table_function_argument_expression_ids =
+        std::move(argument_expression_ids);
+    source.range = Span(select, function_close);
+    document_.relations.push_back(std::move(source));
+
+    NativeRelationAstNode match;
+    match.relation_id = 2;
+    match.relation_kind = NativeRelationAstKind::kMatchRecognize;
+    match.input_relation_ids = {1};
+    match.output_expression_ids = {wildcard_expression_id};
+    match.range = Span(select, clause_close);
+    document_.relations.push_back(std::move(match));
+
+    NativeRowPatternAstNode pattern;
+    pattern.pattern_id = 1;
+    pattern.relation_id = 2;
+    pattern.partition_expression_ids = {*partition_expression_id};
+    pattern.ordering_terms.push_back(
+        {*order_expression_id, NativeSortDirection::kAscending,
+         NativeNullPlacement::kNullsLast,
+         document_.expressions[*order_expression_id - 1].range});
+    NativeRowPatternVariableAstNode variable;
+    variable.name = {pattern_variable.text, pattern_variable.quoted,
+                     TokenSourceRange(pattern_variable)};
+    variable.minimum_occurrences = 1;
+    variable.maximum_occurrences.reset();
+    variable.reluctant = false;
+    variable.define_always_true = true;
+    variable.range = Span(pattern_variable, define_true);
+    pattern.variables.push_back(std::move(variable));
+    pattern.rows_per_match = NativeRowPatternRowsPerMatch::kAll;
+    pattern.after_match_skip =
+        NativeRowPatternAfterMatchSkip::kPastLastRow;
+    pattern.maximum_partition_rows = 10000;
+    pattern.maximum_active_states = 2;
+    pattern.maximum_output_rows = 10000;
+    pattern.stable_row_identity_tie_break_allowed = true;
+    pattern.range = Span(pattern_variable, define_true);
+    document_.row_patterns.push_back(std::move(pattern));
+    document_.root_relation_id = 2;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
   }
 
   NativeRelationalAstDocument ParseTableFunctionSelect() {

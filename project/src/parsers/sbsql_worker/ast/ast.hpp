@@ -84,6 +84,7 @@ enum class NativeRelationAstKind {
   kJoin,
   kWindow,
   kQualify,
+  kMatchRecognize,
   kTableFunctionInvoke,
 };
 
@@ -390,6 +391,47 @@ struct NativeWindowInvocationAstNode {
   SourceRange range;
 };
 
+enum class NativeRowPatternRowsPerMatch : std::uint8_t {
+  kOne = 1,
+  kAll,
+};
+
+enum class NativeRowPatternAfterMatchSkip : std::uint8_t {
+  kPastLastRow = 1,
+  kToNextRow,
+  kToFirstVariable,
+  kToLastVariable,
+};
+
+struct NativeRowPatternVariableAstNode {
+  NativeIdentifierAstNode name;
+  std::uint32_t minimum_occurrences{1};
+  std::optional<std::uint32_t> maximum_occurrences;
+  bool reluctant{false};
+  std::optional<std::uint32_t> define_expression_id;
+  bool define_always_true{false};
+  SourceRange range;
+};
+
+struct NativeRowPatternAstNode {
+  std::uint32_t pattern_id{0};
+  std::uint32_t relation_id{0};
+  std::vector<std::uint32_t> partition_expression_ids;
+  std::vector<NativeOrderingAstTerm> ordering_terms;
+  std::vector<NativeRowPatternVariableAstNode> variables;
+  std::vector<std::uint32_t> measure_expression_ids;
+  NativeRowPatternRowsPerMatch rows_per_match{
+      NativeRowPatternRowsPerMatch::kOne};
+  NativeRowPatternAfterMatchSkip after_match_skip{
+      NativeRowPatternAfterMatchSkip::kToNextRow};
+  std::optional<NativeIdentifierAstNode> skip_target;
+  std::uint32_t maximum_partition_rows{0};
+  std::uint32_t maximum_active_states{0};
+  std::uint32_t maximum_output_rows{0};
+  bool stable_row_identity_tie_break_allowed{false};
+  SourceRange range;
+};
+
 struct NativeRelationAstNode {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
@@ -424,6 +466,7 @@ struct NativeRelationalAstDocument {
   std::vector<NativeGroupingSetAstNode> grouping_sets;
   std::vector<NativeWindowDefinitionAstNode> window_definitions;
   std::vector<NativeWindowInvocationAstNode> window_invocations;
+  std::vector<NativeRowPatternAstNode> row_patterns;
   std::vector<NativeExpressionAstNode> expressions;
   std::optional<NativeTemporalTableSourceRefusal> temporal_table_source_refusal;
   MessageVectorSet messages;

@@ -838,7 +838,8 @@ void PrintMessages(const sbsql::MessageVectorSet& messages) {
 
 void VerifyFullParserServerRoute(const Fixture& fixture,
                                  const bool join_tail_proof_only,
-                                 const bool table_function_proof_only = false) {
+                                 const bool table_function_proof_only = false,
+                                 const bool match_recognize_proof_only = false) {
   constexpr std::string_view kSourceFreeNativeSelect =
       "SELECT key_a,COUNT(*),SUM(amount) FROM (VALUES (1,5), (1,7)) "
       "AS input(key_a,amount) GROUP BY key_a;";
@@ -911,7 +912,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 !parser.session().transaction_uuid.empty(),
             "full parser-server route authentication/attach failed");
 
-    if (!join_tail_proof_only && !table_function_proof_only) {
+    if (!join_tail_proof_only && !table_function_proof_only &&
+        !match_recognize_proof_only) {
       auto source_free = parser.RunPipeline(kSourceFreeNativeSelect, true);
       if (!source_free.accepted) PrintMessages(source_free.messages);
       Require(source_free.accepted &&
@@ -961,7 +963,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           return parser.RunDirectParameterizedForWire(sql, values);
         };
 
-    if (!join_tail_proof_only) {
+    if (!join_tail_proof_only && !match_recognize_proof_only) {
       auto generate_series = run_direct_parameterized(
           "SELECT * FROM generate_series(?, ?, ?);",
           {text_parameter("1"), text_parameter("5"), text_parameter("2")});
@@ -1034,7 +1036,47 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
               "generate_series admitted parser-authored literal arguments");
     }
 
-    if (!table_function_proof_only) {
+    if (!join_tail_proof_only && !table_function_proof_only) {
+      constexpr std::string_view kMatchRecognizeQuery =
+          "SELECT * FROM generate_series(?, ?, ?) MATCH_RECOGNIZE ("
+          "PARTITION BY generate_series ORDER BY generate_series ASC "
+          "ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW "
+          "PATTERN (A+) DEFINE A AS TRUE);";
+      auto match_recognize = run_direct_parameterized(
+          kMatchRecognizeQuery,
+          {text_parameter("5"), text_parameter("1"),
+           text_parameter("-2")});
+      if (!match_recognize.accepted) {
+        PrintMessages(match_recognize.messages);
+      }
+      const auto one = match_recognize.server_result_payload.find(
+          "generate_series=1");
+      const auto three = match_recognize.server_result_payload.find(
+          "generate_series=3");
+      const auto five = match_recognize.server_result_payload.find(
+          "generate_series=5");
+      Require(
+          match_recognize.accepted &&
+              match_recognize.server_operation_id == "query.execute" &&
+              match_recognize.server_cursor_uuid.empty() &&
+              match_recognize.server_row_count == 3 &&
+              one != std::string::npos && three != std::string::npos &&
+              five != std::string::npos && one < three && three < five,
+          "MATCH_RECOGNIZE did not complete parser, bound SBLR, optimizer, "
+          "partition/order pattern execution, and ordered result publication");
+
+      auto refused_one_row = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?) MATCH_RECOGNIZE ("
+          "PARTITION BY generate_series ORDER BY generate_series "
+          "ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW "
+          "PATTERN (A+) DEFINE A AS TRUE);",
+          {text_parameter("1"), text_parameter("3"),
+           text_parameter("1")});
+      Require(!refused_one_row.accepted,
+              "bounded MATCH_RECOGNIZE admitted an unsupported output mode");
+    }
+
+    if (!table_function_proof_only && !match_recognize_proof_only) {
 
     auto joined_literal_parameter_tail = run_direct_parameterized(
         "SELECT l.integer_value FROM "
@@ -1110,7 +1152,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
             "profile");
     }
 
-    if (!join_tail_proof_only && !table_function_proof_only) {
+    if (!join_tail_proof_only && !table_function_proof_only &&
+        !match_recognize_proof_only) {
     auto three_way_join_limit = parser.RunPipeline(
         "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS JOIN "
         "qow_packet7.qow_packet7_join_relation AS r CROSS JOIN "
@@ -3239,17 +3282,26 @@ int main(int argc, char** argv) {
   const bool table_function_proof_only =
       argc == 2 &&
       std::string_view(argv[1]) == "--table-function-proof-only";
-  Require(argc == 1 || join_tail_proof_only || table_function_proof_only,
+  const bool match_recognize_proof_only =
+      argc == 2 &&
+      std::string_view(argv[1]) == "--match-recognize-proof-only";
+  Require(argc == 1 || join_tail_proof_only || table_function_proof_only ||
+              match_recognize_proof_only,
           "unsupported qow live statement-context regression argument");
-  if (join_tail_proof_only || table_function_proof_only) {
+  if (join_tail_proof_only || table_function_proof_only ||
+      match_recognize_proof_only) {
     auto bootstrap_fixture = CreateFixture();
     auto full_route_fixture = CreateFixture(true);
     CreateObjectBackedRelation(&full_route_fixture);
     VerifyFullParserServerRoute(full_route_fixture, join_tail_proof_only,
-                                table_function_proof_only);
-    std::cout << (join_tail_proof_only
-                      ? "qow_join_tail_literal_filter_parameter_limit=passed\n"
-                      : "qow_table_function_generate_series=passed\n");
+                                table_function_proof_only,
+                                match_recognize_proof_only);
+    std::cout
+        << (join_tail_proof_only
+                ? "qow_join_tail_literal_filter_parameter_limit=passed\n"
+                : (table_function_proof_only
+                       ? "qow_table_function_generate_series=passed\n"
+                       : "qow_match_recognize_generate_series=passed\n"));
     return EXIT_SUCCESS;
   }
 

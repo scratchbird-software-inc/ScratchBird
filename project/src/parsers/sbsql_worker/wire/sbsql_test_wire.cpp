@@ -1187,6 +1187,165 @@ BuildEngineProjectedNativeBindingContext(
         return relation.relation_kind ==
                NativeRelationAstKind::kTableFunctionInvoke;
       });
+  const auto match_recognize_relation = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind ==
+               NativeRelationAstKind::kMatchRecognize;
+      });
+  if (match_recognize_relation != ast.relations.end()) {
+    if (table_function_relation == ast.relations.end() ||
+        ast.row_patterns.size() != 1) {
+      return fail("match_recognize_generate_series_profile_invalid");
+    }
+    const auto numeric_profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [](const auto& profile) {
+          return profile.profile_kind == 1 && profile.slot == 0;
+        });
+    const auto& source = *table_function_relation;
+    const auto& match = *match_recognize_relation;
+    const auto argument_count =
+        source.table_function_argument_expression_ids.size();
+    const auto output_expression_id =
+        static_cast<std::uint32_t>(argument_count + 1);
+    const auto exact_identifier = [&](const std::uint32_t expression_id) {
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == expression_id;
+          });
+      return expression != ast.expressions.end() &&
+             expression->expression_kind ==
+                 NativeExpressionAstKind::kIdentifier &&
+             expression->qualified_identifier.size() == 1 &&
+             !expression->qualified_identifier.front().quoted &&
+             ToUpperAscii(expression->qualified_identifier.front().spelling) ==
+                 "GENERATE_SERIES" &&
+             ToUpperAscii(expression->spelling) == "GENERATE_SERIES" &&
+             !expression->literal_kind.has_value() &&
+             expression->child_expression_ids.empty() &&
+             expression->operator_name.empty() &&
+             expression->structural_literal_occurrence_id == 0 &&
+             expression->structural_parameter_occurrence_id == 0 &&
+             expression->structural_variable_occurrence_id == 0;
+    };
+    bool exact_arguments = argument_count == 2 || argument_count == 3;
+    std::unordered_set<std::uint32_t> argument_ids;
+    for (std::size_t ordinal = 0; exact_arguments && ordinal < argument_count;
+         ++ordinal) {
+      const auto expression_id =
+          source.table_function_argument_expression_ids[ordinal];
+      const auto argument = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      exact_arguments =
+          argument != ast.expressions.end() && expression_id == ordinal + 1 &&
+          argument->expression_kind == NativeExpressionAstKind::kParameter &&
+          !argument->literal_kind.has_value() &&
+          argument->child_expression_ids.empty() &&
+          argument->operator_name.empty() &&
+          argument->qualified_identifier.empty() &&
+          argument->structural_literal_occurrence_id == 0 &&
+          argument->structural_parameter_occurrence_id == ordinal + 1 &&
+          argument->structural_variable_occurrence_id == 0 &&
+          argument_ids.insert(expression_id).second;
+    }
+    const auto wildcard = std::ranges::find_if(
+        ast.expressions, [&](const auto& expression) {
+          return source.output_expression_ids ==
+                     std::vector<std::uint32_t>{expression.expression_id} &&
+                 expression.expression_kind ==
+                     NativeExpressionAstKind::kWildcard &&
+                 expression.spelling == "*";
+        });
+    const auto& pattern = ast.row_patterns.front();
+    const bool exact_pattern =
+        ast.row_patterns.size() == 1 && pattern.pattern_id == 1 &&
+        pattern.relation_id == match.relation_id &&
+        pattern.partition_expression_ids.size() == 1 &&
+        exact_identifier(pattern.partition_expression_ids.front()) &&
+        pattern.ordering_terms.size() == 1 &&
+        exact_identifier(pattern.ordering_terms.front().expression_id) &&
+        pattern.ordering_terms.front().direction ==
+            NativeSortDirection::kAscending &&
+        pattern.ordering_terms.front().null_placement ==
+            NativeNullPlacement::kNullsLast &&
+        pattern.variables.size() == 1 &&
+        !pattern.variables.front().name.quoted &&
+        ToUpperAscii(pattern.variables.front().name.spelling) == "A" &&
+        pattern.variables.front().minimum_occurrences == 1 &&
+        !pattern.variables.front().maximum_occurrences.has_value() &&
+        !pattern.variables.front().reluctant &&
+        !pattern.variables.front().define_expression_id.has_value() &&
+        pattern.variables.front().define_always_true &&
+        pattern.measure_expression_ids.empty() &&
+        pattern.rows_per_match == NativeRowPatternRowsPerMatch::kAll &&
+        pattern.after_match_skip ==
+            NativeRowPatternAfterMatchSkip::kPastLastRow &&
+        !pattern.skip_target.has_value() &&
+        pattern.maximum_partition_rows == 10000 &&
+        pattern.maximum_active_states == 2 &&
+        pattern.maximum_output_rows == 10000 &&
+        pattern.stable_row_identity_tie_break_allowed;
+    if (ast.relations.size() != 2 || ast.root_relation_id != match.relation_id ||
+        source.relation_id != 1 || match.relation_id != 2 ||
+        !source.input_relation_ids.empty() ||
+        source.table_function_name.size() != 1 ||
+        source.table_function_name.front().quoted ||
+        ToUpperAscii(source.table_function_name.front().spelling) !=
+            "GENERATE_SERIES" ||
+        !source.relation_source_ids.empty() || !source.values_row_ids.empty() ||
+        !source.grouping_key_expression_ids.empty() ||
+        !source.aggregate_expression_ids.empty() ||
+        !source.predicate_expression_ids.empty() ||
+        !source.limit_expression_ids.empty() ||
+        !source.window_invocation_ids.empty() ||
+        !source.ordering_terms.empty() || !exact_arguments ||
+        match.input_relation_ids != std::vector<std::uint32_t>{1} ||
+        match.output_expression_ids != source.output_expression_ids ||
+        !match.relation_source_ids.empty() || !match.values_row_ids.empty() ||
+        !match.grouping_key_expression_ids.empty() ||
+        !match.aggregate_expression_ids.empty() ||
+        !match.predicate_expression_ids.empty() ||
+        !match.limit_expression_ids.empty() ||
+        !match.table_function_name.empty() ||
+        !match.table_function_argument_expression_ids.empty() ||
+        !match.window_invocation_ids.empty() || !match.ordering_terms.empty() ||
+        !exact_pattern || wildcard == ast.expressions.end() ||
+        ast.expressions.size() != argument_count + 3 ||
+        !ast.catalog_relation_sources.empty() ||
+        !ast.model_object_resolution_requests.empty() ||
+        !ast.values_rows.empty() || !ast.grouping_sets.empty() ||
+        !ast.window_definitions.empty() || !ast.window_invocations.empty() ||
+        !resolved_object_reference_seeds.empty() ||
+        numeric_profile == statement_context.descriptor_profiles.end() ||
+        numeric_profile->nullable ||
+        !CanonicalUuidBytes(numeric_profile->descriptor_uuid).has_value() ||
+        !CanonicalUuidBytes(numeric_profile->type_uuid).has_value()) {
+      return fail("match_recognize_generate_series_profile_invalid");
+    }
+
+    NativeDescriptorBindingInput descriptor;
+    descriptor.descriptor_id = 1;
+    descriptor.descriptor_uuid = numeric_profile->descriptor_uuid;
+    descriptor.type_uuid = numeric_profile->type_uuid;
+    descriptor.nullability = BoundNullability::kNonNull;
+    descriptor.canonical_type_name = "int64";
+    context.descriptors.push_back(std::move(descriptor));
+    context.expressions.push_back(
+        {output_expression_id, 1, std::string(kGenerateSeriesFunctionUuid),
+         std::nullopt, 0, 0, 0});
+    context.outputs.push_back(
+        {1, output_expression_id, "generate_series", 1, true, 0,
+         source.relation_id});
+    context.outputs.push_back(
+        {2, output_expression_id, "generate_series", 1, true, 0,
+         match.relation_id});
+    context.relations.push_back(
+        {source.relation_id, "table-function.generate-series.v1"});
+    context.relations.push_back(
+        {match.relation_id, "match-recognize.a-plus.true.all-rows.v1"});
+    return context;
+  }
   if (table_function_relation != ast.relations.end()) {
     const auto& relation = *table_function_relation;
     const auto output = std::ranges::find_if(
@@ -17545,6 +17704,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               return relation.relation_kind ==
                      NativeRelationAstKind::kTableFunctionInvoke;
             });
+        const auto native_match_recognize_relation = std::ranges::find_if(
+            ast.native_relational.relations, [](const auto& relation) {
+              return relation.relation_kind ==
+                     NativeRelationAstKind::kMatchRecognize;
+            });
         const bool exact_native_table_function_parameter_route =
             native_binding_context.has_value() &&
             ast.native_relational.relations.size() == 1 &&
@@ -17560,6 +17724,27 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             native_binding_context->expressions.size() == 1 &&
             native_binding_context->outputs.size() == 1 &&
             native_binding_context->relations.size() == 1;
+        const bool exact_native_match_recognize_parameter_route =
+            native_binding_context.has_value() &&
+            ast.native_relational.relations.size() == 2 &&
+            native_table_function_relation !=
+                ast.native_relational.relations.end() &&
+            native_match_recognize_relation !=
+                ast.native_relational.relations.end() &&
+            ast.native_relational.root_relation_id ==
+                native_match_recognize_relation->relation_id &&
+            native_match_recognize_relation->input_relation_ids ==
+                std::vector<std::uint32_t>{
+                    native_table_function_relation->relation_id} &&
+            native_table_function_relation
+                    ->table_function_argument_expression_ids.size() >= 2 &&
+            native_table_function_relation
+                    ->table_function_argument_expression_ids.size() <= 3 &&
+            ast.native_relational.row_patterns.size() == 1 &&
+            native_binding_context->descriptors.size() == 1 &&
+            native_binding_context->expressions.size() == 1 &&
+            native_binding_context->outputs.size() == 2 &&
+            native_binding_context->relations.size() == 2;
         const bool exact_native_join_project_after_filter =
             native_join_filter_relation !=
                 ast.native_relational.relations.end() &&
@@ -17655,7 +17840,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             exact_native_join_filter_operand_route ||
             exact_native_catalog_filter_operand_route ||
             exact_native_join_limit_operand_route ||
-            exact_native_table_function_parameter_route;
+            exact_native_table_function_parameter_route ||
+            exact_native_match_recognize_parameter_route;
         const auto reserved_join_filter_operand_expression_id = [&]()
             -> std::optional<std::uint32_t> {
           if (!exact_native_join_filter_operand_route &&
@@ -17993,7 +18179,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             if (ast_parameter != ast.native_relational.expressions.end() &&
                 bound_input == native_binding_context->expressions.end()) {
               const auto reserved_expression_id =
-                  exact_native_table_function_parameter_route
+                  (exact_native_table_function_parameter_route ||
+                   exact_native_match_recognize_parameter_route)
                       ? std::optional<std::uint32_t>{
                             static_cast<std::uint32_t>(mapping.occurrence_id)}
                   : exact_native_join_limit_operand_route
@@ -18019,7 +18206,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                       });
               const char* exact_numeric_mapping_failure = nullptr;
               if (exact_native_join_limit_operand_route ||
-                  exact_native_table_function_parameter_route) {
+                  exact_native_table_function_parameter_route ||
+                  exact_native_match_recognize_parameter_route) {
                 if (limit_numeric_profile ==
                     native_statement_context->descriptor_profiles.end()) {
                   exact_numeric_mapping_failure =
@@ -18055,7 +18243,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                      ? BoundNullability::kNullable
                                                      : BoundNullability::kNonNull;
               if (exact_native_join_limit_operand_route ||
-                  exact_native_table_function_parameter_route) {
+                  exact_native_table_function_parameter_route ||
+                  exact_native_match_recognize_parameter_route) {
                 parameter_descriptor.canonical_type_name = "int64";
               }
               const auto descriptor_id = parameter_descriptor.descriptor_id;
