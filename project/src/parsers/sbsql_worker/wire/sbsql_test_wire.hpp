@@ -202,6 +202,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlCreateSynonymForWire();
   PipelineResult RunDdlCreateForeignTableForWire();
   PipelineResult RunDdlCreateFdwForWire();
+  PipelineResult RunDdlDropFdwForWire();
   PipelineResult RunDdlCreateOrReplaceSrsForWire();
   PipelineResult RunDdlDropSrsForWire();
   PipelineResult RunDdlCreateRewriteRuleForWire();

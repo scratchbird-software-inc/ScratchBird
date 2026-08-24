@@ -83,6 +83,7 @@
 #include "sblr_ddl_create_synonym_runtime.hpp"
 #include "sblr_ddl_create_foreign_table_runtime.hpp"
 #include "sblr_ddl_create_fdw_runtime.hpp"
+#include "sblr_ddl_drop_fdw_runtime.hpp"
 #include "sblr_ddl_drop_foreign_table_runtime.hpp"
 #include "sblr_ddl_drop_synonym_runtime.hpp"
 #include "sblr_ddl_drop_package_runtime.hpp"
@@ -723,6 +724,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::create_synonym_descriptor: { SblrDdlCreateSynonymDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateSynonymDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::create_foreign_table_descriptor: { SblrDdlCreateForeignTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateForeignTableDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::create_fdw_descriptor: { SblrDdlCreateFdwDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateFdwDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_fdw_descriptor: { SblrDdlDropFdwDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropFdwDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_foreign_table_descriptor: { SblrDdlDropForeignTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropForeignTableDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_synonym_descriptor: { SblrDdlDropSynonymDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSynonymDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_package_descriptor: { SblrDdlDropPackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropPackageDescriptorV1(data,size,&operand,&detail,true); }

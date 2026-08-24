@@ -258,6 +258,8 @@ constexpr std::uint32_t kSchemaCoordinateDdlCreateForeignTableRequestV1 = 7315;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateForeignTableResultV1 = 7316;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateFdwRequestV1 = 7319;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateFdwResultV1 = 7320;
+constexpr std::uint32_t kSchemaCoordinateDdlDropFdwRequestV1 = 7321;
+constexpr std::uint32_t kSchemaCoordinateDdlDropFdwResultV1 = 7322;
 constexpr std::uint32_t kSchemaCoordinateDdlDropForeignTableRequestV1 = 7317;
 constexpr std::uint32_t kSchemaCoordinateDdlDropForeignTableResultV1 = 7318;
 constexpr std::uint32_t kSchemaCoordinateDdlDropSynonymRequestV1 = 7313;
@@ -583,6 +585,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateDdlCreateForeignTableResult = 217,
   kCoordinateDdlCreateFdwRequest = 326,
   kCoordinateDdlCreateFdwResult = 327,
+  kCoordinateDdlDropFdwRequest = 328,
+  kCoordinateDdlDropFdwResult = 329,
   kCoordinateDdlDropForeignTableRequest = 324,
   kCoordinateDdlDropForeignTableResult = 325,
   kCoordinateDdlDropSynonymRequest = 320,

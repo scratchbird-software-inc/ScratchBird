@@ -94,6 +94,8 @@
 #include "sblr_ddl_create_foreign_table_coordinator.hpp"
 #include "sblr_ddl_create_fdw_runtime.hpp"
 #include "sblr_ddl_create_fdw_coordinator.hpp"
+#include "sblr_ddl_drop_fdw_runtime.hpp"
+#include "sblr_ddl_drop_fdw_coordinator.hpp"
 #include "sblr_ddl_drop_foreign_table_runtime.hpp"
 #include "sblr_ddl_drop_foreign_table_coordinator.hpp"
 #include "sblr_ddl_drop_package_runtime.hpp"
@@ -7019,6 +7021,7 @@ SessionOperationResult HandleCoordinateDdlDropPackage(ServerSessionRegistry*regi
 
 SessionOperationResult HandleCoordinateDdlDropSynonym(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){auto translated=request;if(translated.payload.size()>=4){translated.payload[0]='P';translated.payload[1]='C';translated.payload[2]='Q';translated.payload[3]='X';}auto result=HandleCoordinateDdlDropPackage(registry,engine_state,translated);result.response_message_type=static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropSynonymResult);result.response_schema_id=sbps::kSchemaCoordinateDdlDropSynonymResultV1;if(result.payload.size()>=4&&!result.payload.empty()){result.payload[0]='D';result.payload[1]='S';result.payload[2]='Y';result.payload[3]='D';}return result;}
 SessionOperationResult HandleCoordinateDdlDropForeignTable(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){auto translated=request;if(translated.payload.size()>=4){translated.payload[0]='P';translated.payload[1]='C';translated.payload[2]='Q';translated.payload[3]='X';}auto result=HandleCoordinateDdlDropPackage(registry,engine_state,translated);result.response_message_type=static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropForeignTableResult);result.response_schema_id=sbps::kSchemaCoordinateDdlDropForeignTableResultV1;if(result.payload.size()>=4){result.payload[0]='D';result.payload[1]='F';result.payload[2]='T';result.payload[3]='D';}return result;}
+SessionOperationResult HandleCoordinateDdlDropFdw(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){auto translated=request;if(translated.payload.size()>=4){translated.payload[0]='P';translated.payload[1]='C';translated.payload[2]='Q';translated.payload[3]='X';}auto result=HandleCoordinateDdlDropPackage(registry,engine_state,translated);result.response_message_type=static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropFdwResult);result.response_schema_id=sbps::kSchemaCoordinateDdlDropFdwResultV1;if(result.payload.size()>=4){result.payload[0]='F';result.payload[1]='D';result.payload[2]='X';result.payload[3]='D';}return result;}
 
 SessionOperationResult HandleCoordinateDdlCreateTableAsQueryWithData(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){
  SessionOperationResult o;o.response_message_type=static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTableAsQueryWithDataResult);o.response_schema_id=sbps::kSchemaCoordinateDdlCreateTableAsQueryWithDataResultV1;o.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;o.session_uuid=request.header.session_uuid;

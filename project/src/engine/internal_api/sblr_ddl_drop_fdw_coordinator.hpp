@@ -1,0 +1,4 @@
+#pragma once
+#include "sblr_ddl_drop_foreign_table_coordinator.hpp"
+#include "../sblr/sblr_ddl_drop_fdw_runtime.hpp"
+namespace scratchbird::engine::internal_api { using SblrDdlDropFdwCoordinationResult=SblrDdlDropForeignTableCoordinationResult; inline SblrDdlDropFdwCoordinationResult CompileSblrDdlDropFdwDescriptor(const EngineRequestContext&c,const std::string&r,std::uint64_t o,std::uint32_t s,std::uint64_t a){auto x=c;for(auto&t:x.trace_tags)if(t=="private_ddl_drop_fdw_binder")t="private_ddl_create_package_binder";return CompileSblrDdlDropForeignTableDescriptor(x,r,o,s,a);} inline SblrDdlDropFdwCoordinationResult ConsumeSblrDdlDropFdwDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlDropFdwDescriptorV1&v){auto x=c;x.trace_tags.push_back("private_ddl_create_package");return ConsumeSblrDdlDropForeignTableDescriptor(x,v);} }

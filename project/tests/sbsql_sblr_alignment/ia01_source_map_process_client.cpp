@@ -331,6 +331,8 @@ int main(int argc, char** argv) {
                                 ? session.RunDdlCreateForeignTableForWire()
                     : operation == "ddl-create-fdw"
                                 ? session.RunDdlCreateFdwForWire()
+                    : operation == "ddl-drop-fdw"
+                                ? session.RunDdlDropFdwForWire()
                     : operation == "ddl-create-or-replace-srs"
                           ? session.RunDdlCreateOrReplaceSrsForWire()
                     : operation == "ddl-drop-srs"

@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::internal_api;SblrExecutorAvailabilityRowIdentity r{kSblrDdlDropFdwExecutorId,kSblrDdlDropFdwOpcodeCode,kSblrDdlDropFdwOpcodeVersion,kSblrDdlDropFdwOperandDescriptorId,kSblrDdlDropFdwResultDescriptorId,kSblrDdlDropFdwResultDescriptorVersion};assert(IsAdmittedExecutorAvailabilityIdentity(r));return 0;}
