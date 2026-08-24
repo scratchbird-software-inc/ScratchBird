@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_ddl_drop_foreign_table_coordinator.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::internal_api;EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="019d0000-0000-7000-8000-000000002956";c.trace_tags={"private_ddl_drop_foreign_table_binder"};auto q=CompileSblrDdlDropForeignTableDescriptor(c,c.statement_uuid.canonical,1,2,7);assert(q.ok);c.trace_tags={"private_ddl_drop_foreign_table"};c.query_cancellation_requested=[](){return true;};auto x=ConsumeSblrDdlDropForeignTableDescriptor(c,q.descriptor);assert(!x.ok&&x.diagnostic.code=="PROCESS.CANCELLED");}

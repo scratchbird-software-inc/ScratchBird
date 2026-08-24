@@ -120,8 +120,9 @@ std::string StorePath(const EngineRequestContext& context,
   const auto ddl_create_index_suffix = identity.executor_id == kSblrDdlCreateIndexExecutorId ? ".ddl_create_index" : ddl_create_table_suffix;
   const auto ddl_drop_index_suffix = identity.executor_id == kSblrDdlDropIndexExecutorId ? ".ddl_drop_index" : ddl_create_index_suffix;
   const auto ddl_drop_synonym_suffix = identity.executor_id == kSblrDdlDropSynonymExecutorId ? ".ddl_drop_synonym" : ddl_drop_index_suffix;
+  const auto ddl_drop_foreign_table_suffix = identity.executor_id == kSblrDdlDropForeignTableExecutorId ? ".ddl_drop_foreign_table" : ddl_drop_synonym_suffix;
   return context.database_path + ".sb.sblr_executor_availability_registry.v1" +
-         ddl_drop_synonym_suffix;
+         ddl_drop_foreign_table_suffix;
 }
 
 void AddField(std::string* out, std::string_view key, std::string_view value) {
@@ -275,6 +276,7 @@ bool ExactDdlCreateTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){re
 bool ExactDdlCreateIndexIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateIndexExecutorId&&r.opcode_code==1540&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateIndexOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateIndexResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropIndexIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropIndexExecutorId&&r.opcode_code==1541&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropIndexOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropIndexResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropSynonymIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropSynonymExecutorId&&r.opcode_code==1575&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropSynonymOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropSynonymResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropForeignTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropForeignTableExecutorId&&r.opcode_code==1577&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropForeignTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropForeignTableResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlAlterDomainIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterDomainExecutorId&&r.opcode_code==1547&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterDomainOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterDomainResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateViewExecutorId&&r.opcode_code==1548&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateViewResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlAlterViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterViewExecutorId&&r.opcode_code==1549&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterViewResultDescriptorId&&r.result_descriptor_version==1;}
@@ -348,6 +350,7 @@ bool ExactAdmittedIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
   if (ExactDmlCounterAddIdentity(row)) return true;
   if (ExactDdlTimeseriesSeriesCardinalityPolicyIdentity(row)) return true;
   if (ExactDdlCreateTimeseriesValueCacheIdentity(row)) return true;
+  if (ExactDdlDropForeignTableIdentity(row)) return true;
   return ExactLiteralIdentity(row) || ExactParameterIdentity(row) ||
          ExactVariableIdentity(row) || ExactSourceMapIdentity(row) ||
          ExactErrorVectorIdentity(row) || ExactDdlCreateProcedureIdentity(row) || ExactDdlDropProcedureIdentity(row) || ExactSequenceSetvalIdentity(row) || ExactQueryNumericIdentity(row) || ExactAdvancedDatatypeFamilyIdentity(row) || ExactProjectIdentity(row) || ExactAggregateIdentity(row) || ExactGroupIdentity(row) || ExactSortIdentity(row) || ExactLimitIdentity(row) || ExactWindowIdentity(row) || ExactReturnResultSetIdentity(row) || ExactKvStructuredReadIdentity(row) || ExactKvStructuredMutateIdentity(row) || ExactKvStructuredScanIdentity(row) || ExactKvStructuredStreamReadIdentity(row) || ExactKvStructuredStreamAppendIdentity(row) || ExactKvStructuredTimeseriesIdentity(row) || ExactSystemConfigSetIdentity(row) || ExactDdlCreateDomainIdentity(row) || ExactDdlCreateSchemaIdentity(row) || ExactDdlCreateTableIdentity(row) || ExactDdlCreateIndexIdentity(row) || ExactDdlAlterDomainIdentity(row) || ExactDdlCreateViewIdentity(row) || ExactDdlAlterViewIdentity(row) || ExactDdlDropViewIdentity(row) || ExactDdlCreateTriggerIdentity(row) || ExactDdlAlterTriggerIdentity(row) || ExactDdlDropTriggerIdentity(row) || ExactDdlDropIndexIdentity(row) || ExactDdlDropSynonymIdentity(row) || ExactTxnBeginIdentity(row) ||
