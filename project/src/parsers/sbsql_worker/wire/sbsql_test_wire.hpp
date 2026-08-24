@@ -210,6 +210,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlDropRewriteRuleForWire();
   PipelineResult RunDdlValidateConstraintForWire();
   PipelineResult RunSecurityCreatePrivilegeTemplateForWire();
+  PipelineResult RunSecurityCreateUserForWire();
   PipelineResult RunSecurityAlterPrivilegeTemplateForWire();
   PipelineResult RunSecurityDropPrivilegeTemplateForWire();
   PipelineResult RunDatabaseCreateTemplateCloneForWire();
