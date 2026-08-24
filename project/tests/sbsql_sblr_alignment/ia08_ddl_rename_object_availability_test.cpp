@@ -1,0 +1,2 @@
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
+int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.database_path="/tmp/sb_object_rename_2933";c.database_uuid.canonical="019d0000-0000-7000-8000-000000002933";c.security_context_present=true;c.trace_tags={"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};a::SblrExecutorAvailabilityRowIdentity r{"engine.op.ddl_rename_object",1572,"1.0","rename_object_descriptor","ddl_result",1};auto s=a::LoadSblrExecutorAvailabilitySnapshot(c,r);return s.ok&&s.snapshot.installed?0:1;}
