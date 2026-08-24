@@ -8,6 +8,7 @@
 
 #include "cost_model.hpp"
 #include "join_planner_full.hpp"
+#include "model_family_profile_factory.hpp"
 #include "optimizer_prepare_metric_collector.hpp"
 #include "query/plan_api.hpp"
 #include "relational_planner.hpp"
@@ -917,6 +918,209 @@ bool ValidateCostVectorBookkeeping() {
       "cost dimensions were overwritten, collapsed, or omitted from explain JSON");
 }
 
+exec::PhysicalMgaStatementContext ModelFamilyMgaContext(
+    const bool timestamp_required) {
+  exec::PhysicalMgaStatementContext context;
+  context.statement_uuid = Uuid(1400);
+  context.owning_transaction_uuid = Uuid(1401);
+  context.statement_snapshot_uuid = Uuid(1402);
+  context.statement_metadata_snapshot_uuid = Uuid(1403);
+  context.owning_local_transaction_id = kOwner;
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  if (timestamp_required) {
+    context.statement_timestamp = "2026-08-24T12:00:00Z";
+  }
+  return context;
+}
+
+bool ValidateModelFamilyOptimizerOwnedProfiles() {
+  struct FamilyCase {
+    std::string family_id;
+    std::vector<std::string> operation_ids;
+    std::string operation_id;
+    std::string logical_operator_id;
+  };
+  const std::vector<FamilyCase> families = {
+      {"document", {}, "DOCUMENT_FIND", "LOGICAL_DOCUMENT_SOURCE_V1"},
+      {"graph", {}, "GRAPH_MATCH", "LOGICAL_GRAPH_SOURCE_V1"},
+      {"key_value", {}, "KEY_VALUE_GET", "LOGICAL_KEY_VALUE_SOURCE_V1"},
+      {"time_series", {}, "TIME_SERIES_RANGE_READ",
+       "LOGICAL_TIME_SERIES_SOURCE_V1"},
+      {"vector", {}, "VECTOR_EXACT_SEARCH", "LOGICAL_VECTOR_SOURCE_V1"},
+      {"search", {}, "SEARCH_RANKED_QUERY", "LOGICAL_SEARCH_SOURCE_V1"},
+      {"spatial", {"SPATIAL_SOURCE"}, "SPATIAL_SOURCE",
+       "LOGICAL_SPATIAL_SOURCE_V1"},
+      {"columnar", {"COLUMNAR_SOURCE"}, "COLUMNAR_SOURCE",
+       "LOGICAL_COLUMNAR_SOURCE_V1"},
+  };
+  bool passed = true;
+  for (std::size_t index = 0; index < families.size(); ++index) {
+    const auto& family = families[index];
+    opt::ModelFamilyCoordinatorRequestV1 logical;
+    logical.family_id = family.family_id;
+    logical.operation_ids = family.operation_ids;
+    logical.operation_id = family.operation_id;
+    logical.logical_operator_id = family.logical_operator_id;
+    logical.logical_node_id = static_cast<std::uint32_t>(index + 1);
+    logical.object_uuid = Uuid(1500 + index);
+    logical.output_descriptor_ids = {
+        static_cast<std::uint32_t>(1600 + index)};
+    const bool timestamp_required = family.family_id != "document" &&
+                                    family.family_id != "graph";
+    logical.mga_statement_context =
+        ModelFamilyMgaContext(timestamp_required);
+    logical.bound_sblr_tree_uuid = Uuid(1700 + index);
+    logical.catalog_epoch_uuid = Uuid(1800 + index);
+    logical.security_context_uuid = Uuid(1900 + index);
+    logical.capability_snapshot_uuid = Uuid(2000 + index);
+    logical.resource_snapshot_uuid = Uuid(2100 + index);
+    logical.statistics_snapshot_uuid = Uuid(2200 + index);
+    logical.route_snapshot_uuid = Uuid(2300 + index);
+    logical.catalog_generation = logical.current_catalog_generation = 7;
+    logical.security_epoch = 8;
+    logical.policy_epoch = 9;
+    logical.resource_epoch = 10;
+    logical.statistics_generation = 11;
+    logical.route_epoch = 12;
+    logical.route_generation = 13;
+    logical.memory_budget_bytes = 4096;
+    logical.security_admitted = true;
+
+    const auto capability = [&](const bool fallback, const bool available,
+                                const std::uint64_t identity) {
+      opt::ModelFamilyCapabilitySnapshotV1 snapshot;
+      snapshot.route_class =
+          fallback
+              ? opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback
+              : opt::ModelFamilyAlternativeRouteClassV1::kNative;
+      snapshot.provider_uuid = Uuid(identity);
+      snapshot.capability_uuid = Uuid(identity + 1);
+      snapshot.provider_generation = 14;
+      snapshot.available = available;
+      snapshot.metrics.statistics_snapshot_uuid =
+          logical.statistics_snapshot_uuid;
+      snapshot.metrics.property_snapshot_uuid = Uuid(identity + 2);
+      snapshot.metrics.calibration_profile_uuid = Uuid(identity + 3);
+      snapshot.metrics.statistics_generation = logical.statistics_generation;
+      snapshot.metrics.confidence_basis_points = fallback ? 8000 : 9500;
+      snapshot.metrics.startup_events = 1;
+      snapshot.metrics.estimated_rows = fallback ? 20 : 2;
+      snapshot.metrics.sequential_pages = fallback ? 20 : 1;
+      snapshot.metrics.working_set_bytes = fallback ? 1024 : 512;
+      snapshot.metrics.memory_grant_units = fallback ? 1024 : 512;
+      snapshot.metrics.predicate_evaluations = fallback ? 20 : 2;
+      snapshot.metrics.mga_rechecks = fallback ? 20 : 2;
+      if (family.family_id == "vector" && !fallback) {
+        snapshot.metrics.vector_distance_evaluations = 2;
+      }
+      if (family.family_id == "search" && !fallback) {
+        snapshot.metrics.text_score_evaluations = 2;
+      }
+      if (family.family_id == "spatial" && !fallback) {
+        snapshot.metrics.spatial_evaluations = 2;
+      }
+      return snapshot;
+    };
+
+    opt::ModelFamilyProfileFactoryRequestV1 request;
+    request.identity_scope = "public.optimizer.model-family." + family.family_id;
+    request.logical_request = logical;
+    request.capability_snapshots = {
+        capability(false, true, 2400 + index * 20),
+        capability(true, true, 2410 + index * 20),
+    };
+    const auto inventory = opt::BuildModelFamilyAlternativeProfilesV1(request);
+    const auto native = opt::PlanOptimizerOwnedModelFamilySourceV1(request);
+    auto reordered_request = request;
+    std::ranges::reverse(reordered_request.capability_snapshots);
+    const auto reordered_inventory =
+        opt::BuildModelFamilyAlternativeProfilesV1(reordered_request);
+    auto changed_metric_request = request;
+    ++changed_metric_request.capability_snapshots.front()
+          .metrics.predicate_evaluations;
+    const auto changed_metric_inventory =
+        opt::BuildModelFamilyAlternativeProfilesV1(changed_metric_request);
+    passed &= Require(
+        inventory.accepted && inventory.optimizer_owned_enumeration &&
+            !inventory.data_access_allowed && inventory.candidates.size() == 2 &&
+            inventory.native_alternative_count == 1 &&
+            inventory.exact_fallback_alternative_count == 1 &&
+            native.accepted && native.selected &&
+            native.optimizer_owned_enumeration &&
+            !native.exact_fallback_selected &&
+            native.selected_candidate.route_class ==
+                opt::ModelFamilyAlternativeRouteClassV1::kNative &&
+            native.selected_candidate.cost.vector_distance_units ==
+                (family.family_id == "vector" ? 2 : 0) &&
+            native.selected_candidate.cost.text_scoring_units ==
+                (family.family_id == "search" ? 2 : 0) &&
+            native.selected_candidate.cost.spatial_evaluation_units ==
+                (family.family_id == "spatial" ? 2 : 0) &&
+            native.selected_candidate.cost.mga_units == 2 &&
+            native.selected_candidate.cost.memory_grant_units == 512 &&
+            native.selected_candidate.cost.scalar_score != 0 &&
+            native.selected_candidate.cost.scalarization_policy_id ==
+                "model-family.local-unit-sum.v1" &&
+            native.selected_candidate.cost.calibration_profile_uuid ==
+                request.capability_snapshots.front()
+                    .metrics.calibration_profile_uuid &&
+            native.selected_cost_explain_json.find(
+                "\"memory_grant_units\":512") != std::string::npos &&
+            native.selected_cost_explain_json.find(
+                "\"scalarization_policy_id\":\"model-family.local-unit-sum.v1\"") !=
+                std::string::npos &&
+            native.candidate_inventory_receipt_uuid ==
+                inventory.candidate_inventory_receipt_uuid &&
+            reordered_inventory.accepted &&
+            reordered_inventory.candidate_inventory_receipt_uuid ==
+                inventory.candidate_inventory_receipt_uuid &&
+            changed_metric_inventory.accepted &&
+            changed_metric_inventory.candidate_inventory_receipt_uuid !=
+                inventory.candidate_inventory_receipt_uuid,
+        "model-family native inventory or full cost vector was not optimizer-owned: " +
+            family.family_id);
+
+    auto fallback_request = request;
+    fallback_request.identity_scope += ".fallback-only";
+    fallback_request.capability_snapshots.erase(
+        fallback_request.capability_snapshots.begin());
+    const auto fallback =
+        opt::PlanOptimizerOwnedModelFamilySourceV1(fallback_request);
+    passed &= Require(
+        fallback.accepted && fallback.selected &&
+            fallback.optimizer_owned_enumeration &&
+            fallback.exact_fallback_selected &&
+            fallback.selected_candidate.route_class ==
+                opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
+        "model-family exact fallback was absent or mislabeled as native: " +
+            family.family_id);
+
+    auto unavailable_request = request;
+    unavailable_request.identity_scope += ".unavailable";
+    unavailable_request.capability_snapshots.resize(1);
+    unavailable_request.capability_snapshots.front().available = false;
+    const auto unavailable =
+        opt::PlanOptimizerOwnedModelFamilySourceV1(unavailable_request);
+    passed &= Require(
+        !unavailable.accepted && !unavailable.data_access_allowed &&
+            !unavailable.optimizer_owned_enumeration &&
+            unavailable.physical_dag.nodes.empty(),
+        "model-family unavailable native route silently became executable: " +
+            family.family_id);
+  }
+  return passed;
+}
+
 bool ValidateCrossJoinSemantics() {
   std::vector<opt::JoinRelationNode> relations = {
       {Uuid(401), 6, 64}, {Uuid(402), 7, 64}};
@@ -1338,6 +1542,7 @@ int main() {
                       ValidateContinuationAndWhatIfPlanningContexts() &&
                       ValidateCompleteKindFactoryCoverage() &&
                       ValidateCostVectorBookkeeping() &&
+                      ValidateModelFamilyOptimizerOwnedProfiles() &&
                       ValidateCrossJoinSemantics() &&
                       ValidateTypedPhysicalPropertyCarrier() &&
                       ValidatePrepareMetricCollectionOrchestration();

@@ -28,6 +28,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
       optimizer_profile_factory.cpp
       optimizer_prepare_metric_collector.cpp
       model_family_coordinator.cpp
+      model_family_profile_factory.cpp
     )
     target_compile_features(sb_qow_canonical_candidate_legality PUBLIC
       cxx_std_20
@@ -147,6 +148,7 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     optimizer_profile_factory.cpp
     # QOW-CMAKE-CES05-MODEL-FAMILY-COORDINATOR-V1
     model_family_coordinator.cpp
+    model_family_profile_factory.cpp
     optimizer_cost_full.cpp
     optimizer_differential_fuzz.cpp
     optimizer_driver_explain_compatibility.cpp

@@ -12,6 +12,7 @@
 #include "cluster_refusal_path.hpp"
 #include "join_planner_full.hpp"
 #include "logical_plan.hpp"
+#include "model_family_profile_factory.hpp"
 #include "optimizer_contract.hpp"
 #include "optimizer_enterprise_manifest.hpp"
 #include "optimizer_explain.hpp"
@@ -21,6 +22,8 @@
 #include "optimizer_safety_gates.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +36,7 @@
 
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
+namespace exec = scratchbird::engine::executor;
 
 namespace {
 
@@ -115,6 +119,14 @@ std::string Csv(std::string_view value) {
 
 std::string Id(std::string_view surface_id, std::string_view suffix) {
   return "pcr060." + std::string(surface_id) + "." + std::string(suffix);
+}
+
+std::string CanonicalUuid(const std::uint64_t suffix) {
+  std::array<char, 37> value{};
+  std::snprintf(value.data(), value.size(),
+                "01a00000-0000-7500-8000-%012llu",
+                static_cast<unsigned long long>(suffix));
+  return value.data();
 }
 
 std::string RelationUuid(std::string_view surface_id) {
@@ -777,6 +789,216 @@ void ApplySharedSurfaceProof(const opt::EnterpriseOptimizerSurfaceEntry& entry,
   }
 }
 
+struct ModelSurfaceProfile {
+  std::string family_id;
+  std::vector<std::string> operation_ids;
+  std::string operation_id;
+  std::string logical_operator_id;
+  bool native = false;
+  bool object_free = false;
+};
+
+std::optional<ModelSurfaceProfile> ModelProfileFor(
+    const std::string_view surface_id) {
+  if (surface_id == "document_path") {
+    return ModelSurfaceProfile{"document", {}, "DOCUMENT_FIND",
+                               "LOGICAL_DOCUMENT_SOURCE_V1", false, false};
+  }
+  if (surface_id == "document_unnest") {
+    return ModelSurfaceProfile{"document", {}, "DOCUMENT_UNNEST",
+                               "LOGICAL_DOCUMENT_SOURCE_V1", true, true};
+  }
+  if (surface_id == "graph_seed") {
+    return ModelSurfaceProfile{"graph", {}, "GRAPH_MATCH",
+                               "LOGICAL_GRAPH_SOURCE_V1", false, false};
+  }
+  if (surface_id == "key_value_lookup") {
+    return ModelSurfaceProfile{"key_value", {}, "KEY_VALUE_GET",
+                               "LOGICAL_KEY_VALUE_SOURCE_V1", true, false};
+  }
+  if (surface_id == "time_series_append") {
+    return ModelSurfaceProfile{"time_series", {}, "TIME_SERIES_RANGE_READ",
+                               "LOGICAL_TIME_SERIES_SOURCE_V1", false, false};
+  }
+  if (surface_id == "time_series_range") {
+    return ModelSurfaceProfile{"time_series", {}, "TIME_SERIES_RANGE_READ",
+                               "LOGICAL_TIME_SERIES_SOURCE_V1", true, false};
+  }
+  if (surface_id == "vector_ann") {
+    return ModelSurfaceProfile{"vector", {}, "VECTOR_ANN_SEARCH",
+                               "LOGICAL_VECTOR_SOURCE_V1", false, false};
+  }
+  if (surface_id == "vector_exact_search") {
+    return ModelSurfaceProfile{"vector", {}, "VECTOR_EXACT_SEARCH",
+                               "LOGICAL_VECTOR_SOURCE_V1", true, false};
+  }
+  if (surface_id == "text_search") {
+    return ModelSurfaceProfile{"search", {}, "SEARCH_RANKED_QUERY",
+                               "LOGICAL_SEARCH_SOURCE_V1", false, false};
+  }
+  if (surface_id == "search_rank_scan") {
+    return ModelSurfaceProfile{"search", {}, "SEARCH_RANKED_QUERY",
+                               "LOGICAL_SEARCH_SOURCE_V1", true, false};
+  }
+  if (surface_id == "spatial_exact_collection") {
+    return ModelSurfaceProfile{"spatial", {"SPATIAL_SOURCE"},
+                               "SPATIAL_SOURCE", "LOGICAL_SPATIAL_SOURCE_V1",
+                               false, false};
+  }
+  if (surface_id == "columnar_exact_collection") {
+    return ModelSurfaceProfile{"columnar", {"COLUMNAR_SOURCE"},
+                               "COLUMNAR_SOURCE",
+                               "LOGICAL_COLUMNAR_SOURCE_V1", false, false};
+  }
+  return std::nullopt;
+}
+
+exec::PhysicalMgaStatementContext ModelFamilyMga(
+    const bool timestamp_required) {
+  exec::PhysicalMgaStatementContext context;
+  context.statement_uuid = CanonicalUuid(3000);
+  context.owning_transaction_uuid = CanonicalUuid(3001);
+  context.statement_snapshot_uuid = CanonicalUuid(3002);
+  context.statement_metadata_snapshot_uuid = CanonicalUuid(3003);
+  context.owning_local_transaction_id = 100;
+  context.oldest_active_transaction_id = 80;
+  context.oldest_interesting_transaction_id = 60;
+  context.oldest_snapshot_transaction_id = 60;
+  context.retention_horizon_transaction_id = 60;
+  context.active_excluded_local_transaction_ids = {80, 100};
+  context.in_doubt_excluded_local_transaction_ids = {90};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 120;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  if (timestamp_required) {
+    context.statement_timestamp = "2026-08-24T12:00:00Z";
+  }
+  return context;
+}
+
+void ApplyModelFamilyProof(
+    const opt::EnterpriseOptimizerSurfaceEntry& entry,
+    const ModelSurfaceProfile& surface,
+    MatrixRow* row) {
+  row->scenario_id = "optimizer_owned_" + surface.family_id +
+                     (surface.native ? "_native" : "_exact_fallback");
+  opt::ModelFamilyCoordinatorRequestV1 logical;
+  logical.family_id = surface.family_id;
+  logical.operation_ids = surface.operation_ids;
+  logical.operation_id = surface.operation_id;
+  logical.logical_operator_id = surface.logical_operator_id;
+  logical.logical_node_id = 1;
+  if (!surface.object_free) logical.object_uuid = CanonicalUuid(3010);
+  logical.output_descriptor_ids = {1};
+  const bool timestamp_required =
+      surface.family_id != "document" && surface.family_id != "graph";
+  logical.mga_statement_context = ModelFamilyMga(timestamp_required);
+  logical.bound_sblr_tree_uuid = CanonicalUuid(3011);
+  logical.catalog_epoch_uuid = CanonicalUuid(3012);
+  logical.security_context_uuid = CanonicalUuid(3013);
+  logical.capability_snapshot_uuid = CanonicalUuid(3014);
+  logical.resource_snapshot_uuid = CanonicalUuid(3015);
+  logical.statistics_snapshot_uuid = CanonicalUuid(3016);
+  logical.route_snapshot_uuid = CanonicalUuid(3017);
+  logical.catalog_generation = logical.current_catalog_generation = 1;
+  logical.security_epoch = 1;
+  logical.policy_epoch = 1;
+  logical.resource_epoch = 1;
+  logical.statistics_generation = 1;
+  logical.route_epoch = 1;
+  logical.route_generation = 1;
+  logical.memory_budget_bytes = 4096;
+  logical.security_admitted = true;
+
+  opt::ModelFamilyCapabilitySnapshotV1 capability;
+  capability.route_class =
+      surface.native
+          ? opt::ModelFamilyAlternativeRouteClassV1::kNative
+          : opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback;
+  capability.provider_uuid = CanonicalUuid(3020);
+  capability.capability_uuid = CanonicalUuid(3021);
+  capability.provider_generation = 1;
+  capability.available = true;
+  capability.metrics.statistics_snapshot_uuid =
+      logical.statistics_snapshot_uuid;
+  capability.metrics.property_snapshot_uuid = CanonicalUuid(3022);
+  capability.metrics.calibration_profile_uuid = CanonicalUuid(3023);
+  capability.metrics.statistics_generation = 1;
+  capability.metrics.confidence_basis_points = 9000;
+  capability.metrics.startup_events = 1;
+  capability.metrics.estimated_rows = 4;
+  capability.metrics.sequential_pages = 2;
+  capability.metrics.working_set_bytes = 512;
+  capability.metrics.memory_grant_units = 512;
+  capability.metrics.predicate_evaluations = 4;
+  capability.metrics.mga_rechecks = 4;
+  if (surface.native && surface.family_id == "vector") {
+    capability.metrics.vector_distance_evaluations = 4;
+  }
+  if (surface.native && surface.family_id == "search") {
+    capability.metrics.text_score_evaluations = 4;
+  }
+
+  opt::ModelFamilyProfileFactoryRequestV1 request;
+  request.identity_scope = "pcr060.model-family." + entry.surface_id;
+  request.logical_request = logical;
+  request.capability_snapshots = {capability};
+  const auto inventory = opt::BuildModelFamilyAlternativeProfilesV1(request);
+  const auto planned = opt::PlanOptimizerOwnedModelFamilySourceV1(request);
+  row->candidate_generated = inventory.accepted &&
+                             inventory.candidates.size() == 1;
+  row->catalog_costed = row->candidate_generated &&
+                        inventory.candidates.front().cost.provenance_generation ==
+                            logical.statistics_generation &&
+                        inventory.candidates.front().cost.mga_units == 4 &&
+                        inventory.candidates.front().cost.memory_grant_units ==
+                            512 &&
+                        inventory.candidates.front().cost.scalar_score != 0;
+  row->selectable = planned.accepted && planned.selected;
+  row->physical_node_emitted =
+      planned.physical_dag.nodes.size() == 1;
+  row->executor_validation = planned.data_access_allowed &&
+                             planned.physical_dag.optimizer_published;
+  row->explain_emitted =
+      !planned.selected_candidate.cost.cost_vector_uuid.empty() &&
+      !planned.candidate_inventory_receipt_uuid.empty() &&
+      planned.selected_cost_explain_json.find(
+          "\"scalarization_policy_id\":\"model-family.local-unit-sum.v1\"") !=
+          std::string::npos &&
+      planned.selected_cost_explain_json.find(
+          "\"memory_grant_units\":512") != std::string::npos;
+  row->plan_cache_dependency_bound =
+      capability.metrics.statistics_snapshot_uuid ==
+          logical.statistics_snapshot_uuid &&
+      !capability.metrics.property_snapshot_uuid.empty();
+  row->benchmark_clean_validated =
+      entry.benchmark_clean_admissible && planned.accepted;
+  row->surface_specific_validator =
+      planned.optimizer_owned_enumeration &&
+      planned.exact_fallback_selected == !surface.native &&
+      planned.selected_candidate.route_class == capability.route_class;
+
+  auto unavailable = request;
+  unavailable.identity_scope += ".unavailable";
+  unavailable.capability_snapshots.front().available = false;
+  const auto refused = opt::PlanOptimizerOwnedModelFamilySourceV1(unavailable);
+  row->fail_closed = !refused.accepted && !refused.data_access_allowed &&
+                     refused.physical_dag.nodes.empty();
+  row->runtime_execution_tested =
+      row->candidate_generated && row->catalog_costed && row->selectable &&
+      row->physical_node_emitted && row->executor_validation &&
+      row->surface_specific_validator && row->fail_closed;
+  row->authority_clean = row->runtime_execution_tested;
+  row->diagnostic_code = entry.diagnostic_code;
+  row->evidence_detail =
+      "optimizer_owned_family_inventory_full_cost_vector_and_exact_route_receipt";
+  row->claim = surface.native
+                   ? "native_model_family_optimizer_route"
+                   : "exact_fallback_distinct_from_native_optimization";
+}
+
 void ApplyClusterProof(const opt::EnterpriseOptimizerSurfaceEntry& entry,
                        MatrixRow* row) {
   row->scenario_id = entry.surface_id == "cluster_fragment"
@@ -884,6 +1106,8 @@ MatrixRow BuildRow(const opt::EnterpriseOptimizerSurfaceEntry& entry) {
              entry.surface_id == "runtime_payload_explain" ||
              entry.surface_id == "plan_cache") {
     ApplySharedSurfaceProof(entry, &row);
+  } else if (const auto model = ModelProfileFor(entry.surface_id)) {
+    ApplyModelFamilyProof(entry, *model, &row);
   } else {
     ApplyAccessProof(entry, &row);
   }

@@ -15,14 +15,38 @@ namespace scratchbird::engine::optimizer {
 struct ModelFamilyCostVectorV1 {
   std::string cost_vector_uuid;
   std::string provenance_uuid;
+  std::string property_snapshot_uuid;
+  std::string calibration_profile_uuid;
+  std::string scalarization_policy_id;
   std::uint64_t provenance_generation{0};
   std::uint32_t confidence_basis_points{0};
+  std::uint64_t scalar_score{0};
+  std::uint64_t startup_units{0};
   std::uint64_t cpu_units{0};
   std::uint64_t sequential_read_units{0};
   std::uint64_t random_read_units{0};
+  std::uint64_t page_write_units{0};
+  std::uint64_t cache_units{0};
   std::uint64_t memory_bytes_required{0};
+  std::uint64_t memory_grant_units{0};
+  std::uint64_t spill_units{0};
+  std::uint64_t network_units{0};
+  std::uint64_t compression_units{0};
+  std::uint64_t encryption_units{0};
+  std::uint64_t predicate_evaluation_units{0};
+  std::uint64_t vector_distance_units{0};
+  std::uint64_t text_scoring_units{0};
+  std::uint64_t spatial_evaluation_units{0};
+  std::uint64_t udr_invocation_units{0};
+  std::uint64_t mga_units{0};
+  std::uint64_t index_maintenance_units{0};
   std::uint64_t uncertainty_penalty{0};
   std::uint64_t risk_penalty{0};
+};
+
+enum class ModelFamilyAlternativeRouteClassV1 : std::uint8_t {
+  kNative,
+  kExactCollectionFallback,
 };
 
 struct ModelFamilyCandidateV1 {
@@ -41,6 +65,9 @@ struct ModelFamilyCandidateV1 {
   bool local_scope{true};
   bool parser_planning_authority_claimed{false};
   bool transaction_finality_authority_claimed{false};
+  ModelFamilyAlternativeRouteClassV1 route_class{
+      ModelFamilyAlternativeRouteClassV1::kNative};
+  std::string candidate_inventory_receipt_uuid;
   ModelFamilyCostVectorV1 cost;
 };
 
@@ -91,12 +118,15 @@ struct ModelFamilyCoordinatorResultV1 {
   bool data_access_allowed{false};
   bool deterministic{false};
   bool exact_fallback_selected{false};
+  bool optimizer_owned_enumeration{false};
   ModelFamilyCandidateV1 selected_candidate;
   scratchbird::engine::executor::TypedPhysicalNodeDag physical_dag;
   std::string logical_operator_id;
   std::string physical_operator_id;
   std::string diagnostic_id;
   std::string detail;
+  std::string candidate_inventory_receipt_uuid;
+  std::string selected_cost_explain_json;
 };
 
 ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
@@ -107,6 +137,9 @@ ModelFamilyCoordinatorResultV1 CoordinateKeyValueFamilySourceV1(
 
 ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request);
+
+std::string SerializeModelFamilyCostVectorToJsonV1(
+    const ModelFamilyCostVectorV1& cost);
 
 struct MultilegDescriptorProfileV1 {
   std::uint8_t profile_kind{0};

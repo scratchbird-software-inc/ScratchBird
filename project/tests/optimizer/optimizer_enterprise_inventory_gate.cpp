@@ -80,6 +80,37 @@ void TestNoStubSurfaceClasses() {
           "LLVM native compile must be optional exact-fallback acceleration");
   Require(!llvm->benchmark_clean_admissible,
           "LLVM native compile cannot close benchmark-clean routes until OEIC LLVM gates pass");
+
+  for (const auto* surface_id : {"key_value_lookup", "vector_exact_search",
+                                 "search_rank_scan", "document_unnest",
+                                 "time_series_range"}) {
+    const auto* surface = FindSurface(surface_id);
+    Require(surface != nullptr &&
+                surface->surface_class ==
+                    opt::EnterpriseOptimizerSurfaceClass::noncluster_live &&
+                surface->production_route_admissible &&
+                surface->implementation_anchor.find(
+                    "model_family_profile_factory") != std::string::npos,
+            std::string("native model-family surface lacks optimizer-owned ") +
+                "profile-factory evidence: " + surface_id);
+  }
+
+  for (const auto* surface_id : {"text_search", "vector_ann",
+                                 "document_path", "graph_seed",
+                                 "time_series_append",
+                                 "spatial_exact_collection",
+                                 "columnar_exact_collection"}) {
+    const auto* surface = FindSurface(surface_id);
+    Require(surface != nullptr &&
+                surface->surface_class ==
+                    opt::EnterpriseOptimizerSurfaceClass::
+                        noncluster_exact_fallback &&
+                surface->diagnostic_code != "OK" &&
+                surface->implementation_anchor.find(
+                    "model_family_profile_factory") != std::string::npos,
+            std::string("model-family fallback was omitted or mislabeled as ") +
+                "native optimization: " + surface_id);
+  }
 }
 
 void TestClusterBoundaryRefusals() {

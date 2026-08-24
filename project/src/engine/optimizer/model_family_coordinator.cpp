@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <sstream>
 #include <tuple>
 #include <unordered_set>
 
@@ -67,35 +68,94 @@ bool Add(std::uint64_t value, std::uint64_t* total) {
   return true;
 }
 
+std::string JsonEscape(const std::string_view value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (const char ch : value) {
+    if (ch == '\\' || ch == '"') escaped.push_back('\\');
+    escaped.push_back(ch);
+  }
+  return escaped;
+}
+
 bool CandidateScore(const ModelFamilyCandidateV1& candidate,
                     std::uint64_t* score) {
   *score = 0;
-  return Add(candidate.cost.cpu_units, score) &&
+  const bool complete =
+         Add(candidate.cost.startup_units, score) &&
+         Add(candidate.cost.cpu_units, score) &&
          Add(candidate.cost.sequential_read_units, score) &&
          Add(candidate.cost.random_read_units, score) &&
+         Add(candidate.cost.page_write_units, score) &&
+         Add(candidate.cost.cache_units, score) &&
          Add(candidate.cost.memory_bytes_required, score) &&
+         Add(candidate.cost.memory_grant_units, score) &&
+         Add(candidate.cost.spill_units, score) &&
+         Add(candidate.cost.network_units, score) &&
+         Add(candidate.cost.compression_units, score) &&
+         Add(candidate.cost.encryption_units, score) &&
+         Add(candidate.cost.predicate_evaluation_units, score) &&
+         Add(candidate.cost.vector_distance_units, score) &&
+         Add(candidate.cost.text_scoring_units, score) &&
+         Add(candidate.cost.spatial_evaluation_units, score) &&
+         Add(candidate.cost.udr_invocation_units, score) &&
+         Add(candidate.cost.mga_units, score) &&
+         Add(candidate.cost.index_maintenance_units, score) &&
          Add(candidate.cost.uncertainty_penalty, score) &&
          Add(candidate.cost.risk_penalty, score);
+  const bool optimizer_owned =
+      !candidate.candidate_inventory_receipt_uuid.empty();
+  return complete &&
+         (!optimizer_owned ||
+          (candidate.cost.scalarization_policy_id ==
+               "model-family.local-unit-sum.v1" &&
+           candidate.cost.scalar_score == *score));
 }
 
 bool DependencyCostValid(const ModelFamilyCostVectorV1& cost) {
+  const bool optimizer_owned = !cost.scalarization_policy_id.empty();
   return CanonicalUuid(cost.cost_vector_uuid) &&
          CanonicalUuid(cost.provenance_uuid) &&
          cost.provenance_generation != 0 &&
          cost.confidence_basis_points != 0 &&
-         cost.confidence_basis_points <= 10'000;
+         cost.confidence_basis_points <= 10'000 &&
+         (!optimizer_owned ||
+          (CanonicalUuid(cost.property_snapshot_uuid) &&
+           CanonicalUuid(cost.calibration_profile_uuid) &&
+           cost.scalarization_policy_id ==
+               "model-family.local-unit-sum.v1"));
 }
 
 bool DependencyCostEqual(const ModelFamilyCostVectorV1& left,
                          const ModelFamilyCostVectorV1& right) {
   return left.cost_vector_uuid == right.cost_vector_uuid &&
          left.provenance_uuid == right.provenance_uuid &&
+         left.property_snapshot_uuid == right.property_snapshot_uuid &&
+         left.calibration_profile_uuid == right.calibration_profile_uuid &&
+         left.scalarization_policy_id == right.scalarization_policy_id &&
          left.provenance_generation == right.provenance_generation &&
          left.confidence_basis_points == right.confidence_basis_points &&
+         left.scalar_score == right.scalar_score &&
+         left.startup_units == right.startup_units &&
          left.cpu_units == right.cpu_units &&
          left.sequential_read_units == right.sequential_read_units &&
          left.random_read_units == right.random_read_units &&
+         left.page_write_units == right.page_write_units &&
+         left.cache_units == right.cache_units &&
          left.memory_bytes_required == right.memory_bytes_required &&
+         left.memory_grant_units == right.memory_grant_units &&
+         left.spill_units == right.spill_units &&
+         left.network_units == right.network_units &&
+         left.compression_units == right.compression_units &&
+         left.encryption_units == right.encryption_units &&
+         left.predicate_evaluation_units ==
+             right.predicate_evaluation_units &&
+         left.vector_distance_units == right.vector_distance_units &&
+         left.text_scoring_units == right.text_scoring_units &&
+         left.spatial_evaluation_units == right.spatial_evaluation_units &&
+         left.udr_invocation_units == right.udr_invocation_units &&
+         left.mga_units == right.mga_units &&
+         left.index_maintenance_units == right.index_maintenance_units &&
          left.uncertainty_penalty == right.uncertainty_penalty &&
          left.risk_penalty == right.risk_penalty;
 }
@@ -288,6 +348,46 @@ bool ExactOrderedOperationChain(const std::string_view family_id,
 
 }  // namespace
 
+std::string SerializeModelFamilyCostVectorToJsonV1(
+    const ModelFamilyCostVectorV1& cost) {
+  std::ostringstream out;
+  out << "{\"cost_vector_uuid\":\"" << JsonEscape(cost.cost_vector_uuid)
+      << "\",\"provenance_uuid\":\"" << JsonEscape(cost.provenance_uuid)
+      << "\",\"property_snapshot_uuid\":\""
+      << JsonEscape(cost.property_snapshot_uuid)
+      << "\",\"calibration_profile_uuid\":\""
+      << JsonEscape(cost.calibration_profile_uuid)
+      << "\",\"scalarization_policy_id\":\""
+      << JsonEscape(cost.scalarization_policy_id)
+      << "\",\"provenance_generation\":" << cost.provenance_generation
+      << ",\"confidence_basis_points\":" << cost.confidence_basis_points
+      << ",\"scalar_score\":" << cost.scalar_score
+      << ",\"startup_units\":" << cost.startup_units
+      << ",\"cpu_units\":" << cost.cpu_units
+      << ",\"sequential_read_units\":" << cost.sequential_read_units
+      << ",\"random_read_units\":" << cost.random_read_units
+      << ",\"page_write_units\":" << cost.page_write_units
+      << ",\"cache_units\":" << cost.cache_units
+      << ",\"memory_bytes_required\":" << cost.memory_bytes_required
+      << ",\"memory_grant_units\":" << cost.memory_grant_units
+      << ",\"spill_units\":" << cost.spill_units
+      << ",\"network_units\":" << cost.network_units
+      << ",\"compression_units\":" << cost.compression_units
+      << ",\"encryption_units\":" << cost.encryption_units
+      << ",\"predicate_evaluation_units\":"
+      << cost.predicate_evaluation_units
+      << ",\"vector_distance_units\":" << cost.vector_distance_units
+      << ",\"text_scoring_units\":" << cost.text_scoring_units
+      << ",\"spatial_evaluation_units\":" << cost.spatial_evaluation_units
+      << ",\"udr_invocation_units\":" << cost.udr_invocation_units
+      << ",\"mga_units\":" << cost.mga_units
+      << ",\"index_maintenance_units\":"
+      << cost.index_maintenance_units
+      << ",\"uncertainty_penalty\":" << cost.uncertainty_penalty
+      << ",\"risk_penalty\":" << cost.risk_penalty << '}';
+  return out.str();
+}
+
 ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request) {
   // QOW-SOURCE-RCP-074-COMMON-MODEL-COORDINATOR-V1
@@ -450,8 +550,22 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   std::uint64_t selected_score = 0;
   bool fallback_seen = false;
   bool memory_refusal_observed = false;
+  std::string optimizer_inventory_receipt_uuid;
   for (const auto& candidate : request.candidates) {
     std::uint64_t score = 0;
+    const bool optimizer_owned_candidate =
+        !candidate.candidate_inventory_receipt_uuid.empty();
+    const bool route_class_consistent =
+        !optimizer_owned_candidate ||
+        (candidate.exact_collection_fallback ==
+         (candidate.route_class ==
+          ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback));
+    const bool inventory_receipt_consistent =
+        !optimizer_owned_candidate ||
+        (CanonicalUuid(candidate.candidate_inventory_receipt_uuid) &&
+         (optimizer_inventory_receipt_uuid.empty() ||
+          optimizer_inventory_receipt_uuid ==
+              candidate.candidate_inventory_receipt_uuid));
     if (!CanonicalUuid(candidate.alternative_uuid) ||
         !alternative_ids.insert(candidate.alternative_uuid).second ||
         !CanonicalUuid(candidate.provider_uuid) ||
@@ -461,9 +575,21 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
         !candidate.local_scope || candidate.parser_planning_authority_claimed ||
         candidate.transaction_finality_authority_claimed ||
         candidate.implementation_id != expected_implementation ||
+        !route_class_consistent || !inventory_receipt_consistent ||
+        (optimizer_owned_candidate &&
+         (!CanonicalUuid(candidate.cost.provenance_uuid) ||
+          !CanonicalUuid(candidate.cost.property_snapshot_uuid) ||
+          !CanonicalUuid(candidate.cost.calibration_profile_uuid) ||
+          candidate.cost.provenance_generation == 0 ||
+          candidate.cost.confidence_basis_points == 0 ||
+          candidate.cost.confidence_basis_points > 10'000)) ||
         !CandidateScore(candidate, &score)) {
       return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                     "model-family candidate domain is incomplete or duplicated");
+    }
+    if (optimizer_owned_candidate && optimizer_inventory_receipt_uuid.empty()) {
+      optimizer_inventory_receipt_uuid =
+          candidate.candidate_inventory_receipt_uuid;
     }
     fallback_seen = fallback_seen || candidate.exact_collection_fallback;
     if (!candidate.available || !candidate.exact ||
@@ -586,8 +712,14 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   result.data_access_allowed = true;
   result.deterministic = true;
   result.exact_fallback_selected = selected->exact_collection_fallback;
+  result.optimizer_owned_enumeration =
+      !selected->candidate_inventory_receipt_uuid.empty();
   result.selected_candidate = *selected;
   result.physical_dag = std::move(dag);
+  result.candidate_inventory_receipt_uuid =
+      selected->candidate_inventory_receipt_uuid;
+  result.selected_cost_explain_json =
+      SerializeModelFamilyCostVectorToJsonV1(selected->cost);
   return result;
 }
 

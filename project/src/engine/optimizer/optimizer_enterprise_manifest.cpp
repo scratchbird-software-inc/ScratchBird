@@ -99,15 +99,29 @@ EnterpriseOptimizerSurfaceManifest() {
       {"covering_index", "index_covering", EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback,
        "access_path_full.*", "SB_OPT_COVERING_RECHECK_OR_PAYLOAD_PROOF_REQUIRED", true, true, true},
       {"text_search", "search_text", EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback,
-       "specialized_planner.*", "SB_OPT_SEARCH_EXACT_RERANK_REQUIRED", true, true, true},
+       "model_family_profile_factory.*;specialized_planner.*", "SB_OPT_SEARCH_EXACT_RERANK_REQUIRED", true, true, true},
       {"vector_ann", "search_vector", EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback,
-       "specialized_planner.*", "SB_OPT_VECTOR_EXACT_RERANK_REQUIRED", true, true, true},
+       "model_family_profile_factory.*;specialized_planner.*", "SB_OPT_VECTOR_EXACT_RERANK_REQUIRED", true, true, true},
       {"document_path", "nosql_document", EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback,
-       "specialized_planner.*;nosql_statistics_advisor.*", "SB_OPT_DOCUMENT_EXACT_RECHECK_REQUIRED", true, true, true},
+       "model_family_profile_factory.*;specialized_planner.*;nosql_statistics_advisor.*", "SB_OPT_DOCUMENT_EXACT_RECHECK_REQUIRED", true, true, true},
       {"graph_seed", "nosql_graph", EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback,
-       "specialized_planner.*", "SB_OPT_GRAPH_FRONTIER_RECHECK_REQUIRED", true, true, true},
+       "model_family_profile_factory.*;specialized_planner.*", "SB_OPT_GRAPH_FRONTIER_RECHECK_REQUIRED", true, true, true},
       {"time_series_append", "time_series", EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback,
-       "specialized_planner.*;relational_planner.*", "SB_OPT_TIMESERIES_EXACT_ROUTE_REQUIRED", true, true, true},
+       "model_family_profile_factory.*;specialized_planner.*;relational_planner.*", "SB_OPT_TIMESERIES_EXACT_ROUTE_REQUIRED", true, true, true},
+      {"key_value_lookup", "nosql_key_value", EnterpriseOptimizerSurfaceClass::noncluster_live,
+       "model_family_profile_factory.*;canonical_query_execute.cpp", "OK", true, true, true},
+      {"vector_exact_search", "search_vector_exact", EnterpriseOptimizerSurfaceClass::noncluster_live,
+       "model_family_profile_factory.*;canonical_query_execute.cpp", "OK", true, true, true},
+      {"search_rank_scan", "search_rank_native", EnterpriseOptimizerSurfaceClass::noncluster_live,
+       "model_family_profile_factory.*;canonical_query_execute.cpp", "OK", true, true, true},
+      {"document_unnest", "nosql_document_native", EnterpriseOptimizerSurfaceClass::noncluster_live,
+       "model_family_profile_factory.*;canonical_query_execute.cpp", "OK", true, true, true},
+      {"time_series_range", "time_series_native", EnterpriseOptimizerSurfaceClass::noncluster_live,
+       "model_family_profile_factory.*;canonical_query_execute.cpp", "OK", true, true, true},
+      {"spatial_exact_collection", "nosql_spatial", EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback,
+       "model_family_profile_factory.*;canonical_query_execute.cpp", "SB_OPT_SPATIAL_EXACT_COLLECTION_REQUIRED", true, true, true},
+      {"columnar_exact_collection", "nosql_columnar", EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback,
+       "model_family_profile_factory.*;canonical_query_execute.cpp", "SB_OPT_COLUMNAR_EXACT_COLLECTION_REQUIRED", true, true, true},
       {"temporary_in_memory", "temp_memory", EnterpriseOptimizerSurfaceClass::noncluster_live,
        "relational_planner.*;optimizer_typed_arena_work_area.*", "OK", true, true, true},
       {"join_property_frontier", "join", EnterpriseOptimizerSurfaceClass::noncluster_live,
@@ -184,12 +198,32 @@ EnterpriseOptimizerManifestValidation ValidateEnterpriseOptimizerManifest() {
     if (entry.benchmark_clean_admissible && !entry.requires_real_metric_producer) {
       validation.diagnostics.push_back("OEIC.MANIFEST.BENCHMARK_CLEAN_WITHOUT_METRIC_PRODUCER:" + entry.surface_id);
     }
+    if (entry.surface_class ==
+            EnterpriseOptimizerSurfaceClass::noncluster_exact_fallback &&
+        entry.diagnostic_code == "OK") {
+      validation.diagnostics.push_back(
+          "OEIC.MANIFEST.EXACT_FALLBACK_MISLABELED_NATIVE:" +
+          entry.surface_id);
+    }
+    const bool model_family_surface =
+        Contains(entry.route_family, "nosql_") ||
+        Contains(entry.route_family, "search_") ||
+        Contains(entry.route_family, "time_series");
+    if (model_family_surface &&
+        !Contains(entry.implementation_anchor,
+                  "model_family_profile_factory")) {
+      validation.diagnostics.push_back(
+          "OEIC.MANIFEST.MODEL_FAMILY_FACTORY_MISSING:" + entry.surface_id);
+    }
   }
 
   const std::vector<std::string_view> required = {
       "table_scan", "btree_point_range", "hash_equality", "bitmap_candidate_set",
       "covering_index", "text_search", "vector_ann", "document_path",
-      "graph_seed", "join_property_frontier", "adaptive_feedback",
+      "graph_seed", "key_value_lookup", "vector_exact_search",
+      "search_rank_scan", "document_unnest", "time_series_range",
+      "spatial_exact_collection", "columnar_exact_collection",
+      "join_property_frontier", "adaptive_feedback",
       "memory_spill_feedback", "runtime_payload_explain", "plan_cache",
       "llvm_native_compile", "cluster_fragment", "remote_pushdown",
       "reference_authority", "parser_execution_authority"};

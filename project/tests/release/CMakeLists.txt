@@ -1388,7 +1388,25 @@ add_test(
   COMMAND public_optimizer_foundation_contract_gate
 )
 set_tests_properties(public_optimizer_foundation_contract_gate PROPERTIES
-  LABELS "public_release_correctness;optimizer;profile_factory;physical_properties;cost_vector;cross_join;relational_dag;prepare_metrics;MGA"
+  LABELS "public_release_correctness;optimizer;profile_factory;model_family;native_optimization;exact_fallback;physical_properties;cost_vector;cross_join;relational_dag;prepare_metrics;MGA"
+)
+
+# Keep the production optimizer manifest/fallback classification proof in the
+# default release profile as well as the opt-in broad optimizer suite.
+add_executable(public_optimizer_enterprise_inventory_gate
+  ../optimizer/optimizer_enterprise_inventory_gate.cpp
+)
+target_compile_features(public_optimizer_enterprise_inventory_gate PRIVATE
+  cxx_std_23)
+target_link_libraries(public_optimizer_enterprise_inventory_gate PRIVATE
+  sb_engine_optimizer_contract_only
+)
+add_test(
+  NAME public_optimizer_enterprise_inventory_gate
+  COMMAND public_optimizer_enterprise_inventory_gate
+)
+set_tests_properties(public_optimizer_enterprise_inventory_gate PROPERTIES
+  LABELS "public_release_correctness;optimizer;enterprise_manifest;model_family;native_optimization;exact_fallback;cluster_boundary;MGA"
 )
 
 add_executable(public_optimizer_prepare_execute_metric_gate
@@ -1579,7 +1597,7 @@ add_test(
           ${CMAKE_CURRENT_BINARY_DIR}/public_optimizer_implementation_matrix_gate_artifacts/public_optimizer_implementation_matrix.csv
 )
 set_tests_properties(public_optimizer_implementation_matrix_gate PROPERTIES
-  LABELS "public_release_correctness;public_optimizer_implementation_matrix_gate;PCR-GATE-060;PCR-060;optimizer;implementation_matrix;plan_cache;explain;benchmark_clean;runtime_evidence"
+  LABELS "public_release_correctness;public_optimizer_implementation_matrix_gate;PCR-GATE-060;PCR-060;optimizer;model_family;native_optimization;exact_fallback;implementation_matrix;plan_cache;explain;benchmark_clean;runtime_evidence"
 )
 
 add_executable(public_optimizer_catalog_backed_planning_gate

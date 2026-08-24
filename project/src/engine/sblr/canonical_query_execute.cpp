@@ -17,6 +17,7 @@
 #include "engine/executor/model_family_executor.hpp"
 #include "engine/functions/registry/function_seed_registry.hpp"
 #include "engine/optimizer/model_family_coordinator.hpp"
+#include "engine/optimizer/model_family_profile_factory.hpp"
 #include "engine/optimizer/optimizer_contract.hpp"
 #include "engine/optimizer/relational_planner.hpp"
 #include "hash_digest.hpp"
@@ -83,6 +84,9 @@ constexpr std::string_view kGenerateSeriesFunctionUuid =
     "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
 constexpr std::size_t kGenerateSeriesMaximumRowCount = 10000;
 
+std::string DerivedCanonicalUuid(std::string_view scope,
+                                 std::string_view purpose);
+
 bool CanonicalUuidText(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-' ||
@@ -95,6 +99,66 @@ bool CanonicalUuidText(const std::string_view value) {
     if (!std::isxdigit(ch) || std::isupper(ch)) return false;
   }
   return true;
+}
+
+opt::ModelFamilyCapabilitySnapshotV1 MakeModelFamilyCapabilitySnapshotV1(
+    const opt::ModelFamilyCoordinatorRequestV1& planning,
+    const std::string_view identity_scope,
+    const opt::ModelFamilyAlternativeRouteClassV1 route_class,
+    std::string provider_uuid,
+    std::string capability_uuid,
+    const std::uint64_t provider_generation,
+    const bool available,
+    const std::uint64_t work_units,
+    const std::uint64_t sequential_pages,
+    const std::uint64_t memory_bytes_required) {
+  opt::ModelFamilyCapabilitySnapshotV1 snapshot;
+  snapshot.route_class = route_class;
+  snapshot.provider_uuid = std::move(provider_uuid);
+  snapshot.capability_uuid = std::move(capability_uuid);
+  snapshot.provider_generation = provider_generation;
+  snapshot.available = available;
+  snapshot.metrics.statistics_snapshot_uuid =
+      planning.statistics_snapshot_uuid;
+  snapshot.metrics.property_snapshot_uuid = DerivedCanonicalUuid(
+      identity_scope, "model-family.property-snapshot.v1");
+  snapshot.metrics.calibration_profile_uuid = DerivedCanonicalUuid(
+      identity_scope, "model-family.calibration-profile.v1");
+  snapshot.metrics.statistics_generation = planning.statistics_generation;
+  snapshot.metrics.confidence_basis_points = 9000;
+  snapshot.metrics.startup_events = 1;
+  snapshot.metrics.estimated_rows = std::max<std::uint64_t>(1, work_units);
+  snapshot.metrics.sequential_pages = sequential_pages;
+  snapshot.metrics.working_set_bytes =
+      std::max<std::uint64_t>(1, memory_bytes_required);
+  snapshot.metrics.memory_grant_units =
+      std::max<std::uint64_t>(1, memory_bytes_required);
+  snapshot.metrics.predicate_evaluations =
+      planning.operation_id.find("FILTER") != std::string::npos ? work_units : 0;
+  if (planning.family_id == "vector") {
+    snapshot.metrics.vector_distance_evaluations =
+        std::max<std::uint64_t>(1, work_units);
+  } else if (planning.family_id == "search") {
+    snapshot.metrics.text_score_evaluations =
+        std::max<std::uint64_t>(1, work_units);
+  } else if (planning.family_id == "spatial") {
+    snapshot.metrics.spatial_evaluations =
+        std::max<std::uint64_t>(1, work_units);
+  }
+  snapshot.metrics.mga_rechecks =
+      std::max<std::uint64_t>(1, work_units);
+  return snapshot;
+}
+
+opt::ModelFamilyCoordinatorResultV1 PlanCanonicalModelFamilySourceV1(
+    opt::ModelFamilyCoordinatorRequestV1 planning,
+    std::string identity_scope,
+    std::vector<opt::ModelFamilyCapabilitySnapshotV1> snapshots) {
+  opt::ModelFamilyProfileFactoryRequestV1 request;
+  request.identity_scope = std::move(identity_scope);
+  request.logical_request = std::move(planning);
+  request.capability_snapshots = std::move(snapshots);
+  return opt::PlanOptimizerOwnedModelFamilySourceV1(request);
 }
 
 constexpr std::int64_t TimeSeriesEndpointDaysFromCivil(
@@ -38495,18 +38559,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           ? current_preferred_generations.front()->generation_uuid
           : DerivedCanonicalUuid(identity_scope,
                                  "time-series.unavailable-capability");
-  const auto alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.alternative");
-  const auto cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.cost-vector");
   const auto fallback_provider_uuid =
       DerivedCanonicalUuid(identity_scope, "time-series.fallback-provider");
   const auto fallback_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "time-series.fallback-capability");
-  const auto fallback_alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.fallback-alternative");
-  const auto fallback_cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.fallback-cost-vector");
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
   opt::ModelFamilyCoordinatorRequestV1 planning;
@@ -38542,12 +38598,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   planning.memory_budget_bytes = input.context.optimizer_memory_budget_bytes;
   planning.security_admitted = input.context.security_context_present &&
                                input.context.authorization_context.present;
-  opt::ModelFamilyCandidateV1 candidate;
-  candidate.alternative_uuid = alternative_uuid;
-  candidate.provider_uuid = provider_uuid;
-  candidate.capability_uuid = capability_uuid;
-  candidate.implementation_id = "physical_time_series_range_scan_v1";
-  candidate.provider_generation =
+  const auto preferred_provider_generation =
       preferred_generation_current
           ? current_preferred_generations.front()->generation_id
           : std::max<std::uint64_t>(1, planning.route_generation);
@@ -38556,42 +38607,38 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   // reconstruction, not rollup materialization.  Until a distinct execution
   // proof exists, every admitted rollup candidate coordinates to the exact
   // engine-owned fallback instead of masquerading as the preferred raw path.
-  candidate.available =
+  const auto preferred_available =
       preferred_generation_current && rollup_candidate == nullptr;
-  candidate.exact = true;
-  candidate.cost.cost_vector_uuid = cost_uuid;
-  candidate.cost.cpu_units = 1;
-  candidate.cost.sequential_read_units = 1;
-  candidate.cost.memory_bytes_required = std::max<std::uint64_t>(
-      1, planning.memory_budget_bytes / 2);
-  planning.candidates.push_back(candidate);
-  auto fallback = candidate;
-  fallback.alternative_uuid = fallback_alternative_uuid;
-  fallback.provider_uuid = fallback_provider_uuid;
-  fallback.capability_uuid = fallback_capability_uuid;
   // The exact engine-owned bucket-store fallback has its own frozen route
   // generation.  It is deliberately independent from both the storage
   // descriptor generation and any externally published provider generation.
-  fallback.provider_generation =
+  const auto fallback_provider_generation =
       std::max<std::uint64_t>(1, planning.route_generation);
-  fallback.available = true;
-  fallback.exact_collection_fallback = true;
-  fallback.cost.cost_vector_uuid = fallback_cost_uuid;
-  fallback.cost.cpu_units = 2;
-  fallback.cost.sequential_read_units = 2;
-  planning.candidates.push_back(fallback);
-  const auto planned = opt::CoordinateModelFamilySourceV1(planning);
-  const auto& expected_selected = candidate.available ? candidate : fallback;
+  std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + ".time-series.native",
+      opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
+      capability_uuid, preferred_provider_generation, preferred_available, 1,
+      1, std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + ".time-series.fallback",
+      opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
+      fallback_provider_uuid, fallback_capability_uuid,
+      fallback_provider_generation, true, 2, 2,
+      std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
+  const auto planned = PlanCanonicalModelFamilySourceV1(
+      planning, identity_scope + ".time-series.inventory",
+      std::move(alternatives));
   if (!planned.accepted || !planned.selected || !planned.data_access_allowed ||
-      planned.exact_fallback_selected == candidate.available ||
-      planned.selected_candidate.alternative_uuid !=
-          expected_selected.alternative_uuid ||
+      !planned.optimizer_owned_enumeration ||
+      planned.exact_fallback_selected == preferred_available ||
       planned.selected_candidate.provider_uuid !=
-          expected_selected.provider_uuid ||
+          (preferred_available ? provider_uuid : fallback_provider_uuid) ||
       planned.selected_candidate.capability_uuid !=
-          expected_selected.capability_uuid ||
+          (preferred_available ? capability_uuid : fallback_capability_uuid) ||
       planned.selected_candidate.provider_generation !=
-          expected_selected.provider_generation ||
+          (preferred_available ? preferred_provider_generation
+                               : fallback_provider_generation) ||
       planned.physical_dag.nodes.size() != 1 ||
       planned.physical_dag.nodes.front().implementation_id !=
           "physical_time_series_range_scan_v1") {
@@ -42430,25 +42477,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   planning.memory_budget_bytes = input.context.optimizer_memory_budget_bytes;
   planning.security_admitted = input.context.security_context_present &&
                                input.context.authorization_context.present;
-  opt::ModelFamilyCandidateV1 candidate;
-  candidate.alternative_uuid = alternative_uuid;
-  candidate.provider_uuid = provider_uuid;
-  candidate.capability_uuid = capability_uuid;
-  candidate.implementation_id = "physical_vector_search_v1";
-  candidate.provider_generation = persisted_relation.descriptor_generation;
-  candidate.available = true;
-  candidate.exact = true;
-  candidate.exact_collection_fallback = false;
-  candidate.cost.cost_vector_uuid = cost_uuid;
-  candidate.cost.cpu_units = std::max<std::uint64_t>(1, top_k_value);
-  candidate.cost.sequential_read_units = 1;
-  candidate.cost.memory_bytes_required = std::max<std::uint64_t>(
-      1, planning.memory_budget_bytes / 2);
-  planning.candidates.push_back(candidate);
-  const auto planned = opt::CoordinateModelFamilySourceV1(planning);
+  std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + ".vector.native",
+      opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
+      capability_uuid, persisted_relation.descriptor_generation, true,
+      std::max<std::uint64_t>(1, top_k_value), 1,
+      std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
+  const auto planned = PlanCanonicalModelFamilySourceV1(
+      planning, identity_scope + ".vector.inventory", std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
-      !planned.data_access_allowed || planned.exact_fallback_selected ||
-      planned.selected_candidate.alternative_uuid != alternative_uuid ||
+      !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
+      planned.exact_fallback_selected ||
       planned.selected_candidate.provider_uuid != provider_uuid ||
       planned.selected_candidate.capability_uuid != capability_uuid ||
       planned.selected_candidate.provider_generation !=
@@ -42633,7 +42673,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   profile.physical_node_kind = exec::PhysicalNodeKind::kScan;
   profile.transformation_rule_id = "canonical.vector.search.v1";
   profile.estimated_rows = top_k_value;
-  profile.memory_bytes_required = candidate.cost.memory_bytes_required;
+  profile.memory_bytes_required =
+      planned.selected_candidate.cost.memory_bytes_required;
   profile.page_read_sequential_units = 1;
   profile.mga_visibility_checks_expected = 1;
   profile.storage_read_capable = true;
@@ -43719,8 +43760,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                       ".physical_search_rank_scan_v1";
   const auto alternative_uuid =
       DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
-  const auto coordinator_cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "cost-search." + suffix);
   const auto physical_cost_uuid =
       DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
   const auto generation =
@@ -43764,25 +43803,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   planning.memory_budget_bytes = input.context.optimizer_memory_budget_bytes;
   planning.security_admitted = input.context.security_context_present &&
                                input.context.authorization_context.present;
-  opt::ModelFamilyCandidateV1 candidate;
-  candidate.alternative_uuid = alternative_uuid;
-  candidate.provider_uuid = provider_uuid;
-  candidate.capability_uuid = capability_uuid;
-  candidate.implementation_id = "physical_search_rank_scan_v1";
-  candidate.provider_generation = persisted_relation.descriptor_generation;
-  candidate.available = true;
-  candidate.exact = true;
-  candidate.exact_collection_fallback = false;
-  candidate.cost.cost_vector_uuid = coordinator_cost_uuid;
-  candidate.cost.cpu_units = std::max<std::uint64_t>(1, top_k_value);
-  candidate.cost.sequential_read_units = 1;
-  candidate.cost.memory_bytes_required = std::max<std::uint64_t>(
-      1, planning.memory_budget_bytes / 2);
-  planning.candidates.push_back(candidate);
-  const auto planned = opt::CoordinateModelFamilySourceV1(planning);
+  std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + ".search.native",
+      opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
+      capability_uuid, persisted_relation.descriptor_generation, true,
+      std::max<std::uint64_t>(1, top_k_value), 1,
+      std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
+  const auto planned = PlanCanonicalModelFamilySourceV1(
+      planning, identity_scope + ".search.inventory", std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
-      !planned.data_access_allowed || planned.exact_fallback_selected ||
-      planned.selected_candidate.alternative_uuid != alternative_uuid ||
+      !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
+      planned.exact_fallback_selected ||
       planned.selected_candidate.provider_uuid != provider_uuid ||
       planned.selected_candidate.capability_uuid != capability_uuid ||
       planned.selected_candidate.provider_generation !=
@@ -43991,7 +44023,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   profile.physical_node_kind = exec::PhysicalNodeKind::kScan;
   profile.transformation_rule_id = "canonical.search.search.v1";
   profile.estimated_rows = top_k_value;
-  profile.memory_bytes_required = candidate.cost.memory_bytes_required;
+  profile.memory_bytes_required =
+      planned.selected_candidate.cost.memory_bytes_required;
   profile.page_read_sequential_units = 1;
   profile.mga_visibility_checks_expected = 1;
   profile.storage_read_capable = true;
@@ -45965,6 +45998,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
 
   const auto identity_scope =
       dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+  const auto physical_alternative_uuid = DerivedCanonicalUuid(
+      identity_scope,
+      "alternative." + std::to_string(scan->node_id) +
+          ".physical_key_value_scan_v1");
+  const auto physical_cost_uuid = DerivedCanonicalUuid(
+      identity_scope,
+      "cost-vector." + std::to_string(scan->node_id) +
+          ".physical_key_value_scan_v1");
   const auto provider_uuid =
       DerivedCanonicalUuid(identity_scope, "key-value.provider");
   const auto capability_uuid =
@@ -45985,16 +46026,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       DerivedCanonicalUuid(identity_scope, "key-value.statistics-snapshot");
   const auto resource_contract_uuid =
       DerivedCanonicalUuid(identity_scope, "key-value.resource-contract");
-  const auto suffix = std::to_string(scan->node_id) +
-                      ".physical_key_value_scan_v1";
-  const auto alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
-  const auto cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
-  const auto fallback_alternative_uuid = DerivedCanonicalUuid(
-      identity_scope, "alternative." + suffix + ".exact-fallback");
-  const auto fallback_cost_uuid = DerivedCanonicalUuid(
-      identity_scope, "cost-vector." + suffix + ".exact-fallback");
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -46034,39 +46065,24 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   planning.memory_budget_bytes = input.context.optimizer_memory_budget_bytes;
   planning.security_admitted = input.context.security_context_present &&
                                input.context.authorization_context.present;
-  opt::ModelFamilyCandidateV1 candidate;
-  candidate.alternative_uuid = alternative_uuid;
-  candidate.provider_uuid = provider_uuid;
-  candidate.capability_uuid = capability_uuid;
-  candidate.implementation_id = "physical_key_value_scan_v1";
-  candidate.provider_generation = persisted_relation.descriptor_generation;
-  candidate.available = true;
-  candidate.exact = true;
-  candidate.exact_collection_fallback = false;
-  candidate.cost.cost_vector_uuid = cost_uuid;
-  candidate.cost.cpu_units = 1;
-  candidate.cost.sequential_read_units = 1;
-  candidate.cost.memory_bytes_required = planning.memory_budget_bytes;
-  planning.candidates.push_back(candidate);
-  opt::ModelFamilyCandidateV1 fallback_candidate;
-  fallback_candidate.alternative_uuid = fallback_alternative_uuid;
-  fallback_candidate.provider_uuid = fallback_provider_uuid;
-  fallback_candidate.capability_uuid = fallback_capability_uuid;
-  fallback_candidate.implementation_id = "physical_key_value_scan_v1";
-  fallback_candidate.provider_generation =
-      persisted_relation.descriptor_generation;
-  fallback_candidate.available = true;
-  fallback_candidate.exact = true;
-  fallback_candidate.exact_collection_fallback = true;
-  fallback_candidate.cost.cost_vector_uuid = fallback_cost_uuid;
-  fallback_candidate.cost.cpu_units = 2;
-  fallback_candidate.cost.sequential_read_units = 2;
-  fallback_candidate.cost.memory_bytes_required = planning.memory_budget_bytes;
-  planning.candidates.push_back(fallback_candidate);
-  const auto planned = opt::CoordinateKeyValueFamilySourceV1(planning);
+  std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + ".key-value.native",
+      opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
+      capability_uuid, persisted_relation.descriptor_generation, true, 1, 1,
+      planning.memory_budget_bytes));
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + ".key-value.fallback",
+      opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
+      fallback_provider_uuid, fallback_capability_uuid,
+      persisted_relation.descriptor_generation, true, 2, 2,
+      planning.memory_budget_bytes));
+  const auto planned = PlanCanonicalModelFamilySourceV1(
+      planning, identity_scope + ".key-value.inventory",
+      std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
-      !planned.data_access_allowed || planned.exact_fallback_selected ||
-      planned.selected_candidate.alternative_uuid != alternative_uuid ||
+      !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
+      planned.exact_fallback_selected ||
       planned.selected_candidate.provider_uuid != provider_uuid ||
       planned.selected_candidate.capability_uuid != capability_uuid ||
       planned.selected_candidate.provider_generation !=
@@ -47085,9 +47101,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       key_physical->executor_capability_uuid !=
           planned.selected_candidate.capability_uuid ||
       key_physical->selected_alternative_uuid !=
-          planned.selected_candidate.alternative_uuid ||
+          physical_alternative_uuid ||
       key_physical->cost_vector_uuid !=
-          planned.selected_candidate.cost.cost_vector_uuid) {
+          physical_cost_uuid) {
     return refuse(
         physical.diagnostic_id.empty()
             ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
@@ -48187,6 +48203,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
 
   const auto identity_scope = dag.bound_sblr_tree_uuid + ":" +
                               input.context.statement_uuid.canonical;
+  const auto physical_alternative_uuid = DerivedCanonicalUuid(
+      identity_scope,
+      "alternative." + std::to_string(scan->node_id) +
+          ".physical_graph_adjacency_scan_v1");
   const auto provider_uuid = DerivedCanonicalUuid(identity_scope, "graph.provider");
   const auto capability_uuid =
       DerivedCanonicalUuid(identity_scope, "graph.capability");
@@ -48202,12 +48222,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       DerivedCanonicalUuid(identity_scope, "graph.statistics-snapshot");
   const auto resource_contract_uuid =
       DerivedCanonicalUuid(identity_scope, "graph.resource-contract");
-  const auto suffix = std::to_string(scan->node_id) +
-                      ".physical_graph_adjacency_scan_v1";
-  const auto alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
-  const auto cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -48244,24 +48258,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   planning.memory_budget_bytes = input.context.optimizer_memory_budget_bytes;
   planning.security_admitted = input.context.security_context_present &&
                                input.context.authorization_context.present;
-  opt::ModelFamilyCandidateV1 candidate;
-  candidate.alternative_uuid = alternative_uuid;
-  candidate.provider_uuid = provider_uuid;
-  candidate.capability_uuid = capability_uuid;
-  candidate.implementation_id = "physical_graph_adjacency_scan_v1";
-  candidate.provider_generation = graph_request.provider_generation;
-  candidate.available = true;
-  candidate.exact = true;
-  candidate.exact_collection_fallback = true;
-  candidate.cost.cost_vector_uuid = cost_uuid;
-  candidate.cost.cpu_units = 1;
-  candidate.cost.sequential_read_units = 1;
-  candidate.cost.memory_bytes_required = planning.memory_budget_bytes;
-  planning.candidates.push_back(candidate);
-  const auto planned = opt::CoordinateModelFamilySourceV1(planning);
+  std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + ".graph.fallback",
+      opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
+      provider_uuid, capability_uuid, graph_request.provider_generation, true,
+      1, 1, planning.memory_budget_bytes));
+  const auto planned = PlanCanonicalModelFamilySourceV1(
+      planning, identity_scope + ".graph.inventory", std::move(alternatives));
   if (!planned.accepted || !planned.selected || !planned.data_access_allowed ||
+      !planned.optimizer_owned_enumeration ||
       !planned.exact_fallback_selected ||
-      planned.selected_candidate.alternative_uuid != alternative_uuid ||
+      planned.selected_candidate.provider_uuid != provider_uuid ||
+      planned.selected_candidate.capability_uuid != capability_uuid ||
       planned.selected_candidate.provider_generation !=
           graph_request.provider_generation) {
     return refuse(planned.diagnostic_id.empty()
@@ -49349,7 +49358,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       physical.physical_dag.nodes.front().executor_capability_uuid !=
           planned.selected_candidate.capability_uuid ||
       physical.physical_dag.nodes.front().selected_alternative_uuid !=
-          planned.selected_candidate.alternative_uuid) {
+          physical_alternative_uuid) {
     return refuse(physical.diagnostic_id.empty()
                       ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
                       : physical.diagnostic_id,
@@ -50527,16 +50536,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       input.context, snapshot.snapshot_vector);
   const auto identity_scope = dag.bound_sblr_tree_uuid + ":" +
                               input.context.statement_uuid.canonical;
+  const auto physical_alternative_uuid = DerivedCanonicalUuid(
+      identity_scope,
+      "alternative." + std::to_string(scan->node_id) +
+          ".physical_document_path_scan_v1");
+  const auto physical_cost_uuid = DerivedCanonicalUuid(
+      identity_scope,
+      "cost-vector." + std::to_string(scan->node_id) +
+          ".physical_document_path_scan_v1");
   const auto provider_uuid =
       DerivedCanonicalUuid(identity_scope, "document.provider");
-  const auto physical_suffix =
-      std::to_string(scan->node_id) + ".physical_document_path_scan_v1";
-  const auto alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "alternative." + physical_suffix);
   const auto capability_uuid =
       DerivedCanonicalUuid(identity_scope, "document.capability");
-  const auto cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "cost-vector." + physical_suffix);
   const auto policy_snapshot_uuid =
       DerivedCanonicalUuid(identity_scope, "document.policy-snapshot");
   const auto statistics_snapshot_uuid =
@@ -50587,20 +50598,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   planning.memory_budget_bytes = input.context.optimizer_memory_budget_bytes;
   planning.security_admitted = input.context.security_context_present &&
                                input.context.authorization_context.present;
-  opt::ModelFamilyCandidateV1 candidate;
-  candidate.alternative_uuid = alternative_uuid;
-  candidate.provider_uuid = provider_uuid;
-  candidate.capability_uuid = capability_uuid;
-  candidate.available = true;
-  candidate.exact = true;
-  candidate.exact_collection_fallback =
-      planning.operation_id != "DOCUMENT_UNNEST";
-  candidate.cost.cost_vector_uuid = cost_uuid;
-  candidate.cost.cpu_units = 1;
-  candidate.cost.sequential_read_units =
-      planning.operation_id == "DOCUMENT_UNNEST" ? 0 : 1;
-  candidate.cost.memory_bytes_required = planning.memory_budget_bytes;
-
   std::vector<const api::RelationalOutputRecord*> outputs;
   for (const auto& output : dag.outputs) {
     if (output.relation_node_id == scan->node_id) outputs.push_back(&output);
@@ -50912,13 +50909,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
     }
 
     const auto provider_generation = generation;
-    candidate.provider_generation = provider_generation;
-    planning.candidates.push_back(candidate);
-    const auto planned = opt::CoordinateDocumentFamilySourceV1(planning);
+    std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+    alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+        planning, identity_scope + ".document-unnest.native",
+        opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
+        capability_uuid, provider_generation, true, 1, 1,
+        planning.memory_budget_bytes));
+    const auto planned = PlanCanonicalModelFamilySourceV1(
+        planning, identity_scope + ".document-unnest.inventory",
+        std::move(alternatives));
     if (!planned.accepted || !planned.selected ||
-        !planned.data_access_allowed || planned.exact_fallback_selected ||
-        planned.selected_candidate.alternative_uuid != alternative_uuid ||
-        planned.selected_candidate.cost.cost_vector_uuid != cost_uuid ||
+        !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
+        planned.exact_fallback_selected ||
+        planned.selected_candidate.provider_uuid != provider_uuid ||
+        planned.selected_candidate.capability_uuid != capability_uuid ||
         planned.selected_candidate.provider_generation != provider_generation ||
         planned.selected_candidate.exact_collection_fallback) {
       return refuse(planned.diagnostic_id.empty()
@@ -52077,9 +52081,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
         producer_physical->executor_capability_uuid !=
             planned.selected_candidate.capability_uuid ||
         producer_physical->selected_alternative_uuid !=
-            planned.selected_candidate.alternative_uuid ||
+            physical_alternative_uuid ||
         producer_physical->cost_vector_uuid !=
-            planned.selected_candidate.cost.cost_vector_uuid) {
+            physical_cost_uuid) {
       return refuse(
           physical.diagnostic_id.empty()
               ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
@@ -52695,13 +52699,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                   "document SELECT authorization was refused");
   }
   const auto provider_generation = persisted_relation.descriptor_generation;
-  candidate.provider_generation = provider_generation;
-  planning.candidates.push_back(candidate);
-  const auto planned = opt::CoordinateDocumentFamilySourceV1(planning);
+  std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + ".document.fallback",
+      opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
+      provider_uuid, capability_uuid, provider_generation, true, 1, 1,
+      planning.memory_budget_bytes));
+  const auto planned = PlanCanonicalModelFamilySourceV1(
+      planning, identity_scope + ".document.inventory",
+      std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
-      !planned.data_access_allowed ||
-      planned.selected_candidate.alternative_uuid != alternative_uuid ||
-      planned.selected_candidate.cost.cost_vector_uuid != cost_uuid ||
+      !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
+      !planned.exact_fallback_selected ||
+      planned.selected_candidate.provider_uuid != provider_uuid ||
+      planned.selected_candidate.capability_uuid != capability_uuid ||
       planned.selected_candidate.provider_generation != provider_generation) {
     return refuse(planned.diagnostic_id.empty()
                       ? "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"
@@ -52902,16 +52913,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       physical.physical_dag.nodes.front().executor_capability_uuid !=
           planned.selected_candidate.capability_uuid ||
       physical.physical_dag.nodes.front().selected_alternative_uuid !=
-          planned.selected_candidate.alternative_uuid ||
+          physical_alternative_uuid ||
       physical.physical_dag.nodes.front().cost_vector_uuid !=
-          planned.selected_candidate.cost.cost_vector_uuid ||
-      physical.physical_dag.nodes.front().retained_cost.cpu_units !=
-          planned.selected_candidate.cost.cpu_units ||
-      physical.physical_dag.nodes.front().retained_cost
-              .page_read_sequential_units !=
-          planned.selected_candidate.cost.sequential_read_units ||
-      physical.physical_dag.nodes.front().retained_cost.memory_bytes_required !=
-          planned.selected_candidate.cost.memory_bytes_required) {
+          physical_cost_uuid) {
     return refuse(
         physical.diagnostic_id.empty()
             ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
@@ -55877,8 +55881,20 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         identity_scope, "rcp080.cost." + suffix);
     const auto provenance_uuid = DerivedCanonicalUuid(
         identity_scope, "rcp080.cost-provenance." + suffix);
+    auto selected_alternative_uuid = alternative_uuid;
     std::string selected_plan_uuid = DerivedCanonicalUuid(
         identity_scope, "rcp080.leg-plan." + suffix);
+    auto selected_inventory_receipt_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.inventory." + suffix);
+    opt::ModelFamilyCostVectorV1 selected_family_cost;
+    selected_family_cost.cost_vector_uuid = cost_uuid;
+    selected_family_cost.provenance_uuid = provenance_uuid;
+    selected_family_cost.provenance_generation = generation;
+    selected_family_cost.confidence_basis_points = 10'000;
+    selected_family_cost.startup_units = 1;
+    selected_family_cost.cpu_units = 1;
+    selected_family_cost.sequential_read_units = 1;
+    selected_family_cost.memory_bytes_required = leg_memory;
     bool exact_fallback_selected = true;
     if (prepared.family_id != "relational") {
       opt::ModelFamilyCoordinatorRequestV1 family_request;
@@ -55921,27 +55937,23 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
           input.context.optimizer_route_generation;
       family_request.memory_budget_bytes = leg_memory;
       family_request.security_admitted = true;
-      opt::ModelFamilyCandidateV1 candidate;
-      candidate.alternative_uuid = alternative_uuid;
-      candidate.provider_uuid = provider_uuid;
-      candidate.capability_uuid = capability_uuid;
-      candidate.implementation_id =
-          captured.implementation_id;
-      candidate.provider_generation =
-          captured.execution_request.input.provider_generation;
-      candidate.available = true;
-      candidate.exact = true;
-      candidate.exact_collection_fallback = true;
-      candidate.cost.cost_vector_uuid = cost_uuid;
-      candidate.cost.cpu_units = 1;
-      candidate.cost.sequential_read_units = 1;
-      candidate.cost.memory_bytes_required = leg_memory;
-      family_request.candidates.push_back(candidate);
-      const auto selected =
-          opt::CoordinateModelFamilySourceV1(family_request);
+      std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+      alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+          family_request, identity_scope + ".rcp080." + suffix + ".fallback",
+          opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
+          provider_uuid, capability_uuid,
+          captured.execution_request.input.provider_generation, true, 1, 1,
+          leg_memory));
+      const auto selected = PlanCanonicalModelFamilySourceV1(
+          family_request,
+          identity_scope + ".rcp080." + suffix + ".inventory",
+          std::move(alternatives));
       if (!selected.accepted || !selected.selected ||
           !selected.data_access_allowed ||
-          selected.selected_candidate.alternative_uuid != alternative_uuid) {
+          !selected.optimizer_owned_enumeration ||
+          !selected.exact_fallback_selected ||
+          selected.selected_candidate.provider_uuid != provider_uuid ||
+          selected.selected_candidate.capability_uuid != capability_uuid) {
         return refuse(selected.diagnostic_id.empty()
                           ? "SB_MODEL_CANDIDATE_SEMANTICS_MISSING_V1"
                           : selected.diagnostic_id,
@@ -55949,7 +55961,12 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                           ? "family-local exact collection fallback was not selected"
                           : selected.detail);
       }
+      selected_alternative_uuid =
+          selected.selected_candidate.alternative_uuid;
       selected_plan_uuid = selected.physical_dag.selected_plan_uuid;
+      selected_inventory_receipt_uuid =
+          selected.candidate_inventory_receipt_uuid;
+      selected_family_cost = selected.selected_candidate.cost;
       exact_fallback_selected = selected.exact_fallback_selected;
     }
 
@@ -55961,7 +55978,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     leg.operation_ids = prepared.operation_ids;
     leg.operation_id = prepared.operation_id;
     leg.selected_plan_uuid = selected_plan_uuid;
-    leg.selected_alternative_uuid = alternative_uuid;
+    leg.selected_alternative_uuid = selected_alternative_uuid;
     leg.provider_uuid = provider_uuid;
     leg.capability_uuid = capability_uuid;
     leg.delivered_property_uuid = DerivedCanonicalUuid(
@@ -55984,17 +56001,11 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     leg.root_physical_node_id = prepared.node->node_id;
     leg.output_descriptor_ids = prepared.node->output_descriptor_ids;
     leg.output_descriptor_uuids = prepared.output_descriptor_uuids;
-    leg.family_local_cost.cost_vector_uuid = cost_uuid;
-    leg.family_local_cost.provenance_uuid = provenance_uuid;
-    leg.family_local_cost.provenance_generation = generation;
-    leg.family_local_cost.confidence_basis_points = 10'000;
-    leg.family_local_cost.cpu_units = 1;
-    leg.family_local_cost.sequential_read_units = 1;
-    leg.family_local_cost.memory_bytes_required = leg_memory;
+    leg.family_local_cost = selected_family_cost;
     opt::ModelFamilyDependencyAlternativeV1 candidate;
-    candidate.alternative_uuid = alternative_uuid;
-    candidate.candidate_inventory_receipt_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.inventory." + suffix);
+    candidate.alternative_uuid = selected_alternative_uuid;
+    candidate.candidate_inventory_receipt_uuid =
+        selected_inventory_receipt_uuid;
     candidate.implementation_id =
         prepared.family_id == "relational"
             ? Rcp080ImplementationV1(prepared.family_id)
@@ -61186,25 +61197,20 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   planning.memory_budget_bytes = input.context.optimizer_memory_budget_bytes;
   planning.security_admitted = input.context.security_context_present &&
                                input.context.authorization_context.present;
-  opt::ModelFamilyCandidateV1 candidate;
-  candidate.alternative_uuid = alternative_uuid;
-  candidate.provider_uuid = provider_uuid;
-  candidate.capability_uuid = capability_uuid;
-  candidate.implementation_id = implementation_id;
-  candidate.provider_generation = persisted.descriptor_generation;
-  candidate.available = true;
-  candidate.exact = true;
-  candidate.exact_collection_fallback = true;
-  candidate.cost.cost_vector_uuid = cost_uuid;
-  candidate.cost.cpu_units = 1;
-  candidate.cost.sequential_read_units = 1;
-  candidate.cost.memory_bytes_required = std::max<std::uint64_t>(
-      1, planning.memory_budget_bytes / 2);
-  planning.candidates.push_back(candidate);
-  const auto planned = opt::CoordinateModelFamilySourceV1(planning);
+  std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
+  alternatives.push_back(MakeModelFamilyCapabilitySnapshotV1(
+      planning, identity_scope + "." + family + ".fallback",
+      opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
+      provider_uuid, capability_uuid, persisted.descriptor_generation, true, 1,
+      1, std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
+  const auto planned = PlanCanonicalModelFamilySourceV1(
+      planning, identity_scope + "." + family + ".inventory",
+      std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
-      !planned.data_access_allowed || !planned.exact_fallback_selected ||
-      planned.selected_candidate.alternative_uuid != alternative_uuid ||
+      !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
+      !planned.exact_fallback_selected ||
+      planned.selected_candidate.provider_uuid != provider_uuid ||
+      planned.selected_candidate.capability_uuid != capability_uuid ||
       planned.selected_candidate.provider_generation !=
           persisted.descriptor_generation) {
     return refuse(planned.diagnostic_id.empty()
@@ -61350,7 +61356,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       spatial ? "canonical.spatial.exact-scan.v1"
               : "canonical.columnar.reconstruction.v1";
   profile.estimated_rows = 1;
-  profile.memory_bytes_required = candidate.cost.memory_bytes_required;
+  profile.memory_bytes_required =
+      planned.selected_candidate.cost.memory_bytes_required;
   profile.page_read_sequential_units = 1;
   profile.mga_visibility_checks_expected = 1;
   profile.storage_read_capable = true;
