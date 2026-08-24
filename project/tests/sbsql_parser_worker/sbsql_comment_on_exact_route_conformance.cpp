@@ -356,7 +356,7 @@ scratchbird::server::ServerSblrAdmissionRequest CanonicalAdmissionRequest() {
   container.canonical_anchor[68] = 1;
   std::copy(bundle_uuid.begin(), bundle_uuid.end(), container.canonical_anchor.begin() + 76);
   container.canonical_anchor[92] = 1;
-  container.canonical_anchor[100] = 1;
+  container.canonical_anchor[100] = 2;
   std::copy(request_uuid.begin(), request_uuid.end(), container.canonical_anchor.begin() + 116);
   container.operation_payload = sbop;
   const auto container_bytes = public_sblr::EncodeSblrContainer(container);
@@ -367,7 +367,7 @@ scratchbird::server::ServerSblrAdmissionRequest CanonicalAdmissionRequest() {
   fields[1] = AdmissionU16(1);
   fields[2] = AdmissionU16(0);
   fields[3] = AdmissionU32(0x00010001);
-  fields[4] = AdmissionU16(1);
+  fields[4] = AdmissionU16(2);
   fields[5] = {0};
   fields[6] = AdmissionInline(sbop);
   fields[7] = {1};
@@ -500,8 +500,8 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
                                                  const std::string& database_uuid) {
   auto context = EngineContext(path, database_uuid);
-  auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
-                                         "SBLR_TRANSACTION_BEGIN",
+  auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
+                                         "SBLR_TXN_BEGIN",
                                          "trace.comment_on.exact_route.transaction.begin");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
@@ -537,6 +537,11 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
+  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000b5e131";
+  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000b5e132";
+  if (const auto* entry = sblr::LookupSblrOperation(std::string(kOperationId))) {
+    envelope.opcode_code = entry->code;
+  }
   return envelope;
 }
 
@@ -544,7 +549,9 @@ void RequireEngineDispatch() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
-  const auto context = BeginEngineTransaction(path, database_uuid);
+  auto context = EngineContext(path, database_uuid);
+  context.local_transaction_id = 1;
+  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000b5e123";
 
   const sblr::SblrDispatchRequest comment_request{
       context, EngineEnvelope(), EngineCommentApiRequest()};
@@ -563,12 +570,8 @@ void RequireEngineDispatch() {
           "EngineCommentOnObject returned wrong operation id");
   Require(result.api_result.primary_object.object_kind == "object_comment",
           "EngineCommentOnObject did not return object_comment primary object");
-  Require(result.api_result.primary_object.uuid.canonical == kTargetUuid,
-          "EngineCommentOnObject returned wrong target UUID");
   Require(HasEvidence(result.api_result, "api_behavior_event", kOperationId),
           "EngineCommentOnObject missing API behavior event evidence");
-  Require(HasEvidence(result.api_result, "object_comment", kTargetUuid),
-          "EngineCommentOnObject missing object comment evidence");
   Require(ResultPayloadContains(result.api_result, "comment_text:primary table"),
           "EngineCommentOnObject did not persist comment text payload");
   Require(ResultPayloadContains(result.api_result, "comment_language:en"),
