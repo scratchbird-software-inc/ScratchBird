@@ -149,6 +149,11 @@ inline const SblrPriorityDRegistryRow* FindSblrPriorityDRegistryRow(
       "SBLR.OPCODE.UNKNOWN"};
   if (opcode == 1567) return &kRefreshMaterializedViewRow;
   if (opcode == 1802) return &kSecurityCreatePolicyRow;
+  static constexpr SblrPriorityDRegistryRow kSecurityDropPolicyRow{
+      SblrOperationFamily::security_mutation, 1803, 1803,
+      SblrBehaviorStatus::implemented, "sblr.security.mutation.v3",
+      "SBLR.OPCODE.UNKNOWN"};
+  if (opcode == 1803) return &kSecurityDropPolicyRow;
   if (family == kSblrAccelerationRegistryRow.family && opcode >= 1 && opcode <= 499) {
     return &kSblrAccelerationRegistryRow;
   }

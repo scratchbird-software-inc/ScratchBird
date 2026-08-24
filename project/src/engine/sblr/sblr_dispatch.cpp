@@ -5484,6 +5484,7 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "security.policy.alter") return "SBLR_SECURITY_POLICY_ALTER";
   if (operation_id == "security.policy.drop" ||
       operation_id == "security.policy.lifecycle_drop") return "SBLR_SECURITY_POLICY_DROP";
+  if (operation_id == "engine.op.sec_drop_policy") return "SBLR_SEC_DROP_POLICY";
   if (operation_id == "security.mask.drop") return "SBLR_SECURITY_MASK_DROP";
   if (operation_id == "security.rls.drop") return "SBLR_SECURITY_RLS_DROP";
   if (operation_id == "security.policy.attach") return "SBLR_SECURITY_POLICY_ATTACH";
@@ -11215,7 +11216,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "security.session.set_role") result.api_result = api::EngineSecuritySetRole(TypedSecuritySetRoleRequest(request));
   else if (op == "security.policy.create") result.api_result = api::EngineSecurityCreatePolicy(TypedSecurityCreatePolicyRequest(request));
   else if (op == "security.policy.alter") result.api_result = api::EngineSecurityAlterPolicy(TypedSecurityAlterPolicyRequest(request));
-  else if (op == "security.policy.drop" || op == "security.policy.lifecycle_drop") result.api_result = api::EngineSecurityDropPolicy(TypedSecurityDropPolicyRequest(request));
+  else if (op == "security.policy.drop" || op == "security.policy.lifecycle_drop" || op == "engine.op.sec_drop_policy") result.api_result = api::EngineSecurityDropPolicy(TypedSecurityDropPolicyRequest(request));
   else if (op == "security.mask.drop") result.api_result = api::EngineSecurityDropMask(TypedSecurityDropMaskRequest(request));
   else if (op == "security.rls.drop") result.api_result = api::EngineSecurityDropRls(TypedSecurityDropRlsRequest(request));
   else if (op == "security.policy.attach") result.api_result = api::EngineSecurityAttachPolicy(TypedSecurityAttachPolicyRequest(request));
