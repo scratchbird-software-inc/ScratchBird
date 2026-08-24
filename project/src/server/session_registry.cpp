@@ -190,6 +190,8 @@
 #include "sblr_security_create_user_coordinator.hpp"
 #include "sblr_sec_create_role_coordinator.hpp"
 #include "sblr_sec_create_role_runtime.hpp"
+#include "sblr_sec_create_policy_runtime.hpp"
+#include "sblr_sec_create_policy_coordinator.hpp"
 #include "sblr_sec_drop_role_coordinator.hpp"
 #include "sblr_sec_drop_role_runtime.hpp"
 #include "sblr_ddl_validate_constraint_coordinator.hpp"
@@ -7097,6 +7099,7 @@ SessionOperationResult HandleCoordinateSecurityCreateRole(ServerSessionRegistry*
   auto q=scratchbird::engine::internal_api::CompileSblrSecCreateRoleDescriptor(c,ru,v.occurrence,v.occurrence); if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);
   result.payload=scratchbird::engine::sblr::EncodeSblrSecCreateRoleDescriptorV1(q.descriptor,false); if(result.payload.empty())return refuse("SECURITY.ROLE_APPLICATION_FAILED","SCRD_encode_failed"); result.accepted=true; return result;
 }
+SessionOperationResult HandleCoordinateSecurityCreatePolicy(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityCreatePolicyResult);result.response_schema_id=sbps::kSchemaCoordinateSecurityCreatePolicyResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_create_policy_refused","Security policy creation coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecCreatePolicyRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecCreatePolicyRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sec_create_policy_binder");auto q=scratchbird::engine::internal_api::CompileSblrSecCreatePolicyDescriptor(c,ru,v.occurrence,v.occurrence);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecCreatePolicyDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.POLICY_APPLICATION_FAILED","SCPD_encode_failed");result.accepted=true;return result;}
 
 SessionOperationResult HandleCoordinateSecurityDropRole(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){
   SessionOperationResult result; result.response_message_type=static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityDropRoleResult); result.response_schema_id=sbps::kSchemaCoordinateSecurityDropRoleResultV1; result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal; result.session_uuid=request.header.session_uuid;

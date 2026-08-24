@@ -353,6 +353,8 @@ int main(int argc, char** argv) {
                           ? session.RunSecurityAlterUserForWire()
                     : operation == "security-create-role"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityCreateRoleForWire():begun; }()
+                    : operation == "security-create-policy"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityCreatePolicyForWire():begun; }()
                     : operation == "security-drop-role"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityDropRoleForWire():begun; }()
                     : operation == "security-alter-privilege-template"

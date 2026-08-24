@@ -176,6 +176,7 @@ enum class SblrValueKind : std::uint16_t {
   alter_user_descriptor = 164,
   security_create_role_descriptor = 165,
   security_drop_role_descriptor = 166,
+  security_create_policy_descriptor = 167,
   drop_temporary_table_descriptor = 102,
   drop_package_descriptor = 142,
   alter_package_descriptor = 150,
