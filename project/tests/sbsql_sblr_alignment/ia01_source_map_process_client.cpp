@@ -273,6 +273,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropViewForWire():begun; }()
                     : operation == "ddl-refresh-materialized-view"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlRefreshMaterializedViewForWire():begun; }()
+                    : operation == "ddl-drop-synonym"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropSynonymForWire():begun; }()
                     : operation == "ddl-drop-package"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropPackageForWire():begun; }()
                     : operation == "ddl-alter-package"
@@ -321,6 +323,8 @@ int main(int argc, char** argv) {
                           ? session.RunDdlRenameObjectVectorForWire()
                     : operation == "ddl-rename-object"
                           ? session.RunDdlRenameObjectForWire()
+                    : operation == "ddl-create-synonym"
+                          ? session.RunDdlCreateSynonymForWire()
                     : operation == "ddl-create-or-replace-srs"
                           ? session.RunDdlCreateOrReplaceSrsForWire()
                     : operation == "ddl-drop-srs"

@@ -171,6 +171,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlDropViewForWire();
   PipelineResult RunDdlRefreshMaterializedViewForWire();
   PipelineResult RunDdlDropPackageForWire();
+  PipelineResult RunDdlDropSynonymForWire();
   PipelineResult RunDdlAlterPackageForWire();
   PipelineResult RunDdlAlterSequenceForWire();
   PipelineResult RunDdlDropSequenceForWire();
@@ -197,6 +198,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlDropTemporaryTableForWire();
   PipelineResult RunDdlRenameObjectVectorForWire();
   PipelineResult RunDdlRenameObjectForWire();
+  PipelineResult RunDdlCreateSynonymForWire();
   PipelineResult RunDdlCreateOrReplaceSrsForWire();
   PipelineResult RunDdlDropSrsForWire();
   PipelineResult RunDdlCreateRewriteRuleForWire();
