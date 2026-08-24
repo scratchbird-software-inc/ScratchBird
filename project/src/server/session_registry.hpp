@@ -1071,6 +1071,8 @@ SessionOperationResult HandleCoordinateDdlDropRewriteRule(ServerSessionRegistry*
 SessionOperationResult HandleCoordinateDdlValidateConstraint(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityCreatePrivilegeTemplate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityCreateUser(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateSecurityAlterUser(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateSecurityCreateRole(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityAlterPrivilegeTemplate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityDropPrivilegeTemplate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDatabaseCreateTemplateClone(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
