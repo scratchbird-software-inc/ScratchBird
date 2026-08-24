@@ -11061,6 +11061,36 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
     if (bytes.empty()) operation.reset();
     else operation = CanonicalBytes(bytes.begin(), bytes.end());
   }
+  // Security user submissions must remain a direct typed native operation;
+  // never fall through to the generic query.execute literal path.
+  if (lowered.operation_id == "engine.op.security_create_user" &&
+      admitted_security_create_user_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto e = c::MakeSblrEnvelope("engine.op.security_create_user",
+                                  "SBLR_SEC_CREATE_USER",
+                                  "security.create.user.native");
+    e.opcode_code = 1792;
+    e.requires_transaction_context = true;
+    e.requires_security_context = true;
+    e.result_shape = "ddl_result";
+    e.diagnostic_shape = "diagnostic_vector";
+    e.parser_package_uuid = session.admitted_parser_package_uuid;
+    e.parser_package_version_major = session.admitted_parser_package_version_major;
+    e.parser_package_version_minor = session.admitted_parser_package_version_minor;
+    e.parser_package_version_patch = session.admitted_parser_package_version_patch;
+    e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+    e.parser_resolved_names_to_uuids = true;
+    c::SblrOperand o;
+    o.ordinal = 1;
+    o.type = "security_create_user_descriptor";
+    o.name = "user";
+    o.value_kind = c::SblrValueKind::security_create_user_descriptor;
+    o.value_body = *admitted_security_create_user_operand;
+    e.operands.push_back(std::move(o));
+    const auto bytes = c::EncodeSblrEnvelope(e);
+    operation = bytes.empty() ? std::nullopt
+                               : std::optional<CanonicalBytes>(CanonicalBytes(bytes.begin(), bytes.end()));
+  }
   const auto opcode_stream = operation.has_value()
       ? EncodeNativeOpcodeStreamBinary(
             *operation, statement_context, session)
@@ -20114,8 +20144,8 @@ PipelineResult SbsqlTestWireSession::RunDdlDropTriggerForWire() {
 }
 
 PipelineResult SbsqlTestWireSession::RunDdlCreateProcedureForWire() {
-  PipelineResult result; if (!server_client_ || !session_.authenticated) return result;
-  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid}; auto acquired=server_client_->AcquireNativeStatementContext(session_,selector); if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}
+  PipelineResult result; if (!server_client_ || !session_.authenticated) { result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.NO_SESSION","ERROR","missing authenticated route","sbsql_sblr_alignment")); return result; }
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid}; auto acquired=server_client_->AcquireNativeStatementContext(session_,selector); if(!acquired.accepted){result.messages=std::move(acquired.messages);if(result.messages.diagnostics.empty())result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.ACQUIRE","ERROR","statement context acquisition failed","sbsql_sblr_alignment"));return result;}
   namespace c=scratchbird::engine::sblr; c::SblrDdlCreateProcedureRequestV1 q; auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid); if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID","ERROR","CREATE PROCEDURE preliminary authority was missing.","sbp_sbsql.wire"));return result;} q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1; auto coordinated=server_client_->CoordinateDdlCreateProcedure(session_,c::EncodeSblrDdlCreateProcedureRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result; c::SblrDdlCreateProcedureDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateProcedureDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false)){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID","ERROR",detail,"sbp_sbsql.wire"));return result;}auto operand=c::EncodeSblrDdlCreateProcedureDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_procedure";g_ddl_create_procedure_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_procedure_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlCreateProcedureResultV1 rr;if(!c::DecodeSblrDdlCreateProcedureResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;
 }
 
@@ -20917,13 +20947,13 @@ PipelineResult SbsqlTestWireSession::RunSecurityCreatePrivilegeTemplateForWire()
 PipelineResult SbsqlTestWireSession::RunSecurityCreateUserForWire() {
   PipelineResult result; if (!server_client_ || !session_.authenticated) return result;
   ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid}; auto acquired=server_client_->AcquireNativeStatementContext(session_,selector); if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}
-  namespace c=scratchbird::engine::sblr; auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid); if(!receipt)return result;
+  namespace c=scratchbird::engine::sblr; auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid); if(!receipt){result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.RECEIPT","ERROR","receipt canonicalization failed","sbsql_sblr_alignment"));return result;}
   c::SblrSecurityCreateUserRequestV1 q; q.receipt=*receipt; q.occurrence=1; q.template_occurrence=1;
-  auto coordinated=server_client_->CoordinateSecurityCreateUser(session_,c::EncodeSblrSecurityCreateUserRequestV1(q)); result.messages=coordinated.messages; if(!coordinated.accepted)return result;
-  c::SblrSecurityCreateUserDescriptorV1 d; std::string detail; if(!c::DecodeSblrSecurityCreateUserDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;
-  auto operand=c::EncodeSblrSecurityCreateUserDescriptorV1(d,true); if(operand.empty())return result; BoundStatement bound; SblrEnvelope lowered; lowered.operation_id="engine.op.security_create_user"; g_security_create_user_operand=&operand;
-  auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr); g_security_create_user_operand=nullptr; if(!submission)return result;
-  auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false); result.accepted=executed.accepted; result.messages=std::move(executed.messages); if(result.accepted){c::SblrSecurityCreateUserResultV1 rr;if(!c::DecodeSblrSecurityCreateUserResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;} return result;
+  auto coordinated=server_client_->CoordinateSecurityCreateUser(session_,c::EncodeSblrSecurityCreateUserRequestV1(q)); result.messages=coordinated.messages; if(!coordinated.accepted){if(result.messages.diagnostics.empty())result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.COORDINATE","ERROR","coordinate request refused without diagnostic","sbsql_sblr_alignment"));return result;}
+  c::SblrSecurityCreateUserDescriptorV1 d; std::string detail; if(!c::DecodeSblrSecurityCreateUserDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false)){result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.DESCRIPTOR","ERROR",detail,"sbsql_sblr_alignment"));return result;}
+  auto operand=c::EncodeSblrSecurityCreateUserDescriptorV1(d,true); if(operand.empty()){result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.OPERAND","ERROR","operand encoding returned empty","sbsql_sblr_alignment"));return result;} BoundStatement bound; SblrEnvelope lowered; lowered.operation_id="engine.op.security_create_user"; g_security_create_user_operand=&operand;
+  auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr); g_security_create_user_operand=nullptr; if(!submission){result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.SUBMISSION","ERROR","canonical submission returned empty","sbsql_sblr_alignment"));return result;}
+  auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false); result.accepted=executed.accepted; result.messages=std::move(executed.messages); if(!result.accepted&&result.messages.diagnostics.empty())result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.EXECUTE","ERROR","execute returned empty refusal","sbsql_sblr_alignment")); if(result.accepted){c::SblrSecurityCreateUserResultV1 rr;if(!c::DecodeSblrSecurityCreateUserResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail)){result.accepted=false;result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.RESULT","ERROR",detail,"sbsql_sblr_alignment"));}} return result;
 }
 PipelineResult SbsqlTestWireSession::RunSecurityDropPrivilegeTemplateForWire() {
   PipelineResult result; if (!server_client_ || !session_.authenticated) return result;

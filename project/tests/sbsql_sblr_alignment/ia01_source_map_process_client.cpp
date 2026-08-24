@@ -348,7 +348,7 @@ int main(int argc, char** argv) {
                     : operation == "security-create-privilege-template"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityCreatePrivilegeTemplateForWire():begun; }()
                     : operation == "security-create-user"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityCreateUserForWire():begun; }()
+                          ? session.RunSecurityCreateUserForWire()
                     : operation == "security-alter-privilege-template"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityAlterPrivilegeTemplateForWire():begun; }()
                     : operation == "security-drop-privilege-template"
