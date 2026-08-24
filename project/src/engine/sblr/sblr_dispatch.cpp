@@ -5405,6 +5405,7 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "ddl.create_sequence") return "SBLR_DDL_CREATE_SEQUENCE";
   if (operation_id == "ddl.create_view") return "SBLR_DDL_CREATE_VIEW";
   if (operation_id == "ddl.create_synonym") return "SBLR_DDL_CREATE_SYNONYM";
+  if (operation_id == "ddl.synonym.drop") return "SBLR_DDL_DROP_SYNONYM";
   if (operation_id == "ddl.constraint.create") return "SBLR_DDL_CONSTRAINT_CREATE";
   if (operation_id == "ddl.constraint.alter") return "SBLR_DDL_CONSTRAINT_ALTER";
   if (operation_id == "ddl.constraint.drop") return "SBLR_DDL_CONSTRAINT_DROP";
@@ -11035,7 +11036,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result = api::EngineInvokeExecutableObject(typed);
   }
   else if (op == "ddl.alter_object") result.api_result = api::EngineAlterObject(TypedAlterObjectRequest(request));
-  else if (op == "ddl.drop_object") result.api_result = api::EngineDropObject(TypedRequest<api::EngineDropObjectRequest>(request));
+  else if (op == "ddl.drop_object" || op == "ddl.synonym.drop") result.api_result = api::EngineDropObject(TypedRequest<api::EngineDropObjectRequest>(request));
   else if (op == "ddl.comment_on_object") result.api_result = api::EngineCommentOnObject(TypedRequest<api::EngineCommentOnObjectRequest>(request));
   else if (op == "dml.insert_rows") {
     auto phase_last = SblrSteadyClock::now();

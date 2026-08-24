@@ -45,6 +45,11 @@ sblr::SblrOperationEnvelope Envelope(std::string_view operation_id, std::string_
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
+  envelope.opcode_code = opcode == "SBLR_DDL_DROP_SYNONYM" ? 1575 : 1574;
+  envelope.result_shape = "ddl_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000000411";
+  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000000412";
   return envelope;
 }
 
@@ -83,9 +88,18 @@ int main() {
 
   const sblr::SblrDispatchRequest drop_request{
       Context(),
-      Envelope("ddl.drop_object", "SBLR_DDL_DROP_OBJECT"),
+      Envelope("ddl.synonym.drop", "SBLR_DDL_DROP_SYNONYM"),
       DropSynonymRequest()};
   RequireDispatchAccepted(sblr::DispatchSblrOperation(drop_request), "ddl.drop_object");
+
+  // A synonym drop must not be admitted through the generic object opcode.
+  // This prevents a parser or transport fallback from silently changing the
+  // authority/result contract of the dedicated SBLR surface.
+  auto malformed = drop_request;
+  malformed.envelope.opcode = "SBLR_DDL_DROP_OBJECT";
+  const auto malformed_result = sblr::DispatchSblrOperation(malformed);
+  Require(!malformed_result.accepted,
+          "synonym drop accepted a generic drop-object opcode");
 
   std::cout << "sbsql_synonym_sblr_dispatch_conformance=passed\n";
   return EXIT_SUCCESS;

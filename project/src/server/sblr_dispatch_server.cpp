@@ -4153,6 +4153,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "extensibility.inspect_udr_packages") return "SBLR_EXTENSIBILITY_INSPECT_UDR_PACKAGES";
   if (operation_id == "extensibility.invoke_udr_package") return "SBLR_UDR_INVOKE";
   if (operation_id == "ddl.create_schema") return "SBLR_DDL_CREATE_SCHEMA";
+  if (operation_id == "ddl.synonym.drop") return "SBLR_DDL_DROP_SYNONYM";
   if (operation_id == "ddl.create_table") return "SBLR_DDL_CREATE_TABLE";
   if (operation_id == "ddl.create_index") return "SBLR_DDL_CREATE_INDEX";
   if (operation_id == "ddl.drop_index") return "SBLR_DDL_DROP_INDEX";
@@ -4456,7 +4457,7 @@ bool OperationNeedsTransactionContext(std::string_view operation_id) {
          operation_id == "ddl.create_procedure" ||
          operation_id == "ddl.create_trigger" ||
          operation_id == "ddl.alter_object" ||
-         operation_id == "ddl.drop_object" ||
+         operation_id == "ddl.drop_object" || operation_id == "ddl.synonym.drop" ||
          operation_id == "ddl.comment_on_object" ||
          operation_id.starts_with("ddl.constraint.") ||
          operation_id == "query.evaluate_projection" ||
