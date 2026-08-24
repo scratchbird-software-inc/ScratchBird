@@ -9924,6 +9924,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_rename_object_vector = request.envelope.operation_id=="engine.op.ddl_rename_object_vector"&&request.envelope.opcode=="SBLR_DDL_RENAME_OBJECT_VECTOR"&&request.envelope.opcode_code==1563;
   const bool exact_ddl_rename_object = request.envelope.operation_id=="engine.op.ddl_rename_object"&&request.envelope.opcode=="SBLR_DDL_RENAME_OBJECT"&&request.envelope.opcode_code==1572;
   const bool exact_ddl_create_synonym = request.envelope.operation_id=="engine.op.ddl_create_synonym"&&request.envelope.opcode=="SBLR_DDL_CREATE_SYNONYM"&&request.envelope.opcode_code==1574;
+  const bool exact_ddl_create_foreign_table = request.envelope.operation_id=="engine.op.ddl_create_foreign_table"&&request.envelope.opcode=="SBLR_DDL_CREATE_FOREIGN_TABLE"&&request.envelope.opcode_code==1576;
   const bool exact_ddl_create_or_replace_srs = request.envelope.operation_id=="engine.op.ddl_create_or_replace_srs"&&request.envelope.opcode=="SBLR_DDL_CREATE_OR_REPLACE_SRS"&&request.envelope.opcode_code==1615;
   const bool exact_ddl_drop_srs = request.envelope.operation_id=="engine.op.ddl_drop_srs"&&request.envelope.opcode=="SBLR_DDL_DROP_SRS"&&request.envelope.opcode_code==1616;
   const bool exact_ddl_create_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_create_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_CREATE_REWRITE_RULE"&&request.envelope.opcode_code==1617;
@@ -10020,7 +10021,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     result.materialized_envelope = request.envelope;
     return result;
   }
-  if (exact_ddl_create_synonym || exact_ddl_rename_object) {
+  if (exact_ddl_create_synonym || exact_ddl_create_foreign_table || exact_ddl_rename_object) {
     result.ok = true;
     result.materialized_envelope = request.envelope;
     return result;
