@@ -955,6 +955,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_security_create_role && !exact_local_security_create_role) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_security_drop_role && !exact_local_security_drop_role) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_local_security_create_role) exact_local_ddl_create_schema = true;
+  if (exact_local_security_drop_role) exact_local_ddl_create_schema = true;
   if (exact_security_alter_privilege_template && !exact_local_security_alter_privilege_template) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_security_drop_privilege_template && !exact_local_security_drop_privilege_template) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_database_create_template_clone && !exact_local_database_create_template_clone) return Refuse(request,"SBLR.OPERAND.INVALID");
