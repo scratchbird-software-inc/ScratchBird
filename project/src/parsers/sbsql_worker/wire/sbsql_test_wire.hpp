@@ -192,6 +192,7 @@ class SbsqlTestWireSession {
   PipelineResult RunGraphCreateForWire();
   PipelineResult RunGraphMergeForWire();
   PipelineResult RunGraphSetForWire();
+  PipelineResult RunGraphRemoveForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();

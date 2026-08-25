@@ -3718,6 +3718,14 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia59_graph_set_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia59_graph_set_process_e2e PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;SBLR_GRAPH_SET;CSC-TEST-003058;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia60_graph_remove_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation graph-remove
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia60_graph_remove_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia60_graph_remove_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;SBLR_GRAPH_REMOVE;CSC-TEST-003059;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_role_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
