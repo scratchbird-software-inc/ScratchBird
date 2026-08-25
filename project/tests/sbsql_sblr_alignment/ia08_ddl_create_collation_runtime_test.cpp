@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_create_collation_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlCreateCollationRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlCreateCollationRequestV1(q);assert(b.size()==64);SblrDdlCreateCollationRequestV1 q2;assert(DecodeSblrDdlCreateCollationRequestV1(b.data(),b.size(),&q2,nullptr));SblrDdlCreateCollationDescriptorV1 d;d.body[0]=1;auto x=EncodeSblrDdlCreateCollationDescriptorV1(d);assert(x.size()==384);SblrDdlCreateCollationDescriptorV1 d2;assert(DecodeSblrDdlCreateCollationDescriptorV1(x.data(),x.size(),&d2,nullptr));x[352]^=1;assert(!DecodeSblrDdlCreateCollationDescriptorV1(x.data(),x.size(),&d2,nullptr));}

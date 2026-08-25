@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_ddl_create_collation_coordinator.hpp"
+#include <cassert>
+using namespace scratchbird::engine::internal_api;int main(){EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="col";c.trace_tags={"private_ddl_create_collation_binder","cluster_provider_admitted","cluster_route_fence_admitted"};auto q=CompileSblrDdlCreateCollationDescriptor(c,"col",7);assert(q.ok);c.trace_tags.push_back("private_ddl_create_collation");assert(ConsumeSblrDdlCreateCollationDescriptor(c,q.descriptor).ok);assert(!ConsumeSblrDdlCreateCollationDescriptor(c,q.descriptor).ok);}

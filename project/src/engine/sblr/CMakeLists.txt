@@ -91,6 +91,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_drop_operator_family_runtime.cpp
   sblr_ddl_create_cast_runtime.cpp
   sblr_ddl_drop_cast_runtime.cpp
+  sblr_ddl_create_collation_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp
   sblr_ddl_create_schema_runtime.cpp
   sblr_ddl_create_table_runtime.cpp
