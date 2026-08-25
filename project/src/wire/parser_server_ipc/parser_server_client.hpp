@@ -635,6 +635,7 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateSecurityDeauthenticate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult SessionRoleSwitch(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult SessionSettingSet(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult ContextSet(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult SessionSettingReset(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult SessionSettingGet(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult SessionDefaultQualifierSet(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;

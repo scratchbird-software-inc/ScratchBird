@@ -1158,6 +1158,7 @@ SessionOperationResult HandleCoordinateSecurityAuthenticate(ServerSessionRegistr
 SessionOperationResult HandleCoordinateSecurityDeauthenticate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleSessionRoleSwitch(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleSessionSettingSet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleContextSet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleSessionSettingReset(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleSessionSettingGet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleSessionDefaultQualifierSet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
