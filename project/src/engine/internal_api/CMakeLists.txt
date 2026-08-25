@@ -454,6 +454,7 @@ add_library(sb_engine_internal_api
   sblr_ddl_create_operator_family_coordinator.cpp
   sblr_ddl_alter_operator_family_coordinator.cpp
   sblr_ddl_drop_operator_family_coordinator.cpp
+  sblr_ddl_create_cast_coordinator.cpp
   sblr_ddl_create_materialized_view_coordinator.cpp
   sblr_ddl_alter_view_coordinator.cpp
   sblr_ddl_drop_view_coordinator.cpp
