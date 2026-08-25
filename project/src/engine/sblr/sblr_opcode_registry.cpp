@@ -1175,7 +1175,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("connection.close", "SBLR_CONN_CLOSE", "session-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::none, SblrOpcodeSecurityClass::authenticated, false),
       CanonicalEntry("connection.hello", "SBLR_CONN_HELLO", "session-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::none, SblrOpcodeSecurityClass::public_metadata, false),
       CanonicalEntry("engine.op.session_setting_set", "SBLR_SESSION_SETTING_SET", "session-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::none, SblrOpcodeSecurityClass::authenticated, false),
-      CanonicalEntry("session.setting.get", "SBLR_SESSION_SETTING_GET", "session-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::none, SblrOpcodeSecurityClass::authenticated, false),
+      CanonicalEntry("engine.op.session_setting_get", "SBLR_SESSION_SETTING_GET", "session-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::none, SblrOpcodeSecurityClass::authenticated, false),
       CanonicalEntry("engine.op.session_setting_reset", "SBLR_SESSION_SETTING_RESET", "session-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::none, SblrOpcodeSecurityClass::authenticated, false),
       CanonicalEntry("session.default_qualifier.set", "SBLR_SESSION_DEFAULT_QUALIFIER_SET", "session-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::none, SblrOpcodeSecurityClass::authenticated, false),
       CanonicalEntry("engine.op.session_role_switch", "SBLR_SESSION_ROLE_SWITCH", "session-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::security, SblrOpcodeSecurityClass::authenticated, true),
@@ -1892,6 +1892,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
   if (code == 4359 && operation_id == "engine.op.session_role_switch" && opcode == "SBLR_SESSION_ROLE_SWITCH") { result.entry = LookupSblrOpcode("SBLR_SESSION_ROLE_SWITCH"); result.ok = result.entry != nullptr; return result; }
   if (code == 4355 && operation_id == "engine.op.session_setting_set" && opcode == "SBLR_SESSION_SETTING_SET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_SET"); result.ok = result.entry != nullptr; return result; }
   if (code == 4357 && operation_id == "engine.op.session_setting_reset" && opcode == "SBLR_SESSION_SETTING_RESET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_RESET"); result.ok = result.entry != nullptr; return result; }
+  if (code == 4356 && operation_id == "engine.op.session_setting_get" && opcode == "SBLR_SESSION_SETTING_GET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_GET"); result.ok = result.entry != nullptr; return result; }
   if (code == 1576 && operation_id == "engine.op.ddl_create_foreign_table" && opcode == "SBLR_DDL_CREATE_FOREIGN_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FOREIGN_TABLE"); result.ok = result.entry != nullptr; return result; }
   if (code == 1578 && operation_id == "engine.op.ddl_create_fdw" && opcode == "SBLR_DDL_CREATE_FDW") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FDW"); result.ok = result.entry != nullptr; return result; }
   if (code == 1579 && operation_id == "engine.op.ddl_drop_fdw" && opcode == "SBLR_DDL_DROP_FDW") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_FDW"); result.ok = result.entry != nullptr; return result; }
@@ -2146,6 +2147,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnve
     result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_SET"); result.ok = result.entry != nullptr; return result;
   }
   if (envelope.opcode_code == 4357 && envelope.operation_id == "engine.op.session_setting_reset" && envelope.opcode == "SBLR_SESSION_SETTING_RESET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_RESET"); result.ok = result.entry != nullptr; return result; }
+  if (envelope.opcode_code == 4356 && envelope.operation_id == "engine.op.session_setting_get" && envelope.opcode == "SBLR_SESSION_SETTING_GET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_GET"); result.ok = result.entry != nullptr; return result; }
   if ((envelope.opcode_code == 1637 || envelope.opcode_code == 1608) && envelope.operation_id == "engine.op.ddl_create_dictionary" && envelope.opcode == "SBLR_DDL_CREATE_DICTIONARY") {
     result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_DICTIONARY"); result.ok = result.entry != nullptr; return result;
   }
