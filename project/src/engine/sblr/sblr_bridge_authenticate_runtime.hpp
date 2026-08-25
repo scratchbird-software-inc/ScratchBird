@@ -1,0 +1,3 @@
+#pragma once
+#include "sblr_accel_gpu_compile_runtime.hpp"
+namespace scratchbird::engine::sblr { using SblrBridgeAuthenticateRequestV1=SblrAccelGpuCompileRequestV1; using SblrBridgeAuthenticateDescriptorV1=SblrAccelGpuCompileDescriptorV1; using SblrBridgeAuthenticateResultV1=SblrAccelGpuCompileResultV1; std::vector<std::uint8_t> EncodeSblrBridgeAuthenticateRequestV1(const SblrBridgeAuthenticateRequestV1&); bool DecodeSblrBridgeAuthenticateRequestV1(const std::uint8_t*,std::size_t,SblrBridgeAuthenticateRequestV1*,std::string*); std::vector<std::uint8_t> EncodeSblrBridgeAuthenticateDescriptorV1(const SblrBridgeAuthenticateDescriptorV1&); bool DecodeSblrBridgeAuthenticateDescriptorV1(const std::uint8_t*,std::size_t,SblrBridgeAuthenticateDescriptorV1*,std::string*); }

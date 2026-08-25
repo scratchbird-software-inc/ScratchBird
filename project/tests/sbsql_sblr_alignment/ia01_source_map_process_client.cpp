@@ -439,6 +439,8 @@ int main(int argc, char** argv) {
                           ? session.RunAccelGpuInvalidateForWire()
                     : operation == "bridge-describe-capabilities"
                           ? session.RunBridgeDescribeCapabilitiesForWire()
+                    : operation == "bridge-open-channel"
+                          ? session.RunBridgeOpenChannelForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -747,6 +749,7 @@ int main(int argc, char** argv) {
   if (operation == "accel-gpu-inspect" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004165 ACCEL_GPU_INSPECT deterministic_cluster_refusal\n"; return 0; }
   if (operation == "accel-gpu-invalidate" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004169 ACCEL_GPU_INVALIDATE deterministic_cluster_refusal\n"; return 0; }
   if (operation == "bridge-describe-capabilities" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004173 BRIDGE_DESCRIBE_CAPABILITIES deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "bridge-open-channel" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004177 BRIDGE_OPEN_CHANNEL deterministic_cluster_refusal\n"; return 0; }
   if (!result.accepted) {
     if (result.messages.diagnostics.empty())
       std::cerr << "SBLR.DDL_CREATE_TYPE.EMPTY_FAILURE operation=" << operation
