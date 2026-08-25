@@ -199,6 +199,7 @@ class SbsqlTestWireSession {
   PipelineResult RunFulltextPhraseScoreForWire();
   PipelineResult RunFulltextMultiFieldScoreForWire();
   PipelineResult RunFulltextRegexMatchForWire();
+  PipelineResult RunFulltextWildcardMatchForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
