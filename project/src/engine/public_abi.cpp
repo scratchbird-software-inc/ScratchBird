@@ -192,6 +192,8 @@
 #include "sblr_ddl_create_publication_coordinator.hpp"
 #include "sblr_ddl_alter_publication_runtime.hpp"
 #include "sblr_ddl_alter_publication_coordinator.hpp"
+#include "sblr_ddl_drop_publication_runtime.hpp"
+#include "sblr_ddl_drop_publication_coordinator.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_coordinator.hpp"
 #include "sblr_ddl_alter_package_coordinator.hpp"
@@ -6939,6 +6941,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool ddl_create_materialized_view_root = false;
   bool ddl_create_publication_root = false;
   bool ddl_alter_publication_root = false;
+  bool ddl_drop_publication_root = false;
   bool ddl_drop_materialized_view_root = false;
   bool ddl_create_table_as_query_with_data_root = false;
   bool ddl_create_table_as_query_with_no_data_root = false;
@@ -7028,6 +7031,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   scratchbird::engine::sblr::SblrDdlCreatePublicationDescriptorV1 ddl_create_publication_descriptor{};
   std::uint64_t ddl_create_publication_availability_generation = 0;
   scratchbird::engine::sblr::SblrDdlAlterPublicationDescriptorV1 ddl_alter_publication_descriptor{};
+  scratchbird::engine::sblr::SblrDdlDropPublicationDescriptorV1 ddl_drop_publication_descriptor{};
   std::uint64_t ddl_alter_publication_availability_generation = 0;
   scratchbird::engine::sblr::SblrQueryNumericDescriptorV1 query_numeric_descriptor;std::uint64_t query_numeric_availability_generation=0;
   scratchbird::engine::sblr::SblrAdvancedDatatypeFamilyDescriptorV1 advanced_datatype_family_descriptor;std::uint64_t advanced_datatype_family_availability_generation=0;
@@ -7315,6 +7319,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
     ddl_create_materialized_view_root = member.operation_id == "engine.op.ddl_create_materialized_view" && member.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" && member.opcode_code == 1566;
     ddl_create_publication_root = member.operation_id == "engine.op.ddl_create_publication" && member.opcode == "SBLR_DDL_CREATE_PUBLICATION" && member.opcode_code == 1582;
     ddl_alter_publication_root = member.operation_id == "engine.op.ddl_alter_publication" && member.opcode == "SBLR_DDL_ALTER_PUBLICATION" && member.opcode_code == 1583;
+    ddl_drop_publication_root = member.operation_id == "engine.op.ddl_drop_publication" && member.opcode == "SBLR_DDL_DROP_PUBLICATION" && member.opcode_code == 1584;
     ddl_drop_materialized_view_root = member.operation_id == "engine.op.ddl_drop_materialized_view" && member.opcode == "SBLR_DDL_DROP_MATERIALIZED_VIEW" && member.opcode_code == 1568;
     ddl_create_table_as_query_with_data_root = member.operation_id == "engine.op.ddl_create_table_as_query_with_data" && member.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" && member.opcode_code == 1669;
     ddl_create_table_as_query_with_no_data_root = member.operation_id == "engine.op.ddl_create_table_as_query_with_no_data" && member.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA" && member.opcode_code == 1670;
@@ -7817,6 +7822,19 @@ if(ddl_drop_index_root){std::string detail;if(member.operands.size()!=1||member.
       dispatched.dispatched_to_api = true;
       dispatched.api_result.ok = true;
       dispatched.api_result.operation_id = "engine.op.ddl_alter_publication";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
+    }
+    if (ddl_drop_publication_root) {
+      const auto& publication_member = opcode_stream && stream.ok && stream.stream.operations.size() > 1 ? stream.stream.operations[1] : operation.envelope;
+      std::string detail;
+      if (publication_member.operands.size() != 1 || publication_member.operands.front().type != "drop_publication_descriptor" || publication_member.operands.front().name != "publication" || !scratchbird::engine::sblr::DecodeSblrDdlDropPublicationDescriptorV1(publication_member.operands.front().value_body.data(), publication_member.operands.front().value_body.size(), &ddl_drop_publication_descriptor, &detail))
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4143, "SBLR.OPERAND.INVALID", "sblr.ddl_drop_publication.operand_invalid", detail);
+      std::uint64_t drop_publication_generation = 0;
+      std::memcpy(&drop_publication_generation, ddl_drop_publication_descriptor.body.data() + 200, sizeof(drop_publication_generation));
+      if (drop_publication_generation == 0)
+        return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4143, "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING", "sblr.ddl_drop_publication.executor_unavailable");
+      dispatched.accepted = true; dispatched.dispatched_to_api = true; dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_drop_publication";
       dispatched.api_result.result_shape.result_kind = "ddl_result";
     }
     if (ddl_create_materialized_view_root) {
@@ -8503,7 +8521,7 @@ if(ddl_drop_index_root){std::string detail;if(member.operands.size()!=1||member.
   if(database_serialize_logical_snapshot_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_database_serialize_logical_snapshot");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDatabaseSerializeLogicalSnapshotDescriptor(c,database_serialize_logical_snapshot_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4146,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDatabaseSerializeLogicalSnapshotResultV1 rr;rr.body[0]=1;rr.availability=database_serialize_logical_snapshot_availability_generation;rr.publication_barrier[0]=1;database_serialize_logical_snapshot_result_bytes=scratchbird::engine::sblr::EncodeSblrDatabaseSerializeLogicalSnapshotResultV1(rr);if(database_serialize_logical_snapshot_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4146,"DATABASE.SERIALIZE_LOGICAL_SNAPSHOT_FAILED","sblr.database_serialize_logical_snapshot.result_encoding_failed");result->result_kind="logical_snapshot_buffer_descriptor";}
   if(database_deserialize_logical_snapshot_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_database_deserialize_logical_snapshot");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDatabaseDeserializeLogicalSnapshotDescriptor(c,database_deserialize_logical_snapshot_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4147,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDatabaseDeserializeLogicalSnapshotResultV1 rr;rr.body[0]=1;rr.availability=database_deserialize_logical_snapshot_availability_generation;rr.publication_barrier[0]=1;database_deserialize_logical_snapshot_result_bytes=scratchbird::engine::sblr::EncodeSblrDatabaseDeserializeLogicalSnapshotResultV1(rr);if(database_deserialize_logical_snapshot_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4147,"DATABASE.DESERIALIZE_LOGICAL_SNAPSHOT_FAILED","sblr.database_deserialize_logical_snapshot.result_encoding_failed");result->result_kind="management_operation_result";}
   if (opcode_stream && !source_map_root && !error_vector_root &&
-      !ddl_create_publication_root && !ddl_alter_publication_root &&
+      !ddl_create_publication_root && !ddl_alter_publication_root && !ddl_drop_publication_root &&
       !txn_begin_root && !txn_commit_root && !txn_rollback_root && !txn_savepoint_root && !txn_release_savepoint_root && !txn_rollback_to_savepoint_root && !psql_autonomous_frame_root && !reservation_release_root && !temporary_cleanup_root && !cursor_open_root && !cursor_fetch_root && !cursor_close_root && !read_by_key_root && !read_range_root && !read_stream_root && !result_set_pass_root && !access_cursor_open_root && !access_cursor_fetch_root && !access_cursor_close_root && !insert_root && !update_root && !delete_root && !merge_root && !table_truncate_root && !table_analyze_root && !bulk_import_stream_root && !bulk_export_stream_root && !statement_batch_root && !atomic_cas_root && !atomic_rmw_root && !advisory_lock_root && !advisory_lock_release_root && !function_call_root && !operator_call_root && !cast_root && !compare_root && !domain_operation_root && !udr_invoke_root && !procedure_invoke_root && !function_invoke_root && !aggregate_invoke_root && !sequence_nextval_root && !sequence_currval_root && !query_numeric_root && !advanced_datatype_family_root && !show_version_root && !project_root && !aggregate_root && !group_root && !security_create_group_mapping_root && !security_drop_group_mapping_root && !sort_root && !limit_root && !kv_structured_read_root && !kv_structured_mutate_root && !kv_structured_scan_root && !kv_structured_stream_read_root && !kv_structured_stream_append_root && !kv_structured_timeseries_root && !system_config_set_root && !ddl_create_domain_root && !ddl_alter_domain_root && !ddl_create_view_root && !ddl_alter_view_root && !ddl_drop_view_root && !ddl_create_trigger_root && !ddl_create_package_root && !ddl_create_or_replace_srs_root && !ddl_drop_srs_root && !ddl_create_schema_root && !ddl_alter_rewrite_rule_root && !ddl_drop_rewrite_rule_root && !ddl_validate_constraint_root) {
     result->query_execute_result_handle = query_handle_validation.handle;
     result->query_execute_result_handle_validated = true;
@@ -8872,6 +8890,18 @@ if(ddl_drop_index_root){auto c=receipt->engine_context;c.trace_tags.push_back("p
     rr.body[97] = 1;
     auto bytes = scratchbird::engine::sblr::EncodeSblrDdlAlterPublicationResultV1(rr);
     if (bytes.empty()) return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4142, "SYSTEM.CONFIG_FAILED", "sblr.ddl_alter_publication.result_encoding_failed");
+    result->result_kind = "ddl_result";
+    result->payload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  }
+  if (ddl_drop_publication_root) {
+    auto c = receipt->engine_context;
+    c.trace_tags.push_back("private_ddl_drop_publication");
+    const auto consumed = scratchbird::engine::internal_api::ConsumeSblrDdlDropPublicationDescriptor(c, ddl_drop_publication_descriptor);
+    if (!consumed.ok) return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4143, consumed.diagnostic.code, consumed.diagnostic.message_key);
+    scratchbird::engine::sblr::SblrDdlDropPublicationResultV1 rr;
+    rr.body[0] = 1; rr.body[16] = 1; rr.body[32] = 1; rr.body[48] = 1;
+    auto bytes = scratchbird::engine::sblr::EncodeSblrDdlDropPublicationResultV1(rr);
+    if (bytes.empty()) return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4143, "SYSTEM.CONFIG_FAILED", "sblr.ddl_drop_publication.result_encoding_failed");
     result->result_kind = "ddl_result";
     result->payload.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
   }

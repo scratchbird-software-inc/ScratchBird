@@ -1051,10 +1051,14 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         IsNonzeroUuidBytes(operand.value_body.data()) &&
         Load64(operand.value_body.data() + 16) != 0;
     const bool alter_publication_descriptor =
-        envelope.operation_id == "engine.op.ddl_alter_publication" &&
+        ((envelope.operation_id == "engine.op.ddl_alter_publication" &&
         envelope.opcode == "SBLR_DDL_ALTER_PUBLICATION" && envelope.opcode_code == 1583 &&
+        operand.type == "alter_publication_descriptor") ||
+        (envelope.operation_id == "engine.op.ddl_drop_publication" &&
+        envelope.opcode == "SBLR_DDL_DROP_PUBLICATION" && envelope.opcode_code == 1584 &&
+        operand.type == "drop_publication_descriptor")) &&
         envelope.operands.size() == 1 && operand.ordinal == 1 &&
-        operand.type == "alter_publication_descriptor" && operand.name == "publication" &&
+        operand.name == "publication" &&
         operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 320;
     const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || alter_publication_descriptor ||
         ValidateValueBody(operand.value_kind, operand.value_body.data(),
