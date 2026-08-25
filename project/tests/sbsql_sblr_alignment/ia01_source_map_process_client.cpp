@@ -383,6 +383,8 @@ int main(int argc, char** argv) {
                           ? session.RunMigrationRollbackForWire()
                     : operation == "migration-retain-evidence"
                           ? session.RunMigrationRetainEvidenceForWire()
+                    : operation == "internal-trigger-dispatch"
+                          ? session.RunInternalTriggerDispatchForWire()
                     : operation == "ddl-create-domain"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDomainForWire():begun; }()
                     : operation == "ddl-create-sequence"

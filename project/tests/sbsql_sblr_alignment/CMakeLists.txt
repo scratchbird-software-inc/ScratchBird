@@ -3870,6 +3870,14 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia78_migration_retain_evidence_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia78_migration_retain_evidence_process_e2e PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;SBLR_MIGRATION_RETAIN_EVIDENCE;CSC-TEST-003077;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia79_internal_trigger_dispatch_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation internal-trigger-dispatch
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia79_internal_trigger_dispatch_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia79_internal_trigger_dispatch_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;SBLR_INTERNAL_TRIGGER_DISPATCH;CSC-TEST-003078;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_role_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
