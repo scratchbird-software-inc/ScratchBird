@@ -405,6 +405,10 @@ int main(int argc, char** argv) {
                           ? session.RunDdlDropExtensionForWire()
                     : operation == "cluster-create-placement-policy"
                           ? session.RunClusterCreatePlacementPolicyForWire()
+                    : operation == "cluster-alter-placement-policy"
+                          ? session.RunClusterAlterPlacementPolicyForWire()
+                    : operation == "cluster-drop-placement-policy"
+                          ? session.RunClusterDropPlacementPolicyForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -692,6 +696,10 @@ int main(int argc, char** argv) {
   }
   if (operation == "cluster-create-placement-policy" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "SB_DIAG_CLUSTER_TXN_UNAVAILABLE") {
     std::cout << "CSC-TEST-004073 CLUSTER_CREATE_PLACEMENT_POLICY deterministic_cluster_refusal\n";
+    return 0;
+  }
+  if ((operation == "cluster-alter-placement-policy" || operation == "cluster-drop-placement-policy") && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "SB_DIAG_CLUSTER_TXN_UNAVAILABLE") {
+    std::cout << (operation == "cluster-alter-placement-policy" ? "CSC-TEST-004077 CLUSTER_ALTER_PLACEMENT_POLICY" : "CSC-TEST-004081 CLUSTER_DROP_PLACEMENT_POLICY") << " deterministic_cluster_refusal\n";
     return 0;
   }
   if (!result.accepted) {
