@@ -467,6 +467,7 @@ add_library(sb_engine_internal_api
   sblr_sec_authenticate_coordinator.cpp
   sblr_sec_deauthenticate_coordinator.cpp
   sblr_session_role_switch_coordinator.cpp
+  sblr_session_setting_set_coordinator.cpp
   sblr_ddl_drop_package_coordinator.cpp
   sblr_ddl_alter_package_coordinator.cpp
   sblr_ddl_alter_sequence_coordinator.cpp
