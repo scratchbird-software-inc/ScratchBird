@@ -277,6 +277,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleShutdownForceForWire():begun; }()
                     : operation == "lifecycle-shutdown-acknowledge"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleShutdownAcknowledgeForWire():begun; }()
+                    : operation == "lifecycle-drop-database"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleDropDatabaseForWire():begun; }()
                     : operation == "aggregate"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunAggregateForWire():begun; }()
                     : operation == "group"
