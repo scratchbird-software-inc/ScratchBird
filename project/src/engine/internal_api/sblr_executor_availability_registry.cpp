@@ -867,4 +867,8 @@ EngineApiDiagnostic RevalidateSblrExecutorAvailability(
   return MakeEngineApiDiagnostic("OK", "ok", {}, false);
 }
 
+bool IsAdmittedExecutorAvailabilityIdentity(const SblrExecutorAvailabilityRowIdentity& identity) {
+  return ExactAdmittedIdentity(identity);
+}
+
 }  // namespace scratchbird::engine::internal_api

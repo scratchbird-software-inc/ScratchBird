@@ -284,6 +284,8 @@ struct SblrExecutorAvailabilityRowIdentity {
   std::uint16_t result_descriptor_version{kSblrLiteralResultDescriptorVersion};
 };
 
+bool IsAdmittedExecutorAvailabilityIdentity(const SblrExecutorAvailabilityRowIdentity& identity);
+
 struct SblrExecutorAvailabilitySnapshot {
   std::string snapshot_uuid;
   std::uint64_t generation{0};
