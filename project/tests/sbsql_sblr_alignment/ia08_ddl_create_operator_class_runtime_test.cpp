@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_create_operator_class_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlCreateOperatorClassRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlCreateOperatorClassRequestV1(q);assert(b.size()==64);SblrDdlCreateOperatorClassRequestV1 q2;assert(DecodeSblrDdlCreateOperatorClassRequestV1(b.data(),b.size(),&q2,nullptr));SblrDdlCreateOperatorClassDescriptorV1 d;d.body[0]=1;auto x=EncodeSblrDdlCreateOperatorClassDescriptorV1(d);assert(x.size()==384);SblrDdlCreateOperatorClassDescriptorV1 d2;assert(DecodeSblrDdlCreateOperatorClassDescriptorV1(x.data(),x.size(),&d2,nullptr));x[352]^=1;assert(!DecodeSblrDdlCreateOperatorClassDescriptorV1(x.data(),x.size(),&d2,nullptr));}
