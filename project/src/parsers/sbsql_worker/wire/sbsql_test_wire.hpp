@@ -180,6 +180,7 @@ class SbsqlTestWireSession {
   PipelineResult RunReplCdcReceiveForWire();
   PipelineResult RunReplCdcAckForWire();
   PipelineResult RunRepl2pcPrewriteForWire();
+  PipelineResult RunRepl2pcCommitForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
