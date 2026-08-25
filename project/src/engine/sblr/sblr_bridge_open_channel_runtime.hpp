@@ -1,0 +1,3 @@
+#pragma once
+#include "sblr_accel_gpu_compile_runtime.hpp"
+namespace scratchbird::engine::sblr { using SblrBridgeOpenChannelRequestV1=SblrAccelGpuCompileRequestV1; using SblrBridgeOpenChannelDescriptorV1=SblrAccelGpuCompileDescriptorV1; using SblrBridgeOpenChannelResultV1=SblrAccelGpuCompileResultV1; std::vector<std::uint8_t> EncodeSblrBridgeOpenChannelRequestV1(const SblrBridgeOpenChannelRequestV1&); bool DecodeSblrBridgeOpenChannelRequestV1(const std::uint8_t*,std::size_t,SblrBridgeOpenChannelRequestV1*,std::string*); std::vector<std::uint8_t> EncodeSblrBridgeOpenChannelDescriptorV1(const SblrBridgeOpenChannelDescriptorV1&); bool DecodeSblrBridgeOpenChannelDescriptorV1(const std::uint8_t*,std::size_t,SblrBridgeOpenChannelDescriptorV1*,std::string*); }

@@ -252,6 +252,7 @@ class SbsqlTestWireSession {
   PipelineResult RunAccelGpuPolicySetForWire();
   PipelineResult RunAccelGpuInspectForWire();
   PipelineResult RunAccelGpuInvalidateForWire();
+  PipelineResult RunBridgeDescribeCapabilitiesForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();
