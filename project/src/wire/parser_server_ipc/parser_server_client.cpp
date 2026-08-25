@@ -751,6 +751,10 @@ constexpr std::uint32_t kSchemaContextSetRequestV1 = 7395;
 constexpr std::uint32_t kSchemaContextSetResultV1 = 7396;
 constexpr std::uint16_t kMessageContextSetRequest = 382;
 constexpr std::uint16_t kMessageContextSetResult = 383;
+constexpr std::uint32_t kSchemaContextUnsetRequestV1 = 7397;
+constexpr std::uint32_t kSchemaContextUnsetResultV1 = 7398;
+constexpr std::uint16_t kMessageContextUnsetRequest = 384;
+constexpr std::uint16_t kMessageContextUnsetResult = 385;
 constexpr std::uint16_t kMessageSessionSettingSetResult = 371;
 constexpr std::uint32_t kSchemaSessionSettingResetRequestV1 = 7385;
 constexpr std::uint32_t kSchemaSessionSettingResetResultV1 = 7386;
@@ -7516,6 +7520,14 @@ ServerVariableBindingResult SbpsClient::ContextSet(const ParserSessionContext& s
   if(!s.authenticated || p.size()!=24) { r.messages=std::move(m); return r; }
   if(!SendRequest(endpoint_,BaseHeader(kMessageContextSetRequest,kSchemaContextSetRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())) { r.messages=std::move(m); return r; }
   if(f.header.message_type!=kMessageContextSetResult||f.header.schema_id!=kSchemaContextSetResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;}
+  r.accepted=true;r.canonical_payload=std::move(f.payload);return r;
+}
+ServerVariableBindingResult SbpsClient::ContextUnset(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const {
+  ServerVariableBindingResult r; MessageVectorSet m; Frame f;
+  const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid);
+  if(!s.authenticated || p.size()!=24) { r.messages=std::move(m); return r; }
+  if(!SendRequest(endpoint_,BaseHeader(kMessageContextUnsetRequest,kSchemaContextUnsetRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())) { r.messages=std::move(m); return r; }
+  if(f.header.message_type!=kMessageContextUnsetResult||f.header.schema_id!=kSchemaContextUnsetResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;}
   r.accepted=true;r.canonical_payload=std::move(f.payload);return r;
 }
 ServerVariableBindingResult SbpsClient::SessionSettingReset(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=24||!SendRequest(endpoint_,BaseHeader(kMessageSessionSettingResetRequest,kSchemaSessionSettingResetRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageSessionSettingResetResult||f.header.schema_id!=kSchemaSessionSettingResetResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
