@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_drop_operator_family_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlDropOperatorFamilyRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlDropOperatorFamilyRequestV1(q);assert(b.size()==64);SblrDdlDropOperatorFamilyRequestV1 q2;assert(DecodeSblrDdlDropOperatorFamilyRequestV1(b.data(),b.size(),&q2,nullptr));SblrDdlDropOperatorFamilyDescriptorV1 d;d.body[0]=1;auto x=EncodeSblrDdlDropOperatorFamilyDescriptorV1(d);assert(x.size()==384);SblrDdlDropOperatorFamilyDescriptorV1 d2;assert(DecodeSblrDdlDropOperatorFamilyDescriptorV1(x.data(),x.size(),&d2,nullptr));x[352]^=1;assert(!DecodeSblrDdlDropOperatorFamilyDescriptorV1(x.data(),x.size(),&d2,nullptr));}
