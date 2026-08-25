@@ -27,7 +27,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-timeseries-series-cardinality-policy"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-timeseries-value-cache"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set", "session-discard"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-alter-role"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-create-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-group-mapping"))
