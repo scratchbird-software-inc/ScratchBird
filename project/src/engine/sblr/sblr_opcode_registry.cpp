@@ -24,7 +24,7 @@ struct CanonicalOpcodeCodeRow {
 // Generated from the manifest-authoritative sblr-opcodes.yaml assignment.
 // The runtime never derives a code from vector order, text hashing, aliases,
 // or an implementation-private sequence.
-constexpr std::array<CanonicalOpcodeCodeRow, 434> kCanonicalOpcodeCodes{{
+constexpr std::array<CanonicalOpcodeCodeRow, 435> kCanonicalOpcodeCodes{{
     {"SBLR_PACKAGE_BEGIN", 0x0001u},
     {"SBLR_PACKAGE_END", 0x0002u},
     {"SBLR_LITERAL", 0x0003u},
@@ -255,6 +255,7 @@ constexpr std::array<CanonicalOpcodeCodeRow, 434> kCanonicalOpcodeCodes{{
     {"SBLR_SESSION_ROLE_SWITCH", 0x1107u},
     {"SBLR_SESSION_DISCARD", 0x1108u},
     {"SBLR_SESSION_SNAPSHOT_HANDLE", 0x1109u},
+    {"SBLR_CONTEXT_SET", 0x110Au},
     {"SBLR_STMT_PREPARE", 0x1200u},
     {"SBLR_STMT_EXECUTE", 0x1201u},
     {"SBLR_STMT_EXECUTE_DIRECT", 0x1202u},
@@ -1892,6 +1893,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
   if (code == 1805 && operation_id == "engine.op.sec_deauthenticate" && opcode == "SBLR_SEC_DEAUTHENTICATE") { result.entry = LookupSblrOpcode("SBLR_SEC_DEAUTHENTICATE"); result.ok = result.entry != nullptr; return result; }
   if (code == 4359 && operation_id == "engine.op.session_role_switch" && opcode == "SBLR_SESSION_ROLE_SWITCH") { result.entry = LookupSblrOpcode("SBLR_SESSION_ROLE_SWITCH"); result.ok = result.entry != nullptr; return result; }
   if (code == 4355 && operation_id == "engine.op.session_setting_set" && opcode == "SBLR_SESSION_SETTING_SET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_SET"); result.ok = result.entry != nullptr; return result; }
+  if (code == 4362 && operation_id == "engine.op.context_set" && opcode == "SBLR_CONTEXT_SET") { result.entry = LookupSblrOpcode("SBLR_CONTEXT_SET"); result.ok = result.entry != nullptr; return result; }
   if (code == 4357 && operation_id == "engine.op.session_setting_reset" && opcode == "SBLR_SESSION_SETTING_RESET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_RESET"); result.ok = result.entry != nullptr; return result; }
   if (code == 4356 && operation_id == "engine.op.session_setting_get" && opcode == "SBLR_SESSION_SETTING_GET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_GET"); result.ok = result.entry != nullptr; return result; }
   if (code == 1576 && operation_id == "engine.op.ddl_create_foreign_table" && opcode == "SBLR_DDL_CREATE_FOREIGN_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FOREIGN_TABLE"); result.ok = result.entry != nullptr; return result; }
@@ -2146,6 +2148,9 @@ SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnve
   }
   if (envelope.opcode_code == 4355 && envelope.operation_id == "engine.op.session_setting_set" && envelope.opcode == "SBLR_SESSION_SETTING_SET") {
     result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_SET"); result.ok = result.entry != nullptr; return result;
+  }
+  if (envelope.opcode_code == 4362 && envelope.operation_id == "engine.op.context_set" && envelope.opcode == "SBLR_CONTEXT_SET") {
+    result.entry = LookupSblrOpcode("SBLR_CONTEXT_SET"); result.ok = result.entry != nullptr; return result;
   }
   if (envelope.opcode_code == 4357 && envelope.operation_id == "engine.op.session_setting_reset" && envelope.opcode == "SBLR_SESSION_SETTING_RESET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_RESET"); result.ok = result.entry != nullptr; return result; }
   if (envelope.opcode_code == 4356 && envelope.operation_id == "engine.op.session_setting_get" && envelope.opcode == "SBLR_SESSION_SETTING_GET") { result.entry = LookupSblrOpcode("SBLR_SESSION_SETTING_GET"); result.ok = result.entry != nullptr; return result; }
