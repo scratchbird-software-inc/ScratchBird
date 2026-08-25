@@ -3104,17 +3104,19 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
   target_include_directories(sbsql_sblr_alignment_ia08_security_grant_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(sbsql_sblr_alignment_ia08_security_grant_runtime PRIVATE sb_engine_sblr)
   add_test(NAME sbsql_sblr_alignment_ia08_security_grant_runtime COMMAND sbsql_sblr_alignment_ia08_security_grant_runtime)
-  set_tests_properties(sbsql_sblr_alignment_ia08_security_grant_runtime PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_GRANT;CSC-TEST-003022;malformed_operand")
+  set_tests_properties(sbsql_sblr_alignment_ia08_security_grant_runtime PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_GRANT;CSC-TEST-002978;malformed_operand")
   add_executable(sbsql_sblr_alignment_ia08_security_grant_availability ia08_security_grant_availability_test.cpp)
   target_include_directories(sbsql_sblr_alignment_ia08_security_grant_availability PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(sbsql_sblr_alignment_ia08_security_grant_availability PRIVATE sb_engine_internal_api)
   add_test(NAME sbsql_sblr_alignment_ia08_security_grant_availability COMMAND sbsql_sblr_alignment_ia08_security_grant_availability)
-  set_tests_properties(sbsql_sblr_alignment_ia08_security_grant_availability PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_GRANT;CSC-TEST-003023;availability")
+  set_tests_properties(sbsql_sblr_alignment_ia08_security_grant_availability PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_GRANT;CSC-TEST-002979;availability")
   add_executable(sbsql_sblr_alignment_ia08_security_grant_cancellation_fault ia08_security_grant_cancellation_fault_test.cpp)
   target_include_directories(sbsql_sblr_alignment_ia08_security_grant_cancellation_fault PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(sbsql_sblr_alignment_ia08_security_grant_cancellation_fault PRIVATE sb_engine_internal_api)
   add_test(NAME sbsql_sblr_alignment_ia08_security_grant_cancellation_fault COMMAND sbsql_sblr_alignment_ia08_security_grant_cancellation_fault)
-  set_tests_properties(sbsql_sblr_alignment_ia08_security_grant_cancellation_fault PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_GRANT;CSC-TEST-003024;cancellation_fault")
+  set_tests_properties(sbsql_sblr_alignment_ia08_security_grant_cancellation_fault PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_GRANT;CSC-TEST-002980;cancellation_fault")
+  add_test(NAME sbsql_sblr_alignment_ia08_security_grant_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-grant --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_security_grant_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia08_security_grant_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_GRANT;CSC-TEST-002977;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_role_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
