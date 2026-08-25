@@ -102,6 +102,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_cluster_alter_placement_policy_runtime.cpp
   sblr_cluster_drop_placement_policy_runtime.cpp
   sblr_cluster_declare_region_runtime.cpp
+  sblr_cluster_declare_availability_zone_runtime.cpp
   sblr_ddl_alter_collation_runtime.cpp
   sblr_ddl_drop_collation_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp

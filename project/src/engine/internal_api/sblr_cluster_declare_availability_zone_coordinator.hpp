@@ -1,0 +1,4 @@
+#pragma once
+#include "api_types.hpp"
+#include "engine/sblr/sblr_cluster_declare_availability_zone_runtime.hpp"
+namespace scratchbird::engine::internal_api{struct SblrClusterDeclareAvailabilityZoneCoordinationResult{bool ok=false;scratchbird::engine::sblr::SblrClusterDeclareAvailabilityZoneDescriptorV1 descriptor{};EngineApiDiagnostic diagnostic;};SblrClusterDeclareAvailabilityZoneCoordinationResult CompileSblrClusterDeclareAvailabilityZoneDescriptor(const EngineRequestContext&,const std::string&,std::uint64_t);SblrClusterDeclareAvailabilityZoneCoordinationResult ConsumeSblrClusterDeclareAvailabilityZoneDescriptor(const EngineRequestContext&,const scratchbird::engine::sblr::SblrClusterDeclareAvailabilityZoneDescriptorV1&);}
