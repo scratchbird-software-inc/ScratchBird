@@ -182,6 +182,7 @@ class SbsqlTestWireSession {
   PipelineResult RunRepl2pcPrewriteForWire();
   PipelineResult RunRepl2pcCommitForWire();
   PipelineResult RunRepl2pcCleanupForWire();
+  PipelineResult RunRepl2pcResolveLockForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
