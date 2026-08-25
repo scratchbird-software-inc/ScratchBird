@@ -4213,6 +4213,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "engine.op.sec_deauthenticate") return "SBLR_SEC_DEAUTHENTICATE";
   if (operation_id == "engine.op.session_role_switch") return "SBLR_SESSION_ROLE_SWITCH";
   if (operation_id == "engine.op.session_setting_set") return "SBLR_SESSION_SETTING_SET";
+  if (operation_id == "engine.op.context_set") return "SBLR_CONTEXT_SET";
   if (operation_id == "security.mask.drop") return "SBLR_SECURITY_MASK_DROP";
   if (operation_id == "security.rls.drop") return "SBLR_SECURITY_RLS_DROP";
   if (operation_id == "security.policy.attach") return "SBLR_SECURITY_POLICY_ATTACH";
