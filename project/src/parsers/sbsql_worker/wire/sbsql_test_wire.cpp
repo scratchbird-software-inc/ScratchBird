@@ -21684,6 +21684,14 @@ PipelineResult SbsqlTestWireSession::RunDdlDropCastForWire() {
     "sbsql_sblr_alignment"));
   return result;
 }
+PipelineResult SbsqlTestWireSession::RunDdlCreateExtensionForWire() {
+  PipelineResult result;
+  result.messages.diagnostics.push_back(MakeDiagnostic(
+    "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN", "ERROR",
+    "CREATE EXTENSION requires an admitted cluster/provider route.",
+    "sbsql_sblr_alignment"));
+  return result;
+}
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }
