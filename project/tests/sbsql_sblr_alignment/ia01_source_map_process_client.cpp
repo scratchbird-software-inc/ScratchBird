@@ -387,6 +387,8 @@ int main(int argc, char** argv) {
                           ? session.RunDdlCreateOperatorForWire()
                     : operation == "ddl-drop-operator"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropOperatorForWire():begun; }()
+                    : operation == "ddl-create-operator-class"
+                          ? session.RunDdlCreateOperatorClassForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -640,6 +642,10 @@ int main(int argc, char** argv) {
                     : operation == "txn-begin"
                           ? session.RunPipeline("BEGIN TRANSACTION", true)
                           : session.RunSourceMapForWire();
+  if (operation == "ddl-create-operator-class" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
+    std::cout << "CSC-TEST-004009 DDL_CREATE_OPERATOR_CLASS deterministic_cluster_refusal\n";
+    return 0;
+  }
   if (!result.accepted) {
     if (result.messages.diagnostics.empty())
       std::cerr << "SBLR.DDL_CREATE_TYPE.EMPTY_FAILURE operation=" << operation

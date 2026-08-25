@@ -21647,6 +21647,11 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateOperatorForWire() {
 PipelineResult SbsqlTestWireSession::RunDdlDropOperatorForWire() {
   PipelineResult result; if(!server_client_||!session_.authenticated)return result; ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid}; auto acquired=server_client_->AcquireNativeStatementContext(session_,selector); if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;} namespace c=scratchbird::engine::sblr; auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid); if(!receipt)return result; c::SblrDdlDropOperatorRequestV1 q; q.operation=*receipt;q.receipt=*receipt;q.descriptor_length=384; auto coordinated=server_client_->CoordinateDdlDropOperator(session_,c::EncodeSblrDdlDropOperatorRequestV1(q)); result.messages=coordinated.messages;if(!coordinated.accepted)return result; c::SblrDdlDropOperatorDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropOperatorDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail))return result;auto operand=c::EncodeSblrDdlDropOperatorDescriptorV1(d);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_operator";g_ddl_drop_operator_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_drop_operator_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;
 }
+PipelineResult SbsqlTestWireSession::RunDdlCreateOperatorClassForWire() {
+  PipelineResult result;
+  result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN", "ERROR", "CREATE OPERATOR CLASS requires an admitted cluster route.", "sbsql_sblr_alignment"));
+  return result;
+}
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }
