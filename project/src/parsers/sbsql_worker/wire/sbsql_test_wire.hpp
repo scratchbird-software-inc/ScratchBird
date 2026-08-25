@@ -225,6 +225,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlCreateSubscriptionForWire();
   PipelineResult RunDdlAlterSubscriptionForWire();
   PipelineResult RunDdlDropSubscriptionForWire();
+  PipelineResult RunDdlCreateOperatorForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();
