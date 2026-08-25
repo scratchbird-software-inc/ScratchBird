@@ -522,9 +522,10 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::udr_ref:
       return size == 16 && IsNonzeroUuidBytes(data);
     case SblrValueKind::descriptor_ref:
-      // Core descriptor carriers may use a fixed 320-byte descriptor body;
-      // envelope-level validation narrows that form to its exact operation.
-      return (size == 16 && data != nullptr && IsNonzeroUuidBytes(data)) || size == 320;
+      // Core descriptor carriers use fixed-size descriptor bodies; envelope-level
+      // validation narrows 320/384-byte forms to their exact operations.
+      return (size == 16 && data != nullptr && IsNonzeroUuidBytes(data)) ||
+             size == 320 || size == 384;
     case SblrValueKind::literal_typed:
     case SblrValueKind::proof_token: {
       if (size < 24 || !IsNonzeroUuidBytes(data)) return false;
@@ -1060,7 +1061,14 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         envelope.operands.size() == 1 && operand.ordinal == 1 &&
         operand.name == "publication" &&
         operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 320;
-    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || alter_publication_descriptor ||
+    const bool create_subscription_descriptor =
+        (envelope.operation_id == "engine.op.ddl_create_subscription" ||
+         envelope.operation_id == "ddl.subscription.create") &&
+        envelope.opcode == "SBLR_DDL_CREATE_SUBSCRIPTION" && envelope.opcode_code == 1585 &&
+        envelope.operands.size() == 1 && operand.ordinal == 1 &&
+        operand.type == "create_subscription_descriptor" && operand.name == "subscription" &&
+        operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 384;
+    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || alter_publication_descriptor || create_subscription_descriptor ||
         ValidateValueBody(operand.value_kind, operand.value_body.data(),
                           operand.value_body.size(), 1, &value_count,
                           &limit_exceeded);
@@ -1083,6 +1091,11 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
     if (operand.value_kind == SblrValueKind::descriptor_ref &&
         operand.value_body.size() == 320 && !alter_publication_descriptor) {
       fail("SBLR.OPERAND_INVALID", "320-byte descriptor references require the ALTER PUBLICATION carrier");
+      break;
+    }
+    if (operand.value_kind == SblrValueKind::descriptor_ref &&
+        operand.value_body.size() == 384 && !create_subscription_descriptor) {
+      fail("SBLR.OPERAND_INVALID", "384-byte descriptor references require the CREATE SUBSCRIPTION carrier");
       break;
     }
     if (operand.value_kind == SblrValueKind::expression_node_table) {
