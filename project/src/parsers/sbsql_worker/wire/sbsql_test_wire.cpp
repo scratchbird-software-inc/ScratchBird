@@ -21297,4 +21297,6 @@ PipelineResult SbsqlTestWireSession::RunParameterBindForWire(){return RunStmtExe
 PipelineResult SbsqlTestWireSession::RunResultPageForWire(){return RunStmtExecuteForWire();}
 
 PipelineResult SbsqlTestWireSession::RunQueryExecuteForWire(){return RunStmtExecuteForWire();}
+
+PipelineResult SbsqlTestWireSession::RunQueryExplainForWire(){return RunStmtExecuteForWire();}
 } // namespace scratchbird::parser::sbsql

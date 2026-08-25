@@ -3374,6 +3374,14 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia16_query_execute_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia16_query_execute_process_e2e PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;SBLR_QUERY_EXECUTE;CSC-TEST-003015;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia17_query_explain_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation query-explain
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia17_query_explain_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia17_query_explain_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;SBLR_QUERY_EXPLAIN;CSC-TEST-003016;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_role_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
