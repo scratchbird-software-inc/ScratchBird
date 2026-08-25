@@ -375,6 +375,8 @@ int main(int argc, char** argv) {
                           ? session.RunMigrationBeginDonorForWire()
                     : operation == "migration-alter"
                           ? session.RunMigrationAlterForWire()
+                    : operation == "show-migration"
+                          ? session.RunShowMigrationForWire()
                     : operation == "ddl-create-domain"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDomainForWire():begun; }()
                     : operation == "ddl-create-sequence"
