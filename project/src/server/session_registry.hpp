@@ -1130,6 +1130,7 @@ SessionOperationResult HandleCoordinateClusterCreatePlacementPolicy(ServerSessio
 SessionOperationResult HandleCoordinateClusterAlterPlacementPolicy(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateClusterDropPlacementPolicy(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateVersionedBranchCreate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateVersionedBranchDelete(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropCast(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateMaterializedView(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlAlterView(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

@@ -255,6 +255,8 @@ bool IsKnownMessageType(std::uint16_t message_type) {
     case 591:
     case 608:
     case 609:
+    case 610:
+    case 611:
     case 364:
     case 365:
     case 366:
