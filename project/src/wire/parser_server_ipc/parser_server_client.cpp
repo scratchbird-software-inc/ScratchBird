@@ -6903,15 +6903,21 @@ ServerPrepareSblrResult SbpsClient::PrepareStmtCanonical(
   std::size_t offset = 0;
   std::string outcome;
   if (!ReadString(response.payload, &offset, &outcome) ||
-      outcome != "accepted" || offset + 16 > response.payload.size() ||
-      (offset += 16, !ReadString(response.payload, &offset, &result.operation_id)) ||
-      !ReadString(response.payload, &offset, &result.detail)) {
+      outcome != "accepted" || offset + 16 > response.payload.size()) {
     AddDiagnostic(&messages, "PARSER_SERVER_IPC.STMT_PREPARE_RESULT_INVALID",
                   "The statement-prepare result payload is malformed or refused.");
     result.messages = std::move(messages);
     return result;
   }
   result.prepared_statement_uuid = UuidToText(GetUuid(response.payload, offset));
+  offset += 16;
+  if (!ReadString(response.payload, &offset, &result.operation_id) ||
+      !ReadString(response.payload, &offset, &result.detail)) {
+    AddDiagnostic(&messages, "PARSER_SERVER_IPC.STMT_PREPARE_RESULT_INVALID",
+                  "The statement-prepare result payload is malformed.");
+    result.messages = std::move(messages);
+    return result;
+  }
   result.accepted = true;
   result.messages = std::move(messages);
   return result;
