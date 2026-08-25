@@ -253,6 +253,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleCreateDatabaseForWire():begun; }()
                     : operation == "lifecycle-open-database"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleOpenDatabaseForWire():begun; }()
+                    : operation == "lifecycle-attach-database"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleAttachDatabaseForWire():begun; }()
                     : operation == "aggregate"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunAggregateForWire():begun; }()
                     : operation == "group"
