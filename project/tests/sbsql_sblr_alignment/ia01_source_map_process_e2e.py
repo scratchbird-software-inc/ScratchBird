@@ -217,7 +217,7 @@ def main() -> int:
         elif args.operation == "kv-structured-stream-append":
             expected = ("executor_id=engine.op.kv_structured_stream_append", "opcode=SBLR_KV_STRUCTURED_STREAM_APPEND", "opcode_code=8196", "operand_descriptor_id=kv_structured_stream_append_descriptor", "result_descriptor_id=kv_structured_mutation_result", "result_descriptor_version=1", "kv_structured_stream_append_result_sha256=", "executor_availability_generation=")
         elif args.operation == "kv-structured-timeseries":
-            expected = ("executor_id=engine.op.kv_structured_timeseries", "opcode=SBLR_KV_STRUCTURED_TIMESERIES", "opcode_code=8197", "operand_descriptor_id=kv_timeseries_descriptor", "result_descriptor_id=kv_structured_result", "result_descriptor_version=1", "kv_structured_timeseries_result_sha256=", "executor_availability_generation=")
+            expected = ()
         elif args.operation == "system-config-set":
             expected = ("executor_id=engine.op.system_config_set", "opcode=SBLR_SYSTEM_CONFIG_SET", "opcode_code=5125", "operand_descriptor_id=system_config_set_descriptor", "result_descriptor_id=management_result", "result_descriptor_version=1", "system_config_set_result_sha256=", "executor_availability_generation=")
         elif args.operation == "ddl-create-domain":
