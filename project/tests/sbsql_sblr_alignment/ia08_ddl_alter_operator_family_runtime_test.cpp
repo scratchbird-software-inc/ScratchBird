@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_alter_operator_family_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlAlterOperatorFamilyRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlAlterOperatorFamilyRequestV1(q);assert(b.size()==64);SblrDdlAlterOperatorFamilyRequestV1 q2;assert(DecodeSblrDdlAlterOperatorFamilyRequestV1(b.data(),b.size(),&q2,nullptr));SblrDdlAlterOperatorFamilyDescriptorV1 d;d.body[0]=1;auto x=EncodeSblrDdlAlterOperatorFamilyDescriptorV1(d);assert(x.size()==384);SblrDdlAlterOperatorFamilyDescriptorV1 d2;assert(DecodeSblrDdlAlterOperatorFamilyDescriptorV1(x.data(),x.size(),&d2,nullptr));x[352]^=1;assert(!DecodeSblrDdlAlterOperatorFamilyDescriptorV1(x.data(),x.size(),&d2,nullptr));}
