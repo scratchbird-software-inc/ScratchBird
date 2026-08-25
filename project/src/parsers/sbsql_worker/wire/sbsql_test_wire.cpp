@@ -20118,6 +20118,7 @@ PipelineResult SbsqlTestWireSession::RunSystemConfigResetForWire() {
 PipelineResult SbsqlTestWireSession::RunDdlCreateRuleForWire() {
   return RunDiagnosticRefusalForWire();
 }
+PipelineResult SbsqlTestWireSession::RunDdlDropRuleForWire() { return RunDiagnosticRefusalForWire(); }
 
 PipelineResult SbsqlTestWireSession::RunDdlCreateDomainForWire() {
   PipelineResult result;
