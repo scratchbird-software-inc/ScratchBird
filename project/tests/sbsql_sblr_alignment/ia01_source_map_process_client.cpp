@@ -395,6 +395,8 @@ int main(int argc, char** argv) {
                           ? session.RunDdlCreateOperatorFamilyForWire()
                     : operation == "ddl-alter-operator-family"
                           ? session.RunDdlAlterOperatorFamilyForWire()
+                    : operation == "ddl-drop-cast"
+                          ? session.RunDdlDropCastForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -662,6 +664,10 @@ int main(int argc, char** argv) {
   }
   if (operation == "ddl-alter-operator-family" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
     std::cout << "CSC-TEST-004021 DDL_ALTER_OPERATOR_FAMILY deterministic_cluster_refusal\n";
+    return 0;
+  }
+  if (operation == "ddl-drop-cast" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
+    std::cout << "CSC-TEST-004033 DDL_DROP_CAST deterministic_cluster_refusal\n";
     return 0;
   }
   if (!result.accepted) {
