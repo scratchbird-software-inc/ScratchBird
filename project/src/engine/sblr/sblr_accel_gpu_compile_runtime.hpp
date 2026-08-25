@@ -1,0 +1,3 @@
+#pragma once
+#include "sblr_accel_llvm_compile_runtime.hpp"
+namespace scratchbird::engine::sblr{using SblrAccelGpuCompileRequestV1=SblrAccelLlvmCompileRequestV1;using SblrAccelGpuCompileDescriptorV1=SblrAccelLlvmCompileDescriptorV1;using SblrAccelGpuCompileResultV1=SblrAccelLlvmCompileResultV1;std::vector<std::uint8_t>EncodeSblrAccelGpuCompileRequestV1(const SblrAccelGpuCompileRequestV1&);bool DecodeSblrAccelGpuCompileRequestV1(const std::uint8_t*,std::size_t,SblrAccelGpuCompileRequestV1*,std::string*);std::vector<std::uint8_t>EncodeSblrAccelGpuCompileDescriptorV1(const SblrAccelGpuCompileDescriptorV1&);bool DecodeSblrAccelGpuCompileDescriptorV1(const std::uint8_t*,std::size_t,SblrAccelGpuCompileDescriptorV1*,std::string*);}
