@@ -6936,6 +6936,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool ddl_refresh_materialized_view_root = false;
   bool ddl_create_materialized_view_root = false;
   bool ddl_create_publication_root = false;
+  bool ddl_alter_publication_root = false;
   bool ddl_drop_materialized_view_root = false;
   bool ddl_create_table_as_query_with_data_root = false;
   bool ddl_create_table_as_query_with_no_data_root = false;
@@ -7309,6 +7310,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
     ddl_refresh_materialized_view_root = member.operation_id == "engine.op.ddl_refresh_materialized_view" && member.opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" && member.opcode_code == 1567;
     ddl_create_materialized_view_root = member.operation_id == "engine.op.ddl_create_materialized_view" && member.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" && member.opcode_code == 1566;
     ddl_create_publication_root = member.operation_id == "engine.op.ddl_create_publication" && member.opcode == "SBLR_DDL_CREATE_PUBLICATION" && member.opcode_code == 1582;
+    ddl_alter_publication_root = member.operation_id == "engine.op.ddl_alter_publication" && member.opcode == "SBLR_DDL_ALTER_PUBLICATION" && member.opcode_code == 1583;
+    if (ddl_alter_publication_root) return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4142, "SBLR.OPERATION_UNSUPPORTED", "sblr.ddl_alter_publication.route_not_implemented");
     ddl_drop_materialized_view_root = member.operation_id == "engine.op.ddl_drop_materialized_view" && member.opcode == "SBLR_DDL_DROP_MATERIALIZED_VIEW" && member.opcode_code == 1568;
     ddl_create_table_as_query_with_data_root = member.operation_id == "engine.op.ddl_create_table_as_query_with_data" && member.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" && member.opcode_code == 1669;
     ddl_create_table_as_query_with_no_data_root = member.operation_id == "engine.op.ddl_create_table_as_query_with_no_data" && member.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA" && member.opcode_code == 1670;

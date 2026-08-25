@@ -20120,6 +20120,7 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateRuleForWire() {
 }
 PipelineResult SbsqlTestWireSession::RunDdlDropRuleForWire() { return RunDiagnosticRefusalForWire(); }
 PipelineResult SbsqlTestWireSession::RunDdlCreatePublicationForWire() { return RunDiagnosticRefusalForWire(); }
+PipelineResult SbsqlTestWireSession::RunDdlAlterPublicationForWire() { return RunDiagnosticRefusalForWire(); }
 
 PipelineResult SbsqlTestWireSession::RunDdlCreateDomainForWire() {
   PipelineResult result;
