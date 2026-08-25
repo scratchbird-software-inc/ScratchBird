@@ -196,6 +196,7 @@ class SbsqlTestWireSession {
   PipelineResult RunGraphDeleteForWire();
   PipelineResult RunGraphDetachDeleteForWire();
   PipelineResult RunFulltextScoreForWire();
+  PipelineResult RunFulltextPhraseScoreForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
