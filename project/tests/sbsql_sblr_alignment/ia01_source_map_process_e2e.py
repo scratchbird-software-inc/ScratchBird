@@ -43,6 +43,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "fulltext-prefix-match"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "fulltext-analyzer-apply"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "diagnostic-refusal"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "diagnostic-reset"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-create-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-grant"))
@@ -284,6 +285,8 @@ def main() -> int:
         elif args.operation == "alter-gpu-profile-disable":
             expected = ()
         elif args.operation == "diagnostic-refusal":
+            expected = ()
+        elif args.operation == "diagnostic-reset":
             expected = ()
         elif args.operation == "ddl-timeseries-series-cardinality-policy":
             expected = ()
