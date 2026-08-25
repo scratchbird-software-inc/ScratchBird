@@ -229,6 +229,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlDropOperatorForWire();
   PipelineResult RunDdlCreateOperatorClassForWire();
   PipelineResult RunDdlDropOperatorClassForWire();
+  PipelineResult RunDdlCreateOperatorFamilyForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();

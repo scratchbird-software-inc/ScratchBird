@@ -21,7 +21,7 @@ def main() -> int:
     parser.add_argument("--client", required=True)
     parser.add_argument("--operation", choices=("show-version", "show-wait-events", "show-object-detail", "source-map", "error-vector", "txn-begin", "txn-commit", "txn-rollback", "txn-savepoint", "txn-release-savepoint", "psql-autonomous-frame", "transaction-reservation-release", "temporary-instance-cleanup", "cursor-open", "cursor-fetch", "cursor-close", "read-by-key", "read-range", "read-stream", "result-set-pass", "access-cursor-open", "access-cursor-fetch", "access-cursor-close", "insert", "update", "delete", "merge", "table-truncate", "table-analyze", "bulk-import-stream", "bulk-export-stream", "statement-batch", "atomic-cas", "atomic-rmw", "advisory-lock", "advisory-lock-release", "function-call", "operator-call", "cast", "compare", "domain-operation", "udr-invoke", "procedure-invoke", "function-invoke", "aggregate-invoke", "sequence-nextval", "sequence-currval", "sequence-setval", "query-numeric", "advanced-datatype-family", "project", "aggregate", "group", "sort", "limit", "window", "return-result-set", "kv-structured-read", "kv-structured-mutate", "kv-structured-scan", "kv-structured-stream-read", "kv-structured-stream-append", "kv-structured-timeseries", "system-config-set", "ddl-create-domain", "ddl-alter-domain", "ddl-create-view", "ddl-alter-view", "ddl-drop-view", "ddl-create-trigger", "ddl-create-schema", "ddl-create-table", "ddl-create-index", "ddl-drop-index"),
                         default="source-map")
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "system-config-get", "system-config-reset", "ddl-create-rule", "ddl-drop-rule", "ddl-create-publication", "ddl-alter-publication", "ddl-drop-publication", "ddl-create-subscription", "ddl-alter-subscription", "ddl-drop-subscription", "ddl-create-operator", "ddl-drop-operator", "ddl-create-operator-class", "ddl-drop-operator-class"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "system-config-get", "system-config-reset", "ddl-create-rule", "ddl-drop-rule", "ddl-create-publication", "ddl-alter-publication", "ddl-drop-publication", "ddl-create-subscription", "ddl-alter-subscription", "ddl-drop-subscription", "ddl-create-operator", "ddl-drop-operator", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-trigger", "ddl-refresh-materialized-view", "ddl-create-materialized-view", "ddl-drop-materialized-view", "ddl-drop-package", "ddl-drop-synonym", "ddl-drop-foreign-table", "ddl-alter-package", "ddl-alter-sequence", "ddl-drop-sequence", "ddl-create-type", "ddl-alter-type", "ddl-drop-type", "ddl-drop-table", "ddl-create-table-as-query-with-data", "ddl-create-table-as-query-with-no-data", "ddl-create-sequence"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-counter-add"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-timeseries-schema-write"))
@@ -247,6 +247,8 @@ def main() -> int:
             expected = ()
         elif args.operation == "ddl-drop-operator-class":
             expected = ()
+        elif args.operation == "ddl-create-operator-family":
+            expected = ()
         elif args.operation == "system-config-set":
             expected = ("executor_id=engine.op.system_config_set", "opcode=SBLR_SYSTEM_CONFIG_SET", "opcode_code=5125", "operand_descriptor_id=system_config_set_descriptor", "result_descriptor_id=management_result", "result_descriptor_version=1", "system_config_set_result_sha256=", "executor_availability_generation=")
         elif args.operation == "ddl-create-domain":
@@ -376,7 +378,7 @@ def main() -> int:
                         "result_descriptor_version=1", "transaction_handle_sha256=",
                         "executor_availability_generation=")
         required_markers = (*expected, "parent_success_barrier=passed")
-        if args.operation in ("ddl-create-operator-class", "ddl-drop-operator-class"):
+        if args.operation in ("ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family"):
             # This is a standalone cluster-gated refusal proof.  No local
             # executor receipt exists, so the transaction success barrier is
             # intentionally not required for this refusal-only route.

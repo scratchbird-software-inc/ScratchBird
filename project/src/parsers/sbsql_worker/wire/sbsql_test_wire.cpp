@@ -21660,6 +21660,14 @@ PipelineResult SbsqlTestWireSession::RunDdlDropOperatorClassForWire() {
     "sbsql_sblr_alignment"));
   return result;
 }
+PipelineResult SbsqlTestWireSession::RunDdlCreateOperatorFamilyForWire() {
+  PipelineResult result;
+  result.messages.diagnostics.push_back(MakeDiagnostic(
+    "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN", "ERROR",
+    "CREATE OPERATOR FAMILY requires an admitted cluster route.",
+    "sbsql_sblr_alignment"));
+  return result;
+}
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }
