@@ -238,6 +238,8 @@ constexpr std::uint32_t kSchemaCoordinateDdlAlterDomainRequestV1 = 7181;
 constexpr std::uint32_t kSchemaCoordinateDdlAlterDomainResultV1 = 7182;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateViewRequestV1 = 7183;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateViewResultV1 = 7184;
+constexpr std::uint32_t kSchemaCoordinateDdlCreatePublicationRequestV1 = 7551;
+constexpr std::uint32_t kSchemaCoordinateDdlCreatePublicationResultV1 = 7552;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewRequestV1 = 7303;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewResultV1 = 7304;
 constexpr std::uint32_t kSchemaCoordinateDdlAlterViewRequestV1 = 7185;
@@ -575,6 +577,8 @@ constexpr std::uint16_t kMessageCoordinateDdlAlterDomainRequest = 186;
 constexpr std::uint16_t kMessageCoordinateDdlAlterDomainResult = 187;
 constexpr std::uint16_t kMessageCoordinateDdlCreateViewRequest = 188;
 constexpr std::uint16_t kMessageCoordinateDdlCreateViewResult = 189;
+constexpr std::uint16_t kMessageCoordinateDdlCreatePublicationRequest = 538;
+constexpr std::uint16_t kMessageCoordinateDdlCreatePublicationResult = 539;
 constexpr std::uint16_t kMessageCoordinateDdlCreateMaterializedViewRequest = 312;
 constexpr std::uint16_t kMessageCoordinateDdlCreateMaterializedViewResult = 313;
 constexpr std::uint16_t kMessageCoordinateDdlAlterViewRequest = 190;
@@ -7632,4 +7636,5 @@ ServerVariableBindingResult SbpsClient::SessionSettingGet(const ParserSessionCon
 ServerVariableBindingResult SbpsClient::SessionDefaultQualifierSet(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=24||!SendRequest(endpoint_,BaseHeader(kMessageSessionDefaultQualifierSetRequest,kSchemaSessionDefaultQualifierSetRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageSessionDefaultQualifierSetResult||f.header.schema_id!=kSchemaSessionDefaultQualifierSetResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 ServerVariableBindingResult SbpsClient::SessionDiscard(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=24||!SendRequest(endpoint_,BaseHeader(kMessageSessionDiscardRequest,kSchemaSessionDiscardRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageSessionDiscardResult||f.header.schema_id!=kSchemaSessionDiscardResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 ServerVariableBindingResult SbpsClient::SessionSnapshotHandle(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=24||!SendRequest(endpoint_,BaseHeader(kMessageSessionSnapshotHandleRequest,kSchemaSessionSnapshotHandleRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageSessionSnapshotHandleResult||f.header.schema_id!=kSchemaSessionSnapshotHandleResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreatePublication(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreatePublicationRequest,kSchemaCoordinateDdlCreatePublicationRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateDdlCreatePublicationResult||f.header.schema_id!=kSchemaCoordinateDdlCreatePublicationResultV1||f.payload.size()!=320||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 } // namespace scratchbird::parser::ipc
