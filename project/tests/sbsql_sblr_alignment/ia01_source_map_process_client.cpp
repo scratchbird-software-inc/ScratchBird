@@ -369,6 +369,8 @@ int main(int argc, char** argv) {
                           ? session.RunDiagnosticRefusalForWire()
                     : operation == "diagnostic-reset"
                           ? session.RunDiagnosticResetForWire()
+                    : operation == "descriptor-transform"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunDescriptorTransformForWire():begun; }()
                     : operation == "ddl-create-domain"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDomainForWire():begun; }()
                     : operation == "ddl-create-sequence"

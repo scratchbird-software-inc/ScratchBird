@@ -44,6 +44,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "fulltext-analyzer-apply"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "diagnostic-refusal"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "diagnostic-reset"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "descriptor-transform"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-create-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-grant"))
