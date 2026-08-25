@@ -371,6 +371,8 @@ int main(int argc, char** argv) {
                           ? session.RunDdlCreateRuleForWire()
                     : operation == "ddl-drop-rule"
                           ? session.RunDdlDropRuleForWire()
+                    : operation == "ddl-create-publication"
+                          ? session.RunDdlCreatePublicationForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"

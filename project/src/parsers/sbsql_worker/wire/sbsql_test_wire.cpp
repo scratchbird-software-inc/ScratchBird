@@ -20119,6 +20119,7 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateRuleForWire() {
   return RunDiagnosticRefusalForWire();
 }
 PipelineResult SbsqlTestWireSession::RunDdlDropRuleForWire() { return RunDiagnosticRefusalForWire(); }
+PipelineResult SbsqlTestWireSession::RunDdlCreatePublicationForWire() { return RunDiagnosticRefusalForWire(); }
 
 PipelineResult SbsqlTestWireSession::RunDdlCreateDomainForWire() {
   PipelineResult result;
