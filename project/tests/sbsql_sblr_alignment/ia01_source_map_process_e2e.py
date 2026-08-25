@@ -52,6 +52,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "migration-rollback"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "migration-retain-evidence"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "internal-trigger-dispatch"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "internal-exception-raise"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-create-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-grant"))
@@ -309,6 +310,8 @@ def main() -> int:
         elif args.operation == "migration-retain-evidence":
             expected = ()
         elif args.operation == "internal-trigger-dispatch":
+            expected = ()
+        elif args.operation == "internal-exception-raise":
             expected = ()
         elif args.operation == "ddl-timeseries-series-cardinality-policy":
             expected = ()

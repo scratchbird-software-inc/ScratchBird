@@ -385,6 +385,8 @@ int main(int argc, char** argv) {
                           ? session.RunMigrationRetainEvidenceForWire()
                     : operation == "internal-trigger-dispatch"
                           ? session.RunInternalTriggerDispatchForWire()
+                    : operation == "internal-exception-raise"
+                          ? session.RunInternalExceptionRaiseForWire()
                     : operation == "ddl-create-domain"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDomainForWire():begun; }()
                     : operation == "ddl-create-sequence"
