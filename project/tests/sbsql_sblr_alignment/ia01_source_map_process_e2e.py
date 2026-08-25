@@ -50,6 +50,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "show-migration"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "migration-cutover"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "migration-rollback"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "migration-retain-evidence"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-create-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-grant"))
@@ -303,6 +304,8 @@ def main() -> int:
         elif args.operation == "migration-cutover":
             expected = ()
         elif args.operation == "migration-rollback":
+            expected = ()
+        elif args.operation == "migration-retain-evidence":
             expected = ()
         elif args.operation == "ddl-timeseries-series-cardinality-policy":
             expected = ()

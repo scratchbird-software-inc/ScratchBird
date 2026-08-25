@@ -381,6 +381,8 @@ int main(int argc, char** argv) {
                           ? session.RunMigrationCutoverForWire()
                     : operation == "migration-rollback"
                           ? session.RunMigrationRollbackForWire()
+                    : operation == "migration-retain-evidence"
+                          ? session.RunMigrationRetainEvidenceForWire()
                     : operation == "ddl-create-domain"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDomainForWire():begun; }()
                     : operation == "ddl-create-sequence"
