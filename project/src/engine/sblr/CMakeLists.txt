@@ -106,6 +106,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_cluster_declare_data_placement_runtime.cpp
   sblr_ddl_create_named_collection_runtime.cpp
   sblr_ddl_drop_named_collection_runtime.cpp
+  sblr_bitemporal_as_of_valid_time_runtime.cpp
   sblr_ddl_alter_collation_runtime.cpp
   sblr_ddl_drop_collation_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp
