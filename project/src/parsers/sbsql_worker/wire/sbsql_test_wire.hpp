@@ -168,6 +168,7 @@ class SbsqlTestWireSession {
   PipelineResult RunLifecycleExitRestrictedOpenForWire();
   PipelineResult RunLifecycleInspectDatabaseForWire();
   PipelineResult RunLifecycleVerifyDatabaseForWire();
+  PipelineResult RunLifecycleRepairDatabaseForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
