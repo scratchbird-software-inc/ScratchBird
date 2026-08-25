@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_create_event_trigger_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlCreateEventTriggerRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlCreateEventTriggerRequestV1(q);assert(b.size()==64);SblrDdlCreateEventTriggerRequestV1 d;assert(DecodeSblrDdlCreateEventTriggerRequestV1(b.data(),b.size(),&d,nullptr));b[52]=1;assert(!DecodeSblrDdlCreateEventTriggerRequestV1(b.data(),b.size(),&d,nullptr));SblrDdlCreateEventTriggerDescriptorV1 x;x.body[0]=1;auto z=EncodeSblrDdlCreateEventTriggerDescriptorV1(x);assert(z.size()==384);z[352]^=1;assert(!DecodeSblrDdlCreateEventTriggerDescriptorV1(z.data(),z.size(),&x,nullptr));}
