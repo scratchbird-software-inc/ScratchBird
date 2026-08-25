@@ -150,6 +150,7 @@ class SbsqlTestWireSession {
   PipelineResult RunQueryEvaluateAdvancedDatatypeFamilyForWire();
   PipelineResult RunProjectForWire();
   PipelineResult RunShowObjectDetailForWire();
+  PipelineResult RunNameResolveForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
