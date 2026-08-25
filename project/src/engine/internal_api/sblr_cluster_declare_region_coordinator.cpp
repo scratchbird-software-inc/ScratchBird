@@ -1,0 +1,3 @@
+#include "sblr_cluster_declare_region_coordinator.hpp"
+#include "api_diagnostics.hpp"
+namespace scratchbird::engine::internal_api{namespace{EngineApiDiagnostic dg(){return MakeEngineApiDiagnostic("SB_DIAG_CLUSTER_TXN_UNAVAILABLE","sblr.cluster_declare_region.standalone_refusal",{});}}SblrClusterDeclareRegionCoordinationResult CompileSblrClusterDeclareRegionDescriptor(const EngineRequestContext&,const std::string&,std::uint64_t){SblrClusterDeclareRegionCoordinationResult o;o.diagnostic=dg();return o;}SblrClusterDeclareRegionCoordinationResult ConsumeSblrClusterDeclareRegionDescriptor(const EngineRequestContext&,const scratchbird::engine::sblr::SblrClusterDeclareRegionDescriptorV1&){SblrClusterDeclareRegionCoordinationResult o;o.diagnostic=dg();return o;}}

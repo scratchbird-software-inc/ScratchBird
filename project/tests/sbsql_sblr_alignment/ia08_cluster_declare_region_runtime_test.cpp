@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_cluster_declare_region_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrClusterDeclareRegionRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrClusterDeclareRegionRequestV1(q);assert(b.size()==64);SblrClusterDeclareRegionRequestV1 d;assert(DecodeSblrClusterDeclareRegionRequestV1(b.data(),b.size(),&d,nullptr));b[52]=1;assert(!DecodeSblrClusterDeclareRegionRequestV1(b.data(),b.size(),&d,nullptr));SblrClusterDeclareRegionDescriptorV1 x;x.body[0]=1;auto z=EncodeSblrClusterDeclareRegionDescriptorV1(x);assert(z.size()==384);z[352]^=1;assert(!DecodeSblrClusterDeclareRegionDescriptorV1(z.data(),z.size(),&x,nullptr));}
