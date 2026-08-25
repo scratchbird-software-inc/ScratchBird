@@ -240,6 +240,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDiagnosticResetForWire();
   PipelineResult RunDescriptorTransformForWire();
   PipelineResult RunMigrationBeginDonorForWire();
+  PipelineResult RunMigrationAlterForWire();
   PipelineResult RunDdlCreateTriggerForWire();
   PipelineResult RunDdlAlterTriggerForWire();
   PipelineResult RunDdlDropTriggerForWire();

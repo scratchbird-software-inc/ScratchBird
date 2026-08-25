@@ -46,6 +46,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "diagnostic-reset"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "descriptor-transform"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "migration-begin-donor"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "migration-alter"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-create-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-grant"))
@@ -291,6 +292,8 @@ def main() -> int:
         elif args.operation == "diagnostic-reset":
             expected = ()
         elif args.operation == "migration-begin-donor":
+            expected = ()
+        elif args.operation == "migration-alter":
             expected = ()
         elif args.operation == "ddl-timeseries-series-cardinality-policy":
             expected = ()
