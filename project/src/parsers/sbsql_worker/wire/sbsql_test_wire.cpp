@@ -153,6 +153,7 @@
 #include "engine/sblr/sblr_ddl_drop_publication_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_subscription_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_subscription_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_subscription_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_domain_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_view_runtime.hpp"
@@ -10491,6 +10492,7 @@ thread_local const std::vector<std::uint8_t>* g_ddl_alter_publication_operand = 
 thread_local const std::vector<std::uint8_t>* g_ddl_drop_publication_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_create_subscription_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_alter_subscription_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_drop_subscription_operand = nullptr;
 
 std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     const BoundStatement& bound, const SblrEnvelope& lowered,
@@ -10634,6 +10636,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   if (lowered.operation_id == "engine.op.ddl_drop_publication" && g_ddl_drop_publication_operand != nullptr) admitted_system_config_set_operand = g_ddl_drop_publication_operand;
   if (lowered.operation_id == "engine.op.ddl_create_subscription" && g_ddl_create_subscription_operand != nullptr) admitted_system_config_set_operand = g_ddl_create_subscription_operand;
   if (lowered.operation_id == "engine.op.ddl_alter_subscription" && g_ddl_alter_subscription_operand != nullptr) admitted_system_config_set_operand = g_ddl_alter_subscription_operand;
+  if (lowered.operation_id == "engine.op.ddl_drop_subscription" && g_ddl_drop_subscription_operand != nullptr) admitted_system_config_set_operand = g_ddl_drop_subscription_operand;
   if (lowered.operation_id == "engine.op.ddl_create_trigger" && g_ddl_create_trigger_operand != nullptr) admitted_ddl_create_trigger_operand = g_ddl_create_trigger_operand;
   if (lowered.operation_id == "engine.op.ddl_alter_trigger" && g_ddl_alter_trigger_operand != nullptr) admitted_ddl_alter_trigger_operand = g_ddl_alter_trigger_operand;
   if (lowered.operation_id == "engine.op.ddl_drop_trigger" && g_ddl_drop_trigger_operand != nullptr) admitted_ddl_drop_trigger_operand = g_ddl_drop_trigger_operand;
@@ -11078,6 +11081,22 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     e.parser_package_version_patch = session.admitted_parser_package_version_patch;
     e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids = true;
     c::SblrOperand o; o.ordinal = 1; o.type = "alter_subscription_descriptor"; o.name = "subscription";
+    o.value_kind = c::SblrValueKind::descriptor_ref; o.value_body = *admitted_system_config_set_operand;
+    e.operands.push_back(std::move(o));
+    auto bytes = c::EncodeSblrEnvelope(e);
+    if (bytes.empty()) operation.reset(); else operation = CanonicalBytes(bytes.begin(), bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_drop_subscription" && admitted_system_config_set_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto e = c::MakeSblrEnvelope("ddl.subscription.drop", "SBLR_DDL_DROP_SUBSCRIPTION", "ddl.subscription.drop.native");
+    e.opcode_code = 1587; e.requires_transaction_context = true; e.requires_security_context = true;
+    e.result_shape = "ddl_result"; e.diagnostic_shape = "diagnostic_vector";
+    e.parser_package_uuid = session.admitted_parser_package_uuid;
+    e.parser_package_version_major = session.admitted_parser_package_version_major;
+    e.parser_package_version_minor = session.admitted_parser_package_version_minor;
+    e.parser_package_version_patch = session.admitted_parser_package_version_patch;
+    e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids = true;
+    c::SblrOperand o; o.ordinal = 1; o.type = "drop_subscription_descriptor"; o.name = "subscription";
     o.value_kind = c::SblrValueKind::descriptor_ref; o.value_body = *admitted_system_config_set_operand;
     e.operands.push_back(std::move(o));
     auto bytes = c::EncodeSblrEnvelope(e);
@@ -20305,6 +20324,31 @@ PipelineResult SbsqlTestWireSession::RunDdlAlterSubscriptionForWire() {
   auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
   result.accepted = executed.accepted; result.messages = std::move(executed.messages);
   if (result.accepted) { c::SblrDdlAlterSubscriptionResultV1 rr; if (!c::DecodeSblrDdlAlterSubscriptionResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlDropSubscriptionForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt) return result;
+  c::SblrDdlDropSubscriptionRequestV1 q; q.operation = *receipt; q.receipt = *receipt; q.descriptor_length = 384;
+  auto coordinated = server_client_->CoordinateDdlDropSubscription(session_, c::EncodeSblrDdlDropSubscriptionRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlDropSubscriptionDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlDropSubscriptionDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail)) return result;
+  auto operand = c::EncodeSblrDdlDropSubscriptionDescriptorV1(d); if (operand.empty()) return result;
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_drop_subscription";
+  g_ddl_drop_subscription_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_ddl_drop_subscription_operand = nullptr; if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlDropSubscriptionResultV1 rr; if (!c::DecodeSblrDdlDropSubscriptionResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
   return result;
 }
 

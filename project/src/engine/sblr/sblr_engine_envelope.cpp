@@ -1074,7 +1074,13 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         envelope.operands.size() == 1 && operand.ordinal == 1 &&
         operand.type == "alter_subscription_descriptor" && operand.name == "subscription" &&
         operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 384;
-    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || alter_publication_descriptor || create_subscription_descriptor || alter_subscription_descriptor ||
+    const bool drop_subscription_descriptor =
+        envelope.operation_id == "ddl.subscription.drop" &&
+        envelope.opcode == "SBLR_DDL_DROP_SUBSCRIPTION" && envelope.opcode_code == 1587 &&
+        envelope.operands.size() == 1 && operand.ordinal == 1 &&
+        operand.type == "drop_subscription_descriptor" && operand.name == "subscription" &&
+        operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 384;
+    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || alter_publication_descriptor || create_subscription_descriptor || alter_subscription_descriptor || drop_subscription_descriptor ||
         ValidateValueBody(operand.value_kind, operand.value_body.data(),
                           operand.value_body.size(), 1, &value_count,
                           &limit_exceeded);
@@ -1101,7 +1107,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
     }
     if (operand.value_kind == SblrValueKind::descriptor_ref &&
         operand.value_body.size() == 384 && !create_subscription_descriptor) {
-      if (!alter_subscription_descriptor) {
+      if (!alter_subscription_descriptor && !drop_subscription_descriptor) {
         fail("SBLR.OPERAND_INVALID", "384-byte descriptor references require a subscription carrier");
         break;
       }
