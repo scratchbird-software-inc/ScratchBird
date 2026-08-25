@@ -463,6 +463,7 @@ add_library(sb_engine_internal_api
   sblr_sec_alter_policy_coordinator.cpp
   sblr_sec_create_policy_coordinator.cpp
   sblr_sec_drop_policy_coordinator.cpp
+  sblr_sec_drop_user_coordinator.cpp
   sblr_ddl_drop_package_coordinator.cpp
   sblr_ddl_alter_package_coordinator.cpp
   sblr_ddl_alter_sequence_coordinator.cpp

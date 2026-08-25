@@ -106,6 +106,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_sec_alter_policy_runtime.cpp
   sblr_sec_create_policy_runtime.cpp
   sblr_sec_drop_policy_runtime.cpp
+  sblr_sec_drop_user_runtime.cpp
   sblr_security_create_user_runtime.cpp
   sblr_ddl_drop_foreign_table_runtime.cpp
   sblr_ddl_drop_package_runtime.cpp
