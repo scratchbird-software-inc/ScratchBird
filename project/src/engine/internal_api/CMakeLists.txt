@@ -448,6 +448,7 @@ add_library(sb_engine_internal_api
   sblr_ddl_alter_subscription_coordinator.cpp
   sblr_ddl_drop_subscription_coordinator.cpp
   sblr_ddl_create_operator_coordinator.cpp
+  sblr_ddl_drop_operator_coordinator.cpp
   sblr_ddl_create_materialized_view_coordinator.cpp
   sblr_ddl_alter_view_coordinator.cpp
   sblr_ddl_drop_view_coordinator.cpp
