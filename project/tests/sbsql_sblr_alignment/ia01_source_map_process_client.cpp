@@ -415,6 +415,10 @@ int main(int argc, char** argv) {
                           ? session.RunVersionedBranchDeleteForWire()
                     : operation == "versioned-diff"
                           ? session.RunVersionedDiffForWire()
+                    : operation == "versioned-tag"
+                          ? session.RunVersionedTagForWire()
+                    : operation == "versioned-revert"
+                          ? session.RunVersionedRevertForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -711,6 +715,8 @@ int main(int argc, char** argv) {
   if (operation == "versioned-branch-create" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004117 VERSIONED_BRANCH_CREATE deterministic_cluster_refusal\n"; return 0; }
   if (operation == "versioned-branch-delete" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004121 VERSIONED_BRANCH_DELETE deterministic_cluster_refusal\n"; return 0; }
   if (operation == "versioned-diff" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004125 VERSIONED_DIFF deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "versioned-tag" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004129 VERSIONED_TAG deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "versioned-revert" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004133 VERSIONED_REVERT deterministic_cluster_refusal\n"; return 0; }
   if (!result.accepted) {
     if (result.messages.diagnostics.empty())
       std::cerr << "SBLR.DDL_CREATE_TYPE.EMPTY_FAILURE operation=" << operation

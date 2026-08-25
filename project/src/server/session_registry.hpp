@@ -1132,6 +1132,8 @@ SessionOperationResult HandleCoordinateClusterDropPlacementPolicy(ServerSessionR
 SessionOperationResult HandleCoordinateVersionedBranchCreate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateVersionedBranchDelete(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateVersionedDiff(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateVersionedTag(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateVersionedRevert(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropCast(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateMaterializedView(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlAlterView(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

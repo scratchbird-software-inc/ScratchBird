@@ -241,6 +241,8 @@ class SbsqlTestWireSession {
   PipelineResult RunVersionedBranchCreateForWire();
   PipelineResult RunVersionedBranchDeleteForWire();
   PipelineResult RunVersionedDiffForWire();
+  PipelineResult RunVersionedTagForWire();
+  PipelineResult RunVersionedRevertForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();
