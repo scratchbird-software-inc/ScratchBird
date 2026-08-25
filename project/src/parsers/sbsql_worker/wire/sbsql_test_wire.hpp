@@ -216,6 +216,7 @@ class SbsqlTestWireSession {
   PipelineResult RunKvStructuredTimeseriesForWire();
   PipelineResult RunSystemConfigSetForWire();
   PipelineResult RunSystemConfigGetForWire();
+  PipelineResult RunSystemConfigResetForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();

@@ -365,6 +365,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSystemConfigSetForWire():begun; }()
                     : operation == "system-config-get"
                           ? session.RunSystemConfigGetForWire()
+                    : operation == "system-config-reset"
+                          ? session.RunSystemConfigResetForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
