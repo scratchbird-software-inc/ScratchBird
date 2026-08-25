@@ -235,6 +235,7 @@ class SbsqlTestWireSession {
   PipelineResult RunStmtExecuteDirectForWire();
   PipelineResult RunStmtFreeForWire();
   PipelineResult RunStmtCancelForWire();
+  PipelineResult RunParameterBindForWire();
   PipelineResult RunSecurityAlterRoleForWire();
   PipelineResult RunSecurityCreateGroupMappingForWire();
   PipelineResult RunSecurityDropGroupMappingForWire();

@@ -21291,4 +21291,6 @@ PipelineResult SbsqlTestWireSession::RunStmtExecuteDirectForWire(){return RunStm
 PipelineResult SbsqlTestWireSession::RunStmtFreeForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="observability.show_version";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);if(!submission)return result;auto prepared=server_client_->PrepareStmtCanonical(session_,*submission);if(!prepared.accepted){result.messages=std::move(prepared.messages);return result;}auto freed=server_client_->ClosePreparedSblr(session_,prepared.prepared_statement_uuid);result.accepted=freed.accepted;result.messages=std::move(freed.messages);return result;}
 
 PipelineResult SbsqlTestWireSession::RunStmtCancelForWire(){return RunStmtFreeForWire();}
+
+PipelineResult SbsqlTestWireSession::RunParameterBindForWire(){return RunStmtExecuteForWire();}
 } // namespace scratchbird::parser::sbsql
