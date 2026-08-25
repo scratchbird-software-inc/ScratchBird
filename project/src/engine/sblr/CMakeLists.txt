@@ -116,6 +116,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_versioned_revert_runtime.cpp
   sblr_versioned_reset_runtime.cpp
   sblr_accel_llvm_policy_set_runtime.cpp
+  sblr_accel_llvm_compile_runtime.cpp
   sblr_ddl_alter_collation_runtime.cpp
   sblr_ddl_drop_collation_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp

@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_accel_llvm_compile_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrAccelLlvmCompileRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrAccelLlvmCompileRequestV1(q);assert(b.size()==64);SblrAccelLlvmCompileRequestV1 q2;std::string e;assert(DecodeSblrAccelLlvmCompileRequestV1(b.data(),b.size(),&q2,&e));SblrAccelLlvmCompileDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrAccelLlvmCompileDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrAccelLlvmCompileDescriptorV1(db.data(),db.size(),&d,&e));return 0;}
