@@ -1,0 +1,3 @@
+#include "sblr_ddl_drop_collation_coordinator.hpp"
+#include "api_diagnostics.hpp"
+namespace scratchbird::engine::internal_api{SblrDdlDropCollationCoordinationResult CompileSblrDdlDropCollationDescriptor(const EngineRequestContext&c,const std::string&n,std::uint64_t a){SblrDdlDropCollationCoordinationResult o;if(!c.security_context_present||!c.statement_metadata_snapshot_engine_owned||n!=c.statement_uuid.canonical||!a)return o;o.descriptor.body[0]=1;o.ok=true;return o;}SblrDdlDropCollationCoordinationResult ConsumeSblrDdlDropCollationDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlDropCollationDescriptorV1&d){SblrDdlDropCollationCoordinationResult o;o.ok=c.security_context_present&&d.body[0];o.descriptor=d;return o;}}
