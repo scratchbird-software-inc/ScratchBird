@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_alter_event_trigger_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlAlterEventTriggerRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlAlterEventTriggerRequestV1(q);assert(b.size()==64);SblrDdlAlterEventTriggerRequestV1 d;assert(DecodeSblrDdlAlterEventTriggerRequestV1(b.data(),b.size(),&d,nullptr));b[52]=1;assert(!DecodeSblrDdlAlterEventTriggerRequestV1(b.data(),b.size(),&d,nullptr));SblrDdlAlterEventTriggerDescriptorV1 x;x.body[0]=1;auto z=EncodeSblrDdlAlterEventTriggerDescriptorV1(x);assert(z.size()==384);z[352]^=1;assert(!DecodeSblrDdlAlterEventTriggerDescriptorV1(z.data(),z.size(),&x,nullptr));}
