@@ -409,6 +409,8 @@ int main(int argc, char** argv) {
                           ? session.RunClusterAlterPlacementPolicyForWire()
                     : operation == "cluster-drop-placement-policy"
                           ? session.RunClusterDropPlacementPolicyForWire()
+                    : operation == "versioned-branch-create"
+                          ? session.RunVersionedBranchCreateForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -702,6 +704,7 @@ int main(int argc, char** argv) {
     std::cout << (operation == "cluster-alter-placement-policy" ? "CSC-TEST-004077 CLUSTER_ALTER_PLACEMENT_POLICY" : "CSC-TEST-004081 CLUSTER_DROP_PLACEMENT_POLICY") << " deterministic_cluster_refusal\n";
     return 0;
   }
+  if (operation == "versioned-branch-create" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004117 VERSIONED_BRANCH_CREATE deterministic_cluster_refusal\n"; return 0; }
   if (!result.accepted) {
     if (result.messages.diagnostics.empty())
       std::cerr << "SBLR.DDL_CREATE_TYPE.EMPTY_FAILURE operation=" << operation

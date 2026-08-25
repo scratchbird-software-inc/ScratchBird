@@ -21718,6 +21718,7 @@ PipelineResult SbsqlTestWireSession::RunClusterCreatePlacementPolicyForWire() {
 }
 PipelineResult SbsqlTestWireSession::RunClusterAlterPlacementPolicyForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("SB_DIAG_CLUSTER_TXN_UNAVAILABLE","ERROR","ALTER PLACEMENT POLICY requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunClusterDropPlacementPolicyForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("SB_DIAG_CLUSTER_TXN_UNAVAILABLE","ERROR","DROP PLACEMENT POLICY requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
+PipelineResult SbsqlTestWireSession::RunVersionedBranchCreateForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","VERSIONED BRANCH CREATE requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }

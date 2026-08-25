@@ -246,6 +246,8 @@ constexpr std::uint32_t kSchemaCoordinateClusterAlterPlacementPolicyRequestV1 = 
 constexpr std::uint32_t kSchemaCoordinateClusterAlterPlacementPolicyResultV1 = 7602;
 constexpr std::uint32_t kSchemaCoordinateClusterDropPlacementPolicyRequestV1 = 7603;
 constexpr std::uint32_t kSchemaCoordinateClusterDropPlacementPolicyResultV1 = 7604;
+constexpr std::uint32_t kSchemaCoordinateVersionedBranchCreateRequestV1 = 7621;
+constexpr std::uint32_t kSchemaCoordinateVersionedBranchCreateResultV1 = 7622;
 constexpr std::uint32_t kSchemaCoordinateDdlDropCastRequestV1 = 7579;
 constexpr std::uint32_t kSchemaCoordinateDdlDropCastResultV1 = 7580;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewRequestV1 = 7303;
@@ -663,6 +665,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateClusterAlterPlacementPolicyResult = 589,
   kCoordinateClusterDropPlacementPolicyRequest = 590,
   kCoordinateClusterDropPlacementPolicyResult = 591,
+  kCoordinateVersionedBranchCreateRequest = 608,
+  kCoordinateVersionedBranchCreateResult = 609,
   kCoordinateDdlDropCastRequest = 566,
   kCoordinateDdlDropCastResult = 567,
   kCoordinateDdlCreateMaterializedViewRequest = 312,

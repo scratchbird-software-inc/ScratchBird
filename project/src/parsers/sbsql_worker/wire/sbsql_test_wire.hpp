@@ -238,6 +238,7 @@ class SbsqlTestWireSession {
   PipelineResult RunClusterCreatePlacementPolicyForWire();
   PipelineResult RunClusterAlterPlacementPolicyForWire();
   PipelineResult RunClusterDropPlacementPolicyForWire();
+  PipelineResult RunVersionedBranchCreateForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();
