@@ -3542,6 +3542,14 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia37_lifecycle_shutdown_database_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia37_lifecycle_shutdown_database_process_e2e PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;SBLR_LIFECYCLE_SHUTDOWN_DATABASE;CSC-TEST-003036;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia38_lifecycle_shutdown_force_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation lifecycle-shutdown-force
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia38_lifecycle_shutdown_force_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia38_lifecycle_shutdown_force_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;SBLR_LIFECYCLE_SHUTDOWN_FORCE;CSC-TEST-003037;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_role_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
