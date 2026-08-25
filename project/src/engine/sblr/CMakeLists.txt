@@ -94,6 +94,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_create_collation_runtime.cpp
   sblr_ddl_create_extension_runtime.cpp
   sblr_ddl_alter_extension_runtime.cpp
+  sblr_ddl_drop_extension_runtime.cpp
   sblr_ddl_alter_collation_runtime.cpp
   sblr_ddl_drop_collation_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp
