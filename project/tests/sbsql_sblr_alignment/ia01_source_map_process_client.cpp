@@ -374,7 +374,7 @@ int main(int argc, char** argv) {
                     : operation == "ddl-create-publication"
                           ? session.RunDdlCreatePublicationForWire()
                     : operation == "ddl-alter-publication"
-                          ? session.RunDdlAlterPublicationForWire()
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterPublicationForWire():begun; }()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"

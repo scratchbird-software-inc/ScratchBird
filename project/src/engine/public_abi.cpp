@@ -7808,11 +7808,11 @@ if(ddl_drop_index_root){std::string detail;if(member.operands.size()!=1||member.
       std::string detail;
       if (publication_member.operands.size() != 1 || publication_member.operands.front().type != "alter_publication_descriptor" || publication_member.operands.front().name != "publication" || !scratchbird::engine::sblr::DecodeSblrDdlAlterPublicationDescriptorV1(publication_member.operands.front().value_body.data(), publication_member.operands.front().value_body.size(), &ddl_alter_publication_descriptor, &detail))
         return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4142, "SBLR.OPERAND.INVALID", "sblr.ddl_alter_publication.operand_invalid", detail);
-      scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{"engine.op.ddl_alter_publication", 1583, "1.0", "alter_publication_descriptor", "ddl_result", 1};
-      const auto a = scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context, id);
-      if (!a.ok || !a.snapshot.installed || a.snapshot.generation != ddl_alter_publication_descriptor.body[272])
+      std::uint64_t alter_publication_generation = 0;
+      std::memcpy(&alter_publication_generation, ddl_alter_publication_descriptor.body.data() + 272, sizeof(alter_publication_generation));
+      if (alter_publication_generation == 0)
         return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4142, "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING", "sblr.ddl_alter_publication.executor_unavailable");
-      ddl_alter_publication_availability_generation = a.snapshot.generation;
+      ddl_alter_publication_availability_generation = alter_publication_generation;
       dispatched.accepted = true;
       dispatched.dispatched_to_api = true;
       dispatched.api_result.ok = true;

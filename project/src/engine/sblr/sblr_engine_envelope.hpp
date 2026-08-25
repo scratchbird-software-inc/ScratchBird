@@ -137,6 +137,7 @@ enum class SblrValueKind : std::uint16_t {
   refresh_materialized_view_descriptor = 149,
   drop_table_descriptor = 152,
   drop_synonym_descriptor = 158,
+  alter_publication_descriptor = 202,
   sequence_setval_descriptor = 65,
   numeric_operation_descriptor = 66,
   advanced_datatype_family_descriptor = 67,

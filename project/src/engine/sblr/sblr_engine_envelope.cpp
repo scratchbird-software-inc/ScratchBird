@@ -8,6 +8,7 @@
 
 #include "sblr_engine_envelope.hpp"
 #include "sblr_ddl_drop_sequence_runtime.hpp"
+#include "sblr_ddl_alter_publication_runtime.hpp"
 #include "sblr_sec_create_role_runtime.hpp"
 #include "sblr_sec_drop_role_runtime.hpp"
 #include "sblr_sec_create_policy_runtime.hpp"
@@ -516,11 +517,14 @@ bool ValidateValueBody(SblrValueKind kind,
   }
   switch (kind) {
     case SblrValueKind::uuid_ref:
-    case SblrValueKind::descriptor_ref:
     case SblrValueKind::policy_ref:
     case SblrValueKind::principal_ref:
     case SblrValueKind::udr_ref:
       return size == 16 && IsNonzeroUuidBytes(data);
+    case SblrValueKind::descriptor_ref:
+      // Core descriptor carriers may use a fixed 320-byte descriptor body;
+      // envelope-level validation narrows that form to its exact operation.
+      return (size == 16 && data != nullptr && IsNonzeroUuidBytes(data)) || size == 320;
     case SblrValueKind::literal_typed:
     case SblrValueKind::proof_token: {
       if (size < 24 || !IsNonzeroUuidBytes(data)) return false;
@@ -779,6 +783,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::alter_user_descriptor: { SblrSecAlterUserDescriptorV1 operand; std::string detail; return DecodeSblrSecAlterUserDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_foreign_table_descriptor: { SblrDdlDropForeignTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropForeignTableDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_synonym_descriptor: { SblrDdlDropSynonymDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSynonymDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_publication_descriptor: { SblrDdlAlterPublicationDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterPublicationDescriptorV1(data,size,&operand,&detail); }
     case SblrValueKind::drop_package_descriptor: { SblrDdlDropPackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropPackageDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::alter_package_descriptor: { SblrDdlAlterPackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterPackageDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::create_sequence_descriptor: { SblrDdlCreateSequenceDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateSequenceDescriptorV1(data,size,&operand,&detail,true); }
@@ -1045,7 +1050,13 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.value_body.size() == 24 &&
         IsNonzeroUuidBytes(operand.value_body.data()) &&
         Load64(operand.value_body.data() + 16) != 0;
-    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor ||
+    const bool alter_publication_descriptor =
+        envelope.operation_id == "engine.op.ddl_alter_publication" &&
+        envelope.opcode == "SBLR_DDL_ALTER_PUBLICATION" && envelope.opcode_code == 1583 &&
+        envelope.operands.size() == 1 && operand.ordinal == 1 &&
+        operand.type == "alter_publication_descriptor" && operand.name == "publication" &&
+        operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 320;
+    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || alter_publication_descriptor ||
         ValidateValueBody(operand.value_kind, operand.value_body.data(),
                           operand.value_body.size(), 1, &value_count,
                           &limit_exceeded);
@@ -1063,6 +1074,11 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         !error_vector_descriptor) {
       fail("SBLR.OPERAND_INVALID",
            "24-byte descriptor references require an exact registered metadata opcode");
+      break;
+    }
+    if (operand.value_kind == SblrValueKind::descriptor_ref &&
+        operand.value_body.size() == 320 && !alter_publication_descriptor) {
+      fail("SBLR.OPERAND_INVALID", "320-byte descriptor references require the ALTER PUBLICATION carrier");
       break;
     }
     if (operand.value_kind == SblrValueKind::expression_node_table) {
