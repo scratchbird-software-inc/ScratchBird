@@ -1,0 +1,6 @@
+#pragma once
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace scratchbird::engine::sblr { struct SblrSecDedeauthenticateRequestV1{std::array<uint8_t,16> receipt{};uint64_t occurrence=0;};struct SblrSecDedeauthenticateDescriptorV1{std::array<uint8_t,16> principal_uuid{},evidence{};uint64_t expected_generation=0,security_generation=0,availability=0;};struct SblrSecDedeauthenticateResultV1{std::array<uint8_t,16> principal_uuid{};std::array<uint8_t,32> effect_evidence{};uint64_t generation=0,security_generation=0,availability=0;uint8_t status=0,publication_barrier=0;};std::vector<uint8_t> EncodeSblrSecDedeauthenticateRequestV1(const SblrSecDedeauthenticateRequestV1&);bool DecodeSblrSecDedeauthenticateRequestV1(const uint8_t*,size_t,SblrSecDedeauthenticateRequestV1*,std::string*);std::vector<uint8_t> EncodeSblrSecDedeauthenticateDescriptorV1(const SblrSecDedeauthenticateDescriptorV1&,bool);bool DecodeSblrSecDedeauthenticateDescriptorV1(const uint8_t*,size_t,SblrSecDedeauthenticateDescriptorV1*,std::string*,bool);std::vector<uint8_t> EncodeSblrSecDedeauthenticateResultV1(const SblrSecDedeauthenticateResultV1&);bool DecodeSblrSecDedeauthenticateResultV1(const uint8_t*,size_t,SblrSecDedeauthenticateResultV1*,std::string*);}
