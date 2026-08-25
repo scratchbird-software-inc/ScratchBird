@@ -230,6 +230,8 @@ constexpr std::uint32_t kSchemaCoordinateDdlCreateOperatorClassRequestV1 = 7567;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateOperatorClassResultV1 = 7568;
 constexpr std::uint32_t kSchemaCoordinateDdlDropOperatorClassRequestV1 = 7569;
 constexpr std::uint32_t kSchemaCoordinateDdlDropOperatorClassResultV1 = 7570;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateOperatorFamilyRequestV1 = 7571;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateOperatorFamilyResultV1 = 7572;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewRequestV1 = 7303;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewResultV1 = 7304;
 constexpr std::uint32_t kSchemaCoordinateDdlAlterViewRequestV1 = 7185;
@@ -629,6 +631,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateDdlCreateOperatorClassResult = 555,
   kCoordinateDdlDropOperatorClassRequest = 556,
   kCoordinateDdlDropOperatorClassResult = 557,
+  kCoordinateDdlCreateOperatorFamilyRequest = 558,
+  kCoordinateDdlCreateOperatorFamilyResult = 559,
   kCoordinateDdlCreateMaterializedViewRequest = 312,
   kCoordinateDdlCreateMaterializedViewResult = 313,
   kCoordinateDdlAlterViewRequest = 190,
