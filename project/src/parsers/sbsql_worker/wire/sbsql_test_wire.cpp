@@ -21652,6 +21652,14 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateOperatorClassForWire() {
   result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN", "ERROR", "CREATE OPERATOR CLASS requires an admitted cluster route.", "sbsql_sblr_alignment"));
   return result;
 }
+PipelineResult SbsqlTestWireSession::RunDdlDropOperatorClassForWire() {
+  PipelineResult result;
+  result.messages.diagnostics.push_back(MakeDiagnostic(
+    "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN", "ERROR",
+    "DROP OPERATOR CLASS requires an admitted cluster route.",
+    "sbsql_sblr_alignment"));
+  return result;
+}
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }
