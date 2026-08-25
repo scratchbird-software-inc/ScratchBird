@@ -78,6 +78,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_drop_rule_runtime.cpp
   sblr_ddl_create_publication_runtime.cpp
   sblr_ddl_alter_publication_runtime.cpp
+  sblr_ddl_drop_publication_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp
   sblr_ddl_create_schema_runtime.cpp
   sblr_ddl_create_table_runtime.cpp

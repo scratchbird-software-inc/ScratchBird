@@ -443,6 +443,7 @@ add_library(sb_engine_internal_api
   sblr_ddl_create_view_coordinator.cpp
   sblr_ddl_create_publication_coordinator.cpp
   sblr_ddl_alter_publication_coordinator.cpp
+  sblr_ddl_drop_publication_coordinator.cpp
   sblr_ddl_create_materialized_view_coordinator.cpp
   sblr_ddl_alter_view_coordinator.cpp
   sblr_ddl_drop_view_coordinator.cpp
