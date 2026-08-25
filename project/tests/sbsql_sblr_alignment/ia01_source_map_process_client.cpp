@@ -261,6 +261,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleEnterMaintenanceForWire():begun; }()
                     : operation == "lifecycle-exit-maintenance"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleExitMaintenanceForWire():begun; }()
+                    : operation == "lifecycle-enter-restricted-open"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunLifecycleEnterRestrictedOpenForWire():begun; }()
                     : operation == "aggregate"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunAggregateForWire():begun; }()
                     : operation == "group"
