@@ -1152,6 +1152,7 @@ SessionOperationResult HandleCoordinateSecurityCreateGroupMapping(ServerSessionR
 SessionOperationResult HandleCoordinateSecurityDropGroupMapping(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityGrant(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityRevoke(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateSecurityAlterPolicy(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSort(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateLimit(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateWindow(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

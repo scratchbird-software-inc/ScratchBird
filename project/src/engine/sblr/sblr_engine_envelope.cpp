@@ -17,6 +17,7 @@
 #include "sblr_sec_drop_group_mapping_runtime.hpp"
 #include "sblr_sec_grant_runtime.hpp"
 #include "sblr_sec_revoke_runtime.hpp"
+#include "sblr_sec_alter_policy_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
@@ -691,6 +692,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::security_drop_group_mapping_descriptor: { SblrSecDropGroupMappingDescriptorV1 operand; std::string detail; return DecodeSblrSecDropGroupMappingDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::security_grant_descriptor: { SblrSecGrantDescriptorV1 operand; std::string detail; return DecodeSblrSecGrantDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::security_revoke_descriptor: { SblrSecRevokeDescriptorV1 operand; std::string detail; return DecodeSblrSecRevokeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::security_alter_policy_descriptor: { SblrSecAlterPolicyDescriptorV1 operand; std::string detail; return DecodeSblrSecAlterPolicyDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::window_descriptor: { SblrWindowDescriptorV1 operand; std::string detail; return DecodeSblrWindowDescriptorV1(data,size,&operand,&detail,true); }

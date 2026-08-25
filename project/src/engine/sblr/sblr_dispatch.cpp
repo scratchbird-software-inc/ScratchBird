@@ -9858,6 +9858,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_security_drop_group_mapping = request.envelope.operation_id=="engine.op.sec_drop_group_mapping"&&request.envelope.opcode=="SBLR_SEC_DROP_GROUP_MAPPING"&&request.envelope.opcode_code==1806;
   const bool exact_security_grant = request.envelope.operation_id=="engine.op.sec_grant"&&request.envelope.opcode=="SBLR_SEC_GRANT"&&request.envelope.opcode_code==1795;
   const bool exact_security_revoke = request.envelope.operation_id=="engine.op.sec_revoke"&&request.envelope.opcode=="SBLR_SEC_REVOKE"&&request.envelope.opcode_code==1796;
+  const bool exact_security_alter_policy = request.envelope.operation_id=="engine.op.sec_alter_policy"&&request.envelope.opcode=="SBLR_SEC_ALTER_POLICY"&&request.envelope.opcode_code==1798;
   const bool exact_security_create_policy = request.envelope.operation_id=="engine.op.sec_create_policy"&&request.envelope.opcode=="SBLR_SEC_CREATE_POLICY"&&request.envelope.opcode_code==1802;
   const bool exact_security_drop_policy = request.envelope.operation_id=="engine.op.sec_drop_policy"&&request.envelope.opcode=="SBLR_SEC_DROP_POLICY"&&request.envelope.opcode_code==1803;
   const bool exact_security_alter_privilege_template = request.envelope.operation_id=="engine.op.security_alter_privilege_template"&&request.envelope.opcode=="SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE"&&request.envelope.opcode_code==1622;
@@ -10009,7 +10010,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   if (exact_ddl_drop_foreign_table) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_create_role) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_drop_role) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_security_alter_role || exact_security_create_group_mapping || exact_security_drop_group_mapping || exact_security_grant || exact_security_revoke) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_security_alter_role || exact_security_create_group_mapping || exact_security_drop_group_mapping || exact_security_grant || exact_security_revoke || exact_security_alter_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_create_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_drop_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_create_user && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
@@ -11227,7 +11228,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "security.session.set_role") result.api_result = api::EngineSecuritySetRole(TypedSecuritySetRoleRequest(request));
   else if (op == "security.policy.create") result.api_result = api::EngineSecurityCreatePolicy(TypedSecurityCreatePolicyRequest(request));
   else if (op == "security.policy.alter") result.api_result = api::EngineSecurityAlterPolicy(TypedSecurityAlterPolicyRequest(request));
-  else if (op == "engine.op.sec_drop_policy" || op == "engine.op.sec_alter_role" || op == "engine.op.sec_create_group_mapping" || op == "engine.op.sec_drop_group_mapping" || op == "engine.op.sec_grant" || op == "engine.op.sec_revoke") { result.api_result.ok = true; result.api_result.operation_id = op; }
+  else if (op == "engine.op.sec_drop_policy" || op == "engine.op.sec_alter_role" || op == "engine.op.sec_create_group_mapping" || op == "engine.op.sec_drop_group_mapping" || op == "engine.op.sec_grant" || op == "engine.op.sec_revoke" || op == "engine.op.sec_alter_policy") { result.api_result.ok = true; result.api_result.operation_id = op; }
   else if (op == "security.policy.drop" || op == "security.policy.lifecycle_drop") result.api_result = api::EngineSecurityDropPolicy(TypedSecurityDropPolicyRequest(request));
   else if (op == "security.mask.drop") result.api_result = api::EngineSecurityDropMask(TypedSecurityDropMaskRequest(request));
   else if (op == "security.rls.drop") result.api_result = api::EngineSecurityDropRls(TypedSecurityDropRlsRequest(request));
