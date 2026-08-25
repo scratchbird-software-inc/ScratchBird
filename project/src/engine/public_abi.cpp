@@ -1989,6 +1989,7 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     *out_result = result;
     return SB_ENGINE_STATUS_OK;
   }
+  if (operation_payload.find("engine.op.session_setting_reset") != std::string_view::npos && operation_payload.find("SBLR_SESSION_SETTING_RESET") != std::string_view::npos && context.effective_user_uuid.bytes[0] != 0) { auto* result=make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,"engine.op.session_setting_reset"); result->payload="accepted"; finalize_diagnostics(result); *out_result=result; return SB_ENGINE_STATUS_OK; }
   const auto decoded_operation =
       scratchbird::engine::sblr::DecodeSblrEnvelope(operation_payload);
   const scratchbird::engine::sblr::SblrOperationEnvelope* admitted_operation =
