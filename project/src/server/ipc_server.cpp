@@ -3426,6 +3426,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateVersionedDiffRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateVersionedTagRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateVersionedRevertRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateVersionedResetRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropCastRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateMaterializedViewRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterViewRequest) ||
@@ -4102,6 +4103,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateVersionedDiffRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateVersionedDiffRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateVersionedDiff(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateVersionedTagRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateVersionedTagRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateVersionedTag(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateVersionedRevertRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateVersionedRevertRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateVersionedRevert(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateVersionedResetRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateVersionedResetRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateVersionedReset(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropCastRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropCastRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropCast(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateMaterializedViewRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateMaterializedViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateMaterializedView(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==190&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterViewRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterView(session_registry,engine_state,frame)));return true;}

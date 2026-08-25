@@ -256,6 +256,8 @@ constexpr std::uint32_t kSchemaCoordinateVersionedTagRequestV1 = 7627;
 constexpr std::uint32_t kSchemaCoordinateVersionedTagResultV1 = 7628;
 constexpr std::uint32_t kSchemaCoordinateVersionedRevertRequestV1 = 7629;
 constexpr std::uint32_t kSchemaCoordinateVersionedRevertResultV1 = 7630;
+constexpr std::uint32_t kSchemaCoordinateVersionedResetRequestV1 = 7631;
+constexpr std::uint32_t kSchemaCoordinateVersionedResetResultV1 = 7632;
 constexpr std::uint32_t kSchemaCoordinateDdlDropCastRequestV1 = 7579;
 constexpr std::uint32_t kSchemaCoordinateDdlDropCastResultV1 = 7580;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewRequestV1 = 7303;
@@ -683,6 +685,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateVersionedTagResult = 615,
   kCoordinateVersionedRevertRequest = 616,
   kCoordinateVersionedRevertResult = 617,
+  kCoordinateVersionedResetRequest = 618,
+  kCoordinateVersionedResetResult = 619,
   kCoordinateDdlDropCastRequest = 566,
   kCoordinateDdlDropCastResult = 567,
   kCoordinateDdlCreateMaterializedViewRequest = 312,
