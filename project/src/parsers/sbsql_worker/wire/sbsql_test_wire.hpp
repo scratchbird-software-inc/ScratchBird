@@ -217,6 +217,7 @@ class SbsqlTestWireSession {
   PipelineResult RunSystemConfigSetForWire();
   PipelineResult RunSystemConfigGetForWire();
   PipelineResult RunSystemConfigResetForWire();
+  PipelineResult RunDdlCreateRuleForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();
