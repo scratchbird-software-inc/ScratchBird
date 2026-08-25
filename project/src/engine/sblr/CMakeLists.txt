@@ -72,6 +72,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_kv_structured_timeseries_runtime.cpp
   sblr_catalog_introspect_runtime.cpp
   sblr_system_config_set_runtime.cpp
+  sblr_system_config_get_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp
   sblr_ddl_create_schema_runtime.cpp
   sblr_ddl_create_table_runtime.cpp

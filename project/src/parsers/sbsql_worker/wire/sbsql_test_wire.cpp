@@ -20109,6 +20109,10 @@ PipelineResult SbsqlTestWireSession::RunSystemConfigSetForWire() {
   if (result.accepted) { c::SblrSystemConfigSetResultV1 rr; if (!c::DecodeSblrSystemConfigSetResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
   return result;
 }
+PipelineResult SbsqlTestWireSession::RunSystemConfigGetForWire() {
+  return RunDiagnosticRefusalForWire();
+}
+
 PipelineResult SbsqlTestWireSession::RunDdlCreateDomainForWire() {
   PipelineResult result;
   if (!server_client_ || !session_.authenticated) return result;
