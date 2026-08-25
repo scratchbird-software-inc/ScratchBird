@@ -4210,6 +4210,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "engine.op.sec_alter_policy") return "SBLR_SEC_ALTER_POLICY";
   if (operation_id == "engine.op.sec_drop_user") return "SBLR_SEC_DROP_USER";
   if (operation_id == "engine.op.sec_authenticate") return "SBLR_SEC_AUTHENTICATE";
+  if (operation_id == "engine.op.sec_deauthenticate") return "SBLR_SEC_DEAUTHENTICATE";
   if (operation_id == "security.mask.drop") return "SBLR_SECURITY_MASK_DROP";
   if (operation_id == "security.rls.drop") return "SBLR_SECURITY_RLS_DROP";
   if (operation_id == "security.policy.attach") return "SBLR_SECURITY_POLICY_ATTACH";

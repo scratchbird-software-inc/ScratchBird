@@ -1155,6 +1155,7 @@ SessionOperationResult HandleCoordinateSecurityRevoke(ServerSessionRegistry*,con
 SessionOperationResult HandleCoordinateSecurityAlterPolicy(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityDropUser(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSecurityAuthenticate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateSecurityDeauthenticate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateSort(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateLimit(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateWindow(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
