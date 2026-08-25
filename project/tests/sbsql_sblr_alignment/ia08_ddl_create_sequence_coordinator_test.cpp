@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_ddl_create_sequence_coordinator.hpp"
+#include <cassert>
+int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="019d0000-0000-7000-8000-000000002696";c.trace_tags={"private_ddl_create_sequence_binder"};auto r=a::CompileSblrDdlCreateSequenceDescriptor(c,c.statement_uuid.canonical,1,1,1);assert(r.ok);c.query_cancellation_requested=[](){return false;};assert(a::ConsumeSblrDdlCreateSequenceDescriptor(c,r.descriptor).ok);return 0;}

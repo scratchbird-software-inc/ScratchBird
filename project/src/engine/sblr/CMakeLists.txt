@@ -112,6 +112,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_versioned_branch_create_runtime.cpp
   sblr_versioned_branch_delete_runtime.cpp
   sblr_versioned_diff_runtime.cpp
+  sblr_versioned_tag_runtime.cpp
   sblr_ddl_alter_collation_runtime.cpp
   sblr_ddl_drop_collation_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp

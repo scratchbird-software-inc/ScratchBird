@@ -1,0 +1,2 @@
+#include "sblr_ddl_alter_sequence_coordinator.hpp"
+namespace scratchbird::engine::internal_api { SblrDdlAlterSequenceCoordinationResult CompileSblrDdlAlterSequenceDescriptor(const EngineRequestContext&c,const std::string&r,std::uint64_t o,std::uint32_t p,std::uint64_t a){return CompileSblrDdlCreatePackageDescriptor(c,r,o,p,a);} SblrDdlAlterSequenceCoordinationResult ConsumeSblrDdlAlterSequenceDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlAlterSequenceDescriptorV1&v){return ConsumeSblrDdlCreatePackageDescriptor(c,v);} }

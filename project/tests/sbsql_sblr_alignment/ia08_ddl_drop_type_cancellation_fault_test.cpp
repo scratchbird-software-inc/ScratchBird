@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_ddl_drop_type_coordinator.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::internal_api;EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="019d0000-0000-7000-8000-000000002960";c.trace_tags={"private_ddl_drop_type_binder"};auto q=CompileSblrDdlDropTypeDescriptor(c,c.statement_uuid.canonical,1,1,1);assert(q.ok);c.trace_tags={"private_ddl_drop_type"};c.query_cancellation_requested=[](){return true;};assert(ConsumeSblrDdlDropTypeDescriptor(c,q.descriptor).diagnostic.code=="PROCESS.CANCELLED");return 0;}

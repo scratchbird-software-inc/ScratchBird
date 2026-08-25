@@ -1,0 +1,4 @@
+#pragma once
+#include "sblr_ddl_create_type_runtime.hpp"
+namespace scratchbird::engine::sblr { using SblrDdlAlterTypeRequestV1=SblrDdlCreateTypeRequestV1; using SblrDdlAlterTypeResultV1=SblrDdlCreateTypeResultV1; inline std::vector<std::uint8_t> EncodeSblrDdlAlterTypeRequestV1(const SblrDdlAlterTypeRequestV1&v){return EncodeSblrDdlCreateTypeRequestV1(v);} inline bool DecodeSblrDdlAlterTypeRequestV1(const std::uint8_t*b,std::size_t n,SblrDdlAlterTypeRequestV1*o,std::string*d){return DecodeSblrDdlCreateViewRequestV1(b,n,o,d);}}
+namespace scratchbird::engine::sblr { using SblrDdlAlterTypeDescriptorV1=SblrDdlCreateTypeDescriptorV1; std::vector<std::uint8_t> EncodeSblrDdlAlterTypeDescriptorV1(const SblrDdlAlterTypeDescriptorV1&,bool); bool DecodeSblrDdlAlterTypeDescriptorV1(const std::uint8_t*,std::size_t,SblrDdlAlterTypeDescriptorV1*,std::string*,bool); }
