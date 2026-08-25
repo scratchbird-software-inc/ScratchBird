@@ -634,6 +634,7 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateSecurityAuthenticate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateSecurityDeauthenticate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult SessionRoleSwitch(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult SessionSettingSet(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateSort(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateLimit(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateWindow(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
