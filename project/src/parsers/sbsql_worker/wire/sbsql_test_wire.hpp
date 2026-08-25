@@ -155,6 +155,7 @@ class SbsqlTestWireSession {
   PipelineResult RunCatalogEpochCheckForWire();
   PipelineResult RunDatabaseAttachForWire();
   PipelineResult RunDatabaseDetachForWire();
+  PipelineResult RunDatabaseCheckpointForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
