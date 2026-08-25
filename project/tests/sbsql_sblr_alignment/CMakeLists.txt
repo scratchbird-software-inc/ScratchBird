@@ -3798,6 +3798,14 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia69_fulltext_analyzer_apply_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia69_fulltext_analyzer_apply_process_e2e PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;SBLR_FULLTEXT_ANALYZER_APPLY;CSC-TEST-003068;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia70_diagnostic_refusal_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation diagnostic-refusal
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia70_diagnostic_refusal_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia70_diagnostic_refusal_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;SBLR_DIAGNOSTIC_REFUSAL;CSC-TEST-003069;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_role_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>

@@ -236,6 +236,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlDropTypeForWire();
   PipelineResult RunDdlDropTableForWire();
   PipelineResult RunGpuProfileDisableRefusalForWire();
+  PipelineResult RunDiagnosticRefusalForWire();
   PipelineResult RunDdlCreateTriggerForWire();
   PipelineResult RunDdlAlterTriggerForWire();
   PipelineResult RunDdlDropTriggerForWire();
