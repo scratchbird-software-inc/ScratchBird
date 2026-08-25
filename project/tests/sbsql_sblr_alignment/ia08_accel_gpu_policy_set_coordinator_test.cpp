@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_accel_gpu_policy_set_coordinator.hpp"
+#include <cassert>
+using namespace scratchbird::engine::internal_api;int main(){EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="gpu-policy";c.trace_tags={"private_accel_gpu_policy_set_binder","sysarch_authorized","cluster_provider_admitted","cluster_route_fence_admitted"};auto q=CompileSblrAccelGpuPolicySetDescriptor(c,"gpu-policy",7);assert(q.ok);c.trace_tags.push_back("private_accel_gpu_policy_set");assert(ConsumeSblrAccelGpuPolicySetDescriptor(c,q.descriptor).ok);return 0;}
