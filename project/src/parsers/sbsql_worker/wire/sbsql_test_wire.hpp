@@ -220,6 +220,7 @@ class SbsqlTestWireSession {
   PipelineResult RunSecurityAuthenticateForWire();
   PipelineResult RunSecurityDeauthenticateForWire();
   PipelineResult RunSessionRoleSwitchForWire();
+  PipelineResult RunSessionSettingSetForWire();
   PipelineResult RunSecurityAlterRoleForWire();
   PipelineResult RunSecurityCreateGroupMappingForWire();
   PipelineResult RunSecurityDropGroupMappingForWire();
