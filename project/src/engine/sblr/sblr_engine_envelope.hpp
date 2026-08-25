@@ -160,6 +160,7 @@ enum class SblrValueKind : std::uint16_t {
   session_snapshot_handle_descriptor = 184,
   context_set_descriptor = 185,
   context_unset_descriptor = 186,
+  context_get_descriptor = 187,
   sort_descriptor = 71,
   limit_descriptor = 72,
   window_descriptor = 73,

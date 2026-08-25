@@ -4215,6 +4215,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "engine.op.session_setting_set") return "SBLR_SESSION_SETTING_SET";
   if (operation_id == "engine.op.context_set") return "SBLR_CONTEXT_SET";
   if (operation_id == "engine.op.context_unset") return "SBLR_CONTEXT_UNSET";
+  if (operation_id == "engine.op.context_get") return "SBLR_CONTEXT_GET";
   if (operation_id == "security.mask.drop") return "SBLR_SECURITY_MASK_DROP";
   if (operation_id == "security.rls.drop") return "SBLR_SECURITY_RLS_DROP";
   if (operation_id == "security.policy.attach") return "SBLR_SECURITY_POLICY_ATTACH";

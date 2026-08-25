@@ -402,6 +402,8 @@ constexpr std::uint32_t kSchemaContextSetRequestV1 = 7395;
 constexpr std::uint32_t kSchemaContextSetResultV1 = 7396;
 constexpr std::uint32_t kSchemaContextUnsetRequestV1 = 7397;
 constexpr std::uint32_t kSchemaContextUnsetResultV1 = 7398;
+constexpr std::uint32_t kSchemaContextGetRequestV1 = 7399;
+constexpr std::uint32_t kSchemaContextGetResultV1 = 7400;
 constexpr std::uint32_t kSchemaCoordinateSortRequestV1 = 7149;
 constexpr std::uint32_t kSchemaCoordinateSortResultV1 = 7150;
 constexpr std::uint32_t kSchemaCoordinateLimitRequestV1 = 7151;
@@ -777,6 +779,8 @@ enum class MessageType : std::uint16_t {
   kContextSetResult = 383,
   kContextUnsetRequest = 384,
   kContextUnsetResult = 385,
+  kContextGetRequest = 386,
+  kContextGetResult = 387,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,
   kCoordinateLimitRequest = 156,

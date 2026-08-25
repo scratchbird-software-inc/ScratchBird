@@ -228,6 +228,7 @@ class SbsqlTestWireSession {
   PipelineResult RunSessionSnapshotHandleForWire();
   PipelineResult RunContextSetForWire();
   PipelineResult RunContextUnsetForWire();
+  PipelineResult RunContextGetForWire();
   PipelineResult RunSecurityAlterRoleForWire();
   PipelineResult RunSecurityCreateGroupMappingForWire();
   PipelineResult RunSecurityDropGroupMappingForWire();

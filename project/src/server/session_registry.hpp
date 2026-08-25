@@ -1160,6 +1160,7 @@ SessionOperationResult HandleSessionRoleSwitch(ServerSessionRegistry*,const Host
 SessionOperationResult HandleSessionSettingSet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleContextSet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleContextUnset(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleContextGet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleSessionSettingReset(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleSessionSettingGet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleSessionDefaultQualifierSet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

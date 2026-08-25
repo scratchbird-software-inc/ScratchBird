@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_context_get_runtime.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::sblr;SblrContextGetDescriptorV1 d;auto b=EncodeSblrContextGetDescriptorV1(d,true);SblrContextGetDescriptorV1 x;std::string e;assert(!DecodeSblrContextGetDescriptorV1(b.data(),b.size()-1,&x,&e,true));return 0;}
