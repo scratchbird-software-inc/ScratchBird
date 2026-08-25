@@ -176,6 +176,7 @@ class SbsqlTestWireSession {
   PipelineResult RunReplConsumerSubscribeForWire();
   PipelineResult RunReplConsumerResumeForWire();
   PipelineResult RunReplConsumerPauseForWire();
+  PipelineResult RunReplConsumerCancelForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
