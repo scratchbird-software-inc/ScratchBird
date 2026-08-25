@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_session_setting_set_runtime.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::sblr;SblrSessionSettingSetRequestV1 q;q.receipt[0]=1;q.occurrence=1;auto b=EncodeSblrSessionSettingSetRequestV1(q);assert(b.size()==24);SblrSessionSettingSetRequestV1 x;std::string d;assert(DecodeSblrSessionSettingSetRequestV1(b.data(),b.size(),&x,&d));SblrSessionSettingSetDescriptorV1 v;v.key[0]='x';v.expected_generation=1;v.availability=1;auto e=EncodeSblrSessionSettingSetDescriptorV1(v,true);assert(e.size()==128);assert(DecodeSblrSessionSettingSetDescriptorV1(e.data(),e.size(),&v,&d,true));return 0;}
