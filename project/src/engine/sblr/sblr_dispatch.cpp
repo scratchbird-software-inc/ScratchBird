@@ -2758,6 +2758,15 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
   if (request.envelope.operation_id == "engine.op.ddl_drop_table" && request.envelope.opcode == "SBLR_DDL_DROP_TABLE" && request.envelope.opcode_code == 1539) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
+  if ((request.envelope.operation_id == "ddl.operator.create" && request.envelope.opcode == "SBLR_DDL_CREATE_OPERATOR" && request.envelope.opcode_code == 1590) ||
+      (request.envelope.operation_id == "ddl.operator.drop" && request.envelope.opcode == "SBLR_DDL_DROP_OPERATOR" && request.envelope.opcode_code == 1591)) {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.ok = true;
+    result.api_result.operation_id = request.envelope.operation_id;
+    result.api_result.result_shape.result_kind = "ddl_result";
+    return result;
+  }
   if (request.envelope.operation_id == "engine.op.diagnostic_refusal" && request.envelope.opcode == "SBLR_DIAGNOSTIC_REFUSAL" && request.envelope.opcode_code == 0x1900) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="diagnostic_refusal_result"; return result; }
   if (request.envelope.operation_id == "engine.op.ddl_create_dictionary" && request.envelope.opcode == "SBLR_DDL_CREATE_DICTIONARY") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (request.envelope.operation_id == "engine.op.ddl_alter_dictionary" && request.envelope.opcode == "SBLR_DDL_ALTER_DICTIONARY" && request.envelope.opcode_code == 1639) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
