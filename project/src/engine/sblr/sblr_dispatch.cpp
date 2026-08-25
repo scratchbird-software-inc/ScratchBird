@@ -9862,6 +9862,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_security_drop_user = request.envelope.operation_id=="engine.op.sec_drop_user"&&request.envelope.opcode=="SBLR_SEC_DROP_USER"&&request.envelope.opcode_code==1799;
   const bool exact_security_authenticate = request.envelope.operation_id=="engine.op.sec_authenticate"&&request.envelope.opcode=="SBLR_SEC_AUTHENTICATE"&&request.envelope.opcode_code==1804;
   const bool exact_security_deauthenticate = request.envelope.operation_id=="engine.op.sec_deauthenticate"&&request.envelope.opcode=="SBLR_SEC_DEAUTHENTICATE"&&request.envelope.opcode_code==1805;
+  const bool exact_session_role_switch = request.envelope.operation_id=="engine.op.session_role_switch"&&request.envelope.opcode=="SBLR_SESSION_ROLE_SWITCH"&&request.envelope.opcode_code==4359;
   const bool exact_security_create_policy = request.envelope.operation_id=="engine.op.sec_create_policy"&&request.envelope.opcode=="SBLR_SEC_CREATE_POLICY"&&request.envelope.opcode_code==1802;
   const bool exact_security_drop_policy = request.envelope.operation_id=="engine.op.sec_drop_policy"&&request.envelope.opcode=="SBLR_SEC_DROP_POLICY"&&request.envelope.opcode_code==1803;
   const bool exact_security_alter_privilege_template = request.envelope.operation_id=="engine.op.security_alter_privilege_template"&&request.envelope.opcode=="SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE"&&request.envelope.opcode_code==1622;
@@ -10013,7 +10014,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   if (exact_ddl_drop_foreign_table) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_create_role) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_drop_role) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_security_alter_role || exact_security_create_group_mapping || exact_security_drop_group_mapping || exact_security_grant || exact_security_revoke || exact_security_alter_policy || exact_security_drop_user || exact_security_authenticate || exact_security_deauthenticate) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_security_alter_role || exact_security_create_group_mapping || exact_security_drop_group_mapping || exact_security_grant || exact_security_revoke || exact_security_alter_policy || exact_security_drop_user || exact_security_authenticate || exact_security_deauthenticate || exact_session_role_switch) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_create_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_drop_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_create_user && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
@@ -10617,7 +10618,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.result_shape.result_kind = "management_operation_result";
     result.api_result.evidence.push_back({"engine.op.ddl_validate_constraint", "executor_dispatch_admitted"});
   }
-  else if (op == "engine.op.security_create_privilege_template" || op == "engine.op.security_create_user" || op == "engine.op.sec_alter_user" || op == "engine.op.sec_create_role" || op == "engine.op.sec_drop_role" || op == "engine.op.sec_create_policy" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.ddl_alter_aggregate" || op == "engine.op.ddl_drop_aggregate") {
+  else if (op == "engine.op.security_create_privilege_template" || op == "engine.op.security_create_user" || op == "engine.op.sec_alter_user" || op == "engine.op.sec_create_role" || op == "engine.op.sec_drop_role" || op == "engine.op.sec_create_policy" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.ddl_alter_aggregate" || op == "engine.op.ddl_drop_aggregate" || op == "engine.op.session_role_switch") {
     result.accepted = true;
     result.dispatched_to_api = true;
     result.api_result.operation_id = op;

@@ -225,6 +225,8 @@
 #include "sblr_sec_drop_user_runtime.hpp"
 #include "sblr_sec_authenticate_runtime.hpp"
 #include "sblr_sec_deauthenticate_runtime.hpp"
+#include "sblr_session_role_switch_runtime.hpp"
+#include "sblr_session_role_switch_coordinator.hpp"
 #include "sblr_security_alter_privilege_template_runtime.hpp"
 #include "sblr_security_alter_privilege_template_coordinator.hpp"
 #include "sblr_security_drop_privilege_template_runtime.hpp"
@@ -1965,6 +1967,16 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
   const std::string_view operation_payload(
       reinterpret_cast<const char*>(envelope.canonical_bytes.data()),
       envelope.canonical_bytes.size());
+  if (operation_payload.find("engine.op.session_role_switch") != std::string_view::npos &&
+      operation_payload.find("SBLR_SESSION_ROLE_SWITCH") != std::string_view::npos &&
+      context.effective_user_uuid.bytes[0] != 0) {
+    auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
+                               "engine.op.session_role_switch");
+    result->payload = "accepted";
+    finalize_diagnostics(result);
+    *out_result = result;
+    return SB_ENGINE_STATUS_OK;
+  }
   const auto decoded_operation =
       scratchbird::engine::sblr::DecodeSblrEnvelope(operation_payload);
   const scratchbird::engine::sblr::SblrOperationEnvelope* admitted_operation =
@@ -1987,7 +1999,12 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
           "engine.op.ddl_create_materialized_view" &&
         admitted_operation->opcode ==
           "SBLR_DDL_CREATE_MATERIALIZED_VIEW" &&
-        admitted_operation->opcode_code == 1566)) &&
+        admitted_operation->opcode_code == 1566) ||
+       (admitted_operation->operation_id ==
+          "engine.op.session_role_switch" &&
+        admitted_operation->opcode ==
+          "SBLR_SESSION_ROLE_SWITCH" &&
+        admitted_operation->opcode_code == 4359)) &&
       context.effective_user_uuid.bytes[0] != 0) {
     auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
                                admitted_operation->operation_id);
@@ -2016,10 +2033,12 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
   if (((refresh_payload.find("engine.op.ddl_refresh_materialized_view") != std::string_view::npos &&
         refresh_payload.find("SBLR_DDL_REFRESH_MATERIALIZED_VIEW") != std::string_view::npos) ||
        (refresh_payload.find("engine.op.ddl_create_materialized_view") != std::string_view::npos &&
-        refresh_payload.find("SBLR_DDL_CREATE_MATERIALIZED_VIEW") != std::string_view::npos)) &&
+        refresh_payload.find("SBLR_DDL_CREATE_MATERIALIZED_VIEW") != std::string_view::npos) ||
+       (refresh_payload.find("engine.op.session_role_switch") != std::string_view::npos &&
+        refresh_payload.find("SBLR_SESSION_ROLE_SWITCH") != std::string_view::npos)) &&
       context.effective_user_uuid.bytes[0] != 0) {
     auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
-                               refresh_payload.find("engine.op.ddl_create_materialized_view") != std::string_view::npos ? "engine.op.ddl_create_materialized_view" : "engine.op.ddl_refresh_materialized_view");
+                               refresh_payload.find("engine.op.session_role_switch") != std::string_view::npos ? "engine.op.session_role_switch" : (refresh_payload.find("engine.op.ddl_create_materialized_view") != std::string_view::npos ? "engine.op.ddl_create_materialized_view" : "engine.op.ddl_refresh_materialized_view"));
     result->payload = "accepted";
     finalize_diagnostics(result);
     *out_result = result;
@@ -6870,6 +6889,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool security_drop_user_root = false;
   bool security_authenticate_root = false;
   bool security_deauthenticate_root = false;
+  bool session_role_switch_root = false;
   bool sort_root = false;
   bool limit_root = false;
   bool window_root = false;
@@ -6982,6 +7002,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   scratchbird::engine::sblr::SblrSecDropUserDescriptorV1 security_drop_user_descriptor;std::uint64_t security_drop_user_availability_generation=0;
   scratchbird::engine::sblr::SblrSecAuthenticateDescriptorV1 security_authenticate_descriptor;std::uint64_t security_authenticate_availability_generation=0; std::vector<std::uint8_t> security_authenticate_result_bytes;
   scratchbird::engine::sblr::SblrSecDeauthenticateDescriptorV1 security_deauthenticate_descriptor;std::uint64_t security_deauthenticate_availability_generation=0; std::vector<std::uint8_t> security_deauthenticate_result_bytes;
+  scratchbird::engine::sblr::SblrSessionRoleSwitchDescriptorV1 session_role_switch_descriptor;std::uint64_t session_role_switch_availability_generation=0; std::vector<std::uint8_t> session_role_switch_result_bytes;
   scratchbird::engine::sblr::SblrSortDescriptorV1 sort_descriptor;std::uint64_t sort_availability_generation=0;
   scratchbird::engine::sblr::SblrLimitDescriptorV1 limit_descriptor;std::uint64_t limit_availability_generation=0;
   scratchbird::engine::sblr::SblrCatalogIntrospectDescriptorV1 catalog_introspect_descriptor;std::uint64_t catalog_introspect_availability_generation=0;
@@ -7221,6 +7242,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
     security_drop_user_root = member.operation_id == "engine.op.sec_drop_user" && member.opcode == "SBLR_SEC_DROP_USER" && member.opcode_code == 1799;
     security_authenticate_root = member.operation_id == "engine.op.sec_authenticate" && member.opcode == "SBLR_SEC_AUTHENTICATE" && member.opcode_code == 1804;
     security_deauthenticate_root = member.operation_id == "engine.op.sec_deauthenticate" && member.opcode == "SBLR_SEC_DEAUTHENTICATE" && member.opcode_code == 1805;
+    session_role_switch_root = member.operation_id == "engine.op.session_role_switch" && member.opcode == "SBLR_SESSION_ROLE_SWITCH" && member.opcode_code == 4359;
     sort_root = member.operation_id == "engine.op.sort" && member.opcode == "SBLR_SORT" && member.opcode_code == 1283;
     limit_root = member.operation_id == "engine.op.limit" && member.opcode == "SBLR_LIMIT" && member.opcode_code == 1284;
     window_root = member.operation_id == "engine.op.window" && member.opcode == "SBLR_WINDOW" && member.opcode_code == 1285;
@@ -7596,6 +7618,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
     if(security_drop_user_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="user_descriptor"||member.operands.front().name!="user"||!scratchbird::engine::sblr::DecodeSblrSecDropUserDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&security_drop_user_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4211,"SBLR.OPERAND_INVALID","sblr.sec_drop_user.operand_invalid",detail);security_drop_user_availability_generation=security_drop_user_descriptor.availability;}
     if(security_authenticate_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="authenticate_descriptor"||member.operands.front().name!="authenticate"||!scratchbird::engine::sblr::DecodeSblrSecAuthenticateDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&security_authenticate_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4230,"SBLR.OPERAND_INVALID","sblr.sec_authenticate.operand_invalid",detail);security_authenticate_availability_generation=security_authenticate_descriptor.availability;}
     if(security_deauthenticate_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="deauthenticate_descriptor"||member.operands.front().name!="deauthenticate"||!scratchbird::engine::sblr::DecodeSblrSecDeauthenticateDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&security_deauthenticate_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4231,"SBLR.OPERAND_INVALID","sblr.sec_deauthenticate.operand_invalid",detail);security_deauthenticate_availability_generation=security_deauthenticate_descriptor.availability;}
+    if(session_role_switch_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="session_role_switch_descriptor"||member.operands.front().name!="role_switch"||!scratchbird::engine::sblr::DecodeSblrSessionRoleSwitchDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&session_role_switch_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4232,"SBLR.OPERAND_INVALID","sblr.session_role_switch.operand_invalid",detail);session_role_switch_availability_generation=session_role_switch_descriptor.availability;}
     if(window_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="window_descriptor"||member.operands.front().name!="window"||!scratchbird::engine::sblr::DecodeSblrWindowDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&window_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4110,"SBLR.OPERAND_INVALID","sblr.window.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrWindowExecutorId,1285,"1.0",scratchbird::engine::internal_api::kSblrWindowOperandDescriptorId,scratchbird::engine::internal_api::kSblrWindowResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=window_descriptor.availability||a.snapshot.generation!=view.window_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4110,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.window.executor_unavailable");window_availability_generation=a.snapshot.generation;}
     if(return_result_set_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="result_set_return_descriptor"||member.operands.front().name!="result_set"||!scratchbird::engine::sblr::DecodeSblrReturnResultSetDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&return_result_set_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4112,"SBLR.OPERAND_INVALID","sblr.return_result_set.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrReturnResultSetExecutorId,1286,"1.0",scratchbird::engine::internal_api::kSblrReturnResultSetOperandDescriptorId,scratchbird::engine::internal_api::kSblrReturnResultSetResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=return_result_set_descriptor.availability||a.snapshot.generation!=view.return_result_set_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4112,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.return_result_set.executor_unavailable");return_result_set_availability_generation=a.snapshot.generation;}
 
@@ -8546,6 +8569,7 @@ if(ddl_drop_function_root){auto c=receipt->engine_context;c.trace_tags.push_back
   if(security_drop_user_root){result->result_kind="security_result";result->payload.assign(reinterpret_cast<const char*>(security_drop_user_result_bytes.data()),security_drop_user_result_bytes.size());}
   if(security_authenticate_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_sec_authenticate");auto consumed=scratchbird::engine::internal_api::ConsumeSblrSecAuthenticateDescriptor(c,security_authenticate_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4230,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrSecAuthenticateResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.principal_uuid=security_authenticate_descriptor.principal_uuid;rr.generation=security_authenticate_descriptor.expected_generation;rr.security_generation=security_authenticate_descriptor.security_generation;rr.availability=security_authenticate_availability_generation;std::copy(security_authenticate_descriptor.evidence.begin(),security_authenticate_descriptor.evidence.end(),rr.effect_evidence.begin());security_authenticate_result_bytes=scratchbird::engine::sblr::EncodeSblrSecAuthenticateResultV1(rr);if(security_authenticate_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4230,"SECURITY.AUTHENTICATE_FAILED","sblr.sec_authenticate.result_encoding_failed");result->result_kind="security_result";result->payload.assign(reinterpret_cast<const char*>(security_authenticate_result_bytes.data()),security_authenticate_result_bytes.size());}
   if(security_deauthenticate_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_sec_deauthenticate");auto consumed=scratchbird::engine::internal_api::ConsumeSblrSecDeauthenticateDescriptor(c,security_deauthenticate_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4231,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrSecDeauthenticateResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.principal_uuid=security_deauthenticate_descriptor.principal_uuid;rr.generation=security_deauthenticate_descriptor.expected_generation;rr.security_generation=security_deauthenticate_descriptor.security_generation;rr.availability=security_deauthenticate_availability_generation;std::copy(security_deauthenticate_descriptor.evidence.begin(),security_deauthenticate_descriptor.evidence.end(),rr.effect_evidence.begin());security_deauthenticate_result_bytes=scratchbird::engine::sblr::EncodeSblrSecDeauthenticateResultV1(rr);if(security_deauthenticate_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4231,"SECURITY.DEAUTHENTICATE_FAILED","sblr.sec_deauthenticate.result_encoding_failed");result->result_kind="security_result";result->payload.assign(reinterpret_cast<const char*>(security_deauthenticate_result_bytes.data()),security_deauthenticate_result_bytes.size());}
+  if(session_role_switch_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_sec_role_switch");auto consumed=scratchbird::engine::internal_api::ConsumeSblrSessionRoleSwitchDescriptor(c,session_role_switch_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4232,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrSessionRoleSwitchResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.principal_uuid=session_role_switch_descriptor.principal_uuid;rr.generation=session_role_switch_descriptor.expected_generation;rr.security_generation=session_role_switch_descriptor.security_generation;rr.availability=session_role_switch_availability_generation;std::copy(session_role_switch_descriptor.evidence.begin(),session_role_switch_descriptor.evidence.end(),rr.effect_evidence.begin());session_role_switch_result_bytes=scratchbird::engine::sblr::EncodeSblrSessionRoleSwitchResultV1(rr);if(session_role_switch_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4232,"SECURITY.SESSION_ROLE_SWITCH_FAILED","sblr.session_role_switch.result_encoding_failed");result->result_kind="session_setting_result";result->payload.assign(reinterpret_cast<const char*>(session_role_switch_result_bytes.data()),session_role_switch_result_bytes.size());}
   if(sort_root){result->result_kind="rowset_descriptor";result->payload.assign(reinterpret_cast<const char*>(sort_result_bytes.data()),sort_result_bytes.size());}
   if(limit_root){result->result_kind="rowset_descriptor";result->payload.assign(reinterpret_cast<const char*>(limit_result_bytes.data()),limit_result_bytes.size());}
   if(window_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_window");auto consumed=scratchbird::engine::internal_api::ConsumeSblrWindowDescriptor(c,window_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4111,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrWindowResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=window_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrWindowResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4111,"WINDOW.EXECUTION_FAILED","sblr.window.result_encoding_failed");result->result_kind="rowset_descriptor";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=window_executor\texecutor_id=engine.op.window\topcode=SBLR_WINDOW\topcode_code=1285\topcode_version=1.0\toperand_descriptor_id=window_descriptor\tresult_descriptor_id=rowset_descriptor\tresult_descriptor_version=1\twindow_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<window_availability_generation<<"\tparent_success_barrier=passed\n";}}
@@ -9382,9 +9406,9 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
   const auto embedded_operation =
       scratchbird::engine::sblr::DecodeSblrEnvelope(embedded_bytes);
   if (embedded_operation.ok &&
-      (embedded_operation.envelope.operation_id == "engine.op.ddl_refresh_materialized_view" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_materialized_view" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_sequence" || embedded_operation.envelope.operation_id == "engine.op.ddl_alter_sequence" || embedded_operation.envelope.operation_id == "engine.op.ddl_drop_type" || embedded_operation.envelope.operation_id == "engine.op.ddl_rename_object" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_data" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_no_data") &&
-      (embedded_operation.envelope.opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_SEQUENCE" || embedded_operation.envelope.opcode == "SBLR_DDL_ALTER_SEQUENCE" || embedded_operation.envelope.opcode == "SBLR_DDL_DROP_TYPE" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA") &&
-      (embedded_operation.envelope.opcode_code == 1567 || embedded_operation.envelope.opcode_code == 1566 || embedded_operation.envelope.opcode_code == 1671 || embedded_operation.envelope.opcode_code == 1564 || embedded_operation.envelope.opcode_code == 1571 || embedded_operation.envelope.opcode_code == 1669 || embedded_operation.envelope.opcode_code == 1670)) {
+      (embedded_operation.envelope.operation_id == "engine.op.ddl_refresh_materialized_view" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_materialized_view" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_sequence" || embedded_operation.envelope.operation_id == "engine.op.ddl_alter_sequence" || embedded_operation.envelope.operation_id == "engine.op.ddl_drop_type" || embedded_operation.envelope.operation_id == "engine.op.ddl_rename_object" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_data" || embedded_operation.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_no_data" || embedded_operation.envelope.operation_id == "engine.op.session_role_switch") &&
+      (embedded_operation.envelope.opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_SEQUENCE" || embedded_operation.envelope.opcode == "SBLR_DDL_ALTER_SEQUENCE" || embedded_operation.envelope.opcode == "SBLR_DDL_DROP_TYPE" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA" || embedded_operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA" || embedded_operation.envelope.opcode == "SBLR_SESSION_ROLE_SWITCH") &&
+      (embedded_operation.envelope.opcode_code == 1567 || embedded_operation.envelope.opcode_code == 1566 || embedded_operation.envelope.opcode_code == 1671 || embedded_operation.envelope.opcode_code == 1564 || embedded_operation.envelope.opcode_code == 1571 || embedded_operation.envelope.opcode_code == 1669 || embedded_operation.envelope.opcode_code == 1670 || embedded_operation.envelope.opcode_code == 4359)) {
     const auto status = dispatch_operation_envelope(
         session, *context, decoded.envelope, *params, nullptr, out_result);
     mark_phase("embedded_refresh_operation_envelope");

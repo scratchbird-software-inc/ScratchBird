@@ -151,6 +151,7 @@ enum class SblrValueKind : std::uint16_t {
   security_drop_user_descriptor = 175,
   security_authenticate_descriptor = 176,
   security_deauthenticate_descriptor = 177,
+  session_role_switch_descriptor = 178,
   sort_descriptor = 71,
   limit_descriptor = 72,
   window_descriptor = 73,
