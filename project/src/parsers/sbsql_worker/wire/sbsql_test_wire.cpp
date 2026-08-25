@@ -21726,6 +21726,7 @@ PipelineResult SbsqlTestWireSession::RunVersionedRevertForWire() { PipelineResul
 PipelineResult SbsqlTestWireSession::RunVersionedResetForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","VERSIONED RESET requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunAccelLlvmPolicySetForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","ACCEL LLVM POLICY SET requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunAccelLlvmCompileForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","ACCEL LLVM COMPILE requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
+PipelineResult SbsqlTestWireSession::RunAccelLlvmInspectForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","ACCEL LLVM INSPECT requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }

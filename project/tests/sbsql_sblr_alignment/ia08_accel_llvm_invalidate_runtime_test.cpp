@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_accel_llvm_invalidate_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrAccelLlvmInvalidateRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrAccelLlvmInvalidateRequestV1(q);assert(b.size()==64);SblrAccelLlvmInvalidateRequestV1 q2;std::string e;assert(DecodeSblrAccelLlvmInvalidateRequestV1(b.data(),b.size(),&q2,&e));SblrAccelLlvmInvalidateDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrAccelLlvmInvalidateDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrAccelLlvmInvalidateDescriptorV1(db.data(),db.size(),&d,&e));return 0;}

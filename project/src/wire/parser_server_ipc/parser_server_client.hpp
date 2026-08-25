@@ -568,6 +568,7 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateVersionedReset(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateAccelLlvmPolicySet(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateAccelLlvmCompile(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAccelLlvmInspect(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlDropCast(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateMaterializedView(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlAlterView(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
