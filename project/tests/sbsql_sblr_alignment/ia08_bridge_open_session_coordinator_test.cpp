@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_bridge_open_session_coordinator.hpp"
+#include <cassert>
+using namespace scratchbird::engine::internal_api; int main(){EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="bridge-session";c.trace_tags={"private_bridge_open_session_binder","sysarch_authorized","cluster_provider_admitted","cluster_route_fence_admitted"};auto q=CompileSblrBridgeOpenSessionDescriptor(c,"bridge-session",7);assert(q.ok);c.trace_tags.push_back("private_bridge_open_session");assert(ConsumeSblrBridgeOpenSessionDescriptor(c,q.descriptor).ok);return 0;}

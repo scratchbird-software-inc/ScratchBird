@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_bridge_open_session_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr; int main(){SblrBridgeOpenSessionRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrBridgeOpenSessionRequestV1(q);assert(b.size()==64);SblrBridgeOpenSessionRequestV1 q2;std::string e;assert(DecodeSblrBridgeOpenSessionRequestV1(b.data(),b.size(),&q2,&e));SblrBridgeOpenSessionDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrBridgeOpenSessionDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrBridgeOpenSessionDescriptorV1(db.data(),db.size(),&d,&e));return 0;}
