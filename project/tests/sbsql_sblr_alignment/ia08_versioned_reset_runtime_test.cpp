@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_versioned_reset_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrVersionedResetRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrVersionedResetRequestV1(q);assert(b.size()==64);SblrVersionedResetRequestV1 q2;std::string e;assert(DecodeSblrVersionedResetRequestV1(b.data(),b.size(),&q2,&e));b[52]=1;assert(!DecodeSblrVersionedResetRequestV1(b.data(),b.size(),&q2,&e));SblrVersionedResetDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrVersionedResetDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrVersionedResetDescriptorV1(db.data(),db.size(),&d,&e));SblrVersionedResetResultV1 r;r.body[0]=1;assert(EncodeSblrVersionedResetResultV1(r).size()==384);return 0;}
