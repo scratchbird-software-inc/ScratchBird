@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_drop_cast_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlDropCastRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlDropCastRequestV1(q);assert(b.size()==64);SblrDdlDropCastRequestV1 q2;assert(DecodeSblrDdlDropCastRequestV1(b.data(),b.size(),&q2,nullptr));SblrDdlDropCastDescriptorV1 d;d.body[0]=1;auto x=EncodeSblrDdlDropCastDescriptorV1(d);assert(x.size()==384);SblrDdlDropCastDescriptorV1 d2;assert(DecodeSblrDdlDropCastDescriptorV1(x.data(),x.size(),&d2,nullptr));x[352]^=1;assert(!DecodeSblrDdlDropCastDescriptorV1(x.data(),x.size(),&d2,nullptr));}
