@@ -757,8 +757,12 @@ constexpr std::uint16_t kMessageContextUnsetRequest = 384;
 constexpr std::uint16_t kMessageContextUnsetResult = 385;
 constexpr std::uint32_t kSchemaContextGetRequestV1 = 7399;
 constexpr std::uint32_t kSchemaContextGetResultV1 = 7400;
+constexpr std::uint32_t kSchemaStmtPrepareRequestV1 = 7401;
+constexpr std::uint32_t kSchemaStmtPrepareResultV1 = 7402;
 constexpr std::uint16_t kMessageContextGetRequest = 386;
 constexpr std::uint16_t kMessageContextGetResult = 387;
+constexpr std::uint16_t kMessageStmtPrepareRequest = 388;
+constexpr std::uint16_t kMessageStmtPrepareResult = 389;
 constexpr std::uint16_t kMessageSessionSettingSetResult = 371;
 constexpr std::uint32_t kSchemaSessionSettingResetRequestV1 = 7385;
 constexpr std::uint32_t kSchemaSessionSettingResetResultV1 = 7386;
@@ -4035,6 +4039,21 @@ std::vector<std::uint8_t> EncodePreparePayload(const ParserSessionContext& sessi
   return out;
 }
 
+std::vector<std::uint8_t> EncodeStmtPreparePayload(
+    const ParserSessionContext& session,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const ParserCanonicalSblrSubmission& submission) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, session_uuid);
+  PutUuid(&out, MakeUuidV7Bytes());
+  PutU64(&out, session.catalog_epoch);
+  PutU64(&out, session.security_policy_epoch);
+  PutU64(&out, session.security_policy_epoch);
+  PutBytes(&out, submission.canonical_container_bytes);
+  PutBytes(&out, submission.canonical_execution_envelope_bytes);
+  return out;
+}
+
 std::vector<std::uint8_t> EncodePreparePayloadV2(
     const ParserSessionContext& session,
     const std::array<std::uint8_t, 16>& session_uuid,
@@ -6834,6 +6853,67 @@ ServerPrepareSblrResult SbpsClient::PrepareSblr(
     return result;
   }
   result.accepted = true;
+  return result;
+}
+
+ServerPrepareSblrResult SbpsClient::PrepareStmt(
+    const ParserSessionContext& session, std::string_view encoded_sblr_envelope) const {
+  ServerPrepareSblrResult result;
+  const auto su = TextToUuid(session.session_uuid), cu = TextToUuid(session.connection_uuid);
+  MessageVectorSet messages; Frame response;
+  if (!SendRequest(endpoint_, BaseHeader(kMessageStmtPrepareRequest, kSchemaStmtPrepareRequestV1, su, cu),
+                   EncodePreparePayload(session, su, encoded_sblr_envelope), &response, &messages,
+                   ActiveSocketCacheKey())) { result.messages = std::move(messages); return result; }
+  if (response.header.message_type != kMessageStmtPrepareResult || response.header.schema_id != kSchemaStmtPrepareResultV1 || IsErrorFrame(response)) { AddFrameDiagnostics(response, &messages); result.messages = std::move(messages); return result; }
+  std::size_t offset = 0; std::string outcome;
+  if (!ReadString(response.payload, &offset, &outcome) || outcome != "accepted" || offset + 16 > response.payload.size()) { AddDiagnostic(&messages, "PARSER_SERVER_IPC.STMT_PREPARE_REJECTED", "The statement prepare request was refused."); result.messages = std::move(messages); return result; }
+  result.prepared_statement_uuid = UuidToText(GetUuid(response.payload, offset)); offset += 16;
+  if (!ReadString(response.payload, &offset, &result.operation_id) || !ReadString(response.payload, &offset, &result.detail)) { result.messages = std::move(messages); return result; }
+  result.accepted = true; result.messages = std::move(messages);
+  return result;
+}
+
+ServerPrepareSblrResult SbpsClient::PrepareStmtCanonical(
+    const ParserSessionContext& session,
+    const ParserCanonicalSblrSubmission& submission) const {
+  ServerPrepareSblrResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  MessageVectorSet messages;
+  Frame response;
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtPrepareRequest,
+                              kSchemaStmtPrepareRequestV1,
+                              session_uuid,
+                              connection_uuid),
+                   EncodeStmtPreparePayload(session, session_uuid, submission),
+                   &response,
+                   &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageStmtPrepareResult ||
+      response.header.schema_id != kSchemaStmtPrepareResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  std::size_t offset = 0;
+  std::string outcome;
+  if (!ReadString(response.payload, &offset, &outcome) ||
+      outcome != "accepted" || offset + 16 > response.payload.size() ||
+      (offset += 16, !ReadString(response.payload, &offset, &result.operation_id)) ||
+      !ReadString(response.payload, &offset, &result.detail)) {
+    AddDiagnostic(&messages, "PARSER_SERVER_IPC.STMT_PREPARE_RESULT_INVALID",
+                  "The statement-prepare result payload is malformed or refused.");
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.prepared_statement_uuid = UuidToText(GetUuid(response.payload, offset));
+  result.accepted = true;
+  result.messages = std::move(messages);
   return result;
 }
 

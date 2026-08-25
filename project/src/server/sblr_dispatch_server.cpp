@@ -838,6 +838,8 @@ struct PreparePayload {
   std::uint64_t security_epoch = 0;
   std::uint64_t policy_generation = 0;
   std::string encoded_sblr_envelope;
+  std::string encoded_sblr_container;
+  std::string encoded_execution_envelope;
   bool transaction_routed = false;
   std::uint64_t local_transaction_id = 0;
   std::string transaction_uuid;
@@ -909,10 +911,23 @@ std::optional<PreparePayload> DecodePreparePayload(
     if (out.local_transaction_id == 0 || out.transaction_uuid.empty()) {
       return std::nullopt;
     }
-  } else if (schema_id != kSchemaPrepareSblrTestV1) {
+  } else if (schema_id != kSchemaPrepareSblrTestV1 &&
+             schema_id != sbps::kSchemaStmtPrepareRequestV1) {
     return std::nullopt;
   }
-  if (!ReadString(payload, &offset, &out.encoded_sblr_envelope)) return std::nullopt;
+  if (schema_id == sbps::kSchemaStmtPrepareRequestV1) {
+    std::vector<std::uint8_t> container;
+    std::vector<std::uint8_t> execution;
+    if (!ReadBytes(payload, &offset, &container) ||
+        !ReadBytes(payload, &offset, &execution) ||
+        container.empty() || execution.empty()) {
+      return std::nullopt;
+    }
+    out.encoded_sblr_container.assign(container.begin(), container.end());
+    out.encoded_execution_envelope.assign(execution.begin(), execution.end());
+  } else if (!ReadString(payload, &offset, &out.encoded_sblr_envelope)) {
+    return std::nullopt;
+  }
   if (offset != payload.size()) return std::nullopt;
   return out;
 }
@@ -4216,6 +4231,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "engine.op.context_set") return "SBLR_CONTEXT_SET";
   if (operation_id == "engine.op.context_unset") return "SBLR_CONTEXT_UNSET";
   if (operation_id == "engine.op.context_get") return "SBLR_CONTEXT_GET";
+  if (operation_id == "engine.op.stmt_prepare") return "SBLR_STMT_PREPARE";
   if (operation_id == "security.mask.drop") return "SBLR_SECURITY_MASK_DROP";
   if (operation_id == "security.rls.drop") return "SBLR_SECURITY_RLS_DROP";
   if (operation_id == "security.policy.attach") return "SBLR_SECURITY_POLICY_ATTACH";
@@ -9053,8 +9069,97 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
                                                        "prepare_sblr",
                                                        "sblr.prepare.pending",
                                                        prepare_transaction);
-  const auto admission = AdmitServerSblrEnvelope(
-      ServerSblrAdmissionRequest{decoded->encoded_sblr_envelope, false});
+  ServerSblrAdmissionRequest admission_request;
+  if (request.header.payload_schema_id == sbps::kSchemaStmtPrepareRequestV1) {
+    // v7401 carries the canonical outer SBLR container and SBEE ingress
+    // separately.  The retired encoded_sblr_envelope field is intentionally
+    // left empty so admission performs the normal identity and authority
+    // checks on the canonical bytes.
+    admission_request.encoded_sblr_container = decoded->encoded_sblr_container;
+    admission_request.encoded_execution_envelope =
+        decoded->encoded_execution_envelope;
+    const auto canonical_container = scratchbird::engine::DecodeSblrContainerBytes(
+        reinterpret_cast<const std::uint8_t*>(decoded->encoded_sblr_container.data()),
+        decoded->encoded_sblr_container.size());
+    const auto canonical_ingress =
+        scratchbird::engine::DecodeSblrExecutionEnvelopeV1Bytes(
+            reinterpret_cast<const std::uint8_t*>(decoded->encoded_execution_envelope.data()),
+            decoded->encoded_execution_envelope.size());
+    scratchbird::engine::SblrExecutionEnvelopeSemanticView ingress_view;
+    if (canonical_container.status == scratchbird::engine::SblrCodecStatus::ok &&
+        canonical_ingress.status == scratchbird::engine::SblrCodecStatus::ok &&
+        scratchbird::engine::SblrValidateExecutionEnvelopeFields(
+            canonical_ingress.envelope, &ingress_view) &&
+        !canonical_container.container.operation_payload.empty()) {
+      const std::string_view operation_bytes(
+          reinterpret_cast<const char*>(
+              canonical_container.container.operation_payload.data()),
+          canonical_container.container.operation_payload.size());
+      const auto operation = scratchbird::engine::sblr::DecodeSblrEnvelope(
+          operation_bytes);
+      if (operation.ok) {
+        admission_request.admitted_registry_snapshot_uuid =
+            operation.envelope.registry_snapshot_uuid;
+        admission_request.admitted_parser_package_uuid =
+            operation.envelope.parser_package_uuid;
+      } else {
+        const auto stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(
+            operation_bytes);
+        if (stream.ok && !stream.stream.operations.empty()) {
+          admission_request.admitted_registry_snapshot_uuid =
+              stream.stream.operations.front().registry_snapshot_uuid;
+          admission_request.admitted_parser_package_uuid =
+              stream.stream.operations.front().parser_package_uuid;
+        }
+      }
+      if (canonical_ingress.envelope.fields.size() > 11 &&
+          canonical_ingress.envelope.fields[11].size() == 17 &&
+          canonical_ingress.envelope.fields[11][0] == 1) {
+        const auto* uuid = canonical_ingress.envelope.fields[11].data() + 1;
+        admission_request.authenticated_principal_uuid = UuidBytesToText(
+            *reinterpret_cast<const std::array<std::uint8_t, 16>*>(uuid));
+      }
+    }
+    admission_request.admitted_parser_package_uuid =
+        admission_request.admitted_parser_package_uuid.empty()
+            ? UuidBytesToText(session->admitted_parser_package_uuid)
+            : admission_request.admitted_parser_package_uuid;
+    admission_request.admitted_parser_package_version_major =
+        session->admitted_parser_package_version_major;
+    admission_request.admitted_parser_package_version_minor =
+        session->admitted_parser_package_version_minor;
+    admission_request.admitted_parser_package_version_patch =
+        session->admitted_parser_package_version_patch;
+    admission_request.admitted_registry_snapshot_uuid =
+        admission_request.admitted_registry_snapshot_uuid.empty()
+            ? (session->database_uuid.empty()
+                   ? UuidBytesToText(session->session_uuid)
+                   : session->database_uuid)
+            : admission_request.admitted_registry_snapshot_uuid;
+    admission_request.authenticated_principal_uuid =
+        admission_request.authenticated_principal_uuid.empty()
+            ? UuidBytesToText(session->effective_user_uuid)
+            : admission_request.authenticated_principal_uuid;
+    admission_request.catalog_snapshot_uuid =
+        session->database_uuid.empty()
+            ? UuidBytesToText(session->session_uuid)
+            : session->database_uuid;
+    admission_request.engine_mga_statement_uuid =
+        UuidBytesToText(decoded->client_statement_uuid);
+    admission_request.engine_mga_snapshot_uuid =
+        UuidBytesToText(session->session_uuid);
+    admission_request.catalog_epoch = session->catalog_generation;
+    admission_request.security_epoch = session->security_epoch;
+    admission_request.resource_epoch = session->resource_epoch;
+    admission_request.security_snapshot_uuid =
+        UuidBytesToText(session->auth_context_uuid);
+    admission_request.security_observation_generation = session->security_epoch;
+    admission_request.package_reservation_deferred = true;
+  } else {
+    admission_request.encoded_sblr_envelope = decoded->encoded_sblr_envelope;
+    admission_request.cluster_authority_active = false;
+  }
+  auto admission = AdmitServerSblrEnvelope(admission_request);
   if (!admission.admitted) {
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
@@ -9086,7 +9191,10 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   prepared.client_statement_uuid = decoded->client_statement_uuid;
   prepared.prepared_transaction_routing_v2 = v2;
   CapturePreparedAuthorityContext(&prepared, prepare_session);
-  prepared.encoded_sblr_envelope = decoded->encoded_sblr_envelope;
+  prepared.encoded_sblr_envelope =
+      request.header.payload_schema_id == sbps::kSchemaStmtPrepareRequestV1
+          ? decoded->encoded_execution_envelope
+          : decoded->encoded_sblr_envelope;
   prepared.operation_family = admission.operation_family;
   prepared.operation_id = admission.operation_id;
   prepared.requires_public_abi_dispatch = admission.requires_public_abi_dispatch;

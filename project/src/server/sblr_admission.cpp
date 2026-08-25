@@ -1821,6 +1821,8 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                   "Parser, registry, dialect, or authenticated identity binding is stale or contradictory.",
                   "ingress_identity_cross_check_failed");
   }
+  // Statement preparation carries canonical SBOS metadata but defers the
+  // package reservation until execution has a live statement receipt.
   if (opcode_stream) {
     for (const auto& member : decoded_stream.stream.operations) {
       if (member.parser_package_uuid != outer_parser_uuid ||
@@ -1913,7 +1915,9 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
                   "Admission evidence hashing failed.", "sha256_unavailable");
   }
-  if (opcode_stream) {
+  // Statement preparation carries canonical SBOS metadata but defers the
+  // package reservation until execution has a live statement receipt.
+  if (opcode_stream && !request.package_reservation_deferred) {
     if (request.package_reservation_handle == 0 ||
         request.reserved_payload_kind != ServerSblrPayloadKind::opcode_stream ||
         request.reserved_payload_size != token->canonical_operation_bytes.size() ||

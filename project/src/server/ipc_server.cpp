@@ -3469,6 +3469,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kContextSetRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kContextUnsetRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kContextGetRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kStmtPrepareRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityDropRoleRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityAlterPrivilegeTemplateRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityDropPrivilegeTemplateRequest) ||
@@ -4116,6 +4117,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==382&&frame.header.payload_schema_id==sbps::kSchemaContextSetRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleContextSet(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==384&&frame.header.payload_schema_id==sbps::kSchemaContextUnsetRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleContextUnset(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==386&&frame.header.payload_schema_id==sbps::kSchemaContextGetRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleContextGet(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==388&&frame.header.payload_schema_id==sbps::kSchemaStmtPrepareRequestV1){auto operation=HandlePrepareSblr(session_registry,engine_state,frame);operation.response_message_type=static_cast<std::uint16_t>(sbps::MessageType::kStmtPrepareResult);operation.response_schema_id=sbps::kSchemaStmtPrepareResultV1;WriteAll(client_fd,SessionOperationFrame(frame,std::move(operation)));return true;}
   if(frame.header.message_type==372&&frame.header.payload_schema_id==sbps::kSchemaSessionSettingResetRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleSessionSettingReset(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==374&&frame.header.payload_schema_id==sbps::kSchemaSessionSettingGetRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleSessionSettingGet(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==376&&frame.header.payload_schema_id==sbps::kSchemaSessionDefaultQualifierSetRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleSessionDefaultQualifierSet(session_registry,engine_state,frame)));return true;}

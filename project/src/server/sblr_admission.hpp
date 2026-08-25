@@ -111,6 +111,9 @@ struct ServerSblrAdmissionRequest {
   std::uint32_t reserved_record_count = 0;
   std::uint64_t reserved_resource_policy_generation = 0;
   std::array<std::uint8_t, 32> reserved_payload_sha256{};
+  // Prepare metadata admission defers package reservation until execution
+  // has a live statement receipt.
+  bool package_reservation_deferred = false;
 };
 
 struct ServerSblrAdmissionTokenData {

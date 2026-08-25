@@ -31,6 +31,7 @@
 #include "sblr_context_set_runtime.hpp"
 #include "sblr_context_unset_runtime.hpp"
 #include "sblr_context_get_runtime.hpp"
+#include "sblr_stmt_prepare_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
@@ -719,6 +720,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::context_set_descriptor: { SblrContextSetDescriptorV1 operand; std::string detail; return DecodeSblrContextSetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::context_unset_descriptor: { SblrContextUnsetDescriptorV1 operand; std::string detail; return DecodeSblrContextUnsetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::context_get_descriptor: { SblrContextGetDescriptorV1 operand; std::string detail; return DecodeSblrContextGetDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::stmt_prepare_descriptor: { SblrStmtPrepareDescriptorV1 operand; std::string detail; return DecodeSblrStmtPrepareDescriptorV1(data,size,&operand,&detail); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::window_descriptor: { SblrWindowDescriptorV1 operand; std::string detail; return DecodeSblrWindowDescriptorV1(data,size,&operand,&detail,true); }

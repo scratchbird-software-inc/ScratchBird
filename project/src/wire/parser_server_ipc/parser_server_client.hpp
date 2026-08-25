@@ -679,6 +679,10 @@ class SbpsClient {
       bool cursor_requested = false) const;
   ServerPrepareSblrResult PrepareSblr(const ParserSessionContext& session,
                                       std::string_view encoded_sblr_envelope) const;
+  ServerPrepareSblrResult PrepareStmt(const ParserSessionContext& session,
+                                      std::string_view encoded_sblr_envelope) const;
+  ServerPrepareSblrResult PrepareStmtCanonical(const ParserSessionContext& session,
+                                               const ParserCanonicalSblrSubmission& submission) const;
   ServerPrepareSblrResult PrepareSblrRouted(
       const ParserSessionContext& session,
       std::string_view encoded_sblr_envelope,
