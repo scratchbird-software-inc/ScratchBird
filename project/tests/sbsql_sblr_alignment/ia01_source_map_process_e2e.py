@@ -41,6 +41,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "fulltext-regex-match"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "fulltext-wildcard-match"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "fulltext-prefix-match"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "fulltext-analyzer-apply"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-create-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-grant"))
