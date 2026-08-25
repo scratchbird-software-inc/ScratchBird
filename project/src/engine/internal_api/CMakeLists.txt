@@ -465,6 +465,7 @@ add_library(sb_engine_internal_api
   sblr_ddl_drop_event_trigger_coordinator.cpp
   sblr_cluster_create_placement_policy_coordinator.cpp
   sblr_cluster_alter_placement_policy_coordinator.cpp
+  sblr_cluster_drop_placement_policy_coordinator.cpp
   sblr_ddl_alter_collation_coordinator.cpp
   sblr_ddl_drop_collation_coordinator.cpp
   sblr_ddl_create_materialized_view_coordinator.cpp

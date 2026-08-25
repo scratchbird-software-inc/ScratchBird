@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_cluster_drop_placement_policy_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrClusterDropPlacementPolicyRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrClusterDropPlacementPolicyRequestV1(q);assert(b.size()==64);SblrClusterDropPlacementPolicyRequestV1 d;assert(DecodeSblrClusterDropPlacementPolicyRequestV1(b.data(),b.size(),&d,nullptr));b[52]=1;assert(!DecodeSblrClusterDropPlacementPolicyRequestV1(b.data(),b.size(),&d,nullptr));SblrClusterDropPlacementPolicyDescriptorV1 x;x.body[0]=1;auto z=EncodeSblrClusterDropPlacementPolicyDescriptorV1(x);assert(z.size()==384);z[352]^=1;assert(!DecodeSblrClusterDropPlacementPolicyDescriptorV1(z.data(),z.size(),&x,nullptr));}
