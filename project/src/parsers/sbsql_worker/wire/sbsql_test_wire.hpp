@@ -156,6 +156,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDatabaseAttachForWire();
   PipelineResult RunDatabaseDetachForWire();
   PipelineResult RunDatabaseCheckpointForWire();
+  PipelineResult RunDatabaseVacuumForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
