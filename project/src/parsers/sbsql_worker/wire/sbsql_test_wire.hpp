@@ -188,6 +188,7 @@ class SbsqlTestWireSession {
   PipelineResult RunRepl2pcHeartbeatForWire();
   PipelineResult RunRepl2pcCheckStatusForWire();
   PipelineResult RunGraphTraverseForWire();
+  PipelineResult RunGraphOptionalMatchForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
