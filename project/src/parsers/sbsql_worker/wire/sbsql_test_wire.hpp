@@ -184,6 +184,7 @@ class SbsqlTestWireSession {
   PipelineResult RunRepl2pcCleanupForWire();
   PipelineResult RunRepl2pcResolveLockForWire();
   PipelineResult RunRepl2pcPessimisticLockForWire();
+  PipelineResult RunRepl2pcPessimisticRollbackForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
