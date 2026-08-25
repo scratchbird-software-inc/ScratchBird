@@ -3854,6 +3854,14 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia76_migration_cutover_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia76_migration_cutover_process_e2e PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;SBLR_MIGRATION_CUTOVER;CSC-TEST-003075;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia77_migration_rollback_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation migration-rollback
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia77_migration_rollback_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia77_migration_rollback_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;SBLR_MIGRATION_ROLLBACK;CSC-TEST-003076;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_role_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
