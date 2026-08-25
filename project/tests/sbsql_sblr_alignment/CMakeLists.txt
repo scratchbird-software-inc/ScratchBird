@@ -3261,6 +3261,10 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
   target_include_directories(sbsql_sblr_alignment_ia08_session_discard_cancellation_fault PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(sbsql_sblr_alignment_ia08_session_discard_cancellation_fault PRIVATE sb_engine_sblr)
   add_test(NAME sbsql_sblr_alignment_ia08_session_discard_cancellation_fault COMMAND sbsql_sblr_alignment_ia08_session_discard_cancellation_fault)
+  add_executable(sbsql_sblr_alignment_ia08_session_snapshot_handle_runtime ia08_session_snapshot_handle_runtime_test.cpp)
+  target_include_directories(sbsql_sblr_alignment_ia08_session_snapshot_handle_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(sbsql_sblr_alignment_ia08_session_snapshot_handle_runtime PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_ia08_session_snapshot_handle_runtime COMMAND sbsql_sblr_alignment_ia08_session_snapshot_handle_runtime)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_role_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
