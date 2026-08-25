@@ -433,6 +433,10 @@ int main(int argc, char** argv) {
                           ? session.RunAccelLlvmInvalidateForWire()
                     : operation == "accel-gpu-policy-set"
                           ? session.RunAccelGpuPolicySetForWire()
+                    : operation == "accel-gpu-inspect"
+                          ? session.RunAccelGpuInspectForWire()
+                    : operation == "accel-gpu-invalidate"
+                          ? session.RunAccelGpuInvalidateForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -738,6 +742,8 @@ int main(int argc, char** argv) {
   if (operation == "accel-llvm-inspect" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004149 ACCEL_LLVM_INSPECT deterministic_cluster_refusal\n"; return 0; }
   if (operation == "accel-llvm-invalidate" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004153 ACCEL_LLVM_INVALIDATE deterministic_cluster_refusal\n"; return 0; }
   if (operation == "accel-gpu-policy-set" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004157 ACCEL_GPU_POLICY_SET deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "accel-gpu-inspect" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004165 ACCEL_GPU_INSPECT deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "accel-gpu-invalidate" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004169 ACCEL_GPU_INVALIDATE deterministic_cluster_refusal\n"; return 0; }
   if (!result.accepted) {
     if (result.messages.diagnostics.empty())
       std::cerr << "SBLR.DDL_CREATE_TYPE.EMPTY_FAILURE operation=" << operation
