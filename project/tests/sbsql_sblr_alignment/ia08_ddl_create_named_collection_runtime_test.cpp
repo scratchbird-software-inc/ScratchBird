@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_create_named_collection_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlCreateNamedCollectionRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlCreateNamedCollectionRequestV1(q);assert(b.size()==64);SblrDdlCreateNamedCollectionRequestV1 d;assert(DecodeSblrDdlCreateNamedCollectionRequestV1(b.data(),b.size(),&d,nullptr));b[52]=1;assert(!DecodeSblrDdlCreateNamedCollectionRequestV1(b.data(),b.size(),&d,nullptr));SblrDdlCreateNamedCollectionDescriptorV1 x;x.body[0]=1;auto z=EncodeSblrDdlCreateNamedCollectionDescriptorV1(x);assert(z.size()==384);z[352]^=1;assert(!DecodeSblrDdlCreateNamedCollectionDescriptorV1(z.data(),z.size(),&x,nullptr));}
