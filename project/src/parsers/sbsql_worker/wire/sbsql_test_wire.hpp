@@ -247,6 +247,7 @@ class SbsqlTestWireSession {
   PipelineResult RunMigrationRetainEvidenceForWire();
   PipelineResult RunInternalTriggerDispatchForWire();
   PipelineResult RunInternalExceptionRaiseForWire();
+  PipelineResult RunInternalExceptionResignalForWire();
   PipelineResult RunDdlCreateTriggerForWire();
   PipelineResult RunDdlAlterTriggerForWire();
   PipelineResult RunDdlDropTriggerForWire();
