@@ -327,6 +327,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunFulltextScoreForWire():begun; }()
                     : operation == "fulltext-phrase-score"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunFulltextPhraseScoreForWire():begun; }()
+                    : operation == "fulltext-multi-field-score"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunFulltextMultiFieldScoreForWire():begun; }()
                     : operation == "aggregate"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunAggregateForWire():begun; }()
                     : operation == "group"
