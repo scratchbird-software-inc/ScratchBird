@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_accel_gpu_invalidate_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr; int main(){SblrAccelGpuInvalidateRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrAccelGpuInvalidateRequestV1(q);assert(b.size()==64);SblrAccelGpuInvalidateRequestV1 q2;std::string e;assert(DecodeSblrAccelGpuInvalidateRequestV1(b.data(),b.size(),&q2,&e));SblrAccelGpuInvalidateDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrAccelGpuInvalidateDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrAccelGpuInvalidateDescriptorV1(db.data(),db.size(),&d,&e));return 0;}

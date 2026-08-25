@@ -246,6 +246,7 @@ class SbsqlTestWireSession {
   PipelineResult RunVersionedResetForWire();
   PipelineResult RunAccelLlvmPolicySetForWire();
   PipelineResult RunAccelLlvmCompileForWire();
+  PipelineResult RunAccelGpuCompileForWire();
   PipelineResult RunAccelLlvmInspectForWire();
   PipelineResult RunAccelLlvmInvalidateForWire();
   PipelineResult RunAccelGpuPolicySetForWire();

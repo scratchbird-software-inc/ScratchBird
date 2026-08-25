@@ -486,6 +486,8 @@ add_library(sb_engine_internal_api
   sblr_accel_llvm_invalidate_coordinator.cpp
   sblr_accel_gpu_policy_set_coordinator.cpp
   sblr_accel_gpu_compile_coordinator.cpp
+  sblr_accel_gpu_inspect_coordinator.cpp
+  sblr_accel_gpu_invalidate_coordinator.cpp
   sblr_ddl_alter_collation_coordinator.cpp
   sblr_ddl_drop_collation_coordinator.cpp
   sblr_ddl_create_materialized_view_coordinator.cpp

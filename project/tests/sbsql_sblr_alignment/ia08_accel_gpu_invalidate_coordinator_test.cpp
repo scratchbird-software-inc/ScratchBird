@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_accel_gpu_invalidate_coordinator.hpp"
+#include <cassert>
+using namespace scratchbird::engine::internal_api; int main(){EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="gpu-invalidate";c.trace_tags={"private_accel_gpu_invalidate_binder","sysarch_authorized","cluster_provider_admitted","cluster_route_fence_admitted"};auto q=CompileSblrAccelGpuInvalidateDescriptor(c,"gpu-invalidate",7);assert(q.ok);c.trace_tags.push_back("private_accel_gpu_invalidate");assert(ConsumeSblrAccelGpuInvalidateDescriptor(c,q.descriptor).ok);return 0;}
