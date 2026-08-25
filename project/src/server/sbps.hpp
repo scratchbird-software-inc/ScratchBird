@@ -250,6 +250,8 @@ constexpr std::uint32_t kSchemaCoordinateVersionedBranchCreateRequestV1 = 7621;
 constexpr std::uint32_t kSchemaCoordinateVersionedBranchCreateResultV1 = 7622;
 constexpr std::uint32_t kSchemaCoordinateVersionedBranchDeleteRequestV1 = 7623;
 constexpr std::uint32_t kSchemaCoordinateVersionedBranchDeleteResultV1 = 7624;
+constexpr std::uint32_t kSchemaCoordinateVersionedDiffRequestV1 = 7625;
+constexpr std::uint32_t kSchemaCoordinateVersionedDiffResultV1 = 7626;
 constexpr std::uint32_t kSchemaCoordinateDdlDropCastRequestV1 = 7579;
 constexpr std::uint32_t kSchemaCoordinateDdlDropCastResultV1 = 7580;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewRequestV1 = 7303;
@@ -671,6 +673,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateVersionedBranchCreateResult = 609,
   kCoordinateVersionedBranchDeleteRequest = 610,
   kCoordinateVersionedBranchDeleteResult = 611,
+  kCoordinateVersionedDiffRequest = 612,
+  kCoordinateVersionedDiffResult = 613,
   kCoordinateDdlDropCastRequest = 566,
   kCoordinateDdlDropCastResult = 567,
   kCoordinateDdlCreateMaterializedViewRequest = 312,

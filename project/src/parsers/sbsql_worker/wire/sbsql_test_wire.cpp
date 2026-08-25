@@ -21720,6 +21720,7 @@ PipelineResult SbsqlTestWireSession::RunClusterAlterPlacementPolicyForWire() { P
 PipelineResult SbsqlTestWireSession::RunClusterDropPlacementPolicyForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("SB_DIAG_CLUSTER_TXN_UNAVAILABLE","ERROR","DROP PLACEMENT POLICY requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunVersionedBranchCreateForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","VERSIONED BRANCH CREATE requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunVersionedBranchDeleteForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","VERSIONED BRANCH DELETE requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
+PipelineResult SbsqlTestWireSession::RunVersionedDiffForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","VERSIONED DIFF requires an admitted cluster route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }
