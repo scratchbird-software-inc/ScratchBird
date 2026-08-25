@@ -217,6 +217,8 @@ bool IsZeroUuid(const std::array<std::uint8_t, 16>& uuid) {
 
 bool IsKnownMessageType(std::uint16_t message_type) {
   switch (message_type) {
+    case 538:
+    case 539:
     case 364:
     case 365:
     case 366:
