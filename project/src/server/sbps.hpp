@@ -394,6 +394,8 @@ constexpr std::uint32_t kSchemaSessionSettingGetRequestV1 = 7387;
 constexpr std::uint32_t kSchemaSessionSettingGetResultV1 = 7388;
 constexpr std::uint32_t kSchemaSessionDefaultQualifierSetRequestV1 = 7389;
 constexpr std::uint32_t kSchemaSessionDefaultQualifierSetResultV1 = 7390;
+constexpr std::uint32_t kSchemaSessionDiscardRequestV1 = 7391;
+constexpr std::uint32_t kSchemaSessionDiscardResultV1 = 7392;
 constexpr std::uint32_t kSchemaCoordinateSortRequestV1 = 7149;
 constexpr std::uint32_t kSchemaCoordinateSortResultV1 = 7150;
 constexpr std::uint32_t kSchemaCoordinateLimitRequestV1 = 7151;
@@ -761,6 +763,8 @@ enum class MessageType : std::uint16_t {
   kSessionSettingGetResult = 375,
   kSessionDefaultQualifierSetRequest = 376,
   kSessionDefaultQualifierSetResult = 377,
+  kSessionDiscardRequest = 378,
+  kSessionDiscardResult = 379,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,
   kCoordinateLimitRequest = 156,
