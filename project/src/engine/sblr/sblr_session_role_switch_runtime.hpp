@@ -1,0 +1,6 @@
+#pragma once
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace scratchbird::engine::sblr { struct SblrSessionRoleSwitchRequestV1{std::array<uint8_t,16> receipt{};uint64_t occurrence=0;};struct SblrSessionRoleSwitchDescriptorV1{std::array<uint8_t,16> principal_uuid{},evidence{};uint64_t expected_generation=0,security_generation=0,availability=0;};struct SblrSessionRoleSwitchResultV1{std::array<uint8_t,16> principal_uuid{};std::array<uint8_t,32> effect_evidence{};uint64_t generation=0,security_generation=0,availability=0;uint8_t status=0,publication_barrier=0;};std::vector<uint8_t> EncodeSblrSessionRoleSwitchRequestV1(const SblrSessionRoleSwitchRequestV1&);bool DecodeSblrSessionRoleSwitchRequestV1(const uint8_t*,size_t,SblrSessionRoleSwitchRequestV1*,std::string*);std::vector<uint8_t> EncodeSblrSessionRoleSwitchDescriptorV1(const SblrSessionRoleSwitchDescriptorV1&,bool);bool DecodeSblrSessionRoleSwitchDescriptorV1(const uint8_t*,size_t,SblrSessionRoleSwitchDescriptorV1*,std::string*,bool);std::vector<uint8_t> EncodeSblrSessionRoleSwitchResultV1(const SblrSessionRoleSwitchResultV1&);bool DecodeSblrSessionRoleSwitchResultV1(const uint8_t*,size_t,SblrSessionRoleSwitchResultV1*,std::string*);}
