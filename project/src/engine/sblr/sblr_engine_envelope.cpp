@@ -25,6 +25,7 @@
 #include "sblr_session_setting_set_runtime.hpp"
 #include "sblr_session_setting_reset_runtime.hpp"
 #include "sblr_session_setting_get_runtime.hpp"
+#include "sblr_session_default_qualifier_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
@@ -707,6 +708,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::session_setting_set_descriptor: { SblrSessionSettingSetDescriptorV1 operand; std::string detail; return DecodeSblrSessionSettingSetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::session_setting_reset_descriptor: { SblrSessionSettingResetDescriptorV1 operand; std::string detail; return DecodeSblrSessionSettingResetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::session_setting_get_descriptor: { SblrSessionSettingGetDescriptorV1 operand; std::string detail; return DecodeSblrSessionSettingGetDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::session_default_qualifier_set_descriptor: { SblrSessionDefaultQualifierSetDescriptorV1 operand; std::string detail; return DecodeSblrSessionDefaultQualifierSetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::window_descriptor: { SblrWindowDescriptorV1 operand; std::string detail; return DecodeSblrWindowDescriptorV1(data,size,&operand,&detail,true); }

@@ -155,6 +155,7 @@ enum class SblrValueKind : std::uint16_t {
   session_setting_set_descriptor = 179,
   session_setting_reset_descriptor = 180,
   session_setting_get_descriptor = 181,
+  session_default_qualifier_set_descriptor = 182,
   sort_descriptor = 71,
   limit_descriptor = 72,
   window_descriptor = 73,
