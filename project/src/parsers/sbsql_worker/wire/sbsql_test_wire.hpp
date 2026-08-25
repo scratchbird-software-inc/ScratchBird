@@ -217,6 +217,7 @@ class SbsqlTestWireSession {
   PipelineResult RunSecurityDropPolicyForWire();
   PipelineResult RunSecurityAlterPolicyForWire();
   PipelineResult RunSecurityDropUserForWire();
+  PipelineResult RunSecurityAuthenticateForWire();
   PipelineResult RunSecurityAlterRoleForWire();
   PipelineResult RunSecurityCreateGroupMappingForWire();
   PipelineResult RunSecurityDropGroupMappingForWire();
