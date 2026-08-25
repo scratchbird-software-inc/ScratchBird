@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_drop_named_collection_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrDdlDropNamedCollectionRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrDdlDropNamedCollectionRequestV1(q);assert(b.size()==64);SblrDdlDropNamedCollectionRequestV1 d;assert(DecodeSblrDdlDropNamedCollectionRequestV1(b.data(),b.size(),&d,nullptr));b[52]=1;assert(!DecodeSblrDdlDropNamedCollectionRequestV1(b.data(),b.size(),&d,nullptr));SblrDdlDropNamedCollectionDescriptorV1 x;x.body[0]=1;auto z=EncodeSblrDdlDropNamedCollectionDescriptorV1(x);assert(z.size()==384);z[352]^=1;assert(!DecodeSblrDdlDropNamedCollectionDescriptorV1(z.data(),z.size(),&x,nullptr));}
