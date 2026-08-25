@@ -35,6 +35,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-remove"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-delete"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-detach-delete"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "fulltext-score"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-create-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-group-mapping"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-grant"))
