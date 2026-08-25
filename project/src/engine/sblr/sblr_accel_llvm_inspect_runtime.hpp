@@ -1,0 +1,3 @@
+#pragma once
+#include "sblr_accel_llvm_policy_set_runtime.hpp"
+namespace scratchbird::engine::sblr{using SblrAccelLlvmInspectRequestV1=SblrAccelLlvmPolicySetRequestV1;using SblrAccelLlvmInspectDescriptorV1=SblrAccelLlvmPolicySetDescriptorV1;using SblrAccelLlvmInspectResultV1=SblrAccelLlvmPolicySetResultV1;std::vector<std::uint8_t>EncodeSblrAccelLlvmInspectRequestV1(const SblrAccelLlvmInspectRequestV1&);bool DecodeSblrAccelLlvmInspectRequestV1(const std::uint8_t*,std::size_t,SblrAccelLlvmInspectRequestV1*,std::string*);std::vector<std::uint8_t>EncodeSblrAccelLlvmInspectDescriptorV1(const SblrAccelLlvmInspectDescriptorV1&);bool DecodeSblrAccelLlvmInspectDescriptorV1(const std::uint8_t*,std::size_t,SblrAccelLlvmInspectDescriptorV1*,std::string*);}

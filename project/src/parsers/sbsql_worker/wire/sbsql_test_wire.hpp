@@ -245,6 +245,7 @@ class SbsqlTestWireSession {
   PipelineResult RunVersionedRevertForWire();
   PipelineResult RunVersionedResetForWire();
   PipelineResult RunAccelLlvmPolicySetForWire();
+  PipelineResult RunAccelLlvmCompileForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();

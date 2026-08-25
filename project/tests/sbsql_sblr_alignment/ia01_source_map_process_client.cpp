@@ -423,6 +423,8 @@ int main(int argc, char** argv) {
                           ? session.RunVersionedResetForWire()
                     : operation == "accel-llvm-policy-set"
                           ? session.RunAccelLlvmPolicySetForWire()
+                    : operation == "accel-llvm-compile"
+                          ? session.RunAccelLlvmCompileForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -723,6 +725,7 @@ int main(int argc, char** argv) {
   if (operation == "versioned-revert" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004133 VERSIONED_REVERT deterministic_cluster_refusal\n"; return 0; }
   if (operation == "versioned-reset" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004137 VERSIONED_RESET deterministic_cluster_refusal\n"; return 0; }
   if (operation == "accel-llvm-policy-set" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004141 ACCEL_LLVM_POLICY_SET deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "accel-llvm-compile" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004145 ACCEL_LLVM_COMPILE deterministic_cluster_refusal\n"; return 0; }
   if (!result.accepted) {
     if (result.messages.diagnostics.empty())
       std::cerr << "SBLR.DDL_CREATE_TYPE.EMPTY_FAILURE operation=" << operation
