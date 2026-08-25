@@ -81,6 +81,7 @@
 #include "engine/sblr/sblr_ddl_create_sequence_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_materialized_view_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_publication_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_publication_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_type_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_type_runtime.hpp"
@@ -739,8 +740,10 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   const bool exact_ddl_drop_sequence=request.root_opcode_code==1565&&request.root_opcode=="SBLR_DDL_DROP_SEQUENCE"&&request.root_operation_id=="engine.op.ddl_drop_sequence"; bool exact_local_ddl_drop_sequence=false;
   const bool exact_ddl_create_materialized_view=request.root_opcode_code==1566&&request.root_opcode=="SBLR_DDL_CREATE_MATERIALIZED_VIEW"&&request.root_operation_id=="engine.op.ddl_create_materialized_view"; bool exact_local_ddl_create_materialized_view=false;
   const bool exact_ddl_create_publication=request.root_opcode_code==1582&&request.root_opcode=="SBLR_DDL_CREATE_PUBLICATION"&&request.root_operation_id=="engine.op.ddl_create_publication"; bool exact_local_ddl_create_publication=false;
-  const bool exact_ddl_alter_publication=request.root_opcode_code==1583&&request.root_opcode=="SBLR_DDL_ALTER_PUBLICATION"&&request.root_operation_id=="engine.op.ddl_alter_publication";
-  if (exact_ddl_alter_publication) return Refuse(request, (request.cluster_context_active || request.cluster_transaction_active || request.route_fence_present) ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN" : "SBLR.OPERATION_UNSUPPORTED");
+  const bool exact_ddl_alter_publication=request.root_opcode_code==1583&&request.root_opcode=="SBLR_DDL_ALTER_PUBLICATION"&&request.root_operation_id=="engine.op.ddl_alter_publication"; bool exact_local_ddl_alter_publication=false;
+  if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_alter_publication&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="alter_publication_descriptor"&&member.operands.front().name=="publication"){scratchbird::engine::sblr::SblrDdlAlterPublicationDescriptorV1 operand;std::string detail;exact_local_ddl_alter_publication=scratchbird::engine::sblr::DecodeSblrDdlAlterPublicationDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail);}}
+  if (exact_ddl_alter_publication && (request.cluster_context_active || request.cluster_transaction_active || request.route_fence_present)) return Refuse(request,"CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN");
+  if (exact_ddl_alter_publication && !exact_local_ddl_alter_publication) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_create_publication && (request.cluster_context_active || request.cluster_transaction_active || request.route_fence_present)) return Refuse(request,"CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN");
   if(stream.ok&&stream.stream.operations.size()==3&&exact_ddl_create_publication&&!request.cluster_context_active&&!request.cluster_transaction_active&&!request.route_fence_present){const auto&member=stream.stream.operations[1];if(member.operands.size()==1&&member.operands.front().type=="create_publication_descriptor"&&member.operands.front().name=="publication"){scratchbird::engine::sblr::SblrDdlCreatePublicationDescriptorV1 operand;std::string detail;exact_local_ddl_create_publication=scratchbird::engine::sblr::DecodeSblrDdlCreatePublicationDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&operand,&detail);}}
   const bool exact_ddl_create_type=request.root_opcode_code==1569&&request.root_opcode=="SBLR_DDL_CREATE_TYPE"&&request.root_operation_id=="engine.op.ddl_create_type"; bool exact_local_ddl_create_type=false;
@@ -936,6 +939,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_local_ddl_create_dictionary) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_continuous_view) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_create_publication) exact_local_ddl_create_schema = true;
+  if (exact_local_ddl_alter_publication) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_alter_continuous_view) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_drop_continuous_view) exact_local_ddl_create_schema = true;
   if (exact_local_dml_async_insert_submit) exact_local_ddl_create_schema = true;
