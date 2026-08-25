@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_session_default_qualifier_runtime.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::sblr; SblrSessionDefaultQualifierSetRequestV1 q; q.receipt[0]=1;q.occurrence=1;auto b=EncodeSblrSessionDefaultQualifierSetRequestV1(q);assert(b.size()==24);SblrSessionDefaultQualifierSetRequestV1 x;std::string e;assert(DecodeSblrSessionDefaultQualifierSetRequestV1(b.data(),b.size(),&x,&e));SblrSessionDefaultQualifierSetDescriptorV1 d;d.key[0]='q';d.expected_generation=1;d.availability=1;auto v=EncodeSblrSessionDefaultQualifierSetDescriptorV1(d,true);assert(v.size()==128);return 0;}
