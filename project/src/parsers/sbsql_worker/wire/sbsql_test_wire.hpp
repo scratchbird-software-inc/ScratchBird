@@ -152,6 +152,7 @@ class SbsqlTestWireSession {
   PipelineResult RunShowObjectDetailForWire();
   PipelineResult RunNameResolveForWire();
   PipelineResult RunParseTextForWire();
+  PipelineResult RunCatalogEpochCheckForWire();
   PipelineResult RunAggregateForWire();
   PipelineResult RunGroupForWire();
   PipelineResult RunSortForWire();
