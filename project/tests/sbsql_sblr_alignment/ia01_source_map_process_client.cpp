@@ -403,6 +403,8 @@ int main(int argc, char** argv) {
                           ? session.RunDdlAlterExtensionForWire()
                     : operation == "ddl-drop-extension"
                           ? session.RunDdlDropExtensionForWire()
+                    : operation == "cluster-create-placement-policy"
+                          ? session.RunClusterCreatePlacementPolicyForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -686,6 +688,10 @@ int main(int argc, char** argv) {
   }
   if (operation == "ddl-drop-extension" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
     std::cout << "CSC-TEST-004057 DDL_DROP_EXTENSION deterministic_cluster_refusal\n";
+    return 0;
+  }
+  if (operation == "cluster-create-placement-policy" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "SB_DIAG_CLUSTER_TXN_UNAVAILABLE") {
+    std::cout << "CSC-TEST-004073 CLUSTER_CREATE_PLACEMENT_POLICY deterministic_cluster_refusal\n";
     return 0;
   }
   if (!result.accepted) {

@@ -21708,6 +21708,14 @@ PipelineResult SbsqlTestWireSession::RunDdlDropExtensionForWire() {
     "sbsql_sblr_alignment"));
   return result;
 }
+PipelineResult SbsqlTestWireSession::RunClusterCreatePlacementPolicyForWire() {
+  PipelineResult result;
+  result.messages.diagnostics.push_back(MakeDiagnostic(
+    "SB_DIAG_CLUSTER_TXN_UNAVAILABLE", "ERROR",
+    "CREATE PLACEMENT POLICY requires an admitted cluster route.",
+    "sbsql_sblr_alignment"));
+  return result;
+}
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }
