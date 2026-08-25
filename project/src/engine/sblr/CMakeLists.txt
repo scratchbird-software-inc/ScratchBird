@@ -103,6 +103,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_sec_drop_group_mapping_runtime.cpp
   sblr_sec_grant_runtime.cpp
   sblr_sec_revoke_runtime.cpp
+  sblr_sec_alter_policy_runtime.cpp
   sblr_sec_create_policy_runtime.cpp
   sblr_sec_drop_policy_runtime.cpp
   sblr_security_create_user_runtime.cpp
