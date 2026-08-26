@@ -1,0 +1,4 @@
+#include "engine/sblr/sblr_ddl_drop_timeseries_value_cache_runtime.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::sblr;SblrDdlDropTimeseriesValueCacheRequestV1 q;q.receipt[0]=1;q.occurrence=1;q.cache_occurrence=2;auto w=EncodeSblrDdlDropTimeseriesValueCacheRequestV1(q);SblrDdlDropTimeseriesValueCacheRequestV1 q2;assert(DecodeSblrDdlDropTimeseriesValueCacheRequestV1(w.data(),w.size(),&q2,nullptr));SblrDdlDropTimeseriesValueCacheDescriptorV1 d;d.evidence[0]=1;d.availability=1;auto dw=EncodeSblrDdlDropTimeseriesValueCacheDescriptorV1(d,true);SblrDdlDropTimeseriesValueCacheDescriptorV1 d2;assert(DecodeSblrDdlDropTimeseriesValueCacheDescriptorV1(dw.data(),dw.size(),&d2,nullptr,true));dw[448]=1;assert(!DecodeSblrDdlDropTimeseriesValueCacheDescriptorV1(dw.data(),dw.size(),&d2,nullptr,true));return 0;}
+
