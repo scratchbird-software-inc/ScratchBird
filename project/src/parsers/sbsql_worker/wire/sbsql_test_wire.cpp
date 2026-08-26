@@ -21739,6 +21739,7 @@ PipelineResult SbsqlTestWireSession::RunBridgeOpenSessionForWire() { PipelineRes
 PipelineResult SbsqlTestWireSession::RunBridgeCloseSessionForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","BRIDGE CLOSE SESSION requires an admitted provider route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunBridgeHealthForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","BRIDGE HEALTH requires an admitted provider route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunBridgeBeginTransactionForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","BRIDGE BEGIN TRANSACTION requires an admitted provider route.","sbsql_sblr_alignment")); return result; }
+PipelineResult SbsqlTestWireSession::RunBridgeCommitTransactionForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","BRIDGE COMMIT TRANSACTION requires an admitted provider route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
   return RunGpuProfileDisableRefusalForWire();
 }
