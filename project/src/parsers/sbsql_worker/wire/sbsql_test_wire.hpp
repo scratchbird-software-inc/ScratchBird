@@ -244,6 +244,12 @@ class SbsqlTestWireSession {
   PipelineResult RunVersionedTagForWire();
   PipelineResult RunVersionedRevertForWire();
   PipelineResult RunVersionedResetForWire();
+  PipelineResult RunBitemporalAsOfForWire();
+  PipelineResult RunVerifiableHistoryProveForWire();
+  PipelineResult RunVerifyProofDescriptorForWire();
+  PipelineResult RunVersionedMergeForWire();
+  PipelineResult RunVersionedHashReadForWire();
+  PipelineResult RunVersionedStatusReadForWire();
   PipelineResult RunAccelLlvmPolicySetForWire();
   PipelineResult RunAccelLlvmCompileForWire();
   PipelineResult RunAccelGpuCompileForWire();
