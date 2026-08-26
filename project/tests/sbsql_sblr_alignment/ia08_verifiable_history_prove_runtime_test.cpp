@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_verifiable_history_prove_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr;int main(){SblrVerifiableHistoryProveRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrVerifiableHistoryProveRequestV1(q);assert(b.size()==64);SblrVerifiableHistoryProveRequestV1 q2;std::string e;assert(DecodeSblrVerifiableHistoryProveRequestV1(b.data(),b.size(),&q2,&e));SblrVerifiableHistoryProveDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrVerifiableHistoryProveDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrVerifiableHistoryProveDescriptorV1(db.data(),db.size(),&d,&e));return 0;}
