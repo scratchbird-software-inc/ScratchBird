@@ -577,6 +577,7 @@ add_library(sb_engine_internal_api
   sblr_dml_counter_add_coordinator.cpp
   sblr_ddl_timeseries_series_cardinality_policy_coordinator.cpp
   sblr_ddl_create_timeseries_value_cache_coordinator.cpp
+  sblr_ddl_alter_timeseries_value_cache_coordinator.cpp
   sblr_dml_timeseries_schema_write_coordinator.cpp
   sblr_ddl_alter_rewrite_rule_coordinator.cpp
   sblr_ddl_drop_trigger_coordinator.cpp

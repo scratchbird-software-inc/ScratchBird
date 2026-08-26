@@ -424,6 +424,8 @@ constexpr std::uint32_t kSchemaCoordinateDdlTimeseriesSeriesCardinalityPolicyReq
 constexpr std::uint32_t kSchemaCoordinateDdlTimeseriesSeriesCardinalityPolicyResultV1 = 7286;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateTimeseriesValueCacheRequestV1 = 7287;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateTimeseriesValueCacheResultV1 = 7288;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterTimeseriesValueCacheRequestV1 = 7289;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterTimeseriesValueCacheResultV1 = 7290;
 constexpr std::uint32_t kSchemaCoordinateDdlDropMacroRequestV1 = 7253;
 constexpr std::uint32_t kSchemaCoordinateDdlDropMacroResultV1 = 7254;
 constexpr std::uint32_t kSchemaCoordinateAdminRegisterExternalRelationResolverRequestV1 = 7255;
@@ -873,6 +875,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateDdlTimeseriesSeriesCardinalityPolicyResult = 291,
   kCoordinateDdlCreateTimeseriesValueCacheRequest = 292,
   kCoordinateDdlCreateTimeseriesValueCacheResult = 293,
+  kCoordinateDdlAlterTimeseriesValueCacheRequest = 294,
+  kCoordinateDdlAlterTimeseriesValueCacheResult = 295,
   kCoordinateDdlDropMacroRequest = 258,
   kCoordinateDdlDropMacroResult = 259,
   kCoordinateAdminRegisterExternalRelationResolverRequest = 260,

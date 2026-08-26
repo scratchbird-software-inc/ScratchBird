@@ -230,6 +230,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_dml_timeseries_schema_write_runtime.cpp
   sblr_ddl_timeseries_series_cardinality_policy_runtime.cpp
   sblr_ddl_create_timeseries_value_cache_runtime.cpp
+  sblr_ddl_alter_timeseries_value_cache_runtime.cpp
   sblr_database_deserialize_logical_snapshot_runtime.cpp
   sblr_database_serialize_logical_snapshot_runtime.cpp
   sblr_ddl_drop_trigger_runtime.cpp
