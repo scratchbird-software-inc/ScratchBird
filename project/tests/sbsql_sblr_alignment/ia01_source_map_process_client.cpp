@@ -683,6 +683,8 @@ int main(int argc, char** argv) {
                           ? session.RunDdlTimeseriesSeriesCardinalityPolicyForWire()
                     : operation == "ddl-create-timeseries-value-cache"
                           ? session.RunDdlCreateTimeseriesValueCacheForWire()
+                          : operation == "ddl-alter-timeseries-value-cache"
+                                ? session.RunDdlAlterTimeseriesValueCacheForWire()
                     : operation == "dml-async-insert-cancel"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDmlAsyncInsertCancelForWire():begun; }()
                     : operation == "ddl-drop-macro"

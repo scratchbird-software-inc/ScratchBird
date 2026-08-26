@@ -386,6 +386,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDmlTimeseriesSchemaWriteForWire();
   PipelineResult RunDdlTimeseriesSeriesCardinalityPolicyForWire();
   PipelineResult RunDdlCreateTimeseriesValueCacheForWire();
+  PipelineResult RunDdlAlterTimeseriesValueCacheForWire();
   PipelineResult RunDmlAsyncInsertCancelForWire();
   PipelineResult RunDdlDropMacroForWire();
   PipelineResult RunAdminRegisterExternalRelationResolverForWire();
