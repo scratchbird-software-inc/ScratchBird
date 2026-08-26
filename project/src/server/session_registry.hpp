@@ -1104,6 +1104,7 @@ SessionOperationResult HandleCoordinateDmlTimeseriesSchemaWrite(ServerSessionReg
 SessionOperationResult HandleCoordinateDdlTimeseriesSeriesCardinalityPolicy(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateTimeseriesValueCache(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlAlterTimeseriesValueCache(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDdlDropTimeseriesValueCache(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDmlAsyncInsertCancel(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropMacro(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateAdminRegisterExternalRelationResolver(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

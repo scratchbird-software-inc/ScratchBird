@@ -24,7 +24,7 @@ struct CanonicalOpcodeCodeRow {
 // Generated from the manifest-authoritative sblr-opcodes.yaml assignment.
 // The runtime never derives a code from vector order, text hashing, aliases,
 // or an implementation-private sequence.
-constexpr std::array<CanonicalOpcodeCodeRow, 437> kCanonicalOpcodeCodes{{
+constexpr std::array<CanonicalOpcodeCodeRow, 439> kCanonicalOpcodeCodes{{
     {"SBLR_PACKAGE_BEGIN", 0x0001u},
     {"SBLR_PACKAGE_END", 0x0002u},
     {"SBLR_LITERAL", 0x0003u},
@@ -405,6 +405,8 @@ constexpr std::array<CanonicalOpcodeCodeRow, 437> kCanonicalOpcodeCodes{{
     {"SBLR_DML_TIMESERIES_SCHEMA_WRITE", 0x0670u},
     {"SBLR_DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY", 0x0671u},
     {"SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE", 0x0672u},
+    {"SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE", 0x0673u},
+    {"SBLR_DDL_DROP_TIMESERIES_VALUE_CACHE", 0x0674u},
     {"SBLR_DDL_CREATE_NAMED_COLLECTION", 0x064Au},
     {"SBLR_DDL_DROP_NAMED_COLLECTION", 0x064Bu},
     {"SBLR_DDL_VALIDATE_CONSTRAINT", 0x0654u},
@@ -1311,6 +1313,8 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       CanonicalEntry("engine.op.dml_timeseries_schema_write", "SBLR_DML_TIMESERIES_SCHEMA_WRITE", "time-series", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.ddl_set_timeseries_series_cardinality_policy", "SBLR_DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY", "time-series", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_create_timeseries_value_cache", "SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE", "time-series", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_alter_timeseries_value_cache", "SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE", "time-series", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_drop_timeseries_value_cache", "SBLR_DDL_DROP_TIMESERIES_VALUE_CACHE", "time-series", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_index", "SBLR_DDL_DROP_INDEX", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("system.config.get", "SBLR_SYSTEM_CONFIG_GET", "database-management", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::sysarch_authorized, true),
@@ -1872,6 +1876,8 @@ const SblrOpcodeEntry* LookupSblrOpcode(std::string_view opcode) {
 
 const SblrOpcodeEntry* LookupSblrOpcodeCode(std::uint16_t code) {
   if (code == 0) return nullptr;
+  if (code == 1651) return LookupSblrOpcode("SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE");
+  if (code == 1652) return LookupSblrOpcode("SBLR_DDL_DROP_TIMESERIES_VALUE_CACHE");
   const SblrOpcodeEntry* match = nullptr;
   for (const auto& entry : StaticSblrOpcodeRegistry()) {
     if (entry.code != code) continue;
@@ -1959,6 +1965,8 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
   if (code == 1648 && operation_id == "engine.op.dml_timeseries_schema_write" && opcode == "SBLR_DML_TIMESERIES_SCHEMA_WRITE") { result.entry = LookupSblrOpcode("SBLR_DML_TIMESERIES_SCHEMA_WRITE"); result.ok = result.entry != nullptr; return result; }
   if (code == 1649 && operation_id == "engine.op.ddl_set_timeseries_series_cardinality_policy" && opcode == "SBLR_DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY") { result.entry = LookupSblrOpcode("SBLR_DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY"); result.ok = result.entry != nullptr; return result; }
   if (code == 1650 && operation_id == "engine.op.ddl_create_timeseries_value_cache" && opcode == "SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1651 && operation_id == "engine.op.ddl_alter_timeseries_value_cache" && opcode == "SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1652 && operation_id == "engine.op.ddl_drop_timeseries_value_cache" && opcode == "SBLR_DDL_DROP_TIMESERIES_VALUE_CACHE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_TIMESERIES_VALUE_CACHE"); result.ok = result.entry != nullptr; return result; }
   if (code == 1567 && operation_id == "engine.op.ddl_refresh_materialized_view" && opcode == "SBLR_DDL_REFRESH_MATERIALIZED_VIEW") { result.entry = LookupSblrOpcode("SBLR_DDL_REFRESH_MATERIALIZED_VIEW"); result.ok = result.entry != nullptr; return result; }
   if (code == 1641 && operation_id == "engine.op.ddl_alter_continuous_view" && opcode == "SBLR_DDL_ALTER_CONTINUOUS_VIEW") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_CONTINUOUS_VIEW"); result.ok = result.entry != nullptr; return result; }
   if (code == 1029 && operation_id == "engine.op.udr_invoke" &&

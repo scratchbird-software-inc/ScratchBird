@@ -128,6 +128,8 @@ enum class SblrValueKind : std::uint16_t {
   timeseries_schema_write_descriptor = 139,
   timeseries_series_cardinality_policy_descriptor = 140,
   timeseries_value_cache_descriptor = 141,
+  timeseries_value_cache_alter_descriptor = 203,
+  timeseries_value_cache_drop_descriptor = 204,
   alter_sequence_descriptor = 143,
   create_materialized_view_descriptor = 144,
   create_type_descriptor = 145,

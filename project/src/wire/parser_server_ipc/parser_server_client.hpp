@@ -664,6 +664,7 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateDdlTimeseriesSeriesCardinalityPolicy(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateTimeseriesValueCache(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlAlterTimeseriesValueCache(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropTimeseriesValueCache(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDmlAsyncInsertCancel(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlDropMacro(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateAdminRegisterExternalRelationResolver(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
