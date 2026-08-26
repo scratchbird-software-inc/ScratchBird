@@ -6342,6 +6342,12 @@ sb_engine_status_t DispatchStatementContextReceipt(
   const bool exact_security_drop_policy_operation = operation.envelope.operation_id == "engine.op.sec_drop_policy" && operation.envelope.opcode_code == 1803 && operation.envelope.opcode == "SBLR_SEC_DROP_POLICY";
   const bool exact_security_drop_group_mapping_operation = operation.envelope.operation_id == "engine.op.sec_drop_group_mapping" && operation.envelope.opcode_code == 1806 && operation.envelope.opcode == "SBLR_SEC_DROP_GROUP_MAPPING";
   const bool exact_security_alter_role_operation = operation.envelope.operation_id == "engine.op.sec_alter_role" && operation.envelope.opcode_code == 1800 && operation.envelope.opcode == "SBLR_SEC_ALTER_ROLE";
+  const bool exact_bitemporal_as_of_operation = operation.envelope.operation_id == "engine.op.bitemporal_as_of" && operation.envelope.opcode_code == 8448 && operation.envelope.opcode == "SBLR_BITEMPORAL_AS_OF";
+  const bool exact_verifiable_history_prove_operation = operation.envelope.operation_id == "engine.op.verifiable_history_prove" && operation.envelope.opcode_code == 8452 && operation.envelope.opcode == "SBLR_VERIFIABLE_HISTORY_PROVE";
+  const bool exact_verify_proof_descriptor_operation = operation.envelope.operation_id == "engine.op.verify_proof_descriptor" && operation.envelope.opcode_code == 8453 && operation.envelope.opcode == "SBLR_VERIFY_PROOF_DESCRIPTOR";
+  const bool exact_versioned_merge_operation = operation.envelope.operation_id == "engine.op.versioned_merge" && operation.envelope.opcode_code == 8456 && operation.envelope.opcode == "SBLR_VERSIONED_MERGE";
+  const bool exact_versioned_hash_read_operation = operation.envelope.operation_id == "engine.op.versioned_hash_read" && operation.envelope.opcode_code == 8457 && operation.envelope.opcode == "SBLR_VERSIONED_HASH_READ";
+  const bool exact_versioned_status_read_operation = operation.envelope.operation_id == "engine.op.versioned_status_read" && operation.envelope.opcode_code == 8458 && operation.envelope.opcode == "SBLR_VERSIONED_STATUS_READ";
   const bool exact_ddl_alter_continuous_view_operation =
       !opcode_stream &&
       operation.envelope.operation_id == "engine.op.ddl_alter_continuous_view" &&
@@ -6367,7 +6373,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
       operation.envelope.opcode == "SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA";
   if (!operation.ok ||
       (!opcode_stream && !exact_ddl_create_table_as_query_operation && !exact_ddl_create_table_as_query_no_data_operation && !exact_ddl_create_continuous_view_operation && !exact_ddl_alter_continuous_view_operation && !exact_ddl_drop_continuous_view_operation && !exact_dml_async_insert_submit_operation && !exact_dml_async_insert_status_operation && !exact_dml_async_insert_cancel_operation && !exact_dml_counter_add_operation && !exact_dml_timeseries_schema_write_operation && !exact_ddl_alter_sequence_operation && !exact_ddl_drop_sequence_operation &&
-       !exact_ddl_drop_type_operation && !exact_ddl_drop_synonym_operation && !exact_ddl_drop_foreign_table_operation && !exact_ddl_create_fdw_operation && !exact_ddl_drop_fdw_operation && !exact_security_create_user_operation && !exact_security_alter_user_operation &&
+       !exact_ddl_drop_type_operation && !exact_ddl_drop_synonym_operation && !exact_ddl_drop_foreign_table_operation && !exact_ddl_create_fdw_operation && !exact_ddl_drop_fdw_operation && !exact_security_create_user_operation && !exact_security_alter_user_operation && !exact_bitemporal_as_of_operation && !exact_verifiable_history_prove_operation && !exact_verify_proof_descriptor_operation && !exact_versioned_merge_operation && !exact_versioned_hash_read_operation && !exact_versioned_status_read_operation &&
        (operation.envelope.operation_id != "query.execute" ||
         operation.envelope.opcode_code != 0x1207 ||
         operation.envelope.opcode != "SBLR_QUERY_EXECUTE"))) {
@@ -6384,6 +6390,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
                " opcode=" + operation.envelope.opcode +
                " opcode_code=" + std::to_string(operation.envelope.opcode_code) +
                " operation_ok=" + (operation.ok ? "true" : "false")));
+  }
+  if (exact_bitemporal_as_of_operation || exact_verifiable_history_prove_operation || exact_verify_proof_descriptor_operation || exact_versioned_merge_operation || exact_versioned_hash_read_operation || exact_versioned_status_read_operation) {
+    return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4059, "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN", "sblr.versioned.cluster_route_required", "versioned operations require an admitted cluster route");
   }
   std::vector<const std::vector<std::uint8_t>*> literal_tables;
   std::vector<const std::vector<std::uint8_t>*> parameter_tables;
