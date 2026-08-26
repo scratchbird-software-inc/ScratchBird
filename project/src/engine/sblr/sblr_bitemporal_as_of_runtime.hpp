@@ -1,0 +1,3 @@
+#pragma once
+#include "sblr_accel_gpu_compile_runtime.hpp"
+namespace scratchbird::engine::sblr { using SblrBitemporalAsOfRequestV1=SblrAccelGpuCompileRequestV1; using SblrBitemporalAsOfDescriptorV1=SblrAccelGpuCompileDescriptorV1; using SblrBitemporalAsOfResultV1=SblrAccelGpuCompileResultV1; std::vector<std::uint8_t> EncodeSblrBitemporalAsOfRequestV1(const SblrBitemporalAsOfRequestV1&); bool DecodeSblrBitemporalAsOfRequestV1(const std::uint8_t*,std::size_t,SblrBitemporalAsOfRequestV1*,std::string*); std::vector<std::uint8_t> EncodeSblrBitemporalAsOfDescriptorV1(const SblrBitemporalAsOfDescriptorV1&); bool DecodeSblrBitemporalAsOfDescriptorV1(const std::uint8_t*,std::size_t,SblrBitemporalAsOfDescriptorV1*,std::string*); }
