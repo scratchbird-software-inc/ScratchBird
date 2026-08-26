@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_bridge_close_session_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr; int main(){SblrBridgeCloseSessionRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrBridgeCloseSessionRequestV1(q);assert(b.size()==64);SblrBridgeCloseSessionRequestV1 q2;std::string e;assert(DecodeSblrBridgeCloseSessionRequestV1(b.data(),b.size(),&q2,&e));SblrBridgeCloseSessionDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrBridgeCloseSessionDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrBridgeCloseSessionDescriptorV1(db.data(),db.size(),&d,&e));return 0;}

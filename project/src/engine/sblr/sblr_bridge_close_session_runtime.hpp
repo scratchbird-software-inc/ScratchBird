@@ -1,0 +1,3 @@
+#pragma once
+#include "sblr_accel_gpu_compile_runtime.hpp"
+namespace scratchbird::engine::sblr { using SblrBridgeCloseSessionRequestV1=SblrAccelGpuCompileRequestV1; using SblrBridgeCloseSessionDescriptorV1=SblrAccelGpuCompileDescriptorV1; using SblrBridgeCloseSessionResultV1=SblrAccelGpuCompileResultV1; std::vector<std::uint8_t> EncodeSblrBridgeCloseSessionRequestV1(const SblrBridgeCloseSessionRequestV1&); bool DecodeSblrBridgeCloseSessionRequestV1(const std::uint8_t*,std::size_t,SblrBridgeCloseSessionRequestV1*,std::string*); std::vector<std::uint8_t> EncodeSblrBridgeCloseSessionDescriptorV1(const SblrBridgeCloseSessionDescriptorV1&); bool DecodeSblrBridgeCloseSessionDescriptorV1(const std::uint8_t*,std::size_t,SblrBridgeCloseSessionDescriptorV1*,std::string*); }
