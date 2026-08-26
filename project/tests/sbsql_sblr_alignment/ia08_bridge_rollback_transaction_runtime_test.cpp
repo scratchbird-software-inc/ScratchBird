@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_bridge_rollback_transaction_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr; int main(){SblrBridgeRollbackTransactionRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrBridgeRollbackTransactionRequestV1(q);assert(b.size()==64);SblrBridgeRollbackTransactionRequestV1 q2;std::string e;assert(DecodeSblrBridgeRollbackTransactionRequestV1(b.data(),b.size(),&q2,&e));SblrBridgeRollbackTransactionDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrBridgeRollbackTransactionDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrBridgeRollbackTransactionDescriptorV1(db.data(),db.size(),&d,&e));return 0;}

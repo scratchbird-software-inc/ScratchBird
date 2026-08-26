@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_bridge_rollback_transaction_coordinator.hpp"
+#include <cassert>
+using namespace scratchbird::engine::internal_api; int main(){EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="bridge-rollback";c.trace_tags={"private_bridge_rollback_transaction_binder","sysarch_authorized","cluster_provider_admitted","cluster_route_fence_admitted"};auto q=CompileSblrBridgeRollbackTransactionDescriptor(c,"bridge-rollback",7);assert(q.ok);c.trace_tags.push_back("private_bridge_rollback_transaction");assert(ConsumeSblrBridgeRollbackTransactionDescriptor(c,q.descriptor).ok);return 0;}
