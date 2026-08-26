@@ -65,6 +65,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "database-deserialize-logical-snapshot"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-macro", "ddl-create-dictionary", "ddl-drop-dictionary", "ddl-alter-dictionary", "ddl-create-continuous-view", "ddl-alter-continuous-view", "ddl-drop-continuous-view", "dml-async-insert-submit", "dml-async-insert-status", "dml-async-insert-cancel", "dml-counter-add", "ddl-drop-macro", "admin-register-external-relation-resolver", "admin-unregister-external-relation-resolver"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "alter-gpu-profile-disable"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "filespace-create"))
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args()
     work = allocate_work(Path(args.work_dir))
@@ -369,6 +370,8 @@ def main() -> int:
             expected = ()
         elif args.operation == "alter-gpu-profile-disable":
             expected = ()
+        elif args.operation == "filespace-create":
+            expected = ()
         elif args.operation == "diagnostic-refusal":
             expected = ()
         elif args.operation == "diagnostic-reset":
@@ -422,7 +425,7 @@ def main() -> int:
                         "result_descriptor_version=1", "transaction_handle_sha256=",
                         "executor_availability_generation=")
         required_markers = (*expected, "parent_success_barrier=passed")
-        if args.operation in ("ddl-create-subscription", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"):
+        if args.operation in ("filespace-create", "ddl-create-subscription", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"):
             # This is a standalone cluster-gated refusal proof.  No local
             # executor receipt exists, so the transaction success barrier is
             # intentionally not required for this refusal-only route.

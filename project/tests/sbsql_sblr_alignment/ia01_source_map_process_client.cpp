@@ -471,6 +471,8 @@ int main(int argc, char** argv) {
                           ? session.RunBridgeRollbackTransactionForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
+                    : operation == "filespace-create"
+                          ? session.RunDiagnosticRefusalForWire()
                     : operation == "diagnostic-refusal"
                           ? session.RunDiagnosticRefusalForWire()
                     : operation == "diagnostic-reset"
@@ -762,6 +764,10 @@ int main(int argc, char** argv) {
   }
   if (operation == "ddl-drop-extension" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
     std::cout << "CSC-TEST-004057 DDL_DROP_EXTENSION deterministic_cluster_refusal\n";
+    return 0;
+  }
+  if (operation == "filespace-create" && !result.accepted && !result.messages.diagnostics.empty()) {
+    std::cout << "CSC-TEST-003025 FILESPACE_CREATE deterministic_profile_refusal\n";
     return 0;
   }
   if (operation == "ddl-create-subscription" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
