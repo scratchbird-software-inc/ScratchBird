@@ -1099,6 +1099,7 @@ SessionOperationResult HandleCoordinateDdlDropContinuousView(ServerSessionRegist
 SessionOperationResult HandleCoordinateDmlAsyncInsertSubmit(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDmlAsyncInsertStatus(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDmlCounterAdd(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDmlConditionalMutate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDmlTimeseriesSchemaWrite(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlTimeseriesSeriesCardinalityPolicy(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateTimeseriesValueCache(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

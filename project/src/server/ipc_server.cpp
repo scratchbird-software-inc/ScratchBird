@@ -3528,6 +3528,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlAsyncInsertStatusRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlAsyncInsertCancelRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlCounterAddRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlConditionalMutateRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlTimeseriesSchemaWriteRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlTimeseriesSeriesCardinalityPolicyRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateTimeseriesValueCacheRequest) ||
@@ -4213,6 +4214,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==278&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlAsyncInsertSubmitRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlAsyncInsertSubmit(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==280&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlAsyncInsertStatusRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlAsyncInsertStatus(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==286&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlCounterAddRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlCounterAdd(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==284&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlConditionalMutateRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlConditionalMutate(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==288&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlTimeseriesSchemaWriteRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlTimeseriesSchemaWrite(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==290&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlTimeseriesSeriesCardinalityPolicyRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlTimeseriesSeriesCardinalityPolicy(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==292&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateTimeseriesValueCacheRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateTimeseriesValueCache(session_registry,engine_state,frame)));return true;}

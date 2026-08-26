@@ -675,6 +675,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDmlAsyncInsertStatusForWire():begun; }()
                     : operation == "dml-counter-add"
                           ? session.RunDmlCounterAddForWire()
+                          : operation == "dml-conditional-mutate"
+                                ? session.RunDmlConditionalMutateForWire()
                     : operation == "dml-timeseries-schema-write"
                           ? session.RunDmlTimeseriesSchemaWriteForWire()
                     : operation == "ddl-timeseries-series-cardinality-policy"

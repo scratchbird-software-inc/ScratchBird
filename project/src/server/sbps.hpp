@@ -416,6 +416,8 @@ constexpr std::uint32_t kSchemaCoordinateDmlAsyncInsertCancelRequestV1 = 7277;
 constexpr std::uint32_t kSchemaCoordinateDmlAsyncInsertCancelResultV1 = 7278;
 constexpr std::uint32_t kSchemaCoordinateDmlCounterAddRequestV1 = 7281;
 constexpr std::uint32_t kSchemaCoordinateDmlCounterAddResultV1 = 7282;
+constexpr std::uint32_t kSchemaCoordinateDmlConditionalMutateRequestV1 = 7279;
+constexpr std::uint32_t kSchemaCoordinateDmlConditionalMutateResultV1 = 7280;
 constexpr std::uint32_t kSchemaCoordinateDmlTimeseriesSchemaWriteRequestV1 = 7283;
 constexpr std::uint32_t kSchemaCoordinateDmlTimeseriesSchemaWriteResultV1 = 7284;
 constexpr std::uint32_t kSchemaCoordinateDdlTimeseriesSeriesCardinalityPolicyRequestV1 = 7285;
@@ -863,6 +865,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateDmlAsyncInsertCancelResult = 283,
   kCoordinateDmlCounterAddRequest = 286,
   kCoordinateDmlCounterAddResult = 287,
+  kCoordinateDmlConditionalMutateRequest = 284,
+  kCoordinateDmlConditionalMutateResult = 285,
   kCoordinateDmlTimeseriesSchemaWriteRequest = 288,
   kCoordinateDmlTimeseriesSchemaWriteResult = 289,
   kCoordinateDdlTimeseriesSeriesCardinalityPolicyRequest = 290,

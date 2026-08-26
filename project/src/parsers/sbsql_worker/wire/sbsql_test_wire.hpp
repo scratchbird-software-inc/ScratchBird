@@ -382,6 +382,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDmlAsyncInsertSubmitForWire();
   PipelineResult RunDmlAsyncInsertStatusForWire();
   PipelineResult RunDmlCounterAddForWire();
+  PipelineResult RunDmlConditionalMutateForWire();
   PipelineResult RunDmlTimeseriesSchemaWriteForWire();
   PipelineResult RunDdlTimeseriesSeriesCardinalityPolicyForWire();
   PipelineResult RunDdlCreateTimeseriesValueCacheForWire();
