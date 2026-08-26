@@ -421,6 +421,18 @@ int main(int argc, char** argv) {
                           ? session.RunVersionedRevertForWire()
                     : operation == "versioned-reset"
                           ? session.RunVersionedResetForWire()
+                    : operation == "bitemporal-as-of"
+                          ? session.RunBitemporalAsOfForWire()
+                    : operation == "verifiable-history-prove"
+                          ? session.RunVerifiableHistoryProveForWire()
+                    : operation == "verify-proof-descriptor"
+                          ? session.RunVerifyProofDescriptorForWire()
+                    : operation == "versioned-merge"
+                          ? session.RunVersionedMergeForWire()
+                    : operation == "versioned-hash-read"
+                          ? session.RunVersionedHashReadForWire()
+                    : operation == "versioned-status-read"
+                          ? session.RunVersionedStatusReadForWire()
                     : operation == "accel-llvm-policy-set"
                           ? session.RunAccelLlvmPolicySetForWire()
                     : operation == "accel-llvm-compile"
@@ -754,6 +766,12 @@ int main(int argc, char** argv) {
   if (operation == "versioned-tag" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004129 VERSIONED_TAG deterministic_cluster_refusal\n"; return 0; }
   if (operation == "versioned-revert" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004133 VERSIONED_REVERT deterministic_cluster_refusal\n"; return 0; }
   if (operation == "versioned-reset" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004137 VERSIONED_RESET deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "bitemporal-as-of" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004285 BITEMPORAL_AS_OF deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "verifiable-history-prove" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004289 VERIFIABLE_HISTORY_PROVE deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "verify-proof-descriptor" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004293 VERIFY_PROOF_DESCRIPTOR deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "versioned-merge" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004297 VERSIONED_MERGE deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "versioned-hash-read" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004301 VERSIONED_HASH_READ deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "versioned-status-read" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004305 VERSIONED_STATUS_READ deterministic_cluster_refusal\n"; return 0; }
   if (operation == "accel-llvm-policy-set" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004141 ACCEL_LLVM_POLICY_SET deterministic_cluster_refusal\n"; return 0; }
   if (operation == "accel-llvm-compile" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004145 ACCEL_LLVM_COMPILE deterministic_cluster_refusal\n"; return 0; }
   if (operation == "accel-gpu-compile" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004161 ACCEL_GPU_COMPILE deterministic_cluster_refusal\n"; return 0; }
