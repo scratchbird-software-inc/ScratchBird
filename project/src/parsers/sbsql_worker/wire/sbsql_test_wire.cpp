@@ -159,6 +159,7 @@
 #include "engine/sblr/sblr_ddl_drop_subscription_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_operator_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_operator_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_operator_family_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_domain_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_view_runtime.hpp"
@@ -21696,6 +21697,9 @@ PipelineResult SbsqlTestWireSession::RunDdlAlterOperatorFamilyForWire() {
     "ALTER OPERATOR FAMILY requires an admitted cluster route.",
     "sbsql_sblr_alignment"));
   return result;
+}
+PipelineResult SbsqlTestWireSession::RunDdlDropOperatorFamilyForWire() {
+  PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDdlDropOperatorFamilyRequestV1 q;q.operation=*receipt;q.receipt=*receipt;q.descriptor_length=384;auto coordinated=server_client_->CoordinateDdlDropOperatorFamily(session_,c::EncodeSblrDdlDropOperatorFamilyRequestV1(q));result.messages=std::move(coordinated.messages);result.accepted=coordinated.accepted;return result;
 }
 PipelineResult SbsqlTestWireSession::RunDdlDropCastForWire() {
   PipelineResult result;

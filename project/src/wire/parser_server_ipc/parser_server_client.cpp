@@ -262,6 +262,8 @@ constexpr std::uint32_t kSchemaCoordinateDdlCreateOperatorFamilyRequestV1 = 7571
 constexpr std::uint32_t kSchemaCoordinateDdlCreateOperatorFamilyResultV1 = 7572;
 constexpr std::uint32_t kSchemaCoordinateDdlAlterOperatorFamilyRequestV1 = 7573;
 constexpr std::uint32_t kSchemaCoordinateDdlAlterOperatorFamilyResultV1 = 7574;
+constexpr std::uint32_t kSchemaCoordinateDdlDropOperatorFamilyRequestV1 = 7575;
+constexpr std::uint32_t kSchemaCoordinateDdlDropOperatorFamilyResultV1 = 7576;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewRequestV1 = 7303;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMaterializedViewResultV1 = 7304;
 constexpr std::uint32_t kSchemaCoordinateDdlAlterViewRequestV1 = 7185;
@@ -635,6 +637,8 @@ constexpr std::uint16_t kMessageCoordinateDdlCreateOperatorFamilyRequest = 558;
 constexpr std::uint16_t kMessageCoordinateDdlCreateOperatorFamilyResult = 559;
 constexpr std::uint16_t kMessageCoordinateDdlAlterOperatorFamilyRequest = 560;
 constexpr std::uint16_t kMessageCoordinateDdlAlterOperatorFamilyResult = 561;
+constexpr std::uint16_t kMessageCoordinateDdlDropOperatorFamilyRequest = 562;
+constexpr std::uint16_t kMessageCoordinateDdlDropOperatorFamilyResult = 563;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateExtensionRequestV1 = 7587;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateExtensionResultV1 = 7588;
 constexpr std::uint16_t kMessageCoordinateDdlCreateExtensionRequest = 574;
@@ -7833,4 +7837,5 @@ ServerVariableBindingResult SbpsClient::CoordinateBridgeCommitTransaction(const 
 ServerVariableBindingResult SbpsClient::CoordinateBridgeRollbackTransaction(const ParserSessionContext&,const std::vector<std::uint8_t>&) const { ServerVariableBindingResult r; r.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","BRIDGE ROLLBACK TRANSACTION requires an admitted provider route.","parser_server_ipc.bridge_rollback_transaction_refused",{})); return r; }
 ServerVariableBindingResult SbpsClient::CoordinateDdlDropCast(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropCastRequest,kSchemaCoordinateDdlDropCastRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateDdlDropCastResult||f.header.schema_id!=kSchemaCoordinateDdlDropCastResultV1||f.payload.size()!=384||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 ServerVariableBindingResult SbpsClient::CoordinateDdlAlterOperatorFamily(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlAlterOperatorFamilyRequest,kSchemaCoordinateDdlAlterOperatorFamilyRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateDdlAlterOperatorFamilyResult||f.header.schema_id!=kSchemaCoordinateDdlAlterOperatorFamilyResultV1||f.payload.size()!=384||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
+ServerVariableBindingResult SbpsClient::CoordinateDdlDropOperatorFamily(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropOperatorFamilyRequest,kSchemaCoordinateDdlDropOperatorFamilyRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateDdlDropOperatorFamilyResult||f.header.schema_id!=kSchemaCoordinateDdlDropOperatorFamilyResultV1||f.payload.size()!=384||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 } // namespace scratchbird::parser::ipc

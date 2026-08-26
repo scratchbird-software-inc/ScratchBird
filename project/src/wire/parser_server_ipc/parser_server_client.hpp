@@ -554,6 +554,7 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateDdlDropOperatorClass(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateOperatorFamily(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlAlterOperatorFamily(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropOperatorFamily(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateExtension(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlAlterExtension(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlDropExtension(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;

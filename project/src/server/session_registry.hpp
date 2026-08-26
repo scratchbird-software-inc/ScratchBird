@@ -1126,6 +1126,7 @@ SessionOperationResult HandleCoordinateDdlCreateOperatorClass(ServerSessionRegis
 SessionOperationResult HandleCoordinateDdlDropOperatorClass(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateOperatorFamily(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlAlterOperatorFamily(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDdlDropOperatorFamily(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateExtension(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlAlterExtension(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropExtension(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
