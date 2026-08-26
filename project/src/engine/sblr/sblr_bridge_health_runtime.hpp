@@ -1,0 +1,3 @@
+#pragma once
+#include "sblr_accel_gpu_compile_runtime.hpp"
+namespace scratchbird::engine::sblr { using SblrBridgeHealthRequestV1=SblrAccelGpuCompileRequestV1; using SblrBridgeHealthDescriptorV1=SblrAccelGpuCompileDescriptorV1; using SblrBridgeHealthResultV1=SblrAccelGpuCompileResultV1; std::vector<std::uint8_t> EncodeSblrBridgeHealthRequestV1(const SblrBridgeHealthRequestV1&); bool DecodeSblrBridgeHealthRequestV1(const std::uint8_t*,std::size_t,SblrBridgeHealthRequestV1*,std::string*); std::vector<std::uint8_t> EncodeSblrBridgeHealthDescriptorV1(const SblrBridgeHealthDescriptorV1&); bool DecodeSblrBridgeHealthDescriptorV1(const std::uint8_t*,std::size_t,SblrBridgeHealthDescriptorV1*,std::string*); }

@@ -128,6 +128,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_bridge_authenticate_runtime.cpp
   sblr_bridge_open_session_runtime.cpp
   sblr_bridge_close_session_runtime.cpp
+  sblr_bridge_health_runtime.cpp
   sblr_ddl_alter_collation_runtime.cpp
   sblr_ddl_drop_collation_runtime.cpp
   sblr_ddl_create_domain_runtime.cpp

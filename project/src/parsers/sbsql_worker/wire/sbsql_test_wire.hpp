@@ -256,6 +256,7 @@ class SbsqlTestWireSession {
   PipelineResult RunBridgeOpenChannelForWire();
   PipelineResult RunBridgeAuthenticateForWire();
   PipelineResult RunBridgeOpenSessionForWire();
+  PipelineResult RunBridgeCloseSessionForWire();
   PipelineResult RunDdlCreateDomainForWire();
   PipelineResult RunDdlAlterDomainForWire();
   PipelineResult RunDdlCreateViewForWire();

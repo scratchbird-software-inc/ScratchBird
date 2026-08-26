@@ -445,6 +445,8 @@ int main(int argc, char** argv) {
                           ? session.RunBridgeAuthenticateForWire()
                     : operation == "bridge-open-session"
                           ? session.RunBridgeOpenSessionForWire()
+                    : operation == "bridge-close-session"
+                          ? session.RunBridgeCloseSessionForWire()
                     : operation == "alter-gpu-profile-disable"
                           ? session.RunGpuProfileDisableRefusalForWire()
                     : operation == "diagnostic-refusal"
@@ -756,6 +758,7 @@ int main(int argc, char** argv) {
   if (operation == "bridge-open-channel" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004177 BRIDGE_OPEN_CHANNEL deterministic_cluster_refusal\n"; return 0; }
   if (operation == "bridge-authenticate" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004181 BRIDGE_AUTHENTICATE deterministic_cluster_refusal\n"; return 0; }
   if (operation == "bridge-open-session" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004185 BRIDGE_OPEN_SESSION deterministic_cluster_refusal\n"; return 0; }
+  if (operation == "bridge-close-session" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") { std::cout << "CSC-TEST-004189 BRIDGE_CLOSE_SESSION deterministic_cluster_refusal\n"; return 0; }
   if (!result.accepted) {
     if (result.messages.diagnostics.empty())
       std::cerr << "SBLR.DDL_CREATE_TYPE.EMPTY_FAILURE operation=" << operation
