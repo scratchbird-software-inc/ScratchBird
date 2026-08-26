@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_bridge_begin_transaction_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr; int main(){SblrBridgeBeginTransactionRequestV1 q;q.operation[0]=1;q.receipt[0]=2;q.descriptor_length=384;auto b=EncodeSblrBridgeBeginTransactionRequestV1(q);assert(b.size()==64);SblrBridgeBeginTransactionRequestV1 q2;std::string e;assert(DecodeSblrBridgeBeginTransactionRequestV1(b.data(),b.size(),&q2,&e));SblrBridgeBeginTransactionDescriptorV1 d;d.body[0]=1;auto db=EncodeSblrBridgeBeginTransactionDescriptorV1(d);assert(db.size()==384);db[352]^=1;assert(!DecodeSblrBridgeBeginTransactionDescriptorV1(db.data(),db.size(),&d,&e));return 0;}

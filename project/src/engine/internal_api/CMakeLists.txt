@@ -494,6 +494,7 @@ add_library(sb_engine_internal_api
   sblr_bridge_open_session_coordinator.cpp
   sblr_bridge_close_session_coordinator.cpp
   sblr_bridge_health_coordinator.cpp
+  sblr_bridge_begin_transaction_coordinator.cpp
   sblr_ddl_alter_collation_coordinator.cpp
   sblr_ddl_drop_collation_coordinator.cpp
   sblr_ddl_create_materialized_view_coordinator.cpp
