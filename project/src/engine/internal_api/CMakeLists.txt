@@ -498,6 +498,7 @@ add_library(sb_engine_internal_api
   sblr_bridge_commit_transaction_coordinator.cpp
   sblr_bridge_rollback_transaction_coordinator.cpp
   sblr_verifiable_history_prove_coordinator.cpp
+  sblr_versioned_status_read_coordinator.cpp
   sblr_ddl_alter_collation_coordinator.cpp
   sblr_ddl_drop_collation_coordinator.cpp
   sblr_ddl_create_materialized_view_coordinator.cpp

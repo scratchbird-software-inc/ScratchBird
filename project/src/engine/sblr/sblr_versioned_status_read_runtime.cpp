@@ -1,0 +1,7 @@
+#include "engine/sblr/sblr_versioned_status_read_runtime.hpp"
+namespace scratchbird::engine::sblr { namespace { void id(std::vector<std::uint8_t>& x,std::uint32_t a,std::uint16_t b){x[8]=a&255;x[9]=a>>8;x[10]=a>>16;x[11]=a>>24;x[12]=b&255;x[13]=b>>8;} }
+std::vector<std::uint8_t> EncodeSblrVersionedStatusReadRequestV1(const SblrVersionedStatusReadRequestV1& v){auto x=EncodeSblrAccelGpuCompileRequestV1(v);if(x.size()==64)id(x,7673,660);return x;}
+bool DecodeSblrVersionedStatusReadRequestV1(const std::uint8_t*p,std::size_t n,SblrVersionedStatusReadRequestV1*o,std::string*e){if(!p||n!=64||p[8]!=0xF9||p[9]!=0x1D||p[12]!=0x94||p[13]!=0x02){if(e)*e="request invalid";return false;}std::vector<std::uint8_t>x(p,p+n);id(x,7643,630);return DecodeSblrAccelGpuCompileRequestV1(x.data(),x.size(),o,e);}
+std::vector<std::uint8_t> EncodeSblrVersionedStatusReadDescriptorV1(const SblrVersionedStatusReadDescriptorV1&v){return EncodeSblrAccelGpuCompileDescriptorV1(v);}
+bool DecodeSblrVersionedStatusReadDescriptorV1(const std::uint8_t*p,std::size_t n,SblrVersionedStatusReadDescriptorV1*o,std::string*e){return DecodeSblrAccelGpuCompileDescriptorV1(p,n,o,e);}
+}
