@@ -16,6 +16,10 @@ from ia01_package_process_e2e import ProofError, allocate_work, seed_database, s
 
 
 STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
+    "show-wait-events": (
+        "CSC-TEST-002702", "READ_METRICS", "engine.op.read_metrics",
+        "SBLR_READ_METRICS", 3073,
+    ),
     "ddl-create-or-replace-srs": (
         "CSC-TEST-002673", "DDL_CREATE_OR_REPLACE_SRS",
         "engine.op.ddl_create_or_replace_srs",
@@ -477,8 +481,7 @@ def main() -> int:
                         "opcode=SBLR_OBSERVABILITY_SHOW_VERSION",
                         "opcode_code=3334")
         elif args.operation == "show-wait-events":
-            expected = ("executor_id=engine.op.read_metrics", "opcode=SBLR_READ_METRICS",
-                        "opcode_code=3073", "request_sha256=")
+            expected = ()
         elif args.operation == "show-object-detail":
             expected = ("operation_id=engine.op.catalog_introspect", "opcode=SBLR_CATALOG_INTROSPECT", "opcode_code=4864")
         elif args.operation == "source-map":
