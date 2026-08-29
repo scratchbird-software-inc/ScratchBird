@@ -43,7 +43,7 @@ struct OpcodeRow {
   bool requires_cluster_authority;
 };
 
-constexpr std::array<OpcodeRow, 50> kRows{{
+constexpr std::array<OpcodeRow, 51> kRows{{
     {"engine.op.repl_cdc_ack", "SBLR_REPL_CDC_ACK", "replication-consumer", sblr::SblrOpcodeCategory::cluster, sblr::SblrOpcodeSupport::cluster_refusal, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::admin_authorized, true, true},
     {"engine.op.repl_2pc_prewrite", "SBLR_REPL_2PC_PREWRITE", "replication-consumer", sblr::SblrOpcodeCategory::cluster, sblr::SblrOpcodeSupport::cluster_refusal, sblr::SblrOpcodeTransactionEffect::cluster_write, sblr::SblrOpcodeSecurityClass::cluster_authorized, true, true},
     {"engine.op.repl_2pc_commit", "SBLR_REPL_2PC_COMMIT", "replication-consumer", sblr::SblrOpcodeCategory::cluster, sblr::SblrOpcodeSupport::cluster_refusal, sblr::SblrOpcodeTransactionEffect::cluster_write, sblr::SblrOpcodeSecurityClass::cluster_authorized, true, true},
@@ -76,6 +76,7 @@ constexpr std::array<OpcodeRow, 50> kRows{{
     {"engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "diagnostic-control", sblr::SblrOpcodeCategory::observability, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
     {"engine.op.diagnostic_reset", "SBLR_DIAGNOSTIC_RESET", "diagnostic-control", sblr::SblrOpcodeCategory::observability, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::admin_authorized, true, false},
     {"engine.op.descriptor_transform", "SBLR_DESCRIPTOR_TRANSFORM", "diagnostic-control", sblr::SblrOpcodeCategory::observability, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"diagnostic.control", "SBLR_DIAGNOSTIC_CONTROL", "diagnostic-control", sblr::SblrOpcodeCategory::observability, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::admin_authorized, false, false},
     {"engine.op.join", "SBLR_JOIN", "relational-plan-node", sblr::SblrOpcodeCategory::query, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
     {"engine.op.set_operation", "SBLR_SET_OPERATION", "relational-plan-node", sblr::SblrOpcodeCategory::query, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
     {"engine.op.cte", "SBLR_CTE", "relational-plan-node", sblr::SblrOpcodeCategory::query, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},

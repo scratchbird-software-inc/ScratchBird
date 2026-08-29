@@ -1406,7 +1406,8 @@ void ApplyFamilyRootCanonicalContract(SblrOpcodeEntry* entry) {
     entry->result_contract = std::string(contract.result);
     entry->executor_id = std::string(contract.operation_id);
     entry->executor_evidence_required = true;
-    entry->executor_evidence_accepted = true;
+    entry->executor_evidence_accepted =
+        entry->opcode != "SBLR_DIAGNOSTIC_CONTROL";
     entry->missing_executor_evidence_diagnostic =
         "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
     return;

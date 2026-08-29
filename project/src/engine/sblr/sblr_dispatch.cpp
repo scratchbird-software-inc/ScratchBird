@@ -10610,6 +10610,10 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id == "engine.op.read_metrics" &&
       request.envelope.opcode == "SBLR_READ_METRICS" &&
       request.envelope.opcode_code == 0x0C01;
+  const bool exact_diagnostic_control =
+      request.envelope.operation_id == "diagnostic.control" &&
+      request.envelope.opcode == "SBLR_DIAGNOSTIC_CONTROL" &&
+      request.envelope.opcode_code == 0x1903;
   const bool exact_catalog_introspect =
       request.envelope.operation_id == "engine.op.catalog_introspect" &&
       request.envelope.opcode == "SBLR_CATALOG_INTROSPECT" &&
@@ -10898,6 +10902,11 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     result.detail = opcode_validation.detail;
     return result;
   }
+  if (exact_diagnostic_control) {
+    result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+    result.detail = "diagnostic control executor evidence is not admitted";
+    return result;
+  }
   const auto decoded = TypedPlanOperationRequest(request);
   if (!decoded.ok) {
     result.diagnostic_id = decoded.diagnostic_id;
@@ -11162,6 +11171,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           "engine.op.ddl_create_fdw", "SBLR_DDL_CREATE_FDW", 1578) ||
       has_exact_static_executor_evidence_identity(
           "engine.op.ddl_drop_fdw", "SBLR_DDL_DROP_FDW", 1579) ||
+      has_exact_static_executor_evidence_identity(
+          "diagnostic.control", "SBLR_DIAGNOSTIC_CONTROL", 6403) ||
       has_exact_static_executor_evidence_identity(
           "engine.op.ddl_drop_foreign_table",
           "SBLR_DDL_DROP_FOREIGN_TABLE", 1577);
