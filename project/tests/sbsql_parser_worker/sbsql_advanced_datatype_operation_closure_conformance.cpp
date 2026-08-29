@@ -120,6 +120,10 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:CATALOG_MUTATE");
   context.trace_tags.push_back("advanced_datatype_operation_closure");
@@ -515,6 +519,9 @@ api::EngineColumnDefinition Column(std::string name, std::string type, std::uint
       "019f0000-0000-7000-8000-000000081" + std::to_string(ordinal + 100);
   column.names.push_back(Name(std::move(name)));
   column.descriptor = Descriptor(std::move(type));
+  if (column.descriptor.canonical_type_name == "text") {
+    column.descriptor.encoded_descriptor = "type=text";
+  }
   column.ordinal = ordinal;
   column.nullable = true;
   return column;

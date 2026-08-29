@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -50,6 +51,19 @@ struct B003Row {
   bool engine_api_command_route;
 };
 
+enum class ExternalAdmission {
+  canonical,
+  internal_only,
+  not_manifest_listed,
+};
+
+struct WireIdentity {
+  std::string_view operation_id;
+  std::string_view opcode;
+  std::string_view family;
+  ExternalAdmission admission{ExternalAdmission::canonical};
+};
+
 constexpr std::array<B003Row, 46> kRows{{
     {"AUDIT-0383", "ENGINE AGENT REQUEST PAGE PREALLOCATION", "agents.request_page_preallocation", "SBLR_AGENT_REQUEST_PAGE_PREALLOCATION", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestPagePreallocation", "authority.engine.agent_management_api_required", true, true},
     {"AUDIT-0384", "ENGINE AGENT REQUEST PAGE RELOCATION", "agents.request_page_relocation", "SBLR_AGENT_REQUEST_PAGE_RELOCATION", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestPageRelocation", "authority.engine.agent_management_api_required", true, true},
@@ -70,11 +84,11 @@ constexpr std::array<B003Row, 46> kRows{{
     {"AUDIT-0397", "ENGINE QUERY BIND PREDICATE", "query.bind_predicate", "SBLR_QUERY_BIND_PREDICATE", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindPredicate", "authority.engine.query_runtime_api_required", false, true},
     {"AUDIT-0398", "ENGINE QUERY BIND PROJECTION", "query.bind_projection", "SBLR_QUERY_BIND_PROJECTION", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindProjection", "authority.engine.query_runtime_api_required", false, true},
     {"AUDIT-0399", "PREPARE TRANSACTION", "transaction.prepare", "SBLR_TRANSACTION_PREPARE", "sblr.transaction.control.v3", "result.shape.transaction_status", "EnginePrepareTransaction", "authority.engine.transaction_control_api_required", true, true},
-    {"AUDIT-0400", "ENGINE CATALOG RESOLVE NAME", "catalog.resolve_name", "SBLR_CATALOG_RESOLVE_NAME", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineResolveName", "authority.engine.catalog_api_required", false, true},
-    {"AUDIT-0401", "ENGINE CATALOG MAP UUID TO NAME", "catalog.map_uuid_to_name", "SBLR_CATALOG_MAP_UUID_TO_NAME", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineMapUuidToName", "authority.engine.catalog_api_required", false, true},
-    {"AUDIT-0402", "ENGINE CATALOG LOOKUP OBJECT", "catalog.lookup_object", "SBLR_CATALOG_LOOKUP_OBJECT", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineLookupObject", "authority.engine.catalog_api_required", false, true},
-    {"AUDIT-0403", "ENGINE CATALOG LIST CHILDREN", "catalog.list_children", "SBLR_CATALOG_LIST_CHILDREN", "sblr.catalog.mutation.v3", "result.shape.catalog_children", "EngineListCatalogChildren", "authority.engine.catalog_api_required", false, true},
-    {"AUDIT-0404", "ENGINE CATALOG GET DEPENDENCIES", "catalog.get_dependencies", "SBLR_CATALOG_GET_DEPENDENCIES", "sblr.catalog.mutation.v3", "result.shape.catalog_dependencies", "EngineGetDependencies", "authority.engine.catalog_api_required", false, true},
+    {"AUDIT-0400", "ENGINE CATALOG RESOLVE NAME", "catalog.resolve_name", "SBLR_CATALOG_RESOLVE_NAME", "sblr.catalog.introspect.v3", "result.shape.catalog_lookup", "EngineResolveName", "authority.engine.catalog_api_required", false, true},
+    {"AUDIT-0401", "ENGINE CATALOG MAP UUID TO NAME", "catalog.map_uuid_to_name", "SBLR_CATALOG_MAP_UUID_TO_NAME", "sblr.catalog.introspect.v3", "result.shape.catalog_lookup", "EngineMapUuidToName", "authority.engine.catalog_api_required", false, true},
+    {"AUDIT-0402", "ENGINE CATALOG LOOKUP OBJECT", "catalog.lookup_object", "SBLR_CATALOG_LOOKUP_OBJECT", "sblr.catalog.introspect.v3", "result.shape.catalog_lookup", "EngineLookupObject", "authority.engine.catalog_api_required", false, true},
+    {"AUDIT-0403", "ENGINE CATALOG LIST CHILDREN", "catalog.list_children", "SBLR_CATALOG_LIST_CHILDREN", "sblr.catalog.introspect.v3", "result.shape.catalog_children", "EngineListCatalogChildren", "authority.engine.catalog_api_required", false, true},
+    {"AUDIT-0404", "ENGINE CATALOG GET DEPENDENCIES", "catalog.get_dependencies", "SBLR_CATALOG_GET_DEPENDENCIES", "sblr.catalog.introspect.v3", "result.shape.catalog_dependencies", "EngineGetDependencies", "authority.engine.catalog_api_required", false, true},
     {"AUDIT-0405", "ENGINE SECURITY CREATE IDENTITY", "security.create_identity", "SBLR_SECURITY_CREATE_IDENTITY", "sblr.security.mutation.v3", "result.shape.security_status", "EngineCreateIdentity", "authority.engine.security_mutation_api_required", true, true},
     {"AUDIT-0406", "ENGINE SECURITY ALTER IDENTITY", "security.alter_identity", "SBLR_SECURITY_ALTER_IDENTITY", "sblr.security.mutation.v3", "result.shape.security_status", "EngineAlterIdentity", "authority.engine.security_mutation_api_required", true, true},
     {"AUDIT-0407", "ENGINE SECURITY GRANT RIGHT", "security.grant_right", "SBLR_SECURITY_GRANT_RIGHT", "sblr.security.mutation.v3", "result.shape.security_grant", "EngineGrantRight", "authority.engine.security_mutation_api_required", true, true},
@@ -88,14 +102,14 @@ constexpr std::array<B003Row, 46> kRows{{
     {"AUDIT-0415", "ENGINE MANAGEMENT PREPARE SUPPORT BUNDLE", "management.prepare_support_bundle", "SBLR_MANAGEMENT_PREPARE_SUPPORT_BUNDLE", "sblr.management.runtime_operation.v3", "result.shape.support_bundle_manifest", "EnginePrepareSupportBundle", "authority.engine.management_runtime_api_required", false, true},
     {"AUDIT-0416", "ALTER DATABASE ENTER RESTRICTED OPEN", "lifecycle.enter_restricted_open", "SBLR_LIFECYCLE_ENTER_RESTRICTED_OPEN", "sblr.management.runtime_operation.v3", "result.shape.lifecycle_status", "EngineEnterRestrictedOpenLifecycle", "authority.engine.lifecycle_api_required", false, false},
     {"AUDIT-0417", "ALTER DATABASE EXIT RESTRICTED OPEN", "lifecycle.exit_restricted_open", "SBLR_LIFECYCLE_EXIT_RESTRICTED_OPEN", "sblr.management.runtime_operation.v3", "result.shape.lifecycle_status", "EngineExitRestrictedOpenLifecycle", "authority.engine.lifecycle_api_required", false, false},
-    {"AUDIT-0425", "REGISTER PARSER PACKAGE", "extensibility.register_parser_package", "SBLR_EXTENSIBILITY_REGISTER_PARSER_PACKAGE", "sblr.udr.operation.v3", "result.shape.parser_package_status", "EngineRegisterParserPackage", "authority.engine.parser_package_api_required", true, true},
+    {"AUDIT-0425", "REGISTER PARSER PACKAGE", "extensibility.register_parser_package", "SBLR_EXTENSIBILITY_REGISTER_PARSER_PACKAGE", "sblr.parser.operation.v3", "result.shape.parser_package_status", "EngineRegisterParserPackage", "authority.engine.parser_package_api_required", true, true},
     {"AUDIT-0426", "ENGINE QUERY EXTRACT VALUE", "query.extract_value", "SBLR_QUERY_EXTRACT_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineExtractValue", "authority.engine.query_runtime_api_required", false, true},
     {"AUDIT-0427", "ENGINE QUERY SET OPERATION", "query.set_operation", "SBLR_QUERY_SET_OPERATION", "sblr.query.relational.v3", "result.shape.typed_value", "EngineSetOperation", "authority.engine.query_runtime_api_required", false, true},
     {"AUDIT-0428", "ENGINE QUERY APPLY NUMERIC OPERATION", "query.apply_numeric_operation", "SBLR_QUERY_APPLY_NUMERIC_OPERATION", "sblr.query.relational.v3", "result.shape.typed_value", "EngineApplyNumericOperation", "authority.engine.query_runtime_api_required", false, true},
     {"AUDIT-0429", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "query.canonicalize_document_value", "SBLR_QUERY_CANONICALIZE_DOCUMENT_VALUE", "sblr.query.document.v3", "result.shape.typed_value", "EngineCanonicalizeDocumentValue", "authority.engine.query_runtime_api_required", false, true},
     {"AUDIT-0430", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "query.evaluate_advanced_datatype_family", "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", "sblr.query.relational.v3", "result.shape.datatype_family_evaluation", "EngineEvaluateAdvancedDatatypeFamily", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0431", "ENGINE QUERY VALIDATE DOMAIN VALUE", "query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineValidateDomainValue", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0432", "ENGINE QUERY INVOKE DOMAIN METHOD", "query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", "sblr.query.relational.v3", "result.shape.typed_value", "EngineInvokeDomainMethod", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0431", "ENGINE QUERY VALIDATE DOMAIN VALUE", "query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineValidateDomainValue", "authority.engine.query_runtime_api_required", true, true},
+    {"AUDIT-0432", "ENGINE QUERY INVOKE DOMAIN METHOD", "query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", "sblr.query.relational.v3", "result.shape.typed_value", "EngineInvokeDomainMethod", "authority.engine.query_runtime_api_required", true, true},
     {"AUDIT-0433", "UNLISTEN ALL NOTIFICATIONS", "session.notification.unlisten_all", "SBLR_EVENT_CHANNEL_UNLISTEN_ALL", "sblr.event.channel.v3", "result.shape.event_subscription_status", "EngineUnlistenSessionNotifications", "authority.engine.event_notification_api_required", false, true},
 }};
 
@@ -112,6 +126,71 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 
 bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
+}
+
+ExternalAdmission AdmissionFor(const B003Row& row) {
+  if (StartsWith(row.operation_id, "artifact.external_git.")) {
+    return ExternalAdmission::not_manifest_listed;
+  }
+  if (row.operation_id == "security.create_identity" ||
+      row.operation_id == "security.alter_identity" ||
+      row.operation_id == "security.grant_right" ||
+      row.operation_id == "security.revoke_right" ||
+      row.operation_id == "security.evaluate_visibility" ||
+      row.operation_id == "security.evaluate_policy" ||
+      row.operation_id == "management.inspect_config" ||
+      row.operation_id == "management.set_config" ||
+      row.operation_id == "management.reset_config" ||
+      row.operation_id == "management.prepare_support_bundle") {
+    return ExternalAdmission::internal_only;
+  }
+  return ExternalAdmission::canonical;
+}
+
+WireIdentity WireIdentityFor(const B003Row& row) {
+  const auto admission = AdmissionFor(row);
+  if (admission == ExternalAdmission::not_manifest_listed) {
+    return {"artifact.export_catalog", "SBLR_ARTIFACT_EXPORT_CATALOG",
+            "sblr.catalog.mutation.v3", admission};
+  }
+  if (admission == ExternalAdmission::canonical) {
+    return {row.operation_id, row.opcode, row.family, admission};
+  }
+  if (row.operation_id == "security.evaluate_visibility" ||
+      row.operation_id == "security.evaluate_policy") {
+    return {"security.policy.show", "SBLR_SECURITY_POLICY_SHOW",
+            "sblr.policy.operation.v3", admission};
+  }
+  if (row.operation_id == "management.inspect_config") {
+    return {"management.inspect_runtime", "SBLR_MANAGEMENT_INSPECT_RUNTIME",
+            "sblr.management.report.v3", admission};
+  }
+  if (row.operation_id == "management.set_config" ||
+      row.operation_id == "management.reset_config" ||
+      row.operation_id == "management.prepare_support_bundle") {
+    return {"management.control_runtime", "SBLR_MANAGEMENT_CONTROL_RUNTIME",
+            "sblr.management.control.v3", admission};
+  }
+  return {"security.grant_right", "SBLR_SECURITY_GRANT_RIGHT",
+          "sblr.security.mutation.v3", admission};
+}
+
+std::string_view AdmissionMarker(ExternalAdmission admission) {
+  if (admission == ExternalAdmission::internal_only) {
+    return "internal_engine_api_operation_id";
+  }
+  if (admission == ExternalAdmission::not_manifest_listed) {
+    return "unlisted_engine_api_operation_id";
+  }
+  return {};
+}
+
+std::string_view AdmissionClassification(ExternalAdmission admission) {
+  if (admission == ExternalAdmission::internal_only) return "internal_only";
+  if (admission == ExternalAdmission::not_manifest_listed) {
+    return "not_manifest_listed";
+  }
+  return "canonical";
 }
 
 std::string_view ExpectedServerAdmissionFamily(const B003Row& row) {
@@ -138,6 +217,26 @@ bool HasValue(const std::vector<std::string>& values, std::string_view expected)
 bool HasDiagnosticCode(const MessageVectorSet& messages, std::string_view code) {
   for (const auto& diagnostic : messages.diagnostics) {
     if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
+bool HasServerDiagnosticCode(
+    const scratchbird::server::ServerSblrAdmissionResult& admission,
+    std::string_view code) {
+  return std::any_of(admission.diagnostics.begin(), admission.diagnostics.end(),
+                     [&](const auto& diagnostic) {
+                       return diagnostic.code == code;
+                     });
+}
+
+bool HasServerDiagnosticDetail(
+    const scratchbird::server::ServerSblrAdmissionResult& admission,
+    std::string_view detail) {
+  for (const auto& diagnostic : admission.diagnostics) {
+    for (const auto& field : diagnostic.fields) {
+      if (field.key == "detail" && field.value == detail) return true;
+    }
   }
   return false;
 }
@@ -228,6 +327,7 @@ api::EngineRowValue Row(std::string uuid,
 
 api::EngineRequestContext EngineContext(bool security_context_present = true) {
   api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-sblr-final-cleanup-b003";
   context.security_context_present = security_context_present;
   context.database_path = "/tmp/sbsql_sblr_final_cleanup_b003.sbdb";
@@ -245,6 +345,7 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.resource_epoch = 107;
   context.trace_tags = {
       "security.bootstrap",
+      "security.fixture_trace_authority",
       "group:ROOT",
       "role:ROOT",
       "right:CONNECT",
@@ -254,23 +355,39 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
       "right:POLICY_ADMIN",
       "right:OBS_SECURITY_INSPECT",
       "right:MANAGEMENT_RUNTIME_CONTROL",
+      "right:OBS_AGENT_STATE_READ",
+      "right:OBS_AGENT_CONTROL",
+      "right:FILESPACE_LIFECYCLE_CONTROL",
   };
   return context;
 }
 
 sblr::SblrOperationEnvelope EngineEnvelope(const B003Row& row) {
-  auto envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
-                                         std::string(row.opcode),
+  const auto wire = WireIdentityFor(row);
+  const auto* entry = sblr::LookupSblrOperation(wire.operation_id);
+  Require(entry != nullptr,
+          EvidenceMessage(row, "canonical_parent", "wire operation missing"));
+  auto envelope = sblr::MakeSblrEnvelope(std::string(wire.operation_id),
+                                         std::string(wire.opcode),
                                          std::string("trace.b003.") +
                                              std::string(row.audit_id));
   envelope.result_shape = row.result_shape;
   envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
   envelope.requires_security_context = true;
-  envelope.requires_transaction_context = row.requires_transaction_context;
-  envelope.requires_cluster_authority = false;
+  envelope.requires_transaction_context = entry->requires_transaction_context;
+  envelope.requires_cluster_authority = entry->requires_cluster_authority;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  return envelope;
+  const auto marker = AdmissionMarker(wire.admission);
+  if (!marker.empty()) {
+    sblr::SblrOperand selector;
+    selector.type = "text";
+    selector.name = marker;
+    selector.value = row.operation_id;
+    envelope.operands.push_back(std::move(selector));
+  }
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 void AddObject(api::EngineApiRequest* request,
@@ -291,6 +408,7 @@ void AddRelatedObject(api::EngineApiRequest* request,
 
 api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
   api::EngineApiRequest request;
+  request.operation_id = row.operation_id;
   request.option_envelopes.push_back(std::string("result_shape_contract:") +
                                      std::string(row.result_shape));
   request.option_envelopes.push_back(std::string("engine_api_function:") +
@@ -410,21 +528,27 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
 }
 
 void RequireLowering(const B003Row& row) {
+  const auto wire = WireIdentityFor(row);
   const auto artifacts = RunPipeline(row.sql);
   if (artifacts.envelope.messages.has_errors()) {
     std::cerr << RenderMessageVectorSet(artifacts.envelope.messages) << '\n';
   }
+  if (artifacts.verifier.messages.has_errors()) {
+    std::cerr << RenderMessageVectorSet(artifacts.verifier.messages) << '\n';
+  }
   Require(artifacts.bound.bound, EvidenceMessage(row, "parser_bind_lower", "row did not bind"));
   Require(artifacts.verifier.admitted,
           EvidenceMessage(row, "parser_bind_lower", "SBLR verifier rejected row"));
-  Require(artifacts.envelope.operation_id == row.operation_id,
+  Require(artifacts.envelope.operation_id == wire.operation_id,
           EvidenceMessage(row, "parser_bind_lower", "operation id mismatch"));
-  Require(artifacts.envelope.sblr_opcode == row.opcode,
+  Require(artifacts.envelope.sblr_opcode == wire.opcode,
           EvidenceMessage(row, "parser_bind_lower", "opcode mismatch"));
-  Require(artifacts.envelope.operation_family == row.family,
+  Require(artifacts.envelope.operation_family == wire.family,
           EvidenceMessage(row, "parser_bind_lower", "operation family mismatch"));
-  Require(artifacts.envelope.sblr_operation_key == row.family,
+  Require(artifacts.envelope.sblr_operation_key == wire.family,
           EvidenceMessage(row, "parser_bind_lower", "SBLR operation key mismatch"));
+  Require(artifacts.envelope.engine_api_operation_id == row.operation_id,
+          EvidenceMessage(row, "parser_bind_lower", "engine API operation id mismatch"));
   Require(artifacts.envelope.result_shape_key == row.result_shape,
           EvidenceMessage(row, "parser_bind_lower", "result shape mismatch"));
   Require(artifacts.envelope.engine_api_function == row.engine_api_function,
@@ -451,8 +575,35 @@ void RequireLowering(const B003Row& row) {
     Require(Contains(artifacts.envelope.payload, "\"engine_api_command_route\":true"),
             EvidenceMessage(row, "parser_bind_lower", "engine command payload flag missing"));
     Require(Contains(artifacts.envelope.payload, "\"canonical_sblr_operation\":\"") &&
-                Contains(artifacts.envelope.payload, row.operation_id),
+                Contains(artifacts.envelope.payload, wire.operation_id),
             EvidenceMessage(row, "parser_bind_lower", "canonical operation missing"));
+    Require(Contains(artifacts.envelope.payload, "\"engine_api_operation_id\":\"") &&
+                Contains(artifacts.envelope.payload, row.operation_id),
+            EvidenceMessage(row, "parser_bind_lower", "engine API operation missing"));
+    Require(Contains(artifacts.envelope.payload,
+                     std::string("\"external_sblr_admission\":\"") +
+                         std::string(AdmissionClassification(wire.admission)) +
+                         "\""),
+            EvidenceMessage(row, "parser_bind_lower", "admission classification mismatch"));
+    const auto marker = AdmissionMarker(wire.admission);
+    const auto selector_count = std::count_if(
+        artifacts.envelope.operands.begin(), artifacts.envelope.operands.end(),
+        [&](const auto& operand) {
+          return operand.name == "internal_engine_api_operation_id" ||
+                 operand.name == "unlisted_engine_api_operation_id";
+        });
+    Require(selector_count == (marker.empty() ? 0 : 1),
+            EvidenceMessage(row, "parser_bind_lower", "admission selector cardinality mismatch"));
+    if (!marker.empty()) {
+      Require(std::any_of(artifacts.envelope.operands.begin(),
+                          artifacts.envelope.operands.end(),
+                          [&](const auto& operand) {
+                            return operand.type == "text" &&
+                                   operand.name == marker &&
+                                   operand.value == row.operation_id;
+                          }),
+              EvidenceMessage(row, "parser_bind_lower", "admission selector mismatch"));
+    }
     Require(Contains(artifacts.envelope.payload, "\"engine_api_function\":\"") &&
                 Contains(artifacts.envelope.payload, row.engine_api_function),
             EvidenceMessage(row, "parser_bind_lower", "domain API function missing"));
@@ -473,21 +624,46 @@ void RequireLowering(const B003Row& row) {
   }
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
-  Require(admission.admitted,
-          EvidenceMessage(row, "server_admission", "server admission rejected row"));
-  Require(admission.requires_public_abi_dispatch,
-          EvidenceMessage(row, "server_admission", "public ABI dispatch not required"));
-  Require(admission.operation_id == row.operation_id,
-          EvidenceMessage(row, "server_admission", "operation id mismatch"));
-  Require(admission.operation_family == ExpectedServerAdmissionFamily(row),
-          EvidenceMessage(row, "server_admission", "operation family mismatch"));
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          EngineEnvelope(row)));
+  if (wire.admission == ExternalAdmission::canonical) {
+    Require(admission.admitted,
+            EvidenceMessage(row, "server_admission", "server admission rejected row"));
+    Require(admission.requires_public_abi_dispatch,
+            EvidenceMessage(row, "server_admission", "public ABI dispatch not required"));
+    Require(admission.operation_id == row.operation_id,
+            EvidenceMessage(row, "server_admission", "operation id mismatch"));
+    Require(admission.operation_family == ExpectedServerAdmissionFamily(row),
+            EvidenceMessage(row, "server_admission", "operation family mismatch"));
+  } else {
+    Require(!admission.admitted,
+            EvidenceMessage(row, "server_admission", "non-public engine API was admitted"));
+    Require(!admission.requires_public_abi_dispatch,
+            EvidenceMessage(row, "server_admission", "refused row requested public dispatch"));
+    Require(HasServerDiagnosticCode(admission, "SBSQL.SURFACE.NOT_ADMITTED"),
+            EvidenceMessage(row, "server_admission", "surface refusal diagnostic missing"));
+    Require(HasServerDiagnosticDetail(
+                admission,
+                wire.admission == ExternalAdmission::internal_only
+                    ? "internal_engine_api_not_external_sblr_callable"
+                    : "operation_not_manifest_listed"),
+            EvidenceMessage(row, "server_admission", "surface refusal reason mismatch"));
+  }
 }
 
 void RequireDispatch(const B003Row& row) {
-  const auto* entry = sblr::LookupSblrOperation(row.operation_id);
+  const auto wire = WireIdentityFor(row);
+  const auto* entry = sblr::LookupSblrOperation(wire.operation_id);
   Require(entry != nullptr, EvidenceMessage(row, "sblr_registry", "operation missing"));
-  Require(entry->opcode == row.opcode, EvidenceMessage(row, "sblr_registry", "opcode mismatch"));
+  Require(entry->opcode == wire.opcode,
+          EvidenceMessage(row, "sblr_registry", "opcode mismatch"));
+  if (wire.admission != ExternalAdmission::canonical) {
+    const auto* synthetic = sblr::LookupSblrOperation(row.operation_id);
+    Require(synthetic == nullptr || synthetic->code == 0 ||
+                synthetic->operation_id == wire.operation_id,
+            EvidenceMessage(row, "sblr_registry",
+                            "non-public operation became an executable wire identity"));
+  }
   const auto envelope = EngineEnvelope(row);
   const auto registry_validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
   Require(registry_validation.ok,

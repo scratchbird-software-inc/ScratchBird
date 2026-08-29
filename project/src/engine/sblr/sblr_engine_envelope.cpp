@@ -37,6 +37,8 @@
 #include "sblr_stmt_prepare_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
+#include "contextual_text_literal_v2_codec.hpp"
+#include "sblr_plan_import_rows_codec.hpp"
 #include "sblr_parameter_runtime.hpp"
 #include "sblr_variable_runtime.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
@@ -208,6 +210,58 @@ constexpr std::array<std::uint16_t, kSblrOperationSectionCount> kSectionTags{
     0x0006, 0x0007, 0x0008, 0x0009};
 constexpr char kProvenanceDomain[] =
     "ScratchBird.SBOP.ProducerProvenance.V1\0";
+
+constexpr std::uint16_t kDdlCreateTypeOpcodeCodeV1 = 0x0621;
+constexpr std::uint16_t kDdlAlterTypeOpcodeCodeV1 = 0x0622;
+constexpr std::uint16_t kDdlDropTypeOpcodeCodeV1 = 0x0623;
+
+bool IsDdlTypeOperationId(std::string_view operation_id) {
+  return operation_id == "engine.op.ddl_create_type" ||
+         operation_id == "engine.op.ddl_alter_type" ||
+         operation_id == "engine.op.ddl_drop_type";
+}
+
+bool IsDdlTypeOpcode(std::string_view opcode) {
+  return opcode == "SBLR_DDL_CREATE_TYPE" ||
+         opcode == "SBLR_DDL_ALTER_TYPE" ||
+         opcode == "SBLR_DDL_DROP_TYPE";
+}
+
+bool IsDdlTypeOpcodeCode(std::uint16_t opcode_code) {
+  return opcode_code == kDdlCreateTypeOpcodeCodeV1 ||
+         opcode_code == kDdlAlterTypeOpcodeCodeV1 ||
+         opcode_code == kDdlDropTypeOpcodeCodeV1;
+}
+
+bool IsDdlTypeIdentityClaim(const SblrOperationEnvelope& envelope) {
+  return IsDdlTypeOperationId(envelope.operation_id) ||
+         IsDdlTypeOpcode(envelope.opcode) ||
+         IsDdlTypeOpcodeCode(envelope.opcode_code);
+}
+
+bool IsExactDdlCreateTypeIdentity(const SblrOperationEnvelope& envelope) {
+  return envelope.operation_id == "engine.op.ddl_create_type" &&
+         envelope.opcode == "SBLR_DDL_CREATE_TYPE" &&
+         envelope.opcode_code == kDdlCreateTypeOpcodeCodeV1;
+}
+
+bool IsExactDdlAlterTypeIdentity(const SblrOperationEnvelope& envelope) {
+  return envelope.operation_id == "engine.op.ddl_alter_type" &&
+         envelope.opcode == "SBLR_DDL_ALTER_TYPE" &&
+         envelope.opcode_code == kDdlAlterTypeOpcodeCodeV1;
+}
+
+bool IsExactDdlDropTypeIdentity(const SblrOperationEnvelope& envelope) {
+  return envelope.operation_id == "engine.op.ddl_drop_type" &&
+         envelope.opcode == "SBLR_DDL_DROP_TYPE" &&
+         envelope.opcode_code == kDdlDropTypeOpcodeCodeV1;
+}
+
+bool IsExactDdlTypeIdentity(const SblrOperationEnvelope& envelope) {
+  return IsExactDdlCreateTypeIdentity(envelope) ||
+         IsExactDdlAlterTypeIdentity(envelope) ||
+         IsExactDdlDropTypeIdentity(envelope);
+}
 
 SblrEnvelopeDiagnostic Diagnostic(std::string code, std::string message) {
   return SblrEnvelopeDiagnostic{std::move(code), std::move(message), true};
@@ -609,6 +663,12 @@ bool ValidateValueBody(SblrValueKind kind,
       SblrExpressionNodeReferenceV1 reference;
       return DecodeSblrExpressionNodeReferenceV1(data, size, &reference);
     }
+    case SblrValueKind::contextual_text_literal_profile_set: {
+      ContextualTextLiteralExecuteV2 execute;
+      ContextualTextCodecDiagnosticV2 diagnostic;
+      return DecodeContextualTextLiteralExecuteV2(data, size, &execute,
+                                                   &diagnostic);
+    }
     case SblrValueKind::parameter_node_table:
       return DecodeSblrParameterNodeTableV1(data, size).ok;
     case SblrValueKind::parameter_node_ref: {
@@ -747,6 +807,12 @@ bool ValidateValueBody(SblrValueKind kind,
       SblrCatalogIntrospectDescriptorV1 operand; std::string detail;
       return DecodeSblrCatalogIntrospectDescriptorV1(data, size, &operand, &detail, true);
     }
+    case SblrValueKind::lifecycle_create_database_descriptor: {
+      SblrLifecycleCreateDatabaseDescriptorV1 operand;
+      std::string detail;
+      return DecodeSblrLifecycleCreateDatabaseDescriptorV1(
+          data, size, &operand, &detail);
+    }
     case SblrValueKind::result_set_return_descriptor: { SblrReturnResultSetDescriptorV1 operand; std::string detail; return DecodeSblrReturnResultSetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::kv_structured_read_descriptor: { SblrKvStructuredReadDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredReadDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::kv_structured_mutate_descriptor: { SblrKvStructuredMutateDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredMutateDescriptorV1(data,size,&operand,&detail,true); }
@@ -817,9 +883,8 @@ bool ValidateValueBody(SblrValueKind kind,
   return false;
 }
 
-Bytes EncodeOperandVector(const std::vector<SblrOperand>& operands) {
+Bytes EncodeOperandRecordsUnchecked(const std::vector<SblrOperand>& operands) {
   Bytes section;
-  Append32(&section, static_cast<std::uint32_t>(operands.size()));
   for (const auto& operand : operands) {
     Append32(&section, operand.ordinal);
     AppendText(&section, operand.type);
@@ -832,13 +897,22 @@ Bytes EncodeOperandVector(const std::vector<SblrOperand>& operands) {
   return section;
 }
 
-bool DecodeOperandVector(const std::uint8_t* data,
-                         std::size_t size,
-                         std::vector<SblrOperand>* operands,
-                         bool* limit_exceeded) {
-  Reader reader(data, size);
-  std::uint32_t count = 0;
-  if (!reader.Read32(&count)) return false;
+Bytes EncodeOperandVector(const std::vector<SblrOperand>& operands) {
+  Bytes section;
+  Append32(&section, static_cast<std::uint32_t>(operands.size()));
+  const auto records = EncodeOperandRecordsUnchecked(operands);
+  section.insert(section.end(), records.begin(), records.end());
+  return section;
+}
+
+bool DecodeOperandRecords(Reader* reader,
+                          const std::uint32_t count,
+                          const SblrOperandRecordDecodeProfile profile,
+                          std::vector<SblrOperand>* operands,
+                          bool* limit_exceeded) {
+  if (reader == nullptr || operands == nullptr || limit_exceeded == nullptr) {
+    return false;
+  }
   if (count > kSblrOperationMaximumOperands) {
     *limit_exceeded = true;
     return false;
@@ -851,42 +925,72 @@ bool DecodeOperandVector(const std::uint8_t* data,
     std::uint32_t slot_size = 0;
     std::uint16_t raw_kind = 0;
     std::uint64_t value_size = 0;
-    if (!reader.Read32(&operand.ordinal) || operand.ordinal != index + 1 ||
-        !reader.Read32(&type_size) || type_size == 0 || type_size > 256 ||
-        type_size > reader.remaining()) {
+    if (!reader->Read32(&operand.ordinal) || operand.ordinal != index + 1 ||
+        !reader->Read32(&type_size) || type_size == 0 || type_size > 256 ||
+        type_size > reader->remaining()) {
       return false;
     }
     const std::uint8_t* text_data = nullptr;
-    if (!reader.Take(type_size, &text_data)) return false;
+    if (!reader->Take(type_size, &text_data)) return false;
     operand.type.assign(reinterpret_cast<const char*>(text_data), type_size);
     if (!IsValidUtf8(operand.type) || !IsOperationKey(operand.type, 256) ||
-        !reader.Read32(&slot_size) || slot_size == 0 || slot_size > 256 ||
-        slot_size > reader.remaining()) {
+        !reader->Read32(&slot_size) || slot_size == 0 || slot_size > 256 ||
+        slot_size > reader->remaining()) {
       return false;
     }
-    if (!reader.Take(slot_size, &text_data)) return false;
+    if (!reader->Take(slot_size, &text_data)) return false;
     operand.name.assign(reinterpret_cast<const char*>(text_data), slot_size);
     if (!IsValidUtf8(operand.name) ||
-        !reader.Read16(&raw_kind) || !reader.Read16(&operand.value_flags) ||
-        !reader.Read64(&value_size) || operand.value_flags != 0 ||
-        value_size > reader.remaining()) {
+        !reader->Read16(&raw_kind) ||
+        !reader->Read16(&operand.value_flags) ||
+        !reader->Read64(&value_size) || operand.value_flags != 0 ||
+        value_size > reader->remaining()) {
       return false;
     }
     operand.value_kind = static_cast<SblrValueKind>(raw_kind);
     if (!IsCanonicalOperandName(operand)) return false;
     const std::uint8_t* value_data = nullptr;
-    if (!reader.Take(static_cast<std::size_t>(value_size), &value_data)) {
+    if (!reader->Take(static_cast<std::size_t>(value_size), &value_data)) {
       return false;
     }
+    const bool contextual_profile =
+        profile == SblrOperandRecordDecodeProfile::
+                       contextual_query_execute_v1_1 ||
+        profile == SblrOperandRecordDecodeProfile::
+                       contextual_query_execute_v1_1_pre_kind206;
+    const bool contextual_composed_sbxn =
+        contextual_profile &&
+        operand.value_kind == SblrValueKind::expression_node_table &&
+        DecodeSblrContextualComposedExpressionNodeTableV2(
+            value_data, static_cast<std::size_t>(value_size)).ok;
     const bool deferred_source_map_descriptor =
         operand.value_kind == SblrValueKind::descriptor_ref && value_size == 24 &&
         IsNonzeroUuidBytes(value_data) && Load64(value_data + 16) != 0;
-    if (!deferred_source_map_descriptor &&
+    if ((profile == SblrOperandRecordDecodeProfile::
+                        contextual_query_execute_v1_1_pre_kind206 &&
+         operand.value_kind ==
+             SblrValueKind::contextual_text_literal_profile_set) ||
+        (!deferred_source_map_descriptor && !contextual_composed_sbxn &&
         !ValidateValueBody(operand.value_kind, value_data,
                            static_cast<std::size_t>(value_size), 1,
-                           &value_count, limit_exceeded)) return false;
+                           &value_count, limit_exceeded))) return false;
     operand.value_body.assign(value_data, value_data + value_size);
     operands->push_back(std::move(operand));
+  }
+  return true;
+}
+
+bool DecodeOperandVector(const std::uint8_t* data,
+                         std::size_t size,
+                         const SblrOperandRecordDecodeProfile profile,
+                         std::vector<SblrOperand>* operands,
+                         bool* limit_exceeded) {
+  Reader reader(data, size);
+  std::uint32_t count = 0;
+  if (!reader.Read32(&count) ||
+      !DecodeOperandRecords(&reader, count, profile, operands,
+                            limit_exceeded)) {
+    return false;
   }
   return reader.remaining() == 0;
 }
@@ -954,6 +1058,82 @@ std::string JsonEscape(std::string_view input) {
 
 }  // namespace
 
+std::vector<std::uint8_t> EncodeSblrCanonicalOperandRecords(
+    const std::vector<SblrOperand>& operands) {
+  if (operands.empty() ||
+      operands.size() > kSblrOperationMaximumOperands) {
+    return {};
+  }
+  std::uint64_t total = 0;
+  for (std::size_t index = 0; index != operands.size(); ++index) {
+    const auto& operand = operands[index];
+    if (operand.ordinal != index + 1 || !operand.value.empty() ||
+        operand.value_flags != 0 || !IsOperationKey(operand.type, 256) ||
+        !IsCanonicalOperandName(operand)) {
+      return {};
+    }
+    const std::uint64_t record_bytes =
+        4U + 4U + operand.type.size() + 4U + operand.name.size() + 2U + 2U +
+        8U + operand.value_body.size();
+    if (record_bytes > kSblrOperationMaximumBytes - total) return {};
+    total += record_bytes;
+  }
+  return EncodeOperandRecordsUnchecked(operands);
+}
+
+SblrCanonicalOperandRecordsDecodeResult DecodeSblrCanonicalOperandRecords(
+    const std::uint8_t* bytes,
+    const std::size_t size,
+    const std::uint32_t expected_count,
+    const SblrOperandRecordDecodeProfile profile) {
+  SblrCanonicalOperandRecordsDecodeResult result;
+  const auto fail = [&](std::string code, std::string message) {
+    result.diagnostics.push_back(
+        Diagnostic(std::move(code), std::move(message)));
+  };
+  const bool known_profile =
+      profile == SblrOperandRecordDecodeProfile::canonical_envelope_v1 ||
+      profile ==
+          SblrOperandRecordDecodeProfile::contextual_query_execute_v1_1 ||
+      profile == SblrOperandRecordDecodeProfile::
+                     contextual_query_execute_v1_1_pre_kind206;
+  if (bytes == nullptr || size == 0 || size > kSblrOperationMaximumBytes ||
+      expected_count == 0 ||
+      expected_count > kSblrOperationMaximumOperands || !known_profile) {
+    fail(expected_count > kSblrOperationMaximumOperands ||
+                 size > kSblrOperationMaximumBytes
+             ? "SBLR.OPERATION.LIMIT_EXCEEDED"
+             : "SBLR.OPERAND_INVALID",
+         "canonical operand-record extent or expected count is invalid");
+    return result;
+  }
+  Reader reader(bytes, size);
+  bool limit_exceeded = false;
+  if (!DecodeOperandRecords(&reader, expected_count, profile,
+                            &result.operands, &limit_exceeded) ||
+      reader.remaining() != 0) {
+    result.operands.clear();
+    fail(limit_exceeded ? "SBLR.OPERATION.LIMIT_EXCEEDED"
+                        : "SBLR.OPERAND_INVALID",
+         "canonical operand records are malformed, noncanonical, or have "
+         "trailing bytes");
+    return result;
+  }
+  result.canonical_bytes =
+      EncodeSblrCanonicalOperandRecords(result.operands);
+  if (result.canonical_bytes.size() != size ||
+      !std::equal(result.canonical_bytes.begin(),
+                  result.canonical_bytes.end(), bytes)) {
+    result.operands.clear();
+    result.canonical_bytes.clear();
+    fail("SBLR.OPERATION.NONCANONICAL",
+         "decoded operand records do not re-encode byte-for-byte");
+    return result;
+  }
+  result.ok = true;
+  return result;
+}
+
 std::uint32_t SblrCrc32c(const std::uint8_t* data, std::size_t size) noexcept {
   std::uint32_t crc = 0xffffffffu;
   for (std::size_t i = 0; i < size; ++i) {
@@ -963,6 +1143,135 @@ std::uint32_t SblrCrc32c(const std::uint8_t* data, std::size_t size) noexcept {
     }
   }
   return ~crc;
+}
+
+std::vector<std::uint8_t> EncodeSblrLifecycleCreateDatabaseDescriptorV1(
+    const SblrLifecycleCreateDatabaseDescriptorV1& descriptor) {
+  const auto nonzero_uuid = [](const auto& value) {
+    return std::any_of(value.begin(), value.end(),
+                       [](std::uint8_t byte) { return byte != 0; });
+  };
+  if (!nonzero_uuid(descriptor.operation_uuid) ||
+      !nonzero_uuid(descriptor.statement_receipt_uuid) ||
+      !nonzero_uuid(descriptor.database_uuid) ||
+      !nonzero_uuid(descriptor.database_name_uuid) ||
+      !nonzero_uuid(descriptor.owner_uuid) ||
+      !nonzero_uuid(descriptor.catalog_snapshot_uuid) ||
+      !nonzero_uuid(descriptor.security_context_uuid) ||
+      !nonzero_uuid(descriptor.policy_snapshot_uuid) ||
+      !nonzero_uuid(descriptor.transaction_uuid) ||
+      !nonzero_uuid(descriptor.durability_profile_uuid) ||
+      !nonzero_uuid(descriptor.resource_budget_uuid) ||
+      !nonzero_uuid(descriptor.descriptor_evidence_uuid) ||
+      descriptor.catalog_generation == 0 ||
+      descriptor.policy_generation == 0 ||
+      descriptor.transaction_generation == 0 ||
+      descriptor.resource_budget_generation == 0 ||
+      descriptor.executor_availability_generation == 0 ||
+      (descriptor.option_count == 0) != descriptor.option_vector.empty() ||
+      descriptor.option_vector.size() > UINT32_MAX - 320u) {
+    return {};
+  }
+  const auto option_hash = scratchbird::core::hash::ComputeSha256Digest(
+      descriptor.option_vector);
+  if (!option_hash.ok() || option_hash.digest != descriptor.option_vector_sha256) {
+    return {};
+  }
+
+  Bytes encoded(320u + descriptor.option_vector.size(), 0);
+  encoded[0] = 'S';
+  encoded[1] = 'C';
+  encoded[2] = 'D';
+  encoded[3] = 'D';
+  Store16(&encoded, 4, 1);
+  Store16(&encoded, 6, 320);
+  Store32(&encoded, 8, static_cast<std::uint32_t>(encoded.size()));
+  const auto copy_uuid = [&encoded](std::size_t offset, const auto& value) {
+    std::copy(value.begin(), value.end(),
+              encoded.begin() + static_cast<std::ptrdiff_t>(offset));
+  };
+  copy_uuid(16, descriptor.operation_uuid);
+  copy_uuid(32, descriptor.statement_receipt_uuid);
+  copy_uuid(48, descriptor.database_uuid);
+  copy_uuid(64, descriptor.database_name_uuid);
+  copy_uuid(80, descriptor.owner_uuid);
+  copy_uuid(96, descriptor.filespace_uuid);
+  copy_uuid(112, descriptor.template_database_uuid);
+  copy_uuid(128, descriptor.catalog_snapshot_uuid);
+  Store64(&encoded, 144, descriptor.catalog_generation);
+  copy_uuid(152, descriptor.security_context_uuid);
+  copy_uuid(168, descriptor.policy_snapshot_uuid);
+  Store64(&encoded, 184, descriptor.policy_generation);
+  copy_uuid(192, descriptor.transaction_uuid);
+  Store64(&encoded, 208, descriptor.transaction_generation);
+  Store32(&encoded, 216,
+          static_cast<std::uint32_t>(descriptor.option_vector.size()));
+  Store16(&encoded, 220, descriptor.option_count);
+  encoded[222] = descriptor.if_not_exists ? 1 : 0;
+  copy_uuid(224, descriptor.durability_profile_uuid);
+  copy_uuid(240, descriptor.resource_budget_uuid);
+  Store64(&encoded, 256, descriptor.resource_budget_generation);
+  Store64(&encoded, 264, descriptor.executor_availability_generation);
+  std::copy(descriptor.option_vector_sha256.begin(),
+            descriptor.option_vector_sha256.end(), encoded.begin() + 272);
+  copy_uuid(304, descriptor.descriptor_evidence_uuid);
+  std::copy(descriptor.option_vector.begin(), descriptor.option_vector.end(),
+            encoded.begin() + 320);
+  return encoded;
+}
+
+bool DecodeSblrLifecycleCreateDatabaseDescriptorV1(
+    const std::uint8_t* data,
+    std::size_t size,
+    SblrLifecycleCreateDatabaseDescriptorV1* descriptor,
+    std::string* detail) {
+  const auto fail = [detail](std::string message) {
+    if (detail != nullptr) *detail = std::move(message);
+    return false;
+  };
+  if (data == nullptr || descriptor == nullptr || size < 320 ||
+      data[0] != 'S' || data[1] != 'C' || data[2] != 'D' || data[3] != 'D' ||
+      Load16(data + 4) != 1 || Load16(data + 6) != 320 ||
+      Load32(data + 8) != size || Load32(data + 12) != 0 ||
+      data[222] > 1 || data[223] != 0 ||
+      Load32(data + 216) != size - 320) {
+    return fail("SCDD v1 header, length, flags, or reserved field is invalid");
+  }
+  SblrLifecycleCreateDatabaseDescriptorV1 decoded;
+  const auto copy_uuid = [data](std::size_t offset, auto* value) {
+    std::copy_n(data + offset, value->size(), value->begin());
+  };
+  copy_uuid(16, &decoded.operation_uuid);
+  copy_uuid(32, &decoded.statement_receipt_uuid);
+  copy_uuid(48, &decoded.database_uuid);
+  copy_uuid(64, &decoded.database_name_uuid);
+  copy_uuid(80, &decoded.owner_uuid);
+  copy_uuid(96, &decoded.filespace_uuid);
+  copy_uuid(112, &decoded.template_database_uuid);
+  copy_uuid(128, &decoded.catalog_snapshot_uuid);
+  decoded.catalog_generation = Load64(data + 144);
+  copy_uuid(152, &decoded.security_context_uuid);
+  copy_uuid(168, &decoded.policy_snapshot_uuid);
+  decoded.policy_generation = Load64(data + 184);
+  copy_uuid(192, &decoded.transaction_uuid);
+  decoded.transaction_generation = Load64(data + 208);
+  decoded.option_count = Load16(data + 220);
+  decoded.if_not_exists = data[222] == 1;
+  copy_uuid(224, &decoded.durability_profile_uuid);
+  copy_uuid(240, &decoded.resource_budget_uuid);
+  decoded.resource_budget_generation = Load64(data + 256);
+  decoded.executor_availability_generation = Load64(data + 264);
+  std::copy_n(data + 272, decoded.option_vector_sha256.size(),
+              decoded.option_vector_sha256.begin());
+  copy_uuid(304, &decoded.descriptor_evidence_uuid);
+  decoded.option_vector.assign(data + 320, data + size);
+  const auto canonical = EncodeSblrLifecycleCreateDatabaseDescriptorV1(decoded);
+  if (canonical.size() != size ||
+      !std::equal(canonical.begin(), canonical.end(), data)) {
+    return fail("SCDD v1 identity, generation, option hash, or canonical bytes are invalid");
+  }
+  *descriptor = std::move(decoded);
+  return true;
 }
 
 SblrOperationEnvelope MakeSblrEnvelope(std::string operation_id,
@@ -985,26 +1294,107 @@ SblrOperationEnvelope MakeSblrEnvelope(std::string operation_id,
 SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& envelope) {
   SblrEnvelopeValidationResult result;
   result.ok = true;
-  const auto fail = [&result](std::string code, std::string message) {
+  const bool plan_import_rows_identity_claim =
+      envelope.operation_id == "dml.plan_import_rows" ||
+      envelope.opcode == "SBLR_DML_PLAN_IMPORT_ROWS" ||
+      envelope.opcode_code == kPlanImportRowsOpcodeCodeV1;
+  const bool ddl_type_identity_claim = IsDdlTypeIdentityClaim(envelope);
+  const bool exact_ddl_create_type =
+      IsExactDdlCreateTypeIdentity(envelope);
+  const bool exact_ddl_alter_type = IsExactDdlAlterTypeIdentity(envelope);
+  const bool exact_ddl_drop_type = IsExactDdlDropTypeIdentity(envelope);
+  const bool exact_ddl_type = exact_ddl_create_type || exact_ddl_alter_type ||
+                              exact_ddl_drop_type;
+  const auto fail = [&result, plan_import_rows_identity_claim](
+                        std::string code, std::string message) {
+    if (plan_import_rows_identity_claim && code != "SBLR.OPCODE_INVALID") {
+      code = "SBLR.OPERAND_INVALID";
+    }
     result.ok = false;
     result.diagnostics.push_back(Diagnostic(std::move(code), std::move(message)));
   };
 
+  if (ddl_type_identity_claim && !exact_ddl_type) {
+    fail("SBLR.OPCODE_INVALID",
+         "TYPE DDL code, operation key, and mnemonic must be the exact "
+         "registered identity tuple");
+    return result;
+  }
+
+  const bool exact_query_execute_identity =
+      envelope.operation_id == "query.execute" &&
+      envelope.opcode == "SBLR_QUERY_EXECUTE" &&
+      envelope.opcode_code == 4615;
+  const bool contextual_text_profile_set_claim = std::ranges::any_of(
+      envelope.operands, [](const SblrOperand& operand) {
+        return operand.value_kind ==
+               SblrValueKind::contextual_text_literal_profile_set;
+      });
+  const bool contextual_query_execute_claim =
+      exact_query_execute_identity &&
+      (contextual_text_profile_set_claim ||
+       (envelope.operation_version_major == 1 &&
+        envelope.operation_version_minor == 1));
+  const bool query_execute_v1_0 =
+      exact_query_execute_identity && envelope.operation_version_major == 1 &&
+      envelope.operation_version_minor == 0;
+  const bool query_execute_v1_1 =
+      exact_query_execute_identity && envelope.operation_version_major == 1 &&
+      envelope.operation_version_minor == 1;
+  const bool exact_ddl_create_index =
+      envelope.opcode_code == 1540 &&
+      envelope.operation_id == "engine.op.ddl_create_index" &&
+      envelope.opcode == "SBLR_DDL_CREATE_INDEX";
+  const bool exact_plan_import_rows =
+      envelope.operation_id == "dml.plan_import_rows" &&
+      envelope.opcode == "SBLR_DML_PLAN_IMPORT_ROWS" &&
+      envelope.opcode_code == kPlanImportRowsOpcodeCodeV1;
   if (envelope.envelope_major != kEngineSblrEnvelopeMajor ||
       envelope.envelope_minor != kEngineSblrEnvelopeMinor ||
-      envelope.operation_version_major != 1 || envelope.operation_version_minor != 0) {
-    fail("SBLR.OPERATION.VERSION_INVALID", "SBOP v1.0 is the only admitted operation encoding");
+      envelope.operation_version_major != 1 ||
+      (envelope.operation_version_minor != 0 && !query_execute_v1_1)) {
+    fail((plan_import_rows_identity_claim ||
+          (exact_ddl_type &&
+           (envelope.operation_version_major != 1 ||
+            envelope.operation_version_minor != 0)))
+             ? "SBLR.OPCODE_INVALID"
+             : (contextual_query_execute_claim
+                    ? "SBLR.OPERAND_INVALID"
+                    : "SBLR.OPERATION.VERSION_INVALID"),
+         "SBOP v1.1 is admitted only for contextual query.execute");
+    if (contextual_query_execute_claim) return result;
   }
   if (!IsOperationKey(envelope.operation_id, 1024) ||
       !IsOpcodeMnemonic(envelope.opcode)) {
     fail("SBLR.OPERATION.TEXT_INVALID", "operation key or opcode mnemonic is not canonical");
   }
-  if (envelope.result_shape.empty() || envelope.result_shape.size() > 1024 ||
-      !IsValidUtf8(envelope.result_shape) || envelope.diagnostic_shape.empty() ||
-      envelope.diagnostic_shape.size() > 1024 || !IsValidUtf8(envelope.diagnostic_shape) ||
-      envelope.trace_key.empty() || envelope.trace_key.size() > 4096 ||
+  const bool result_and_diagnostic_text_valid =
+      !envelope.result_shape.empty() &&
+      envelope.result_shape.size() <= 1024 &&
+      IsValidUtf8(envelope.result_shape) &&
+      !envelope.diagnostic_shape.empty() &&
+      envelope.diagnostic_shape.size() <= 1024 &&
+      IsValidUtf8(envelope.diagnostic_shape);
+  if (!result_and_diagnostic_text_valid) {
+    fail((exact_ddl_create_index || exact_ddl_type || query_execute_v1_1)
+             ? "SBLR.OPERAND_INVALID"
+             : "SBLR.OPERATION.TEXT_INVALID",
+         "result or diagnostic identity is not canonical");
+  } else if (query_execute_v1_1 &&
+             (envelope.result_shape != "query_execute_result" ||
+              envelope.diagnostic_shape != "diagnostic_vector")) {
+    fail("SBLR.OPERAND_INVALID",
+         "query.execute v1.1 requires query_execute_result and "
+         "diagnostic_vector");
+  }
+  if (exact_plan_import_rows &&
+      envelope.result_shape != "import_plan_result") {
+    fail("SBLR.OPERAND_INVALID",
+         "dml.plan_import_rows requires import_plan_result v1");
+  }
+  if (envelope.trace_key.empty() || envelope.trace_key.size() > 4096 ||
       !IsValidUtf8(envelope.trace_key)) {
-    fail("SBLR.OPERATION.TEXT_INVALID", "result, diagnostic, or trace identity is not canonical");
+    fail("SBLR.OPERATION.TEXT_INVALID", "trace identity is not canonical");
   }
   std::array<std::uint8_t, 16> uuid{};
   if (!ParseUuid(envelope.parser_package_uuid, &uuid) ||
@@ -1015,14 +1405,24 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
                                                    envelope.operation_id,
                                                    envelope.opcode);
   if (!identity.ok) {
-    fail("SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH", identity.detail);
+    fail((plan_import_rows_identity_claim || ddl_type_identity_claim)
+             ? "SBLR.OPCODE_INVALID"
+             : "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
+         identity.detail);
   }
   if (envelope.contains_sql_text || HasSourceArtifactMetadata(envelope.source_artifact_map)) {
     fail("SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY",
          "SBOP cannot carry SQL text, source artifacts, or SBEE-owned authority");
   }
   if (envelope.operands.size() > kSblrOperationMaximumOperands) {
-    fail("SBLR.OPERATION.LIMIT_EXCEEDED", "operand count exceeds the v1 limit");
+    fail((exact_ddl_create_index || exact_ddl_type)
+             ? "SBLR.OPERAND_INVALID"
+             : "SBLR.OPERATION.LIMIT_EXCEEDED",
+         "operand count exceeds the v1 limit");
+  }
+  if (exact_plan_import_rows && envelope.operands.size() != 1) {
+    fail("SBLR.OPERAND_INVALID",
+         "dml.plan_import_rows requires exactly one descriptor reference");
   }
   std::uint64_t value_count = 0;
   std::size_t expression_node_table_count = 0;
@@ -1034,6 +1434,8 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   std::size_t variable_node_table_count = 0;
   std::optional<SblrVariableNodeTableCodecResultV1> variable_node_table;
   std::vector<SblrVariableNodeReferenceV1> variable_node_references;
+  std::size_t contextual_text_profile_set_count = 0;
+  std::optional<ContextualTextLiteralExecuteV2> contextual_text_execute;
   for (std::size_t i = 0; i < envelope.operands.size(); ++i) {
     const auto& operand = envelope.operands[i];
     bool limit_exceeded = false;
@@ -1055,6 +1457,27 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.value_body.size() == 24 &&
         IsNonzeroUuidBytes(operand.value_body.data()) &&
         Load64(operand.value_body.data() + 16) != 0;
+    const bool dml_update_rows_descriptor =
+        envelope.operation_id == "dml.update_rows" &&
+        envelope.opcode == "SBLR_DML_UPDATE_ROWS" &&
+        envelope.opcode_code == 783 && envelope.operands.size() == 1 &&
+        operand.ordinal == 1 && operand.type == "dml.update_rows" &&
+        operand.name == "request" &&
+        operand.value_kind == SblrValueKind::descriptor_ref &&
+        operand.value_body.size() == 24 &&
+        IsNonzeroUuidBytes(operand.value_body.data()) &&
+        Load64(operand.value_body.data() + 16) != 0;
+    PlanImportRowsDescriptorRefV1 plan_import_rows_reference;
+    PlanImportRowsCodecDiagnosticV1 plan_import_rows_diagnostic;
+    const bool plan_import_rows_descriptor =
+        exact_plan_import_rows && envelope.operands.size() == 1 &&
+        operand.ordinal == 1 &&
+        operand.type == "import_rows_plan_descriptor" &&
+        operand.name == "request" &&
+        operand.value_kind == SblrValueKind::descriptor_ref &&
+        DecodePlanImportRowsDescriptorRefV1(
+            operand.value_body.data(), operand.value_body.size(),
+            &plan_import_rows_reference, &plan_import_rows_diagnostic);
     const bool alter_publication_descriptor =
         ((envelope.operation_id == "engine.op.ddl_alter_publication" &&
         envelope.opcode == "SBLR_DDL_ALTER_PUBLICATION" && envelope.opcode_code == 1583 &&
@@ -1073,23 +1496,28 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.type == "create_subscription_descriptor" && operand.name == "subscription" &&
         operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 384;
     const bool alter_subscription_descriptor =
-        envelope.operation_id == "ddl.subscription.alter" &&
+        envelope.operation_id == "engine.op.ddl_alter_subscription" &&
         envelope.opcode == "SBLR_DDL_ALTER_SUBSCRIPTION" && envelope.opcode_code == 1586 &&
         envelope.operands.size() == 1 && operand.ordinal == 1 &&
         operand.type == "alter_subscription_descriptor" && operand.name == "subscription" &&
         operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 384;
     const bool drop_subscription_descriptor =
-        envelope.operation_id == "ddl.subscription.drop" &&
+        envelope.operation_id == "engine.op.ddl_drop_subscription" &&
         envelope.opcode == "SBLR_DDL_DROP_SUBSCRIPTION" && envelope.opcode_code == 1587 &&
         envelope.operands.size() == 1 && operand.ordinal == 1 &&
         operand.type == "drop_subscription_descriptor" && operand.name == "subscription" &&
         operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 384;
     const bool create_operator_descriptor =
-        envelope.operation_id == "ddl.operator.create" && envelope.opcode == "SBLR_DDL_CREATE_OPERATOR" && envelope.opcode_code == 1590 &&
+        envelope.operation_id == "engine.op.ddl_create_operator" && envelope.opcode == "SBLR_DDL_CREATE_OPERATOR" && envelope.opcode_code == 1590 &&
         envelope.operands.size() == 1 && operand.ordinal == 1 && operand.type == "create_operator_descriptor" && operand.name == "operator" &&
         operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 384;
-    const bool drop_operator_descriptor = envelope.operation_id=="ddl.operator.drop"&&envelope.opcode=="SBLR_DDL_DROP_OPERATOR"&&envelope.opcode_code==1591&&envelope.operands.size()==1&&operand.ordinal==1&&operand.type=="drop_operator_descriptor"&&operand.name=="operator"&&operand.value_kind==SblrValueKind::descriptor_ref&&operand.value_body.size()==384;
-    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || alter_publication_descriptor || create_subscription_descriptor || alter_subscription_descriptor || drop_subscription_descriptor || create_operator_descriptor || drop_operator_descriptor ||
+    const bool drop_operator_descriptor = envelope.operation_id=="engine.op.ddl_drop_operator"&&envelope.opcode=="SBLR_DDL_DROP_OPERATOR"&&envelope.opcode_code==1591&&envelope.operands.size()==1&&operand.ordinal==1&&operand.type=="drop_operator_descriptor"&&operand.name=="operator"&&operand.value_kind==SblrValueKind::descriptor_ref&&operand.value_body.size()==384;
+    const bool contextual_composed_sbxn =
+        query_execute_v1_1 &&
+        operand.value_kind == SblrValueKind::expression_node_table &&
+        DecodeSblrContextualComposedExpressionNodeTableV2(
+            operand.value_body.data(), operand.value_body.size()).ok;
+    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || dml_update_rows_descriptor || plan_import_rows_descriptor || alter_publication_descriptor || create_subscription_descriptor || alter_subscription_descriptor || drop_subscription_descriptor || create_operator_descriptor || drop_operator_descriptor || contextual_composed_sbxn ||
         ValidateValueBody(operand.value_kind, operand.value_body.data(),
                           operand.value_body.size(), 1, &value_count,
                           &limit_exceeded);
@@ -1097,14 +1525,29 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.value_flags != 0 || !IsOperationKey(operand.type, 256) ||
         !IsCanonicalOperandName(operand) ||
         !canonical_value_body) {
-      fail(limit_exceeded ? "SBLR.OPERATION.LIMIT_EXCEEDED"
-                          : "SBLR.OPERATION.OPERAND_INVALID",
-           "operand vector is not canonical typed SBOP data");
+      std::ostringstream detail;
+      detail << "operand vector is not canonical typed SBOP data"
+             << ";ordinal=" << operand.ordinal
+             << ";expected_ordinal=" << (i + 1)
+             << ";legacy_value_empty=" << (operand.value.empty() ? "true" : "false")
+             << ";value_flags=" << operand.value_flags
+             << ";type_canonical="
+             << (IsOperationKey(operand.type, 256) ? "true" : "false")
+             << ";name_canonical="
+             << (IsCanonicalOperandName(operand) ? "true" : "false")
+             << ";value_body_canonical="
+             << (canonical_value_body ? "true" : "false");
+      fail((exact_ddl_create_index || exact_ddl_type || query_execute_v1_1)
+               ? "SBLR.OPERAND_INVALID"
+               : (limit_exceeded ? "SBLR.OPERATION.LIMIT_EXCEEDED"
+                                 : "SBLR.OPERATION.OPERAND_INVALID"),
+           detail.str());
       break;
     }
     if (operand.value_kind == SblrValueKind::descriptor_ref &&
         operand.value_body.size() == 24 && !source_map_descriptor &&
-        !error_vector_descriptor) {
+        !error_vector_descriptor && !dml_update_rows_descriptor &&
+        !plan_import_rows_descriptor) {
       fail("SBLR.OPERAND_INVALID",
            "24-byte descriptor references require an exact registered metadata opcode");
       break;
@@ -1121,6 +1564,18 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         break;
       }
     }
+    if (operand.value_kind ==
+            SblrValueKind::lifecycle_create_database_descriptor &&
+        !(envelope.operation_id == "engine.op.lifecycle_create_database" &&
+          envelope.opcode == "SBLR_LIFECYCLE_CREATE_DATABASE" &&
+          envelope.opcode_code == 5128 && envelope.operands.size() == 1 &&
+          operand.ordinal == 1 &&
+          operand.type == "lifecycle_create_database_descriptor.v1" &&
+          operand.name == "database")) {
+      fail("SBLR.OPERAND_INVALID",
+           "SCDD v1 is admitted only as the lifecycle create database operand");
+      break;
+    }
     if (operand.value_kind == SblrValueKind::expression_node_table) {
       ++expression_node_table_count;
       if (envelope.operation_id != "query.execute" ||
@@ -1132,8 +1587,11 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
              "SBXN v1 is admitted only as the unique query.execute expression_nodes carrier");
         break;
       }
-      expression_node_table = DecodeSblrExpressionNodeTableV1(
-          operand.value_body.data(), operand.value_body.size());
+      expression_node_table = query_execute_v1_1
+          ? DecodeSblrContextualComposedExpressionNodeTableV2(
+                operand.value_body.data(), operand.value_body.size())
+          : DecodeSblrExpressionNodeTableV1(
+                operand.value_body.data(), operand.value_body.size());
     }
     if (operand.value_kind == SblrValueKind::expression_node_ref) {
       SblrExpressionNodeReferenceV1 reference;
@@ -1148,6 +1606,33 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         break;
       }
       expression_node_references.push_back(reference);
+    }
+    if (operand.value_kind ==
+        SblrValueKind::contextual_text_literal_profile_set) {
+      ++contextual_text_profile_set_count;
+      if (!query_execute_v1_1 ||
+          operand.ordinal != envelope.operands.size() ||
+          operand.type != "literal.contextual_text_profile_set.v2" ||
+          operand.name != "contextual_text_profiles" ||
+          contextual_text_profile_set_count != 1) {
+        fail("SBLR.OPERAND_INVALID",
+             "SBTLXE02 is admitted only as the unique final query.execute "
+             "v1.1 contextual profile-set operand");
+        break;
+      }
+      ContextualTextLiteralExecuteV2 execute;
+      ContextualTextCodecDiagnosticV2 diagnostic;
+      if (!DecodeContextualTextLiteralExecuteV2(
+              operand.value_body.data(), operand.value_body.size(), &execute,
+              &diagnostic)) {
+        fail(diagnostic.code.empty() ? "SBLR.OPERAND_INVALID"
+                                     : diagnostic.code,
+             diagnostic.detail.empty()
+                 ? "SBTLXE02 is not canonical"
+                 : diagnostic.detail);
+        break;
+      }
+      contextual_text_execute = std::move(execute);
     }
     if (operand.value_kind == SblrValueKind::parameter_node_table) {
       ++parameter_node_table_count;
@@ -1205,6 +1690,70 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       variable_node_references.push_back(reference);
     }
   }
+  if (exact_ddl_create_index && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrDdlCreateIndexDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          envelope.result_shape == "ddl_result" &&
+          envelope.diagnostic_shape == "diagnostic_vector" &&
+          !envelope.contains_sql_text &&
+          envelope.parser_resolved_names_to_uuids &&
+          operand.ordinal == 1 &&
+          operand.type == "create_index_descriptor" &&
+          operand.name == "index" &&
+          operand.value_kind == SblrValueKind::create_index_descriptor &&
+          DecodeSblrDdlCreateIndexDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail, true);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical CREATE INDEX envelope or CIDO operand is invalid");
+    }
+  }
+  if (exact_ddl_type && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "ddl_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      const bool canonical_common =
+          operand.ordinal == 1 && operand.name == "type";
+      std::string detail;
+      if (exact_ddl_create_type && canonical_common &&
+          operand.type == "create_type_descriptor" &&
+          operand.value_kind == SblrValueKind::create_type_descriptor) {
+        SblrDdlCreateTypeDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrDdlCreateTypeDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      } else if (exact_ddl_alter_type && canonical_common &&
+                 operand.type == "alter_type_descriptor" &&
+                 operand.value_kind == SblrValueKind::alter_type_descriptor) {
+        SblrDdlAlterTypeDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrDdlAlterTypeDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      } else if (exact_ddl_drop_type && canonical_common &&
+                 operand.type == "drop_type_descriptor" &&
+                 operand.value_kind == SblrValueKind::drop_type_descriptor) {
+        SblrDdlDropTypeDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrDdlDropTypeDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      }
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical TYPE DDL result, diagnostic, or operation-specific "
+           "descriptor binding is invalid");
+    }
+  }
   if (expression_node_table.has_value()) {
     if (!ValidateSblrLiteralReferenceBijectionV1(
             *expression_node_table, expression_node_references)) {
@@ -1214,6 +1763,69 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   } else if (!expression_node_references.empty()) {
     fail("SBLR.OPERAND_INVALID",
          "relational literal reference requires the exact SBXN table");
+  }
+  if (query_execute_v1_1 && contextual_text_execute.has_value()) {
+    if (!expression_node_table.has_value() ||
+        contextual_text_execute->mappings.empty()) {
+      fail("SBLR.OPERAND_INVALID",
+           "query.execute v1.1 requires a nonempty contextual SBXN subset");
+    } else {
+      std::vector<SblrOperand> pre_contextual_operands(
+          envelope.operands.begin(), envelope.operands.end() - 1);
+      const auto pre_contextual_records =
+          EncodeSblrCanonicalOperandRecords(pre_contextual_operands);
+      const auto expected_operand_sha =
+          ComputeContextualTextPreContextualOperandVectorSha256V2(
+              pre_contextual_records,
+              static_cast<std::uint32_t>(pre_contextual_operands.size()));
+      const auto expected_sbxn_sha = ComputeContextualTextSbxnSha256V2(
+          expression_node_table->canonical_bytes);
+      if (pre_contextual_records.empty() ||
+          contextual_text_execute->pre_contextual_operand_vector_sha256 !=
+              expected_operand_sha ||
+          contextual_text_execute->sbxn_sha256 != expected_sbxn_sha) {
+        fail("SBLR.OPERAND_INVALID",
+             "SBTLXE02 pre-contextual operand or SBXN hash differs");
+      }
+      const auto& contextual_descriptor =
+          contextual_text_execute->mappings.front().profile.descriptor_uuid;
+      const auto contextual_generation =
+          contextual_text_execute->mappings.front().profile
+              .descriptor_generation;
+      std::vector<const SblrExpressionLiteralNodeV1*> contextual_nodes;
+      for (const auto& node : expression_node_table->table.nodes) {
+        if (node.descriptor_uuid == contextual_descriptor &&
+            node.descriptor_generation == contextual_generation) {
+          contextual_nodes.push_back(&node);
+        }
+      }
+      std::ranges::sort(
+          contextual_nodes, {},
+          &SblrExpressionLiteralNodeV1::parent_operand_ordinal);
+      if (contextual_nodes.size() !=
+          contextual_text_execute->mappings.size()) {
+        fail("SBLR.OPERAND_INVALID",
+             "contextual d718 SBXN nodes and SBTLXE02 mappings are not "
+             "bijective");
+      } else {
+        for (std::size_t index = 0; index != contextual_nodes.size();
+             ++index) {
+          const auto& node = *contextual_nodes[index];
+          const auto& mapping = contextual_text_execute->mappings[index];
+          if (mapping.literal_occurrence !=
+                  node.parent_operand_ordinal ||
+              mapping.node_id != node.node_id ||
+              mapping.profile.descriptor_uuid != node.descriptor_uuid ||
+              mapping.profile.descriptor_generation !=
+                  node.descriptor_generation ||
+              mapping.profile.canonical_body != node.literal_body) {
+            fail("SBLR.OPERAND_INVALID",
+                 "contextual SBXN node and SBTLXE02 mapping differ");
+            break;
+          }
+        }
+      }
+    }
   }
   if (parameter_node_table.has_value()) {
     if (!ValidateSblrParameterReferenceBijectionV1(
@@ -1234,6 +1846,22 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   } else if (!variable_node_references.empty()) {
     fail("SBLR.OPERAND_INVALID",
          "relational variable reference requires the exact SBVN table");
+  }
+  if (result.ok &&
+      ((query_execute_v1_1 && contextual_text_profile_set_count != 1) ||
+       (query_execute_v1_0 && contextual_text_profile_set_count != 0))) {
+    fail("SBLR.OPERAND_INVALID",
+         "query.execute v1.1 requires one contextual profile set and v1.0 "
+         "forbids it");
+  }
+  if (envelope.operation_id == "engine.op.lifecycle_create_database" &&
+      envelope.opcode == "SBLR_LIFECYCLE_CREATE_DATABASE" &&
+      envelope.opcode_code == 5128 &&
+      (envelope.operands.size() != 1 ||
+       envelope.operands.front().value_kind !=
+           SblrValueKind::lifecycle_create_database_descriptor)) {
+    fail("SBLR.OPERAND_INVALID",
+         "lifecycle create database requires exactly one canonical SCDD v1 operand");
   }
   if (envelope.opcode_code == 3 || envelope.opcode == "SBLR_LITERAL" ||
       envelope.operation_id == "engine.op.literal") {
@@ -1337,9 +1965,17 @@ SblrDecodeResult DecodeSblrEnvelope(std::string_view encoded) {
   if (Load32(data) != kSblrOperationMagic) {
     return DecodeFailure("SBLR.OPERATION.MAGIC_INVALID", "operation magic is not literal SBOP");
   }
-  if (Load16(data + 4) != kFormatMajor || Load16(data + 6) != kFormatMinor ||
-      Load16(data + 18) != 1 || Load16(data + 20) != 0) {
+  if (Load16(data + 4) != kFormatMajor ||
+      Load16(data + 6) != kFormatMinor) {
     return DecodeFailure("SBLR.OPERATION.VERSION_INVALID", "operation version is unsupported");
+  }
+  const bool operation_version_supported =
+      Load16(data + 18) == 1 && Load16(data + 20) <= 1;
+  if (!operation_version_supported &&
+      !IsDdlTypeOpcodeCode(Load16(data + 16)) &&
+      Load16(data + 16) != 4615) {
+    return DecodeFailure("SBLR.OPERATION.VERSION_INVALID",
+                         "operation version is unsupported");
   }
   const std::uint64_t payload_size = Load64(data + 40);
   const std::uint64_t declared_total = Load64(data + 48);
@@ -1399,14 +2035,54 @@ SblrDecodeResult DecodeSblrEnvelope(std::string_view encoded) {
   envelope.opcode_code = Load16(data + 16);
   envelope.operation_version_major = Load16(data + 18);
   envelope.operation_version_minor = Load16(data + 20);
-  if (!DecodeText(sections[0].data, sections[0].size, 1024, &envelope.operation_id) ||
-      !IsOperationKey(envelope.operation_id, 1024) ||
-      !DecodeText(sections[1].data, sections[1].size, 256, &envelope.opcode) ||
-      !IsOpcodeMnemonic(envelope.opcode) ||
-      !DecodeText(sections[5].data, sections[5].size, 1024, &envelope.result_shape) ||
-      !DecodeText(sections[6].data, sections[6].size, 1024, &envelope.diagnostic_shape) ||
-      !DecodeText(sections[7].data, sections[7].size, 4096, &envelope.trace_key)) {
-    return DecodeFailure("SBLR.OPERATION.TEXT_INVALID", "operation contains noncanonical text");
+  const bool operation_id_text_ok =
+      DecodeText(sections[0].data, sections[0].size, 1024,
+                 &envelope.operation_id) &&
+      IsOperationKey(envelope.operation_id, 1024);
+  const bool opcode_text_ok =
+      DecodeText(sections[1].data, sections[1].size, 256, &envelope.opcode) &&
+      IsOpcodeMnemonic(envelope.opcode);
+  const bool ddl_type_identity_claim = IsDdlTypeIdentityClaim(envelope);
+  if (!operation_id_text_ok || !opcode_text_ok) {
+    return DecodeFailure(
+        ddl_type_identity_claim ? "SBLR.OPCODE_INVALID"
+                                : "SBLR.OPERATION.TEXT_INVALID",
+        "operation identity text is not canonical");
+  }
+  const bool exact_ddl_type = IsExactDdlTypeIdentity(envelope);
+  const bool exact_query_execute_identity =
+      envelope.operation_id == "query.execute" &&
+      envelope.opcode == "SBLR_QUERY_EXECUTE" &&
+      envelope.opcode_code == 4615;
+  const bool query_execute_v1_1 =
+      exact_query_execute_identity && envelope.operation_version_major == 1 &&
+      envelope.operation_version_minor == 1;
+  if (ddl_type_identity_claim && !exact_ddl_type) {
+    return DecodeFailure(
+        "SBLR.OPCODE_INVALID",
+        "TYPE DDL code, operation key, and mnemonic are cross-wired");
+  }
+  if (!operation_version_supported) {
+    return DecodeFailure(exact_ddl_type
+                             ? "SBLR.OPCODE_INVALID"
+                             : (exact_query_execute_identity
+                                    ? "SBLR.OPERAND_INVALID"
+                                    : "SBLR.OPERATION.VERSION_INVALID"),
+                         "operation version is unsupported");
+  }
+  if (!DecodeText(sections[5].data, sections[5].size, 1024,
+                  &envelope.result_shape) ||
+      !DecodeText(sections[6].data, sections[6].size, 1024,
+                  &envelope.diagnostic_shape)) {
+    return DecodeFailure((exact_ddl_type || query_execute_v1_1)
+                             ? "SBLR.OPERAND_INVALID"
+                             : "SBLR.OPERATION.TEXT_INVALID",
+                         "result or diagnostic identity text is not canonical");
+  }
+  if (!DecodeText(sections[7].data, sections[7].size, 4096,
+                  &envelope.trace_key)) {
+    return DecodeFailure("SBLR.OPERATION.TEXT_INVALID",
+                         "trace identity text is not canonical");
   }
   if (sections[2].size != 28 || !IsNonzeroUuidBytes(sections[2].data) ||
       sections[3].size != 16 || !IsNonzeroUuidBytes(sections[3].data)) {
@@ -1418,11 +2094,25 @@ SblrDecodeResult DecodeSblrEnvelope(std::string_view encoded) {
   envelope.parser_package_version_patch = Load32(sections[2].data + 24);
   envelope.registry_snapshot_uuid = FormatUuid(sections[3].data);
   envelope.parser_resolved_names_to_uuids = true;
+  const bool exact_ddl_create_index =
+      envelope.opcode_code == 1540 &&
+      envelope.operation_id == "engine.op.ddl_create_index" &&
+      envelope.opcode == "SBLR_DDL_CREATE_INDEX";
   bool limit_exceeded = false;
+  const auto operand_decode_profile =
+      query_execute_v1_1
+          ? SblrOperandRecordDecodeProfile::
+                contextual_query_execute_v1_1
+          : SblrOperandRecordDecodeProfile::canonical_envelope_v1;
   if (!DecodeOperandVector(sections[4].data, sections[4].size,
-                           &envelope.operands, &limit_exceeded)) {
-    return DecodeFailure(limit_exceeded ? "SBLR.OPERATION.LIMIT_EXCEEDED"
-                                        : "SBLR.OPERATION.OPERAND_INVALID",
+                           operand_decode_profile, &envelope.operands,
+                           &limit_exceeded)) {
+    return DecodeFailure((exact_ddl_create_index || exact_ddl_type ||
+                          query_execute_v1_1)
+                             ? "SBLR.OPERAND_INVALID"
+                             : (limit_exceeded
+                                    ? "SBLR.OPERATION.LIMIT_EXCEEDED"
+                                    : "SBLR.OPERATION.OPERAND_INVALID"),
                          "operand vector is malformed or noncanonical");
   }
   if (sections[8].size != 32) {

@@ -18,6 +18,8 @@
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 
+#include "canonical_sblr_admission_test_helper.hpp"
+
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -947,7 +949,9 @@ int main() {
                                 "cluster.inspect_state");
 
   auto cluster_mapping_active = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{TextOperationEnvelope(false, true, false), true});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION",
+          true));
   Require(cluster_mapping_active.admitted && cluster_mapping_active.requires_public_abi_dispatch,
           "active cluster-authority admission did not route to the provider boundary");
 

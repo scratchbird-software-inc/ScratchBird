@@ -77,6 +77,12 @@ void PutU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
   out->push_back(static_cast<std::uint8_t>((value >> 8u) & 0xffu));
 }
 
+void PutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
+  for (std::uint32_t shift = 0; shift < 64; shift += 8) {
+    out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
+  }
+}
+
 void PutUuid(std::vector<std::uint8_t>* out, const std::array<std::uint8_t, 16>& uuid_bytes) {
   out->insert(out->end(), uuid_bytes.begin(), uuid_bytes.end());
 }
@@ -285,8 +291,13 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
 
 sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
                        const std::array<std::uint8_t, 16>& cursor_uuid) {
+  auto payload = scratchbird::server::EncodeFetchPayloadForTest(
+      session_uuid, cursor_uuid, 1, 1);
+  PutUuid(&payload, sbps::MakeUuidV7Bytes());
+  PutU16(&payload, 1);
+  PutU64(&payload, 1);
   return Frame(sbps::MessageType::kFetch,
-               scratchbird::server::EncodeFetchPayloadForTest(session_uuid, cursor_uuid),
+               std::move(payload),
                {},
                session_uuid);
 }
@@ -587,7 +598,7 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
   const auto fetch_after_detach = scratchbird::server::HandleFetch(
       &registry, FetchFrame(session_a.session_uuid, cursor_uuid));
   Require(!fetch_after_detach.accepted &&
-              HasDiagnostic(fetch_after_detach, "PARSER_SERVER_IPC.SESSION_REQUIRED"),
+              HasDiagnostic(fetch_after_detach, "SERVER.STREAM.DESCRIPTOR_STALE"),
           "DBLC-009 detached session fetched a tombstoned cursor");
 
   const auto finality_it = registry.finality_by_request_uuid.find(

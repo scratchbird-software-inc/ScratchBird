@@ -23,6 +23,10 @@ namespace scratchbird::engine::internal_api {
 
 struct MgaRelationColumnStorageDescriptor {
   EngineUuid column_uuid;
+  // Exact catalog-object generation for this column.  This is distinct from
+  // the enclosing storage descriptor generation and is carried into bound
+  // DML occurrence records; a zero value is never executable authority.
+  std::uint64_t column_generation = 1;
   std::uint32_t ordinal = 0;
   std::string canonical_name_key;
   EngineDescriptor value_descriptor;
@@ -56,6 +60,10 @@ struct MgaRelationStorageDescriptor {
   EngineUuid database_uuid;
   EngineUuid schema_uuid;
   EngineUuid relation_uuid;
+  // Exact catalog-object generation for the relation.  Descriptor generation
+  // versions this storage projection; it must not be substituted for the
+  // relation object's own generation at a DML authority boundary.
+  std::uint64_t relation_generation = 1;
   EngineUuid primary_filespace_uuid;
   std::string relation_kind = "table";
   std::string storage_profile = "local_mga_rowstore_v1";

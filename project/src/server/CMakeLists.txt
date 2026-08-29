@@ -62,6 +62,17 @@ if(NOT TARGET sb_core_resource_governance)
   target_link_libraries(sb_core_resource_governance PUBLIC sb_core_platform sb_core_metrics)
 endif()
 
+add_library(sb_server_sbps_private_narrow_profile STATIC
+  sbps_private_narrow_profile.cpp
+)
+target_compile_features(sb_server_sbps_private_narrow_profile PUBLIC cxx_std_23)
+target_include_directories(sb_server_sbps_private_narrow_profile PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(sb_server_sbps_private_narrow_profile PUBLIC
+  sb_core_platform
+)
+
 add_library(sb_server_resource_governance
   server_resource_governance.cpp
 )

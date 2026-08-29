@@ -13,9 +13,12 @@
 #include "query/plan_api.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 
 namespace scratchbird::engine::sblr {
+
+struct ContextualTextDispatchActivationV2;
 
 #if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
 // Shared engine-owned scalar comparison callback for canonical relational
@@ -27,6 +30,19 @@ bool CompareCanonicalRelationalScalarsV1(
     const scratchbird::engine::internal_api::EngineTypedValue& right,
     int* comparison,
     std::string* diagnostic_id,
+    std::string* refusal_detail);
+
+// Engine-private validation for the full persisted canonical TEXT descriptor
+// consumed by a live QOW row binding.  Registry identity is revalidated from
+// the statement datatype receipt and charset/collation generations are
+// revalidated against the active database resource catalog.  Callers may not
+// use this as a descriptor constructor or as object-free scalar authority.
+bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const scratchbird::engine::internal_api::RelationalTypeDescriptor& bound,
+    const scratchbird::engine::internal_api::EngineDescriptor& persisted,
+    scratchbird::engine::internal_api::RelationalNullability
+        effective_nullability,
     std::string* refusal_detail);
 #endif
 
@@ -88,6 +104,8 @@ ExecuteCanonicalObjectFreeValuesQuery(
 struct CanonicalCurrentHeapExecutionRequest {
   scratchbird::engine::internal_api::EngineRequestContext context;
   scratchbird::engine::internal_api::TypedRelationalDag relational_dag;
+  std::shared_ptr<ContextualTextDispatchActivationV2>
+      contextual_text_activation;
 };
 
 // QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
@@ -98,5 +116,10 @@ struct CanonicalCurrentHeapExecutionRequest {
 // object snapshot, physical DAG, or visibility authority.
 CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const CanonicalCurrentHeapExecutionRequest& request);
+
+// Deterministic proof of the production contextual RCP079 route, cancellation,
+// exact-key, and source-memory admission helpers. It owns no parser authority
+// and mutates no engine registry or receipt.
+std::uint32_t CanonicalContextualTextRcp079RuntimeProofMaskForTest();
 
 }  // namespace scratchbird::engine::sblr

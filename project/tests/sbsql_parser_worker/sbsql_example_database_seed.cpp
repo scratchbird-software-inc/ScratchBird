@@ -9,16 +9,23 @@
 #include "api_types.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "database_lifecycle.hpp"
+#include "ddl/create_api.hpp"
+#include "dml/insert_api.hpp"
+#include "hash_digest.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_registry.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "sblr_transaction_commit_runtime.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -33,65 +40,18 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kLiveRouteAlicePrincipalUuid = "019f0a11-ce00-7000-8000-000000000001";
-constexpr std::string_view kLiveRouteSysarchRoleUuid = "019f0a11-ce00-7000-8000-00000000f001";
-constexpr std::string_view kLiveRoutePublicGroupUuid = "019f0a11-ce00-7000-8000-00000000f101";
-constexpr std::string_view kLiveRouteSysarchMembershipUuid = "019f0a11-ce00-7000-8000-00000000f201";
-constexpr std::string_view kLiveRoutePublicMembershipUuid = "019f0a11-ce00-7000-8000-00000000f202";
+#ifndef SB_EXAMPLE_SEED_PACK_ROOT
+#define SB_EXAMPLE_SEED_PACK_ROOT \
+  "project/resources/seed-packs/initial-resource-pack"
+#endif
 
-const std::vector<std::string>& SysarchRights() {
-  static const std::vector<std::string> rights = {
-      "CONNECT",
-      "VISIBLE",
-      "DISCOVER",
-      "LIST_CHILD",
-      "SELECT",
-      "INSERT",
-      "UPDATE",
-      "DELETE",
-      "EXECUTE",
-      "CREATE",
-      "ALTER",
-      "DROP",
-      "POLICY_ADMIN",
-      "OBS_METRICS_READ_ALL",
-      "OBS_RUNTIME_ALL",
-      "OBS_INDEX_PROFILE_READ",
-      "OBS_MANAGEMENT_INSPECT",
-      "OBS_MANAGEMENT_CONTROL",
-      "OBS_CONFIG_INSPECT",
-      "OBS_CONFIG_CONTROL",
-      "SEC_IDENTITY_ADMIN",
-      "SEC_MEMBERSHIP_ADMIN",
-      "SEC_GRANT_ADMIN",
-      "MGA_TRANSACTION_INSPECT",
-      "MGA_RECOVERY_INSPECT",
-      "MGA_CLEANUP_INSPECT",
-      "MGA_CLEANUP_CONTROL",
-      "AUTH_PROVIDER_ADMIN",
-      "AUDIT_READ",
-      "AUDIT_ADMIN",
-      "SUPPORT_EXPORT",
-      "UDR_TRUST_ADMIN",
-      "UDR_MANAGE",
-      "UDR_INSPECT",
-      "UDR_INVOKE",
-      "BACKUP_CREATE",
-      "BACKUP_RESTORE",
-      "BACKUP_CONTROL",
-      "BACKUP_INSPECT",
-      "EVENT_ADMIN",
-      "EVENT_CREATE",
-      "EVENT_ALTER",
-      "EVENT_DROP",
-      "EVENT_SUBSCRIBE",
-      "EVENT_PUBLISH",
-      "EVENT_DELIVERY_READ",
-      "EVENT_DELIVERY_ACK",
-      "MANAGER_ADMISSION_ADMIN",
-  };
-  return rights;
-}
+constexpr std::string_view kBenchmarkPassword = "ScratchBird-E2E-2026!";
+constexpr std::string_view kBenchmarkCredentialFingerprint =
+    "local-password-pbkdf2-sha256:v1:iterations=600000:"
+    "salt=0123456789abcdef0123456789abcdef:"
+    "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
+constexpr std::string_view kDatatypeCatalogSnapshotUuid =
+    "019d0000-0000-7000-8000-00000000d701";
 
 void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -114,30 +74,6 @@ std::string NewUuid(UuidKind kind) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, seed);
   if (!generated.ok()) Fail("UUID generation failed");
   return uuid::UuidToString(generated.value.value);
-}
-
-std::string HexText(std::string_view value) {
-  constexpr char kDigits[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(value.size() * 2);
-  for (const unsigned char ch : value) {
-    out.push_back(kDigits[(ch >> 4) & 0x0f]);
-    out.push_back(kDigits[ch & 0x0f]);
-  }
-  return out;
-}
-
-std::string StableGrantUuid(std::size_t index) {
-  std::string suffix = "000000000000";
-  std::string hex;
-  std::size_t value = 0x1000 + index + 1;
-  do {
-    const int digit = static_cast<int>(value & 0x0f);
-    hex.insert(hex.begin(), "0123456789abcdef"[digit]);
-    value >>= 4;
-  } while (value != 0);
-  suffix.replace(suffix.size() - hex.size(), hex.size(), hex);
-  return "019f0a11-ce00-7000-8000-" + suffix;
 }
 
 api::EngineLocalizedName Name(std::string name) {
@@ -175,12 +111,21 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
+api::EngineTypedValue BigintValue(std::string value) {
+  api::EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = "int64";
+  typed.descriptor.encoded_descriptor = "type=int64";
+  typed.encoded_value = std::move(value);
+  return typed;
+}
+
 api::EngineRowValue CopyStreamRow(std::string row_uuid,
                                   std::string id,
                                   std::string payload) {
   api::EngineRowValue row;
   row.requested_row_uuid.canonical = std::move(row_uuid);
-  row.fields.push_back({"id", TextValue(std::move(id))});
+  row.fields.push_back({"id", BigintValue(std::move(id))});
   row.fields.push_back({"payload", TextValue(std::move(payload))});
   return row;
 }
@@ -190,7 +135,7 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   static const std::string seeder_principal_uuid = NewUuid(UuidKind::principal);
   static const std::string seeder_session_uuid = NewUuid(UuidKind::session);
   api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-example-database-seed";
   context.database_path = database_path.string();
   context.database_uuid.canonical = database_uuid;
@@ -201,14 +146,33 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      std::string(kDatatypeCatalogSnapshotUuid);
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.trace_tags.push_back("sbsql.example_database_seed");
   context.trace_tags.push_back("security.bootstrap");
+  context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("group:SEC");
+  context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
+  context.trace_tags.push_back("right:CATALOG_MUTATE");
+  context.trace_tags.push_back("right:DML_MUTATE");
   return context;
 }
 
 sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcode) {
+  const auto* registry_entry = sblr::LookupSblrOperation(operation_id);
+  if (registry_entry == nullptr) {
+    Fail("seed operation is absent from the canonical SBLR registry: " +
+         operation_id);
+  }
+  if (registry_entry->opcode != opcode) {
+    Fail("seed opcode mnemonic drifted from the canonical SBLR registry: " +
+         operation_id);
+  }
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "sbsql.example_database_seed");
+  envelope.opcode_code = registry_entry->code;
+  envelope.result_shape = registry_entry->result_contract;
   static const std::string parser_package_uuid = NewUuid(UuidKind::object);
   static const std::string registry_snapshot_uuid = NewUuid(UuidKind::object);
   envelope.parser_package_uuid = parser_package_uuid;
@@ -219,29 +183,132 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcod
   return envelope;
 }
 
-sblr::SblrDispatchResult Dispatch(std::string operation_id,
-                                  std::string opcode,
-                                  api::EngineRequestContext context,
-                                  api::EngineApiRequest request = {},
-                                  bool requires_transaction = false) {
-  auto envelope = Envelope(operation_id, std::move(opcode));
-  envelope.requires_transaction_context = requires_transaction;
-  request.context = context;
-  request.operation_id = operation_id;
-  sblr::SblrDispatchRequest dispatch;
-  dispatch.context = std::move(context);
-  dispatch.envelope = std::move(envelope);
-  dispatch.api_request = std::move(request);
-  auto result = sblr::DispatchSblrOperation(dispatch);
-  if (!result.accepted || !result.envelope_validated || !result.dispatched_to_api || !result.api_result.ok) {
-    std::cerr << "seed dispatch failed for " << operation_id << '\n'
-              << sblr::SerializeSblrDispatchResultToJson(result);
-    std::exit(EXIT_FAILURE);
+struct SeedTransaction {
+  api::EngineRequestContext context;
+  scratchbird::core::hash::Digest256 begin_admission_sha256{};
+};
+
+SeedTransaction BeginSeedTransaction(const std::filesystem::path& database_path,
+                                     const std::string& database_uuid) {
+  auto context = BaseContext(database_path, database_uuid);
+  auto envelope = Envelope("engine.op.txn_begin", "SBLR_TXN_BEGIN");
+  envelope.requires_transaction_context = false;
+
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  auto body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  if (body.empty()) Fail("canonical transaction-begin options failed to encode");
+  const auto admission_sha =
+      scratchbird::core::hash::ComputeSha256Digest(body);
+  if (!admission_sha.ok()) Fail("canonical transaction-begin evidence hash failed");
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = std::move(body);
+  envelope.operands.push_back(std::move(operand));
+
+  api::EngineApiRequest api_request;
+  api_request.context = context;
+  api_request.operation_id = "engine.op.txn_begin";
+  auto admitted = sblr::DispatchSblrOperation(
+      {context, std::move(envelope), std::move(api_request), std::nullopt});
+  if (!admitted.envelope_validated || !admitted.accepted ||
+      !admitted.dispatched_to_api || !admitted.api_result.ok) {
+    std::cerr << "seed canonical transaction-begin admission failed\n"
+              << sblr::SerializeSblrDispatchResultToJson(admitted);
+    Fail("canonical transaction-begin admission failed");
   }
-  return result;
+  if (admitted.api_result.local_transaction_id != 0 ||
+      !admitted.api_result.transaction_uuid.canonical.empty()) {
+    Fail("SBLR transaction-begin admission published engine MGA state");
+  }
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.operation_id = "transaction.begin";
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  if (!begun.ok || begun.local_transaction_id == 0 ||
+      begun.transaction_uuid.canonical.empty()) {
+    Fail("engine-owned transaction begin failed after canonical SBLR admission");
+  }
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  return {std::move(context), admission_sha.digest};
 }
 
-std::string CreateDatabase(const std::filesystem::path& database_path) {
+void CommitSeedTransaction(const SeedTransaction& transaction) {
+  auto envelope = Envelope("engine.op.txn_commit", "SBLR_TXN_COMMIT");
+  envelope.requires_transaction_context = true;
+
+  const auto parsed_transaction =
+      uuid::ParseUuid(transaction.context.transaction_uuid.canonical);
+  if (!parsed_transaction.ok()) Fail("seed transaction UUID is not canonical");
+  sblr::SblrTransactionCommitOptionsV1 options;
+  std::copy(parsed_transaction.value.bytes.begin(),
+            parsed_transaction.value.bytes.end(),
+            options.transaction_uuid.begin());
+  options.local_transaction_id = transaction.context.local_transaction_id;
+  options.admitted_handle_evidence_sha256 =
+      transaction.begin_admission_sha256;
+  options.commit_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  auto body = sblr::EncodeSblrTransactionCommitOptionsV1(&options);
+  if (body.empty()) Fail("canonical transaction-commit options failed to encode");
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.commit.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_commit_options;
+  operand.value_body = std::move(body);
+  envelope.operands.push_back(std::move(operand));
+
+  api::EngineApiRequest api_request;
+  api_request.context = transaction.context;
+  api_request.operation_id = "engine.op.txn_commit";
+  auto admitted = sblr::DispatchSblrOperation(
+      {transaction.context, std::move(envelope), std::move(api_request),
+       std::nullopt});
+  if (!admitted.envelope_validated || !admitted.accepted ||
+      !admitted.dispatched_to_api || !admitted.api_result.ok) {
+    std::cerr << "seed canonical transaction-commit admission failed\n"
+              << sblr::SerializeSblrDispatchResultToJson(admitted);
+    Fail("canonical transaction-commit admission failed");
+  }
+
+  api::EngineCommitTransactionRequest commit;
+  commit.context = transaction.context;
+  commit.operation_id = "transaction.commit";
+  const auto committed = api::EngineCommitTransaction(commit);
+  if (!committed.ok || !committed.engine_finality_known ||
+      committed.commit_finality_state != "committed_by_engine_inventory") {
+    std::cerr << "commit ok=" << (committed.ok ? "true" : "false")
+              << " finality_known="
+              << (committed.engine_finality_known ? "true" : "false")
+              << " state=" << committed.commit_finality_state << '\n';
+    for (const auto& diagnostic : committed.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    Fail("engine-owned transaction commit failed after canonical SBLR admission");
+  }
+}
+
+std::string CreateDatabase(const std::filesystem::path& database_path,
+                           const std::string& bootstrap_principal) {
   if (std::filesystem::exists(database_path)) {
     Fail("example database already exists; refusing to seed without the database UUID association");
   }
@@ -256,8 +323,14 @@ std::string CreateDatabase(const std::filesystem::path& database_path) {
   create.filespace_uuid = filespace_uuid.value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = now;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  create.resource_seed_pack_root = SB_EXAMPLE_SEED_PACK_ROOT;
+  create.allow_minimal_resource_bootstrap = false;
+  create.require_resource_seed_pack = true;
+  create.bootstrap_principal_name = bootstrap_principal;
+  create.bootstrap_credential_fingerprint =
+      std::string(kBenchmarkCredentialFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
   create.allow_overwrite = false;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -265,43 +338,6 @@ std::string CreateDatabase(const std::filesystem::path& database_path) {
     Fail("example database creation failed");
   }
   return uuid::UuidToString(database_uuid.value.value);
-}
-
-void WriteAuthStore(const std::filesystem::path& database_path,
-                    const std::string& database_uuid,
-                    const std::string& user,
-                    const std::string& verifier) {
-  std::ofstream out(database_path.string() + ".sb.local_password_auth", std::ios::trunc);
-  out << user << "\tlocal_password\t" << verifier << '\n';
-  if (!out) Fail("example database local password verifier store creation failed");
-  scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
-      database_path,
-      database_uuid,
-      kLiveRouteAlicePrincipalUuid,
-      user,
-      verifier,
-      17,
-      "sbsql_example_database_seed");
-  std::ofstream events(database_path.string() + ".sb.security_principal_events", std::ios::app);
-  events << "SBSECPL1\tROLE\t0\t" << kLiveRouteSysarchRoleUuid << '\t'
-         << HexText("sysarch") << '\t' << kLiveRouteAlicePrincipalUuid
-         << "\tactive\t18\t0\n";
-  events << "SBSECPL1\tGROUP\t0\t" << kLiveRoutePublicGroupUuid << '\t'
-         << HexText("PUBLIC") << "\t\tactive\t19\t0\n";
-  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kLiveRouteSysarchMembershipUuid << '\t'
-         << kLiveRouteAlicePrincipalUuid << '\t' << kLiveRouteSysarchRoleUuid
-         << "\trole\t" << kLiveRouteAlicePrincipalUuid << "\t20\t0\n";
-  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kLiveRoutePublicMembershipUuid << '\t'
-         << kLiveRouteAlicePrincipalUuid << '\t' << kLiveRoutePublicGroupUuid
-         << "\tgroup\t" << kLiveRouteAlicePrincipalUuid << "\t21\t0\n";
-  std::size_t grant_index = 0;
-  for (const auto& right : SysarchRights()) {
-    events << "SBSECPL1\tGRANT\t0\t" << StableGrantUuid(grant_index++) << '\t'
-           << kLiveRouteSysarchRoleUuid << "\trole\t\t\t" << right << '\t'
-           << kLiveRouteAlicePrincipalUuid << "\tallow\t"
-           << (22 + grant_index) << "\t0\n";
-  }
-  if (!events) Fail("example database role/group authorization seed write failed");
 }
 
 std::string SchemaUuidForPath(const api::EngineRequestContext& context, const std::string& path) {
@@ -313,35 +349,23 @@ std::string SchemaUuidForPath(const api::EngineRequestContext& context, const st
   return {};
 }
 
-std::string CreateBenchmarkUser(const api::EngineRequestContext& context, const std::string& user) {
-  api::EngineApiRequest request;
-  request.target_object.uuid.canonical = NewUuid(UuidKind::principal);
-  request.target_object.object_kind = "security_identity";
-  request.localized_names.push_back(Name(user));
-  request.option_envelopes.push_back("identity_kind:user");
-  request.option_envelopes.push_back("principal_name:" + user);
-  request.option_envelopes.push_back("home_schema_path:users." + user);
-  const auto created = Dispatch("security.create_identity", "SBLR_SECURITY_CREATE_IDENTITY", context, std::move(request), true);
-  for (const auto& evidence : created.api_result.evidence) {
-    if (evidence.evidence_kind == "home_schema") { return evidence.evidence_id; }
-  }
-  Fail("security.create_identity did not return generated home schema UUID");
-  return {};
-}
 
 void CreateTable(const api::EngineRequestContext& context,
                  std::string table_uuid,
                  std::string schema_uuid,
                  std::string name) {
-  api::EngineApiRequest request;
+  api::EngineCreateTableRequest request;
+  request.context = context;
+  request.operation_id = "ddl.create_table";
   request.target_schema.uuid.canonical = std::move(schema_uuid);
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::move(table_uuid);
-  request.target_object.object_kind = "table";
-  request.localized_names.push_back(Name(std::move(name)));
-  request.columns.push_back(Column(0, "id", "text"));
-  request.columns.push_back(Column(1, "payload", "text"));
-  (void)Dispatch("ddl.create_table", "SBLR_DDL_CREATE_TABLE", context, std::move(request), true);
+  request.requested_table_uuid.canonical = std::move(table_uuid);
+  request.table_names.push_back(Name(std::move(name)));
+  request.table_columns.push_back(Column(0, "id", "text"));
+  request.table_columns.push_back(Column(1, "payload", "text"));
+  if (!api::EngineCreateTable(request).ok) {
+    Fail("engine-owned benchmark table seed failed");
+  }
 }
 
 void CreateTableWithColumns(const api::EngineRequestContext& context,
@@ -349,31 +373,38 @@ void CreateTableWithColumns(const api::EngineRequestContext& context,
                             std::string schema_uuid,
                             std::string name,
                             const std::vector<std::pair<std::string, std::string>>& columns) {
-  api::EngineApiRequest request;
+  api::EngineCreateTableRequest request;
+  request.context = context;
+  request.operation_id = "ddl.create_table";
   request.target_schema.uuid.canonical = std::move(schema_uuid);
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::move(table_uuid);
-  request.target_object.object_kind = "table";
-  request.localized_names.push_back(Name(std::move(name)));
+  request.requested_table_uuid.canonical = std::move(table_uuid);
+  request.table_names.push_back(Name(std::move(name)));
   for (std::uint32_t ordinal = 0; ordinal < columns.size(); ++ordinal) {
-    request.columns.push_back(Column(ordinal, columns[ordinal].first, columns[ordinal].second));
+    request.table_columns.push_back(
+        Column(ordinal, columns[ordinal].first, columns[ordinal].second));
   }
-  (void)Dispatch("ddl.create_table", "SBLR_DDL_CREATE_TABLE", context, std::move(request), true);
+  if (!api::EngineCreateTable(request).ok) {
+    Fail("engine-owned benchmark table seed failed");
+  }
 }
 
 std::string CreateCopyStreamFixtureTable(const api::EngineRequestContext& context,
                                          const std::string& public_schema_uuid) {
   std::string table_uuid = NewUuid(UuidKind::object);
-  api::EngineApiRequest request;
+  api::EngineCreateTableRequest request;
+  request.context = context;
+  request.operation_id = "ddl.create_table";
   request.target_schema.uuid.canonical = public_schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = table_uuid;
-  request.target_object.object_kind = "table";
-  request.localized_names.push_back(Name("sbsfc021_stream_table"));
-  request.columns.push_back(Column(0, "id", "text"));
-  request.columns.push_back(Column(1, "payload", "text"));
-  request.indexes.push_back(CopyStreamUniqueIdIndex());
-  (void)Dispatch("ddl.create_table", "SBLR_DDL_CREATE_TABLE", context, std::move(request), true);
+  request.requested_table_uuid.canonical = table_uuid;
+  request.table_names.push_back(Name("sbsfc021_stream_table"));
+  request.table_columns.push_back(Column(0, "id", "int64"));
+  request.table_columns.push_back(Column(1, "payload", "text"));
+  request.table_indexes.push_back(CopyStreamUniqueIdIndex());
+  if (!api::EngineCreateTable(request).ok) {
+    Fail("engine-owned copy-stream table seed failed");
+  }
   return table_uuid;
 }
 
@@ -440,66 +471,57 @@ void CreateCurrentBenchmarkTables(const api::EngineRequestContext& context,
 
 void SeedCopyStreamFixtureRow(const api::EngineRequestContext& context,
                               const std::string& table_uuid) {
-  api::EngineApiRequest request;
-  request.target_object.uuid.canonical = table_uuid;
-  request.target_object.object_kind = "table";
-  request.rows.push_back(CopyStreamRow(NewUuid(UuidKind::row),
-                                       "6",
-                                       "stream-baseline"));
-  (void)Dispatch("dml.insert_rows", "SBLR_DML_INSERT_ROWS", context, std::move(request), true);
+  api::EngineInsertRowsRequest request;
+  request.context = context;
+  request.operation_id = "dml.insert_rows";
+  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.object_kind = "table";
+  request.input_rows.push_back(CopyStreamRow(NewUuid(UuidKind::row),
+                                             "6",
+                                             "stream-baseline"));
+  if (!api::EngineInsertRows(request).ok) {
+    Fail("engine-owned copy-stream row seed failed");
+  }
 }
 
 void SeedUserSchemas(const std::filesystem::path& database_path,
-                     const std::string& database_uuid,
-                     const std::string& user) {
-  auto begin = Dispatch("transaction.begin",
-                        "SBLR_TRANSACTION_BEGIN",
-                        BaseContext(database_path, database_uuid));
-  auto context = BaseContext(database_path, database_uuid);
-  context.local_transaction_id = begin.api_result.local_transaction_id;
-  context.transaction_uuid = begin.api_result.transaction_uuid;
-  context.snapshot_visible_through_local_transaction_id = begin.api_result.local_transaction_id;
+                     const std::string& database_uuid) {
+  auto transaction = BeginSeedTransaction(database_path, database_uuid);
+  const auto& context = transaction.context;
 
-  const std::string private_schema_uuid = CreateBenchmarkUser(context, user);
   const std::string public_schema_uuid = SchemaUuidForPath(context, "users.public");
   if (public_schema_uuid.empty()) Fail("users.public schema UUID was not visible after database create");
   CreateTable(context,
               NewUuid(UuidKind::object),
               public_schema_uuid,
               "benchmark_public_items");
-  CreateTable(context, NewUuid(UuidKind::object), private_schema_uuid, "benchmark_private_items");
   const std::string copy_stream_table_uuid = CreateCopyStreamFixtureTable(context, public_schema_uuid);
   CreateCurrentBenchmarkTables(context, public_schema_uuid);
-  (void)Dispatch("transaction.commit", "SBLR_TRANSACTION_COMMIT", context, {}, true);
+  CommitSeedTransaction(transaction);
 
-  auto seed_begin = Dispatch("transaction.begin",
-                             "SBLR_TRANSACTION_BEGIN",
-                             BaseContext(database_path, database_uuid));
-  auto seed_context = BaseContext(database_path, database_uuid);
-  seed_context.local_transaction_id = seed_begin.api_result.local_transaction_id;
-  seed_context.transaction_uuid = seed_begin.api_result.transaction_uuid;
-  seed_context.snapshot_visible_through_local_transaction_id =
-      seed_begin.api_result.local_transaction_id;
-  SeedCopyStreamFixtureRow(seed_context, copy_stream_table_uuid);
-  (void)Dispatch("transaction.commit", "SBLR_TRANSACTION_COMMIT", seed_context, {}, true);
+  auto seed_transaction = BeginSeedTransaction(database_path, database_uuid);
+  SeedCopyStreamFixtureRow(seed_transaction.context, copy_stream_table_uuid);
+  CommitSeedTransaction(seed_transaction);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 4) {
-    std::cerr << "usage: sbsql_example_database_seed <database> <user> <verifier-hex>\n";
+    std::cerr << "usage: sbsql_example_database_seed <database> <user> <password>\n";
     return EXIT_FAILURE;
   }
   const std::filesystem::path database_path = argv[1];
   const std::string user = argv[2];
-  const std::string verifier = argv[3];
+  const std::string password = argv[3];
+  if (password != kBenchmarkPassword) {
+    Fail("example database seeder accepts only its fixed production PBKDF2 fixture password");
+  }
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "sbsql_example_database_seed");
-  const std::string database_uuid = CreateDatabase(database_path);
-  SeedUserSchemas(database_path, database_uuid, user);
-  WriteAuthStore(database_path, database_uuid, user, verifier);
+  const std::string database_uuid = CreateDatabase(database_path, user);
+  SeedUserSchemas(database_path, database_uuid);
   std::cout << "sbsql_example_database_seed=passed database=" << database_path
-            << " schemas=users,users.public,users." << user << '\n';
+            << " schemas=users,users.public principal=" << user << '\n';
   return EXIT_SUCCESS;
 }

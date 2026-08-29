@@ -11,23 +11,36 @@
 #include "api_diagnostics.hpp"
 #include "catalog/name_registry.hpp"
 #include "database_lifecycle.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
+#include "security/database_local_security_event_store.hpp"
 #include "security/security_crypto_policy.hpp"
 #include "security/security_model.hpp"
+#include "typed_update_carrier_codec.hpp"
+#include "local_transaction_store.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
 namespace {
+
+using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;
+using scratchbird::transaction::mga::LookupLocalTransaction;
+using scratchbird::transaction::mga::MakeLocalTransactionId;
+using scratchbird::transaction::mga::TransactionState;
 
 struct LoadOptions {
   bool enforce_visibility = true;
@@ -70,6 +83,17 @@ std::string HexEncode(const std::string& value) {
   return out;
 }
 
+std::string HexEncode(const std::array<std::uint8_t, 32>& value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(value.size() * 2);
+  for (const auto byte : value) {
+    out.push_back(kHex[(byte >> 4) & 0x0f]);
+    out.push_back(kHex[byte & 0x0f]);
+  }
+  return out;
+}
+
 int HexValue(char c) {
   if (c >= '0' && c <= '9') { return c - '0'; }
   if (c >= 'a' && c <= 'f') { return 10 + c - 'a'; }
@@ -88,6 +112,23 @@ std::string HexDecode(const std::string& value) {
     out.push_back(static_cast<char>((hi << 4) | lo));
   }
   return out;
+}
+
+bool HexDecodeSha256(const std::string& value,
+                     std::array<std::uint8_t, 32>* out) {
+  if (out == nullptr || value.size() != 64) return false;
+  for (std::size_t index = 0; index < out->size(); ++index) {
+    const int hi = HexValue(value[index * 2]);
+    const int lo = HexValue(value[index * 2 + 1]);
+    if (hi < 0 || lo < 0) return false;
+    (*out)[index] = static_cast<std::uint8_t>((hi << 4) | lo);
+  }
+  return true;
+}
+
+bool NonzeroSha256(const std::array<std::uint8_t, 32>& value) {
+  return std::any_of(value.begin(), value.end(),
+                     [](std::uint8_t byte) { return byte != 0; });
 }
 
 std::uint64_t ParseU64(const std::string& value) {
@@ -459,7 +500,8 @@ std::string NormalizePrivilege(std::string privilege) {
 
 bool PrivilegeAllowsGlobalGrant(const std::string& privilege) {
   if (!IsKnownSecurityRight(privilege)) return false;
-  return privilege.rfind("OBS_", 0) == 0 ||
+  return privilege == "CONNECT" || privilege == "SELECT" ||
+         privilege.rfind("OBS_", 0) == 0 ||
          privilege.rfind("SEC_", 0) == 0 ||
          privilege.rfind("MGA_", 0) == 0 ||
          privilege.rfind("AUTH_", 0) == 0 ||
@@ -571,7 +613,100 @@ std::string RowPolicyEvent(const EngineSecurityRowPolicyRecord& record) {
          record.policy_effect + "\t" + HexEncode(record.predicate_envelope) + "\t" +
          record.definer_principal_uuid + "\t" + record.lifecycle_state + "\t" +
          std::to_string(record.policy_generation) + "\t" +
-         (record.deleted ? "1" : "0");
+         (record.deleted ? "1" : "0") + "\t" +
+         record.policy_version_uuid + "\t" +
+         std::to_string(record.effective_transaction_number) + "\t" +
+         std::to_string(record.target_object_generation) + "\t" +
+         std::to_string(record.update_policy_phase) + "\t" +
+         record.effective_policy_uuid + "\t" +
+         std::to_string(record.effective_policy_generation) + "\t" +
+         record.effective_expression_uuid + "\t" +
+         std::to_string(record.effective_expression_generation) + "\t" +
+         HexEncode(record.effective_expression_evidence_sha256) + "\t" +
+         record.source_expression_uuid + "\t" +
+         std::to_string(record.source_expression_generation) + "\t" +
+         HexEncode(record.source_expression_evidence_sha256) + "\t" +
+         record.source_catalog_snapshot_uuid + "\t" +
+         std::to_string(record.source_catalog_generation) + "\t" +
+         std::to_string(record.source_security_generation);
+}
+
+bool CanonicalNonzeroUuid(std::string_view text) {
+  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
+  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
+         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+}
+
+bool NativeRowPolicyAuthorityValid(
+    const EngineRequestContext& context,
+    const EngineSecurityRowPolicyNativeAuthorityV1& authority) {
+  return authority.present && context.local_transaction_id != 0 &&
+         context.statement_metadata_snapshot_engine_owned &&
+         authority.target_relation_generation != 0 &&
+         (authority.phase == 1 || authority.phase == 2) &&
+         CanonicalNonzeroUuid(authority.policy_version_uuid) &&
+         CanonicalNonzeroUuid(authority.effective_policy_uuid) &&
+         authority.effective_policy_generation != 0 &&
+         CanonicalNonzeroUuid(authority.effective_expression_uuid) &&
+         authority.effective_expression_generation != 0 &&
+         NonzeroSha256(authority.effective_expression_evidence_sha256) &&
+         CanonicalNonzeroUuid(authority.source_expression_uuid) &&
+         authority.source_expression_generation != 0 &&
+         NonzeroSha256(authority.source_expression_evidence_sha256) &&
+         // Current DUSR catalog/security snapshot bindings are issued when a
+         // typed UPDATE snapshot is frozen.  A policy mutation caller may not
+         // predeclare those future identities or generations.
+         authority.catalog_snapshot_uuid.empty() &&
+         authority.catalog_generation == 0 &&
+         authority.security_generation == 0;
+}
+
+void ApplyNativeRowPolicyAuthority(
+    const EngineSecurityRowPolicyNativeAuthorityV1& authority,
+    const EngineRequestContext& context,
+    std::uint64_t policy_event_generation,
+    EngineSecurityRowPolicyRecord* record) {
+  record->policy_version_uuid = authority.policy_version_uuid;
+  // Final effective-transaction authority does not exist until the owning
+  // transaction is committed in the MGA inventory.  Resolver code projects
+  // that committed inventory identity; the pending catalog row stores zero.
+  record->effective_transaction_number = 0;
+  record->target_object_generation = authority.target_relation_generation;
+  record->update_policy_phase = authority.phase;
+  record->effective_policy_uuid = authority.effective_policy_uuid;
+  record->effective_policy_generation = authority.effective_policy_generation;
+  record->effective_expression_uuid = authority.effective_expression_uuid;
+  record->effective_expression_generation =
+      authority.effective_expression_generation;
+  record->effective_expression_evidence_sha256 =
+      authority.effective_expression_evidence_sha256;
+  record->source_expression_uuid = authority.source_expression_uuid;
+  record->source_expression_generation =
+      authority.source_expression_generation;
+  record->source_expression_evidence_sha256 =
+      authority.source_expression_evidence_sha256;
+  record->source_catalog_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  record->source_catalog_generation = context.catalog_generation_id;
+  record->source_security_generation = policy_event_generation;
+}
+
+void ClearNativeRowPolicyAuthority(EngineSecurityRowPolicyRecord* record) {
+  record->policy_version_uuid.clear();
+  record->effective_transaction_number = 0;
+  record->target_object_generation = 0;
+  record->update_policy_phase = 0;
+  record->effective_policy_uuid.clear();
+  record->effective_policy_generation = 0;
+  record->effective_expression_uuid.clear();
+  record->effective_expression_generation = 0;
+  record->effective_expression_evidence_sha256.fill(0);
+  record->source_expression_uuid.clear();
+  record->source_expression_generation = 0;
+  record->source_expression_evidence_sha256.fill(0);
+  record->source_catalog_snapshot_uuid.clear();
+  record->source_catalog_generation = 0;
+  record->source_security_generation = 0;
 }
 
 std::string DefinerCacheEvent(const EngineSecurityDefinerRightsCacheRecord& record) {
@@ -598,6 +733,60 @@ std::string AuditEvent(const EngineSecurityAuditRecord& record) {
          record.target_uuid + "\t" + record.outcome + "\t" +
          HexEncode(record.redacted_detail) + "\t" +
          std::to_string(record.security_generation);
+}
+
+std::mutex g_security_lifecycle_event_append_mutex;
+
+bool AdvancesAuthorizationContext(const std::string& event) {
+  static constexpr std::array<std::string_view, 7> kAuthorityEvents = {
+      "PRINCIPAL", "ROLE", "GROUP", "MEMBERSHIP", "GRANT", "REVOKE",
+      "ROW_POLICY"};
+  for (const auto kind : kAuthorityEvents) {
+    const std::string prefix =
+        std::string(kSecurityPrincipalLifecycleEventMagic) + "\t" +
+        std::string(kind) + "\t";
+    if (StartsWith(event, prefix)) return true;
+  }
+  return false;
+}
+
+std::string AuthorizationContextSuccessorEvent(
+    const EngineRequestContext& context,
+    std::uint64_t generation,
+    const std::vector<std::string>& authority_events) {
+  std::string evidence_source;
+  for (const auto& event : authority_events) {
+    evidence_source.append(event);
+    evidence_source.push_back('\n');
+  }
+  return std::string(kSecurityPrincipalLifecycleEventMagic) +
+         "\tAUTH_CONTEXT_SUCCESSOR\t" +
+         std::to_string(context.local_transaction_id) + "\t" +
+         std::to_string(generation) + "\t" +
+         StableToken("security-context-successor", evidence_source);
+}
+
+bool LoadLastAuthorizationContextGeneration(
+    const EngineRequestContext& context,
+    std::uint64_t* generation) {
+  if (generation == nullptr) return false;
+  *generation = 0;
+  std::ifstream in(EventPath(context), std::ios::binary);
+  if (!in) return true;
+  std::string line;
+  while (std::getline(in, line)) {
+    const auto parts = Split(line, '\t');
+    if (parts.size() < 2 ||
+        parts[0] != kSecurityPrincipalLifecycleEventMagic ||
+        parts[1] != "AUTH_CONTEXT_SUCCESSOR") {
+      continue;
+    }
+    if (parts.size() != 5) return false;
+    const auto next = ParseU64(parts[3]);
+    if (next == 0 || next <= *generation || parts[4].empty()) return false;
+    *generation = next;
+  }
+  return true;
 }
 
 EngineSecurityAuditRecord MakeAudit(const EngineRequestContext& context,
@@ -628,14 +817,41 @@ EngineApiDiagnostic AppendEvents(const EngineRequestContext& context,
   std::error_code exists_error;
   const bool database_exists =
       std::filesystem::exists(context.database_path, exists_error);
-  if (exists_error || database_exists) {
+  if (exists_error) {
     return PrincipalDiagnostic(
         kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
-        "page_backed_mga_security_mutation_not_implemented");
+        "database_identity_check_failed");
+  }
+  if (database_exists) {
+    EngineRequestContext provider_context = context;
+    if (!HasTraceTag(
+            provider_context,
+            std::string(kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1))) {
+      provider_context.trace_tags.emplace_back(
+          kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1);
+    }
+    const auto appended = AppendDatabaseLocalSecurityEventBatchV1(
+        provider_context, std::span<const std::string>(events));
+    return appended.diagnostic;
+  }
+  std::lock_guard<std::mutex> append_guard(
+      g_security_lifecycle_event_append_mutex);
+  std::vector<std::string> committed_events = events;
+  if (std::any_of(events.begin(), events.end(), AdvancesAuthorizationContext)) {
+    std::uint64_t current_generation = 0;
+    if (!LoadLastAuthorizationContextGeneration(context,
+                                                &current_generation) ||
+        current_generation == std::numeric_limits<std::uint64_t>::max()) {
+      return PrincipalDiagnostic(
+          kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+          "security_context_generation_authority_invalid");
+    }
+    committed_events.push_back(AuthorizationContextSuccessorEvent(
+        context, current_generation + 1, events));
   }
   std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
   if (!out) { return PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabaseWriteFailed, "open"); }
-  for (const auto& event : events) { out << event << '\n'; }
+  for (const auto& event : committed_events) { out << event << '\n'; }
   out.flush();
   if (!out) { return PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabaseWriteFailed, "flush"); }
   return OkDiagnostic();
@@ -671,6 +887,18 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
         "database_identity_check_failed");
     return result;
   }
+
+  std::map<std::string, EngineSecurityPrincipalRecord> principals;
+  std::map<std::string, EngineSecurityRoleRecord> roles;
+  std::map<std::string, EngineSecurityGroupRecord> groups;
+  std::map<std::string, EngineSecurityMembershipRecord> memberships;
+  std::map<std::string, EngineSecurityPrivilegeGrantRecord> grants;
+  std::map<std::string, EngineSecurityRowPolicyRecord> row_policies;
+  std::map<std::string, EngineSecurityDefinerRightsCacheRecord> cache;
+  std::vector<std::string> event_lines;
+  std::uint64_t initial_security_context_generation = 0;
+  std::uint64_t expected_security_context_generation = 0;
+
   if (database_exists) {
     const auto catalog =
         scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
@@ -693,7 +921,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       role.role_name = "ROLE_SYSARCH";
       role.lifecycle_state = "active";
       role.security_generation = state.policy_generation;
-      result.state.roles.push_back(std::move(role));
+      roles.emplace(role.role_uuid, std::move(role));
     }
     if (state.present) {
       EngineSecurityPrincipalRecord principal;
@@ -706,7 +934,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       principal.lifecycle_state = "active";
       principal.credential_fingerprint = state.credential_fingerprint;
       principal.security_generation = state.policy_generation;
-      result.state.principals.push_back(std::move(principal));
+      principals.emplace(principal.principal_uuid, std::move(principal));
 
       EngineSecurityMembershipRecord membership;
       membership.creator_tx = state.creator_tx;
@@ -720,42 +948,110 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       membership.container_kind = "role";
       membership.grantor_principal_uuid = membership.member_principal_uuid;
       membership.security_generation = state.policy_generation;
-      result.state.memberships.push_back(std::move(membership));
+      memberships.emplace(
+          MembershipKey(membership.member_principal_uuid,
+                        membership.container_uuid,
+                        membership.container_kind),
+          std::move(membership));
     }
     result.state.security_generation =
         std::max<std::uint64_t>(1, state.policy_generation);
     result.state.policy_generation =
         std::max<std::uint64_t>(1, state.policy_generation);
+    result.state.security_context_generation =
+        state.security_context_generation;
+    if (result.state.security_context_generation == 0) {
+      result.diagnostic = PrincipalDiagnostic(
+          kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+          "bootstrap_security_context_generation_missing");
+      return result;
+    }
     result.state.cache_invalidation_epoch = result.state.security_generation;
-    result.ok = true;
-    result.diagnostic = OkDiagnostic();
-    return result;
+    initial_security_context_generation =
+        result.state.security_context_generation;
+
+    EngineRequestContext provider_context = context;
+    if (!HasTraceTag(
+            provider_context,
+            std::string(kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1))) {
+      provider_context.trace_tags.emplace_back(
+          kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1);
+    }
+    const auto visibility =
+        provider_context.local_transaction_id == 0
+            ? DatabaseLocalSecurityEventVisibilityV1::latest_committed
+            : DatabaseLocalSecurityEventVisibilityV1::
+                  include_reader_own_uncommitted;
+    auto loaded = LoadDatabaseLocalSecurityEventStoreV1(provider_context,
+                                                        visibility);
+    if (!loaded.ok) {
+      result.diagnostic = loaded.diagnostic;
+      return result;
+    }
+    if (loaded.state.security_context_generation <
+        initial_security_context_generation) {
+      result.diagnostic = PrincipalDiagnostic(
+          kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+          "page_backed_security_context_generation_regressed");
+      return result;
+    }
+    expected_security_context_generation =
+        loaded.state.security_context_generation;
+    event_lines = std::move(loaded.state.events);
+  } else {
+    std::ifstream in(EventPath(context), std::ios::binary);
+    std::string line;
+    while (in && std::getline(in, line)) {
+      event_lines.push_back(std::move(line));
+    }
   }
 
-  std::ifstream in(EventPath(context), std::ios::binary);
-  if (!in) {
-    result.ok = true;
-    result.diagnostic = OkDiagnostic();
-    return result;
-  }
-
-  std::map<std::string, EngineSecurityPrincipalRecord> principals;
-  std::map<std::string, EngineSecurityRoleRecord> roles;
-  std::map<std::string, EngineSecurityGroupRecord> groups;
-  std::map<std::string, EngineSecurityMembershipRecord> memberships;
-  std::map<std::string, EngineSecurityPrivilegeGrantRecord> grants;
-  std::map<std::string, EngineSecurityRowPolicyRecord> row_policies;
-  std::map<std::string, EngineSecurityDefinerRightsCacheRecord> cache;
-
-  std::string line;
   std::uint64_t event_sequence = 0;
-  while (std::getline(in, line)) {
+  std::uint64_t durable_security_context_generation =
+      initial_security_context_generation;
+  bool collecting_authority_successor_batch = false;
+  std::vector<std::string> authority_successor_batch;
+  for (const auto& line : event_lines) {
     ++event_sequence;
     if (!StartsWith(line, kSecurityPrincipalLifecycleEventMagic)) { continue; }
     const auto parts = Split(line, '\t');
     if (parts.size() < 3) { continue; }
     const std::string& event = parts[1];
     const std::uint64_t creator_tx = ParseU64(parts[2]);
+    if (event == "AUTH_CONTEXT_SUCCESSOR") {
+      std::string evidence_source;
+      for (const auto& authority_event : authority_successor_batch) {
+        evidence_source.append(authority_event);
+        evidence_source.push_back('\n');
+      }
+      const auto generation = parts.size() == 5 ? ParseU64(parts[3]) : 0;
+      const auto expected = StableToken("security-context-successor",
+                                        evidence_source);
+      if (!collecting_authority_successor_batch || parts.size() != 5 ||
+          generation == 0 ||
+          generation <= durable_security_context_generation ||
+          parts[4] != expected) {
+        result.diagnostic = PrincipalDiagnostic(
+            kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+            "security_context_successor_evidence_invalid");
+        return result;
+      }
+      durable_security_context_generation = generation;
+      collecting_authority_successor_batch = false;
+      authority_successor_batch.clear();
+    } else if (AdvancesAuthorizationContext(line)) {
+      if (collecting_authority_successor_batch) {
+        result.diagnostic = PrincipalDiagnostic(
+            kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+            "security_context_successor_missing");
+        return result;
+      }
+      collecting_authority_successor_batch = true;
+      authority_successor_batch.clear();
+      authority_successor_batch.push_back(line);
+    } else if (collecting_authority_successor_batch) {
+      authority_successor_batch.push_back(line);
+    }
     if (options.enforce_visibility && !EventVisible(context, creator_tx)) { continue; }
 
     if (event == "PRINCIPAL" && parts.size() >= 10) {
@@ -886,6 +1182,63 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       record.lifecycle_state = parts[9].empty() ? "active" : parts[9];
       record.policy_generation = ParseU64(parts[10]);
       record.deleted = ParseBool(parts[11]);
+      if (parts.size() >= 27) {
+        record.policy_version_uuid = parts[12];
+        record.effective_transaction_number = ParseU64(parts[13]);
+        record.target_object_generation = ParseU64(parts[14]);
+        const auto phase = ParseU64(parts[15]);
+        record.update_policy_phase =
+            phase <= std::numeric_limits<std::uint8_t>::max()
+                ? static_cast<std::uint8_t>(phase)
+                : 0;
+        record.effective_policy_uuid = parts[16];
+        record.effective_policy_generation = ParseU64(parts[17]);
+        record.effective_expression_uuid = parts[18];
+        record.effective_expression_generation = ParseU64(parts[19]);
+        if (!HexDecodeSha256(parts[20],
+                            &record.effective_expression_evidence_sha256)) {
+          result.diagnostic = PrincipalDiagnostic(
+              kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+              "row_policy_effective_evidence_invalid");
+          return result;
+        }
+        record.source_expression_uuid = parts[21];
+        record.source_expression_generation = ParseU64(parts[22]);
+        if (!HexDecodeSha256(parts[23],
+                            &record.source_expression_evidence_sha256)) {
+          result.diagnostic = PrincipalDiagnostic(
+              kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+              "row_policy_native_evidence_invalid");
+          return result;
+        }
+        record.source_catalog_snapshot_uuid = parts[24];
+        record.source_catalog_generation = ParseU64(parts[25]);
+        record.source_security_generation = ParseU64(parts[26]);
+      } else if (parts.size() >= 22) {
+        // Pre-native-effective-projection rows remain readable for their
+        // historical security surfaces.  Their missing typed authority keeps
+        // them fail-closed for typed UPDATE.
+        record.policy_version_uuid = parts[12];
+        record.effective_transaction_number = ParseU64(parts[13]);
+        record.target_object_generation = ParseU64(parts[14]);
+        const auto phase = ParseU64(parts[15]);
+        record.update_policy_phase =
+            phase <= std::numeric_limits<std::uint8_t>::max()
+                ? static_cast<std::uint8_t>(phase)
+                : 0;
+        record.source_expression_uuid = parts[16];
+        record.source_expression_generation = ParseU64(parts[17]);
+        if (!HexDecodeSha256(parts[18],
+                            &record.source_expression_evidence_sha256)) {
+          result.diagnostic = PrincipalDiagnostic(
+              kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+              "row_policy_native_evidence_invalid");
+          return result;
+        }
+        record.source_catalog_snapshot_uuid = parts[19];
+        record.source_catalog_generation = ParseU64(parts[20]);
+        record.source_security_generation = ParseU64(parts[21]);
+      }
       result.state.security_generation =
           std::max(result.state.security_generation, record.policy_generation);
       result.state.policy_generation =
@@ -916,6 +1269,8 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
           std::max(result.state.security_generation, generation);
       result.state.policy_generation =
           std::max(result.state.policy_generation, generation);
+    } else if (event == "AUTH_CONTEXT_SUCCESSOR") {
+      result.state.security_context_generation = ParseU64(parts[3]);
     } else if (event == "AUDIT" && parts.size() >= 10) {
       EngineSecurityAuditRecord audit;
       audit.creator_tx = creator_tx;
@@ -929,6 +1284,19 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       audit.security_generation = ParseU64(parts[9]);
       result.state.audit_records.push_back(std::move(audit));
     }
+  }
+  if (collecting_authority_successor_batch) {
+    result.diagnostic = PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+        "security_context_successor_missing_at_eof");
+    return result;
+  }
+  if (database_exists && durable_security_context_generation !=
+                             expected_security_context_generation) {
+    result.diagnostic = PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+        "page_backed_security_context_generation_mismatch");
+    return result;
   }
 
   for (auto& [_, record] : principals) { result.state.principals.push_back(std::move(record)); }
@@ -1083,6 +1451,216 @@ TResult MutatingSetupFailure(const EngineApiRequest& request,
   return SuccessResult<TResult>(request.context, operation_id);
 }
 
+std::mutex g_security_policy_snapshot_authority_mutex;
+std::unordered_map<std::string, EngineSecurityPolicySnapshotAuthorityV1>
+    g_security_policy_snapshot_authorities;
+std::uint64_t g_security_policy_snapshot_ordinal = 0;
+
+bool ExactNonzeroUuid(std::string_view text) {
+  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
+  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
+         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+}
+
+std::string TypedUpdateUuidText(
+    const scratchbird::wire::TypedUpdateUuid& bytes) {
+  if (std::all_of(bytes.begin(), bytes.end(),
+                  [](std::uint8_t value) { return value == 0; })) {
+    return {};
+  }
+  scratchbird::core::platform::Uuid value{};
+  std::copy(bytes.begin(), bytes.end(), value.bytes.begin());
+  return scratchbird::core::uuid::UuidToString(value);
+}
+
+std::string FreshSecurityPolicySnapshotUuid() {
+  const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::object,
+      now + (++g_security_policy_snapshot_ordinal));
+  return generated.ok()
+      ? scratchbird::core::uuid::UuidToString(generated.value.value)
+      : std::string{};
+}
+
+bool PolicyIdentityLess(
+    const EngineSecurityPolicyCatalogRowIdentityV1& left,
+    const EngineSecurityPolicyCatalogRowIdentityV1& right) {
+  if (left.phase != right.phase) return left.phase < right.phase;
+  const auto left_uuid = scratchbird::core::uuid::ParseUuid(left.policy_uuid);
+  const auto right_uuid = scratchbird::core::uuid::ParseUuid(right.policy_uuid);
+  if (!left_uuid.ok() || !right_uuid.ok()) {
+    return left.policy_uuid < right.policy_uuid;
+  }
+  if (left_uuid.value.bytes != right_uuid.value.bytes) {
+    return left_uuid.value.bytes < right_uuid.value.bytes;
+  }
+  return left.policy_generation < right.policy_generation;
+}
+
+EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
+    const EngineRequestContext& context,
+    const std::string& target_relation_uuid,
+    EngineSecurityPolicySnapshotAuthorityV1* snapshot) {
+  if (snapshot == nullptr || !context.security_context_present ||
+      !context.statement_metadata_snapshot_engine_owned ||
+      !ExactNonzeroUuid(context.statement_receipt_uuid.canonical) ||
+      !ExactNonzeroUuid(target_relation_uuid) ||
+      !context.authorization_context.present ||
+      !ExactNonzeroUuid(context.authorization_context.authority_uuid.canonical) ||
+      context.authorization_context.security_context_generation == 0 ||
+      context.security_epoch == 0 || context.catalog_generation_id == 0 ||
+      context.authorization_context.security_epoch != context.security_epoch ||
+      context.authorization_context.catalog_generation_id !=
+          context.catalog_generation_id ||
+      context.authorization_context.policy_epoch == 0) {
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticAuthorityRequired,
+                               "policy_snapshot_context_invalid");
+  }
+
+  const auto loaded = LoadState(context, {.enforce_visibility = true});
+  if (!loaded.ok) return loaded.diagnostic;
+  if (loaded.state.security_generation == 0 ||
+      loaded.state.policy_generation == 0 ||
+      loaded.state.security_context_generation == 0 ||
+      loaded.state.security_context_generation !=
+          context.authorization_context.security_context_generation ||
+      loaded.state.security_generation !=
+          context.authorization_context.security_epoch ||
+      loaded.state.policy_generation !=
+          context.authorization_context.policy_epoch) {
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyStale,
+                               "durable_materialized_generation_mismatch");
+  }
+
+  std::vector<EngineSecurityPolicyCatalogRowIdentityV1> admitted;
+  for (const auto& policy : context.authorization_context.policies) {
+    if (policy.target_uuid.canonical != target_relation_uuid) continue;
+    if (!ExactNonzeroUuid(policy.policy_uuid.canonical) ||
+        policy.source_policy_generation == 0 ||
+        policy.policy_epoch !=
+            context.authorization_context.policy_epoch) {
+      return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyStale,
+                                 "materialized_policy_identity_invalid");
+    }
+    const EngineSecurityRowPolicyRecord* durable = nullptr;
+    for (const auto& candidate : loaded.state.row_policies) {
+      if (candidate.policy_uuid != policy.policy_uuid.canonical) continue;
+      if (durable != nullptr) {
+        return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyDuplicate,
+                                   "durable_policy_identity_duplicate");
+      }
+      durable = &candidate;
+    }
+    if (durable == nullptr || durable->deleted ||
+        durable->lifecycle_state != "active" ||
+        durable->target_object_uuid != target_relation_uuid ||
+        durable->policy_generation != policy.source_policy_generation ||
+        !ExactNonzeroUuid(durable->policy_version_uuid) ||
+        durable->target_object_generation == 0 ||
+        (durable->update_policy_phase != 1 &&
+         durable->update_policy_phase != 2) ||
+        !ExactNonzeroUuid(durable->effective_policy_uuid) ||
+        durable->effective_policy_generation == 0 ||
+        !ExactNonzeroUuid(durable->effective_expression_uuid) ||
+        durable->effective_expression_generation == 0 ||
+        !NonzeroSha256(durable->effective_expression_evidence_sha256) ||
+        policy.update_policy_phase != durable->update_policy_phase ||
+        policy.effective_policy_uuid.canonical !=
+            durable->effective_policy_uuid ||
+        policy.effective_policy_generation !=
+            durable->effective_policy_generation ||
+        policy.effective_expression_uuid.canonical !=
+            durable->effective_expression_uuid ||
+        policy.effective_expression_generation !=
+            durable->effective_expression_generation ||
+        policy.effective_expression_evidence_sha256 !=
+            durable->effective_expression_evidence_sha256 ||
+        !ExactNonzeroUuid(durable->source_expression_uuid) ||
+        durable->source_expression_generation == 0 ||
+        !NonzeroSha256(durable->source_expression_evidence_sha256) ||
+        !ExactNonzeroUuid(durable->source_catalog_snapshot_uuid) ||
+        durable->source_catalog_generation == 0 ||
+        durable->source_security_generation == 0 ||
+        durable->source_security_generation > loaded.state.security_generation) {
+      return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyStale,
+                                 "durable_materialized_policy_mismatch");
+    }
+    const auto transaction_inventory =
+        LoadLocalTransactionInventoryFromDatabase(context.database_path);
+    if (!transaction_inventory.ok()) {
+      return PrincipalDiagnostic(
+          kSecurityPrincipalDiagnosticPolicyStale,
+          "policy_effective_transaction_inventory_unavailable");
+    }
+    const auto effective_transaction = LookupLocalTransaction(
+        transaction_inventory.inventory,
+        MakeLocalTransactionId(durable->creator_tx));
+    if (!effective_transaction.ok() ||
+        (effective_transaction.entry.state != TransactionState::committed &&
+         effective_transaction.entry.state != TransactionState::archived) ||
+        effective_transaction.entry.identity.local_id.value == 0) {
+      return PrincipalDiagnostic(
+          kSecurityPrincipalDiagnosticPolicyStale,
+          "policy_effective_transaction_not_committed");
+    }
+    EngineSecurityPolicyCatalogRowIdentityV1 identity;
+    identity.policy_uuid = durable->policy_uuid;
+    identity.policy_generation = durable->policy_generation;
+    identity.policy_version_uuid = durable->policy_version_uuid;
+    identity.effective_transaction_number =
+        effective_transaction.entry.identity.local_id.value;
+    identity.target_relation_uuid = durable->target_object_uuid;
+    identity.target_relation_generation =
+        durable->target_object_generation;
+    identity.phase = durable->update_policy_phase;
+    identity.effective_policy_uuid = durable->effective_policy_uuid;
+    identity.effective_policy_generation =
+        durable->effective_policy_generation;
+    identity.effective_expression_uuid =
+        durable->effective_expression_uuid;
+    identity.effective_expression_generation =
+        durable->effective_expression_generation;
+    identity.effective_expression_evidence_sha256 =
+        durable->effective_expression_evidence_sha256;
+    identity.source_expression_uuid = durable->source_expression_uuid;
+    identity.source_expression_generation =
+        durable->source_expression_generation;
+    identity.source_expression_evidence_sha256 =
+        durable->source_expression_evidence_sha256;
+    // DUSR binds the UPDATE statement's current catalog/security snapshot,
+    // not the policy-creation statement's historical provenance fields.
+    identity.catalog_snapshot_uuid =
+        context.statement_metadata_snapshot_uuid.canonical;
+    identity.catalog_generation = context.catalog_generation_id;
+    identity.security_generation = loaded.state.security_generation;
+    admitted.push_back(std::move(identity));
+  }
+  std::sort(admitted.begin(), admitted.end(), PolicyIdentityLess);
+  if (std::adjacent_find(admitted.begin(), admitted.end(),
+                         [](const auto& left, const auto& right) {
+                           return left.policy_uuid == right.policy_uuid;
+                         }) != admitted.end()) {
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyDuplicate,
+                               "materialized_policy_identity_duplicate");
+  }
+
+  snapshot->authenticated_statement_receipt_uuid =
+      context.statement_receipt_uuid.canonical;
+  snapshot->security_context_uuid =
+      context.authorization_context.authority_uuid.canonical;
+  snapshot->security_context_generation =
+      context.authorization_context.security_context_generation;
+  snapshot->security_generation = loaded.state.security_generation;
+  snapshot->policy_generation = loaded.state.policy_generation;
+  snapshot->target_relation_uuid = target_relation_uuid;
+  snapshot->admitted_policy_rows = std::move(admitted);
+  return OkDiagnostic();
+}
+
 }  // namespace
 
 std::string RedactSecurityPrincipalProtectedMaterialForDiagnostics(std::string text) {
@@ -1094,6 +1672,203 @@ std::string RedactSecurityPrincipalProtectedMaterialForDiagnostics(std::string t
 EngineLoadSecurityPrincipalLifecycleStateResult LoadSecurityPrincipalLifecycleState(
     const EngineRequestContext& context) {
   return LoadState(context, {.enforce_visibility = true});
+}
+
+EngineSecurityPolicySnapshotAuthorityResultV1
+IssueEngineSecurityPolicySnapshotAuthorityV1(
+    const EngineRequestContext& context,
+    const std::string& target_relation_uuid) {
+  EngineSecurityPolicySnapshotAuthorityResultV1 result;
+  EngineSecurityPolicySnapshotAuthorityV1 snapshot;
+  result.diagnostic = ResolveSecurityPolicySnapshotSource(
+      context, target_relation_uuid, &snapshot);
+  if (result.diagnostic.error) return result;
+
+  std::lock_guard<std::mutex> guard(
+      g_security_policy_snapshot_authority_mutex);
+  snapshot.snapshot_uuid = FreshSecurityPolicySnapshotUuid();
+  snapshot.snapshot_generation = 1;
+  if (!ExactNonzeroUuid(snapshot.snapshot_uuid) ||
+      g_security_policy_snapshot_authorities.contains(snapshot.snapshot_uuid)) {
+    result.diagnostic = PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+        "policy_snapshot_identity_issue_failed");
+    return result;
+  }
+  g_security_policy_snapshot_authorities.emplace(snapshot.snapshot_uuid,
+                                                 snapshot);
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  result.snapshot = std::move(snapshot);
+  return result;
+}
+
+EngineApiDiagnostic RevalidateEngineSecurityPolicySnapshotAuthorityV1(
+    const EngineRequestContext& context,
+    const EngineSecurityPolicySnapshotAuthorityV1& admitted) {
+  if (!ExactNonzeroUuid(admitted.snapshot_uuid) ||
+      admitted.snapshot_generation != 1) {
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyStale,
+                               "policy_snapshot_identity_invalid");
+  }
+  EngineSecurityPolicySnapshotAuthorityV1 current;
+  auto diagnostic = ResolveSecurityPolicySnapshotSource(
+      context, admitted.target_relation_uuid, &current);
+  if (diagnostic.error) return diagnostic;
+
+  std::lock_guard<std::mutex> guard(
+      g_security_policy_snapshot_authority_mutex);
+  const auto found =
+      g_security_policy_snapshot_authorities.find(admitted.snapshot_uuid);
+  if (found == g_security_policy_snapshot_authorities.end() ||
+      found->second != admitted) {
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyStale,
+                               "policy_snapshot_unknown_or_forged");
+  }
+  current.snapshot_uuid = admitted.snapshot_uuid;
+  current.snapshot_generation = admitted.snapshot_generation;
+  if (current != admitted) {
+    return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyStale,
+                               "policy_snapshot_source_changed");
+  }
+  return OkDiagnostic();
+}
+
+EngineSecurityPolicySnapshotRecoveryResultV1
+RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateValidatedDurableAuthorityHandleV1& validated_handle,
+    std::span<const std::uint8_t> exact_dumo_bytes) {
+  EngineSecurityPolicySnapshotRecoveryResultV1 result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic = PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticPolicyStale, std::move(detail));
+    return result;
+  };
+  if (!validated_handle.valid() || validated_handle.impl_ == nullptr ||
+      exact_dumo_bytes.empty() ||
+      exact_dumo_bytes.size() !=
+          validated_handle.impl_->exact_dumo.size() ||
+      !std::equal(exact_dumo_bytes.begin(), exact_dumo_bytes.end(),
+                  validated_handle.impl_->exact_dumo.begin())) {
+    return refuse("validated_durable_security_handle_invalid");
+  }
+
+  const auto& durable = *validated_handle.impl_;
+  scratchbird::wire::TypedUpdateSecurityPolicySourceVector source;
+  scratchbird::wire::TypedUpdateSecuritySnapshotProof proof;
+  scratchbird::wire::TypedUpdateMgaRecoveryObservation observation;
+  scratchbird::wire::TypedUpdateCarrierError error;
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateSecurityPolicySourceVector(
+          durable.snapshot.source_policy_vector_dusv, &source, &error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateSecuritySnapshotProof(
+          durable.snapshot.security_snapshot_proof_dusp, &proof, &error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateMgaRecoveryObservation(
+          exact_dumo_bytes, &observation, &error)) {
+    return refuse("validated_durable_security_carrier_invalid:" +
+                  error.field + ":" + error.detail);
+  }
+  const std::string snapshot_uuid =
+      TypedUpdateUuidText(proof.security_snapshot_uuid);
+  const std::string target_relation_uuid =
+      TypedUpdateUuidText(proof.target_relation_uuid);
+  if (!ExactNonzeroUuid(snapshot_uuid) ||
+      proof.security_snapshot_generation == 0 ||
+      !ExactNonzeroUuid(target_relation_uuid) ||
+      source.records.size() != proof.source_policy_count ||
+      durable.identity.database_uuid !=
+          TypedUpdateUuidText(proof.database_uuid) ||
+      durable.identity.authenticated_statement_receipt_uuid !=
+          TypedUpdateUuidText(proof.authenticated_statement_receipt_uuid) ||
+      durable.identity.owning_transaction_uuid !=
+          TypedUpdateUuidText(proof.owning_transaction_uuid) ||
+      durable.identity.owning_local_transaction_id !=
+          proof.owning_local_transaction_id ||
+      durable.identity.operation_uuid !=
+          TypedUpdateUuidText(proof.operation_uuid) ||
+      durable.identity.operation_generation != proof.operation_generation ||
+      durable.identity.descriptor_uuid !=
+          TypedUpdateUuidText(proof.descriptor_uuid) ||
+      durable.identity.descriptor_generation != proof.descriptor_generation ||
+      durable.identity.recovery_token_uuid !=
+          TypedUpdateUuidText(proof.recovery_token_uuid) ||
+      durable.identity.recovery_generation != proof.recovery_generation) {
+    return refuse("validated_durable_security_identity_mismatch");
+  }
+
+  EngineSecurityPolicySnapshotAuthorityV1 current;
+  auto diagnostic = ResolveSecurityPolicySnapshotSource(
+      context, target_relation_uuid, &current);
+  if (diagnostic.error) {
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  }
+  if (current.security_context_uuid !=
+          TypedUpdateUuidText(proof.security_context_uuid) ||
+      current.security_context_generation !=
+          proof.security_context_generation ||
+      current.security_generation != proof.security_epoch ||
+      current.policy_generation != proof.policy_generation ||
+      current.policy_generation != proof.policy_catalog_epoch ||
+      current.admitted_policy_rows.size() != source.records.size()) {
+    return refuse("durable_security_snapshot_source_stale");
+  }
+  for (std::size_t index = 0; index < source.records.size(); ++index) {
+    const auto& encoded = source.records[index];
+    const auto& admitted = current.admitted_policy_rows[index];
+    if (encoded.source_policy_ordinal != index + 1 ||
+        encoded.phase != admitted.phase || encoded.source_state != 1 ||
+        TypedUpdateUuidText(encoded.policy_uuid) != admitted.policy_uuid ||
+        encoded.policy_generation != admitted.policy_generation ||
+        TypedUpdateUuidText(encoded.policy_version_uuid) !=
+            admitted.policy_version_uuid ||
+        encoded.effective_transaction_number !=
+            admitted.effective_transaction_number ||
+        TypedUpdateUuidText(encoded.target_relation_uuid) !=
+            admitted.target_relation_uuid ||
+        encoded.target_relation_generation !=
+            admitted.target_relation_generation ||
+        TypedUpdateUuidText(encoded.source_expression_uuid) !=
+            admitted.source_expression_uuid ||
+        encoded.source_expression_generation !=
+            admitted.source_expression_generation ||
+        encoded.source_expression_evidence_sha256 !=
+            admitted.source_expression_evidence_sha256 ||
+        TypedUpdateUuidText(encoded.catalog_snapshot_uuid) !=
+            admitted.catalog_snapshot_uuid ||
+        encoded.catalog_generation != admitted.catalog_generation ||
+        TypedUpdateUuidText(encoded.security_snapshot_uuid) != snapshot_uuid ||
+        encoded.security_snapshot_generation !=
+            proof.security_snapshot_generation) {
+      return refuse("durable_security_policy_source_row_stale:" +
+                    std::to_string(index));
+    }
+  }
+
+  current.snapshot_uuid = snapshot_uuid;
+  current.snapshot_generation = proof.security_snapshot_generation;
+  std::lock_guard<std::mutex> guard(
+      g_security_policy_snapshot_authority_mutex);
+  const auto found =
+      g_security_policy_snapshot_authorities.find(snapshot_uuid);
+  if (found != g_security_policy_snapshot_authorities.end()) {
+    if (found->second != current) {
+      return refuse("durable_security_snapshot_identity_conflict");
+    }
+  } else {
+    g_security_policy_snapshot_authorities.emplace(snapshot_uuid, current);
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  result.snapshot = std::move(current);
+  return result;
+}
+
+void ResetEngineSecurityPolicySnapshotAuthorityForTestV1() {
+  std::lock_guard<std::mutex> guard(
+      g_security_policy_snapshot_authority_mutex);
+  g_security_policy_snapshot_authorities.clear();
+  g_security_policy_snapshot_ordinal = 0;
 }
 
 EngineOwnedSysarchRoleIdentityResult ResolveEngineOwnedSysarchRoleIdentity(
@@ -2137,6 +2912,18 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
       : request.definer_principal_uuid;
   record.lifecycle_state = "active";
   record.policy_generation = generation;
+  if (request.native_authority.present) {
+    if (!NativeRowPolicyAuthorityValid(request.context,
+                                       request.native_authority)) {
+      return DiagnosticResult<EngineSecurityAttachPolicyResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrincipalDiagnosticAuthorityRequired,
+                              "native_policy_authority_invalid"));
+    }
+    ApplyNativeRowPolicyAuthority(request.native_authority,
+                                  request.context, generation,
+                                  &record);
+  }
   const auto audit = MakeAudit(request.context,
                               kOperation,
                               target_uuid,
@@ -2223,6 +3010,18 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
       : request.definer_principal_uuid;
   record.lifecycle_state = "active";
   record.policy_generation = generation;
+  if (request.native_authority.present) {
+    if (!NativeRowPolicyAuthorityValid(request.context,
+                                       request.native_authority)) {
+      return DiagnosticResult<EngineSecurityCreatePolicyResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrincipalDiagnosticAuthorityRequired,
+                              "native_policy_authority_invalid"));
+    }
+    ApplyNativeRowPolicyAuthority(request.native_authority,
+                                  request.context, generation,
+                                  &record);
+  }
   const auto audit = MakeAudit(request.context,
                               kOperation,
                               policy_uuid,
@@ -2337,6 +3136,9 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
   if (!request.predicate_envelope.empty()) {
     record.predicate_envelope =
         RedactSecurityPrincipalProtectedMaterialForDiagnostics(request.predicate_envelope);
+    if (!request.native_authority.present) {
+      ClearNativeRowPolicyAuthority(&record);
+    }
   }
   if (!request.definer_principal_uuid.empty()) {
     record.definer_principal_uuid = request.definer_principal_uuid;
@@ -2344,6 +3146,18 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
   record.lifecycle_state = lifecycle;
   record.policy_generation = generation;
   record.deleted = false;
+  if (request.native_authority.present) {
+    if (!NativeRowPolicyAuthorityValid(request.context,
+                                       request.native_authority)) {
+      return DiagnosticResult<EngineSecurityAlterPolicyResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrincipalDiagnosticAuthorityRequired,
+                              "native_policy_authority_invalid"));
+    }
+    ApplyNativeRowPolicyAuthority(request.native_authority,
+                                  request.context, generation,
+                                  &record);
+  }
   const auto audit = MakeAudit(request.context,
                               kOperation,
                               policy_uuid,
@@ -2527,7 +3341,8 @@ EngineSecurityActivatePolicyResult EngineSecurityActivatePolicy(
   }
   const auto* existing = FindRowPolicy(loaded.state, policy_uuid);
   const std::uint64_t generation = NextGeneration(loaded.state);
-  EngineSecurityRowPolicyRecord record;
+  EngineSecurityRowPolicyRecord record =
+      existing == nullptr ? EngineSecurityRowPolicyRecord{} : *existing;
   record.creator_tx = request.context.local_transaction_id;
   record.policy_uuid = policy_uuid;
   record.target_object_uuid = existing == nullptr ? policy_uuid : existing->target_object_uuid;
@@ -2590,7 +3405,8 @@ EngineSecurityDeactivatePolicyResult EngineSecurityDeactivatePolicy(
   }
   const auto* existing = FindRowPolicy(loaded.state, policy_uuid);
   const std::uint64_t generation = NextGeneration(loaded.state);
-  EngineSecurityRowPolicyRecord record;
+  EngineSecurityRowPolicyRecord record =
+      existing == nullptr ? EngineSecurityRowPolicyRecord{} : *existing;
   record.creator_tx = request.context.local_transaction_id;
   record.policy_uuid = policy_uuid;
   record.target_object_uuid = existing == nullptr ? policy_uuid : existing->target_object_uuid;
@@ -2885,6 +3701,18 @@ EngineSecurityPutRowPolicyResult EngineSecurityPutRowPolicy(
       RedactSecurityPrincipalProtectedMaterialForDiagnostics(request.predicate_envelope);
   record.definer_principal_uuid = request.definer_principal_uuid;
   record.policy_generation = generation;
+  if (request.native_authority.present) {
+    if (!NativeRowPolicyAuthorityValid(request.context,
+                                       request.native_authority)) {
+      return DiagnosticResult<EngineSecurityPutRowPolicyResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrincipalDiagnosticAuthorityRequired,
+                              "native_policy_authority_invalid"));
+    }
+    ApplyNativeRowPolicyAuthority(request.native_authority,
+                                  request.context, generation,
+                                  &record);
+  }
   const auto audit = MakeAudit(request.context,
                               kOperation,
                               target_uuid,

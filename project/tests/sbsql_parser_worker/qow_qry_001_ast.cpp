@@ -494,12 +494,29 @@ bool ValidateCatalogProjectionComposition() {
 }
 
 bool ValidateCatalogJoinTailComposition() {
+  constexpr std::string_view bare_join_sql =
+      "SELECT * FROM app.left_relation AS l JOIN "
+      "app.right_relation AS r ON l.id = r.id;";
+  const auto bare_join = sbsql::ParseNativeRelationalAst(
+      sbsql::BuildCst(bare_join_sql));
+  bool passed = true;
+  passed &= Require(
+      bare_join.accepted() && bare_join.root_relation_id == 3 &&
+          bare_join.relations.size() == 3 &&
+          bare_join.expressions.size() == 5 &&
+          bare_join.relations[2].relation_kind ==
+              sbsql::NativeRelationAstKind::kJoin &&
+          bare_join.relations[2].join_kind ==
+              sbsql::NativeJoinAstKind::kInner &&
+          bare_join.relations[2].predicate_expression_ids ==
+              std::vector<std::uint32_t>({5}),
+      "bare JOIN did not normalize to the canonical INNER JOIN graph");
+
   constexpr std::string_view mixed_sql =
       "SELECT l.integer_value FROM app.left_relation AS l CROSS JOIN "
       "app.right_relation AS r WHERE r.join_value >= 2 LIMIT ?;";
   const auto mixed =
       sbsql::ParseNativeRelationalAst(sbsql::BuildCst(mixed_sql));
-  bool passed = true;
   passed &= Require(mixed.accepted(),
                     "catalog JOIN literal-filter/parameter-LIMIT was refused");
   passed &= Require(mixed.root_relation_id == 6 &&
@@ -745,21 +762,63 @@ bool ValidateCatalogRelationRefusal() {
   return passed;
 }
 
-bool ValidateFamilyBoundary() {
-  const auto cst = sbsql::BuildCst("SELECT 1;");
+bool ValidateObjectFreeConstantSelect() {
+  constexpr std::string_view sql = "SELECT 1;";
+  const auto cst = sbsql::BuildCst(sql);
   const auto native = sbsql::ParseNativeRelationalAst(cst);
   bool passed = true;
-  passed &= Require(!native.recognized(),
-                    "the bounded native parser claimed an object-free SELECT");
-  passed &= Require(native.root_relation_id == 0 && native.relations.empty(),
-                    "unrecognized syntax produced native relation nodes");
+  passed &= Require(native.recognized() && native.accepted(),
+                    "object-free numeric SELECT was not accepted natively");
+  passed &= Require(native.root_relation_id == 1 &&
+                        native.relations.size() == 1 &&
+                        native.values_rows.size() == 1 &&
+                        native.expressions.size() == 1,
+                    "object-free numeric SELECT DAG cardinalities differ");
+  if (native.relations.size() == 1) {
+    const auto& relation = native.relations.front();
+    passed &= Require(relation.relation_id == 1 &&
+                          relation.relation_kind ==
+                              sbsql::NativeRelationAstKind::kValues &&
+                          relation.input_relation_ids.empty() &&
+                          relation.values_row_ids ==
+                              std::vector<std::uint32_t>({1}) &&
+                          relation.output_expression_ids ==
+                              std::vector<std::uint32_t>({1}) &&
+                          SourceForRange(sql, relation.range) == "SELECT 1",
+                      "object-free numeric SELECT VALUES relation differs");
+  }
+  if (native.values_rows.size() == 1) {
+    const auto& row = native.values_rows.front();
+    passed &= Require(row.row_id == 1 &&
+                          row.expression_ids ==
+                              std::vector<std::uint32_t>({1}) &&
+                          SourceForRange(sql, row.range) == "1",
+                      "object-free numeric SELECT row descriptor differs");
+  }
+  if (native.expressions.size() == 1) {
+    const auto& literal = native.expressions.front();
+    passed &= Require(
+        literal.expression_id == 1 &&
+            literal.expression_kind ==
+                sbsql::NativeExpressionAstKind::kLiteral &&
+            literal.literal_kind == sbsql::NativeLiteralAstKind::kNumeric &&
+            literal.spelling == "1" &&
+            literal.child_expression_ids.empty() &&
+            literal.structural_literal_occurrence_id == 1 &&
+            SourceForRange(sql, literal.range) == "1",
+        "object-free numeric SELECT literal descriptor differs");
+  }
 
   const auto ast = sbsql::BuildAst(cst);
-  passed &= Require(!ast.messages.has_errors(), "legacy SELECT classification regressed");
+  passed &= Require(!ast.messages.has_errors(),
+                    "object-free numeric SELECT BuildAst was refused");
   passed &= Require(ast.family == sbsql::StatementFamily::kQuery,
-                    "legacy SELECT family classification regressed");
-  passed &= Require(!ast.native_relational.recognized(),
-                    "BuildAst fabricated a typed VALUES document for SELECT");
+                    "object-free numeric SELECT family differs");
+  passed &= Require(ast.native_relational.accepted() &&
+                        ast.native_relational.root_relation_id == 1 &&
+                        ast.produces_sblr &&
+                        !ast.requires_name_resolution,
+                    "BuildAst did not retain the canonical object-free VALUES DAG");
   return passed;
 }
 
@@ -1033,7 +1092,7 @@ int main() {
   passed &= ValidateCatalogJoinTailComposition();
   passed &= ValidateCatalogOrderingComposition();
   passed &= ValidateCatalogRelationRefusal();
-  passed &= ValidateFamilyBoundary();
+  passed &= ValidateObjectFreeConstantSelect();
   passed &= ValidateTypedWindowVocabulary();
   passed &= ValidateTypedWindowParse();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

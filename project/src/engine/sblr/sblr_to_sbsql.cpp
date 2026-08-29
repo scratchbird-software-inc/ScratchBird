@@ -9,6 +9,7 @@
 #include "sblr_to_sbsql.hpp"
 
 #include "sblr_opcode_registry.hpp"
+#include "scratchbird/engine/sblr_envelope.hpp"
 
 #include <cctype>
 #include <sstream>
@@ -40,7 +41,18 @@ const SblrOperand* FindOperand(const SblrOperationEnvelope& envelope,
 std::string_view OperandValue(const SblrOperationEnvelope& envelope,
                               std::string_view name) {
   const auto* operand = FindOperand(envelope, name);
-  return operand == nullptr ? std::string_view() : std::string_view(operand->value);
+  if (operand == nullptr) return {};
+  if (!operand->value.empty()) return operand->value;
+  if (operand->value_kind != SblrValueKind::literal_typed ||
+      operand->value_body.size() < 24) {
+    return {};
+  }
+  const auto size = scratchbird::engine::SblrReadU64(
+      operand->value_body.data() + 16);
+  if (size != operand->value_body.size() - 24) return {};
+  return std::string_view(
+      reinterpret_cast<const char*>(operand->value_body.data() + 24),
+      static_cast<std::size_t>(size));
 }
 
 const SblrSourceSymbolArtifact* FindSymbol(const SblrOperationEnvelope& envelope,
@@ -445,15 +457,15 @@ SblrToSbsqlResult RenderDmlSingleRow(const SblrOperationEnvelope& envelope) {
 
   const bool insert = IsAnyOperation(envelope, "dml.insert_rows",
                                      "SBLR_DML_INSERT_ROWS",
-                                     "dml.insert", "SBLR_INSERT");
+                                     "engine.op.insert", "SBLR_INSERT");
   const bool select = IsOperation(envelope, "dml.select_rows",
                                   "SBLR_DML_SELECT_ROWS");
   const bool update = IsAnyOperation(envelope, "dml.update_rows",
                                      "SBLR_DML_UPDATE_ROWS",
-                                     "dml.update", "SBLR_UPDATE");
+                                     "engine.op.update", "SBLR_UPDATE");
   const bool delete_row = IsAnyOperation(envelope, "dml.delete_rows",
                                          "SBLR_DML_DELETE_ROWS",
-                                         "dml.delete", "SBLR_DELETE");
+                                         "engine.op.delete", "SBLR_DELETE");
   if (!insert && !select && !update && !delete_row) {
     return Refuse("SB_SBLR_TO_SBSQL_UNSUPPORTED_OPERATION",
                   "SBLR-to-SBsql DML route supports insert select update and delete only");
@@ -832,7 +844,9 @@ SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const SblrOperationEnvelope& envelop
   }
 
   SblrToSbsqlResult result;
-  const auto validation = ValidateSblrEnvelope(envelope);
+  auto operation = envelope;
+  operation.source_artifact_map = {};
+  const auto validation = ValidateSblrEnvelope(operation);
   if (!validation.ok) {
     CopyValidationDiagnostics(validation, &result);
     return result;
@@ -845,12 +859,12 @@ SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const SblrOperationEnvelope& envelop
     return RenderProceduralBundle(envelope);
   }
   if (IsAnyOperation(envelope, "dml.insert_rows", "SBLR_DML_INSERT_ROWS",
-                     "dml.insert", "SBLR_INSERT") ||
+                     "engine.op.insert", "SBLR_INSERT") ||
       IsOperation(envelope, "dml.select_rows", "SBLR_DML_SELECT_ROWS") ||
       IsAnyOperation(envelope, "dml.update_rows", "SBLR_DML_UPDATE_ROWS",
-                     "dml.update", "SBLR_UPDATE") ||
+                     "engine.op.update", "SBLR_UPDATE") ||
       IsAnyOperation(envelope, "dml.delete_rows", "SBLR_DML_DELETE_ROWS",
-                     "dml.delete", "SBLR_DELETE")) {
+                     "engine.op.delete", "SBLR_DELETE")) {
     return RenderDmlSingleRow(envelope);
   }
   if (IsOperation(envelope, "ddl.create_table", "SBLR_DDL_CREATE_TABLE")) {

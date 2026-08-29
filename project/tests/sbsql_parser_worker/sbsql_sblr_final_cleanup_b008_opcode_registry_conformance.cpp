@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -42,61 +43,57 @@ struct OpcodeRow {
   bool requires_cluster_authority;
 };
 
-constexpr std::array<OpcodeRow, 54> kRows{{
-    {"envelope.package_begin", "SBLR_PACKAGE_BEGIN", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
-    {"envelope.package_end", "SBLR_PACKAGE_END", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
-    {"expression.literal", "SBLR_LITERAL", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
-    {"expression.parameter", "SBLR_PARAMETER", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
-    {"expression.variable", "SBLR_VARIABLE", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
-    {"envelope.source_map", "SBLR_SOURCE_MAP", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
-    {"diagnostic.error_vector", "SBLR_ERROR_VECTOR", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
-    {"transaction.txn_begin", "SBLR_TXN_BEGIN", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
-    {"transaction.txn_commit", "SBLR_TXN_COMMIT", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"transaction.txn_rollback", "SBLR_TXN_ROLLBACK", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"transaction.savepoint.create", "SBLR_TXN_SAVEPOINT", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"transaction.savepoint.release", "SBLR_TXN_RELEASE_SAVEPOINT", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"transaction.savepoint.rollback_to", "SBLR_TXN_ROLLBACK_TO_SAVEPOINT", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"transaction.lock_table", "SBLR_TXN_LOCK_TABLE", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"transaction.unlock_table", "SBLR_TXN_UNLOCK_TABLE", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"transaction.lock_named", "SBLR_TXN_LOCK_NAMED", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"transaction.unlock_named", "SBLR_TXN_UNLOCK_NAMED", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"cursor.open", "SBLR_CURSOR_OPEN", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"cursor.fetch", "SBLR_CURSOR_FETCH", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"cursor.close", "SBLR_CURSOR_CLOSE", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"read.by_key", "SBLR_READ_BY_KEY", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"read.range", "SBLR_READ_RANGE", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"read.stream", "SBLR_READ_STREAM", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"result_set.pass", "SBLR_RESULT_SET_PASS", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"dml.insert", "SBLR_INSERT", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"dml.update", "SBLR_UPDATE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"dml.delete", "SBLR_DELETE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"dml.merge", "SBLR_MERGE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"cluster.write_admission", "SBLR_CLUSTER_WRITE_ADMISSION", "data-mutation", sblr::SblrOpcodeCategory::cluster, sblr::SblrOpcodeSupport::cluster_refusal, sblr::SblrOpcodeTransactionEffect::cluster_write, sblr::SblrOpcodeSecurityClass::cluster_authorized, true, true},
-    {"table.truncate", "SBLR_TABLE_TRUNCATE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"table.analyze", "SBLR_TABLE_ANALYZE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"bulk.import_stream", "SBLR_BULK_IMPORT_STREAM", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"bulk.export_stream", "SBLR_BULK_EXPORT_STREAM", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"statement.batch", "SBLR_STATEMENT_BATCH", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"atomic.compare_and_set", "SBLR_ATOMIC_CAS", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"atomic.read_modify_write", "SBLR_ATOMIC_READ_MODIFY_WRITE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"advisory_lock.acquire", "SBLR_ADVISORY_LOCK_ACQUIRE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"advisory_lock.release", "SBLR_ADVISORY_LOCK_RELEASE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"expression.function_call", "SBLR_FUNCTION_CALL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"expression.operator_call", "SBLR_OPERATOR_CALL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"expression.cast", "SBLR_CAST", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"expression.compare", "SBLR_COMPARE", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"domain.operation", "SBLR_DOMAIN_OPERATION", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"routine.procedure_invoke", "SBLR_PROCEDURE_INVOKE", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"routine.function_invoke", "SBLR_FUNCTION_INVOKE", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"routine.aggregate_invoke", "SBLR_AGGREGATE_INVOKE", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"sequence.nextval", "SBLR_SEQUENCE_NEXTVAL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"sequence.currval", "SBLR_SEQUENCE_CURRVAL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"sequence.setval", "SBLR_SEQUENCE_SETVAL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized, true, false},
-    {"result.project", "SBLR_PROJECT", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"result.aggregate", "SBLR_AGGREGATE", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"result.group", "SBLR_GROUP", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"result.sort", "SBLR_SORT", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
-    {"result.limit", "SBLR_LIMIT", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+constexpr std::array<OpcodeRow, 50> kRows{{
+    {"engine.op.package_begin", "SBLR_PACKAGE_BEGIN", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.package_end", "SBLR_PACKAGE_END", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.literal", "SBLR_LITERAL", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.parameter", "SBLR_PARAMETER", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.variable", "SBLR_VARIABLE", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.source_map", "SBLR_SOURCE_MAP", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.error_vector", "SBLR_ERROR_VECTOR", "core-envelope", sblr::SblrOpcodeCategory::core, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.txn_begin", "SBLR_TXN_BEGIN", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.txn_commit", "SBLR_TXN_COMMIT", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
+    {"engine.op.txn_rollback", "SBLR_TXN_ROLLBACK", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
+    {"engine.op.txn_savepoint", "SBLR_TXN_SAVEPOINT", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
+    {"engine.op.txn_release_savepoint", "SBLR_TXN_RELEASE_SAVEPOINT", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
+    {"engine.op.txn_rollback_to_savepoint", "SBLR_TXN_ROLLBACK_TO_SAVEPOINT", "transaction-control", sblr::SblrOpcodeCategory::transaction, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
+    {"engine.op.cursor_open", "SBLR_CURSOR_OPEN", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.cursor_fetch", "SBLR_CURSOR_FETCH", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.cursor_close", "SBLR_CURSOR_CLOSE", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.read_by_key", "SBLR_READ_BY_KEY", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.read_range", "SBLR_READ_RANGE", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.read_stream", "SBLR_READ_STREAM", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.result_set_pass", "SBLR_RESULT_SET_PASS", "data-read", sblr::SblrOpcodeCategory::data_read, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.insert", "SBLR_INSERT", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.update", "SBLR_UPDATE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.delete", "SBLR_DELETE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.merge", "SBLR_MERGE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.cluster_write_admission", "SBLR_CLUSTER_WRITE_ADMISSION", "data-mutation", sblr::SblrOpcodeCategory::cluster, sblr::SblrOpcodeSupport::cluster_refusal, sblr::SblrOpcodeTransactionEffect::cluster_write, sblr::SblrOpcodeSecurityClass::cluster_authorized, true, true},
+    {"engine.op.table_truncate", "SBLR_TABLE_TRUNCATE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.table_analyze", "SBLR_TABLE_ANALYZE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.bulk_import_stream", "SBLR_BULK_IMPORT_STREAM", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.bulk_export_stream", "SBLR_BULK_EXPORT_STREAM", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.statement_batch", "SBLR_STATEMENT_BATCH", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.atomic_cas", "SBLR_ATOMIC_CAS", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.atomic_read_modify_write", "SBLR_ATOMIC_READ_MODIFY_WRITE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.advisory_lock_acquire", "SBLR_ADVISORY_LOCK_ACQUIRE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.advisory_lock_release", "SBLR_ADVISORY_LOCK_RELEASE", "data-mutation", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.function_call", "SBLR_FUNCTION_CALL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.operator_call", "SBLR_OPERATOR_CALL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.cast", "SBLR_CAST", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.compare", "SBLR_COMPARE", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.domain_operation", "SBLR_DOMAIN_OPERATION", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.procedure_invoke", "SBLR_PROCEDURE_INVOKE", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.function_invoke", "SBLR_FUNCTION_INVOKE", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.aggregate_invoke", "SBLR_AGGREGATE_INVOKE", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.sequence_nextval", "SBLR_SEQUENCE_NEXTVAL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.sequence_currval", "SBLR_SEQUENCE_CURRVAL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.sequence_setval", "SBLR_SEQUENCE_SETVAL", "expression-eval", sblr::SblrOpcodeCategory::expression, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized, true, false},
+    {"engine.op.project", "SBLR_PROJECT", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.aggregate", "SBLR_AGGREGATE", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.group", "SBLR_GROUP", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.sort", "SBLR_SORT", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
+    {"engine.op.limit", "SBLR_LIMIT", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
 }};
 
 void Require(bool condition, std::string_view message) {
@@ -142,7 +139,12 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = row.requires_transaction_context;
   envelope.requires_cluster_authority = row.requires_cluster_authority;
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      envelope);
+}
+
+std::string_view ExpectedExecutorId(const OpcodeRow& row) {
+  return row.operation_id;
 }
 
 void RequireCanonicalLookupAndMetadata(const OpcodeRow& row) {
@@ -169,6 +171,11 @@ void RequireCanonicalLookupAndMetadata(const OpcodeRow& row) {
   Require(by_opcode->cluster_private == row.requires_cluster_authority,
           EvidenceMessage(row, "authority", "cluster-private marker drifted"));
 
+  Require(by_opcode->executor_id == ExpectedExecutorId(row),
+          EvidenceMessage(row, "executor", "Core executor binding drifted"));
+  Require(by_opcode->executor_evidence_required,
+          EvidenceMessage(row, "executor", "Core executor evidence gate is not required"));
+
   const auto* by_operation = sblr::LookupSblrOperation(row.operation_id);
   Require(by_operation == by_opcode,
           EvidenceMessage(row, "lookup", "operation lookup did not return canonical entry"));
@@ -177,13 +184,43 @@ void RequireCanonicalLookupAndMetadata(const OpcodeRow& row) {
 void RequireCanonicalEnvelopeValidation(const OpcodeRow& row) {
   const auto envelope = EnvelopeFor(row);
   const auto envelope_validation = sblr::ValidateSblrEnvelope(envelope);
-  Require(envelope_validation.ok,
-          EvidenceMessage(row, "envelope", "base engine envelope rejected valid canonical opcode"));
+  const bool expression_leaf_root =
+      row.opcode == "SBLR_LITERAL" || row.opcode == "SBLR_PARAMETER" ||
+      row.opcode == "SBLR_VARIABLE";
+  if (expression_leaf_root) {
+    bool operand_refusal = false;
+    for (const auto& diagnostic : envelope_validation.diagnostics) {
+      if (diagnostic.code == "SBLR.OPERAND_INVALID") {
+        operand_refusal = true;
+        break;
+      }
+    }
+    Require(!envelope_validation.ok && operand_refusal,
+            EvidenceMessage(row, "envelope",
+                            "expression leaf was admitted as a top-level root"));
+  } else {
+    Require(envelope_validation.ok,
+            EvidenceMessage(row, "envelope",
+                            "base engine envelope rejected valid canonical opcode"));
+  }
 
+  const auto* entry = sblr::LookupSblrOperation(row.operation_id);
+  Require(entry != nullptr,
+          EvidenceMessage(row, "opcode_validation", "canonical operation disappeared"));
   const auto opcode_validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
+  if (!entry->executor_evidence_accepted) {
+    Require(!opcode_validation.ok &&
+                opcode_validation.diagnostic_id ==
+                    "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" &&
+                opcode_validation.diagnostic_id ==
+                    entry->missing_executor_evidence_diagnostic,
+            EvidenceMessage(row, "opcode_validation",
+                            "missing executor evidence did not fail closed"));
+    return;
+  }
   Require(opcode_validation.ok,
           EvidenceMessage(row, "opcode_validation", "canonical opcode validation failed"));
-  Require(opcode_validation.entry != nullptr &&
+  Require(opcode_validation.entry == entry &&
               opcode_validation.entry->opcode == row.opcode,
           EvidenceMessage(row, "opcode_validation", "validation did not bind canonical entry"));
 
@@ -213,34 +250,38 @@ void RequireCanonicalEnvelopeValidation(const OpcodeRow& row) {
   }
 }
 
-void RequireAliasPreservation() {
-  struct AliasRow {
+void RequireCanonicalOperationPreservation() {
+  struct CanonicalOperationRow {
     std::string_view operation_id;
     std::string_view opcode;
   };
-  constexpr std::array<AliasRow, 5> aliases{{
-      {"transaction.begin", "SBLR_TRANSACTION_BEGIN"},
-      {"transaction.commit", "SBLR_TRANSACTION_COMMIT"},
+  constexpr std::array<CanonicalOperationRow, 2> canonical_operations{{
       {"dml.insert_rows", "SBLR_DML_INSERT_ROWS"},
       {"dml.update_rows", "SBLR_DML_UPDATE_ROWS"},
-      {"query.cast_value", "SBLR_QUERY_CAST_VALUE"},
   }};
 
-  for (const auto& alias : aliases) {
-    const auto* entry = sblr::LookupSblrOperation(alias.operation_id);
-    Require(entry != nullptr, "existing operation alias disappeared from opcode registry");
-    Require(entry->opcode == alias.opcode, "existing operation alias opcode changed");
-    Require(sblr::LookupSblrOpcode(alias.opcode) == entry,
-            "existing opcode alias lookup no longer resolves to its route");
+  for (const auto& canonical : canonical_operations) {
+    const auto* entry = sblr::LookupSblrOperation(canonical.operation_id);
+    Require(entry != nullptr, "existing operation canonical disappeared from opcode registry");
+    Require(entry->opcode == canonical.opcode, "existing operation canonical opcode changed");
+    Require(sblr::LookupSblrOpcode(canonical.opcode) == entry,
+            "existing opcode canonical lookup no longer resolves to its route");
 
-    auto envelope = sblr::MakeSblrEnvelope(std::string(alias.operation_id),
-                                           std::string(alias.opcode),
-                                           "opcode-alias-preservation");
+    auto envelope = sblr::MakeSblrEnvelope(std::string(canonical.operation_id),
+                                           std::string(canonical.opcode),
+                                           "opcode-canonical-preservation");
     envelope.requires_security_context = entry->requires_security_context;
     envelope.requires_transaction_context = entry->requires_transaction_context;
     envelope.requires_cluster_authority = entry->requires_cluster_authority;
     const auto validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
-    Require(validation.ok, "existing operation/opcode alias validation regressed");
+    if (entry->executor_evidence_accepted) {
+      Require(validation.ok, "canonical operation validation regressed");
+    } else {
+      Require(entry->executor_evidence_required && !validation.ok &&
+                  validation.diagnostic_id ==
+                      "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+              "canonical operation did not fail closed on missing executor evidence");
+    }
   }
 }
 
@@ -258,7 +299,7 @@ void RequireUnknownAndMismatchDiagnostics() {
               unknown_operation_validation.diagnostic_id == "SB_DIAG_SBLR_UNKNOWN_OPERATION",
           "unknown operation diagnostic changed");
 
-  auto mismatch = sblr::MakeSblrEnvelope("dml.insert",
+  auto mismatch = sblr::MakeSblrEnvelope("engine.op.insert",
                                          "SBLR_NOT_A_REAL_OPCODE",
                                          "opcode-mismatch");
   mismatch.requires_transaction_context = true;
@@ -281,7 +322,7 @@ api::EngineRequestContext EngineContext() {
 void RequireClusterWriteAdmissionBoundary() {
   const OpcodeRow* row = nullptr;
   for (const auto& candidate : kRows) {
-    if (candidate.operation_id == "cluster.write_admission") {
+    if (candidate.operation_id == "engine.op.cluster_write_admission") {
       row = &candidate;
       break;
     }
@@ -381,7 +422,7 @@ int main() {
     RequireCanonicalLookupAndMetadata(row);
     RequireCanonicalEnvelopeValidation(row);
   }
-  RequireAliasPreservation();
+  RequireCanonicalOperationPreservation();
   RequireUnknownAndMismatchDiagnostics();
   RequireClusterWriteAdmissionBoundary();
   std::cout << "sbsql_sblr_final_cleanup_b008_opcode_registry_conformance=passed\n";

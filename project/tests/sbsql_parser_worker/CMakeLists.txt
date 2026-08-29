@@ -1111,6 +1111,13 @@ if(TARGET sb_engine AND TARGET sb_engine_internal_api AND
     qow_match_recognize_generate_series_e2e_v1 PROPERTIES
     LABELS "release_profile;optimizer;match_recognize;row_pattern;generate_series;sbsql_e2e;canonical_mga_statement_context;mga_transaction_regression"
   )
+  add_test(NAME qow_spatial_columnar_join_e2e_v1
+    COMMAND qow_live_server_statement_context_regression
+      --spatial-columnar-proof-only)
+  set_tests_properties(
+    qow_spatial_columnar_join_e2e_v1 PROPERTIES
+    LABELS "qow_closure;RCP-079;spatial;columnar;join;canonical_mga_statement_context;mga_transaction_regression;development_candidate"
+  )
 endif()
 
 add_executable(sbp_sbsql_pipeline_probe parser_pipeline_probe.cpp)
@@ -1498,9 +1505,23 @@ add_test(
           --repo-root "${PROJECT_SOURCE_DIR}/.."
           --build-root "${CMAKE_BINARY_DIR}"
 )
+set(SBSQL_FINAL_ENTERPRISE_PROOF_DEPENDS
+  sbsql_final_language_expansion_closure_gate
+  ctest_no_execution_plan_runtime_dependency_gate
+)
+if(TARGET sb_server_core AND TARGET sb_cluster_provider)
+  list(APPEND SBSQL_FINAL_ENTERPRISE_PROOF_DEPENDS
+    sblr_surface_fse_p7_execution_proof_gate
+  )
+endif()
+if(SB_BUILD_COMPATIBILITY_PARSERS)
+  list(APPEND SBSQL_FINAL_ENTERPRISE_PROOF_DEPENDS
+    parser_dialect_isolation_audit_gate
+  )
+endif()
 set_tests_properties(final_sblr_sbsql_enterprise_proof_closure_gate PROPERTIES
   LABELS "FEP-P7;final_sblr_sbsql_enterprise_proof_closure;release_gate;sbsql_parser_worker;sblr_surface;reference_parser_release_evidence;mga_transaction_regression"
-  DEPENDS "sbsql_final_language_expansion_closure_gate;ctest_no_execution_plan_runtime_dependency_gate;parser_dialect_isolation_audit_gate;sblr_surface_fse_p7_execution_proof_gate"
+  DEPENDS "${SBSQL_FINAL_ENTERPRISE_PROOF_DEPENDS}"
 )
 
 add_test(
@@ -1509,9 +1530,18 @@ add_test(
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/final_sblr_sbsql_master_closure_gate.py"
           --repo-root "${PROJECT_SOURCE_DIR}/.."
 )
+set(SBSQL_FINAL_MASTER_CLOSURE_DEPENDS
+  final_sblr_sbsql_enterprise_proof_closure_gate
+  sbsql_final_language_expansion_closure_gate
+)
+if(SB_BUILD_COMPATIBILITY_PARSERS)
+  list(APPEND SBSQL_FINAL_MASTER_CLOSURE_DEPENDS
+    parser_dialect_isolation_audit_gate
+  )
+endif()
 set_tests_properties(final_sblr_sbsql_master_closure_gate PROPERTIES
   LABELS "FSM-P7;final_sblr_sbsql_master_closure;release_gate;sbsql_parser_worker;sblr_surface;reference_parser_release_evidence;mga_transaction_regression"
-  DEPENDS "final_sblr_sbsql_enterprise_proof_closure_gate;sbsql_final_language_expansion_closure_gate;parser_dialect_isolation_audit_gate"
+  DEPENDS "${SBSQL_FINAL_MASTER_CLOSURE_DEPENDS}"
 )
 
 add_test(
@@ -1572,10 +1602,31 @@ add_test(
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_long_soak_security_packaging_support_audit_gate.py"
           --repo-root "${PROJECT_SOURCE_DIR}/.."
 )
+set(_sb_long_soak_security_packaging_dependencies
+  sbsql_sml_067_081_release_certification_gate
+)
+if(NOT WIN32
+   AND TARGET sb_server
+   AND TARGET sb_listener
+   AND TARGET sbp_sbsql
+   AND TARGET sb_isql)
+  list(APPEND _sb_long_soak_security_packaging_dependencies
+    cdp_config_defaults_rollback_gate
+    cdp_soak_leak_stability_gate
+  )
+endif()
+if(SB_BUILD_ENGINE_LISTENER_ENTERPRISE_GATES
+   OR SB_BUILD_TESTS
+   OR SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
+  list(APPEND _sb_long_soak_security_packaging_dependencies
+    engine_listener_support_bundle_redaction_gate
+  )
+endif()
 set_tests_properties(sbsql_long_soak_security_packaging_support_audit_gate PROPERTIES
   LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-017;sbsql_long_soak_security_packaging_support_audit;sbsql_parser_worker;release_gate;mga_transaction_regression"
-  DEPENDS "sbsql_sml_067_081_release_certification_gate;cdp_config_defaults_rollback_gate;cdp_soak_leak_stability_gate;engine_listener_support_bundle_redaction_gate"
+  DEPENDS "${_sb_long_soak_security_packaging_dependencies}"
 )
+unset(_sb_long_soak_security_packaging_dependencies)
 
 add_test(
   NAME dpc_workload_corpus_closure_gate
@@ -1673,6 +1724,17 @@ add_test(
 )
 set_tests_properties(sbsql_sblr_binary_round_trip_fixture_gate PROPERTIES
   LABELS "sbsql_sblr_binary_round_trip_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
+)
+
+add_test(
+  NAME sbsql_plan_import_rows_generated_evidence_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_plan_import_rows_generated_evidence_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+          --artifact-root "${SBSQL_SURFACE_TO_SBLR_ARTIFACT_ROOT}"
+)
+set_tests_properties(sbsql_plan_import_rows_generated_evidence_gate PROPERTIES
+  LABELS "sbsql_plan_import_rows_generated_evidence_gate;SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1;PID-007;sbsql_parser_worker"
 )
 
 add_test(
@@ -2763,7 +2825,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARG
     COMMAND sbsql_bridge_command_route_conformance
   )
   set_tests_properties(sbsql_bridge_command_route_conformance PROPERTIES
-    LABELS "sbsql_bridge_command_route_conformance;trusted_udr_bridge_gate;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;mga_transaction_regression"
+    LABELS "sbsql_bridge_command_route_conformance;trusted_udr_bridge_gate;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_surface_to_sblr_full_implementation_closure;sbsql_parser_worker;cluster_private_public_fail_closed;sbsql_exact_refusal_passed;mga_transaction_regression"
   )
 
   add_executable(
@@ -3172,6 +3234,11 @@ if(TARGET sb_engine_sblr)
     cdp_sblr_registry_round_trip_gate.cpp
   )
   target_compile_features(cdp_sblr_registry_round_trip_gate PRIVATE cxx_std_23)
+  target_include_directories(
+    cdp_sblr_registry_round_trip_gate
+    PRIVATE
+      "${PROJECT_SOURCE_DIR}/src/server"
+  )
   target_link_libraries(
     cdp_sblr_registry_round_trip_gate
     PRIVATE
@@ -3236,6 +3303,8 @@ if(TARGET sb_engine_sblr)
     sbsql_cluster_provider_conformance.cpp
   )
   target_compile_features(sbsql_cluster_provider_conformance PRIVATE cxx_std_23)
+  target_include_directories(sbsql_cluster_provider_conformance PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/server")
   target_link_libraries(sbsql_cluster_provider_conformance PRIVATE sb_engine_sblr)
   if(SB_ENABLE_CLUSTER_PROVIDER AND SB_CLUSTER_PROVIDER_STUB)
     set(SBSQL_CLUSTER_PROVIDER_CONFORMANCE_TEST_NAME sbsql_cluster_provider_stub_conformance)
@@ -3258,6 +3327,8 @@ if(TARGET sb_engine_sblr)
       sbsql_extension_boundary_abi_manifest_conformance.cpp
     )
     target_compile_features(sbsql_extension_boundary_abi_manifest_conformance PRIVATE cxx_std_23)
+    target_include_directories(sbsql_extension_boundary_abi_manifest_conformance PRIVATE
+      "${PROJECT_SOURCE_DIR}/src/server")
     target_link_libraries(
       sbsql_extension_boundary_abi_manifest_conformance
       PRIVATE
@@ -4217,7 +4288,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_database_lifecycle_exact_route_conformance
   )
   set_tests_properties(sbsql_database_lifecycle_exact_route_conformance PROPERTIES
-    LABELS "sbsql_database_lifecycle_exact_route_conformance;SBSFC-020R-QV;SBSFC-020R-QW;SBSFC-020R-QX;SBSFC-020R-QY;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed;sbsql_exact_refusal;database_lifecycle"
+    LABELS "sbsql_database_lifecycle_exact_route_conformance;SBSFC-020R-QV;SBSFC-020R-QW;SBSFC-020R-QX;SBSFC-020R-QY;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed;database_lifecycle"
   )
 
   add_executable(
@@ -5093,6 +5164,21 @@ if(TARGET sb_engine_sblr)
   )
 endif()
 
+foreach(SBSQL_OPCODE_REGISTRY_TARGET IN ITEMS
+    sbsql_sblr_final_cleanup_b008_opcode_registry_conformance
+    sbsql_sblr_final_cleanup_b009_opcode_registry_conformance
+    sbsql_sblr_final_cleanup_b010_opcode_registry_conformance
+    sbsql_sblr_final_cleanup_b011_opcode_registry_conformance
+    sbsql_sblr_final_cleanup_b012_opcode_registry_conformance
+    sbsql_sblr_final_cleanup_b013_opcode_registry_conformance
+    sbsql_sblr_final_cleanup_b014_opcode_registry_conformance)
+  target_include_directories(
+    ${SBSQL_OPCODE_REGISTRY_TARGET}
+    PRIVATE
+      "${PROJECT_SOURCE_DIR}/src/server"
+  )
+endforeach()
+
 if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engine_sblr)
   add_executable(
     sbsql_sblr_final_cleanup_b015_cluster_provider_route_conformance
@@ -5107,6 +5193,11 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     sbsql_sblr_final_cleanup_b015_cluster_provider_route_conformance
     PRIVATE
       SCRATCHBIRD_PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+  )
+  target_include_directories(
+    sbsql_sblr_final_cleanup_b015_cluster_provider_route_conformance
+    PRIVATE
+      "${PROJECT_SOURCE_DIR}/src/server"
   )
   target_link_libraries(
     sbsql_sblr_final_cleanup_b015_cluster_provider_route_conformance
@@ -5138,6 +5229,11 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     sbsql_sblr_final_cleanup_b016_cluster_provider_evidence_conformance
     PRIVATE
       SCRATCHBIRD_PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+  )
+  target_include_directories(
+    sbsql_sblr_final_cleanup_b016_cluster_provider_evidence_conformance
+    PRIVATE
+      "${PROJECT_SOURCE_DIR}/src/server"
   )
   target_link_libraries(
     sbsql_sblr_final_cleanup_b016_cluster_provider_evidence_conformance
@@ -5265,6 +5361,56 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   )
   set_tests_properties(sbsql_query_scalar_projection_conformance PROPERTIES
     LABELS "sbsql_query_scalar_projection_conformance;SBSFC-010;SBSFC-011;SBSFC-012;SBSFC-013;SBSFC-014;SBSFC-014R-Y;SBSFC-016R-G;SBSFC-016R-H;SBSFC-016R-I;SBSFC-016R-J;SBSFC-016R-K;SBSFC-016R-L;SBSFC-021;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker"
+  )
+endif()
+
+if(TARGET sbl_sbsql_parser_worker_core)
+  add_executable(
+    sbsql_authoritative_multi_source_projection_conformance
+    sbsql_authoritative_multi_source_projection_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_authoritative_multi_source_projection_conformance
+    PRIVATE
+      cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_authoritative_multi_source_projection_conformance
+    PRIVATE
+      sbl_sbsql_parser_worker_core
+  )
+  add_test(
+    NAME sbsql_authoritative_multi_source_projection_conformance
+    COMMAND sbsql_authoritative_multi_source_projection_conformance
+  )
+  set_tests_properties(
+    sbsql_authoritative_multi_source_projection_conformance
+    PROPERTIES
+      LABELS "sbsql_authoritative_multi_source_projection_conformance;SBSFC-021;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker"
+  )
+
+  add_executable(
+    sbsql_contextual_text_literal_v2_parser_conformance
+    sbsql_contextual_text_literal_v2_parser_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_contextual_text_literal_v2_parser_conformance
+    PRIVATE
+      cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_contextual_text_literal_v2_parser_conformance
+    PRIVATE
+      sbl_sbsql_parser_worker_core
+  )
+  add_test(
+    NAME sbsql_contextual_text_literal_v2_parser_conformance
+    COMMAND sbsql_contextual_text_literal_v2_parser_conformance
+  )
+  set_tests_properties(
+    sbsql_contextual_text_literal_v2_parser_conformance
+    PROPERTIES
+      LABELS "sbsql_contextual_text_literal_v2_parser_conformance;contextual_text_literal_v2;sblr_operation_matrix_gate;sbsql_parser_worker"
   )
 endif()
 
@@ -5448,6 +5594,119 @@ if(TARGET sb_server_core AND TARGET sb_engine_sblr)
   )
   set_tests_properties(sbsql_dml_mga_row_result_conformance PROPERTIES
     LABELS "sbsql_dml_mga_row_result_conformance;SBSFC-021;SBSFC-021R-Z;sbsql_query_dml_full_route_conformance;sblr_operation_matrix_gate;sbsql_parser_worker"
+  )
+endif()
+
+if(TARGET sb_engine_internal_api)
+  add_executable(
+    sbsql_narrow_query_profile_source_conformance
+    sbsql_narrow_query_profile_source_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_narrow_query_profile_source_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_narrow_query_profile_source_conformance
+    PRIVATE
+      sb_engine_internal_api
+  )
+  add_test(
+    NAME sbsql_narrow_query_profile_source_conformance
+    COMMAND sbsql_narrow_query_profile_source_conformance
+  )
+  set_tests_properties(
+    sbsql_narrow_query_profile_source_conformance PROPERTIES
+    LABELS "sbsql_narrow_query_profile_source_conformance;narrow_query_profile;SBSFC-015;sbsql_parser_worker;mga_transaction_regression"
+  )
+endif()
+
+if(TARGET sb_engine_internal_api)
+  add_executable(
+    sbsql_dml_update_authority_provider_conformance
+    sbsql_dml_update_authority_provider_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_dml_update_authority_provider_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_dml_update_authority_provider_conformance
+    PRIVATE
+      sb_engine_internal_api
+  )
+  add_test(
+    NAME sbsql_dml_update_authority_provider_conformance
+    COMMAND sbsql_dml_update_authority_provider_conformance
+  )
+  set_tests_properties(
+    sbsql_dml_update_authority_provider_conformance PROPERTIES
+    LABELS "sbsql_dml_update_authority_provider_conformance;SBSFC-021;SBSFC-021R-Z;sblr_operation_matrix_gate;sbsql_parser_worker"
+  )
+endif()
+
+if(TARGET sb_engine_internal_api)
+  add_executable(
+    sbsql_dml_update_statement_mga_authority_provider_conformance
+    sbsql_dml_update_statement_mga_authority_provider_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_dml_update_statement_mga_authority_provider_conformance
+    PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_dml_update_statement_mga_authority_provider_conformance
+    PRIVATE
+      sb_engine_internal_api
+  )
+  add_test(
+    NAME sbsql_dml_update_statement_mga_authority_provider_conformance
+    COMMAND sbsql_dml_update_statement_mga_authority_provider_conformance
+  )
+  set_tests_properties(
+    sbsql_dml_update_statement_mga_authority_provider_conformance PROPERTIES
+    LABELS "sbsql_dml_update_statement_mga_authority_provider_conformance;SBSFC-021;SBSFC-021R-Z;sblr_operation_matrix_gate;sbsql_parser_worker"
+  )
+endif()
+
+if(TARGET sb_engine_internal_api)
+  add_executable(
+    sbsql_dml_update_datatype_operator_authority_provider_conformance
+    sbsql_dml_update_datatype_operator_authority_provider_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_dml_update_datatype_operator_authority_provider_conformance
+    PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_dml_update_datatype_operator_authority_provider_conformance
+    PRIVATE
+      sb_engine_internal_api
+  )
+  add_test(
+    NAME sbsql_dml_update_datatype_operator_authority_provider_conformance
+    COMMAND sbsql_dml_update_datatype_operator_authority_provider_conformance
+  )
+  set_tests_properties(
+    sbsql_dml_update_datatype_operator_authority_provider_conformance PROPERTIES
+    LABELS "sbsql_dml_update_datatype_operator_authority_provider_conformance;SBSFC-021;SBSFC-021R-Z;sblr_operation_matrix_gate;sbsql_parser_worker"
+  )
+endif()
+
+if(TARGET sb_engine_internal_api)
+  add_executable(
+    sbsql_dml_update_durable_operation_authority_provider_conformance
+    sbsql_dml_update_durable_operation_authority_provider_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_dml_update_durable_operation_authority_provider_conformance
+    PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_dml_update_durable_operation_authority_provider_conformance
+    PRIVATE
+      sb_engine_internal_api
+  )
+  add_test(
+    NAME sbsql_dml_update_durable_operation_authority_provider_conformance
+    COMMAND sbsql_dml_update_durable_operation_authority_provider_conformance
+  )
+  set_tests_properties(
+    sbsql_dml_update_durable_operation_authority_provider_conformance PROPERTIES
+    LABELS "sbsql_dml_update_durable_operation_authority_provider_conformance;SBSFC-021;SBSFC-021R-Z;sblr_operation_matrix_gate;sbsql_parser_worker;mga_transaction_regression"
   )
 endif()
 
@@ -5843,6 +6102,11 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
   if(TARGET sb_engine_sblr AND TARGET sb_storage_database)
     add_executable(sbsql_example_database_seed sbsql_example_database_seed.cpp)
     target_compile_features(sbsql_example_database_seed PRIVATE cxx_std_23)
+    target_compile_definitions(
+      sbsql_example_database_seed
+      PRIVATE
+        SB_EXAMPLE_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+    )
     target_link_libraries(sbsql_example_database_seed PRIVATE sb_engine_sblr sb_storage_database sb_core_uuid)
   endif()
   if(TARGET sb_storage_database AND TARGET sb_core_uuid)
@@ -5986,6 +6250,25 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     )
   endif()
   if(TARGET sb_isql)
+    add_executable(
+      cdp_database_seed
+      ${PROJECT_SOURCE_DIR}/tools/release/public_driver_test_database_seed.cpp
+    )
+    target_compile_features(cdp_database_seed PRIVATE cxx_std_23)
+    target_link_libraries(cdp_database_seed PRIVATE
+      sb_engine_internal_api
+      sb_storage_database
+      sb_core_memory
+      sb_core_uuid
+    )
+    add_custom_target(cdp_live_route_gate_deps
+      DEPENDS
+        sb_server
+        sb_listener
+        sbp_sbsql
+        sb_isql
+        cdp_database_seed
+    )
     add_test(
       NAME sbsql_sb_isql_local_ipc_route_smoke
       COMMAND "${SBSQL_PYTHON3}"
@@ -6015,6 +6298,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/cdp_rs"
               --build-mode "configured"
     )
@@ -6029,6 +6314,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/cdp_copy_route"
     )
     set_tests_properties(cdp_copy_route_gate PROPERTIES
@@ -6060,6 +6347,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/cdp041"
     )
     set_tests_properties(cdp_native_bulk_ingest_cli_gate PROPERTIES
@@ -6074,6 +6363,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/cdp049"
     )
     set_tests_properties(cdp_config_defaults_rollback_gate PROPERTIES
@@ -6087,6 +6378,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/cdp_profiler_evidence"
               --build-mode "configured"
     )
@@ -6101,6 +6394,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/cdp_soak_leak_stability"
               --build-mode "configured"
     )
@@ -6117,6 +6412,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/cdp050"
     )
     set_tests_properties(cdp_final_regression_benchmark_gate PROPERTIES
@@ -6131,6 +6428,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/cdp_security_api_abi"
     )
     set_tests_properties(cdp_security_api_abi_gate PROPERTIES
@@ -6362,10 +6661,19 @@ foreach(test_name IN LISTS SBSQL_PARSER_LIFECYCLE_TESTS)
   endif()
 endforeach()
 
-if(TARGET sb_server_core)
+if(TARGET sbl_sbsql_embedded_client_bridge AND
+   TARGET sb_storage_database AND TARGET sb_core_memory AND TARGET sb_core_uuid)
   add_executable(sb_streaming_result_protocol_conformance sbsql_streaming_result_protocol_conformance.cpp)
   target_compile_features(sb_streaming_result_protocol_conformance PRIVATE cxx_std_23)
-  target_link_libraries(sb_streaming_result_protocol_conformance PRIVATE sb_server_core)
+  target_compile_definitions(sb_streaming_result_protocol_conformance PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
+  target_link_libraries(sb_streaming_result_protocol_conformance PRIVATE
+    sbl_sbsql_embedded_client_bridge
+    sb_storage_database
+    sb_core_memory
+    sb_core_uuid
+  )
   add_test(
     NAME sb_streaming_result_protocol_conformance
     COMMAND sb_streaming_result_protocol_conformance

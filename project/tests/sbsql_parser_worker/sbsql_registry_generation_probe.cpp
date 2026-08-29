@@ -184,6 +184,7 @@ bool ValidParserHandler(std::string_view value) {
 bool ValidUdrHandler(std::string_view value) {
   return value == "udr.sbsql_parser_support.cluster_profile_gate" ||
          value == "udr.sbsql_parser_support.native_future_decision" ||
+         value == "udr.sbsql_parser_support.parse_to_sblr_uuid" ||
          value == "udr.sbsql_parser_support.parse_describe_normalize";
 }
 
@@ -290,8 +291,12 @@ bool ValidateRow(const sbsql::GeneratedSurfaceRegistryRow& row) {
     std::cerr << row.surface_id << " is cluster_private without cluster_private scope\n";
     ok = false;
   }
+  const bool cluster_parser_gate =
+      row.parser_handler_key == "parser.cluster_profile_gate" ||
+      (row.family == "bridge" &&
+       row.parser_handler_key == "parser.statement_family.bridge");
   if (row.cluster_scope == "cluster_private" &&
-      (row.parser_handler_key != "parser.cluster_profile_gate" ||
+      (!cluster_parser_gate ||
        row.server_admission_key != "server.admission.cluster_profile_gate" ||
        row.engine_rule_key != "engine.rule.cluster_private_fail_closed_or_profile" ||
        row.diagnostic_key != "diagnostic.cluster_profile_fail_closed")) {

@@ -241,6 +241,18 @@ std::optional<std::string_view> DescriptorField(
   return value;
 }
 
+bool IsCanonicalInt128DescriptorV1(const EngineDescriptor& descriptor) {
+  constexpr std::string_view kDescriptorUuid =
+      "019d0000-0000-7000-8000-00000000d714";
+  constexpr std::string_view kTypeUuid =
+      "019d0000-0000-7000-8000-00000000d715";
+  const auto type_uuid =
+      DescriptorField(descriptor.encoded_descriptor, "type_uuid");
+  return CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
+         descriptor.descriptor_uuid.canonical == kDescriptorUuid &&
+         type_uuid.has_value() && *type_uuid == kTypeUuid;
+}
+
 bool DescriptorU32(const EngineDescriptor& descriptor,
                    const std::string_view key,
                    std::uint32_t* value) {
@@ -616,12 +628,17 @@ bool CanonicalDerivedDescriptorShapesMatch(
     const std::string_view left, const std::string_view right,
     bool* left_nullable, bool* right_nullable) {
   if (left_nullable == nullptr || right_nullable == nullptr) return false;
-  bool left_found = false;
-  bool right_found = false;
+  bool left_canonical_found = false;
+  bool left_storage_found = false;
+  bool left_admitted = false;
+  bool right_canonical_found = false;
+  bool right_storage_found = false;
+  bool right_admitted = false;
   std::size_t left_offset = 0;
   std::size_t right_offset = 0;
   const auto next_field = [](const std::string_view encoded,
-                             std::size_t* offset, bool* found_nullable,
+                             std::size_t* offset, bool* canonical_found,
+                             bool* storage_found, bool* admitted,
                              bool* nullable, std::string_view* normalized,
                              bool* done) {
     if (*offset > encoded.size()) {
@@ -637,19 +654,25 @@ bool CanonicalDerivedDescriptorShapesMatch(
     if (field.empty()) return false;
     if (field.starts_with("nullability=") ||
         field.starts_with("nullable=")) {
-      if (*found_nullable) return false;
-      *found_nullable = true;
       const bool long_form = field.starts_with("nullability=");
+      auto* carrier_found = long_form ? canonical_found : storage_found;
+      if (*carrier_found) return false;
+      *carrier_found = true;
       const auto value = field.substr(
           long_form ? std::string_view("nullability=").size()
                     : std::string_view("nullable=").size());
-      if (value == (long_form ? "nullable" : "true")) {
-        *nullable = true;
+      bool parsed_nullable = false;
+      if (value == (long_form ? "nullable" : "true") ||
+          (long_form && value == "unknown")) {
+        parsed_nullable = true;
       } else if (value == (long_form ? "non_null" : "false")) {
-        *nullable = false;
+        parsed_nullable = false;
       } else {
         return false;
       }
+      if (*admitted && *nullable != parsed_nullable) return false;
+      *nullable = parsed_nullable;
+      *admitted = true;
       *normalized = "nullability=*";
       return true;
     }
@@ -661,9 +684,11 @@ bool CanonicalDerivedDescriptorShapesMatch(
     std::string_view right_field;
     bool left_done = false;
     bool right_done = false;
-    if (!next_field(left, &left_offset, &left_found, left_nullable,
+    if (!next_field(left, &left_offset, &left_canonical_found,
+                    &left_storage_found, &left_admitted, left_nullable,
                     &left_field, &left_done) ||
-        !next_field(right, &right_offset, &right_found, right_nullable,
+        !next_field(right, &right_offset, &right_canonical_found,
+                    &right_storage_found, &right_admitted, right_nullable,
                     &right_field, &right_done) ||
         left_done != right_done) {
       return false;
@@ -671,7 +696,7 @@ bool CanonicalDerivedDescriptorShapesMatch(
     if (left_done) break;
     if (left_field != right_field) return false;
   }
-  return left_found && right_found;
+  return left_admitted && right_admitted;
 }
 
 }  // namespace
@@ -851,6 +876,13 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
     if (!IsKnownScalarType(descriptor)) {
       return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_TYPE_UNSUPPORTED", descriptor.canonical_type_name, 0, column);
     }
+    if (CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
+        !IsCanonicalInt128DescriptorV1(descriptor)) {
+      return ErrorDiagnostic(
+          "DATATYPE.DESCRIPTOR_INVALID",
+          "int128 result descriptor does not match the canonical datatype.int128.v1 identity",
+          0, column);
+    }
   }
   for (std::size_t row = 0; row < batch.rows.size(); ++row) {
     if (const auto cancelled = poll_cancellation(row, 0);
@@ -916,6 +948,14 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         double ignored = 0.0;
         if (!ParseReal64Strict(value.encoded_value, &ignored)) {
           return ErrorDiagnostic("SB_EXECUTOR_REAL64_DECODE_FAILED", value.encoded_value, row, column);
+        }
+      } else if (IsCanonicalInt128DescriptorV1(expected.descriptor)) {
+        if (!value.encoded_value.empty() ||
+            value.binary_value.size() != 16) {
+          return ErrorDiagnostic(
+              "DATATYPE.DESCRIPTOR_INVALID",
+              "datatype.int128.le.v1 requires one exact 16-byte signed little-endian payload",
+              row, column);
         }
       } else if (RequiresExpandedScalarValidation(expected.descriptor)) {
         std::string detail;
@@ -1247,6 +1287,13 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
                              "canonical output descriptor or nullability is unresolved",
                              0, column);
     }
+    if (CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
+        !IsCanonicalInt128DescriptorV1(descriptor)) {
+      return ErrorDiagnostic(
+          "DATATYPE.DESCRIPTOR_INVALID",
+          "canonical output int128 descriptor is not datatype.int128.v1",
+          0, column);
+    }
   }
   for (std::size_t row = 0; row < batch.rows.size(); ++row) {
     if (const auto cancelled = poll_cancellation(row, 0);
@@ -1289,6 +1336,13 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
             "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
             "legacy NULL flag or non-value sentinel reached operator", row,
             column);
+      }
+      if (IsCanonicalInt128DescriptorV1(bound_column.descriptor) &&
+          (!value.encoded_value.empty() || value.binary_value.size() != 16)) {
+        return ErrorDiagnostic(
+            "DATATYPE.DESCRIPTOR_INVALID",
+            "datatype.int128.le.v1 requires one exact 16-byte signed little-endian payload",
+            row, column);
       }
     }
   }
@@ -2466,6 +2520,69 @@ EngineTypedValue EvaluateDescriptorDomainMethod(const DescriptorDomainPolicy& po
   }
   SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_DOMAIN_METHOD_UNKNOWN", method_name));
   return {};
+}
+
+DescriptorRuntimeDiagnostic TransitionCanonicalInt128SumV1(
+    CanonicalInt128SumStateV1* state,
+    const bool input_is_null,
+    const std::int64_t input_value) {
+  if (state == nullptr) {
+    return ErrorDiagnostic("SBLR.OPERAND.INVALID",
+                           "canonical int128 SUM state is absent");
+  }
+  if (input_is_null) return OkDiagnostic();
+  unsigned __int128 bits = 0;
+  for (std::size_t byte = 0; byte < state->signed_little_endian.size(); ++byte) {
+    bits |= static_cast<unsigned __int128>(
+                state->signed_little_endian[byte])
+            << (byte * 8U);
+  }
+  const bool negative =
+      (state->signed_little_endian.back() & std::uint8_t{0x80}) != 0;
+  const unsigned __int128 magnitude = negative ? (~bits + 1U) : bits;
+  const __int128 current =
+      negative ? -static_cast<__int128>(magnitude - 1U) - 1
+               : static_cast<__int128>(magnitude);
+  constexpr unsigned __int128 kMaximumBits =
+      (static_cast<unsigned __int128>(1) << 127U) - 1U;
+  constexpr __int128 kMaximum = static_cast<__int128>(kMaximumBits);
+  constexpr __int128 kMinimum = -kMaximum - 1;
+  if ((input_value > 0 && current > kMaximum - input_value) ||
+      (input_value < 0 && current < kMinimum - input_value)) {
+    return ErrorDiagnostic("NUMERIC.INT128.OVERFLOW",
+                           "canonical int128 SUM transition overflow");
+  }
+  const auto next = current + static_cast<__int128>(input_value);
+  const auto encoded = static_cast<unsigned __int128>(next);
+  for (std::size_t byte = 0; byte < state->signed_little_endian.size(); ++byte) {
+    state->signed_little_endian[byte] =
+        static_cast<std::uint8_t>(encoded >> (byte * 8U));
+  }
+  state->nonnull_value_seen = true;
+  return OkDiagnostic();
+}
+
+CanonicalInt128SumFinalizeResultV1 FinalizeCanonicalInt128SumV1(
+    const CanonicalInt128SumStateV1& state,
+    const EngineDescriptor& descriptor) {
+  CanonicalInt128SumFinalizeResultV1 result;
+  if (!IsCanonicalInt128DescriptorV1(descriptor)) {
+    result.diagnostic = ErrorDiagnostic(
+        "DATATYPE.DESCRIPTOR_INVALID",
+        "canonical int128 SUM result descriptor is not datatype.int128.v1");
+    return result;
+  }
+  result.value.descriptor = descriptor;
+  if (!state.nonnull_value_seen) {
+    result.value.is_null = true;
+    result.value.state = EngineValueState::sql_null;
+  } else {
+    result.value.binary_value.assign(state.signed_little_endian.begin(),
+                                     state.signed_little_endian.end());
+    result.value.state = EngineValueState::value;
+  }
+  result.diagnostic = OkDiagnostic();
+  return result;
 }
 
 Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {

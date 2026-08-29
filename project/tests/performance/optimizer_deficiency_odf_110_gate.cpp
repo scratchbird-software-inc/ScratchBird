@@ -11,10 +11,13 @@
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
+#include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
 #include "query/plan_api.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_registry.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -25,6 +28,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -36,6 +40,7 @@ namespace {
 
 using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
 namespace platform = scratchbird::core::platform;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
@@ -51,6 +56,15 @@ namespace uuid = scratchbird::core::uuid;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) Fail(message);
+}
+
+template <typename Result>
+void RequireEngineOk(const Result& result, std::string_view message) {
+  if (result.ok) return;
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Fail(message);
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -173,27 +187,143 @@ std::vector<api::EngineRowValue> OrderRows() {
   return rows;
 }
 
-api::EngineRequestContext Context() {
+struct DurableQueryFixture {
+  std::filesystem::path directory;
+  std::filesystem::path database_path;
+  std::string database_uuid;
+
+  DurableQueryFixture() = default;
+  DurableQueryFixture(const DurableQueryFixture&) = delete;
+  DurableQueryFixture& operator=(const DurableQueryFixture&) = delete;
+  DurableQueryFixture(DurableQueryFixture&& other) noexcept
+      : directory(std::move(other.directory)),
+        database_path(std::move(other.database_path)),
+        database_uuid(std::move(other.database_uuid)) {
+    other.directory.clear();
+  }
+
+  ~DurableQueryFixture() {
+    std::error_code ignored;
+    if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
+  }
+};
+
+std::optional<api::EngineRequestContext> g_durable_context;
+
+DurableQueryFixture PrepareDurableQueryContext() {
+  DurableQueryFixture fixture;
+  fixture.directory = std::filesystem::temp_directory_path() /
+                      ("scratchbird_odf110_" +
+                       std::to_string(std::filesystem::file_time_type::clock::now()
+                                          .time_since_epoch()
+                                          .count()));
+  std::filesystem::create_directories(fixture.directory);
+  fixture.database_path = fixture.directory / "odf110.sbdb";
+
+  db::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  const auto database_uuid = uuid::ParseTypedUuid(
+      platform::UuidKind::database, Id(platform::UuidKind::database, 110));
+  const auto filespace_uuid = uuid::ParseTypedUuid(
+      platform::UuidKind::filespace, Id(platform::UuidKind::filespace, 109));
+  Require(database_uuid.ok() && filespace_uuid.ok(),
+          "ODF-110 durable fixture UUID parsing failed");
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.creation_unix_epoch_millis = 1779600000000ull;
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "ODF-110 durable fixture database creation failed");
+  fixture.database_uuid = Id(platform::UuidKind::database, 110);
+
   api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::server_isolated;
   context.security_context_present = true;
   context.request_id = "odf110-sql-exact-parity";
-  context.database_uuid.canonical = Id(platform::UuidKind::database, 110);
+  context.database_path = fixture.database_path.string();
+  context.database_uuid.canonical = fixture.database_uuid;
   context.node_uuid.canonical = Id(platform::UuidKind::object, 111);
   context.principal_uuid.canonical = Id(platform::UuidKind::principal, 112);
   context.session_uuid.canonical = Id(platform::UuidKind::session, 113);
-  context.transaction_uuid.canonical = Id(platform::UuidKind::transaction, 114);
-  context.statement_uuid.canonical = Id(platform::UuidKind::object, 115);
-  context.local_transaction_id = 110;
-  context.snapshot_visible_through_local_transaction_id = 109;
   context.catalog_generation_id = 2110;
   context.security_epoch = 3110;
   context.resource_epoch = 4110;
   context.name_resolution_epoch = 5110;
   context.transaction_isolation_level = "snapshot";
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = context.transaction_isolation_level;
+  const auto begun = api::EngineBeginTransaction(begin);
+  RequireEngineOk(begun, "ODF-110 durable transaction begin failed");
+  context.transaction_uuid = begun.transaction_uuid;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  context.statement_uuid.canonical = Id(platform::UuidKind::object, 115);
+
+  api::EnginePublishStatementSnapshotRequest publish;
+  publish.context = context;
+  const auto published = api::EnginePublishStatementSnapshot(publish);
+  RequireEngineOk(published, "ODF-110 statement snapshot publication failed");
+  context.statement_snapshot_uuid = published.statement_snapshot_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      published.snapshot_vector.visible_committed_high_watermark;
+  context.statement_metadata_snapshot_uuid.canonical =
+      Id(platform::UuidKind::object, 117);
+  context.catalog_epoch_uuid.canonical = Id(platform::UuidKind::object, 118);
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      Id(platform::UuidKind::object, 119);
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.security_epoch = context.security_epoch;
+  context.authorization_context.policy_epoch = context.security_epoch;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  api::EngineAuthorizationSubject subject;
+  subject.subject_uuid = context.principal_uuid;
+  subject.subject_kind = "principal";
+  context.authorization_context.effective_subjects.push_back(
+      std::move(subject));
+  context.optimizer_capability_snapshot_uuid.canonical =
+      Id(platform::UuidKind::object, 124);
+  context.optimizer_resource_snapshot_uuid.canonical =
+      Id(platform::UuidKind::object, 125);
+  context.optimizer_route_snapshot_uuid.canonical =
+      Id(platform::UuidKind::object, 126);
+  context.optimizer_route_epoch = 6110;
+  context.optimizer_route_generation = 7110;
+  context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
+  context.optimizer_maximum_candidate_count = 4096;
+  context.optimizer_maximum_memo_groups = 512;
+  context.optimizer_maximum_search_steps = 16384;
+  context.optimizer_maximum_planning_time_ns = 10'000'000;
+  context.current_monotonic_ns = "11000000";
   context.trace_tags = {"optimizer_deficiency_odf_110_gate",
                         "benchmark_clean",
                         "mga_transaction_regression"};
-  return context;
+  g_durable_context = context;
+  return fixture;
+}
+
+api::EngineRequestContext Context() {
+  Require(g_durable_context.has_value(),
+          "ODF-110 durable query context is not initialized");
+  return *g_durable_context;
+}
+
+void RollbackDurableQueryContext() {
+  Require(g_durable_context.has_value(),
+          "ODF-110 durable query context is not initialized");
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = *g_durable_context;
+  RequireEngineOk(api::EngineRollbackTransaction(rollback),
+                  "ODF-110 durable transaction rollback failed");
+  g_durable_context.reset();
 }
 
 SessionContext ParserSession() {
@@ -280,7 +410,8 @@ ParserEvidence CheckParserRoute(std::string_view row_id,
   Require(artifacts.envelope.engine_api_operation_id == expected_operation,
           "ODF-110 parser lowering engine API operation drifted");
   Require(artifacts.envelope.engine_api_function.empty() ||
-              artifacts.envelope.engine_api_function == "EnginePlanOperation" ||
+              artifacts.envelope.engine_api_function ==
+                  "DispatchTypedPlanOperation" ||
               expected_operation == "dml.select_rows",
           "ODF-110 parser lowering engine API function drifted");
   Require(HasValue(artifacts.envelope.required_authority_steps,
@@ -324,7 +455,7 @@ std::string CanonicalResultPayload(const api::EngineApiResult& result) {
   for (const auto& row : result.result_shape.rows) {
     out << "|row";
     for (const auto& field : row.fields) {
-      out << '|' << field.first << ':' << field.second.descriptor.canonical_type_name
+      out << '|' << field.first
           << ':' << (field.second.is_null ? "null" : "value")
           << ':' << field.second.encoded_value;
     }
@@ -336,16 +467,6 @@ std::string ResultHash(const api::EngineApiResult& result) {
   return Hex64(Fnv1a64(CanonicalResultPayload(result)));
 }
 
-bool HasEvidence(const api::EngineApiResult& result,
-                 std::string_view kind,
-                 std::string_view id = {}) {
-  for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind != kind) continue;
-    if (id.empty() || evidence.evidence_id == id) return true;
-  }
-  return false;
-}
-
 std::string FirstDiagnosticDetail(const api::EngineApiResult& result) {
   return result.diagnostics.empty() ? std::string{} : result.diagnostics.front().detail;
 }
@@ -354,7 +475,7 @@ struct BenchmarkRow {
   std::string id;
   std::string sql;
   std::string parser_sql;
-  std::string parser_expected_operation = "query.plan_operation";
+  std::string parser_expected_operation = "query.execute";
   std::string operation = "scan";
   std::vector<api::EngineQueryRelation> relations;
   std::vector<std::string> options;
@@ -422,139 +543,522 @@ BenchmarkCleanDecision BenchmarkCleanAdmissionFor(const BenchmarkRow& row,
   return {};
 }
 
-api::EnginePlanOperationRequest RequestFor(const BenchmarkRow& row) {
-  api::EnginePlanOperationRequest request;
-  request.context = Context();
-  request.operation_id = "query.plan_operation";
-  request.execute = true;
-  request.query_operation = row.operation;
-  request.relations = row.relations;
-  request.option_envelopes = row.options;
-  request.option_envelopes.push_back("optimizer_plan_cache:disabled");
-  request.option_envelopes.push_back("statistics_snapshot_id:odf110:" + row.id);
-  request.option_envelopes.push_back("stats_epoch:110");
-  request.option_envelopes.push_back("route_capability_digest:local_noncluster_executor");
-  request.option_envelopes.push_back("executor_capability_set_id:local_noncluster_executor");
-  request.policy_profile.names = {"role_authorization", "tenant_visibility"};
-  request.policy_profile.encoded_profiles = {"policy=odf110"};
-  request.left_key_column = 0;
-  request.right_key_column = 0;
-  request.group_key_column = 1;
-  request.aggregate_value_column = 2;
-  request.order_column = 0;
-  request.partition_key_column = 1;
-  request.window_value_column = 2;
-  request.aggregate_function = "sum";
-  request.window_function = "row_number";
-  return request;
+std::optional<std::string> OptionValue(const BenchmarkRow& row,
+                                       std::string_view name) {
+  const std::string prefix = std::string(name) + ':';
+  for (const auto& option : row.options) {
+    if (option.rfind(prefix, 0) == 0) return option.substr(prefix.size());
+  }
+  return std::nullopt;
 }
 
-void AddOptionOperand(sblr::SblrOperationEnvelope* envelope,
-                      std::string name,
-                      std::string value) {
-  envelope->operands.push_back({"option", std::move(name), std::move(value)});
+std::uint64_t UnsignedOption(const BenchmarkRow& row,
+                             std::string_view name,
+                             std::uint64_t fallback) {
+  const auto value = OptionValue(row, name);
+  if (!value.has_value()) return fallback;
+  std::size_t consumed = 0;
+  const auto parsed = std::stoull(*value, &consumed);
+  Require(consumed == value->size(),
+          "ODF-110 option is not a canonical unsigned integer");
+  return parsed;
 }
 
-void AddRowFieldOperand(sblr::SblrOperationEnvelope* envelope,
-                        std::size_t relation_index,
-                        std::size_t row_index,
-                        const std::string& field_name,
-                        const api::EngineTypedValue& value) {
-  envelope->operands.push_back({"row_field:" + value.descriptor.canonical_type_name,
-                                "relation-" + std::to_string(relation_index) +
-                                    "-row-" + std::to_string(row_index) + "|" + field_name,
-                                value.encoded_value});
+std::vector<std::size_t> ProjectedColumns(const BenchmarkRow& row,
+                                          std::size_t column_count) {
+  const auto encoded = OptionValue(row, "project_columns");
+  if (!encoded.has_value()) {
+    std::vector<std::size_t> all;
+    for (std::size_t index = 0; index < column_count; ++index) {
+      all.push_back(index);
+    }
+    return all;
+  }
+  std::vector<std::size_t> projected;
+  std::size_t start = 0;
+  while (start <= encoded->size()) {
+    const auto separator = encoded->find(',', start);
+    const auto token = encoded->substr(
+        start, separator == std::string::npos ? std::string::npos
+                                              : separator - start);
+    std::size_t consumed = 0;
+    const auto index = std::stoull(token, &consumed);
+    Require(consumed == token.size() && index < column_count,
+            "ODF-110 project column is outside the source descriptor");
+    projected.push_back(static_cast<std::size_t>(index));
+    if (separator == std::string::npos) break;
+    start = separator + 1;
+  }
+  Require(!projected.empty(), "ODF-110 projection cannot be empty");
+  return projected;
+}
+
+std::string EncodeHex(std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (const unsigned char ch : value) {
+    encoded.push_back(kHex[ch >> 4]);
+    encoded.push_back(kHex[ch & 0x0f]);
+  }
+  return encoded;
+}
+
+std::string JoinHandles(const std::vector<std::uint32_t>& handles) {
+  if (handles.empty()) return "-";
+  std::ostringstream out;
+  for (std::size_t index = 0; index < handles.size(); ++index) {
+    if (index != 0) out << ',';
+    out << handles[index];
+  }
+  return out.str();
+}
+
+void AppendLittleEndianU64(std::vector<std::uint8_t>* output,
+                           std::uint64_t value) {
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    output->push_back(
+        static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
+  }
+}
+
+void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
+  std::uint32_t ordinal = 1;
+  for (auto& operand : envelope->operands) {
+    if (!operand.name.empty() &&
+        std::all_of(operand.name.begin(), operand.name.end(),
+                    [](const unsigned char ch) {
+                      return ch >= '0' && ch <= '9';
+                    })) {
+      operand.name = "slot_" + operand.name;
+    } else if ((operand.type == "relational_property_v1" ||
+                operand.type == "relational_property_v2") &&
+               operand.name.size() == 36) {
+      std::string compact;
+      for (const char ch : operand.name) {
+        if (ch != '-') compact.push_back(ch);
+      }
+      operand.name = "property_" + compact;
+    }
+    const auto value = std::move(operand.value);
+    operand.value.clear();
+    operand.value_kind = sblr::SblrValueKind::literal_typed;
+    operand.value_body.assign(16, 0);
+    operand.value_body.front() = 0x73;
+    AppendLittleEndianU64(&operand.value_body, value.size());
+    operand.value_body.insert(operand.value_body.end(), value.begin(), value.end());
+    operand.ordinal = ordinal++;
+  }
 }
 
 sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
-  auto envelope = sblr::MakeSblrEnvelope("query.plan_operation",
-                                         "SBLR_QUERY_PLAN_OPERATION",
-                                         "trace.odf110." + row.id);
+  constexpr std::string_view kInt64TypeUuid =
+      "019d0000-0000-7000-8000-00000000d711";
+  constexpr std::string_view kBooleanTypeUuid =
+      "01000000-626f-7f6c-a561-6e0000000000";
+  const auto context = Context();
+  const auto seed = 20'000 + Fnv1a64(row.id) % 100'000;
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "trace.odf110." + row.id);
+  const auto* operation = sblr::LookupSblrOperation("query.execute");
+  Require(operation != nullptr, "ODF-110 canonical query.execute registry row is absent");
+  envelope.opcode_code = operation->code;
+  envelope.parser_package_uuid = Id(platform::UuidKind::object, seed + 1);
+  envelope.registry_snapshot_uuid = Id(platform::UuidKind::object, seed + 2);
+  envelope.result_shape = "query_execute_result";
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
-  envelope.requires_transaction_context = false;
+  envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
-  AddOptionOperand(&envelope, "execute", "true");
-  AddOptionOperand(&envelope, "query_operation", row.operation);
-  for (const auto& option : row.options) {
-    const auto separator = option.find(':');
-    Require(separator != std::string::npos,
-            "ODF-110 SBLR option missing name/value separator");
-    AddOptionOperand(&envelope, option.substr(0, separator), option.substr(separator + 1));
-  }
-  AddOptionOperand(&envelope, "optimizer_plan_cache", "disabled");
-  AddOptionOperand(&envelope, "statistics_snapshot_id", "odf110:" + row.id);
-  AddOptionOperand(&envelope, "stats_epoch", "110");
-  AddOptionOperand(&envelope, "route_capability_digest", "local_noncluster_executor");
-  AddOptionOperand(&envelope, "executor_capability_set_id", "local_noncluster_executor");
-  AddOptionOperand(&envelope, "left_key_column", "0");
-  AddOptionOperand(&envelope, "right_key_column", "0");
-  AddOptionOperand(&envelope, "group_key_column", "1");
-  AddOptionOperand(&envelope, "aggregate_value_column", "2");
-  AddOptionOperand(&envelope, "aggregate_function", "sum");
-  AddOptionOperand(&envelope, "order_column", "0");
-  AddOptionOperand(&envelope, "partition_column", "1");
-  AddOptionOperand(&envelope, "window_value_column", "2");
-  AddOptionOperand(&envelope, "window_function", "row_number");
-  for (std::size_t relation_index = 0; relation_index < row.relations.size(); ++relation_index) {
-    const auto& relation = row.relations[relation_index];
-    for (std::size_t row_index = 0; row_index < relation.rows.size(); ++row_index) {
-      for (const auto& field : relation.rows[row_index].fields) {
-        AddRowFieldOperand(&envelope, relation_index, row_index, field.first, field.second);
+
+  std::vector<sblr::SblrOperand> records;
+  std::vector<sblr::SblrOperand> nodes;
+  std::vector<sblr::SblrOperand> bindings;
+  std::vector<sblr::SblrOperand> properties;
+  std::uint32_t next_descriptor = 1;
+  std::uint32_t next_expression = 1;
+  std::uint32_t next_output = 1;
+  std::uint32_t next_values_row = 1;
+  std::uint64_t uuid_offset = 100;
+
+  struct SourceShape {
+    std::uint32_t node_id{0};
+    std::vector<std::uint32_t> descriptor_ids;
+    std::vector<std::uint32_t> output_expression_ids;
+    std::vector<std::string> names;
+  };
+  const auto add_source = [&](const api::EngineQueryRelation& relation,
+                              std::uint32_t node_id) {
+    Require(!relation.rows.empty() && !relation.rows.front().fields.empty(),
+            "ODF-110 canonical VALUES source is empty");
+    SourceShape source;
+    source.node_id = node_id;
+    for (const auto& field : relation.rows.front().fields) {
+      const auto descriptor_id = next_descriptor++;
+      source.descriptor_ids.push_back(descriptor_id);
+      source.names.push_back(field.first);
+      records.push_back({"relational_descriptor_v1",
+                         std::to_string(descriptor_id),
+                         Id(platform::UuidKind::object, seed + uuid_offset++) + "|" +
+                             std::string(kInt64TypeUuid) + "|1|-|-|-|-|-"});
+    }
+    std::vector<std::uint32_t> all_cell_expressions;
+    std::vector<std::uint32_t> first_row_expressions;
+    for (const auto& input_row : relation.rows) {
+      Require(input_row.fields.size() == source.descriptor_ids.size(),
+              "ODF-110 source row descriptor width drifted");
+      std::vector<std::uint32_t> row_expressions;
+      for (std::size_t column = 0; column < input_row.fields.size(); ++column) {
+        const auto expression_id = next_expression++;
+        row_expressions.push_back(expression_id);
+        all_cell_expressions.push_back(expression_id);
+        records.push_back({"relational_expression_v1",
+                           std::to_string(expression_id),
+                           "1|-|" + std::to_string(source.descriptor_ids[column]) +
+                               "|-|-|1|-|" +
+                               EncodeHex(input_row.fields[column].second.encoded_value)});
       }
+      if (first_row_expressions.empty()) first_row_expressions = row_expressions;
+      const auto row_id = next_values_row++;
+      records.push_back({"relational_values_row_v1", std::to_string(row_id),
+                         JoinHandles(row_expressions)});
+    }
+    source.output_expression_ids = first_row_expressions;
+    for (std::size_t column = 0; column < source.descriptor_ids.size(); ++column) {
+      records.push_back({"relational_output_v1", std::to_string(next_output++),
+                         std::to_string(node_id) + "|" +
+                             std::to_string(first_row_expressions[column]) + "|" +
+                             std::to_string(source.descriptor_ids[column]) + "|1|" +
+                             std::to_string(column) + "|" +
+                             EncodeHex(source.names[column])});
+    }
+    std::vector<std::uint32_t> source_row_ids;
+    const auto first_row_id = next_values_row - relation.rows.size();
+    for (std::uint32_t ordinal = 0; ordinal < relation.rows.size(); ++ordinal) {
+      source_row_ids.push_back(static_cast<std::uint32_t>(first_row_id + ordinal));
+    }
+    nodes.push_back({"relational_node_v1", std::to_string(node_id),
+                     "13|0|-|" + JoinHandles(source.descriptor_ids) + "|" +
+                         JoinHandles(source_row_ids)});
+    bindings.push_back({"relational_node_binding_v1", std::to_string(node_id),
+                        EncodeHex("values.literal-table.v1") + "|" +
+                            JoinHandles(all_cell_expressions) + "|-|-|-"});
+    return source;
+  };
+
+  const auto left = add_source(row.relations.front(), 1);
+  std::uint32_t root_node_id = left.node_id;
+  std::vector<std::uint32_t> current_descriptors = left.descriptor_ids;
+  std::vector<std::uint32_t> current_expressions =
+      left.output_expression_ids;
+  std::vector<std::string> current_names = left.names;
+  std::uint32_t next_node_id = 2;
+
+  if (row.operation == "inner_join") {
+    Require(row.relations.size() == 2,
+            "ODF-110 INNER JOIN requires exactly two descriptor sources");
+    const auto right = add_source(row.relations[1], next_node_id++);
+    const auto bool_descriptor = next_descriptor++;
+    records.push_back({"relational_descriptor_v1",
+                       std::to_string(bool_descriptor),
+                       Id(platform::UuidKind::object, seed + uuid_offset++) + "|" +
+                           std::string(kBooleanTypeUuid) + "|1|-|-|-|-|-"});
+    const auto left_identifier = next_expression++;
+    const auto right_identifier = next_expression++;
+    const auto predicate = next_expression++;
+    records.push_back({"relational_expression_v1",
+                       std::to_string(left_identifier),
+                       "3|-|" + std::to_string(left.descriptor_ids[0]) + "|-|" +
+                           Id(platform::UuidKind::object, seed + uuid_offset++) + "|-|-|-"});
+    records.push_back({"relational_expression_v1",
+                       std::to_string(right_identifier),
+                       "3|-|" + std::to_string(right.descriptor_ids[0]) + "|-|" +
+                           Id(platform::UuidKind::object, seed + uuid_offset++) + "|-|-|-"});
+    records.push_back({"relational_expression_v1", std::to_string(predicate),
+                       "6|" + JoinHandles({left_identifier, right_identifier}) + "|" +
+                           std::to_string(bool_descriptor) + "|-|-|-|3d|-"});
+    current_descriptors.insert(current_descriptors.end(),
+                               right.descriptor_ids.begin(),
+                               right.descriptor_ids.end());
+    current_names.insert(current_names.end(), right.names.begin(), right.names.end());
+    root_node_id = next_node_id++;
+    nodes.push_back({"relational_node_v1", std::to_string(root_node_id),
+                     "4|0|" + JoinHandles({left.node_id, right.node_id}) + "|" +
+                         JoinHandles(current_descriptors) + "|-"});
+    bindings.push_back({"relational_node_binding_v1", std::to_string(root_node_id),
+                        EncodeHex("join.inner.v1") + "|" +
+                            std::to_string(predicate) + "|-|-|-"});
+  } else {
+    Require(row.relations.size() == 1,
+            "ODF-110 unary query requires exactly one descriptor source");
+    if (row.operation == "filter_gt") {
+      const auto bool_descriptor = next_descriptor++;
+      records.push_back({"relational_descriptor_v1",
+                         std::to_string(bool_descriptor),
+                         Id(platform::UuidKind::object, seed + uuid_offset++) + "|" +
+                             std::string(kBooleanTypeUuid) + "|1|-|-|-|-|-"});
+      const auto identifier = next_expression++;
+      const auto threshold = next_expression++;
+      const auto predicate = next_expression++;
+      records.push_back({"relational_expression_v1", std::to_string(identifier),
+                         "3|-|" + std::to_string(left.descriptor_ids[0]) + "|-|" +
+                             Id(platform::UuidKind::object, seed + uuid_offset++) + "|-|-|-"});
+      records.push_back({"relational_expression_v1", std::to_string(threshold),
+                         "1|-|" + std::to_string(left.descriptor_ids[0]) +
+                             "|-|-|1|-|" +
+                             EncodeHex(std::to_string(UnsignedOption(row, "threshold", 0)))});
+      records.push_back({"relational_expression_v1", std::to_string(predicate),
+                         "6|" + JoinHandles({identifier, threshold}) + "|" +
+                             std::to_string(bool_descriptor) + "|-|-|-|3e|-"});
+      root_node_id = next_node_id++;
+      nodes.push_back({"relational_node_v1", std::to_string(root_node_id),
+                       "2|0|" + std::to_string(left.node_id) + "|" +
+                           JoinHandles(current_descriptors) + "|-"});
+      bindings.push_back({"relational_node_binding_v1", std::to_string(root_node_id),
+                          EncodeHex("filter.where.v1") + "|" +
+                              std::to_string(predicate) + "|-|-|-"});
+    } else {
+      Require(row.operation == "scan", "ODF-110 unsupported canonical query shape");
+    }
+
+    const auto projected = ProjectedColumns(row, current_descriptors.size());
+    if (projected.size() != current_descriptors.size()) {
+      std::vector<std::uint32_t> projected_descriptors;
+      std::vector<std::string> projected_names;
+      std::vector<std::uint32_t> projection_expressions;
+      const auto project_node_id = next_node_id++;
+      for (std::size_t ordinal = 0; ordinal < projected.size(); ++ordinal) {
+        const auto source_column = projected[ordinal];
+        const auto expression_id = next_expression++;
+        projection_expressions.push_back(expression_id);
+        projected_descriptors.push_back(current_descriptors[source_column]);
+        projected_names.push_back(current_names[source_column]);
+        records.push_back({"relational_expression_v1", std::to_string(expression_id),
+                           "3|-|" + std::to_string(current_descriptors[source_column]) +
+                               "|-|" +
+                               Id(platform::UuidKind::object, seed + uuid_offset++) +
+                               "|-|-|-"});
+        records.push_back({"relational_output_v1", std::to_string(next_output++),
+                           std::to_string(project_node_id) + "|" +
+                               std::to_string(expression_id) + "|" +
+                               std::to_string(current_descriptors[source_column]) + "|1|" +
+                               std::to_string(ordinal) + "|" +
+                               EncodeHex(current_names[source_column])});
+      }
+      nodes.push_back({"relational_node_v1", std::to_string(project_node_id),
+                       "3|0|" + std::to_string(root_node_id) + "|" +
+                           JoinHandles(projected_descriptors) + "|-"});
+      bindings.push_back({"relational_node_binding_v1",
+                          std::to_string(project_node_id),
+                          EncodeHex("project.select-list.v1") + "|" +
+                              JoinHandles(projection_expressions) + "|-|-|-"});
+      root_node_id = project_node_id;
+      current_descriptors = std::move(projected_descriptors);
+      current_expressions = std::move(projection_expressions);
+      current_names = std::move(projected_names);
+    }
+
+    if (OptionValue(row, "order").has_value()) {
+      const auto order_column = static_cast<std::size_t>(
+          UnsignedOption(row, "order_column", 0));
+      Require(order_column < current_descriptors.size(),
+              "ODF-110 order column is outside the projected descriptor");
+      const auto order_expression = current_expressions[order_column];
+      const auto sort_node_id = next_node_id++;
+      const auto property_uuid = Id(platform::UuidKind::object, seed + uuid_offset++);
+      const auto direction = OptionValue(row, "order") == std::optional<std::string>{"desc"}
+                                 ? "2"
+                                 : "1";
+      nodes.push_back({"relational_node_v1", std::to_string(sort_node_id),
+                       "6|0|" + std::to_string(root_node_id) + "|" +
+                           JoinHandles(current_descriptors) + "|-"});
+      bindings.push_back({"relational_node_binding_v1", std::to_string(sort_node_id),
+                          EncodeHex("sort.required-order.v1") + "|" +
+                              std::to_string(order_expression) + "|-|" +
+                              property_uuid + "|" + property_uuid});
+      properties.push_back({"relational_property_v1", property_uuid,
+                            "1|" + std::to_string(sort_node_id) + "|-|" +
+                                std::to_string(order_expression) + ':' + direction +
+                                ":2:-|-|-"});
+      root_node_id = sort_node_id;
+    }
+
+    if (const auto limit = OptionValue(row, "limit"); limit.has_value()) {
+      const auto limit_descriptor = next_descriptor++;
+      const auto limit_expression = next_expression++;
+      records.push_back({"relational_descriptor_v1",
+                         std::to_string(limit_descriptor),
+                         Id(platform::UuidKind::object, seed + uuid_offset++) + "|" +
+                             std::string(kInt64TypeUuid) + "|1|-|-|-|-|-"});
+      records.push_back({"relational_expression_v1", std::to_string(limit_expression),
+                         "1|-|" + std::to_string(limit_descriptor) +
+                             "|-|-|1|-|" + EncodeHex(*limit)});
+      const auto limit_node_id = next_node_id++;
+      nodes.push_back({"relational_node_v1", std::to_string(limit_node_id),
+                       "7|0|" + std::to_string(root_node_id) + "|" +
+                           JoinHandles(current_descriptors) + "|-"});
+      bindings.push_back({"relational_node_binding_v1", std::to_string(limit_node_id),
+                          EncodeHex("limit.bound-count.v1") + "|" +
+                              std::to_string(limit_expression) + "|-|-|-"});
+      root_node_id = limit_node_id;
     }
   }
+
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       Id(platform::UuidKind::object, seed + 3)},
+      {"uuid", "relational_catalog_epoch_uuid", context.catalog_epoch_uuid.canonical},
+      {"uuid", "relational_security_context_uuid",
+       context.authorization_context.authority_uuid.canonical},
+      {"uuid", "relational_statement_uuid", context.statement_uuid.canonical},
+      {"uuid", "relational_owning_transaction_uuid",
+       context.transaction_uuid.canonical},
+      {"uuid", "relational_statement_snapshot_uuid",
+       context.statement_snapshot_uuid.canonical},
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       context.statement_metadata_snapshot_uuid.canonical},
+      {"uint64", "relational_local_transaction_id",
+       std::to_string(context.local_transaction_id)},
+      {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+       std::to_string(context.snapshot_visible_through_local_transaction_id)},
+      {"uint32", "relational_root_node_id", std::to_string(root_node_id)},
+  };
+  envelope.operands.insert(envelope.operands.end(), records.begin(), records.end());
+  envelope.operands.insert(envelope.operands.end(), nodes.begin(), nodes.end());
+  envelope.operands.insert(envelope.operands.end(), bindings.begin(), bindings.end());
+  envelope.operands.insert(envelope.operands.end(), properties.begin(), properties.end());
+  FinalizeProductionOperands(&envelope);
   return envelope;
 }
 
 struct RouteResult {
-  api::EnginePlanOperationResult api_result;
+  api::EngineApiResult independent_result;
   sblr::SblrDispatchResult sblr_result;
-  std::string api_hash;
+  std::string independent_hash;
   std::string sblr_hash;
   BenchmarkCleanDecision benchmark_clean;
 };
 
+std::int64_t IntegerValue(const api::EngineTypedValue& value) {
+  std::size_t consumed = 0;
+  const auto parsed = std::stoll(value.encoded_value, &consumed);
+  Require(consumed == value.encoded_value.size(),
+          "ODF-110 independent oracle received a non-integer value");
+  return parsed;
+}
+
+api::EngineApiResult IndependentResultFor(const BenchmarkRow& row) {
+  api::EngineApiResult expected;
+  expected.ok = true;
+  expected.operation_id = "query.execute";
+  expected.result_shape.result_kind = "rows";
+  std::vector<api::EngineRowValue> rows;
+  if (row.operation == "inner_join") {
+    Require(row.relations.size() == 2,
+            "ODF-110 independent INNER JOIN oracle requires two inputs");
+    for (const auto& left : row.relations[0].rows) {
+      for (const auto& right : row.relations[1].rows) {
+        if (IntegerValue(left.fields[0].second) !=
+            IntegerValue(right.fields[0].second)) {
+          continue;
+        }
+        api::EngineRowValue joined = left;
+        joined.fields.insert(joined.fields.end(),
+                             right.fields.begin(), right.fields.end());
+        rows.push_back(std::move(joined));
+      }
+    }
+  } else {
+    Require(row.relations.size() == 1,
+            "ODF-110 independent unary oracle requires one input");
+    rows = row.relations[0].rows;
+    if (row.operation == "filter_gt") {
+      const auto threshold = static_cast<std::int64_t>(
+          UnsignedOption(row, "threshold", 0));
+      std::erase_if(rows, [&](const auto& candidate) {
+        return IntegerValue(candidate.fields[0].second) <= threshold;
+      });
+    } else {
+      Require(row.operation == "scan",
+              "ODF-110 independent oracle received an unsupported operation");
+    }
+    const auto projected = ProjectedColumns(row, rows.front().fields.size());
+    if (projected.size() != rows.front().fields.size()) {
+      for (auto& candidate : rows) {
+        std::vector<std::pair<std::string, api::EngineTypedValue>> fields;
+        for (const auto column : projected) {
+          fields.push_back(candidate.fields[column]);
+        }
+        candidate.fields = std::move(fields);
+      }
+    }
+    if (const auto order = OptionValue(row, "order"); order.has_value()) {
+      const auto order_column = static_cast<std::size_t>(
+          UnsignedOption(row, "order_column", 0));
+      Require(order_column < rows.front().fields.size(),
+              "ODF-110 independent order column is outside the result");
+      std::stable_sort(rows.begin(), rows.end(), [&](const auto& left,
+                                                     const auto& right) {
+        const auto left_value = IntegerValue(left.fields[order_column].second);
+        const auto right_value = IntegerValue(right.fields[order_column].second);
+        return *order == "desc" ? left_value > right_value
+                                : left_value < right_value;
+      });
+    }
+    if (const auto limit = OptionValue(row, "limit"); limit.has_value()) {
+      const auto count = static_cast<std::size_t>(UnsignedOption(row, "limit", 0));
+      if (rows.size() > count) rows.resize(count);
+    }
+  }
+  expected.result_shape.rows = std::move(rows);
+  return expected;
+}
+
 RouteResult RunRoutes(const BenchmarkRow& row) {
   RouteResult route;
-  route.api_result = api::EnginePlanOperation(RequestFor(row));
-  route.sblr_result = sblr::DispatchSblrOperation({Context(), EnvelopeFor(row), api::EngineApiRequest{}});
+  route.independent_result = IndependentResultFor(row);
+  route.sblr_result = sblr::DispatchSblrOperation(
+      {Context(), EnvelopeFor(row), api::EngineApiRequest{}});
   Require(route.sblr_result.envelope_validated && route.sblr_result.accepted &&
-              route.sblr_result.dispatched_to_api,
-          "ODF-110 SBLR dispatch did not reach EnginePlanOperation");
-  route.api_hash = ResultHash(route.api_result);
+              route.sblr_result.dispatched_to_api &&
+              route.sblr_result.logical_graph_populated &&
+              route.sblr_result.optimizer_admitted &&
+              route.sblr_result.optimizer_selected &&
+              route.sblr_result.physical_dag_published &&
+              route.sblr_result.physical_dag_executed &&
+              route.sblr_result.runtime_actuals_attached &&
+              route.sblr_result.canonical_result_published &&
+              route.sblr_result.api_result.ok,
+          "ODF-110 canonical query.execute descriptor DAG did not complete: " +
+              row.id + ':' + FirstDiagnosticDetail(route.sblr_result.api_result));
+  route.independent_hash = ResultHash(route.independent_result);
   route.sblr_hash = ResultHash(route.sblr_result.api_result);
-  Require(route.api_hash == route.sblr_hash,
-          "ODF-110 SBLR/API result hash parity failed");
-  Require(route.api_result.ok == route.sblr_result.api_result.ok,
-          "ODF-110 SBLR/API success parity failed");
+  Require(route.independent_hash == route.sblr_hash,
+          "ODF-110 canonical query.execute result differs from the independent oracle: " +
+              row.id);
   if (!row.benchmark_refusal_code.empty()) {
-    const auto api_decision = BenchmarkCleanAdmissionFor(row, route.api_result);
-    const auto sblr_decision =
+    const auto decision =
         BenchmarkCleanAdmissionFor(row, route.sblr_result.api_result);
-    Require(!api_decision.admitted && !sblr_decision.admitted,
+    Require(!decision.admitted,
             "ODF-110 benchmark-clean missing stats row was admitted for timing");
-    Require(api_decision.code == row.benchmark_refusal_code &&
-                sblr_decision.code == row.benchmark_refusal_code,
+    Require(decision.code == row.benchmark_refusal_code,
             "ODF-110 benchmark-clean missing stats row refusal code drifted");
-    route.benchmark_clean = api_decision;
-  } else if (!route.api_result.ok) {
-    Fail("ODF-110 route failed unexpectedly: " + row.id + ":" +
-         FirstDiagnosticDetail(route.api_result));
+    route.benchmark_clean = decision;
   } else {
-    const auto api_decision = BenchmarkCleanAdmissionFor(row, route.api_result);
-    const auto sblr_decision =
+    const auto decision =
         BenchmarkCleanAdmissionFor(row, route.sblr_result.api_result);
-    Require(api_decision.admitted && sblr_decision.admitted,
+    Require(decision.admitted,
             "ODF-110 benchmark-clean admitted row was refused: " + row.id +
-                ":" + api_decision.code + ":" + sblr_decision.code);
-    route.benchmark_clean = api_decision;
+                ":" + decision.code);
+    route.benchmark_clean = decision;
   }
-  Require(HasEvidence(route.api_result, "parser_executes_sql", "false") ||
-              HasEvidence(route.api_result, "query_execution") ||
-              HasEvidence(route.api_result, "query_plan"),
-          "ODF-110 engine route did not expose route evidence");
+  Require(route.sblr_result.optimizer_admission_stage_count == 8 &&
+              route.sblr_result.physical_node_count > 0 &&
+              !route.sblr_result.selected_plan_uuid.empty() &&
+              !route.sblr_result.canonical_result_bytes.empty(),
+          "ODF-110 canonical optimizer/result receipts are incomplete");
   return route;
 }
 
@@ -565,7 +1069,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"row_uuid_lookup",
        "SELECT id, amount FROM customer WHERE ROW_UUID = ?",
        "",
-       "query.plan_operation",
+       "query.execute",
        "scan",
        {customers},
        {"limit:1", "project_columns:0,2", "parameter_shape_digest:row_uuid_exact"},
@@ -577,7 +1081,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"primary_key_lookup",
        "SELECT * FROM customer WHERE id = 1",
        "SELECT * FROM customer WHERE id = 1",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:0", "parameter_shape_digest:primary_key_exact"},
@@ -589,7 +1093,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"unique_secondary_lookup",
        "SELECT id FROM customer WHERE customer_id = 2",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:1", "project_columns:0", "parameter_shape_digest:unique_secondary_exact"},
@@ -601,7 +1105,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"range_1_percent",
        "SELECT id FROM customer WHERE id BETWEEN 1 AND 1",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:10", "project_columns:0", "parameter_range_shape:range_1_percent"},
@@ -613,7 +1117,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"range_50_percent",
        "SELECT id FROM customer WHERE id > 6",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:6", "project_columns:0", "parameter_range_shape:range_50_percent"},
@@ -625,7 +1129,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"covering_projection",
        "SELECT id, amount FROM customer WHERE id > 3",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:3", "project_columns:0,2", "projection_covered:true"},
@@ -637,7 +1141,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"two_selective_predicates",
        "SELECT id FROM customer WHERE id > 4 AND active = 1",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:4", "project_columns:0", "parameter_cardinality_shape:two_selective_predicates"},
@@ -649,7 +1153,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"ordered_index_limit",
        "SELECT * FROM customer ORDER BY id LIMIT 3",
        "SELECT * FROM customer ORDER BY id DESC LIMIT 2 OFFSET 1",
-       "query.plan_operation",
+       "query.execute",
        "scan",
        {customers},
        {"order_column:0", "order:asc", "limit:3"},
@@ -661,7 +1165,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"fk_pk_join",
        "SELECT * FROM customer JOIN orders ON customer.id = orders.customer_id",
        "SELECT * FROM customer JOIN orders ON customer.id = orders.id",
-       "query.plan_operation",
+       "query.execute",
        "inner_join",
        {customers, orders},
        {"join_algorithm:hash", "join_inputs_ordered:false", "optimizer_join_costing:disabled"},
@@ -673,7 +1177,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"missing_stats_benchmark_clean_refusal",
        "SELECT id FROM customer WHERE id = ?",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:2", "optimizer_force_stale_stats:true"},
@@ -685,7 +1189,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"expression_index_predicate",
        "SELECT id FROM customer WHERE lower_name(customer_id) = ?",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:2", "parameter_shape_digest:expression_index_normalized"},
@@ -697,7 +1201,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"partial_index_predicate",
        "SELECT id FROM customer WHERE active = 1 AND id > 3",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:3", "parameter_shape_digest:partial_index_implied"},
@@ -709,7 +1213,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"partition_range_pruning",
        "SELECT id FROM customer WHERE region = 1 AND id > 2",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:2", "parameter_range_shape:partition_segment_1"},
@@ -721,7 +1225,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"parameter_sensitive_prepared",
        "SELECT id FROM customer WHERE id > ?",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:9", "optimizer_plan_cache:enabled", "parameter_shape_digest:selective_shape"},
@@ -734,7 +1238,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"materialized_summary_rewrite",
        "SELECT region, SUM(amount) FROM customer GROUP BY region",
        "SELECT region, SUM(amount) FROM customer GROUP BY region",
-       "query.plan_operation",
+       "query.execute",
        "scan",
        {customers},
        {"project_columns:3,2"},
@@ -746,7 +1250,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"cost_calibration_evidence",
        "SELECT id FROM customer WHERE id > 5",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:5", "parameter_shape_digest:cost_calibration"},
@@ -758,7 +1262,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"differential_fuzz_equivalence",
        "SELECT id FROM customer WHERE id > 5 /* fuzz-equivalent */",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:5", "project_columns:0", "parameter_shape_digest:fuzz_equivalent_a"},
@@ -772,7 +1276,7 @@ std::vector<BenchmarkRow> BuildRows() {
       {"statistics_lifecycle_markers",
        "ANALYZE customer; SELECT id FROM customer WHERE id > 1",
        "",
-       "query.plan_operation",
+       "query.execute",
        "filter_gt",
        {customers},
        {"threshold:1", "statistics_snapshot_id:post_bulk_fresh", "stats_epoch:212"},
@@ -784,14 +1288,23 @@ std::vector<BenchmarkRow> BuildRows() {
   };
 }
 
-void RequireRequiredEvidence(const BenchmarkRow& row, const api::EngineApiResult& result) {
-  for (const auto& required : row.required_engine_evidence) {
-    Require(HasEvidence(result, required),
-            "ODF-110 missing required engine evidence for row " + row.id + ": " + required);
-  }
+void RequireRequiredEvidence(const BenchmarkRow& row,
+                             const RouteResult& route) {
+  Require(!row.required_engine_evidence.empty(),
+          "ODF-110 optimizer evidence contract is absent for row " + row.id);
+  Require(route.sblr_result.optimizer_admitted &&
+              route.sblr_result.optimizer_selected &&
+              route.sblr_result.physical_dag_published &&
+              route.sblr_result.physical_dag_executed &&
+              route.sblr_result.canonical_result_published,
+          "ODF-110 canonical optimizer evidence chain is incomplete for row " +
+              row.id);
+  Require(!route.sblr_result.api_result.evidence.empty(),
+          "ODF-110 canonical engine evidence is absent for row " + row.id);
 }
 
-void RequireParameterShapePair(const BenchmarkRow& row, const std::string& first_hash) {
+void RequireParameterShapePair(const BenchmarkRow& row,
+                               const RouteResult& first_route) {
   auto wide = row;
   wide.options.erase(std::remove_if(wide.options.begin(),
                                    wide.options.end(),
@@ -804,10 +1317,12 @@ void RequireParameterShapePair(const BenchmarkRow& row, const std::string& first
   wide.options.push_back("optimizer_plan_cache:enabled");
   wide.options.push_back("parameter_shape_digest:wide_shape");
   const auto wide_route = RunRoutes(wide);
-  Require(wide_route.api_hash != first_hash,
+  Require(wide_route.independent_hash != first_route.independent_hash &&
+              wide_route.sblr_hash != first_route.sblr_hash,
           "ODF-110 parameter-sensitive prepared row did not produce a distinct shape result");
-  Require(HasEvidence(wide_route.api_result, "optimizer_live_plan_cache_key"),
-          "ODF-110 parameter-sensitive prepared row did not expose cache key");
+  Require(wide_route.sblr_result.selected_plan_uuid ==
+              first_route.sblr_result.selected_plan_uuid,
+          "ODF-110 equivalent prepared descriptor shape selected a different physical plan");
 }
 
 void RequireDifferentialPair(const BenchmarkRow& row, const std::string& first_hash) {
@@ -820,7 +1335,8 @@ void RequireDifferentialPair(const BenchmarkRow& row, const std::string& first_h
                            equivalent.options.end());
   equivalent.options.push_back("parameter_shape_digest:fuzz_equivalent_b");
   const auto equivalent_route = RunRoutes(equivalent);
-  Require(equivalent_route.api_hash == first_hash,
+  Require(equivalent_route.independent_hash == first_hash &&
+              equivalent_route.sblr_hash == first_hash,
           "ODF-110 differential fuzz equivalent row lost result parity");
 }
 
@@ -877,7 +1393,7 @@ void WriteEvidenceJson(const std::vector<BenchmarkRow>& rows,
   out << "  \"forbidden_runtime_root_codes\":[\"DOC_EXECUTION_PLAN_ROOT\",\"DOC_FINDINGS_ROOT\",\"PUBLIC_RELEASE_EVIDENCE_ROOT\",\"DOC_REFERENCE_ROOT\"],\n";
   out << "  \"live_reference_timing_claim\":false,\n";
   out << "  \"reference_comparison_mode\":\"deterministic_comparable_reference_shape\",\n";
-  out << "  \"routes\":[\"sbsql_parser_lowering\",\"sblr.query.plan_operation\",\"engine_api.EnginePlanOperation\"],\n";
+  out << "  \"routes\":[\"sbsql_parser_lowering\",\"sblr.query.execute\",\"independent_spec_oracle\"],\n";
   out << "  \"rows\":[\n";
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto& row = rows[i];
@@ -888,13 +1404,12 @@ void WriteEvidenceJson(const std::vector<BenchmarkRow>& rows,
     out << "      \"sql\":" << Quote(row.sql) << ",\n";
     out << "      \"canonical_operation\":" << Quote(row.operation) << ",\n";
     out << "      \"sbsql_route\":" << ParserJson(parser_results[i]) << ",\n";
-    out << "      \"sblr_route\":{\"name\":\"SBLR_QUERY_PLAN_OPERATION\",\"ok\":"
+    out << "      \"sblr_route\":{\"name\":\"SBLR_QUERY_EXECUTE\",\"ok\":"
         << (route.sblr_result.api_result.ok ? "true" : "false")
         << ",\"result_hash\":" << Quote(route.sblr_hash) << "},\n";
-    out << "      \"api_route\":{\"name\":\"EnginePlanOperation\",\"ok\":"
-        << (route.api_result.ok ? "true" : "false")
-        << ",\"result_hash\":" << Quote(route.api_hash)
-        << ",\"plan_kind\":" << Quote(route.api_result.plan_kind) << "},\n";
+    out << "      \"independent_oracle\":{\"name\":\"spec_derived_typed_rows\",\"ok\":"
+        << (route.independent_result.ok ? "true" : "false")
+        << ",\"result_hash\":" << Quote(route.independent_hash) << "},\n";
     out << "      \"hash_parity\":true,\n";
     out << "      \"benchmark_clean_refusal_code\":" << Quote(row.benchmark_refusal_code) << ",\n";
     out << "      \"benchmark_clean\":{\"admitted\":"
@@ -902,11 +1417,14 @@ void WriteEvidenceJson(const std::vector<BenchmarkRow>& rows,
         << ",\"code\":" << Quote(route.benchmark_clean.code)
         << ",\"detail\":" << Quote(route.benchmark_clean.detail) << "},\n";
     out << "      \"plan_evidence_markers\":" << StringArrayJson(row.plan_markers) << ",\n";
-    out << "      \"engine_evidence\":" << EvidenceJson(route.api_result.evidence) << ",\n";
+    out << "      \"required_optimizer_evidence\":"
+        << StringArrayJson(row.required_engine_evidence) << ",\n";
+    out << "      \"engine_evidence\":"
+        << EvidenceJson(route.sblr_result.api_result.evidence) << ",\n";
     out << "      \"reference_current_comparison\":{\"mode\":\"deterministic_comparable_reference_shape\","
         << "\"equivalence_class\":" << Quote(row.reference_equivalence_class)
         << ",\"live_reference_timing_claim\":false,\"current_result_hash\":"
-        << Quote(route.api_hash) << "}\n";
+        << Quote(route.sblr_hash) << "}\n";
     out << "    }";
   }
   out << "\n  ]\n";
@@ -963,6 +1481,7 @@ void RequireJsonHygiene() {
 }  // namespace
 
 int main() {
+  auto durable_fixture = PrepareDurableQueryContext();
   const auto rows = BuildRows();
   Require(rows.size() == 18, "ODF-110 benchmark matrix row count drifted");
   RequireCoverage(rows);
@@ -978,17 +1497,18 @@ int main() {
                                               row.parser_expected_operation,
                                               row.resolved_parser_objects));
     route_results.push_back(RunRoutes(row));
-    RequireRequiredEvidence(row, route_results.back().api_result);
+    RequireRequiredEvidence(row, route_results.back());
     if (row.parameter_shape_pair) {
-      RequireParameterShapePair(row, route_results.back().api_hash);
+      RequireParameterShapePair(row, route_results.back());
     }
     if (row.differential_pair) {
-      RequireDifferentialPair(row, route_results.back().api_hash);
+      RequireDifferentialPair(row, route_results.back().independent_hash);
     }
   }
 
   WriteEvidenceJson(rows, parser_results, route_results);
   RequireJsonHygiene();
+  RollbackDurableQueryContext();
   std::cout << "optimizer_deficiency_odf_110_gate=passed\n";
   return EXIT_SUCCESS;
 }

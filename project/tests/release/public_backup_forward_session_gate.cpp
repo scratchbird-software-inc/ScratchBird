@@ -152,6 +152,10 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   return context;
 }
@@ -313,6 +317,7 @@ bool BackupForwardSessionProof(const std::filesystem::path& work_dir) {
   payload_col.names.push_back({"en", "primary", "", "payload", true});
   payload_col.descriptor.descriptor_kind = "datatype";
   payload_col.descriptor.canonical_type_name = "text";
+  payload_col.descriptor.encoded_descriptor = "type=text";
   create.table_columns = {payload_col};
   const auto created = api::EngineCreateTable(create);
   ok = ExpectApiOk(created, "PCR-085 source table should create") && ok;

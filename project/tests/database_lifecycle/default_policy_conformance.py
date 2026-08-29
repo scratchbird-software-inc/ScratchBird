@@ -169,7 +169,7 @@ def assert_not_ignored(repo_root: Path, paths: list[Path]) -> None:
     for path in paths:
         rel = path.relative_to(repo_root)
         result = subprocess.run(
-            ["git", "check-ignore", "-q", str(rel)],
+            ["git", "-c", f"safe.directory={repo_root}", "check-ignore", "-q", str(rel)],
             cwd=repo_root,
             check=False,
         )

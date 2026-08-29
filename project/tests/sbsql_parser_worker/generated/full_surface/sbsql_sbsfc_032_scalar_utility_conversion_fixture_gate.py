@@ -20,7 +20,7 @@ from collections import defaultdict
 from pathlib import Path
 
 
-SURFACE_REGISTRY = "public_input_snapshot"
+SURFACE_REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
 SEED_REGISTRY = "project/src/engine/functions/registry/function_seed_registry.cpp"
 FIXTURES = "project/tests/sbsql_parser_worker/generated/full_surface/SBSFC_032_SCALAR_UTILITY_CONVERSION_FIXTURES.csv"
 

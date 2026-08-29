@@ -499,7 +499,7 @@ EngineDropTemporalPeriodResult EngineDropTemporalPeriod(
 
 EngineShowBitemporalPeriodsResult EngineShowBitemporalPeriods(
     const EngineShowBitemporalPeriodsRequest& request) {
-  constexpr std::string_view kOperation = "versioned.bitemporal.show_periods";
+  constexpr std::string_view kOperation = "engine.op.catalog_introspect";
   const auto base = ValidateBase(request,
                                  kOperation,
                                  false,
@@ -514,7 +514,7 @@ EngineShowBitemporalPeriodsResult EngineShowBitemporalPeriods(
       request.context, std::string(kOperation));
   result.result_shape.result_kind = "rs.bitemporal.periods.v1";
   AddTemporalEvidence(&result, "show_periods", "EngineShowBitemporalPeriods");
-  AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_SHOW_BITEMPORAL_PERIODS");
+  AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_CATALOG_INTROSPECT");
   AddTemporalPeriodRows(&result, request, TableUuid(request), {});
   result.result_shape.result_kind = "rs.bitemporal.periods.v1";
   return result;
@@ -522,7 +522,8 @@ EngineShowBitemporalPeriodsResult EngineShowBitemporalPeriods(
 
 EngineShowBitemporalHistoryResult EngineShowBitemporalHistory(
     const EngineShowBitemporalHistoryRequest& request) {
-  constexpr std::string_view kOperation = "versioned.bitemporal.show_history";
+  constexpr std::string_view kOperation =
+      "engine.op.bitemporal_for_versions_between";
   const auto base = ValidateBase(request,
                                  kOperation,
                                  false,
@@ -537,7 +538,9 @@ EngineShowBitemporalHistoryResult EngineShowBitemporalHistory(
       request.context, std::string(kOperation));
   result.result_shape.result_kind = "rs.bitemporal.history.v1";
   AddTemporalEvidence(&result, "show_history", "EngineShowBitemporalHistory");
-  AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_SHOW_BITEMPORAL_HISTORY");
+  AddApiBehaviorEvidence(&result,
+                         "sblr_opcode",
+                         "SBLR_BITEMPORAL_FOR_VERSIONS_BETWEEN");
   AddTemporalPeriodRows(&result, request, TableUuid(request), PeriodUuid(request));
   const auto dml_records = VisibleApiBehaviorRecords(request.context,
                                                      std::string(kTemporalDmlEventKind),
@@ -618,7 +621,17 @@ EngineReadBitemporalHistoryResult EngineReadBitemporalHistory(
 
 EngineApplyForPortionOfPeriodResult EngineApplyForPortionOfPeriod(
     const EngineApplyForPortionOfPeriodRequest& request) {
-  constexpr std::string_view kOperation = "dml.for_portion_of_period";
+  const std::string dml_action = Lower(OptionValue(request, "dml_action:"));
+  if (dml_action != "update" && dml_action != "delete") {
+    return DiagnosticResult<EngineApplyForPortionOfPeriodResult>(
+        request,
+        "engine.op.update",
+        MakeEngineApiDiagnostic("SB_ENGINE_API_INVALID_REQUEST",
+                                "sbsql.temporal.dml_action_required",
+                                "dml_action_update_or_delete_required"));
+  }
+  const std::string_view kOperation =
+      dml_action == "update" ? "engine.op.update" : "engine.op.delete";
   const auto base = ValidateBase(request,
                                  kOperation,
                                  true,
@@ -658,7 +671,9 @@ EngineApplyForPortionOfPeriodResult EngineApplyForPortionOfPeriod(
     result.result_shape.result_kind = "rs.dml.change.v1";
     result.dml_summary.rows_changed = request.rows.empty() ? 1 : request.rows.size();
     AddTemporalEvidence(&result, "for_portion_of_period", "EngineApplyForPortionOfPeriod");
-    AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_DML_FOR_PORTION_OF_PERIOD");
+    AddApiBehaviorEvidence(&result,
+                           "sblr_opcode",
+                           dml_action == "update" ? "SBLR_UPDATE" : "SBLR_DELETE");
     if (OptionBool(request, "backdate:") ||
         HasRight(request, "TEMPORAL_HISTORY_ADMIN", TableUuid(request))) {
       AddApiBehaviorEvidence(&result, "audit_event", "dml.for_portion_of_period.applied");

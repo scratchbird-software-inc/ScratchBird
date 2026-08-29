@@ -36,6 +36,7 @@ api::EngineRequestContext AgentContext() {
   api::EngineRequestContext context;
   context.request_id = "pfar-015c-agent-show-sys-surface-parity";
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.cluster_authority_available = false;
   context.database_uuid.canonical = "019f015c-0000-7000-8000-000000000001";
   context.principal_uuid.canonical = "principal.management-ui.local";
@@ -47,6 +48,7 @@ api::EngineRequestContext AgentContext() {
       "right:OBS_AGENT_EVIDENCE_READ",
       "right:OBS_METRICS_READ_FAMILY",
       "right:OBS_POLICY_READ",
+      "security.fixture_trace_authority",
       "agent_show_sys_surface_parity_gate",
   };
   return context;

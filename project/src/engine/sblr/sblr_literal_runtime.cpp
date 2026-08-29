@@ -3,10 +3,14 @@
 
 #include "sblr_literal_runtime.hpp"
 #include "hash_digest.hpp"
+#include "sbl_numeric.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <string_view>
 
 namespace scratchbird::engine::sblr {
@@ -39,7 +43,10 @@ namespace {
 constexpr std::size_t kHeaderBytes = 32;
 constexpr std::size_t kRecordFixedBytes = 125;
 constexpr std::size_t kMaximumLiteralBytes = 65536;
-constexpr std::uint32_t kMaximumNodes = 1'048'576;
+constexpr std::uint32_t kMaximumNodes = 4096;
+constexpr std::size_t kMaximumBoundAstBytes = 491592;
+constexpr std::size_t kMaximumExpressionNodeTableBytes = 610336;
+constexpr std::size_t kMaximumFinalizeRequestBytes = 1102136;
 
 std::uint16_t U16(const std::uint8_t* p) {
   return static_cast<std::uint16_t>(p[0]) |
@@ -83,6 +90,137 @@ bool Nonzero32(const std::array<std::uint8_t,32>& bytes) {
     return value != 0;
   });
 }
+
+SblrLiteralExactDecimalCodecResultV1 DecimalFailure(
+    const bool overflow, std::string detail) {
+  SblrLiteralExactDecimalCodecResultV1 result;
+  result.diagnostic_id =
+      overflow ? "DATATYPE.DESCRIPTOR_INVALID" : "SBLR.OPERAND_INVALID";
+  result.detail = std::move(detail);
+  return result;
+}
+
+bool EndsWithAsciiInsensitive(const std::string_view value,
+                              const std::string_view suffix) {
+  if (suffix.size() > value.size()) return false;
+  const auto offset = value.size() - suffix.size();
+  for (std::size_t index = 0; index < suffix.size(); ++index) {
+    const auto left = static_cast<unsigned char>(value[offset + index]);
+    const auto right = static_cast<unsigned char>(suffix[index]);
+    if (std::toupper(left) != std::toupper(right)) return false;
+  }
+  return true;
+}
+
+struct DecimalLexicalPartsV1 {
+  std::string numeric;
+  bool overflow = false;
+};
+
+std::optional<DecimalLexicalPartsV1> ValidateDecimalLexicalV1(
+    std::string_view lexical) {
+  if (lexical.empty() || lexical.size() > 128) return std::nullopt;
+  for (const auto suffix : {std::string_view{"DECIMAL"},
+                            std::string_view{"DEC"},
+                            std::string_view{"D"}}) {
+    if (lexical.size() > suffix.size() &&
+        EndsWithAsciiInsensitive(lexical, suffix)) {
+      lexical.remove_suffix(suffix.size());
+      break;
+    }
+  }
+  if (lexical.empty()) return std::nullopt;
+
+  DecimalLexicalPartsV1 parts;
+  parts.numeric.reserve(lexical.size());
+  std::size_t cursor = 0;
+  if (lexical[cursor] == '+' || lexical[cursor] == '-') {
+    parts.numeric.push_back(lexical[cursor++]);
+    if (cursor == lexical.size()) return std::nullopt;
+  }
+  const auto consume_digits = [&](std::size_t* position,
+                                  std::string* destination,
+                                  std::uint32_t* bounded_value) {
+    bool saw_digit = false;
+    bool prior_digit = false;
+    while (*position < lexical.size()) {
+      const char byte = lexical[*position];
+      if (byte >= '0' && byte <= '9') {
+        saw_digit = true;
+        prior_digit = true;
+        destination->push_back(byte);
+        if (bounded_value != nullptr) {
+          if (*bounded_value > 38U / 10U ||
+              (*bounded_value == 38U / 10U &&
+               static_cast<std::uint32_t>(byte - '0') > 38U % 10U)) {
+            parts.overflow = true;
+          } else {
+            *bounded_value = (*bounded_value * 10U) +
+                             static_cast<std::uint32_t>(byte - '0');
+          }
+        }
+        ++*position;
+        continue;
+      }
+      if (byte == '_') {
+        if (!prior_digit || *position + 1 >= lexical.size() ||
+            lexical[*position + 1] < '0' || lexical[*position + 1] > '9') {
+          return false;
+        }
+        prior_digit = false;
+        ++*position;
+        continue;
+      }
+      break;
+    }
+    return saw_digit && prior_digit;
+  };
+
+  if (!consume_digits(&cursor, &parts.numeric, nullptr)) return std::nullopt;
+  if (cursor < lexical.size() && lexical[cursor] == '.') {
+    parts.numeric.push_back(lexical[cursor++]);
+    if (!consume_digits(&cursor, &parts.numeric, nullptr)) return std::nullopt;
+  }
+  if (cursor < lexical.size() &&
+      (lexical[cursor] == 'e' || lexical[cursor] == 'E')) {
+    parts.numeric.push_back('e');
+    ++cursor;
+    if (cursor < lexical.size() &&
+        (lexical[cursor] == '+' || lexical[cursor] == '-')) {
+      parts.numeric.push_back(lexical[cursor++]);
+    }
+    std::uint32_t exponent = 0;
+    if (!consume_digits(&cursor, &parts.numeric, &exponent)) {
+      return std::nullopt;
+    }
+    if (exponent > 38) parts.overflow = true;
+  }
+  if (cursor != lexical.size()) return std::nullopt;
+  return parts;
+}
+
+std::string RenderExactDecimalV1(const bool negative,
+                                 const std::string_view coefficient,
+                                 const std::uint8_t scale) {
+  if (coefficient == "0") return "0";
+  std::string rendered;
+  if (negative) rendered.push_back('-');
+  if (scale == 0) {
+    rendered.append(coefficient);
+    return rendered;
+  }
+  if (coefficient.size() <= scale) {
+    rendered.append("0.");
+    rendered.append(scale - coefficient.size(), '0');
+    rendered.append(coefficient);
+    return rendered;
+  }
+  const auto integer_bytes = coefficient.size() - scale;
+  rendered.append(coefficient.substr(0, integer_bytes));
+  rendered.push_back('.');
+  rendered.append(coefficient.substr(integer_bytes));
+  return rendered;
+}
 }  // namespace
 
 std::array<std::uint8_t, 32> ComputeSblrLiteralDescriptorProfileBindingV1(
@@ -115,7 +253,7 @@ std::array<std::uint8_t,32> ComputeSblrLiteralDemandSequenceSha256V1(
   static constexpr std::string_view domain=
       "ScratchBird.SblrLiteralDemandSequence.V1";
   std::vector<std::uint8_t> bytes(domain.begin(),domain.end());
-  if(demands.size()>std::numeric_limits<std::uint32_t>::max()) return {};
+  if(demands.size()>kMaximumNodes) return {};
   Put32(&bytes,static_cast<std::uint32_t>(demands.size()));
   std::uint64_t prior=0;
   for(const auto& demand:demands){
@@ -135,7 +273,7 @@ std::vector<std::uint8_t> EncodeSblrLiteralPrebindRequestV1(
     const SblrLiteralPrebindRequestV1& request){
   if(!Nonzero(request.preliminary_receipt_uuid)||!Nonzero(request.catalog_snapshot_uuid)||
      request.catalog_generation==0||
-     !Nonzero(request.mga_snapshot_uuid)||request.demands.size()>(std::numeric_limits<std::uint32_t>::max())||
+     !Nonzero(request.mga_snapshot_uuid)||request.demands.size()>kMaximumNodes||
      request.demands.size()>(std::numeric_limits<std::size_t>::max()-128)/48)return{};
   const auto hash=ComputeSblrLiteralDemandSequenceSha256V1(request.demands);
   if(hash!=request.demand_sha256)return{};
@@ -157,7 +295,7 @@ SblrLiteralPrebindRequestCodecResultV1 DecodeSblrLiteralPrebindRequestV1(
   SblrLiteralPrebindRequestCodecResultV1 r;r.diagnostic_id="SBLR.OPERAND_INVALID";
   const auto fail=[&](std::string d){r.detail=std::move(d);return r;};
   if(bytes==nullptr||size<128||!std::equal(bytes,bytes+4,reinterpret_cast<const std::uint8_t*>("SBLN"))||U16(bytes+4)!=1||U16(bytes+6)!=128||U32(bytes+8)!=size||U32(bytes+12)!=0||U32(bytes+92)!=48)return fail("SBLN header is noncanonical");
-  const auto count=U32(bytes+88);if(count>(size-128)/48||128+std::size_t(count)*48!=size)return fail("SBLN extent is invalid");
+  const auto count=U32(bytes+88);if(count>kMaximumNodes||count>(size-128)/48||128+std::size_t(count)*48!=size)return fail("SBLN extent is invalid");
   auto& q=r.request;std::copy_n(bytes+16,16,q.preliminary_receipt_uuid.begin());std::copy_n(bytes+32,16,q.catalog_snapshot_uuid.begin());q.catalog_generation=U64(bytes+48);q.security_epoch=U64(bytes+56);q.resource_epoch=U64(bytes+64);std::copy_n(bytes+72,16,q.mga_snapshot_uuid.begin());std::copy_n(bytes+96,32,q.demand_sha256.begin());
   q.demands.reserve(count);std::size_t off=128;std::uint64_t prior=0;
   for(std::uint32_t i=0;i<count;++i,off+=48){SblrLiteralDemandV1 d;d.occurrence_id=U64(bytes+off);d.lexical_class=U16(bytes+off+8);d.context_class=U16(bytes+off+10);if(d.occurrence_id==0||d.occurrence_id<=prior||bytes[off+12]>1||bytes[off+13]||bytes[off+14]||bytes[off+15])return fail("SBLN demand is noncanonical");d.nullable=bytes[off+12]!=0;std::copy_n(bytes+off+16,32,d.lexical_sha256.begin());q.demands.push_back(d);prior=d.occurrence_id;}
@@ -169,7 +307,7 @@ std::array<std::uint8_t,32> ComputeSblrLiteralOrderedProfilesSha256V1(
     const std::vector<SblrLiteralProfileMappingV1>& mappings){
   static constexpr std::string_view domain=
       "ScratchBird.SblrLiteralOrderedProfiles.V1";
-  if(mappings.size()>std::numeric_limits<std::uint32_t>::max())return{};
+  if(mappings.size()>kMaximumNodes)return{};
   std::vector<std::uint8_t> bytes(domain.begin(),domain.end());
   Put32(&bytes,static_cast<std::uint32_t>(mappings.size()));
   std::uint64_t prior=0;
@@ -192,7 +330,7 @@ std::vector<std::uint8_t> EncodeSblrLiteralPrebindResultV1(
     const SblrLiteralPrebindResultV1& value){
   if(!Nonzero(value.preliminary_receipt_uuid)||!Nonzero(value.catalog_snapshot_uuid)||
      value.catalog_generation==0||!Nonzero(value.mga_snapshot_uuid)||
-     value.mappings.size()>std::numeric_limits<std::uint32_t>::max()||
+     value.mappings.size()>kMaximumNodes||
      ComputeSblrLiteralOrderedProfilesSha256V1(value.mappings)!=value.ordered_profile_sha256)return{};
   std::size_t suffix=0;
   for(const auto& mapping:value.mappings){
@@ -217,11 +355,11 @@ std::vector<std::uint8_t> EncodeSblrLiteralPrebindResultV1(
 
 bool DecodeSblrLiteralFinalizeRequestV1(const std::uint8_t* b,std::size_t n,
                                         SblrLiteralFinalizeRequestV1* out){
-  if(b==nullptr||out==nullptr||n<208||n>1036600||!std::equal(b,b+4,reinterpret_cast<const std::uint8_t*>("SBLF"))||U16(b+4)!=1||U16(b+6)!=208||U32(b+8)!=n||U32(b+12)!=0)return false;
+  if(b==nullptr||out==nullptr||n<208||n>kMaximumFinalizeRequestBytes||!std::equal(b,b+4,reinterpret_cast<const std::uint8_t*>("SBLF"))||U16(b+4)!=1||U16(b+6)!=208||U32(b+8)!=n||U32(b+12)!=0)return false;
   SblrLiteralFinalizeRequestV1 v;std::copy_n(b+16,16,v.preliminary_receipt_uuid.begin());
   std::copy_n(b+32,32,v.demand_sha256.begin());std::copy_n(b+64,32,v.ordered_profile_sha256.begin());std::copy_n(b+96,32,v.bound_ast_sha256.begin());std::copy_n(b+128,32,v.sbxn_sha256.begin());
   v.catalog_generation=U64(b+160);v.security_epoch=U64(b+168);v.resource_epoch=U64(b+176);std::copy_n(b+184,16,v.mga_snapshot_uuid.begin());
-  const auto sbba_bytes=U32(b+200),sbxn_bytes=U32(b+204);if(sbba_bytes>n-208||sbxn_bytes>n-208-sbba_bytes||208+std::size_t(sbba_bytes)+std::size_t(sbxn_bytes)!=n)return false;
+  const auto sbba_bytes=U32(b+200),sbxn_bytes=U32(b+204);if(sbba_bytes>kMaximumBoundAstBytes||sbxn_bytes>kMaximumExpressionNodeTableBytes||sbba_bytes>n-208||sbxn_bytes>n-208-sbba_bytes||208+std::size_t(sbba_bytes)+std::size_t(sbxn_bytes)!=n)return false;
   if(!Nonzero(v.preliminary_receipt_uuid)||v.catalog_generation==0||!Nonzero(v.mga_snapshot_uuid))return false;v.canonical_sbba.assign(b+208,b+208+sbba_bytes);v.canonical_sbxn.assign(b+208+sbba_bytes,b+n);SblrLiteralBoundAstV1 parsed;if(!DecodeSblrLiteralBoundAstV1(v.canonical_sbba.data(),v.canonical_sbba.size(),&parsed)||ComputeSblrLiteralBoundAstSha256V1(v.canonical_sbba)!=v.bound_ast_sha256)return false;if(v.canonical_sbxn.empty()){if(!parsed.nodes.empty()||std::any_of(v.sbxn_sha256.begin(),v.sbxn_sha256.end(),[](auto x){return x!=0;}))return false;}else{const auto table=DecodeSblrExpressionNodeTableV1(v.canonical_sbxn.data(),v.canonical_sbxn.size());const auto digest=core::hash::ComputeSha256Digest(v.canonical_sbxn);if(!table.ok||!digest.ok()||digest.digest!=v.sbxn_sha256)return false;}*out=std::move(v);return true;
 }
 
@@ -235,14 +373,14 @@ std::vector<std::uint8_t> EncodeSblrLiteralAdmissionV1(SblrLiteralAdmissionV1* a
 }
 
 std::vector<std::uint8_t> EncodeSblrLiteralBoundAstV1(const SblrLiteralBoundAstV1& v){
-  if(!Nonzero(v.preliminary_receipt_uuid)||v.nodes.size()>std::numeric_limits<std::uint32_t>::max()||v.nodes.size()>(std::numeric_limits<std::size_t>::max()-72)/120)return{};
+  if(!Nonzero(v.preliminary_receipt_uuid)||v.nodes.size()>kMaximumNodes||v.nodes.size()>(std::numeric_limits<std::size_t>::max()-72)/120)return{};
   std::vector<std::uint8_t> out;out.reserve(72+v.nodes.size()*120);out.insert(out.end(),{'S','B','B','A'});Put16(&out,1);Put16(&out,72);Put32(&out,static_cast<std::uint32_t>(72+v.nodes.size()*120));Put32(&out,0);Put32(&out,static_cast<std::uint32_t>(v.nodes.size()));Put32(&out,120);out.insert(out.end(),v.preliminary_receipt_uuid.begin(),v.preliminary_receipt_uuid.end());out.insert(out.end(),v.demand_sha256.begin(),v.demand_sha256.end());
   std::uint32_t prior_ordinal=0;std::uint64_t prior_node=0;
   for(const auto& n:v.nodes){if(n.parent_operand_ordinal==0||n.node_id==0||!Nonzero(n.descriptor_uuid)||n.descriptor_generation==0||!Nonzero(n.type_uuid)||!Nonzero(n.profile_uuid)||n.occurrence_id==0||(n.parent_operand_ordinal<prior_ordinal)||(n.parent_operand_ordinal==prior_ordinal&&n.node_id<=prior_node))return{};Put32(&out,120);Put32(&out,n.parent_operand_ordinal);Put64(&out,n.node_id);out.insert(out.end(),n.descriptor_uuid.begin(),n.descriptor_uuid.end());Put64(&out,n.descriptor_generation);out.insert(out.end(),n.type_uuid.begin(),n.type_uuid.end());out.insert(out.end(),n.profile_uuid.begin(),n.profile_uuid.end());Put64(&out,n.occurrence_id);out.insert(out.end(),n.lexical_sha256.begin(),n.lexical_sha256.end());out.push_back(n.nullable?1:0);out.insert(out.end(),7,0);prior_ordinal=n.parent_operand_ordinal;prior_node=n.node_id;}
   return out;
 }
 bool DecodeSblrLiteralBoundAstV1(const std::uint8_t* b,std::size_t n,SblrLiteralBoundAstV1* out){
-  if(b==nullptr||out==nullptr||n<72||!std::equal(b,b+4,reinterpret_cast<const std::uint8_t*>("SBBA"))||U16(b+4)!=1||U16(b+6)!=72||U32(b+8)!=n||U32(b+12)!=0||U32(b+20)!=120)return false;const auto count=U32(b+16);if(count>(n-72)/120||72+std::size_t(count)*120!=n)return false;SblrLiteralBoundAstV1 v;std::copy_n(b+24,16,v.preliminary_receipt_uuid.begin());std::copy_n(b+40,32,v.demand_sha256.begin());if(!Nonzero(v.preliminary_receipt_uuid))return false;v.nodes.reserve(count);std::size_t off=72;
+  if(b==nullptr||out==nullptr||n<72||n>kMaximumBoundAstBytes||!std::equal(b,b+4,reinterpret_cast<const std::uint8_t*>("SBBA"))||U16(b+4)!=1||U16(b+6)!=72||U32(b+8)!=n||U32(b+12)!=0||U32(b+20)!=120)return false;const auto count=U32(b+16);if(count>kMaximumNodes||count>(n-72)/120||72+std::size_t(count)*120!=n)return false;SblrLiteralBoundAstV1 v;std::copy_n(b+24,16,v.preliminary_receipt_uuid.begin());std::copy_n(b+40,32,v.demand_sha256.begin());if(!Nonzero(v.preliminary_receipt_uuid))return false;v.nodes.reserve(count);std::size_t off=72;
   for(std::uint32_t i=0;i<count;++i,off+=120){if(U32(b+off)!=120||b[off+112]>1||std::any_of(b+off+113,b+off+120,[](auto x){return x!=0;}))return false;SblrLiteralBoundAstNodeV1 x;x.parent_operand_ordinal=U32(b+off+4);x.node_id=U64(b+off+8);std::copy_n(b+off+16,16,x.descriptor_uuid.begin());x.descriptor_generation=U64(b+off+32);std::copy_n(b+off+40,16,x.type_uuid.begin());std::copy_n(b+off+56,16,x.profile_uuid.begin());x.occurrence_id=U64(b+off+72);std::copy_n(b+off+80,32,x.lexical_sha256.begin());x.nullable=b[off+112]!=0;v.nodes.push_back(x);}const auto canonical=EncodeSblrLiteralBoundAstV1(v);if(canonical.size()!=n||!std::equal(canonical.begin(),canonical.end(),b))return false;*out=std::move(v);return true;
 }
 std::array<std::uint8_t,32> ComputeSblrLiteralBoundAstSha256V1(const std::vector<std::uint8_t>& bytes){static constexpr std::string_view domain="ScratchBird.SblrLiteralBoundAst.V1";SblrLiteralBoundAstV1 parsed;if(!DecodeSblrLiteralBoundAstV1(bytes.data(),bytes.size(),&parsed))return{};std::vector<std::uint8_t> input(domain.begin(),domain.end());input.insert(input.end(),bytes.begin(),bytes.end());const auto digest=core::hash::ComputeSha256Digest(input);return digest.ok()?digest.digest:std::array<std::uint8_t,32>{};}
@@ -332,9 +470,172 @@ std::array<std::uint8_t, 8> EncodeSblrLiteralInt64LeV1(
   return encoded;
 }
 
-SblrExpressionNodeTableCodecResultV1 DecodeSblrExpressionNodeTableV1(
-    const std::uint8_t* bytes, std::size_t size) {
+SblrLiteralExactDecimalCodecResultV1 EncodeSblrLiteralExactDecimalV1(
+    const std::string_view lexical) {
+  const auto parts = ValidateDecimalLexicalV1(lexical);
+  if (!parts.has_value()) {
+    return DecimalFailure(false, "exact decimal lexical grammar is malformed");
+  }
+  if (parts->overflow) {
+    return DecimalFailure(true, "exact decimal exponent exceeds precision 38");
+  }
+
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  numeric::NumericRequest request;
+  request.operation = numeric::NumericOperation::canonicalize;
+  request.type = numeric::NumericType::decimal;
+  request.left = {numeric::NumericType::decimal, parts->numeric, false};
+  request.context.precision = 38;
+  request.context.scale = 0;
+  request.context.allow_special_values = false;
+  request.context.canonical_preserve_scale = true;
+  const auto canonicalized = numeric::ApplyNumericOperation(request);
+  if (canonicalized.status == numeric::NumericStatusCode::overflow) {
+    return DecimalFailure(true, "exact decimal precision exceeds 38");
+  }
+  if (canonicalized.status != numeric::NumericStatusCode::ok ||
+      canonicalized.value.is_null || canonicalized.value.encoded.empty()) {
+    return DecimalFailure(false, "sbl_numeric refused the exact decimal lexical value");
+  }
+
+  std::string canonical = canonicalized.value.encoded;
+  if (canonical == "-0") canonical = "0";
+  std::size_t cursor = 0;
+  const bool negative = canonical.front() == '-';
+  if (negative) ++cursor;
+  const auto decimal = canonical.find('.', cursor);
+  const std::size_t scale = decimal == std::string::npos
+                                ? 0
+                                : canonical.size() - decimal - 1;
+  if (scale > 38) {
+    return DecimalFailure(true, "exact decimal scale exceeds 38");
+  }
+  std::string coefficient;
+  coefficient.reserve(canonical.size());
+  for (; cursor < canonical.size(); ++cursor) {
+    const char byte = canonical[cursor];
+    if (byte == '.') continue;
+    if (byte < '0' || byte > '9') {
+      return DecimalFailure(false,
+                            "sbl_numeric returned noncanonical decimal text");
+    }
+    coefficient.push_back(byte);
+  }
+  const auto first_nonzero = coefficient.find_first_not_of('0');
+  if (first_nonzero == std::string::npos) {
+    coefficient = "0";
+    canonical = "0";
+  } else if (first_nonzero != 0) {
+    coefficient.erase(0, first_nonzero);
+  }
+  const std::size_t precision = std::max(coefficient.size(), scale);
+  if (precision == 0 || precision > 38) {
+    return DecimalFailure(true, "exact decimal normalized precision exceeds 38");
+  }
+  const std::size_t group_count =
+      coefficient == "0" ? 1 : (coefficient.size() + 8) / 9;
+  if (group_count == 0 || group_count > 5) {
+    return DecimalFailure(true,
+                          "exact decimal coefficient exceeds five base-1e9 groups");
+  }
+
+  SblrLiteralExactDecimalCodecResultV1 result;
+  result.precision = static_cast<std::uint8_t>(precision);
+  result.scale = static_cast<std::uint8_t>(scale);
+  result.canonical_lexical = canonical;
+  result.canonical_bytes[0] = static_cast<std::uint8_t>(scale);
+  if (negative && coefficient != "0") result.canonical_bytes[0] |= 0x80U;
+  result.canonical_bytes[1] = result.precision;
+  result.canonical_bytes[2] = static_cast<std::uint8_t>(group_count);
+  std::size_t end = coefficient.size();
+  for (std::size_t group = 0; group < group_count; ++group) {
+    const auto begin = end > 9 ? end - 9 : 0;
+    std::uint32_t value = 0;
+    const auto parsed = std::from_chars(coefficient.data() + begin,
+                                        coefficient.data() + end, value);
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != coefficient.data() + end || value >= 1'000'000'000U) {
+      return DecimalFailure(false,
+                            "exact decimal coefficient group is malformed");
+    }
+    const auto offset = 4 + group * 4;
+    for (unsigned byte = 0; byte < 4; ++byte) {
+      result.canonical_bytes[offset + byte] =
+          static_cast<std::uint8_t>(value >> (byte * 8));
+    }
+    end = begin;
+  }
+  if (end != 0) {
+    return DecimalFailure(true,
+                          "exact decimal coefficient group extent overflowed");
+  }
+  result.ok = true;
+  return result;
+}
+
+SblrLiteralExactDecimalCodecResultV1 DecodeSblrLiteralExactDecimalV1(
+    const std::uint8_t* bytes, const std::size_t size) {
+  if (bytes == nullptr || size != kSblrLiteralExactDecimalBytes) {
+    return DecimalFailure(false, "exact decimal body must be exactly 24 bytes");
+  }
+  const bool negative = (bytes[0] & 0x80U) != 0;
+  const auto scale = static_cast<std::uint8_t>(bytes[0] & 0x7fU);
+  const auto precision = bytes[1];
+  const auto group_count = bytes[2];
+  if (scale > 38 || precision == 0 || precision > 38 ||
+      group_count == 0 || group_count > 5 || bytes[3] != 0) {
+    return DecimalFailure(false,
+                          "exact decimal header is outside canonical bounds");
+  }
+  std::array<std::uint32_t, 5> groups{};
+  for (std::size_t group = 0; group < groups.size(); ++group) {
+    groups[group] = U32(bytes + 4 + group * 4);
+    if (groups[group] >= 1'000'000'000U ||
+        (group >= group_count && groups[group] != 0)) {
+      return DecimalFailure(false,
+                            "exact decimal coefficient group is noncanonical");
+    }
+  }
+  if ((group_count > 1 && groups[group_count - 1] == 0) ||
+      (group_count == 1 && groups[0] == 0 &&
+       (negative || scale != 0 || precision != 1))) {
+    return DecimalFailure(false,
+                          "exact decimal coefficient is not minimally encoded");
+  }
+
+  std::string coefficient = std::to_string(groups[group_count - 1]);
+  for (std::size_t remaining = group_count - 1; remaining != 0; --remaining) {
+    const auto group = std::to_string(groups[remaining - 1]);
+    coefficient.append(9 - group.size(), '0');
+    coefficient.append(group);
+  }
+  const auto expected_group_count =
+      coefficient == "0" ? 1 : (coefficient.size() + 8) / 9;
+  const auto expected_precision = std::max(coefficient.size(),
+                                            static_cast<std::size_t>(scale));
+  if (expected_group_count != group_count || expected_precision != precision) {
+    return DecimalFailure(false,
+                          "exact decimal precision or group count is noncanonical");
+  }
+  const auto canonical = RenderExactDecimalV1(negative, coefficient, scale);
+  const auto reencoded = EncodeSblrLiteralExactDecimalV1(canonical);
+  if (!reencoded.ok || !std::equal(reencoded.canonical_bytes.begin(),
+                                   reencoded.canonical_bytes.end(), bytes)) {
+    return DecimalFailure(false,
+                          "exact decimal decode and re-encode bytes differ");
+  }
+  auto result = reencoded;
+  result.precision = precision;
+  result.scale = scale;
+  return result;
+}
+
+static SblrExpressionNodeTableCodecResultV1
+DecodeSblrExpressionNodeTableWithLimitV1(
+    const std::uint8_t* bytes, std::size_t size,
+    const std::size_t maximum_bytes) {
   if (bytes == nullptr || size < kHeaderBytes ||
+      size > maximum_bytes ||
       !std::equal(bytes, bytes + 4, reinterpret_cast<const std::uint8_t*>("SBXN")) ||
       U16(bytes + 4) != 1 || U16(bytes + 6) != kHeaderBytes ||
       U32(bytes + 12) != 0 || U64(bytes + 16) != size ||
@@ -395,10 +696,30 @@ SblrExpressionNodeTableCodecResultV1 DecodeSblrExpressionNodeTableV1(
     }
     ordinals[node.parent_operand_ordinal] = true;
   }
-  result.canonical_bytes=EncodeSblrExpressionNodeTableV1(result.table);
-  if (result.canonical_bytes.size()!=size || !std::equal(result.canonical_bytes.begin(),result.canonical_bytes.end(),bytes))
-    return Fail("SBXN decode/re-encode differs");
+  result.canonical_bytes.assign(bytes, bytes + size);
   result.ok=true; return result;
+}
+
+SblrExpressionNodeTableCodecResultV1 DecodeSblrExpressionNodeTableV1(
+    const std::uint8_t* bytes, std::size_t size) {
+  auto result = DecodeSblrExpressionNodeTableWithLimitV1(
+      bytes, size, kSblrExpressionNodeTableMaximumBytesV1);
+  if (!result.ok) return result;
+  const auto reencoded = EncodeSblrExpressionNodeTableV1(result.table);
+  if (reencoded.size() != size ||
+      !std::equal(reencoded.begin(), reencoded.end(), bytes)) {
+    return Fail("SBXN decode/re-encode differs");
+  }
+  result.canonical_bytes = reencoded;
+  return result;
+}
+
+SblrExpressionNodeTableCodecResultV1
+DecodeSblrContextualComposedExpressionNodeTableV2(
+    const std::uint8_t* bytes, std::size_t size) {
+  return DecodeSblrExpressionNodeTableWithLimitV1(
+      bytes, size,
+      kSblrContextualComposedExpressionNodeTableMaximumBytesV2);
 }
 
 std::vector<std::uint8_t> EncodeSblrExpressionNodeTableV1(const SblrExpressionNodeTableV1& table) {
@@ -409,7 +730,9 @@ std::vector<std::uint8_t> EncodeSblrExpressionNodeTableV1(const SblrExpressionNo
        n.parent_node_id!=0||n.parent_operand_ordinal==0||n.literal_body.size()>kMaximumLiteralBytes||
        n.literal_body.size()>std::numeric_limits<std::size_t>::max()-kRecordFixedBytes) return {};
     const auto record=kRecordFixedBytes+n.literal_body.size(); if(record>std::numeric_limits<std::uint32_t>::max()||record>std::numeric_limits<std::size_t>::max()-total)return{};
-    total+=record; previous=n.node_id;
+    total+=record;
+    if(total>kMaximumExpressionNodeTableBytes)return{};
+    previous=n.node_id;
   }
   std::vector<bool> ordinals(table.nodes.size()+1,false);
   for(const auto& n:table.nodes){if(n.parent_operand_ordinal>table.nodes.size()||ordinals[n.parent_operand_ordinal])return{};ordinals[n.parent_operand_ordinal]=true;}

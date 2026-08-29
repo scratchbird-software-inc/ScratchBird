@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "ddl/create_api.hpp"
@@ -193,6 +194,10 @@ api::EngineRequestContext BaseEngineContext() {
   context.cluster_uuid.canonical = "019f0000-0000-7000-8000-000000000805";
   context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000000806";
   context.catalog_generation_id = 7;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.security_epoch = 11;
   context.resource_epoch = 13;
   context.name_resolution_epoch = 17;
@@ -361,7 +366,7 @@ void RequireParserLoweringAndAdmission() {
           "SHOW CREATE verifier rejected the exact route");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected SHOW CREATE route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for SHOW CREATE");

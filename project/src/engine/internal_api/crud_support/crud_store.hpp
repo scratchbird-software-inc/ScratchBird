@@ -140,6 +140,22 @@ struct CrudLargeValueRecord {
   std::vector<CrudLargeValueChunkRecord> chunks;
 };
 
+// A complete relation-descriptor replacement published inside a sealed MGA
+// catalog migration event.  Visibility is determined from creator_tx and the
+// exact event sequence; readers never rewrite or infer this snapshot from the
+// migrated table spelling.
+struct CrudSealedRelationDescriptorSnapshot {
+  std::uint64_t creator_tx = 0;
+  std::uint64_t event_sequence = 0;
+  std::string relation_uuid;
+  std::string relation_descriptor_uuid;
+  std::uint64_t relation_descriptor_generation = 0;
+  std::uint64_t descriptor_field_count = 0;
+  std::uint64_t descriptor_field_bytes = 0;
+  std::uint32_t contextual_sidecar_count = 0;
+  std::vector<std::pair<std::string, std::string>> descriptor_fields;
+};
+
 struct CrudState {
   std::map<std::uint64_t, std::string> transactions;
   std::vector<CrudTableRecord> tables;
@@ -147,6 +163,8 @@ struct CrudState {
   std::vector<CrudIndexRecord> indexes;
   std::vector<CrudIndexEntryRecord> index_entries;
   std::vector<CrudLargeValueRecord> large_values;
+  std::vector<CrudSealedRelationDescriptorSnapshot>
+      sealed_relation_descriptor_snapshots;
   std::uint64_t max_transaction_id = 0;
   std::uint64_t max_sequence = 0;
   std::uint64_t max_index_sequence = 0;

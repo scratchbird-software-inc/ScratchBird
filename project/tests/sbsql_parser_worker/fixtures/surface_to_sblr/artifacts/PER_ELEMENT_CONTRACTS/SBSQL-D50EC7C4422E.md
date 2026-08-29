@@ -27,9 +27,9 @@ Generated public per-element contract snapshot.
 
 | Field | Value |
 | --- | --- |
-| Backlog closure status | e2e_passed |
-| Release final status | cluster_provider_route_passed |
-| Release claim | cluster_public_fail_closed_provider_gated |
+| Backlog closure status | exact_refusal_passed |
+| Release final status | exact_refusal_passed |
+| Release claim | public_exact_refusal_implemented |
 | Release status | row_evidence_complete |
 | Remaining risk | none |
 

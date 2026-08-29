@@ -110,7 +110,7 @@ SblrLocalMetricsReadCodecResult DecodeSblrLocalMetricsReadRequest(const std::uin
 
 SblrLocalMetricsReadCodecResult DecodeSblrLocalMetricsReadOperand(const SblrOperationEnvelope& envelope) {
   if (!IsSblrLocalMetricsReadOperation(envelope.operation_id) || envelope.opcode != "SBLR_READ_METRICS" || envelope.opcode_code != 0x0c01 || envelope.operands.size() != 1) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "sbop_identity_or_operand_count");
-  const auto& operand = envelope.operands.front(); if (operand.type != "metrics.read_request.v1" || operand.name != "request" || operand.ordinal != 1 || operand.value_kind != SblrValueKind::literal_typed || operand.value_body.size() < 24) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "sbop_operand_carrier");
+  const auto& operand = envelope.operands.front(); if (operand.type != "metrics.read_request.v1" || operand.name != "request" || operand.ordinal != 1 || operand.value_kind != SblrValueKind::literal_typed || operand.value_body.size() < 24 || IsZero(operand.value_body.data(), 16)) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "sbop_operand_carrier");
   std::uint64_t bytes = 0; for (unsigned i = 0; i != 8; ++i) bytes |= static_cast<std::uint64_t>(operand.value_body[16 + i]) << (i * 8); if (bytes != operand.value_body.size() - 24) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "sbop_carrier_size");
   return DecodeSblrLocalMetricsReadRequest(operand.value_body.data() + 24, static_cast<std::size_t>(bytes));
 }

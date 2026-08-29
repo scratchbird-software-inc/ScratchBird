@@ -96,9 +96,9 @@ opt::OptimizerStatisticsCatalog CardinalityCatalog() {
 
 opt::JoinGraph ReorderSafeInnerGraph() {
   std::vector<opt::JoinRelationNode> relations = {
-      {"rel.big", 10000, false},
-      {"rel.medium", 200, false},
-      {"rel.small", 10, false},
+      {.relation_uuid = "rel.big", .estimated_rows = 10000},
+      {.relation_uuid = "rel.medium", .estimated_rows = 200},
+      {.relation_uuid = "rel.small", .estimated_rows = 10},
   };
   std::vector<opt::JoinPredicateEdge> predicates;
   opt::JoinPredicateEdge big_medium;
@@ -195,8 +195,8 @@ bool DirectSemanticBarriersPreserveOrder() {
 
   for (const auto& entry : cases) {
     std::vector<opt::JoinRelationNode> relations = {
-        {"rel.big", 10000, false},
-        {"rel.small", 10, false},
+        {.relation_uuid = "rel.big", .estimated_rows = 10000},
+        {.relation_uuid = "rel.small", .estimated_rows = 10},
     };
     std::vector<opt::JoinPredicateEdge> predicates;
     opt::JoinPredicateEdge edge;

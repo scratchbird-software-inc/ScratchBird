@@ -40,6 +40,8 @@ constexpr std::string_view kAliceBootstrapCredentialFingerprint =
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
 constexpr std::string_view kAppSchemaUuid = "018f0a2b-0000-7000-9000-000000000100";
+constexpr std::string_view kDatatypeCatalogSnapshotUuid =
+    "019d0000-0000-7000-8000-00000000d701";
 
 struct CreatedDatabaseFixture {
   std::string database_uuid;
@@ -357,6 +359,10 @@ api::EngineRequestContext BaseContext(const Args& args, const std::string& datab
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      std::string(kDatatypeCatalogSnapshotUuid);
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.trace_tags.push_back("public.driver_test_database_seed");
   context.trace_tags.push_back("security.bootstrap");
   context.trace_tags.push_back("group:SEC");

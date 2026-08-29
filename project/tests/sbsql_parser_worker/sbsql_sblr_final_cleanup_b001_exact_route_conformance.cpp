@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -230,6 +231,37 @@ std::string_view ExpectedAdmissionFamily(const B001Row& row) {
   return row.family;
 }
 
+std::string_view CanonicalOperationId(const B001Row& row) {
+  if (StartsWith(row.operation_id, "op.gpu.") ||
+      StartsWith(row.operation_id, "op.show.gpu")) {
+    return "acceleration.gpu.operation";
+  }
+  if (StartsWith(row.operation_id, "op.native_compile.") ||
+      row.operation_id == "op.show.aot_artifacts" ||
+      StartsWith(row.operation_id, "op.show.llvm") ||
+      StartsWith(row.operation_id, "op.show.native_compile")) {
+    return "extensibility.compile_llvm_module";
+  }
+  if (StartsWith(row.operation_id, "op.management.")) {
+    return "management.control_runtime";
+  }
+  if (StartsWith(row.operation_id, "op.show.management.")) {
+    return "management.inspect_runtime";
+  }
+  if (ExpectedEngineApiFunction(row) == "EngineSecurityInspectOperation") {
+    return "catalog.get_descriptor";
+  }
+  if (row.operation_id == "op.show.index_health") {
+    return "index.maintenance";
+  }
+  if (row.operation_id == "op.show.metrics" ||
+      row.operation_id == "op.show.metrics_family" ||
+      row.operation_id == "op.show.performance") {
+    return "observability.show_metrics";
+  }
+  return "management.inspect_runtime";
+}
+
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
@@ -281,6 +313,7 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.database_path = "/tmp/sbsql_sblr_final_cleanup_b001.sbdb";
   context.database_uuid.canonical = "019f0000-0000-7000-8000-00000000c801";
   context.session_uuid.canonical = "019f0000-0000-7000-8000-00000000c802";
+  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-00000000c807";
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-00000000c803";
   context.node_uuid.canonical = "019f0000-0000-7000-8000-00000000c804";
   context.statement_uuid.canonical = "019f0000-0000-7000-8000-00000000c805";
@@ -288,22 +321,44 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.catalog_generation_id = 53;
   context.security_epoch = 59;
   context.resource_epoch = 61;
+  context.local_transaction_id = 1;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  context.trace_tags = {
+      "security.fixture_trace_authority",
+      "right:OBS_METRICS_READ_ALL",
+      "right:OBS_SECURITY_INSPECT",
+      "right:POLICY_ADMIN",
+      "right:MANAGEMENT_RUNTIME_CONTROL",
+  };
   return context;
 }
 
 sblr::SblrOperationEnvelope EngineEnvelope(const B001Row& row) {
-  auto envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
-                                         std::string(row.opcode),
+  const auto canonical_operation = CanonicalOperationId(row);
+  const auto* canonical_entry =
+      sblr::LookupSblrOperation(canonical_operation);
+  Require(canonical_entry != nullptr,
+          EvidenceMessage(row, "canonical_parent", "canonical parent missing"));
+  auto envelope = sblr::MakeSblrEnvelope(std::string(canonical_operation),
+                                         canonical_entry->opcode,
                                          std::string("trace.b001.") +
                                              std::string(row.audit_id));
   envelope.result_shape = row.result_shape;
   envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
   envelope.requires_security_context = true;
-  envelope.requires_transaction_context = false;
-  envelope.requires_cluster_authority = false;
+  envelope.requires_transaction_context =
+      canonical_entry->requires_transaction_context;
+  envelope.requires_cluster_authority =
+      canonical_entry->requires_cluster_authority;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  return envelope;
+  sblr::SblrOperand selector;
+  selector.type = "text";
+  selector.name = "public_operation_id";
+  selector.value = row.operation_id;
+  envelope.operands.push_back(std::move(selector));
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 api::EngineApiRequest ApiRequestForRow(const B001Row& row) {
@@ -366,21 +421,27 @@ void RequireExactLowering(const B001Row& row) {
           EvidenceMessage(row, "parser_bind_lower", "SQL text key was embedded"));
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          EngineEnvelope(row)));
   Require(admission.admitted,
           EvidenceMessage(row, "server_admission", "server admission rejected row"));
   Require(admission.requires_public_abi_dispatch,
           EvidenceMessage(row, "server_admission", "public ABI dispatch not required"));
-  Require(admission.operation_id == row.operation_id,
-          EvidenceMessage(row, "server_admission", "operation id mismatch"));
+  Require(admission.operation_id == CanonicalOperationId(row),
+          EvidenceMessage(row, "server_admission", "canonical operation id mismatch"));
   Require(admission.operation_family == ExpectedAdmissionFamily(row),
           EvidenceMessage(row, "server_admission", "operation family mismatch"));
 }
 
 void RequireSblrRegistryAndDispatch(const B001Row& row) {
-  const auto* entry = sblr::LookupSblrOperation(row.operation_id);
-  Require(entry != nullptr, EvidenceMessage(row, "sblr_registry", "operation missing"));
-  Require(entry->opcode == row.opcode, EvidenceMessage(row, "sblr_registry", "opcode mismatch"));
+  const auto* entry = sblr::LookupSblrOperation(CanonicalOperationId(row));
+  Require(entry != nullptr,
+          EvidenceMessage(row, "sblr_registry", "canonical parent missing"));
+  Require(entry->code != 0,
+          EvidenceMessage(row, "sblr_registry", "canonical parent code missing"));
+  const auto* legacy = sblr::LookupSblrOperation(row.operation_id);
+  Require(legacy == nullptr || legacy->code == 0,
+          EvidenceMessage(row, "sblr_registry", "synthetic command alias became executable"));
   const auto envelope = EngineEnvelope(row);
   const auto registry_validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
   Require(registry_validation.ok,

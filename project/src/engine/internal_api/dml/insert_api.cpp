@@ -1788,6 +1788,12 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
   result.operation_id = "dml.insert_rows";
   result.diagnostics = std::move(direct_result.diagnostics);
   for (auto& diagnostic : result.diagnostics) {
+    constexpr std::string_view kDirectOperationPrefix =
+        "dml.direct_physical_bulk_append:";
+    if (StartsWith(diagnostic.detail, kDirectOperationPrefix)) {
+      diagnostic.detail =
+          "dml.insert_rows:" + diagnostic.detail.substr(kDirectOperationPrefix.size());
+    }
     if (StartsWith(diagnostic.code, "SB-BULK-CONSTRAINT-UNIQUE-") ||
         diagnostic.detail.find("bulk_unique_proof_persisted_conflict") !=
             std::string::npos ||

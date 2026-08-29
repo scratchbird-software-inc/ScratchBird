@@ -20,6 +20,8 @@
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
+#include "../canonical_sblr_admission_test_helper.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -300,8 +302,8 @@ void RequireAdmissionAndOpcodeRegistry() {
     Require(entry->requires_security_context,
             "DDL/catalog route must require security context");
     const auto admitted = server::AdmitServerSblrEnvelope(
-        server::ServerSblrAdmissionRequest{
-            AdmissionFrame(route.operation_id, route.family), false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+            route.operation_id, route.opcode));
     Require(admitted.admitted, "server admission rejected DDL/catalog route");
     Require(admitted.requires_public_abi_dispatch,
             "DDL/catalog route did not require public ABI dispatch");

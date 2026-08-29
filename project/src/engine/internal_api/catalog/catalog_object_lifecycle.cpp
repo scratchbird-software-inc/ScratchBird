@@ -11,6 +11,8 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1029,12 +1031,128 @@ EngineApiDiagnostic ValidateMutatingContext(const EngineRequestContext& context)
   return OkDiagnostic();
 }
 
+bool ObjectKindCanUseSessionTemporaryNameNamespace(
+    const std::string& object_kind) {
+  return object_kind == "table" || object_kind == "relation";
+}
+
+bool IsExactCanonicalSessionUuid(const std::string& value) {
+  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
+      scratchbird::core::platform::UuidKind::session, value);
+  return parsed.ok() &&
+         scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
+}
+
+EngineApiDiagnostic ValidateCatalogNameNamespace(
+    const EngineCatalogNameNamespace& name_namespace,
+    const EngineRequestContext& context,
+    const std::string& object_kind) {
+  if (name_namespace.kind == EngineCatalogNameNamespaceKind::kCatalog) {
+    if (!name_namespace.owner_session_uuid.canonical.empty()) {
+      return CatalogDiagnostic(kCatalogObjectDiagnosticNameNamespaceInvalid,
+                               "catalog_namespace_has_session_owner");
+    }
+    return OkDiagnostic();
+  }
+  if (name_namespace.kind !=
+          EngineCatalogNameNamespaceKind::kSessionTemporary ||
+      !ObjectKindCanUseSessionTemporaryNameNamespace(object_kind)) {
+    return CatalogDiagnostic(kCatalogObjectDiagnosticNameNamespaceInvalid,
+                             "session_temporary_namespace_requires_relation");
+  }
+  if (!IsExactCanonicalSessionUuid(context.session_uuid.canonical) ||
+      !IsExactCanonicalSessionUuid(
+          name_namespace.owner_session_uuid.canonical) ||
+      name_namespace.owner_session_uuid.canonical !=
+          context.session_uuid.canonical) {
+    return CatalogDiagnostic(kCatalogObjectDiagnosticNameNamespaceInvalid,
+                             "session_temporary_namespace_owner_mismatch");
+  }
+  return OkDiagnostic();
+}
+
+struct CatalogNameNamespaceClassification {
+  bool ok = true;
+  bool participates = true;
+  EngineApiDiagnostic diagnostic = OkDiagnostic();
+  EngineCatalogNameNamespace name_namespace;
+};
+
+CatalogNameNamespaceClassification ClassifyExistingCatalogNameNamespace(
+    const EngineRequestContext& context,
+    const EngineCatalogNameRecord& existing) {
+  CatalogNameNamespaceClassification result;
+  if (!ObjectKindCanUseSessionTemporaryNameNamespace(existing.object_kind)) {
+    return result;
+  }
+  const auto visibility =
+      CheckMgaTemporaryTableVisibility(context, existing.object_uuid);
+  if (!visibility.ok) {
+    result.ok = false;
+    result.diagnostic = visibility.diagnostic;
+    return result;
+  }
+  if (!visibility.table_visible) {
+    result.participates = !visibility.known_temporary &&
+                          !visibility.hidden_by_temporary_visibility;
+    return result;
+  }
+  if (!visibility.table.temporary) {
+    if (visibility.table.temporary_scope.empty() &&
+        visibility.table.temporary_session_uuid.empty()) {
+      return result;
+    }
+  } else if (visibility.table.temporary_scope == "global") {
+    if (visibility.table.temporary_session_uuid.empty()) { return result; }
+  } else if (visibility.table.temporary_scope == "private" &&
+             IsExactCanonicalSessionUuid(
+                 visibility.table.temporary_session_uuid)) {
+    result.name_namespace.kind =
+        EngineCatalogNameNamespaceKind::kSessionTemporary;
+    result.name_namespace.owner_session_uuid.canonical =
+        visibility.table.temporary_session_uuid;
+    return result;
+  }
+  result.ok = false;
+  result.diagnostic = CatalogDiagnostic(
+      kCatalogObjectDiagnosticNameNamespaceInvalid,
+      "temporary_relation_namespace_descriptor_invalid:" +
+          existing.object_uuid);
+  return result;
+}
+
+bool CatalogNameNamespacesCollide(
+    const EngineCatalogNameNamespace& requested_namespace,
+    const std::string& requested_object_kind,
+    const EngineCatalogNameNamespace& existing_namespace,
+    const std::string& existing_object_kind) {
+  const bool requested_is_session =
+      requested_namespace.kind ==
+      EngineCatalogNameNamespaceKind::kSessionTemporary;
+  const bool existing_is_session =
+      existing_namespace.kind ==
+      EngineCatalogNameNamespaceKind::kSessionTemporary;
+  if (!requested_is_session && !existing_is_session) { return true; }
+  if (!ObjectKindCanUseSessionTemporaryNameNamespace(requested_object_kind) ||
+      !ObjectKindCanUseSessionTemporaryNameNamespace(existing_object_kind)) {
+    return true;
+  }
+  if (requested_is_session && existing_is_session) {
+    return requested_namespace.owner_session_uuid.canonical ==
+           existing_namespace.owner_session_uuid.canonical;
+  }
+  return false;
+}
+
 EngineApiDiagnostic CheckNameConflict(const EngineCatalogObjectLifecycleState& state,
                                       const std::string& object_uuid,
                                       const std::string& object_kind,
                                       const std::string& schema_uuid,
                                       const std::vector<EngineLocalizedName>& names,
-                                      const EngineRequestContext& context) {
+                                      const EngineRequestContext& context,
+                                      const EngineCatalogNameNamespace&
+                                          requested_namespace =
+                                              EngineCatalogNameNamespace{}) {
   const std::string default_language = DefaultLanguageTag(context);
   for (const auto& requested : names) {
     const auto wanted = MakeNameRecord(context, object_uuid, object_kind, schema_uuid, requested, 0);
@@ -1044,6 +1162,16 @@ EngineApiDiagnostic CheckNameConflict(const EngineCatalogObjectLifecycleState& s
       if (ProfileName(existing.identifier_profile_uuid) != ProfileName(wanted.identifier_profile_uuid)) { continue; }
       if (!CollisionScopeMatches(existing, wanted, default_language)) { continue; }
       if (LookupKeysCollide(wanted, existing)) {
+        const auto existing_namespace =
+            ClassifyExistingCatalogNameNamespace(context, existing);
+        if (!existing_namespace.ok) { return existing_namespace.diagnostic; }
+        if (!existing_namespace.participates ||
+            !CatalogNameNamespacesCollide(requested_namespace,
+                                          object_kind,
+                                          existing_namespace.name_namespace,
+                                          existing.object_kind)) {
+          continue;
+        }
         return CatalogDiagnostic(object_kind == "synonym" ? kCatalogSynonymDiagnosticNameConflict
                                                           : kCatalogObjectDiagnosticDuplicateName,
                                  existing.object_kind + ":" + schema_uuid + ":" + wanted.display_name);
@@ -1468,6 +1596,12 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticKindRequired, "target_object.object_kind"));
   }
+  const auto namespace_status = ValidateCatalogNameNamespace(
+      request.name_namespace, request.context, object_kind);
+  if (namespace_status.error) {
+    return DiagnosticResult<EngineCatalogCreateObjectResult>(
+        request.context, kOperation, namespace_status);
+  }
   const auto names = EffectiveNames(request);
   if (names.empty()) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
@@ -1525,7 +1659,13 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticSchemaOwnerDenied, schema_uuid));
   }
-  const auto conflict = CheckNameConflict(loaded.state, object_uuid, object_kind, schema_uuid, names, request.context);
+  const auto conflict = CheckNameConflict(loaded.state,
+                                          object_uuid,
+                                          object_kind,
+                                          schema_uuid,
+                                          names,
+                                          request.context,
+                                          request.name_namespace);
   if (conflict.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, conflict); }
   std::string synonym_target_uuid;
   std::string synonym_target_class;

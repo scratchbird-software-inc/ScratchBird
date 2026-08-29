@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_engine_lifecycle.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cluster/cluster_control_api.hpp"
 #include "cluster/cluster_insert_route_api.hpp"
 #include "cluster/cluster_inspect_api.hpp"
@@ -392,13 +393,9 @@ void TestMGAAndIndexClusterTransactionsFailClosed() {
 }
 
 void TestSblrAndAgentClusterBoundary() {
-  server::ServerSblrAdmissionRequest cluster_authority_request;
-  cluster_authority_request.cluster_authority_active = true;
-  cluster_authority_request.encoded_sblr_envelope =
-      "operation_id=ddl.create_table\n"
-      "result_shape=ddl_result\n"
-      "diagnostic_shape=diagnostic_vector\n"
-      "parser_resolved_names_to_uuids=true\n";
+  auto cluster_authority_request =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "ddl.create_table", "SBLR_DDL_CREATE_TABLE", true);
   auto authority_result = server::AdmitServerSblrEnvelope(cluster_authority_request);
   Require(authority_result.admitted && authority_result.requires_public_abi_dispatch,
           "SBLR admission rejected a non-cluster operation when cluster authority was active");
@@ -406,14 +403,9 @@ void TestSblrAndAgentClusterBoundary() {
               authority_result.operation_id == "ddl.create_table",
           "SBLR admission remapped a non-cluster operation into the cluster provider path");
 
-  server::ServerSblrAdmissionRequest requires_cluster;
-  requires_cluster.cluster_authority_active = false;
-  requires_cluster.encoded_sblr_envelope =
-      "operation_id=cluster.inspect_state\n"
-      "result_shape=cluster_result\n"
-      "diagnostic_shape=diagnostic_vector\n"
-      "parser_resolved_names_to_uuids=true\n"
-      "requires_cluster_authority=true\n";
+  auto requires_cluster =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "cluster.inspect_state", "SBLR_CLUSTER_INSPECT_STATE", false);
   auto required_result = server::AdmitServerSblrEnvelope(requires_cluster);
   Require(required_result.admitted && required_result.requires_public_abi_dispatch,
           "SBLR admission did not route a cluster-required operation to the provider boundary");

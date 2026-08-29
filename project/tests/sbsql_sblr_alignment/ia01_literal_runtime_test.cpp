@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
+#include <string_view>
+#include <utility>
 
 namespace sblr = scratchbird::engine::sblr;
 [[noreturn]] void Fail(const char* text){std::cerr<<text<<'\n';std::exit(EXIT_FAILURE);}
@@ -16,6 +18,26 @@ void Require(bool value,const char* text){if(!value)Fail(text);}
 void U16(std::vector<std::uint8_t>* out,std::uint16_t v){out->push_back(v);out->push_back(v>>8);}
 void U32(std::vector<std::uint8_t>* out,std::uint32_t v){for(unsigned i=0;i!=4;++i)out->push_back(v>>(8*i));}
 void U64(std::vector<std::uint8_t>* out,std::uint64_t v){for(unsigned i=0;i!=8;++i)out->push_back(v>>(8*i));}
+
+sblr::SblrLiteralExactDecimalCodecResultV1 RequireDecimal(
+    const std::string_view lexical,
+    const std::string_view canonical,
+    const std::uint8_t precision,
+    const std::uint8_t scale) {
+  const auto encoded = sblr::EncodeSblrLiteralExactDecimalV1(lexical);
+  Require(encoded.ok, "exact decimal lexical value was refused");
+  Require(encoded.canonical_lexical == canonical,
+          "exact decimal lexical normalization differs");
+  Require(encoded.precision == precision && encoded.scale == scale,
+          "exact decimal precision or scale differs");
+  const auto decoded = sblr::DecodeSblrLiteralExactDecimalV1(
+      encoded.canonical_bytes.data(), encoded.canonical_bytes.size());
+  Require(decoded.ok && decoded.canonical_bytes == encoded.canonical_bytes &&
+              decoded.canonical_lexical == canonical &&
+              decoded.precision == precision && decoded.scale == scale,
+          "exact decimal canonical round trip failed");
+  return encoded;
+}
 
 int main(){
   for (const auto value : {std::int64_t{0}, std::int64_t{1},
@@ -32,6 +54,91 @@ int main(){
   Require(!sblr::DecodeSblrLiteralInt64LeV1(
                short_bigint.data(), short_bigint.size()).has_value(),
           "short bigint body was admitted");
+
+  const auto half = RequireDecimal("0.5", "0.5", 1, 1);
+  std::array<std::uint8_t, sblr::kSblrLiteralExactDecimalBytes>
+      expected_half{};
+  expected_half[0] = 1;
+  expected_half[1] = 1;
+  expected_half[2] = 1;
+  expected_half[4] = 5;
+  Require(half.canonical_bytes == expected_half,
+          "exact decimal 0.5 bytes differ from the Core codec");
+  Require(RequireDecimal("+000.5000", "0.5", 1, 1).canonical_bytes ==
+              expected_half,
+          "equivalent exact decimal spelling did not normalize identically");
+  Require(RequireDecimal("5e-1", "0.5", 1, 1).canonical_bytes ==
+              expected_half,
+          "exact decimal exponent spelling did not normalize identically");
+  RequireDecimal("1_000.500_0DECIMAL", "1000.5", 5, 1);
+  RequireDecimal("-0.000D", "0", 1, 0);
+  RequireDecimal("99999999999999999999999999999999999999",
+                 "99999999999999999999999999999999999999", 38, 0);
+  RequireDecimal("1e-38", "0.00000000000000000000000000000000000001",
+                 38, 38);
+
+  for (const auto overflow : {
+           std::string_view{"999999999999999999999999999999999999999"},
+           std::string_view{"1e-39"}, std::string_view{"1e38"}}) {
+    const auto result = sblr::EncodeSblrLiteralExactDecimalV1(overflow);
+    Require(!result.ok &&
+                result.diagnostic_id == "DATATYPE.DESCRIPTOR_INVALID",
+            "exact decimal overflow did not refuse with descriptor diagnostic");
+  }
+  for (const auto malformed : {
+           std::string_view{}, std::string_view{"1."},
+           std::string_view{".5"}, std::string_view{"1__0.5"},
+           std::string_view{"1_.5"}, std::string_view{"1.5_"},
+           std::string_view{"1e"}, std::string_view{"1.5F"}}) {
+    const auto result = sblr::EncodeSblrLiteralExactDecimalV1(malformed);
+    Require(!result.ok && result.diagnostic_id == "SBLR.OPERAND_INVALID",
+            "malformed exact decimal did not refuse with operand diagnostic");
+  }
+
+  const auto require_malformed_decimal = [&](auto bytes) {
+    const auto result = sblr::DecodeSblrLiteralExactDecimalV1(
+        bytes.data(), bytes.size());
+    Require(!result.ok && result.diagnostic_id == "SBLR.OPERAND_INVALID",
+            "noncanonical exact decimal bytes were admitted");
+  };
+  std::array<std::uint8_t, 23> short_decimal{};
+  require_malformed_decimal(short_decimal);
+  auto malformed_decimal = expected_half;
+  malformed_decimal[0] = 39;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = expected_half;
+  malformed_decimal[1] = 0;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = expected_half;
+  malformed_decimal[2] = 0;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = expected_half;
+  malformed_decimal[2] = 6;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = expected_half;
+  malformed_decimal[3] = 1;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = expected_half;
+  malformed_decimal[4] = 0x00;
+  malformed_decimal[5] = 0xca;
+  malformed_decimal[6] = 0x9a;
+  malformed_decimal[7] = 0x3b;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = expected_half;
+  malformed_decimal[8] = 1;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = expected_half;
+  malformed_decimal[2] = 2;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = {};
+  malformed_decimal[0] = 0x80;
+  malformed_decimal[1] = 1;
+  malformed_decimal[2] = 1;
+  require_malformed_decimal(malformed_decimal);
+  malformed_decimal = expected_half;
+  malformed_decimal[1] = 2;
+  require_malformed_decimal(malformed_decimal);
+
   sblr::SblrLiteralExecutorEvidenceV1 executor_evidence;
   executor_evidence.descriptor_uuid[0]=1;
   executor_evidence.descriptor_generation=1;
@@ -68,6 +175,18 @@ int main(){
   Require(sblr::ComputeSblrLiteralDescriptorProfileBindingV1(
               decoded_profile.profile,9,10)==profile.profile_binding_sha256,
           "SBLP binding revalidation failed");
+  auto decimal_profile = profile;
+  decimal_profile.codec_id = std::string{sblr::kSblrLiteralExactDecimalCodecId};
+  decimal_profile.profile_binding_sha256 =
+      sblr::ComputeSblrLiteralDescriptorProfileBindingV1(decimal_profile, 9, 10);
+  const auto encoded_decimal_profile =
+      sblr::EncodeSblrLiteralDescriptorProfileV1(decimal_profile);
+  Require(encoded_decimal_profile.size() == 194,
+          "SBLP exact decimal record is not 194 bytes");
+  Require(sblr::DecodeSblrLiteralDescriptorProfileV1(
+              encoded_decimal_profile.data(), encoded_decimal_profile.size())
+              .ok,
+          "SBLP exact decimal profile round trip failed");
   auto stale_profile=encoded_profile;stale_profile[64]^=1;
   const auto decoded_stale=sblr::DecodeSblrLiteralDescriptorProfileV1(
       stale_profile.data(),stale_profile.size());
@@ -128,6 +247,32 @@ int main(){
   auto trailing=encoded; trailing.push_back(0);
   Require(!sblr::DecodeSblrExpressionNodeTableV1(trailing.data(),trailing.size()).ok,
           "SBXN trailing byte was admitted");
+
+  sblr::SblrExpressionNodeTableV1 maximum_table;
+  maximum_table.nodes.reserve(4096);
+  for (std::uint32_t ordinal = 1; ordinal <= 4096; ++ordinal) {
+    auto maximum_node = node;
+    maximum_node.node_id = ordinal;
+    maximum_node.parent_operand_ordinal = ordinal;
+    maximum_node.literal_body.assign(24, 0);
+    maximum_table.nodes.push_back(std::move(maximum_node));
+  }
+  const auto maximum_sbxn =
+      sblr::EncodeSblrExpressionNodeTableV1(maximum_table);
+  Require(maximum_sbxn.size() == 610336 &&
+              sblr::DecodeSblrExpressionNodeTableV1(
+                  maximum_sbxn.data(), maximum_sbxn.size()).ok,
+          "Core maximum-size SBXN was not admitted exactly");
+  maximum_table.nodes.back().literal_body.push_back(0);
+  Require(sblr::EncodeSblrExpressionNodeTableV1(maximum_table).empty(),
+          "SBXN above the Core maximum byte extent was admitted");
+  maximum_table.nodes.back().literal_body.pop_back();
+  auto excess_node = maximum_table.nodes.back();
+  excess_node.node_id = 4097;
+  excess_node.parent_operand_ordinal = 4097;
+  maximum_table.nodes.push_back(std::move(excess_node));
+  Require(sblr::EncodeSblrExpressionNodeTableV1(maximum_table).empty(),
+          "SBXN above the Core maximum node count was admitted");
 
   sblr::SblrOperationEnvelope carrier;
   carrier.operation_id="query.execute"; carrier.opcode="SBLR_QUERY_EXECUTE";

@@ -18,6 +18,26 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 
+constexpr std::string_view kVertexA =
+    "019df075-0000-7000-8000-00000000000a";
+constexpr std::string_view kVertexB =
+    "019df075-0000-7000-8000-00000000000b";
+constexpr std::string_view kVertexC =
+    "019df075-0000-7000-8000-00000000000c";
+constexpr std::string_view kVertexD =
+    "019df075-0000-7000-8000-00000000000d";
+constexpr std::string_view kVertexE =
+    "019df075-0000-7000-8000-00000000000e";
+
+std::string Path(std::initializer_list<std::string_view> vertices) {
+  std::string path;
+  for (const auto vertex : vertices) {
+    if (!path.empty()) { path += "->"; }
+    path += vertex;
+  }
+  return path;
+}
+
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
   std::exit(EXIT_FAILURE);
@@ -77,19 +97,19 @@ api::EngineGraphPhysicalProof GraphProof() {
 
 std::vector<api::EngineGraphVertexInput> Vertices() {
   return {
-      {"A",
+      {std::string(kVertexA),
        {"person", "seed"},
        {{"tenant", "blue"}, {"name", "alpha"}}},
-      {"B",
+      {std::string(kVertexB),
        {"person"},
        {{"tenant", "green"}, {"name", "beta"}}},
-      {"C",
+      {std::string(kVertexC),
        {"account"},
        {{"tenant", "blue"}, {"name", "connector"}}},
-      {"D",
+      {std::string(kVertexD),
        {"account"},
        {{"tenant", "red"}, {"name", "detour"}}},
-      {"E",
+      {std::string(kVertexE),
        {"person"},
        {{"tenant", "blue"}, {"name", "cycle"}}},
   };
@@ -97,13 +117,20 @@ std::vector<api::EngineGraphVertexInput> Vertices() {
 
 std::vector<api::EngineGraphEdgeInput> Edges() {
   return {
-      {"e-ac", "A", "C", "knows", {{"since", "2024"}}, 1.0},
-      {"e-ad", "A", "D", "knows", {{"since", "2025"}}, 2.0},
-      {"e-cb", "C", "B", "knows", {{"since", "2026"}}, 1.5},
-      {"e-db", "D", "B", "knows", {{"since", "2026"}}, 2.5},
-      {"e-ba", "B", "A", "blocks", {{"since", "2023"}}, 3.0},
-      {"e-ae", "A", "E", "blocks", {{"since", "2022"}}, 4.0},
-      {"e-ea", "E", "A", "knows", {{"since", "2022"}}, 5.0},
+      {"019df075-0000-7000-8000-000000000101", std::string(kVertexA),
+       std::string(kVertexC), "knows", {{"since", "2024"}}, 1.0},
+      {"019df075-0000-7000-8000-000000000102", std::string(kVertexA),
+       std::string(kVertexD), "knows", {{"since", "2025"}}, 2.0},
+      {"019df075-0000-7000-8000-000000000103", std::string(kVertexC),
+       std::string(kVertexB), "knows", {{"since", "2026"}}, 1.5},
+      {"019df075-0000-7000-8000-000000000104", std::string(kVertexD),
+       std::string(kVertexB), "knows", {{"since", "2026"}}, 2.5},
+      {"019df075-0000-7000-8000-000000000105", std::string(kVertexB),
+       std::string(kVertexA), "blocks", {{"since", "2023"}}, 3.0},
+      {"019df075-0000-7000-8000-000000000106", std::string(kVertexA),
+       std::string(kVertexE), "blocks", {{"since", "2022"}}, 4.0},
+      {"019df075-0000-7000-8000-000000000107", std::string(kVertexE),
+       std::string(kVertexA), "knows", {{"since", "2022"}}, 5.0},
   };
 }
 
@@ -190,9 +217,9 @@ void PropertyIndexSeedTraversalAndFrontierBatching() {
 
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 property-index graph traversal failed");
-  Require(RowField(result, 0, "vertex_id") == "A",
+  Require(RowField(result, 0, "vertex_id") == kVertexA,
           "ODF-075 property index seed did not select vertex A first");
-  Require(AnyRowFieldEquals(result, "path", "A->C->B"),
+  Require(AnyRowFieldEquals(result, "path", Path({kVertexA, kVertexC, kVertexB})),
           "ODF-075 depth-2 frontier traversal missed A->C->B");
   Require(AnyRowFieldEquals(result, "depth", "2"),
           "ODF-075 depth-2 traversal did not emit depth 2 rows");
@@ -222,17 +249,17 @@ void PropertyIndexSeedTraversalAndFrontierBatching() {
 
 void BidirectionalAToBPath() {
   auto request = BaseRequest();
-  request.bidirectional_start_vertex_id = "A";
-  request.bidirectional_end_vertex_id = "B";
+  request.bidirectional_start_vertex_id = kVertexA;
+  request.bidirectional_end_vertex_id = kVertexB;
   request.max_depth = 4;
 
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 bidirectional graph path query failed");
-  Require(RowField(result, 0, "vertex_id") == "A",
+  Require(RowField(result, 0, "vertex_id") == kVertexA,
           "ODF-075 bidirectional path did not start at A");
-  Require(RowField(result, 2, "vertex_id") == "B",
+  Require(RowField(result, 2, "vertex_id") == kVertexB,
           "ODF-075 bidirectional path did not end at B");
-  Require(RowField(result, 2, "path") == "A->C->B",
+  Require(RowField(result, 2, "path") == Path({kVertexA, kVertexC, kVertexB}),
           "ODF-075 bidirectional path was not deterministic");
   Require(EvidenceContains(result, "graph_bidirectional_search", "applied=true"),
           "ODF-075 bidirectional search evidence missing");
@@ -245,14 +272,14 @@ void BidirectionalAToBPath() {
 void VectorSearchFusionSeedTraversal() {
   auto request = BaseRequest();
   request.fusion_source_kind = api::EngineGraphFusionSourceKind::kVector;
-  request.fused_candidate_seed_vertex_ids = {"C"};
+  request.fused_candidate_seed_vertex_ids = {std::string(kVertexC)};
   request.max_depth = 1;
 
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 graph+vector fusion seed traversal failed");
-  Require(RowField(result, 0, "vertex_id") == "C",
+  Require(RowField(result, 0, "vertex_id") == kVertexC,
           "ODF-075 fusion seed did not start at candidate C");
-  Require(AnyRowFieldEquals(result, "path", "C->B"),
+  Require(AnyRowFieldEquals(result, "path", Path({kVertexC, kVertexB})),
           "ODF-075 fusion seed traversal missed C->B");
   Require(EvidenceContains(result, "graph_fusion_seed_source", "vector"),
           "ODF-075 graph fusion source evidence missing");
@@ -265,14 +292,14 @@ void VectorSearchFusionSeedTraversal() {
 void SearchFusionSeedTraversal() {
   auto request = BaseRequest();
   request.fusion_source_kind = api::EngineGraphFusionSourceKind::kSearch;
-  request.fused_candidate_seed_vertex_ids = {"A"};
+  request.fused_candidate_seed_vertex_ids = {std::string(kVertexA)};
   request.max_depth = 1;
 
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 graph+search fusion seed traversal failed");
-  Require(RowField(result, 0, "vertex_id") == "A",
+  Require(RowField(result, 0, "vertex_id") == kVertexA,
           "ODF-075 search fusion seed did not start at candidate A");
-  Require(AnyRowFieldEquals(result, "path", "A->C"),
+  Require(AnyRowFieldEquals(result, "path", Path({kVertexA, kVertexC})),
           "ODF-075 search fusion seed traversal missed A->C");
   Require(EvidenceContains(result, "graph_fusion_seed_source", "search"),
           "ODF-075 graph search fusion source evidence missing");

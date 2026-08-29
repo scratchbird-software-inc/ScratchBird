@@ -28,7 +28,7 @@ from collections import Counter
 from pathlib import Path
 
 
-REGISTRY = "public_input_snapshot"
+REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 STRICT_LEDGER_NAME = "STRICT_ROW_COVERAGE_LEDGER.csv"
 MANIFEST_NAME = "PER_ROW_EVIDENCE_MANIFEST.csv"

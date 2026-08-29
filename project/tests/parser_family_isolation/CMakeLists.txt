@@ -84,24 +84,26 @@ set_tests_properties(parser_family_binary_identity_fixture_tests PROPERTIES
   LABELS "parser_family_isolation;parser_family_identity"
 )
 
-add_test(
-  NAME parser_family_binary_identity_checkpoint
-  COMMAND
-    "${Python3_EXECUTABLE}"
-    -B
-    "${SB_PARSER_FAMILY_BINARY_ISOLATION_GATE}"
-    --repo-root "${PROJECT_SOURCE_DIR}/.."
-    --build-dir "${CMAKE_BINARY_DIR}"
-    --ownership-map "${SB_PARSER_FAMILY_OWNERSHIP_MAP}"
-    --evidence-dir "${SB_PARSER_FAMILY_BINARY_ISOLATION_EVIDENCE_DIR}"
-    --require-complete-registry
-    --allow-no-artifacts
-)
-set_tests_properties(parser_family_binary_identity_checkpoint PROPERTIES
-  DEPENDS parser_family_binary_identity_fixture_tests
-  SKIP_RETURN_CODE 77
-  LABELS "parser_family_isolation;parser_family_identity"
-)
+if(SB_BUILD_COMPATIBILITY_PARSERS)
+  add_test(
+    NAME parser_family_binary_identity_checkpoint
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      -B
+      "${SB_PARSER_FAMILY_BINARY_ISOLATION_GATE}"
+      --repo-root "${PROJECT_SOURCE_DIR}/.."
+      --build-dir "${CMAKE_BINARY_DIR}"
+      --ownership-map "${SB_PARSER_FAMILY_OWNERSHIP_MAP}"
+      --evidence-dir "${SB_PARSER_FAMILY_BINARY_ISOLATION_EVIDENCE_DIR}"
+      --require-complete-registry
+      --allow-no-artifacts
+  )
+  set_tests_properties(parser_family_binary_identity_checkpoint PROPERTIES
+    DEPENDS parser_family_binary_identity_fixture_tests
+    SKIP_RETURN_CODE 77
+    LABELS "parser_family_isolation;parser_family_identity"
+  )
+endif()
 
 add_test(
   NAME parser_family_package_isolation_fixture_tests
@@ -128,7 +130,8 @@ set_tests_properties(parser_family_runtime_isolation_fixture_tests PROPERTIES
   LABELS "parser_family_isolation;parser_family_runtime;PARSER-ISO-014"
 )
 
-if(SB_FIREBIRD_RUNTIME_ISOLATION_PREFIX
+if(SB_BUILD_COMPATIBILITY_PARSERS
+   AND SB_FIREBIRD_RUNTIME_ISOLATION_PREFIX
    AND SB_FIREBIRD_RUNTIME_ISOLATION_SERVER
    AND SB_FIREBIRD_RUNTIME_ISOLATION_LISTENER
    AND SB_FIREBIRD_RUNTIME_ISOLATION_ISQL)
@@ -162,24 +165,26 @@ if(SB_FIREBIRD_RUNTIME_ISOLATION_PREFIX
   )
 endif()
 
-add_test(
-  NAME parser_family_package_isolation_gate
-  COMMAND
-    "${Python3_EXECUTABLE}"
-    -B
-    "${SB_PARSER_FAMILY_PACKAGE_ISOLATION_GATE}"
-    --repo-root "${PROJECT_SOURCE_DIR}/.."
-    --build-dir "${CMAKE_BINARY_DIR}"
-    --ownership-map "${SB_PARSER_FAMILY_OWNERSHIP_MAP}"
-    --evidence-dir "${SB_PARSER_FAMILY_PACKAGE_ISOLATION_EVIDENCE_DIR}"
-    --require-complete-registry
-    --allow-no-artifacts
-)
-set_tests_properties(parser_family_package_isolation_gate PROPERTIES
-  DEPENDS parser_family_package_isolation_fixture_tests
-  SKIP_RETURN_CODE 77
-  LABELS "parser_family_isolation;parser_family_package;PARSER-ISO-006"
-)
+if(SB_BUILD_COMPATIBILITY_PARSERS)
+  add_test(
+    NAME parser_family_package_isolation_gate
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      -B
+      "${SB_PARSER_FAMILY_PACKAGE_ISOLATION_GATE}"
+      --repo-root "${PROJECT_SOURCE_DIR}/.."
+      --build-dir "${CMAKE_BINARY_DIR}"
+      --ownership-map "${SB_PARSER_FAMILY_OWNERSHIP_MAP}"
+      --evidence-dir "${SB_PARSER_FAMILY_PACKAGE_ISOLATION_EVIDENCE_DIR}"
+      --require-complete-registry
+      --allow-no-artifacts
+  )
+  set_tests_properties(parser_family_package_isolation_gate PROPERTIES
+    DEPENDS parser_family_package_isolation_fixture_tests
+    SKIP_RETURN_CODE 77
+    LABELS "parser_family_isolation;parser_family_package;PARSER-ISO-006"
+  )
+endif()
 
 add_test(
   NAME parser_family_isolation_static_gate

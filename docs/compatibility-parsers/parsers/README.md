@@ -4,9 +4,9 @@
 python3 project/tests/reference_regression/generate_compatibility_parser_docs.py --repo-root . --write
 -->
 
-This directory contains one generated status page per public compatibility parser lane. Each page is generated from the public compatibility parser remap matrix and is checked by CTest so every declared surface has a searchable support, route, or refusal entry.
+This directory contains one generated status page per public compatibility parser lane. Each page is generated from the public compatibility parser remap matrix and is checked by CTest so every declared surface has a searchable support, route, or refusal entry. All statuses are retained pre-hold evidence and do not claim conformance to the in-progress SBLR contract.
 
-| Parser | Reference profile | Batch | Declared surfaces | Public status |
+| Parser | Reference profile | Batch | Declared surfaces | Retained pre-hold status |
 | --- | --- | --- | ---: | --- |
 | [Apache Ignite](apache_ignite.md) | `2.17.0` | `distributed` | 75 | `beta_gate_passed_mapped_or_explicit_refusal` |
 | [Cassandra](cassandra.md) | `5.0.8` | `nosql` | 74 | `beta_gate_passed_mapped_or_explicit_refusal` |

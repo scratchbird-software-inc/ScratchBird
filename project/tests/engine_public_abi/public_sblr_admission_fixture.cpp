@@ -239,7 +239,7 @@ sb_engine_status_t Dispatch(Harness& harness,
 std::string CanonicalOperationBytes() {
   namespace sblr = scratchbird::engine::sblr;
   auto envelope = sblr::MakeSblrEnvelope(
-      "transaction.txn_begin", "SBLR_TXN_BEGIN",
+      "engine.op.txn_begin", "SBLR_TXN_BEGIN",
       "public-abi-canonical-codec-structure");
   envelope.opcode_code = 0x0100u;
   envelope.parser_package_uuid =
@@ -264,7 +264,7 @@ int main() {
   }
   const auto decoded = sblr::DecodeSblrEnvelope(canonical);
   if (!decoded.ok ||
-      decoded.envelope.operation_id != "transaction.txn_begin" ||
+      decoded.envelope.operation_id != "engine.op.txn_begin" ||
       decoded.envelope.opcode != "SBLR_TXN_BEGIN" ||
       std::string(decoded.canonical_bytes.begin(),
                   decoded.canonical_bytes.end()) != canonical ||

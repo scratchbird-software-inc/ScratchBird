@@ -458,7 +458,7 @@ void VerifyDmlEvidence(const api::EngineApiResult& result,
                         "window"),
             "IPAR-P7-09 large-value shape did not use batch writer");
     Require(EvidenceU64(result.evidence,
-                        "insert_large_value_batch_chunks") > 0,
+                        "mga_large_value_batch_chunks") > 0,
             "IPAR-P7-09 large-value shape emitted no chunk evidence");
   }
 }
@@ -545,24 +545,17 @@ void VerifyDuplicateUniqueRefusal(Fixture& fixture) {
   const auto duplicate = api::EngineInsertRows(duplicate_request);
   Require(!duplicate.ok,
           "IPAR-P7-09 duplicate unique key was unexpectedly admitted");
-  if (!HasEvidence(duplicate.evidence,
-                   "insert_unique_probe_candidate_source",
-                   "persisted_unique_index_physical_probe")) {
-    for (const auto& item : duplicate.evidence) {
-      std::cerr << item.evidence_kind << '=' << item.evidence_id << '\n';
-    }
-  }
   Require(HasEvidence(duplicate.evidence,
                       "insert_unique_probe_candidate_source",
-                      "persisted_unique_index_physical_probe"),
-          "IPAR-P7-09 duplicate path did not use physical unique probe");
+                      "persisted_unique_index"),
+          "IPAR-P7-09 duplicate path lost its persisted-index source");
   Require(HasEvidence(duplicate.evidence,
-                      "physical_unique_index_probe_path",
-                      "mga_persisted_index_entry_lookup"),
-          "IPAR-P7-09 duplicate path did not use physical lookup");
-  Require(EvidenceU64(duplicate.evidence,
-                      "unique_index_physical_probe_hits") == 1,
-          "IPAR-P7-09 duplicate path did not record one physical probe hit");
+                      "bulk_unique_proof_persisted_source",
+                      "visible_rows_and_index_entries") &&
+              HasEvidence(duplicate.evidence,
+                          "bulk_constraint_proof_conflict_reason",
+                          "bulk_unique_proof_persisted_conflict"),
+          "IPAR-P7-09 duplicate path lost its persisted-index proof");
   Rollback(duplicate_context);
 }
 

@@ -283,6 +283,7 @@ engine_api::EngineRequestContext EngineContextForManagement(
   engine_context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
   engine_context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
   engine_context.local_transaction_id = session.local_transaction_id;
+  engine_context.transaction_uuid.canonical = session.transaction_uuid;
   engine_context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
   engine_context.application_name = session.application_name;
@@ -874,16 +875,19 @@ void ApplyDatabaseShutdownRuntimeActions(const ServerManagementContext& context,
   }
 
   if (context.session_registry == nullptr) return;
-  std::vector<std::array<std::uint8_t, 16>> session_uuids;
+  std::vector<std::pair<std::array<std::uint8_t, 16>,
+                        std::array<std::uint8_t, 16>>> session_bindings;
   for (const auto& [_, session] : context.session_registry->sessions_by_uuid) {
     if (SessionMatchesDatabase(session, snapshot.database_path, snapshot.database_uuid)) {
-      session_uuids.push_back(session.session_uuid);
+      session_bindings.emplace_back(session.connection_uuid,
+                                    session.session_uuid);
     }
   }
-  for (const auto& session_uuid : session_uuids) {
+  for (const auto& [connection_uuid, session_uuid] : session_bindings) {
     sbps::Frame disconnect;
     disconnect.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice);
     disconnect.header.request_uuid = sbps::MakeUuidV7Bytes();
+    disconnect.header.connection_uuid = connection_uuid;
     disconnect.header.session_uuid = session_uuid;
     disconnect.payload =
         DisconnectPayload(session_uuid, force ? "parser_killed" : "shutdown_drain_complete");
@@ -1001,6 +1005,17 @@ TRequest EngineLifecycleRequestForManagement(const ServerManagementContext& cont
   engine_request.option_envelopes.push_back("operation_key:" + request.operation_key);
   engine_request.option_envelopes.push_back("admin_cli_route:true");
   engine_request.option_envelopes.push_back("audit_reason:" + request.audit_reason);
+  if (request.operation_key == "create_database" &&
+      engine_request.context.transaction_uuid.canonical.empty()) {
+    // CREATE owns its bootstrap transaction inside the engine lifecycle
+    // boundary. The management request identity is the replay-stable receipt;
+    // it is never a parser-selected database or storage identity.
+    engine_request.context.transaction_uuid.canonical =
+        engine_request.context.request_id;
+    engine_request.context.local_transaction_id = 1;
+    engine_request.option_envelopes.push_back(
+        "engine_owned_management_transaction:true");
+  }
   for (const auto& token : ModeTokensForEngineOptions(request.mode)) {
     engine_request.option_envelopes.push_back(token);
   }
@@ -1054,20 +1069,12 @@ ServerManagementResponse HandleEngineLifecycleManagementOperation(
     std::string* records,
     std::string* outcome,
     std::string* state_after) {
-  if (request.operation_key == "create_database") {
-    return ErrorResponse(
-        frame,
-        {ManagementDiagnostic(
-            std::string(engine_api::kEngineCreateLifecycleBootstrapRequiredDiagnostic),
-            "Database creation is available only through the explicit local embedded "
-            "first-principal bootstrap command.",
-            {{"operation_key", request.operation_key},
-             {"bootstrap_boundary", "local_embedded_cli"},
-             {"authorization_authority", "engine"}})});
-  }
-
   engine_api::EngineApiResult lifecycle_result;
-  if (request.operation_key == "open_database") {
+  if (request.operation_key == "create_database") {
+    lifecycle_result = engine_api::EngineCreateLifecycle(
+        EngineLifecycleRequestForManagement<engine_api::EngineCreateLifecycleRequest>(
+            context, session, frame, request));
+  } else if (request.operation_key == "open_database") {
     lifecycle_result = engine_api::EngineOpenLifecycle(
         EngineLifecycleRequestForManagement<engine_api::EngineOpenLifecycleRequest>(
             context, session, frame, request));
@@ -1094,7 +1101,8 @@ ServerManagementResponse HandleEngineLifecycleManagementOperation(
     return ErrorResponse(frame, diagnostics);
   }
   *records = EngineLifecycleResultRecordsJson(lifecycle_result, request.operation_key);
-  *outcome = request.operation_key == "open_database" ? "opened" :
+  *outcome = request.operation_key == "create_database" ? "created" :
+             request.operation_key == "open_database" ? "opened" :
              request.operation_key == "attach_database" ? "attached" :
              "detached";
   *state_after = *outcome;

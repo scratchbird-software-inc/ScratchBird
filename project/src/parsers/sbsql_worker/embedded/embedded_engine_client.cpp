@@ -489,6 +489,67 @@ struct EmbeddedEngineClient::Impl {
   scratchbird::server::HostedEngineState engine_state;
   scratchbird::server::ServerSessionRegistry registry;
   bool started = false;
+  std::array<std::uint8_t, 16> parser_package_uuid{};
+  std::array<std::uint8_t, 16> dialect_profile_uuid{};
+
+  void EnsureEmbeddedParserIdentity() {
+    if (parser_package_uuid == std::array<std::uint8_t, 16>{}) {
+      parser_package_uuid = scratchbird::server::sbps::MakeUuidV7Bytes();
+    }
+    if (dialect_profile_uuid == std::array<std::uint8_t, 16>{}) {
+      dialect_profile_uuid = scratchbird::server::sbps::MakeUuidV7Bytes();
+    }
+  }
+
+  void AdmitEmbeddedParserIdentity(
+      const std::array<std::uint8_t, 16>& connection_uuid) {
+    EnsureEmbeddedParserIdentity();
+    scratchbird::server::ServerAdmittedParserChannelIdentity identity;
+    identity.parser_package_uuid = parser_package_uuid;
+    identity.dialect_profile_uuid = dialect_profile_uuid;
+    identity.parser_package_version_major =
+        config.parser_api_major == 0 ? kSbsqlWorkerParserApiCurrentMajor
+                                     : config.parser_api_major;
+    identity.parser_package_version_minor = 0;
+    identity.parser_package_version_patch = 0;
+    registry.admitted_parser_identity_by_connection_uuid.insert_or_assign(
+        scratchbird::server::UuidBytesToText(connection_uuid), identity);
+  }
+
+  bool PublishCanonicalNativeSessionIdentity(SessionContext* session) {
+    if (session == nullptr || session->session_uuid.empty()) return false;
+    const auto found = registry.sessions_by_uuid.find(session->session_uuid);
+    if (found == registry.sessions_by_uuid.end()) return false;
+    EnsureEmbeddedParserIdentity();
+    if (found->second.admitted_parser_package_uuid ==
+        std::array<std::uint8_t, 16>{}) {
+      found->second.admitted_parser_package_uuid = parser_package_uuid;
+      found->second.admitted_dialect_profile_uuid = dialect_profile_uuid;
+      found->second.admitted_parser_package_version_major =
+          config.parser_api_major == 0 ? kSbsqlWorkerParserApiCurrentMajor
+                                       : config.parser_api_major;
+      found->second.admitted_parser_package_version_minor = 0;
+      found->second.admitted_parser_package_version_patch = 0;
+    }
+    // Embedded direct execution does not negotiate a physical SBPS socket,
+    // but it invokes the same authenticated handlers and exact schemas.  Mark
+    // only the capabilities actually provided by this in-process route.
+    found->second.transaction_routing_v2_negotiated = true;
+    found->second.relation_descriptor_projection_v3_negotiated = true;
+    session->admitted_parser_package_uuid = scratchbird::server::UuidBytesToText(
+        found->second.admitted_parser_package_uuid);
+    session->admitted_dialect_profile_uuid = scratchbird::server::UuidBytesToText(
+        found->second.admitted_dialect_profile_uuid);
+    session->admitted_parser_package_version_major =
+        found->second.admitted_parser_package_version_major;
+    session->admitted_parser_package_version_minor =
+        found->second.admitted_parser_package_version_minor;
+    session->admitted_parser_package_version_patch =
+        found->second.admitted_parser_package_version_patch;
+    session->transaction_routing_v2_negotiated = true;
+    session->relation_descriptor_projection_v3_negotiated = true;
+    return true;
+  }
 
   bool EnsureStarted(std::string requested_database, MessageVectorSet* messages) {
     if (started) return true;
@@ -554,6 +615,7 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
   if (!impl_->EnsureStarted(credentials.requested_database, messages)) return false;
 
   const auto connection_uuid = scratchbird::server::sbps::MakeUuidV7Bytes();
+  impl_->AdmitEmbeddedParserIdentity(connection_uuid);
   auto auth_frame = BaseConnectionFrame(
       scratchbird::server::sbps::MessageType::kAuthHandoff,
       kSchemaAuthHandoffV1,
@@ -700,6 +762,13 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
   session->catalog_epoch = catalog_generation;
   session->security_policy_epoch = attach_security_epoch == 0 ? policy_generation : attach_security_epoch;
   session->descriptor_epoch = descriptor_epoch == 0 ? name_resolution_epoch : descriptor_epoch;
+  if (!impl_->PublishCanonicalNativeSessionIdentity(session)) {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.HELLO_IDENTITY_INVALID",
+                  "embedded native parser admission identity was not bound to the authenticated session");
+    session->authenticated = false;
+    return false;
+  }
   return true;
 #else
   (void)credentials;
@@ -824,6 +893,13 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
   session->catalog_epoch = catalog_generation;
   session->security_policy_epoch = attach_security_epoch == 0 ? policy_generation : attach_security_epoch;
   session->descriptor_epoch = descriptor_epoch == 0 ? name_resolution_epoch : descriptor_epoch;
+  if (!impl_->PublishCanonicalNativeSessionIdentity(session)) {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.HELLO_IDENTITY_INVALID",
+                  "embedded native parser admission identity was not bound to the authenticated session");
+    session->authenticated = false;
+    return false;
+  }
   return true;
 #else
   (void)credentials;
@@ -851,10 +927,34 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
         "sbp_sbsql.embedded"));
     return result;
   }
+  const bool require_relation_descriptor =
+      object_class == "relation" || object_class == "table";
+  ipc::ParserTransactionSelector transaction;
+  transaction.local_transaction_id = session.local_transaction_id;
+  transaction.transaction_uuid = session.transaction_uuid;
+  if (require_relation_descriptor &&
+      (!session.transaction_routing_v2_negotiated ||
+       !session.relation_descriptor_projection_v3_negotiated ||
+       !transaction.present())) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_V3_NOT_NEGOTIATED",
+        "ERROR",
+        "Embedded relation resolution requires the negotiated transaction-bound V3 projection route.",
+        "sbp_sbsql.embedded"));
+    return result;
+  }
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kResolveNameRequest),
                          session);
-  frame.payload = EncodeResolveNamePayload(session, presented_name, quoted, object_class, config);
+  frame.header.payload_schema_id = require_relation_descriptor
+      ? scratchbird::server::sbps::kSchemaResolveNameRequestV3
+      : scratchbird::server::sbps::kSchemaResolveNameRequestV1;
+  frame.payload = require_relation_descriptor
+      ? ipc::EncodeResolveNameRequestPayloadV3(
+            session, presented_name, quoted, object_class, config, transaction,
+            0x01u)
+      : EncodeResolveNamePayload(session, presented_name, quoted, object_class,
+                                 config);
   const auto encoded = scratchbird::server::ResolveNamePublicFrameForEmbedded(
       frame, impl_->engine_state, &impl_->registry);
   const auto decoded = scratchbird::server::sbps::DecodeFrameBytes(
@@ -866,6 +966,12 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
         "The embedded public name response frame is malformed.",
         "sbp_sbsql.embedded"));
     return result;
+  }
+  if (require_relation_descriptor) {
+    ipc::PublicNameResolutionResult projected;
+    ipc::DecodeResolveNameResultPayloadV3(decoded.frame->payload, true,
+                                          &projected);
+    return projected;
   }
   return DecodePublicNamePayload(decoded.frame->payload, "resolved");
 #else
@@ -891,6 +997,8 @@ PublicNameResolutionResult EmbeddedEngineClient::RenderUuidPublic(
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kRenderUuidRequest),
                          session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaRenderUuidRequestV1;
   frame.payload = EncodeRenderUuidPayload(object_uuid);
   const auto encoded =
       scratchbird::server::RenderUuidPublicFrameForEmbedded(frame, &impl_->registry);
@@ -915,6 +1023,404 @@ PublicNameResolutionResult EmbeddedEngineClient::RenderUuidPublic(
       "sbp_sbsql.embedded"));
   return result;
 #endif
+}
+
+ipc::ServerStatementContextResult
+EmbeddedEngineClient::AcquireNativeStatementContext(
+    const SessionContext& session,
+    const ipc::ParserTransactionSelector& transaction) {
+  ipc::ServerStatementContextResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || !session.transaction_routing_v2_negotiated ||
+      !session.relation_descriptor_projection_v3_negotiated ||
+      !transaction.present() ||
+      TextToUuid(session.session_uuid) == std::array<std::uint8_t, 16>{} ||
+      TextToUuid(session.connection_uuid) == std::array<std::uint8_t, 16>{} ||
+      TextToUuid(transaction.transaction_uuid) ==
+          std::array<std::uint8_t, 16>{}) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_IDENTITY_INVALID",
+                  "embedded native statement-context acquisition requires "
+                  "an authenticated exact transaction route");
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+                             scratchbird::server::sbps::MessageType::
+                                 kAcquireStatementContextRequest),
+                         session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaAcquireStatementContextRequestV11;
+  frame.payload = ipc::EncodeNativeStatementContextRequestPayloadV11(
+      session, transaction);
+  const auto operation = scratchbird::server::HandleAcquireStatementContext(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_schema_id !=
+          scratchbird::server::sbps::
+              kSchemaAcquireStatementContextResultV11 ||
+      !ipc::DecodeNativeStatementContextResultPayloadV11(
+          operation.payload, &result.context) ||
+      result.context.transaction.local_transaction_id !=
+          transaction.local_transaction_id ||
+      result.context.transaction.transaction_uuid !=
+          transaction.transaction_uuid) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
+                  "the embedded engine-issued native statement context was "
+                  "malformed or did not match the requested transaction");
+    result.context = {};
+    return result;
+  }
+  result.accepted = true;
+#else
+  (void)session;
+  (void)transaction;
+  AddDiagnostic(&result.messages,
+                "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerLiteralBindingResult
+EmbeddedEngineClient::NegotiateLiteralDescriptors(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbln) {
+  ipc::ServerLiteralBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || canonical_sbln.size() < 128) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "the embedded literal descriptor request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+                             scratchbird::server::sbps::MessageType::
+                                 kNegotiateLiteralDescriptorsRequest),
+                         session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::
+          kSchemaNegotiateLiteralDescriptorsRequestV1;
+  frame.payload = canonical_sbln;
+  const auto operation = scratchbird::server::HandleNegotiateLiteralDescriptors(
+      &impl_->registry, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_schema_id !=
+      scratchbird::server::sbps::
+          kSchemaNegotiateLiteralDescriptorsResultV1) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.LITERAL_RESULT_SCHEMA_MISMATCH",
+                  "the embedded literal negotiation result schema is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_sbln;
+  AddDiagnostic(&result.messages,
+                "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerLiteralBindingResult
+EmbeddedEngineClient::IssueContextualTextLiteralProfiles(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbtlnr) {
+  ipc::ServerLiteralBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || canonical_sbtlnr.size() < 410 ||
+      canonical_sbtlnr.size() > 65536) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "the embedded contextual TEXT literal profile request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(698, session);
+  frame.header.stream_id = 1;
+  frame.header.payload_schema_id = 7711;
+  frame.payload = canonical_sbtlnr;
+  const auto operation =
+      scratchbird::server::HandleIssueContextualTextLiteralProfiles(
+          &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != 699 ||
+      operation.response_schema_id != 7712) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.LITERAL_RESULT_SCHEMA_MISMATCH",
+                  "the embedded contextual TEXT literal profile result is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_sbtlnr;
+  AddDiagnostic(&result.messages,
+                "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerLiteralBindingResult EmbeddedEngineClient::FinalizeLiteralBinding(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sblf) {
+  ipc::ServerLiteralBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || canonical_sblf.size() < 208) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "the embedded literal finalization request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(40, session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaFinalizeLiteralBindingRequestV1;
+  frame.payload = canonical_sblf;
+  const auto operation = scratchbird::server::HandleFinalizeLiteralBinding(
+      &impl_->registry, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_schema_id !=
+      scratchbird::server::sbps::kSchemaFinalizeLiteralBindingResultV1) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.LITERAL_RESULT_SCHEMA_MISMATCH",
+                  "the embedded literal finalization result schema is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_sblf;
+  AddDiagnostic(&result.messages,
+                "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateBulkImportStream(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || canonical_request.size() != 64) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "the embedded bulk import stream request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+                             scratchbird::server::sbps::MessageType::
+                                 kCoordinateBulkImportStreamRequest),
+                         session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaCoordinateBulkImportStreamRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateBulkImportStream(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaCoordinateBulkImportStreamResultV1 ||
+      operation.payload.size() != 424) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.BULK_IMPORT_STREAM_RESULT_SCHEMA_MISMATCH",
+                  "the embedded bulk import stream result is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages,
+                "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDmlUpdateRowsBind(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || canonical_request.size() < 52 ||
+      canonical_request.size() > 65536) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "the embedded DML UPDATE binding request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDmlUpdateRowsBindRequest),
+      session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::
+      kSchemaCoordinateDmlUpdateRowsBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::
+      HandleCoordinateDmlUpdateRowsBind(&impl_->registry,
+                                        impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCoordinateDmlUpdateRowsBindResultV1 ||
+      operation.payload.size() != 24) {
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.DML_UPDATE_BIND_RESULT_SCHEMA_MISMATCH",
+        "the embedded DML UPDATE binding result is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDmlPlanImportRowsBind(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  constexpr std::size_t kRequestHeaderBytes = 120;
+  constexpr std::size_t kMappingRecordBytes = 24;
+  constexpr std::size_t kMaximumMappings = 262144;
+  constexpr std::size_t kMaximumRequestBytes =
+      kRequestHeaderBytes + kMaximumMappings * kMappingRecordBytes;
+  if (!session.authenticated ||
+      canonical_request.size() < kRequestHeaderBytes ||
+      canonical_request.size() > kMaximumRequestBytes) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "the embedded DML plan-import binding request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDmlPlanImportRowsBindRequest),
+      session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::
+      kSchemaCoordinateDmlPlanImportRowsBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::
+      HandleCoordinateDmlPlanImportRowsBind(&impl_->registry,
+                                            impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDmlPlanImportRowsBindResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCoordinateDmlPlanImportRowsBindResultV1 ||
+      operation.payload.size() != 24) {
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.DML_PLAN_IMPORT_ROWS_BIND_RESULT_SCHEMA_MISMATCH",
+        "the embedded DML plan-import binding result is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ServerExecutionResult
+EmbeddedEngineClient::ExecuteCanonicalSblrWithDataPacket(
+    const SessionContext& session,
+    const ipc::ParserStatementContext& statement_context,
+    const ipc::ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
+  ServerExecutionResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || !session.transaction_routing_v2_negotiated ||
+      !statement_context.complete() || !submission.complete() ||
+      submission.statement_uuid != statement_context.statement_uuid) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.CANONICAL_STATEMENT_CONTEXT_INVALID",
+                  "embedded canonical execution requires the exact acquired "
+                  "statement and active transaction context");
+    return result;
+  }
+  std::uint32_t request_schema_id = 0;
+  auto payload = ipc::EncodeCanonicalExecuteRequestPayload(
+      session, statement_context, submission, data_packet, cursor_requested,
+      &request_schema_id);
+  if (payload.empty() || request_schema_id == 0) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.CANONICAL_STATEMENT_CONTEXT_INVALID",
+                  "the embedded canonical execute request could not be encoded");
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+                             scratchbird::server::sbps::MessageType::
+                                 kExecuteSblr),
+                         session);
+  frame.header.payload_schema_id = request_schema_id;
+  frame.payload = std::move(payload);
+  const auto operation = scratchbird::server::HandleExecuteSblr(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!ipc::DecodeCanonicalExecuteResultPayload(
+          operation.payload, frame.header.request_uuid, &result,
+          &result.messages)) {
+    if (!operation.diagnostics.empty()) {
+      AddServerDiagnostics(operation.diagnostics, &result.messages);
+    }
+    if (result.messages.diagnostics.empty()) {
+      AddDiagnostic(&result.messages,
+                    "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
+                    "the embedded canonical execute result payload is malformed");
+    }
+    result.accepted = false;
+  }
+#else
+  (void)session;
+  (void)statement_context;
+  (void)submission;
+  (void)data_packet;
+  (void)cursor_requested;
+  AddDiagnostic(&result.messages,
+                "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
 }
 
 ServerExecutionResult EmbeddedEngineClient::ExecuteSblr(

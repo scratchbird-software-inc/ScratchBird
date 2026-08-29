@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/relation_descriptor_projection.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/select_api.hpp"
@@ -160,7 +161,15 @@ api::EngineRequestContext Begin(Fixture& fixture,
   begin.context.security_epoch = 1;
   begin.context.resource_epoch =
       fixture.created.state.resource_seed_catalog.resource_epoch;
+  begin.context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  begin.context.datatype_catalog_generation = 1;
+  begin.context.datatype_registry_generation = 1;
   begin.context.name_resolution_epoch = 1;
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &begin.context,
+      "relation_descriptor_projection_conformance",
+      {"CATALOG_MUTATE"});
   begin.isolation_level = "read_committed";
   if (read_only) {
     begin.transaction_policy_profile.encoded_profiles.push_back(
@@ -326,8 +335,8 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
   table.table_columns.push_back(Column(
       1,
       "text_value",
-      "varchar(20)",
-      "type=varchar(20);character_length=20;charset_uuid=" +
+      "text",
+      "type=text;character_length=20;charset_uuid=" +
           utf8->resource_uuid +
           ";collation_uuid=" + utf8->default_collation_uuid));
   table.table_columns.push_back(Column(
@@ -506,6 +515,17 @@ void RequireProjectionRows(
       "dml_surface_variant:relation.unknown_inventory.v1";
   Require(!api::EngineSelectRows(unknown_variant).ok,
           "catalog projection accepted an unknown select variant");
+
+  auto retired_result_shape = SelectRequest(fixture, context, descriptor);
+  retired_result_shape.option_envelopes[1] =
+      "result_projection:any_legacy_projection";
+  const auto retired_result_shape_result =
+      api::EngineSelectRows(retired_result_shape);
+  Require(!retired_result_shape_result.ok &&
+              HasDiagnosticDetail(
+                  retired_result_shape_result,
+                  "dml.select_rows:retired_result_shape_not_supported"),
+          "generic retired result projection was not refused");
 
   auto excluded_dependency = context;
   excluded_dependency.statement_metadata_snapshot_engine_owned = true;

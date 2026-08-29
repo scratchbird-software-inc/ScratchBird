@@ -423,6 +423,10 @@ class SbsqlTestWireSession {
       std::string_view encoded_sblr_envelope,
       const std::vector<std::uint8_t>& data_packet,
       bool cursor_requested = false);
+  PipelineResult RunCanonicalRouteTextEnvelopeForWire(
+      std::string_view encoded_route_envelope,
+      const std::vector<std::uint8_t>& data_packet = {},
+      bool cursor_requested = false);
   ServerPrepareSblrResult PrepareSblrForWire(std::string_view encoded_sblr_envelope);
   PipelineResult RunPreparedSblrEnvelopeForWire(std::string_view prepared_statement_uuid,
                                                 std::string_view encoded_sblr_envelope,
@@ -452,6 +456,7 @@ class SbsqlTestWireSession {
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::vector<std::uint8_t> admitted_transaction_handle_;
   std::vector<std::uint8_t> retired_transaction_handle_;
+  bool replaying_transaction_handle_{false};
   std::vector<std::uint8_t> admitted_savepoint_descriptor_;
   std::vector<std::uint8_t> retired_savepoint_descriptor_;
   std::vector<std::uint8_t> admitted_savepoint_handle_;
@@ -469,6 +474,7 @@ class SbsqlTestWireSession {
   std::map<std::string, ipc::CursorStreamDescriptorV1> cursor_stream_descriptors_;
   std::deque<std::string> stable_relation_name_resolution_lru_;
 
+  bool FinalizeSuccessfulAutocommitForWire(PipelineResult* statement_result);
   bool HasExecutionRoute() const;
   ServerExecutionResult ExecuteSblrOnRoute(std::string_view encoded_sblr_envelope,
                                            bool cursor_requested = false);

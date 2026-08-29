@@ -15,6 +15,18 @@ inline constexpr const char* kSblrLiteralOpcodeVersion = "1.0";
 inline constexpr const char* kSblrLiteralOperandDescriptorId = "typed_literal";
 inline constexpr const char* kSblrLiteralResultDescriptorId = "typed_value";
 inline constexpr std::uint16_t kSblrLiteralResultDescriptorVersion = 1;
+inline constexpr const char* kSblrContextualTextLiteralExecutorId =
+    "engine.executor.contextual_text_literal_equality.v2";
+inline constexpr std::uint16_t kSblrContextualTextLiteralOpcodeCode = 4615;
+inline constexpr const char* kSblrContextualTextLiteralOpcodeVersion = "1.1";
+inline constexpr const char*
+    kSblrContextualTextLiteralOperandDescriptorId =
+        "contextual_text_literal_profile_set";
+inline constexpr const char*
+    kSblrContextualTextLiteralResultDescriptorId =
+        "contextual_text_equality_boolean";
+inline constexpr std::uint16_t
+    kSblrContextualTextLiteralResultDescriptorVersion = 2;
 inline constexpr const char* kSblrParameterExecutorId = "engine.op.parameter";
 inline constexpr std::uint16_t kSblrParameterOpcodeCode = 4;
 inline constexpr const char* kSblrParameterOpcodeVersion = "1.0";
@@ -166,6 +178,25 @@ inline constexpr const char* kSblrInsertOperandDescriptorId = "insert_descriptor
 inline constexpr const char* kSblrInsertResultDescriptorId = "mutation_result";
 inline constexpr std::uint16_t kSblrInsertResultDescriptorVersion = 1;
 inline constexpr const char* kSblrUpdateExecutorId="engine.op.update";inline constexpr std::uint16_t kSblrUpdateOpcodeCode=769;inline constexpr const char* kSblrUpdateOpcodeVersion="1.0";inline constexpr const char* kSblrUpdateOperandDescriptorId="update_descriptor";inline constexpr const char* kSblrUpdateResultDescriptorId="mutation_result";inline constexpr std::uint16_t kSblrUpdateResultDescriptorVersion=1;
+inline constexpr const char* kSblrDmlUpdateRowsExecutorId = "dml.update_rows";
+inline constexpr std::uint16_t kSblrDmlUpdateRowsOpcodeCode = 783;
+inline constexpr const char* kSblrDmlUpdateRowsOpcodeVersion = "1.0";
+inline constexpr const char* kSblrDmlUpdateRowsOperandDescriptorId =
+    "dml_update_rows_descriptor";
+inline constexpr const char* kSblrDmlUpdateRowsResultDescriptorId =
+    "mutation_result";
+inline constexpr std::uint16_t kSblrDmlUpdateRowsResultDescriptorVersion = 1;
+// SEARCH_KEY: SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1
+inline constexpr const char* kSblrDmlPlanImportRowsExecutorId =
+    "dml.plan_import_rows";
+inline constexpr std::uint16_t kSblrDmlPlanImportRowsOpcodeCode = 793;
+inline constexpr const char* kSblrDmlPlanImportRowsOpcodeVersion = "1.0";
+inline constexpr const char* kSblrDmlPlanImportRowsOperandDescriptorId =
+    "import_rows_plan_descriptor";
+inline constexpr const char* kSblrDmlPlanImportRowsResultDescriptorId =
+    "import_plan_result";
+inline constexpr std::uint16_t
+    kSblrDmlPlanImportRowsResultDescriptorVersion = 1;
 inline constexpr const char* kSblrDeleteExecutorId="engine.op.delete";inline constexpr std::uint16_t kSblrDeleteOpcodeCode=770;inline constexpr const char* kSblrDeleteOpcodeVersion="1.0";inline constexpr const char* kSblrDeleteOperandDescriptorId="delete_descriptor";inline constexpr const char* kSblrDeleteResultDescriptorId="mutation_result";inline constexpr std::uint16_t kSblrDeleteResultDescriptorVersion=1;
 inline constexpr const char* kSblrMergeExecutorId="engine.op.merge";inline constexpr std::uint16_t kSblrMergeOpcodeCode=771;inline constexpr const char* kSblrMergeOpcodeVersion="1.0";inline constexpr const char* kSblrMergeOperandDescriptorId="merge_descriptor";inline constexpr const char* kSblrMergeResultDescriptorId="mutation_result";inline constexpr std::uint16_t kSblrMergeResultDescriptorVersion=1;
 inline constexpr const char* kSblrTableTruncateExecutorId="engine.op.table_truncate";inline constexpr std::uint16_t kSblrTableTruncateOpcodeCode=773;inline constexpr const char* kSblrTableTruncateOpcodeVersion="1.0";inline constexpr const char* kSblrTableTruncateOperandDescriptorId="truncate_table_descriptor";inline constexpr const char* kSblrTableTruncateResultDescriptorId="mutation_result";inline constexpr std::uint16_t kSblrTableTruncateResultDescriptorVersion=1;
@@ -331,6 +362,14 @@ struct SblrExecutorAvailabilitySetResult {
 SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
     const EngineRequestContext& context);
 SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
+    const EngineRequestContext& context,
+    const SblrExecutorAvailabilityRowIdentity& exact_row_identity);
+
+// Read-only exact-current lookup. Unlike the compatibility loader above this
+// never bootstraps or publishes an absent row; validation-only consumers must
+// fail closed when no durable current authority exists.
+SblrExecutorAvailabilityLoadResult
+LoadCurrentSblrExecutorAvailabilitySnapshot(
     const EngineRequestContext& context,
     const SblrExecutorAvailabilityRowIdentity& exact_row_identity);
 

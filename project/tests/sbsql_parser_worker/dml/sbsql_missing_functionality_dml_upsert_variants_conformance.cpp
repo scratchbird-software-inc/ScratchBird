@@ -196,6 +196,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("SBSQL-MISS-008");
   return context;

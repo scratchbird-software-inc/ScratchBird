@@ -14,6 +14,8 @@
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
+#include "canonical_sblr_admission_test_helper.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -221,69 +223,78 @@ void CommitFixture(Fixture* fixture) {
                                                fixture->typed_local_transaction_id,
                                                1790600000100);
   Require(committed.ok(), "local transaction commit failed");
-  fixture->inventory = std::move(committed.inventory);
+  const auto reopen_transaction_uuid =
+      uuid::GenerateEngineIdentityV7(UuidKind::transaction, 1790600000101);
+  Require(reopen_transaction_uuid.ok(), "reopen transaction UUID generation failed");
+  auto reopened = txn::BeginLocalTransaction(std::move(committed.inventory),
+                                             reopen_transaction_uuid.value,
+                                             1790600000102);
+  Require(reopened.ok(), "reopen transaction begin failed");
+  fixture->inventory = std::move(reopened.inventory);
+  fixture->transaction_uuid =
+      uuid::UuidToString(reopen_transaction_uuid.value.value);
+  fixture->local_transaction_id = reopened.entry.identity.local_id.value;
+  fixture->typed_local_transaction_id = reopened.entry.identity.local_id;
   Require(db::PersistLocalTransactionInventoryToDatabase(fixture->path.string(),
                                                          fixture->inventory)
               .ok(),
-          "committed transaction inventory persist failed");
-}
-
-std::string AdmissionFrame(std::string operation_id,
-                           std::string family,
-                           std::string opcode) {
-  return "envelope=SBLRExecutionEnvelope.v3\n"
-         "envelope_major=3\n"
-         "sblr_version=sblr_v3\n"
-         "operation_id=" + operation_id + "\n"
-         "sblr_operation_family=" + family + "\n"
-         "result_shape=rs.structured_type.route.v1\n"
-         "diagnostic_shape=diag.structured_type.v1\n"
-         "parser_resolved_names_to_uuids=true\n"
-         "contains_sql_text=false\n"
-         "engine_api_command_route=true\n"
-         "public_sbsql_exact_command=true\n"
-         "evidence=sblr_opcode:" + opcode + "\n";
+          "reopen transaction inventory persist failed");
 }
 
 void ValidateAdmissionAndRegistry() {
   struct Route {
+    std::string retired_operation_id;
     std::string operation_id;
     std::string opcode;
     std::string family;
+    std::string operand_contract;
+    std::string result_contract;
     bool requires_txn;
   };
   const Route routes[] = {
-      {"catalog.mutation.create_type", "SBLR_CATALOG_MUTATION_CREATE_TYPE",
-       "sblr.catalog.mutation.v3", true},
-      {"catalog.mutation.alter_type", "SBLR_CATALOG_MUTATION_ALTER_TYPE",
-       "sblr.catalog.mutation.v3", true},
-      {"catalog.mutation.drop_type", "SBLR_CATALOG_MUTATION_DROP_TYPE",
-       "sblr.catalog.mutation.v3", true},
-      {"catalog.type.show", "SBLR_SHOW_TYPE",
-       "sblr.catalog.introspect.v3", false},
-      {"catalog.type.show_all", "SBLR_SHOW_TYPES",
-       "sblr.catalog.introspect.v3", false},
-      {"query.structured_type.constructor",
-       "SBLR_QUERY_STRUCTURED_TYPE_CONSTRUCTOR",
-       "sblr.query.relational.v3", true},
-      {"query.structured_type.cast", "SBLR_QUERY_STRUCTURED_TYPE_CAST",
-       "sblr.query.relational.v3", true},
-      {"query.structured_type.compare", "SBLR_QUERY_STRUCTURED_TYPE_COMPARE",
-       "sblr.query.relational.v3", true},
-      {"query.structured_type.serialize",
-       "SBLR_QUERY_STRUCTURED_TYPE_SERIALIZE",
-       "sblr.query.relational.v3", true},
+      {"catalog.mutation.create_type", "engine.op.ddl_create_type",
+       "SBLR_DDL_CREATE_TYPE", "sblr.catalog.mutation.v3",
+       "create_type_descriptor", "ddl_result", true},
+      {"catalog.mutation.alter_type", "engine.op.ddl_alter_type",
+       "SBLR_DDL_ALTER_TYPE", "sblr.catalog.mutation.v3",
+       "alter_type_descriptor", "ddl_result", true},
+      {"catalog.mutation.drop_type", "engine.op.ddl_drop_type",
+       "SBLR_DDL_DROP_TYPE", "sblr.catalog.mutation.v3",
+       "drop_type_descriptor", "ddl_result", true},
+      {"catalog.type.show", "engine.op.catalog_introspect",
+       "SBLR_CATALOG_INTROSPECT", "sblr.catalog.introspect.v3",
+       "catalog_introspect_descriptor", "catalog_introspect_result", true},
+      {"catalog.type.show_all", "engine.op.catalog_introspect",
+       "SBLR_CATALOG_INTROSPECT", "sblr.catalog.introspect.v3",
+       "catalog_introspect_descriptor", "catalog_introspect_result", true},
+      {"query.structured_type.constructor", "engine.op.domain_operation",
+       "SBLR_DOMAIN_OPERATION", "sblr.query.relational.v3",
+       "domain_operation_descriptor", "typed_value", true},
+      {"query.structured_type.cast", "engine.op.cast", "SBLR_CAST",
+       "sblr.query.relational.v3", "cast_descriptor", "typed_value", true},
+      {"query.structured_type.compare", "engine.op.compare", "SBLR_COMPARE",
+       "sblr.query.relational.v3", "comparison_descriptor", "boolean_value", true},
+      {"query.structured_type.serialize", "engine.op.domain_operation",
+       "SBLR_DOMAIN_OPERATION", "sblr.query.relational.v3",
+       "domain_operation_descriptor", "typed_value", true},
   };
   for (const auto& route : routes) {
+    Require(sblr::LookupSblrOperation(route.retired_operation_id) == nullptr,
+            "retired structured type synthetic SBLR identity remained admitted");
     const auto* entry = sblr::LookupSblrOperation(route.operation_id);
     Require(entry != nullptr, "structured type opcode registry entry missing");
     Require(entry->opcode == route.opcode, "structured type opcode mismatch");
+    Require(entry->operand_contract == route.operand_contract,
+            "structured type operand contract mismatch");
+    Require(entry->result_contract == route.result_contract,
+            "structured type result contract mismatch");
     Require(entry->support == sblr::SblrOpcodeSupport::implemented,
             "structured type opcode not implemented");
     Require(entry->requires_transaction_context == route.requires_txn,
             "structured type opcode transaction requirement drifted");
     const auto admission = server::AdmitServerSblrEnvelope(
-        {AdmissionFrame(route.operation_id, route.family, route.opcode), false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+            route.operation_id, route.opcode));
     if (!admission.admitted) {
       std::cerr << "route=" << route.operation_id << " family="
                 << route.family << "\n";

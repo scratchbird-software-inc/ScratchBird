@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -233,7 +234,7 @@ void RequireExactLowering(const JsonCase& test_case,
 
 void RequireServerAdmission(const SblrEnvelope& envelope) {
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
   Require(admission.admitted, "server admission rejected SBSFC-061 exact route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for SBSFC-061");

@@ -1,6 +1,6 @@
 # Database Lifecycle Traceability Report
 
-Generated: `2026-06-20T17:08:10Z`
+Generated: `2026-08-26T12:48:51Z`
 Slice: `DBLC-013R`
 Acceptance gate: `DBLC_P13R_TRACEABILITY_COMPLETE`
 Status: `failed`
@@ -12,19 +12,15 @@ This report is generated from the database lifecycle tracker, acceptance gates, 
 
 ## Coverage Summary
 
-- Execution_Plan CTest labels observed in current CMake/test files: `5365`
-- Test source inventory entries observed: `20579`
-- Generated trace records: `448`
+- Execution_Plan CTest labels observed in current CMake/test files: `0`
+- Test source inventory entries observed: `0`
+- Generated trace records: `0`
 - Fatal findings: `1`
 - Warnings: `0`
 
 | Trace category | Records |
 | --- | ---: |
-| `invalid_transition_or_refusal` | `43` |
-| `operation_family` | `83` |
-| `route` | `24` |
-| `state` | `112` |
-| `transition` | `186` |
+| `none` | `0` |
 
 ## Required Gates
 
@@ -36,94 +32,47 @@ This report is generated from the database lifecycle tracker, acceptance gates, 
 
 | Severity | Code | Location | Detail |
 | --- | --- | --- | --- |
-| `fatal` | `DBLC013R.TRACE_KIND_MISSING` | `diagnostic` | required traceability category has no generated records |
+| `fatal` | `DBLC013R.MISSING_INPUT` | `public_input_snapshot` | required traceability input is missing |
 
 ## Trace Samples
 
-| Kind | Item | Gates |
-| --- | --- | --- |
-| `state` | `catalog.sys_information_projection` | `database_lifecycle_catalog_object`, `database_lifecycle_protocol_versioning`, `database_lifecycle_storage`, `database_lifecycle_sys_information_projection`, `database_lifecycle_upgrade_migration` |
-| `state` | `catalog.system_physical_index_profiles` | `database_lifecycle_catalog_object`, `database_lifecycle_index_statistics_plan`, `database_lifecycle_sys_information_projection` |
-| `state` | `database.absent` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `database.activation_failed_recoverable` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `database.closed_clean` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `database.closed_created` | `database_lifecycle_admin_cli`, `database_lifecycle_default_policy_catalog`, `database_lifecycle_storage` |
-| `state` | `database.closed_unclean` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `database.create_failed_recoverable` | `database_lifecycle_admin_cli`, `database_lifecycle_default_policy_catalog`, `database_lifecycle_storage` |
-| `state` | `database.creating_tx1` | `database_lifecycle_admin_cli`, `database_lifecycle_default_policy_catalog`, `database_lifecycle_storage` |
-| `state` | `database.drop_quarantined` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `database.drop_refused` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `database.dropped` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `database.dropping` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `database.failed` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `database.first_open_activating_tx2` | `database_lifecycle_admin_cli`, `database_lifecycle_protocol_versioning`, `database_lifecycle_storage`, `database_lifecycle_upgrade_migration` |
-| `state` | `database.online` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `database.open_refused` | `database_lifecycle_admin_cli`, `database_lifecycle_protocol_versioning`, `database_lifecycle_storage`, `database_lifecycle_upgrade_migration` |
-| `state` | `database.opening` | `database_lifecycle_admin_cli`, `database_lifecycle_protocol_versioning`, `database_lifecycle_storage`, `database_lifecycle_upgrade_migration` |
-| `state` | `database.quarantined` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `database.shutdown_draining` | `database_lifecycle_admin_cli`, `database_lifecycle_process_association`, `database_lifecycle_server_route`, `database_lifecycle_shutdown_notification`, `database_lifecycle_storage` |
-| `state` | `database.shutdown_fencing` | `database_lifecycle_admin_cli`, `database_lifecycle_process_association`, `database_lifecycle_server_route`, `database_lifecycle_shutdown_notification`, `database_lifecycle_storage` |
-| `state` | `database.shutdown_finalizing` | `database_lifecycle_admin_cli`, `database_lifecycle_process_association`, `database_lifecycle_server_route`, `database_lifecycle_shutdown_notification`, `database_lifecycle_storage` |
-| `state` | `database.shutdown_forcing` | `database_lifecycle_admin_cli`, `database_lifecycle_process_association`, `database_lifecycle_server_route`, `database_lifecycle_shutdown_notification`, `database_lifecycle_storage` |
-| `state` | `database.shutdown_notifying` | `database_lifecycle_admin_cli`, `database_lifecycle_event_notification`, `database_lifecycle_process_association`, `database_lifecycle_server_route`, `database_lifecycle_shutdown_notification`, `database_lifecycle_storage` |
-| `state` | `database.shutdown_refused` | `database_lifecycle_admin_cli`, `database_lifecycle_process_association`, `database_lifecycle_server_route`, `database_lifecycle_shutdown_notification`, `database_lifecycle_storage` |
-| `state` | `database.verify_read_only` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `filespace.absent` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.active_primary` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.active_secondary` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.attach_refused` | `database_lifecycle_filespace`, `database_lifecycle_security`, `database_lifecycle_security_principal`, `database_lifecycle_storage` |
-| `state` | `filespace.attaching` | `database_lifecycle_filespace`, `database_lifecycle_security`, `database_lifecycle_security_principal`, `database_lifecycle_storage` |
-| `state` | `filespace.compact_refused` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.compacting` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.demote_refused` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.demoting` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.detach_refused` | `database_lifecycle_filespace`, `database_lifecycle_server_route`, `database_lifecycle_session_request_cursor`, `database_lifecycle_storage` |
-| `state` | `filespace.detached` | `database_lifecycle_filespace`, `database_lifecycle_server_route`, `database_lifecycle_session_request_cursor`, `database_lifecycle_storage` |
-| `state` | `filespace.detaching` | `database_lifecycle_filespace`, `database_lifecycle_server_route`, `database_lifecycle_session_request_cursor`, `database_lifecycle_storage` |
-| `state` | `filespace.drop_quarantined` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.drop_refused` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.dropped` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.dropping` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.maintenance_fenced` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.move_refused` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.moving` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.promote_refused` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.promoting` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.quarantined` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.read_only` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.read_write` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.registering` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.registration_failed` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.repair_planned` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_index_statistics_plan`, `database_lifecycle_storage` |
-| `state` | `filespace.repair_running` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.truncate_refused` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.truncating` | `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `filespace.verify_running` | `database_lifecycle_admin_cli`, `database_lifecycle_filespace`, `database_lifecycle_storage` |
-| `state` | `mode.diagnostic_read_only` | `DBLC_STATIC_TRACEABILITY_COVERAGE`, `database_lifecycle_admin_cli`, `database_lifecycle_storage`, `database_lifecycle_supportability_evidence` |
-| `state` | `mode.entry_refused` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.exit_refused` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.maintenance` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.maintenance_entering` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.maintenance_exiting` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.repair_failed` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.repair_planning` | `database_lifecycle_admin_cli`, `database_lifecycle_index_statistics_plan`, `database_lifecycle_storage` |
-| `state` | `mode.repair_refused` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.repair_running` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.restricted_entering` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.restricted_exiting` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `mode.restricted_open` | `database_lifecycle_admin_cli`, `database_lifecycle_protocol_versioning`, `database_lifecycle_storage`, `database_lifecycle_upgrade_migration` |
-| `state` | `mode.verify_running` | `database_lifecycle_admin_cli`, `database_lifecycle_storage` |
-| `state` | `process.absent` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `state` | `process.active` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `state` | `process.associated` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `state` | `process.draining` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `state` | `process.failed` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `state` | `process.force_stopping` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon`, `database_lifecycle_server_route`, `database_lifecycle_shutdown_notification` |
-| `state` | `process.quarantined` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `state` | `process.ready` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `state` | `process.starting` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `summary` | `368 additional generated records` | `covered` |
+No trace records were generated.
 
 ## CMake Integration
 
-The traceability CTest/static labels are materialized in the current CMake inventory.
+Shared CMake registration is coordinator-owned. Apply this snippet in `project/tests/database_lifecycle/CMakeLists.txt` after `SB_PRIVATE_REPO_ROOT` and `Python3_EXECUTABLE` are available:
+
+```cmake
+set(SB_DATABASE_LIFECYCLE_TRACEABILITY_AUDIT
+  "${SB_PRIVATE_REPO_ROOT}/project/tools/database_lifecycle/lifecycle_traceability_audit.py"
+)
+
+add_executable(database_lifecycle_traceability_conformance
+  traceability_conformance.cpp
+)
+target_compile_features(database_lifecycle_traceability_conformance PRIVATE cxx_std_23)
+target_compile_definitions(
+  database_lifecycle_traceability_conformance
+  PRIVATE
+    SB_DBLC_TRACEABILITY_AUDIT="${SB_DATABASE_LIFECYCLE_TRACEABILITY_AUDIT}"
+    SB_DBLC_REPO_ROOT="${SB_PRIVATE_REPO_ROOT}"
+    SB_DBLC_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
+)
+
+add_test(
+  NAME database_lifecycle_traceability_conformance
+  COMMAND database_lifecycle_traceability_conformance
+)
+set_tests_properties(database_lifecycle_traceability_conformance PROPERTIES
+  LABELS "database_lifecycle_traceability;DBLC_P13R_TRACEABILITY_COMPLETE;database_lifecycle"
+)
+
+add_test(
+  NAME database_lifecycle_traceability_static
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/traceability_static.py"
+          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+)
+set_tests_properties(database_lifecycle_traceability_static PROPERTIES
+  LABELS "database_lifecycle_traceability;DBLC_STATIC_TRACEABILITY_COVERAGE;DBLC_P13R_TRACEABILITY_COMPLETE;database_lifecycle"
+)
+```

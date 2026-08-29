@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -223,7 +224,7 @@ void RequireCursorRoutineSignature(std::string_view sql,
           "ROUTINE-CURSOR-GATE-001 payload embedded SQL text or parameter name");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "ROUTINE-CURSOR-GATE-009 server admission rejected cursor signature");
   Require(admission.requires_public_abi_dispatch,
           "ROUTINE-CURSOR-GATE-009 server admission skipped public ABI dispatch");

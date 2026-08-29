@@ -855,6 +855,8 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       const auto input_live_bytes =
           materialized_live_bytes_by_node[input_index];
       std::optional<DescriptorBatch> input_batch;
+      std::optional<CanonicalExactCountStarCardinality>
+          exact_count_star_cardinality;
       if (remaining == 1) {
         if (input_live_bytes > retained_materialized_live_bytes) {
           return refuse(Refusal(
@@ -864,6 +866,9 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
         retained_materialized_live_bytes -= input_live_bytes;
         input_batch = std::move(input_result.materialized_output_batch);
         input_result.materialized_output_batch.reset();
+        exact_count_star_cardinality =
+            std::move(input_result.exact_count_star_cardinality);
+        input_result.exact_count_star_cardinality.reset();
         materialized_live_bytes_by_node[input_index] = 0;
         materialized_live_by_node[input_index] = 0;
       } else {
@@ -891,6 +896,8 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
               "physical shared-input copy exceeds the remaining statement memory"));
         }
         input_batch = input_result.materialized_output_batch;
+        exact_count_star_cardinality =
+            input_result.exact_count_star_cardinality;
       }
       if (input_live_bytes >
           std::numeric_limits<std::uint64_t>::max() -
@@ -906,12 +913,36 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
                         input_result.result_handle_id,
                         input_result.output_descriptor_ids,
                         std::move(input_batch),
+                        std::move(exact_count_star_cardinality),
                         input_result.mga_statement_context});
-      if (!inputs.back().materialized_output_batch.has_value() ||
-          !CheckedAdd(
-              materialized_input_rows,
-              inputs.back().materialized_output_batch->rows.size(),
-              &materialized_input_rows)) {
+      if (!inputs.back().materialized_output_batch.has_value()) {
+        return refuse(Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "physical input row count overflowed"));
+      }
+      std::uint64_t causal_input_rows =
+          inputs.back().materialized_output_batch->rows.size();
+      if (inputs.back().exact_count_star_cardinality.has_value()) {
+        const auto& cardinality =
+            *inputs.back().exact_count_star_cardinality;
+        if (cardinality.abi_version != 1 ||
+            !cardinality.engine_mga_snapshot_bound ||
+            !cardinality.visibility_rechecks_complete ||
+            !cardinality.value_payloads_not_materialized ||
+            !inputs.back().materialized_output_batch->rows.empty() ||
+            input_result.executed_implementation_id != "scan.heap.v1" ||
+            input_result.output_row_count != cardinality.visible_row_count) {
+          return refuse(Refusal(
+              "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
+              "COUNT(*) streaming cardinality carrier is inconsistent"));
+        }
+        causal_input_rows = cardinality.visible_row_count;
+      }
+      if (causal_input_rows >
+              std::numeric_limits<std::size_t>::max() ||
+          !CheckedAdd(materialized_input_rows,
+                      static_cast<std::size_t>(causal_input_rows),
+                      &materialized_input_rows)) {
         return refuse(Refusal(
             "SBLR.PLAN_TREE.RESOURCE_LIMIT",
             "physical input row count overflowed"));
@@ -1083,6 +1114,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       if (!step.transient_state_cleanup_proven || step.diagnostic.ok ||
           step.result_handle_id != 0 ||
           step.materialized_output_batch.has_value() ||
+          step.exact_count_star_cardinality.has_value() ||
           !exact_selected_identity || cancellation_policy == nullptr ||
           duplicate_cancellation_policy ||
           step.cancellation_evidence_uuid !=
@@ -1155,8 +1187,43 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
           request.runtime_limits, total_materialized_rows,
           total_materialized_cells, &next_total_rows, &next_total_cells);
       if (!batch_validation.ok) return refuse(batch_validation);
-      if (step.output_row_count !=
-          step.materialized_output_batch->rows.size()) {
+      const bool exact_count_star_source =
+          step.exact_count_star_cardinality.has_value();
+      if (exact_count_star_source) {
+        const auto& cardinality = *step.exact_count_star_cardinality;
+        const auto consumer_count = std::ranges::count_if(
+            physical_dag.nodes, [&](const auto& candidate) {
+              return std::ranges::find(
+                         candidate.input_physical_node_ids,
+                         node.physical_node_id) !=
+                     candidate.input_physical_node_ids.end();
+            });
+        const auto consumer = std::ranges::find_if(
+            physical_dag.nodes, [&](const auto& candidate) {
+              return candidate.input_physical_node_ids ==
+                     std::vector<std::uint64_t>{node.physical_node_id};
+            });
+        if (node.node_kind != PhysicalNodeKind::kScan ||
+            node.implementation_id != "scan.heap.v1" ||
+            node.physical_node_id == physical_dag.root_physical_node_id ||
+            consumer_count != 1 || consumer == physical_dag.nodes.end() ||
+            consumer->physical_node_id !=
+                physical_dag.root_physical_node_id ||
+            consumer->node_kind != PhysicalNodeKind::kAggregate ||
+            consumer->implementation_id != "aggregate.count-star.v1" ||
+            cardinality.abi_version != 1 ||
+            !cardinality.engine_mga_snapshot_bound ||
+            !cardinality.visibility_rechecks_complete ||
+            !cardinality.value_payloads_not_materialized ||
+            !step.materialized_output_batch->rows.empty() ||
+            step.output_row_count != cardinality.visible_row_count ||
+            step.rows_examined != cardinality.scanned_row_version_count) {
+          return refuse(Refusal(
+              "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
+              "COUNT(*) source did not publish an exact streaming carrier"));
+        }
+      } else if (step.output_row_count !=
+                 step.materialized_output_batch->rows.size()) {
         return refuse(Refusal(
             "QOW-DIAG-QRY-004-PHYSICAL-CAUSAL-COUNTER-V1",
             "physical output-row counter differs from the typed batch"));

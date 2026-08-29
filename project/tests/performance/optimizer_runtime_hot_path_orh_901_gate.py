@@ -28,7 +28,8 @@ REQUIRED_SOURCE_TOKENS = {
         "document_path_index_runtime_strict_route",
     },
     "project/tests/performance/optimizer_runtime_hot_path_orh_121_gate.cpp": {
-        "allow_minimal_resource_bootstrap:true",
+        "CreateCredentialedDatabaseFixture",
+        "credentialed lifecycle fixture create failed",
         "CreateLifecycleSchemaAndTable",
     },
     "project/tests/performance/CMakeLists.txt": {

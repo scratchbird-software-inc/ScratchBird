@@ -431,6 +431,18 @@ def product_payload(repo_root: Path, hardening: dict[str, Any]) -> dict[str, Any
         }),
         with_row_hash({
             "sml_id": "SML-043",
+            "classification": "exact_refusal_route_result",
+            "classification_status": "closed_exact_refusal",
+            "surface_count": release_status_counts.get("exact_refusal_passed", 0),
+            "final_status": "exact_refusal_passed",
+            "lower_level_only": False,
+            "result_evidence_source": "SBSQL_SURFACE_RELEASE_DECLARATION.csv/exact_refusal_result_refs",
+            "result_evidence_sha256": sha256_text(
+                "exact_refusal_passed:" + str(release_status_counts.get("exact_refusal_passed", 0))
+            ),
+        }),
+        with_row_hash({
+            "sml_id": "SML-043",
             "classification": "explicit_lower_level_only",
             "classification_status": "closed_lower_level_only",
             "surface_count": release_status_counts.get("cluster_provider_route_passed", 0),

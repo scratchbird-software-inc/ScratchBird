@@ -13,6 +13,7 @@
 #include "ipc/sbps_client.hpp"
 #include "rendering/rendering.hpp"
 #include "uuid.hpp"
+#include "engine/sblr/sblr_engine_envelope.hpp"
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -302,10 +303,13 @@ struct SbwpColumn {
 struct RowSet {
   std::vector<SbwpColumn> columns;
   std::vector<std::vector<std::optional<std::string>>> rows;
+  bool malformed{false};
+  std::string malformed_detail;
 };
 
 struct CopyImportRow {
   std::vector<std::pair<std::string, std::optional<std::string>>> fields;
+  std::vector<std::string> canonical_types;
 };
 
 struct NativeCopyPacket {
@@ -2402,13 +2406,22 @@ std::string CompactCopyRowsPayload(const CopyImportState& copy,
   std::string out;
   for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
     const auto& row = copy.rows[row_index];
-    for (const auto& [name, value] : row.fields) {
+    for (std::size_t field_index = 0; field_index < row.fields.size();
+         ++field_index) {
+      const auto& [name, value] = row.fields[field_index];
       if (!out.empty()) out.push_back(';');
       if (include_field_names) {
         out += HexEncodeCopyText(name);
       }
       out.push_back('|');
-      out += HexEncodeCopyText(value.has_value() ? "text" : "null");
+      const std::string_view canonical_type =
+          !value.has_value()
+              ? std::string_view("null")
+              : (field_index < row.canonical_types.size() &&
+                         !row.canonical_types[field_index].empty()
+                     ? std::string_view(row.canonical_types[field_index])
+                     : std::string_view("text"));
+      out += HexEncodeCopyText(canonical_type);
       out.push_back('|');
       out += HexEncodeCopyText(value.value_or(std::string{}));
       out.push_back('|');
@@ -2416,6 +2429,57 @@ std::string CompactCopyRowsPayload(const CopyImportState& copy,
     }
   }
   return out;
+}
+
+std::size_t CanonicalCompactCopyChunkEnd(const CopyImportState& copy,
+                                         std::size_t first_row,
+                                         std::size_t maximum_end_row) {
+  constexpr std::size_t kTypedLiteralCarrierBytes = 16 + 8;
+  static_assert(scratchbird::engine::sblr::kSblrOperationMaximumScalarBytes >
+                kTypedLiteralCarrierBytes);
+  constexpr std::size_t kMaximumCompactPayloadBytes =
+      scratchbird::engine::sblr::kSblrOperationMaximumScalarBytes -
+      kTypedLiteralCarrierBytes;
+
+  const std::size_t bounded_end = std::min(maximum_end_row, copy.rows.size());
+  std::size_t payload_bytes = 0;
+  bool first_field = true;
+  std::size_t end_row = first_row;
+  for (std::size_t row_index = first_row; row_index < bounded_end;
+       ++row_index) {
+    std::size_t candidate_bytes = payload_bytes;
+    bool candidate_first_field = first_field;
+    const auto& row = copy.rows[row_index];
+    for (std::size_t field_index = 0; field_index < row.fields.size();
+         ++field_index) {
+      const auto& value = row.fields[field_index].second;
+      const std::string_view canonical_type =
+          !value.has_value()
+              ? std::string_view("null")
+              : (field_index < row.canonical_types.size() &&
+                         !row.canonical_types[field_index].empty()
+                     ? std::string_view(row.canonical_types[field_index])
+                     : std::string_view("text"));
+      const std::size_t value_bytes = value.has_value() ? value->size() : 0;
+      if (!candidate_first_field) ++candidate_bytes;
+      candidate_first_field = false;
+      if (canonical_type.size() >
+              (std::numeric_limits<std::size_t>::max() - candidate_bytes - 4) /
+                  2 ||
+          value_bytes >
+              (std::numeric_limits<std::size_t>::max() - candidate_bytes - 4 -
+               canonical_type.size() * 2) /
+                  2) {
+        return end_row;
+      }
+      candidate_bytes += 4 + canonical_type.size() * 2 + value_bytes * 2;
+    }
+    if (candidate_bytes > kMaximumCompactPayloadBytes) break;
+    payload_bytes = candidate_bytes;
+    first_field = candidate_first_field;
+    end_row = row_index + 1;
+  }
+  return end_row;
 }
 
 bool CopyRowsHaveSharedShape(const CopyImportState& copy,
@@ -2446,6 +2510,19 @@ enum class NativeRowColumnType : std::uint8_t {
   kReal64 = 6,
   kBinary = 7,
 };
+
+std::string NativeRowCanonicalTypeName(NativeRowColumnType type) {
+  switch (type) {
+    case NativeRowColumnType::kText: return "text";
+    case NativeRowColumnType::kInt64: return "int64";
+    case NativeRowColumnType::kBoolean: return "boolean";
+    case NativeRowColumnType::kInt32: return "int32";
+    case NativeRowColumnType::kUInt64: return "uint64";
+    case NativeRowColumnType::kReal64: return "real64";
+    case NativeRowColumnType::kBinary: return "binary";
+  }
+  return {};
+}
 
 std::optional<std::int64_t> ParseLosslessNativeInt64(std::string_view value) {
   if (value.empty()) return std::nullopt;
@@ -2826,6 +2903,7 @@ std::optional<std::vector<CopyImportRow>> ParseNativeRowCopyRows(
     off += null_bitmap_bytes;
     CopyImportRow row;
     row.fields.reserve(column_count);
+    row.canonical_types.reserve(column_count);
     for (std::uint32_t column_index = 0; column_index < column_count; ++column_index) {
       const bool is_null =
           (payload[null_bitmap_offset + column_index / 8u] &
@@ -2885,6 +2963,8 @@ std::optional<std::vector<CopyImportRow>> ParseNativeRowCopyRows(
         }
       }
       row.fields.emplace_back(names[column_index], std::move(value));
+      row.canonical_types.push_back(
+          NativeRowCanonicalTypeName(column_types[column_index]));
     }
     rows.push_back(std::move(row));
   }
@@ -2991,7 +3071,7 @@ std::string BuildCopyExecuteEnvelope(const CopyImportState& copy,
   out += "source_kind=csv_stream\n";
   out += "format_family=csv\n";
   out += "source_fingerprint=sbwp-copy-data-canonical-row-fields\n";
-  out += "source_position=row:0\n";
+  out += "source_position=row:" + std::to_string(first_row) + "\n";
   out += "encoding=utf8\n";
   out += "line_ending=lf\n";
   out += "delimiter=,\n";
@@ -3048,7 +3128,8 @@ std::string BuildCopyExecuteEnvelope(const CopyImportState& copy) {
 std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
                                                 std::size_t first_row,
                                                 std::size_t row_count,
-                                                bool include_compact_payload = true) {
+                                                bool include_compact_payload = true,
+                                                std::size_t source_row_offset = 0) {
   const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
   std::string out;
   out += "operation_id=dml.execute_native_bulk_ingest\n";
@@ -3068,7 +3149,8 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "source_kind=binary_typed_rows\n";
   out += "format_family=binary_typed_rows\n";
   out += "source_fingerprint=sb-isql-native-bulk-ingest-canonical-row-fields\n";
-  out += "source_position=row:0\n";
+  out += "source_position=row:" +
+         std::to_string(source_row_offset + first_row) + "\n";
   out += "estimated_row_count=" + std::to_string(end_row - first_row) + "\n";
   out += "native_bulk_ingest=true\n";
   out += std::string("native_bulk_ingest_enabled=") +
@@ -3081,6 +3163,11 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
+  out += "operand=text\ttarget_object_uuid\t" + copy.target_object_uuid + "\n";
+  out += "operand=text\ttarget_object_kind\ttable\n";
+  out += "operand=text\tnative_bulk_ingest\ttrue\n";
+  out += std::string("operand=text\tnative_bulk_ingest_enabled\t") +
+         (copy.native_bulk_ingest_enabled ? "true\n" : "false\n");
   out += "operand=text\tphysical_mga_cow\tfalse\n";
   out += "operand=text\tinsert_trace.rows\tfalse\n";
   out += "operand=text\tsblr.rowset_default_markers_absent\ttrue\n";
@@ -3177,6 +3264,8 @@ std::string BuildInsertRowsExecuteEnvelope(const CopyImportState& copy,
   out += "insert_mode=values\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
+  out += "operand=text\ttarget_object_uuid\t" + copy.target_object_uuid + "\n";
+  out += "operand=text\ttarget_object_kind\ttable\n";
   out += "operand=text\tphysical_mga_cow\tfalse\n";
   out += "operand=text\tinsert_trace.rows\tfalse\n";
   out += "operand=text\tsblr.rowset_default_markers_absent\ttrue\n";
@@ -3261,6 +3350,11 @@ std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
+  out += "operand=text\ttarget_object_uuid\t" + copy.target_object_uuid + "\n";
+  out += "operand=text\ttarget_object_kind\ttable\n";
+  out += "operand=text\tnative_bulk_ingest\ttrue\n";
+  out += std::string("operand=text\tnative_bulk_ingest_enabled\t") +
+         (copy.native_bulk_ingest_enabled ? "true\n" : "false\n");
   out += "operand=text\tphysical_mga_cow\tfalse\n";
   out += "operand=text\tinsert_trace.rows\tfalse\n";
   if (copy.source_size_bytes != 0) {
@@ -3385,38 +3479,12 @@ bool PrepareCopyNativeBulkHandle(SbsqlTestWireSession* session,
   if (!copy->native_bulk_ingest) {
     return true;
   }
-  RefreshWireAuthorityEpochsFromSession(*session, state);
-  CopyImportState prepare_template;
-  prepare_template.native_bulk_ingest = true;
-  prepare_template.native_bulk_ingest_enabled = copy->native_bulk_ingest_enabled;
-  prepare_template.sql = copy->sql;
-  prepare_template.target_object_uuid = copy->target_object_uuid;
-  prepare_template.source_size_bytes = copy->source_size_bytes;
-  prepare_template.preallocation_bytes = copy->preallocation_bytes;
-  prepare_template.preallocation_factor_percent =
-      copy->preallocation_factor_percent;
-  const auto prepared = session->PrepareSblrForWire(
-      BuildNativeBulkIngestExecuteEnvelope(prepare_template, 0, 0));
-  RefreshWireAuthorityEpochsFromSession(*session, state);
-  if (prepared.accepted && !prepared.prepared_statement_uuid.empty()) {
-    copy->prepared_statement_uuid = prepared.prepared_statement_uuid;
-    copy->prepared_operation_id = prepared.operation_id;
-    CaptureCopyPreparedAuthorityEpochs(*session, copy);
-    return true;
-  }
-  if (diagnostic_code != nullptr) {
-    *diagnostic_code =
-        FirstDiagnosticCode(prepared.messages,
-                            "SBSQL.COPY.PREPARED_HANDLE_REFUSED");
-  }
-  if (diagnostic_detail != nullptr) {
-    *diagnostic_detail = DiagnosticFieldValue(prepared.messages, "detail");
-    if (diagnostic_detail->empty()) {
-      *diagnostic_detail =
-          "COPY native bulk path requires a server-owned prepared SBLR handle";
-    }
-  }
-  return false;
+  copy->prepared_statement_uuid.clear();
+  copy->prepared_operation_id.clear();
+  copy->prepared_catalog_epoch = 0;
+  copy->prepared_security_policy_epoch = 0;
+  copy->prepared_descriptor_epoch = 0;
+  return true;
 }
 
 std::uint32_t CopyWindowBytesForSession(const SbwpSessionState& state, std::uint8_t format) {
@@ -3556,28 +3624,51 @@ RowSet ParseSyntheticJsonRowsFromResultPayload(std::string_view payload) {
 
 RowSet ParseRowsFromResultPayload(std::string_view payload) {
   RowSet rowset;
-  std::map<std::string, std::size_t> column_index;
+  // Columns are identified by name plus that name's occurrence ordinal within
+  // a row. This preserves duplicate relational projection names (id,id) while
+  // still admitting intentionally sparse observability rows whose named fields
+  // vary from row to row.
+  std::map<std::pair<std::string, std::size_t>, std::size_t> column_index;
   std::istringstream in{std::string(payload)};
   std::string line;
   while (std::getline(in, line)) {
     if (!line.starts_with("row[")) continue;
     const auto eq = line.find("]=");
-    if (eq == std::string::npos) continue;
-    const auto fields = ParseFieldList(std::string_view(line).substr(eq + 2));
-    if (fields.empty()) continue;
+    if (eq == std::string::npos) {
+      rowset.malformed = true;
+      rowset.malformed_detail =
+          "The engine result row record is missing its canonical row delimiter.";
+      return rowset;
+    }
+    const std::string_view body = std::string_view(line).substr(eq + 2);
+    const auto fields = ParseFieldList(body);
+    if (fields.empty()) {
+      if (!body.empty()) {
+        rowset.malformed = true;
+        rowset.malformed_detail =
+            "The engine result row record contains no canonical named fields.";
+        return rowset;
+      }
+      continue;
+    }
+    std::map<std::string, std::size_t> occurrences;
     std::vector<std::optional<std::string>> row(rowset.columns.size());
     for (const auto& [name, value] : fields) {
-      auto found = column_index.find(name);
+      const std::size_t occurrence = occurrences[name]++;
+      const auto key = std::make_pair(name, occurrence);
+      auto found = column_index.find(key);
       if (found == column_index.end()) {
         const auto ordinal = rowset.columns.size();
-        column_index[name] = ordinal;
+        column_index.emplace(key, ordinal);
         SbwpColumn column;
         column.name = name.empty() ? "column" + std::to_string(ordinal + 1) : name;
         column.type_oid = InferTypeOid(value);
         rowset.columns.push_back(std::move(column));
-        for (auto& existing : rowset.rows) existing.resize(rowset.columns.size());
+        for (auto& existing : rowset.rows) {
+          existing.resize(rowset.columns.size());
+        }
         row.resize(rowset.columns.size());
-        found = column_index.find(name);
+        found = column_index.find(key);
       }
       row[found->second] = value;
     }
@@ -4464,6 +4555,28 @@ bool ShouldAutoCursor(std::string_view sql) {
   return Upper(StripSqlTerminator(std::string(sql))).starts_with("SELECT");
 }
 
+bool IsCommandCompletionOnlyDdl(std::string_view sql) {
+  const std::string normalized = Upper(StripSqlTerminator(std::string(sql)));
+  return StartsWithWord(normalized, "CREATE") ||
+         StartsWithWord(normalized, "ALTER") ||
+         StartsWithWord(normalized, "DROP") ||
+         StartsWithWord(normalized, "TRUNCATE") ||
+         StartsWithWord(normalized, "COMMENT") ||
+         StartsWithWord(normalized, "GRANT") ||
+         StartsWithWord(normalized, "REVOKE");
+}
+
+bool IsCommandCompletionOnlyDml(std::string_view sql) {
+  const std::string normalized = Upper(StripSqlTerminator(std::string(sql)));
+  const bool mutation = StartsWithWord(normalized, "INSERT") ||
+                        StartsWithWord(normalized, "UPDATE") ||
+                        StartsWithWord(normalized, "DELETE") ||
+                        StartsWithWord(normalized, "MERGE");
+  if (!mutation) return false;
+  return FindKeywordOutsideSql(normalized, "RETURNING") ==
+         std::string::npos;
+}
+
 void RefreshWireTransactionStateFromSession(const SbsqlTestWireSession& session,
                                             SbwpSessionState* state) {
   if (state == nullptr) return;
@@ -4540,6 +4653,14 @@ bool SendPipelineResult(ClientIo* io,
                                              "PARSER_SERVER_IPC.FETCH_REJECTED"));
       }
       RowSet rowset = ParseRowsFromResultPayload(fetched.row_packet);
+      if (rowset.malformed) {
+        (void)session->CancelCursorOnRoute(result.server_cursor_uuid);
+        return SendError(io,
+                         state,
+                         "XX000",
+                         "PARSER_SERVER_IPC.EXECUTE_RESULT_SCHEMA_MISMATCH",
+                         rowset.malformed_detail);
+      }
       if (!rowset.rows.empty()) {
         if (!row_description_sent) {
           if (!SendFrame(io,
@@ -4577,7 +4698,25 @@ bool SendPipelineResult(ClientIo* io,
                      CommandCompletePayload(emitted_rows,
                                             "SELECT " + std::to_string(emitted_rows)));
   }
+  // DDL result descriptors are authenticated engine evidence for the parser
+  // and public ABI. They are not an implicit SQL row set. A DDL command only
+  // exposes rows through an explicit RETURNING or inspection surface, neither
+  // of which is part of the normalized command-completion forms above.
+  if (IsCommandCompletionOnlyDdl(sql) || IsCommandCompletionOnlyDml(sql)) {
+    return SendFrame(io,
+                     state,
+                     kCommandComplete,
+                     CommandCompletePayload(CommandCompleteRowsFor(result),
+                                            CommandTagFor(sql, result)));
+  }
   RowSet rowset = ParseRowsFromResultPayload(result.server_result_payload);
+  if (rowset.malformed) {
+    return SendError(io,
+                     state,
+                     "XX000",
+                     "PARSER_SERVER_IPC.EXECUTE_RESULT_SCHEMA_MISMATCH",
+                     rowset.malformed_detail);
+  }
   if (!rowset.rows.empty()) {
     if (!SendFrame(io, state, kRowDescription, RowDescriptionPayload(rowset.columns,
                                                                      state->p1_payloads))) {
@@ -4682,160 +4821,152 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                  state->simple_insert_rowset_cache.size(),
                                  row_count,
                                  cache_hit ? "hit" : "miss_or_stale");
-  if (!cache_hit) {
-    CopyImportState prepare_template;
-    prepare_template.native_bulk_ingest = true;
-    prepare_template.native_bulk_ingest_enabled = true;
-    prepare_template.sql = rowset.sql;
-    prepare_template.target_object_uuid = rowset.target_object_uuid;
-    const std::int64_t prepare_started = phase_trace ? ParserPhaseNowNs() : 0;
-    const std::string prepare_envelope =
-        BuildNativeBulkIngestExecuteEnvelope(prepare_template, 0, 0);
-    const auto prepared =
-        session->PrepareSblrForWire(prepare_envelope);
+  state->simple_insert_rowset_cache.erase(presented_shape_key);
+  cache_it = state->simple_insert_rowset_cache.end();
+
+  PipelineResult result;
+  result.accepted = true;
+  result.statement_family = "dml";
+  result.operation_family = "sblr.dml.operation.v3";
+  result.server_operation_id = "dml.insert_rows";
+  std::size_t chunk_count = 0;
+  for (std::size_t first_row = 0; first_row < row_count;) {
+    const std::size_t maximum_rows = std::min(
+        kCopyExecuteRowsPerSblrEnvelope, row_count - first_row);
+    const std::size_t end_row = CanonicalCompactCopyChunkEnd(
+        rowset, first_row, first_row + maximum_rows);
+    if (end_row == first_row) {
+      if (command_accepted != nullptr) *command_accepted = false;
+      write_total_trace("canonical_scalar_limit_exceeded");
+      return SendError(io,
+                       state,
+                       "54000",
+                       "SBLR.OPERATION.LIMIT_EXCEEDED",
+                       "One INSERT row exceeds the canonical typed-scalar operand limit") &&
+             (!send_ready || SendReady(io, state, ReadyReason::kErrorRecovered));
+    }
+    const std::size_t chunk_rows = end_row - first_row;
+    const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
+    const std::string envelope =
+        BuildInsertRowsExecuteEnvelope(rowset, first_row, chunk_rows, true);
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "simple_insert_rowset_fast_path",
-                                   "prepare_sblr",
-                                   prepare_started,
-                                   prepare_envelope.size(),
-                                   1,
-                                   0,
-                                   prepared.accepted ? "accepted" : "rejected");
-    if (prepared.accepted && !prepared.prepared_statement_uuid.empty()) {
-      SimpleInsertRowsetPreparedEntry entry;
-      entry.prepared_statement_uuid = prepared.prepared_statement_uuid;
-      entry.operation_id = prepared.operation_id;
-      entry.target_object_uuid = rowset.target_object_uuid;
-      CaptureSimpleInsertRowsetAuthorityEpochs(*session, &entry);
-      cache_it =
-          state->simple_insert_rowset_cache.insert_or_assign(presented_shape_key,
-                                                             std::move(entry)).first;
-    } else {
-      cache_it = state->simple_insert_rowset_cache.end();
+                                   "build_sblr_envelope",
+                                   envelope_started,
+                                   envelope.size(),
+                                   chunk_count + 1,
+                                   chunk_rows);
+    const std::int64_t packet_started = phase_trace ? ParserPhaseNowNs() : 0;
+    const std::vector<std::uint8_t> data_packet =
+        BuildNativeRowPacket(rowset, first_row, chunk_rows);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "simple_insert_rowset_fast_path",
+                                   "build_native_row_packet",
+                                   packet_started,
+                                   data_packet.size(),
+                                   chunk_count + 1,
+                                   chunk_rows,
+                                   "scratchbird.native_rows.v2");
+    if (data_packet.empty()) {
+      if (command_accepted != nullptr) *command_accepted = false;
+      write_total_trace("empty_canonical_data_packet");
+      return SendError(io,
+                       state,
+                       "22000",
+                       "SBSQL.INSERT_ROWSET.CANONICAL_ROW_ENCODING_FAILED",
+                       "The INSERT rowset could not be encoded as canonical typed rows") &&
+             (!send_ready || SendReady(io, state, ReadyReason::kErrorRecovered));
     }
-  }
 
-  const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
-  const std::string envelope =
-      BuildNativeBulkIngestExecuteEnvelope(rowset, 0, row_count, false);
-  WriteParserPhaseTraceIfEnabled(phase_trace,
-                                 "simple_insert_rowset_fast_path",
-                                 "build_sblr_envelope",
-                                 envelope_started,
-                                 envelope.size(),
-                                 1,
-                                 row_count);
-  const std::int64_t packet_started = phase_trace ? ParserPhaseNowNs() : 0;
-  const std::vector<std::uint8_t> data_packet =
-      BuildNativeRowPacket(rowset, 0, row_count);
-  WriteParserPhaseTraceIfEnabled(phase_trace,
-                                 "simple_insert_rowset_fast_path",
-                                 "build_native_row_packet",
-                                 packet_started,
-                                 data_packet.size(),
-                                 1,
-                                 row_count,
-                                 "scratchbird.native_rows.v2");
-  if (data_packet.empty()) {
-    write_total_trace("not_applicable_empty_data_packet");
-    return std::nullopt;
-  }
-
-  const bool uses_prepared = cache_it != state->simple_insert_rowset_cache.end();
-  const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
-  auto result = cache_it == state->simple_insert_rowset_cache.end()
-                    ? session->RunSblrEnvelopeWithDataPacket(envelope, data_packet, false)
-                    : session->RunPreparedSblrEnvelopeForWire(
-                          cache_it->second.prepared_statement_uuid,
-                          envelope,
-                          data_packet,
-                          false);
-  WriteParserPhaseTraceIfEnabled(phase_trace,
-                                 "simple_insert_rowset_fast_path",
-                                 uses_prepared ? "run_prepared_sblr_with_data_packet"
-                                               : "run_sblr_with_data_packet",
-                                 execute_started,
-                                 envelope.size() + data_packet.size(),
-                                 1,
-                                 row_count,
-                                 result.accepted ? "accepted" : "rejected");
-  if (!result.accepted || result.messages.has_errors()) {
-    if (command_accepted != nullptr) *command_accepted = false;
-    state->simple_insert_rowset_cache.erase(presented_shape_key);
-    const std::string diagnostic_code =
-        FirstDiagnosticCode(result.messages, "SBSQL.INSERT_ROWSET_FAST_PATH.REJECTED");
-    const std::string diagnostic_detail = DiagnosticFieldValue(result.messages, "detail");
-    const std::string diagnostic_text = FirstDiagnosticText(result.messages);
-    if (IsTriggerAwarePathRequiredDiagnostic(diagnostic_code,
-                                             diagnostic_detail,
-                                             diagnostic_text)) {
-      state->simple_insert_rowset_cache.erase(presented_shape_key);
-      if (command_accepted != nullptr) *command_accepted = true;
-      RefreshWireTransactionStateFromSession(*session, state);
-      const std::int64_t fallback_started = phase_trace ? ParserPhaseNowNs() : 0;
-      const std::string trigger_aware_envelope =
-          BuildInsertRowsExecuteEnvelope(rowset, 0, row_count);
-      auto trigger_aware_result =
-          session->RunSblrEnvelope(trigger_aware_envelope, false);
-      WriteParserPhaseTraceIfEnabled(
-          phase_trace,
-          "simple_insert_rowset_fast_path",
-          "run_trigger_aware_insert_rows_fallback",
-          fallback_started,
-          trigger_aware_envelope.size(),
-          1,
-          row_count,
-          trigger_aware_result.accepted ? "accepted" : "rejected");
-      if (trigger_aware_result.accepted && !trigger_aware_result.messages.has_errors()) {
+    const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
+    auto chunk_result = session->RunCanonicalRouteTextEnvelopeForWire(
+        envelope, {}, false);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "simple_insert_rowset_fast_path",
+                                   "run_sblr_with_data_packet",
+                                   execute_started,
+                                   envelope.size() + data_packet.size(),
+                                   chunk_count + 1,
+                                   chunk_rows,
+                                   chunk_result.accepted ? "accepted" : "rejected");
+    if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
+      std::string diagnostic_code = FirstDiagnosticCode(
+          chunk_result.messages, "SBSQL.INSERT_ROWSET_FAST_PATH.REJECTED");
+      std::string diagnostic_detail =
+          DiagnosticFieldValue(chunk_result.messages, "detail");
+      const std::string diagnostic_text =
+          FirstDiagnosticText(chunk_result.messages);
+      if (IsTriggerAwarePathRequiredDiagnostic(diagnostic_code,
+                                               diagnostic_detail,
+                                               diagnostic_text)) {
         RefreshWireTransactionStateFromSession(*session, state);
-        if (trigger_aware_result.server_row_count == 0) {
-          trigger_aware_result.server_row_count = row_count;
-        }
-        trigger_aware_result.server_affected_rows_present = true;
-        if (trigger_aware_result.server_affected_rows == 0) {
-          trigger_aware_result.server_affected_rows = row_count;
-        }
-        if (success_result != nullptr) {
-          *success_result = trigger_aware_result;
-        }
-        if (suppress_success_result) {
-          write_total_trace("trigger_aware_insert_rows_fallback_success_suppressed");
-          return !send_ready || SendReady(io, state);
-        }
-        if (!SendPipelineResult(io, session, state, rowset.sql, trigger_aware_result)) {
-          write_total_trace("trigger_aware_insert_rows_send_failed");
+        const std::int64_t fallback_started =
+            phase_trace ? ParserPhaseNowNs() : 0;
+        const std::string trigger_aware_envelope =
+            BuildInsertRowsExecuteEnvelope(rowset, first_row, chunk_rows, false);
+        chunk_result = session->RunCanonicalRouteTextEnvelopeForWire(
+            trigger_aware_envelope, {}, false);
+        WriteParserPhaseTraceIfEnabled(
+            phase_trace,
+            "simple_insert_rowset_fast_path",
+            "run_trigger_aware_insert_rows_fallback",
+            fallback_started,
+            trigger_aware_envelope.size(),
+            chunk_count + 1,
+            chunk_rows,
+            chunk_result.accepted ? "accepted" : "rejected");
+        diagnostic_code = FirstDiagnosticCode(
+            chunk_result.messages, "SBSQL.INSERT_ROWSET_FAST_PATH.REJECTED");
+        diagnostic_detail =
+            DiagnosticFieldValue(chunk_result.messages, "detail");
+      }
+      if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
+        if (command_accepted != nullptr) *command_accepted = false;
+        state->simple_insert_rowset_cache.erase(presented_shape_key);
+        if (!SendError(io,
+                       state,
+                       "42000",
+                       FirstDiagnosticText(chunk_result.messages),
+                       diagnostic_detail.empty()
+                           ? diagnostic_code
+                           : diagnostic_code + ";" + diagnostic_detail)) {
+          write_total_trace("send_error_failed");
           return false;
         }
-        write_total_trace("trigger_aware_insert_rows_fallback_success");
-        return !send_ready || SendReady(io, state);
+        write_total_trace("rejected");
+        return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
       }
-      result = std::move(trigger_aware_result);
     }
-    if (diagnostic_code.find("PREPARED_STATEMENT") != std::string::npos ||
-        diagnostic_detail.find("prepared_statement") != std::string::npos) {
-      state->simple_insert_rowset_cache.erase(presented_shape_key);
+
+    RefreshWireTransactionStateFromSession(*session, state);
+    if (chunk_result.server_row_count == 0) {
+      chunk_result.server_row_count = chunk_rows;
     }
-    if (!SendError(io,
-                   state,
-                   "42000",
-                   FirstDiagnosticText(result.messages),
-                   diagnostic_detail.empty() ? diagnostic_code
-                                             : diagnostic_code + ";" + diagnostic_detail)) {
-      write_total_trace("send_error_failed");
-      return false;
+    chunk_result.server_affected_rows_present = true;
+    if (chunk_result.server_affected_rows == 0) {
+      chunk_result.server_affected_rows = chunk_rows;
     }
-    write_total_trace("rejected");
-    return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+    result.statement_family = chunk_result.statement_family;
+    result.operation_family = chunk_result.operation_family;
+    result.server_operation_id = chunk_result.server_operation_id;
+    result.server_row_count += chunk_result.server_row_count;
+    result.server_affected_rows += chunk_result.server_affected_rows;
+    result.server_affected_rows_present = true;
+    if (!chunk_result.server_result_payload.empty()) {
+      if (!result.server_result_payload.empty() &&
+          result.server_result_payload.back() != '\n') {
+        result.server_result_payload.push_back('\n');
+      }
+      result.server_result_payload += chunk_result.server_result_payload;
+    }
+    ++chunk_count;
+    first_row = end_row;
   }
-  RefreshWireTransactionStateFromSession(*session, state);
-  if (result.server_row_count == 0) result.server_row_count = row_count;
-  result.server_affected_rows_present = true;
-  if (result.server_affected_rows == 0) result.server_affected_rows = row_count;
   if (success_result != nullptr) {
     *success_result = result;
   }
   if (suppress_success_result) {
-    write_total_trace(uses_prepared ? "prepared_success_suppressed" : "direct_success_suppressed");
+    write_total_trace("direct_success_suppressed");
     return !send_ready || SendReady(io, state);
   }
   const std::int64_t send_started = phase_trace ? ParserPhaseNowNs() : 0;
@@ -4859,7 +4990,7 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                  1,
                                  row_count,
                                  "sent");
-  write_total_trace(uses_prepared ? "prepared_success" : "direct_success");
+  write_total_trace("direct_success");
   return !send_ready || SendReady(io, state);
 }
 
@@ -5325,11 +5456,10 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
       if (!append_parameter_row(values)) return false;
     }
   }
-  const std::string envelope = BuildNativeBulkIngestExecuteEnvelope(rowset, 0, rowset.rows.size());
-  auto result = plan.server_prepared_statement_uuid.empty()
-                    ? session->RunSblrEnvelope(envelope, false)
-                    : session->RunPreparedSblrEnvelopeForWire(
-                          plan.server_prepared_statement_uuid, envelope, {}, false);
+  const std::string envelope =
+      BuildInsertRowsExecuteEnvelope(rowset, 0, rowset.rows.size());
+  auto result = session->RunCanonicalRouteTextEnvelopeForWire(
+      envelope, {}, false);
   if (!result.accepted || result.messages.has_errors()) {
     const std::string diagnostic_code =
         FirstDiagnosticCode(result.messages, "SBWP.PREPARED_ROWSET.EXECUTION_REJECTED");
@@ -5341,7 +5471,8 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
       RefreshWireTransactionStateFromSession(*session, state);
       const std::string trigger_aware_envelope =
           BuildInsertRowsExecuteEnvelope(rowset, 0, rowset.rows.size());
-      result = session->RunSblrEnvelope(trigger_aware_envelope, false);
+      result = session->RunCanonicalRouteTextEnvelopeForWire(
+          trigger_aware_envelope, {}, false);
       if (result.accepted && !result.messages.has_errors()) {
         RefreshWireTransactionStateFromSession(*session, state);
         if (result.server_row_count == 0) result.server_row_count = rowset.rows.size();
@@ -5604,7 +5735,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     StoreFinalityRecord(state, record);
     commit_finality = std::move(record);
   }
-  if (result.server_operation_id == "dml.plan_import_rows" &&
+  if (result.server_operation_id == "engine.op.bulk_import_stream" &&
       Upper(sql).find("FROM STDIN") != std::string::npos) {
     const auto target_uuid = JsonObjectTextField(result.sblr_payload, "target_object_uuid");
     if (!target_uuid.has_value() || target_uuid->empty()) {
@@ -6037,7 +6168,8 @@ PipelineResult RunCopyTriggerAwareInsertRowsFallback(
   const std::int64_t fallback_started = phase_trace ? ParserPhaseNowNs() : 0;
   const std::string trigger_aware_envelope =
       BuildInsertRowsExecuteEnvelope(copy, first_row, row_count);
-  auto result = session->RunSblrEnvelope(trigger_aware_envelope, false);
+  auto result = session->RunCanonicalRouteTextEnvelopeForWire(
+      trigger_aware_envelope, {}, false);
   WriteParserPhaseTraceIfEnabled(
       phase_trace,
       phase_event,
@@ -6158,7 +6290,8 @@ bool ExecutePreparedNativeCopyPacket(SbsqlTestWireSession* session,
                                                     {},
                                                     packet.payload,
                                                     false)
-          : session->RunSblrEnvelopeWithDataPacket(envelope, packet.payload, false);
+          : session->RunCanonicalRouteTextEnvelopeForWire(
+                envelope, packet.payload, false);
   WriteParserPhaseTraceIfEnabled(phase_trace,
                                  "copy_data",
                                  use_prepared ? "run_prepared_native_bulk_data_packet"
@@ -6371,6 +6504,129 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
   std::size_t chunk_count = copy.aggregate_chunk_count;
+  if (copy.native_bulk_ingest) {
+    // COPY transport frames are staging only.  Reconstruct the complete,
+    // ordered typed row set and submit it once so the engine consumes one
+    // statement receipt and owns one MGA publication barrier.  Splitting the
+    // row set into independently executable SBOP envelopes can expose an
+    // earlier chunk if a later chunk fails or is cancelled.
+    std::vector<CopyImportRow> staged_rows = std::move(copy.rows);
+    for (const auto& packet : copy.native_packets) {
+      std::string diagnostic_code;
+      std::string diagnostic_detail;
+      if (!BindOrValidateNativeCopyDescriptor(&copy,
+                                              packet,
+                                              &diagnostic_code,
+                                              &diagnostic_detail)) {
+        return SendError(io,
+                         state,
+                         "42000",
+                         diagnostic_code.empty()
+                             ? "SBSQL.COPY.DESCRIPTOR_MISMATCH"
+                             : diagnostic_code,
+                         diagnostic_detail) &&
+               SendReady(io, state, ReadyReason::kErrorRecovered);
+      }
+      auto rows = ParseNativeRowCopyRows(packet.payload);
+      if (!rows.has_value()) {
+        return SendError(
+                   io,
+                   state,
+                   "22000",
+                   "SBSQL.COPY.NATIVE_PACKET_CANONICAL_ROW_DECODE_FAILED",
+                   "COPY native row packet could not be converted to canonical typed rows") &&
+               SendReady(io, state, ReadyReason::kErrorRecovered);
+      }
+      staged_rows.insert(staged_rows.end(),
+                         std::make_move_iterator(rows->begin()),
+                         std::make_move_iterator(rows->end()));
+    }
+    copy.rows = std::move(staged_rows);
+    copy.native_packets.clear();
+    if (copy.rows.empty()) {
+      return SendError(io,
+                       state,
+                       "22000",
+                       "SBSQL.COPY.NO_ROWS",
+                       "COPY native bulk statement has no canonical rows") &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    const std::int64_t packet_started =
+        phase_trace ? ParserPhaseNowNs() : 0;
+    auto packet_bytes = BuildNativeRowPacket(copy, 0, copy.rows.size());
+    auto packet = ParseNativeRowCopyPacketHeader(packet_bytes);
+    WriteParserPhaseTraceIfEnabled(
+        phase_trace,
+        "copy_done",
+        "seal_logical_native_bulk_rowset",
+        packet_started,
+        packet_bytes.size(),
+        1,
+        copy.rows.size(),
+        packet.has_value() ? "sealed" : "rejected");
+    if (!packet.has_value() || packet->row_count != copy.rows.size()) {
+      return SendError(io,
+                       state,
+                       "22000",
+                       "SBSQL.COPY.NATIVE_PACKET_CANONICAL_ROW_ENCODE_FAILED",
+                       "COPY complete typed row set could not be sealed as one native packet") &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    const bool use_prepared =
+        CopyPreparedHandleCurrent(copy, session->session());
+    if (!copy.prepared_statement_uuid.empty() && !use_prepared) {
+      return SendError(io,
+                       state,
+                       "42000",
+                       "SBSQL.COPY.PREPARED_HANDLE_STALE",
+                       "COPY prepared bulk handle is missing or stale for the current session epochs") &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    const std::string envelope =
+        use_prepared
+            ? std::string{}
+            : BuildNativeBulkIngestExecuteEnvelopeForPacket(copy, *packet);
+    const std::int64_t execute_started =
+        phase_trace ? ParserPhaseNowNs() : 0;
+    auto logical_result =
+        use_prepared
+            ? session->RunPreparedSblrEnvelopeForWire(
+                  copy.prepared_statement_uuid, {}, packet_bytes, false)
+            : session->RunCanonicalRouteTextEnvelopeForWire(
+                  envelope, packet_bytes, false);
+    WriteParserPhaseTraceIfEnabled(
+        phase_trace,
+        "copy_done",
+        use_prepared ? "execute_prepared_logical_native_bulk_statement"
+                     : "execute_logical_native_bulk_statement",
+        execute_started,
+        envelope.size() + packet_bytes.size(),
+        1,
+        copy.rows.size(),
+        logical_result.accepted ? "accepted" : "rejected");
+    if (!logical_result.accepted || logical_result.messages.has_errors()) {
+      const std::string diagnostic_code = FirstDiagnosticCode(
+          logical_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
+      std::string diagnostic_detail =
+          DiagnosticFieldValue(logical_result.messages, "detail");
+      if (diagnostic_detail.empty()) {
+        diagnostic_detail = FirstDiagnosticText(logical_result.messages);
+      }
+      return SendError(io,
+                       state,
+                       "42000",
+                       FirstDiagnosticText(logical_result.messages),
+                       diagnostic_detail.empty()
+                           ? diagnostic_code
+                           : diagnostic_code + ";" + diagnostic_detail) &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    NormalizeDmlChunkCounts(&logical_result, copy.rows.size());
+    result = std::move(logical_result);
+    chunk_count = 1;
+    copy.rows.clear();
+  }
+  std::size_t native_packet_row_offset = 0;
   for (const auto& packet : copy.native_packets) {
     std::string diagnostic_code;
     std::string diagnostic_detail;
@@ -6388,109 +6644,139 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
       }
       return SendReady(io, state, ReadyReason::kErrorRecovered);
     }
-    const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
-    const bool use_prepared =
-        CopyPreparedHandleCurrent(copy, session->session());
-    const std::string envelope =
-        use_prepared ? std::string{} : BuildNativeBulkIngestExecuteEnvelopeForPacket(copy, packet);
-    auto chunk_result =
-        use_prepared
-            ? session->RunPreparedSblrEnvelopeForWire(
-                  copy.prepared_statement_uuid, {}, packet.payload, false)
-            : session->RunSblrEnvelopeWithDataPacket(envelope, packet.payload, false);
-    WriteParserPhaseTraceIfEnabled(phase_trace,
-                                   "copy_done",
-                                   use_prepared ? "run_prepared_sblr_with_data_packet"
-                                                : "run_sblr_with_data_packet",
-                                   execute_started,
-                                   envelope.size() + packet.payload.size(),
-                                   chunk_count + 1,
-                                   packet.row_count,
-                                   chunk_result.accepted ? "accepted" : "rejected");
-    if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
-      std::string diagnostic_code = FirstDiagnosticCode(
-          chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
-      std::string diagnostic_detail =
-          DiagnosticFieldValue(chunk_result.messages, "detail");
-      std::string diagnostic_text = FirstDiagnosticText(chunk_result.messages);
-      if (diagnostic_detail.empty()) diagnostic_detail = diagnostic_text;
-      if (IsTriggerAwarePathRequiredDiagnostic(diagnostic_code,
-                                               diagnostic_detail,
-                                               diagnostic_text)) {
-        auto fallback_result = RunCopyTriggerAwareNativePacketFallback(
-            session,
-            state,
-            copy,
-            packet,
-            phase_trace,
-            "copy_done",
-            chunk_count + 1,
-            &diagnostic_code,
-            &diagnostic_detail);
-        if (!fallback_result.has_value()) {
-          if (!SendError(io,
-                         state,
-                         "42000",
-                         diagnostic_code.empty() ? "SBSQL.COPY.TRIGGER_AWARE_FALLBACK_REJECTED"
-                                                 : diagnostic_code,
-                         diagnostic_detail)) {
-            return false;
-          }
-          return SendReady(io, state, ReadyReason::kErrorRecovered);
-        }
-        chunk_result = std::move(*fallback_result);
-      }
-    }
-    if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
-      const std::string diagnostic_code = FirstDiagnosticCode(
-          chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
-      std::string diagnostic_detail =
-          DiagnosticFieldValue(chunk_result.messages, "detail");
-      if (diagnostic_detail.empty()) {
-        diagnostic_detail = FirstDiagnosticText(chunk_result.messages);
-      }
-      if (!SendError(io,
-                     state,
-                     "42000",
-                     FirstDiagnosticText(chunk_result.messages),
-                     diagnostic_detail.empty() ? diagnostic_code
-                                               : diagnostic_code + ";" + diagnostic_detail)) {
+    auto canonical_rows = ParseNativeRowCopyRows(packet.payload);
+    if (!canonical_rows.has_value()) {
+      if (!SendError(
+              io,
+              state,
+              "22000",
+              "SBSQL.COPY.NATIVE_PACKET_CANONICAL_ROW_DECODE_FAILED",
+              "COPY native row packet could not be converted to canonical typed rows")) {
         return false;
       }
       return SendReady(io, state, ReadyReason::kErrorRecovered);
     }
-    ++chunk_count;
-    result.statement_family = chunk_result.statement_family;
-    result.operation_family = chunk_result.operation_family;
-    result.server_operation_id = chunk_result.server_operation_id;
-    result.server_row_count += chunk_result.server_row_count == 0 ? packet.row_count
-                                                                  : chunk_result.server_row_count;
-    result.server_affected_rows += chunk_result.server_affected_rows_present
-                                       ? chunk_result.server_affected_rows
-                                       : (chunk_result.server_row_count == 0
-                                              ? packet.row_count
-                                              : chunk_result.server_row_count);
-    result.server_affected_rows_present = true;
-    if (!chunk_result.server_result_payload.empty()) {
-      if (!result.server_result_payload.empty() && result.server_result_payload.back() != '\n') {
-        result.server_result_payload.push_back('\n');
+    CopyImportState canonical_copy = copy;
+    canonical_copy.rows = std::move(*canonical_rows);
+    for (std::size_t first_row = 0; first_row < canonical_copy.rows.size();) {
+      const std::size_t maximum_rows = std::min(
+          kCopyExecuteRowsPerSblrEnvelope,
+          canonical_copy.rows.size() - first_row);
+      const std::size_t end_row = CanonicalCompactCopyChunkEnd(
+          canonical_copy, first_row, first_row + maximum_rows);
+      if (end_row == first_row) {
+        return SendError(
+                   io,
+                   state,
+                   "54000",
+                   "SBLR.OPERATION.LIMIT_EXCEEDED",
+                   "One COPY row exceeds the canonical typed-scalar operand limit") &&
+               SendReady(io, state, ReadyReason::kErrorRecovered);
       }
-      result.server_result_payload += chunk_result.server_result_payload;
+      const std::size_t row_count = end_row - first_row;
+      const std::string envelope = BuildNativeBulkIngestExecuteEnvelope(
+          canonical_copy, first_row, row_count, true,
+          native_packet_row_offset);
+      const std::int64_t execute_started =
+          phase_trace ? ParserPhaseNowNs() : 0;
+      auto chunk_result = session->RunCanonicalRouteTextEnvelopeForWire(
+          envelope, {}, false);
+      WriteParserPhaseTraceIfEnabled(
+          phase_trace,
+          "copy_done",
+          "run_canonical_native_bulk_for_native_packet",
+          execute_started,
+          envelope.size(),
+          chunk_count + 1,
+          row_count,
+          chunk_result.accepted ? "accepted" : "rejected");
+      if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
+        const std::string diagnostic_code = FirstDiagnosticCode(
+            chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
+        std::string diagnostic_detail =
+            DiagnosticFieldValue(chunk_result.messages, "detail");
+        const std::string diagnostic_text =
+            FirstDiagnosticText(chunk_result.messages);
+        if (diagnostic_detail.empty()) diagnostic_detail = diagnostic_text;
+        if (IsTriggerAwarePathRequiredDiagnostic(diagnostic_code,
+                                                 diagnostic_detail,
+                                                 diagnostic_text)) {
+          chunk_result = RunCopyTriggerAwareInsertRowsFallback(
+              session,
+              state,
+              canonical_copy,
+              first_row,
+              row_count,
+              phase_trace,
+              "copy_done",
+              chunk_count + 1);
+        }
+      }
+      if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
+        const std::string diagnostic_code = FirstDiagnosticCode(
+            chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
+        std::string diagnostic_detail =
+            DiagnosticFieldValue(chunk_result.messages, "detail");
+        if (diagnostic_detail.empty()) {
+          diagnostic_detail = FirstDiagnosticText(chunk_result.messages);
+        }
+        if (!SendError(
+                io,
+                state,
+                "42000",
+                FirstDiagnosticText(chunk_result.messages),
+                diagnostic_detail.empty()
+                    ? diagnostic_code
+                    : diagnostic_code + ";" + diagnostic_detail)) {
+          return false;
+        }
+        return SendReady(io, state, ReadyReason::kErrorRecovered);
+      }
+      ++chunk_count;
+      result.statement_family = chunk_result.statement_family;
+      result.operation_family = chunk_result.operation_family;
+      result.server_operation_id = chunk_result.server_operation_id;
+      result.server_row_count += chunk_result.server_row_count == 0
+                                     ? row_count
+                                     : chunk_result.server_row_count;
+      result.server_affected_rows +=
+          chunk_result.server_affected_rows_present
+              ? chunk_result.server_affected_rows
+              : (chunk_result.server_row_count == 0
+                     ? row_count
+                     : chunk_result.server_row_count);
+      result.server_affected_rows_present = true;
+      if (!chunk_result.server_result_payload.empty()) {
+        if (!result.server_result_payload.empty() &&
+            result.server_result_payload.back() != '\n') {
+          result.server_result_payload.push_back('\n');
+        }
+        result.server_result_payload += chunk_result.server_result_payload;
+      }
+      first_row = end_row;
     }
+    native_packet_row_offset += canonical_copy.rows.size();
   }
-  for (std::size_t first_row = 0; first_row < copy.rows.size();
-       first_row += kCopyExecuteRowsPerSblrEnvelope) {
-    const std::size_t row_count =
-        std::min(kCopyExecuteRowsPerSblrEnvelope, copy.rows.size() - first_row);
-    const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
-    const bool use_native_row_packet =
-        copy.native_bulk_ingest && CopyRowsHaveSharedShape(copy, first_row, end_row);
+  for (std::size_t first_row = 0; first_row < copy.rows.size();) {
+    const std::size_t maximum_end_row =
+        std::min(copy.rows.size(), first_row + kCopyExecuteRowsPerSblrEnvelope);
+    const std::size_t end_row =
+        CanonicalCompactCopyChunkEnd(copy, first_row, maximum_end_row);
+    if (end_row == first_row) {
+      return SendError(
+                 io,
+                 state,
+                 "54000",
+                 "SBLR.OPERATION.LIMIT_EXCEEDED",
+                 "One COPY row exceeds the canonical typed-scalar operand limit") &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    const std::size_t row_count = end_row - first_row;
+    const bool use_native_row_packet = false;
     const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
-    const std::string envelope =
-        copy.native_bulk_ingest
-            ? BuildNativeBulkIngestExecuteEnvelope(
-                  copy, first_row, row_count, !use_native_row_packet)
-            : BuildCopyExecuteEnvelope(copy, first_row, row_count);
+    const std::string envelope = copy.native_bulk_ingest
+        ? BuildNativeBulkIngestExecuteEnvelope(copy, first_row, row_count, true)
+        : BuildInsertRowsExecuteEnvelope(copy, first_row, row_count, true);
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "copy_done",
                                    "build_execute_envelope",
@@ -6513,15 +6799,9 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
                                    row_count,
                                    use_native_row_packet ? "scratchbird.native_rows.v2" : "not_used");
     const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
-    const bool use_prepared =
-        !data_packet.empty() && CopyPreparedHandleCurrent(copy, session->session());
-    auto chunk_result =
-        data_packet.empty()
-            ? session->RunSblrEnvelope(envelope, false)
-            : (use_prepared
-                   ? session->RunPreparedSblrEnvelopeForWire(
-                         copy.prepared_statement_uuid, envelope, data_packet, false)
-                   : session->RunSblrEnvelopeWithDataPacket(envelope, data_packet, false));
+    const bool use_prepared = false;
+    auto chunk_result = session->RunCanonicalRouteTextEnvelopeForWire(
+        envelope, {}, false);
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "copy_done",
                                    data_packet.empty()
@@ -6591,6 +6871,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
       }
       result.server_result_payload += chunk_result.server_result_payload;
     }
+    first_row = end_row;
   }
   const std::int64_t send_started = phase_trace ? ParserPhaseNowNs() : 0;
   if (!SendPipelineResult(io, session, state, copy_sql, result)) return false;

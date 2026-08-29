@@ -38,6 +38,13 @@ struct TemporaryFilteredNameMatches {
   std::vector<NameRegistryEntry> durable_matches;
 };
 
+bool IsExactCanonicalSessionUuid(const std::string& value) {
+  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
+      scratchbird::core::platform::UuidKind::session, value);
+  return parsed.ok() &&
+         scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
+}
+
 std::string LowerResourceClass(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -283,6 +290,74 @@ bool NameRegistryMatchCanBeTemporaryTable(const NameRegistryEntry& match) {
   return ObjectClassCanBeTemporaryTable(match.object_class);
 }
 
+enum class TemporaryNameCandidateKind {
+  kNotVisible,
+  kCatalog,
+  kOwnedPrivate,
+};
+
+struct TemporaryNameCandidateClassification {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  TemporaryNameCandidateKind kind = TemporaryNameCandidateKind::kNotVisible;
+};
+
+TemporaryNameCandidateClassification ClassifyTemporaryNameCandidate(
+    const EngineResolveNameRequest& request,
+    const std::string& object_uuid,
+    const MgaTemporaryTableVisibilityResult& visibility) {
+  TemporaryNameCandidateClassification classified;
+  if (!visibility.table_visible) {
+    classified.ok = true;
+    return classified;
+  }
+  if (!visibility.table.temporary) {
+    if (!visibility.table.temporary_scope.empty() ||
+        !visibility.table.temporary_session_uuid.empty()) {
+      classified.diagnostic = MakeInvalidRequestDiagnostic(
+          "catalog.resolve_name",
+          "durable_table_namespace_invalid:" + object_uuid);
+      return classified;
+    }
+    classified.ok = true;
+    classified.kind = TemporaryNameCandidateKind::kCatalog;
+    return classified;
+  }
+  if (visibility.table.temporary_scope == "global" &&
+      visibility.table.temporary_session_uuid.empty()) {
+    if (!visibility.visible_to_session) {
+      classified.diagnostic = MakeInvalidRequestDiagnostic(
+          "catalog.resolve_name",
+          "global_temporary_table_namespace_not_visible:" + object_uuid);
+      return classified;
+    }
+    classified.ok = true;
+    classified.kind = TemporaryNameCandidateKind::kCatalog;
+    return classified;
+  }
+  if (visibility.table.temporary_scope == "private" &&
+      IsExactCanonicalSessionUuid(
+          visibility.table.temporary_session_uuid)) {
+    if (!IsExactCanonicalSessionUuid(
+            request.context.session_uuid.canonical)) {
+      classified.diagnostic = MakeInvalidRequestDiagnostic(
+          "catalog.resolve_name",
+          "temporary_table_session_namespace_invalid:" + object_uuid);
+      return classified;
+    }
+    classified.ok = true;
+    if (visibility.table.temporary_session_uuid ==
+        request.context.session_uuid.canonical) {
+      classified.kind = TemporaryNameCandidateKind::kOwnedPrivate;
+    }
+    return classified;
+  }
+  classified.diagnostic = MakeInvalidRequestDiagnostic(
+      "catalog.resolve_name",
+      "temporary_table_namespace_invalid:" + object_uuid);
+  return classified;
+}
+
 TemporaryFilteredNameMatches FilterTemporaryNameMatches(
     const EngineResolveNameRequest& request,
     const std::vector<NameRegistryEntry>& matches) {
@@ -299,14 +374,17 @@ TemporaryFilteredNameMatches FilterTemporaryNameMatches(
       filtered.diagnostic = visibility.diagnostic;
       return filtered;
     }
-    if (!visibility.table_visible) {
-      continue;
+    const auto classified = ClassifyTemporaryNameCandidate(
+        request, match.object_uuid, visibility);
+    if (!classified.ok) {
+      filtered.ok = false;
+      filtered.diagnostic = classified.diagnostic;
+      return filtered;
     }
-    if (!visibility.known_temporary) {
+    if (classified.kind == TemporaryNameCandidateKind::kCatalog) {
       filtered.durable_matches.push_back(match);
-      continue;
-    }
-    if (visibility.visible_to_session) {
+    } else if (classified.kind ==
+               TemporaryNameCandidateKind::kOwnedPrivate) {
       filtered.temporary_matches.push_back(match);
     }
   }
@@ -890,7 +968,56 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
   EngineCatalogResolveObjectNameRequest catalog_request;
   static_cast<EngineApiRequest&>(catalog_request) = static_cast<const EngineApiRequest&>(request);
   const auto catalog_resolved = EngineCatalogResolveObjectName(catalog_request);
+
+  std::string requested_object_class =
+      request.sql_object_reference.expected_object_type;
+  if (requested_object_class.empty()) {
+    requested_object_class = request.target_object.object_kind;
+  }
+  const bool relation_lookup =
+      ObjectClassCanBeTemporaryTable(requested_object_class) ||
+      (catalog_resolved.ok && ObjectClassCanBeTemporaryTable(
+                                  catalog_resolved.primary_object.object_kind));
+  NameRegistryResolveResult registry_resolved;
+  TemporaryFilteredNameMatches registry_filtered;
+  bool registry_filtered_available = false;
+  if (relation_lookup) {
+    registry_resolved =
+        ResolveNameRegistryPublic(request, requested_object_class);
+    if (!registry_resolved.ok &&
+        registry_resolved.diagnostic.code != "CATALOG.NAME.NOT_FOUND") {
+      return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+          request.context,
+          "catalog.resolve_name",
+          registry_resolved.diagnostic);
+    }
+    if (registry_resolved.ok) {
+      registry_filtered =
+          FilterTemporaryNameMatches(request, registry_resolved.matches);
+      if (!registry_filtered.ok) {
+        return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+            request.context,
+            "catalog.resolve_name",
+            registry_filtered.diagnostic);
+      }
+      registry_filtered_available = true;
+      if (registry_filtered.temporary_matches.size() > 1) {
+        return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+            request.context,
+            "catalog.resolve_name",
+            MakeEngineApiDiagnostic("CATALOG.NAME.AMBIGUOUS",
+                                    "catalog.name.ambiguous",
+                                    "ambiguous_name"));
+      }
+      if (registry_filtered.temporary_matches.size() == 1) {
+        return MakeNameRegistryResolveResult(
+            request, registry_filtered.temporary_matches.front(), true);
+      }
+    }
+  }
+
   if (catalog_resolved.ok) {
+    bool catalog_candidate_visible = true;
     if (ObjectClassCanBeTemporaryTable(catalog_resolved.primary_object.object_kind)) {
       const auto visibility = CheckMgaTemporaryTableVisibility(
           request.context,
@@ -901,54 +1028,70 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
             "catalog.resolve_name",
             visibility.diagnostic);
       }
-      if (visibility.hidden_by_temporary_visibility ||
-          (visibility.known_temporary && !visibility.visible_to_session)) {
+      const auto classified = ClassifyTemporaryNameCandidate(
+          request,
+          catalog_resolved.primary_object.uuid.canonical,
+          visibility);
+      if (!classified.ok) {
         return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
             request.context,
             "catalog.resolve_name",
-            MakeEngineApiDiagnostic("CATALOG.NAME.NOT_FOUND",
-                                    "message_vector.item_not_found_or_does_not_exist",
-                                    "item_not_found_or_does_not_exist"));
+            classified.diagnostic);
       }
+      catalog_candidate_visible =
+          classified.kind != TemporaryNameCandidateKind::kNotVisible;
     }
-    auto result = MakeApiBehaviorSuccess<EngineResolveNameResult>(request.context, "catalog.resolve_name");
-    result.primary_object = catalog_resolved.primary_object;
-    result.bound_object_identity = catalog_resolved.bound_object_identity;
-    result.result_shape = catalog_resolved.result_shape;
-    result.evidence = catalog_resolved.evidence;
-    AddApiBehaviorEvidence(&result, "catalog_object_lifecycle_resolver", "SBCATOBJ1");
-    const auto semantic = AttachViewSemanticProjection(
-        request,
-        result.primary_object.object_kind,
-        result.primary_object.uuid.canonical,
-        &result);
-    if (semantic.error) {
-      return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
-          request.context, "catalog.resolve_name", semantic);
+    if (catalog_candidate_visible) {
+      auto result = MakeApiBehaviorSuccess<EngineResolveNameResult>(request.context, "catalog.resolve_name");
+      result.primary_object = catalog_resolved.primary_object;
+      result.bound_object_identity = catalog_resolved.bound_object_identity;
+      result.result_shape = catalog_resolved.result_shape;
+      result.evidence = catalog_resolved.evidence;
+      AddApiBehaviorEvidence(&result, "catalog_object_lifecycle_resolver", "SBCATOBJ1");
+      const auto semantic = AttachViewSemanticProjection(
+          request,
+          result.primary_object.object_kind,
+          result.primary_object.uuid.canonical,
+          &result);
+      if (semantic.error) {
+        return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+            request.context, "catalog.resolve_name", semantic);
+      }
+      return result;
     }
-    return result;
   }
-  if (!catalog_resolved.diagnostics.empty() &&
+  if (!catalog_resolved.ok && !catalog_resolved.diagnostics.empty() &&
       catalog_resolved.diagnostics.front().code.rfind("CATALOG.SYNONYM_", 0) == 0) {
     return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
         request.context,
         "catalog.resolve_name",
         catalog_resolved.diagnostics.front());
   }
-  const auto resolved = ResolveNameRegistryPublic(request, request.sql_object_reference.expected_object_type);
-  if (!resolved.ok) {
-    return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(request.context, "catalog.resolve_name", resolved.diagnostic);
+
+  if (!registry_filtered_available) {
+    registry_resolved =
+        ResolveNameRegistryPublic(request, requested_object_class);
+    if (!registry_resolved.ok) {
+      return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+          request.context,
+          "catalog.resolve_name",
+          registry_resolved.diagnostic);
+    }
+    registry_filtered =
+        FilterTemporaryNameMatches(request, registry_resolved.matches);
+    if (!registry_filtered.ok) {
+      return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+          request.context,
+          "catalog.resolve_name",
+          registry_filtered.diagnostic);
+    }
   }
-  const auto filtered = FilterTemporaryNameMatches(request, resolved.matches);
-  if (!filtered.ok) {
-    return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
-        request.context,
-        "catalog.resolve_name",
-        filtered.diagnostic);
-  }
-  const bool use_temporary_matches = !filtered.temporary_matches.empty();
+
+  const bool use_temporary_matches =
+      !registry_filtered.temporary_matches.empty();
   const auto& effective_matches =
-      use_temporary_matches ? filtered.temporary_matches : filtered.durable_matches;
+      use_temporary_matches ? registry_filtered.temporary_matches
+                            : registry_filtered.durable_matches;
   if (effective_matches.empty()) {
     return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
         request.context,

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -278,7 +279,7 @@ void RequireExactLowering(const AgentRowEvidence& row) {
   }
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted,
           EvidenceMessage(row, "server_admission", "server admission rejected agent route"));
   Require(admission.requires_public_abi_dispatch,
@@ -286,7 +287,9 @@ void RequireExactLowering(const AgentRowEvidence& row) {
                           "server admission did not require engine public ABI dispatch"));
   Require(admission.operation_id == row.operation_id,
           EvidenceMessage(row, "server_admission", "server admission operation id mismatch"));
-  Require(admission.operation_family == "sblr.management.runtime_operation.v3",
+  Require(admission.operation_family ==
+              (row.mutation ? "sblr.management.control.v3"
+                            : "sblr.management.report.v3"),
           EvidenceMessage(row, "server_admission", "server admission family mismatch"));
 }
 
@@ -294,6 +297,8 @@ api::EngineRequestContext EngineContext(const AgentRowEvidence& row) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-agent-management-exact-route";
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("right:OBS_AGENT_STATE_READ");
   context.trace_tags.push_back("right:OBS_AGENT_CONTROL");
   context.trace_tags.push_back(std::string("sbsql_surface_id:") + std::string(row.surface_id));
@@ -316,9 +321,17 @@ sblr::SblrOperationEnvelope EngineEnvelope(const AgentRowEvidence& row) {
                                          std::string(row.opcode),
                                          std::string("trace.agent_management.exact_route.") +
                                              std::string(row.surface_id));
+  const auto* registry = sblr::LookupSblrOperation(row.operation_id);
+  Require(registry != nullptr,
+          EvidenceMessage(row, "engine_dispatch", "canonical registry row missing"));
+  Require(registry->opcode == row.opcode,
+          EvidenceMessage(row, "engine_dispatch", "canonical opcode mismatch"));
+  envelope.opcode_code = registry->code;
+  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000001808";
+  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000001809";
   envelope.requires_security_context = true;
-  envelope.requires_transaction_context = false;
-  envelope.requires_cluster_authority = false;
+  envelope.requires_transaction_context = registry->requires_transaction_context;
+  envelope.requires_cluster_authority = registry->requires_cluster_authority;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   return envelope;

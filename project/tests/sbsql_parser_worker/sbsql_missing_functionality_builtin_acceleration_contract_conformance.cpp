@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -364,7 +365,7 @@ void RequireCompileStatementPipelineAndDispatch(const api::EngineRequestContext&
           "Gate 012 compile statement operand count drifted");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   if (!admission.admitted) {
     for (const auto& diagnostic : admission.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
@@ -442,7 +443,7 @@ void RequireCacheControlRoute(const api::EngineRequestContext& context,
           "Gate 012 cache route embedded SQL text key");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "Gate 012 cache route server admission rejected route");
   Require(admission.requires_public_abi_dispatch,
           "Gate 012 cache route did not require public ABI dispatch");

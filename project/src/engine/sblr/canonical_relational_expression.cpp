@@ -8,6 +8,7 @@
 
 #include "canonical_relational_expression.hpp"
 #include "hash_digest.hpp"
+#include "sblr_literal_runtime.hpp"
 
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
@@ -24,6 +25,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace scratchbird::engine::sblr {
@@ -153,7 +155,20 @@ std::string BoundLiteralType(
     return std::string(*expected_type);
   }
   if(expression.literal_typed_value_v1.has_value()){
-    return kind==api::RelationalLiteralKind::kNumeric?"bigint":std::string{};
+    if (kind != api::RelationalLiteralKind::kNumeric) return {};
+    const auto& bytes =
+        expression.literal_typed_value_v1->canonical_value_bytes;
+    if (DecodeSblrLiteralInt64LeV1(bytes.data(), bytes.size()).has_value() &&
+        !descriptor.precision.has_value() && !descriptor.scale.has_value()) {
+      return "bigint";
+    }
+    const auto decimal =
+        DecodeSblrLiteralExactDecimalV1(bytes.data(), bytes.size());
+    if (decimal.ok && descriptor.precision == decimal.precision &&
+        descriptor.scale == decimal.scale) {
+      return "decimal";
+    }
+    return {};
   }
   const auto& payload = *expression.literal_or_parameter_ref;
   switch (kind) {
@@ -510,49 +525,197 @@ bool SameDescriptor(const api::EngineDescriptor& left,
          left.encoded_descriptor == right.encoded_descriptor;
 }
 
+bool ExactCanonicalBooleanRelationalDescriptorV1(
+    const api::RelationalTypeDescriptor& descriptor,
+    const api::RelationalNullability effective_nullability) {
+  if (!descriptor.datatype_identity_authoritative ||
+      (effective_nullability != api::RelationalNullability::kNonNull &&
+       effective_nullability != api::RelationalNullability::kNullable) ||
+      (descriptor.nullability != api::RelationalNullability::kNonNull &&
+       descriptor.nullability != api::RelationalNullability::kNullable) ||
+      descriptor.descriptor_uuid != descriptor.type_uuid ||
+      !IsCanonicalUuid(descriptor.statement_receipt_uuid) ||
+      descriptor.statement_receipt_uuid ==
+          "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  const auto identity = dt::LookupCanonicalBooleanTypeCodecIdentityV1(
+      descriptor.datatype_catalog_snapshot_uuid,
+      descriptor.datatype_catalog_generation,
+      descriptor.datatype_registry_generation);
+  return identity.ok &&
+         descriptor.descriptor_uuid == identity.row.descriptor_uuid &&
+         descriptor.descriptor_generation ==
+             identity.row.descriptor_generation &&
+         descriptor.type_uuid == identity.row.type_uuid &&
+         descriptor.type_generation == identity.row.type_generation &&
+         descriptor.codec_id == identity.row.codec_id &&
+         descriptor.codec_version == identity.row.codec_version &&
+         descriptor.codec_generation == identity.row.codec_generation &&
+         dt::IsExactCanonicalBooleanDescriptorTypeAliasV1(
+             descriptor.descriptor_uuid, descriptor.descriptor_generation,
+             descriptor.type_uuid, descriptor.type_generation,
+             descriptor.codec_id, descriptor.codec_version,
+             descriptor.codec_generation, true);
+}
+
+bool ExactCanonicalTextRelationalDescriptorV1(
+    const api::RelationalTypeDescriptor& descriptor,
+    const api::RelationalNullability effective_nullability) {
+  if (!descriptor.datatype_identity_authoritative ||
+      (effective_nullability != api::RelationalNullability::kNonNull &&
+       effective_nullability != api::RelationalNullability::kNullable) ||
+      (descriptor.nullability != api::RelationalNullability::kNonNull &&
+       descriptor.nullability != api::RelationalNullability::kNullable) ||
+      descriptor.descriptor_uuid == descriptor.type_uuid ||
+      !IsCanonicalUuid(descriptor.statement_receipt_uuid) ||
+      descriptor.statement_receipt_uuid ==
+          "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      descriptor.datatype_catalog_snapshot_uuid,
+      descriptor.datatype_catalog_generation,
+      descriptor.datatype_registry_generation, descriptor.descriptor_uuid,
+      descriptor.descriptor_generation);
+  return identity.ok && dt::IsExactCanonicalTextTypeCodecIdentityV1(identity.row) &&
+         descriptor.descriptor_uuid == identity.row.descriptor_uuid &&
+         descriptor.descriptor_generation ==
+             identity.row.descriptor_generation &&
+         descriptor.type_uuid == identity.row.type_uuid &&
+         descriptor.type_generation == identity.row.type_generation &&
+         descriptor.codec_id == identity.row.codec_id &&
+         descriptor.codec_version == identity.row.codec_version &&
+         descriptor.codec_generation == identity.row.codec_generation;
+}
+
+bool CarriesPersistedTextAuthorityFieldsV1(
+    const api::EngineDescriptor& descriptor) {
+  constexpr std::array<std::string_view, 9> kAuthorityFields{
+      "charset_generation=", "collation_generation=", "resource_epoch=",
+      "datatype_descriptor_generation=", "type_generation=", "codec_uuid=",
+      "codec_id=", "codec_generation=", "null_encoding="};
+  return std::ranges::any_of(kAuthorityFields, [&](const auto field) {
+    return descriptor.encoded_descriptor.find(field) != std::string::npos;
+  });
+}
+
+bool BuildExactCanonicalBooleanRuntimeDescriptorV1(
+    const api::RelationalTypeDescriptor& source,
+    const api::RelationalNullability effective_nullability,
+    api::EngineDescriptor* descriptor) {
+  if (descriptor == nullptr ||
+      !ExactCanonicalBooleanRelationalDescriptorV1(source,
+                                                   effective_nullability)) {
+    return false;
+  }
+  descriptor->descriptor_uuid.canonical = source.descriptor_uuid;
+  descriptor->descriptor_kind = "scalar";
+  descriptor->canonical_type_name = "boolean";
+  descriptor->encoded_descriptor =
+      "datatype_descriptor_uuid=" + source.descriptor_uuid +
+      ";datatype_descriptor_generation=" +
+      std::to_string(source.descriptor_generation) +
+      ";type_uuid=" + source.type_uuid + ";type_generation=" +
+      std::to_string(source.type_generation) + ";codec_id=" +
+      source.codec_id + ";codec_version=" +
+      std::to_string(source.codec_version) + ";codec_generation=" +
+      std::to_string(source.codec_generation) +
+      ";null_encoding=1;nullability=" +
+      (effective_nullability == api::RelationalNullability::kNullable
+           ? "nullable"
+           : "non_null");
+  return true;
+}
+
 bool SamePersistedRowDescriptor(
+    const std::uint32_t bound_descriptor_id,
     const api::RelationalTypeDescriptor& bound,
     const api::EngineDescriptor& actual,
     const std::optional<api::RelationalNullability>
-        effective_nullability = std::nullopt) {
+        effective_nullability = std::nullopt,
+    const CanonicalRelationalExpressionRuntimeServices* services = nullptr,
+    std::string* authority_refusal_detail = nullptr) {
   if (!api::QowCanonicalDescriptorIdentityV1(actual) ||
       actual.descriptor_uuid.canonical != bound.descriptor_uuid ||
       actual.descriptor_kind != "scalar") {
     return false;
   }
 
-  static const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  std::string bound_type_name;
-  if (core_manifest.ok()) {
-    const auto row = std::ranges::find_if(
-        core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
-          return TypedUuidText(candidate.descriptor_uuid) == bound.type_uuid;
-        });
-    if (row != core_manifest.manifest.descriptor_rows.end()) {
-      bound_type_name = row->stable_name;
-    } else {
-      const auto int64_row = std::ranges::find_if(
-          core_manifest.manifest.descriptor_rows, [](const auto& candidate) {
-            return candidate.stable_name == "int64";
-          });
-      if (int64_row != core_manifest.manifest.descriptor_rows.end()) {
-        const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-            "019d0000-0000-7000-8000-00000000d701",
-            core_manifest.manifest.catalog_epoch, 1,
-            TypedUuidText(int64_row->descriptor_uuid),
-            int64_row->descriptor_epoch);
-        if (identity.ok && identity.row.type_uuid == bound.type_uuid) {
-          bound_type_name = int64_row->stable_name;
-        }
-      }
-    }
+  const auto expected_nullability =
+      effective_nullability.value_or(bound.nullability);
+  if (services != nullptr &&
+      services->prevalidated_persisted_row_descriptor_authority) {
+    const auto prevalidated =
+        services->prevalidated_persisted_row_descriptor_authority(
+            bound_descriptor_id, bound, actual, expected_nullability);
+    if (prevalidated.has_value()) return *prevalidated;
   }
-  if (bound_type_name.empty() ||
-      !SameCanonicalType(bound_type_name, actual.canonical_type_name)) {
+  if (bound.descriptor_uuid == bound.type_uuid) {
+    api::EngineDescriptor expected;
+    return BuildExactCanonicalBooleanRuntimeDescriptorV1(
+               bound, expected_nullability, &expected) &&
+           SameDescriptor(expected, actual);
+  }
+
+  const bool exact_canonical_text =
+      ExactCanonicalTextRelationalDescriptorV1(bound, expected_nullability);
+  const bool live_persisted_text_authority =
+      services != nullptr &&
+      static_cast<bool>(services->persisted_row_descriptor_authority);
+  if (exact_canonical_text &&
+      (live_persisted_text_authority ||
+       CarriesPersistedTextAuthorityFieldsV1(actual))) {
+    if (!live_persisted_text_authority) {
+      if (authority_refusal_detail != nullptr) {
+        *authority_refusal_detail =
+            "persisted canonical TEXT authority is unavailable";
+      }
+      return false;
+    }
+    return services->persisted_row_descriptor_authority(
+        bound_descriptor_id, bound, actual, expected_nullability,
+        authority_refusal_detail);
+  }
+
+  static const auto canonical_type_name_by_type_uuid = [] {
+    std::unordered_map<std::string, std::string> names;
+    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return names;
+    const auto record_name = [&](const std::string& type_uuid,
+                                 const std::string& stable_name) {
+      if (type_uuid.empty()) return;
+      const auto [found, inserted] = names.emplace(type_uuid, stable_name);
+      if (!inserted && !SameCanonicalType(found->second, stable_name)) {
+        found->second.clear();
+      }
+    };
+    for (const auto& row : manifest.manifest.descriptor_rows) {
+      const auto descriptor_uuid = TypedUuidText(row.descriptor_uuid);
+      // Record both exact descriptor and separately registered value-type
+      // identities. The sole descriptor/type alias is handled above through
+      // the full canonical boolean authority tuple.
+      record_name(descriptor_uuid, row.stable_name);
+      const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+          "019d0000-0000-7000-8000-00000000d701",
+          manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+          row.descriptor_epoch);
+      if (!identity.ok || identity.row.type_uuid.empty()) continue;
+      record_name(identity.row.type_uuid, row.stable_name);
+    }
+    return names;
+  }();
+  const auto bound_type_name =
+      canonical_type_name_by_type_uuid.find(bound.type_uuid);
+  if (bound_type_name == canonical_type_name_by_type_uuid.end() ||
+      bound_type_name->second.empty() ||
+      !SameCanonicalType(bound_type_name->second,
+                         actual.canonical_type_name)) {
     return false;
   }
 
   bool canonical_seen = false;
+  bool datatype_descriptor_uuid_seen = false;
   bool type_uuid_seen = false;
   bool nullability_seen = false;
   bool charset_seen = false;
@@ -561,8 +724,6 @@ bool SamePersistedRowDescriptor(
   bool width_seen = false;
   bool precision_seen = false;
   bool scale_seen = false;
-  const auto expected_nullability =
-      effective_nullability.value_or(bound.nullability);
 
   const auto exact_string_optional = [](const std::string_view value,
                                         const std::optional<std::string>& bound_value,
@@ -604,6 +765,12 @@ bool SamePersistedRowDescriptor(
         return false;
       }
       canonical_seen = true;
+    } else if (key == "datatype_descriptor_uuid") {
+      if (datatype_descriptor_uuid_seen || value.empty() ||
+          value != bound.descriptor_uuid) {
+        return false;
+      }
+      datatype_descriptor_uuid_seen = true;
     } else if (key == "type_uuid") {
       if (type_uuid_seen || value.empty() || value != bound.type_uuid) {
         return false;
@@ -787,6 +954,11 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
     if (descriptor == nullptr || type_name.empty() || type_name == "null") {
       return false;
     }
+    if (source.descriptor_uuid == source.type_uuid) {
+      return type_name == "boolean" &&
+             BuildExactCanonicalBooleanRuntimeDescriptorV1(
+                 source, effective_nullability, descriptor);
+    }
     descriptor->descriptor_uuid.canonical = source.descriptor_uuid;
     descriptor->descriptor_kind = "scalar";
     descriptor->canonical_type_name = type_name;
@@ -867,7 +1039,7 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
             &expected_descriptor) ||
         (!SameDescriptor(expected_descriptor,
                          row_values[ordinal].descriptor) &&
-         !SamePersistedRowDescriptor(*descriptor->second,
+         !SamePersistedRowDescriptor(descriptor_id, *descriptor->second,
                                      row_values[ordinal].descriptor,
                                      effective_nullability)) ||
         !descriptor_dynamic_bytes(row_values[ordinal].descriptor,
@@ -1673,6 +1845,60 @@ CanonicalRelationalExpressionRuntime::CanonicalRelationalExpressionRuntime(
   }
 }
 
+std::optional<std::uint64_t>
+CanonicalRelationalExpressionRuntime::RetainedLogicalMemoryBytesV1()
+    const noexcept {
+  std::uint64_t bytes = sizeof(*this);
+  const auto add = [](std::uint64_t* total,
+                      const std::uint64_t increment) noexcept {
+    if (total == nullptr ||
+        increment > std::numeric_limits<std::uint64_t>::max() - *total) {
+      return false;
+    }
+    *total += increment;
+    return true;
+  };
+  const auto add_product = [&](const std::size_t count,
+                               const std::size_t width) noexcept {
+    static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
+    if (width != 0 &&
+        count > std::numeric_limits<std::uint64_t>::max() / width) {
+      return false;
+    }
+    return add(&bytes, static_cast<std::uint64_t>(count) *
+                           static_cast<std::uint64_t>(width));
+  };
+  constexpr std::size_t kHashNodeLinks = 6 * sizeof(void*);
+  if (!add_product(descriptors_.bucket_count(), sizeof(void*)) ||
+      !add_product(descriptors_.size(),
+                   sizeof(decltype(descriptors_)::value_type) +
+                       kHashNodeLinks) ||
+      !add_product(expressions_.bucket_count(), sizeof(void*)) ||
+      !add_product(expressions_.size(),
+                   sizeof(decltype(expressions_)::value_type) +
+                       kHashNodeLinks) ||
+      !add_product(descriptor_type_names_.bucket_count(), sizeof(void*)) ||
+      !add_product(descriptor_type_names_.size(),
+                   sizeof(decltype(descriptor_type_names_)::value_type) +
+                       kHashNodeLinks) ||
+      !add_product(inference_stack_.bucket_count(), sizeof(void*)) ||
+      !add_product(inference_stack_.size(),
+                   sizeof(decltype(inference_stack_)::value_type) +
+                       kHashNodeLinks)) {
+    return std::nullopt;
+  }
+  for (const auto& [descriptor_id, canonical_type_name] :
+       descriptor_type_names_) {
+    (void)descriptor_id;
+    if (!add(&bytes,
+             static_cast<std::uint64_t>(canonical_type_name.capacity())) ||
+        !add(&bytes, 1)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
 bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     const std::uint32_t root_expression_id,
     const CanonicalRelationalExpressionRowBinding& row_binding,
@@ -1740,8 +1966,14 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
             : (row_binding.row_nullable[ordinal]
                    ? api::RelationalNullability::kNullable
                    : api::RelationalNullability::kNonNull);
-    if (!SamePersistedRowDescriptor(*descriptor->second, value->descriptor,
-                                    effective_nullability)) {
+    const bool exact_canonical_text_bound =
+        ExactCanonicalTextRelationalDescriptorV1(*descriptor->second,
+                                                 effective_nullability);
+    std::string descriptor_authority_detail;
+    if (!SamePersistedRowDescriptor(
+            descriptor_id, *descriptor->second, value->descriptor,
+            effective_nullability,
+            &services_, &descriptor_authority_detail)) {
       *refusal_detail =
           "materialized row value lost its full canonical descriptor identity:" +
           std::string("identity=") +
@@ -1764,7 +1996,38 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
           ":precision=" +
           (descriptor->second->precision.has_value() ? "1" : "0") +
           ":scale=" +
-          (descriptor->second->scale.has_value() ? "1" : "0");
+          (descriptor->second->scale.has_value() ? "1" : "0") +
+          ":bound_exact_text=" +
+          (exact_canonical_text_bound ? "1" : "0") +
+          ":bound_authoritative=" +
+          (descriptor->second->datatype_identity_authoritative ? "1" : "0") +
+          ":bound_descriptor_uuid=" + descriptor->second->descriptor_uuid +
+          ":bound_descriptor_generation=" +
+          std::to_string(descriptor->second->descriptor_generation) +
+          ":bound_type_uuid=" + descriptor->second->type_uuid +
+          ":bound_type_generation=" +
+          std::to_string(descriptor->second->type_generation) +
+          ":bound_codec_id=" + descriptor->second->codec_id +
+          ":bound_codec_version=" +
+          std::to_string(descriptor->second->codec_version) +
+          ":bound_codec_generation=" +
+          std::to_string(descriptor->second->codec_generation) +
+          ":bound_statement_receipt=" +
+          descriptor->second->statement_receipt_uuid +
+          ":bound_datatype_snapshot=" +
+          descriptor->second->datatype_catalog_snapshot_uuid +
+          ":bound_datatype_catalog_generation=" +
+          std::to_string(descriptor->second->datatype_catalog_generation) +
+          ":bound_datatype_registry_generation=" +
+          std::to_string(descriptor->second->datatype_registry_generation) +
+          ":effective_nullability=" +
+          std::to_string(
+              static_cast<std::uint8_t>(effective_nullability)) +
+          ":authority_hook=" +
+          (services_.persisted_row_descriptor_authority ? "1" : "0") +
+          (descriptor_authority_detail.empty()
+               ? std::string{}
+               : ":authority=" + descriptor_authority_detail);
       return false;
     }
     if (value->state == api::EngineValueState::sql_null) {
@@ -1905,29 +2168,37 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     const bool has_operator = record.operator_name.has_value();
     const bool has_payload = record.literal_or_parameter_ref.has_value();
     const bool has_typed_literal = record.literal_typed_value_v1.has_value();
+    const bool has_contextual_literal =
+        record.contextual_text_literal_v2.has_value();
     const bool has_typed_parameter =
         record.parameter_typed_value_v1.has_value();
     bool exact_shape = false;
     switch (record.expression_kind) {
       case api::RelationalExpressionKind::kLiteral:
         exact_shape = record.child_expression_ids.empty() && has_literal &&
-                      (has_payload != has_typed_literal) && !has_function &&
-                      !has_name && !has_operator;
+                      (static_cast<unsigned>(has_payload) +
+                           static_cast<unsigned>(has_typed_literal) +
+                           static_cast<unsigned>(has_contextual_literal) ==
+                       1) &&
+                      !has_function && !has_name && !has_operator;
         break;
       case api::RelationalExpressionKind::kParenthesized:
         exact_shape = record.child_expression_ids.size() == 1 &&
                       !has_function && !has_name && !has_literal &&
-                      !has_operator && !has_payload;
+                      !has_operator && !has_payload &&
+                      !has_contextual_literal;
         break;
       case api::RelationalExpressionKind::kUnary:
         exact_shape = record.child_expression_ids.size() == 1 &&
                       has_operator && !has_function && !has_name &&
-                      !has_literal && !has_payload;
+                      !has_literal && !has_payload &&
+                      !has_contextual_literal;
         break;
       case api::RelationalExpressionKind::kBinary:
         exact_shape = record.child_expression_ids.size() == 2 &&
                       has_operator && !has_function && !has_name &&
-                      !has_literal && !has_payload;
+                      !has_literal && !has_payload &&
+                      !has_contextual_literal;
         break;
       case api::RelationalExpressionKind::kParameter:
         exact_shape = record.child_expression_ids.empty() &&
@@ -2050,21 +2321,22 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
       *canonical_type_name = row->stable_name;
       return true;
     }
-    // int64 has separate current descriptor and value-type identities. Resolve
-    // the type UUID only through the exact current type/codec registry row;
-    // never treat an arbitrary UUID as an alias for the core datatype.
-    const auto int64_row = std::ranges::find_if(
-        core_manifest.manifest.descriptor_rows, [](const auto& candidate) {
-          return candidate.stable_name == "int64";
-        });
-    if (int64_row != core_manifest.manifest.descriptor_rows.end()) {
+    // Literal codecs use distinct current descriptor and value-type
+    // identities. Resolve those type UUIDs only through exact current registry
+    // rows; never treat an arbitrary UUID as a datatype alias.
+    for (const auto stable_name : {std::string_view{"int64"},
+                                   std::string_view{"decimal"}}) {
+      const auto row = std::ranges::find_if(
+          core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
+            return candidate.stable_name == stable_name;
+          });
+      if (row == core_manifest.manifest.descriptor_rows.end()) continue;
       const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
           "019d0000-0000-7000-8000-00000000d701",
           core_manifest.manifest.catalog_epoch, 1,
-          TypedUuidText(int64_row->descriptor_uuid),
-          int64_row->descriptor_epoch);
+          TypedUuidText(row->descriptor_uuid), row->descriptor_epoch);
       if (identity.ok && identity.row.type_uuid == descriptor.type_uuid) {
-        *canonical_type_name = int64_row->stable_name;
+        *canonical_type_name = row->stable_name;
         return true;
       }
     }
@@ -2149,9 +2421,14 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
 
   switch (expression.expression_kind) {
     case api::RelationalExpressionKind::kLiteral: {
-      if (!expression.literal_kind.has_value() ||
-          (expression.literal_or_parameter_ref.has_value() ==
-           expression.literal_typed_value_v1.has_value())) {
+      const unsigned payload_count =
+          static_cast<unsigned>(
+              expression.literal_or_parameter_ref.has_value()) +
+          static_cast<unsigned>(
+              expression.literal_typed_value_v1.has_value()) +
+          static_cast<unsigned>(
+              expression.contextual_text_literal_v2.has_value());
+      if (!expression.literal_kind.has_value() || payload_count != 1) {
         *refusal_detail = "literal expression payload is incomplete";
         return leave(false);
       }
@@ -2185,6 +2462,18 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
         *refusal_detail =
             "literal type is outside the bound object-free scalar profile";
         return leave(false);
+      }
+      if (expression.contextual_text_literal_v2.has_value()) {
+        if (*expression.literal_kind !=
+                api::RelationalLiteralKind::kString ||
+            expression.contextual_text_literal_v2
+                    ->literal_descriptor_handle !=
+                expression.result_descriptor_id) {
+          *refusal_detail =
+              "contextual TEXT literal marker is structurally invalid";
+          return leave(false);
+        }
+        return finish_type(type_name);
       }
       if (*expression.literal_kind == api::RelationalLiteralKind::kUuid &&
           !IsCanonicalUuid(*expression.literal_or_parameter_ref)) {
@@ -2327,6 +2616,67 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
         return finish_type("boolean");
       }
       if (IsComparisonOperator(operation)) {
+        const auto left_expression =
+            expressions_.find(expression.child_expression_ids[0]);
+        const auto right_expression =
+            expressions_.find(expression.child_expression_ids[1]);
+        const bool left_contextual =
+            left_expression != expressions_.end() &&
+            left_expression->second->contextual_text_literal_v2.has_value();
+        const bool right_contextual =
+            right_expression != expressions_.end() &&
+            right_expression->second->contextual_text_literal_v2.has_value();
+        if (left_contextual || right_contextual) {
+          if (operation != "=" || left_contextual == right_contextual ||
+              !services_.contextual_text_equality_evaluator ||
+              !services_.contextual_text_equality_type_authority) {
+            *refusal_detail =
+                "contextual TEXT literal is outside its exact equality type authority";
+            return leave(false);
+          }
+          const auto* literal_expression =
+              left_contextual ? left_expression->second
+                              : right_expression->second;
+          const auto& marker =
+              *literal_expression->contextual_text_literal_v2;
+          if (literal_expression->expression_kind !=
+                  api::RelationalExpressionKind::kLiteral ||
+              literal_expression->literal_kind !=
+                  api::RelationalLiteralKind::kString ||
+              literal_expression->literal_or_parameter_ref.has_value() ||
+              literal_expression->literal_typed_value_v1.has_value() ||
+              marker.literal_descriptor_handle == 0 ||
+              marker.literal_descriptor_handle !=
+                  literal_expression->result_descriptor_id) {
+            *refusal_detail =
+                "contextual TEXT literal marker is structurally invalid";
+            return leave(false);
+          }
+          if (!services_.contextual_text_equality_type_authority(
+                  expression.expression_id,
+                  expression.child_expression_ids[0],
+                  expression.child_expression_ids[1],
+                  literal_expression->expression_id,
+                  marker.literal_occurrence, marker.node_id,
+                  marker.literal_descriptor_handle, refusal_detail)) {
+            if (refusal_detail->empty()) {
+              *refusal_detail =
+                  "contextual TEXT literal type authority did not match its exact equality";
+            }
+            return leave(false);
+          }
+          const auto target_expression_id =
+              left_contextual ? expression.child_expression_ids[1]
+                              : expression.child_expression_ids[0];
+          std::string target_type;
+          if (!InferTypeInternal(target_expression_id, "text", &target_type,
+                                 refusal_detail) ||
+              !BindDescriptorType(literal_expression->result_descriptor_id,
+                                  "text", refusal_detail)) {
+            return leave(false);
+          }
+          return finish_type("boolean");
+        }
         std::string left_type;
         std::string right_type;
         if (!InferTypeInternal(expression.child_expression_ids[0], std::nullopt,
@@ -2489,6 +2839,16 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
     return false;
   }
   const auto& source = *found->second;
+  if (source.descriptor_uuid == source.type_uuid) {
+    if (type_name == "boolean" &&
+        BuildExactCanonicalBooleanRuntimeDescriptorV1(
+            source, source.nullability, descriptor)) {
+      return true;
+    }
+    *refusal_detail =
+        "scalar descriptor/type alias is not exact canonical boolean authority";
+    return false;
+  }
   descriptor->descriptor_uuid.canonical = source.descriptor_uuid;
   descriptor->descriptor_kind = "scalar";
   descriptor->canonical_type_name = std::string(type_name);
@@ -2792,6 +3152,11 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
   }
 
   if (expression.expression_kind == api::RelationalExpressionKind::kLiteral) {
+    if (expression.contextual_text_literal_v2.has_value()) {
+      *refusal_detail =
+          "contextual TEXT literal requires its exact binary equality service";
+      return false;
+    }
     api::EngineTypedValue literal;
     literal.descriptor = result_descriptor;
     if (*expression.literal_kind == api::RelationalLiteralKind::kNull) {
@@ -2805,12 +3170,36 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
           typed.canonical_value_bytes);
       if(typed.value_state!="value"||typed.descriptor_generation==0||
          typed.descriptor_uuid!=result_descriptor.descriptor_uuid.canonical||
-         !digest.ok()||digest.digest!=typed.canonical_value_sha256||
-         typed.canonical_value_bytes.size()!=8){
+         !digest.ok()||digest.digest!=typed.canonical_value_sha256){
         *refusal_detail="typed_value_v1 descriptor, state, bytes, or SHA differs";
         return false;
       }
-      literal.binary_value=typed.canonical_value_bytes;
+      const auto int64_value=DecodeSblrLiteralInt64LeV1(
+          typed.canonical_value_bytes.data(),typed.canonical_value_bytes.size());
+      const auto decimal_value=DecodeSblrLiteralExactDecimalV1(
+          typed.canonical_value_bytes.data(),typed.canonical_value_bytes.size());
+      if(int64_value.has_value()){
+        literal.binary_value=typed.canonical_value_bytes;
+      }else if(decimal_value.ok){
+        const auto source_descriptor=descriptors_.find(
+            expression.result_descriptor_id);
+        if(source_descriptor==descriptors_.end()||
+           !source_descriptor->second->precision.has_value()||
+           !source_descriptor->second->scale.has_value()||
+           *source_descriptor->second->precision!=decimal_value.precision||
+           *source_descriptor->second->scale!=decimal_value.scale||
+           !CanonicalizeLiteralPayload(
+               inferred_type,result_descriptor,decimal_value.canonical_lexical,
+               &literal.encoded_value,refusal_detail)){
+          if(refusal_detail->empty())
+            *refusal_detail=
+                "exact decimal typed value differs from its bound descriptor";
+          return false;
+        }
+      }else{
+        *refusal_detail="typed_value_v1 canonical literal codec is unsupported";
+        return false;
+      }
       return finish(std::move(literal));
     }
     std::string payload = *expression.literal_or_parameter_ref;
@@ -3189,6 +3578,52 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
   }
 
   if (IsComparisonOperator(operation)) {
+    const auto left_expression =
+        expressions_.find(expression.child_expression_ids[0]);
+    const auto right_expression =
+        expressions_.find(expression.child_expression_ids[1]);
+    const bool left_contextual =
+        left_expression != expressions_.end() &&
+        left_expression->second->contextual_text_literal_v2.has_value();
+    const bool right_contextual =
+        right_expression != expressions_.end() &&
+        right_expression->second->contextual_text_literal_v2.has_value();
+    if (left_contextual || right_contextual) {
+      if (operation != "=" || left_contextual == right_contextual ||
+          !services_.contextual_text_equality_evaluator) {
+        *refusal_detail =
+            "contextual TEXT literal is outside its exact equality service";
+        return false;
+      }
+      const auto target_expression_id =
+          left_contextual ? expression.child_expression_ids[1]
+                          : expression.child_expression_ids[0];
+      const auto* target_value = ActiveRowValue(target_expression_id);
+      if (target_value == nullptr) {
+        *refusal_detail =
+            "contextual TEXT equality target is not an active row value";
+        return false;
+      }
+      api::EngineSqlTruthValue truth =
+          api::EngineSqlTruthValue::unknown;
+      std::string diagnostic_id;
+      if (!services_.contextual_text_equality_evaluator(
+              expression.expression_id, expression.child_expression_ids[0],
+              expression.child_expression_ids[1], *target_value, &truth,
+              &diagnostic_id, refusal_detail)) {
+        if (!diagnostic_id.empty()) {
+          *refusal_detail = diagnostic_id + ":" + *refusal_detail;
+        }
+        return false;
+      }
+      api::EngineTypedValue contextual_result;
+      if (!api::QowMaterializeCanonicalTruthValueV1(
+              truth, result_descriptor, &contextual_result,
+              refusal_detail)) {
+        return false;
+      }
+      return finish(std::move(contextual_result));
+    }
     std::string left_type;
     std::string right_type;
     if (!InferTypeInternal(expression.child_expression_ids[0], std::nullopt,

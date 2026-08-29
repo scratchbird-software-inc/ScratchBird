@@ -9,6 +9,7 @@
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "local_transaction_store.hpp"
+#include "memory.hpp"
 #include "startup_state.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
@@ -241,6 +242,12 @@ void RequireSecondWritableOpenEvidence(const db::DatabaseLifecycleState& state,
 }  // namespace
 
 int main() {
+  const auto memory_fixture =
+      scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+          scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+          "first_open_activation_conformance");
+  Require(memory_fixture.ok() && memory_fixture.fixture_mode,
+          "lifecycle memory fixture configuration failed");
   const auto database_path = TestDatabasePath();
   struct Cleanup {
     std::filesystem::path path;

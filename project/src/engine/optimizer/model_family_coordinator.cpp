@@ -384,6 +384,12 @@ bool ExactOrderedOperationChain(const std::string_view family_id,
 
 }  // namespace
 
+void RetainModelFamilyCostVectorV1(
+    const ModelFamilyCostVectorV1& source,
+    scratchbird::engine::executor::PhysicalCostVectorReceipt* retained) {
+  RetainModelFamilyCostVector(source, retained);
+}
+
 std::optional<std::uint64_t> ScalarizeModelFamilyCostVectorV1(
     const ModelFamilyCostVectorV1& cost) {
   if (cost.complete_dimension_vector &&

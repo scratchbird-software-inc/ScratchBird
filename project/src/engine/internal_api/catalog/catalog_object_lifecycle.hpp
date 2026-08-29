@@ -39,6 +39,7 @@ inline constexpr const char* kCatalogObjectDiagnosticMgaVisibilityRefused = "CAT
 inline constexpr const char* kCatalogObjectDiagnosticCacheEpochStale = "CATALOG.OBJECT.CACHE_EPOCH_STALE";
 inline constexpr const char* kCatalogObjectDiagnosticDatabasePathRequired = "CATALOG.OBJECT.DATABASE_PATH_REQUIRED";
 inline constexpr const char* kCatalogObjectDiagnosticDatabaseWriteFailed = "CATALOG.OBJECT.DATABASE_WRITE_FAILED";
+inline constexpr const char* kCatalogObjectDiagnosticNameNamespaceInvalid = "CATALOG.OBJECT.NAME_NAMESPACE_INVALID";
 inline constexpr const char* kCatalogSynonymDiagnosticTargetMissing = "CATALOG.SYNONYM_TARGET_MISSING";
 inline constexpr const char* kCatalogSynonymDiagnosticTargetClassMismatch = "CATALOG.SYNONYM_TARGET_CLASS_MISMATCH";
 inline constexpr const char* kCatalogSynonymDiagnosticCycle = "CATALOG.SYNONYM_CYCLE";
@@ -227,7 +228,19 @@ struct EngineLoadCatalogObjectLifecycleStateResult {
   EngineCatalogObjectLifecycleState state;
 };
 
-struct EngineCatalogCreateObjectRequest : EngineApiRequest {};
+enum class EngineCatalogNameNamespaceKind {
+  kCatalog,
+  kSessionTemporary,
+};
+
+struct EngineCatalogNameNamespace {
+  EngineCatalogNameNamespaceKind kind = EngineCatalogNameNamespaceKind::kCatalog;
+  EngineUuid owner_session_uuid;
+};
+
+struct EngineCatalogCreateObjectRequest : EngineApiRequest {
+  EngineCatalogNameNamespace name_namespace;
+};
 struct EngineCatalogCreateObjectResult : EngineApiResult {
   EngineBoundObjectIdentity bound_object_identity;
   std::uint64_t metadata_cache_epoch = 0;

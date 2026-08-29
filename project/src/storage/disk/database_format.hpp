@@ -26,6 +26,7 @@ using scratchbird::core::platform::u64;
 inline constexpr u32 kScratchBirdDatabaseFormatMajor = 1;
 inline constexpr u32 kScratchBirdDatabaseFormatMinor = 0;
 inline constexpr u32 kDatabaseHeaderSerializedBytes = 512;
+inline constexpr u32 kDatabaseHeaderOpaqueMarkerBytes = 176;
 inline constexpr std::array<byte, 8> kScratchBirdDatabaseMagic = {'S', 'B', 'D', 'B', 'V', '0', '0', '1'};
 
 using SerializedDatabaseHeader = std::array<byte, kDatabaseHeaderSerializedBytes>;
@@ -78,6 +79,11 @@ struct DatabaseHeader {
   u64 feature_flags = 0;
   u64 compatibility_flags = DatabaseCompatibilityFlag::public_node_safe_header_open;
   u64 header_checksum = 0;
+  // Opaque database-local private-relation locator marker at serialized
+  // offsets 80..255. The database format layer preserves these exact bytes;
+  // the private locator authority owns their interpretation.
+  std::array<byte, kDatabaseHeaderOpaqueMarkerBytes>
+      database_local_private_relation_locator_marker{};
 };
 
 struct DatabaseHeaderResult {

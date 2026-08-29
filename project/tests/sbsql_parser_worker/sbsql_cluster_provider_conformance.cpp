@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "cluster_provider/cluster_provider.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "sblr_dispatch.hpp"
 
 #include <cstdlib>
@@ -218,9 +219,10 @@ void VerifyClusterProviderProfile() {
   context.session_uuid.canonical = "cluster-provider-conformance-session";
   context.principal_uuid.canonical = "cluster-provider-conformance-user";
 
-  auto envelope = sblr::MakeSblrEnvelope("cluster.topology.inspect",
-                                         "SBLR_CLUSTER_TOPOLOGY_INSPECT",
-                                         "cluster-provider-conformance");
+  auto envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "cluster.inspect_state", "SBLR_CLUSTER_INSPECT_STATE",
+          "cluster-provider-conformance");
   envelope.requires_security_context = true;
   envelope.requires_cluster_authority = true;
 
@@ -236,12 +238,17 @@ void VerifyClusterProviderProfile() {
   Require(cluster_provider::ClusterProviderSupportsExecution() == info.supports_execution,
           "cluster provider support flag and provider info disagree");
 
-  auto info_envelope = sblr::MakeSblrEnvelope(std::string(cluster_provider::kClusterProviderInfoOperationId),
-                                             std::string(cluster_provider::kClusterProviderInfoOpcode),
-                                             "cluster-provider-conformance");
+  auto info_envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          cluster_provider::kClusterProviderInfoOperationId,
+          cluster_provider::kClusterProviderInfoOpcode,
+          "cluster-provider-conformance");
   info_envelope.requires_security_context = true;
+  info_envelope.requires_transaction_context = true;
+  info_envelope.requires_cluster_authority = true;
   sblr::SblrDispatchRequest info_request;
   info_request.context = context;
+  info_request.context.local_transaction_id = 1;
   info_request.envelope = info_envelope;
   const auto info_result = sblr::DispatchSblrOperation(info_request);
   Require(info_result.envelope_validated,
@@ -286,6 +293,9 @@ void VerifyClusterProviderProfile() {
             "stub build did not link the compile-link stub provider");
     Require(!result.api_result.ok,
             "compile-link stub unexpectedly executed cluster SBLR");
+    Require(!info.supports_execution && info.compile_link_only &&
+                info.support_status == "compile_link_only",
+            "compile-link stub advertised executable cluster support");
     Require(result.api_result.cluster_authority_required,
             "compile-link stub did not mark cluster authority as required");
     Require(HasUnsupportedFeature(result.api_result, "cluster.provider.stub"),
@@ -308,6 +318,9 @@ void VerifyClusterProviderProfile() {
     Require(cluster_provider::ClusterProviderMode() == "no_cluster",
             "non-cluster build did not link the no-cluster provider");
     Require(!result.api_result.ok, "no-cluster provider unexpectedly executed cluster SBLR");
+    Require(!info.supports_execution && !info.compile_link_only &&
+                info.support_status == "not_enabled",
+            "no-cluster provider advertised executable cluster support");
     Require(result.api_result.cluster_authority_required,
             "no-cluster provider did not mark cluster authority as required");
     Require(result.api_result.unsupported_features.size() == 1,

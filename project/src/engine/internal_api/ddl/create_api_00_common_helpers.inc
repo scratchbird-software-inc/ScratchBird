@@ -95,6 +95,35 @@ std::map<std::string, std::string> DescriptorFieldsLocal(const std::string& desc
   return fields;
 }
 
+std::optional<std::map<std::string, std::string>>
+StrictDescriptorFieldsLocal(const std::string& descriptor) {
+  std::map<std::string, std::string> fields;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const std::string trimmed = TrimAsciiLocal(descriptor.substr(
+        start, end == std::string::npos ? descriptor.size() - start
+                                        : end - start));
+    if (!trimmed.empty()) {
+      const auto separator = trimmed.find('=');
+      const std::string key = LowerAsciiLocal(TrimAsciiLocal(
+          separator == std::string::npos
+              ? trimmed
+              : trimmed.substr(0, separator)));
+      const std::string value = separator == std::string::npos
+                                    ? "true"
+                                    : TrimAsciiLocal(
+                                          trimmed.substr(separator + 1));
+      if (key.empty() || !fields.emplace(key, value).second) {
+        return std::nullopt;
+      }
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return fields;
+}
+
 std::string DescriptorFieldLocal(const std::map<std::string, std::string>& fields,
                                  std::initializer_list<const char*> names) {
   for (const auto* name : names) {
@@ -207,6 +236,23 @@ bool ParsePositiveDescriptorU32Local(const std::string& value,
   }
 }
 
+bool ParsePositiveDescriptorU64Local(const std::string& value,
+                                     std::uint64_t* parsed) {
+  if (parsed == nullptr || value.empty()) return false;
+  try {
+    std::size_t consumed = 0;
+    const auto number = std::stoull(value, &consumed, 10);
+    if (consumed != value.size() || number == 0 ||
+        std::to_string(number) != value) {
+      return false;
+    }
+    *parsed = number;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 std::optional<std::uint32_t> CharacterLengthFromTypeLocal(
     const std::string& type_name) {
   const auto open = type_name.find('(');
@@ -235,6 +281,12 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
       DescriptorFieldLocal(fields, {"charset_uuid"});
   std::string collation_uuid =
       DescriptorFieldLocal(fields, {"collation_uuid"});
+  const std::string charset_generation_text =
+      DescriptorFieldLocal(fields, {"charset_generation"});
+  const std::string collation_generation_text =
+      DescriptorFieldLocal(fields, {"collation_generation"});
+  const std::string resource_epoch_text =
+      DescriptorFieldLocal(fields, {"resource_epoch"});
   const std::string character_length_text =
       DescriptorFieldLocal(fields, {"character_length", "char_length"});
   const std::string text_resource_storage = LowerAsciiLocal(
@@ -243,8 +295,12 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
       text_resource_storage == "large_object";
   const bool has_resource_modifier =
       !charset_uuid.empty() || !collation_uuid.empty();
+  const bool has_resource_authority =
+      !charset_generation_text.empty() ||
+      !collation_generation_text.empty() || !resource_epoch_text.empty();
   const bool has_text_modifier =
-      has_resource_modifier || !character_length_text.empty() ||
+      has_resource_modifier || has_resource_authority ||
+      !character_length_text.empty() ||
       !text_resource_storage.empty();
   if (!has_text_modifier) {
     return MakeEngineApiDiagnostic(
@@ -294,6 +350,10 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
     return MakeInvalidRequestDiagnostic(
         "ddl.create_table", "collation_uuid_requires_charset_uuid");
   }
+  if (!has_resource_modifier && has_resource_authority) {
+    return MakeInvalidRequestDiagnostic(
+        "ddl.create_table", "orphan_text_resource_authority");
+  }
 
   if (!charset_uuid.empty()) {
     EngineUuid requested_charset;
@@ -320,6 +380,36 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
         charset.resource_descriptor.resource_uuid.canonical) {
       return MakeInvalidRequestDiagnostic(
           "ddl.create_table", "collation_charset_relationship_mismatch");
+    }
+
+    const auto validate_or_set_u64 =
+        [&](const std::string& key,
+            const std::string& carried,
+            const std::uint64_t expected) -> bool {
+      std::uint64_t parsed = 0;
+      if (!carried.empty() &&
+          (!ParsePositiveDescriptorU64Local(carried, &parsed) ||
+           parsed != expected)) {
+        return false;
+      }
+      *column_descriptor = SetDescriptorFieldLocal(
+          std::move(*column_descriptor), key, std::to_string(expected));
+      return true;
+    };
+    if (!validate_or_set_u64(
+            "charset_generation", charset_generation_text,
+            charset.resource_descriptor.family_epoch) ||
+        !validate_or_set_u64(
+            "collation_generation", collation_generation_text,
+            collation.resource_descriptor.family_epoch) ||
+        !validate_or_set_u64(
+            "resource_epoch", resource_epoch_text,
+            charset.resource_descriptor.resource_epoch) ||
+        collation.resource_descriptor.resource_epoch !=
+            charset.resource_descriptor.resource_epoch ||
+        charset.resource_descriptor.resource_epoch != context.resource_epoch) {
+      return MakeInvalidRequestDiagnostic(
+          "ddl.create_table", "text_resource_authority_stale");
     }
 
     *column_descriptor = SetDescriptorFieldLocal(

@@ -8,7 +8,10 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "datatype_catalog_manifest.hpp"
+
 #include <algorithm>
+#include <charconv>
 #include <limits>
 #include <unordered_set>
 #include <utility>
@@ -104,16 +107,181 @@ std::optional<std::string_view> CanonicalJoinDescriptorField(
   return value;
 }
 
+template <typename Integer>
+bool ParseCanonicalJoinUnsigned(const std::string_view text,
+                                Integer* value) {
+  if (value == nullptr || text.empty() ||
+      (text.size() > 1 && text.front() == '0')) {
+    return false;
+  }
+  Integer parsed = 0;
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), parsed);
+  if (error != std::errc{} || end != text.data() + text.size()) return false;
+  *value = parsed;
+  return true;
+}
+
+struct CanonicalBooleanJoinAliasCarrierV1 {
+  std::string_view datatype_descriptor_uuid;
+  std::uint64_t datatype_descriptor_generation = 0;
+  std::string_view type_uuid;
+  std::uint64_t type_generation = 0;
+  std::string_view codec_id;
+  std::uint16_t codec_version = 0;
+  std::uint64_t codec_generation = 0;
+  std::uint8_t null_encoding = 0;
+  bool nullable = false;
+};
+
+bool DecodeExactCanonicalBooleanJoinAliasCarrierV1(
+    const ExecutorColumnDescriptor& column,
+    CanonicalBooleanJoinAliasCarrierV1* carrier) {
+  if (carrier == nullptr ||
+      !internal_api::QowCanonicalDescriptorIdentityV1(column.descriptor) ||
+      column.descriptor.descriptor_kind != "scalar" ||
+      column.descriptor.canonical_type_name != "boolean") {
+    return false;
+  }
+
+  CanonicalBooleanJoinAliasCarrierV1 decoded;
+  bool datatype_descriptor_uuid_seen = false;
+  bool datatype_descriptor_generation_seen = false;
+  bool type_uuid_seen = false;
+  bool type_generation_seen = false;
+  bool codec_id_seen = false;
+  bool codec_version_seen = false;
+  bool codec_generation_seen = false;
+  bool null_encoding_seen = false;
+  bool nullability_seen = false;
+  std::size_t begin = 0;
+  while (begin < column.descriptor.encoded_descriptor.size()) {
+    const auto end = column.descriptor.encoded_descriptor.find(';', begin);
+    const auto field =
+        std::string_view(column.descriptor.encoded_descriptor)
+            .substr(begin, end == std::string::npos ? std::string::npos
+                                                    : end - begin);
+    const auto separator = field.find('=');
+    if (field.empty() || separator == std::string_view::npos ||
+        separator == 0 || separator + 1 == field.size() ||
+        field.find('=', separator + 1) != std::string_view::npos) {
+      return false;
+    }
+    const auto key = field.substr(0, separator);
+    const auto value = field.substr(separator + 1);
+    if (key == "datatype_descriptor_uuid") {
+      if (datatype_descriptor_uuid_seen || !CanonicalJoinUuid(value)) {
+        return false;
+      }
+      datatype_descriptor_uuid_seen = true;
+      decoded.datatype_descriptor_uuid = value;
+    } else if (key == "datatype_descriptor_generation") {
+      if (datatype_descriptor_generation_seen ||
+          !ParseCanonicalJoinUnsigned(
+              value, &decoded.datatype_descriptor_generation) ||
+          decoded.datatype_descriptor_generation == 0) {
+        return false;
+      }
+      datatype_descriptor_generation_seen = true;
+    } else if (key == "type_uuid") {
+      if (type_uuid_seen || !CanonicalJoinUuid(value)) return false;
+      type_uuid_seen = true;
+      decoded.type_uuid = value;
+    } else if (key == "type_generation") {
+      if (type_generation_seen ||
+          !ParseCanonicalJoinUnsigned(value, &decoded.type_generation) ||
+          decoded.type_generation == 0) {
+        return false;
+      }
+      type_generation_seen = true;
+    } else if (key == "codec_id") {
+      if (codec_id_seen || value.empty()) return false;
+      codec_id_seen = true;
+      decoded.codec_id = value;
+    } else if (key == "codec_version") {
+      if (codec_version_seen ||
+          !ParseCanonicalJoinUnsigned(value, &decoded.codec_version) ||
+          decoded.codec_version == 0) {
+        return false;
+      }
+      codec_version_seen = true;
+    } else if (key == "codec_generation") {
+      if (codec_generation_seen ||
+          !ParseCanonicalJoinUnsigned(value, &decoded.codec_generation) ||
+          decoded.codec_generation == 0) {
+        return false;
+      }
+      codec_generation_seen = true;
+    } else if (key == "null_encoding") {
+      if (null_encoding_seen ||
+          !ParseCanonicalJoinUnsigned(value, &decoded.null_encoding)) {
+        return false;
+      }
+      null_encoding_seen = true;
+    } else if (key == "nullability") {
+      if (nullability_seen || (value != "nullable" && value != "non_null")) {
+        return false;
+      }
+      nullability_seen = true;
+      decoded.nullable = value == "nullable";
+    } else {
+      return false;
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+    if (begin == column.descriptor.encoded_descriptor.size()) return false;
+  }
+
+  if (!datatype_descriptor_uuid_seen ||
+      !datatype_descriptor_generation_seen || !type_uuid_seen ||
+      !type_generation_seen || !codec_id_seen || !codec_version_seen ||
+      !codec_generation_seen || !null_encoding_seen || !nullability_seen ||
+      decoded.datatype_descriptor_uuid !=
+          column.descriptor.descriptor_uuid.canonical ||
+      decoded.datatype_descriptor_uuid != decoded.type_uuid ||
+      decoded.nullable != column.nullable || decoded.null_encoding != 1 ||
+      !scratchbird::core::datatypes::
+          IsExactCanonicalBooleanDescriptorTypeAliasV1(
+              std::string(decoded.datatype_descriptor_uuid),
+              decoded.datatype_descriptor_generation,
+              std::string(decoded.type_uuid), decoded.type_generation,
+              std::string(decoded.codec_id), decoded.codec_version,
+              decoded.codec_generation, true)) {
+    return false;
+  }
+  const auto canonical =
+      "datatype_descriptor_uuid=" +
+      std::string(decoded.datatype_descriptor_uuid) +
+      ";datatype_descriptor_generation=" +
+      std::to_string(decoded.datatype_descriptor_generation) +
+      ";type_uuid=" + std::string(decoded.type_uuid) +
+      ";type_generation=" + std::to_string(decoded.type_generation) +
+      ";codec_id=" + std::string(decoded.codec_id) +
+      ";codec_version=" + std::to_string(decoded.codec_version) +
+      ";codec_generation=" + std::to_string(decoded.codec_generation) +
+      ";null_encoding=" + std::to_string(decoded.null_encoding) +
+      ";nullability=" + (decoded.nullable ? "nullable" : "non_null");
+  if (column.descriptor.encoded_descriptor != canonical) return false;
+  *carrier = decoded;
+  return true;
+}
+
 }  // namespace
 
 DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
     const DescriptorBatch& left_batch,
     const DescriptorBatch& right_batch) {
+  struct ObservedJoinDescriptorRoleV1 {
+    const ExecutorColumnDescriptor* column = nullptr;
+    std::string_view type_uuid;
+  };
   std::unordered_set<std::string_view> descriptor_uuids;
   std::unordered_set<std::string_view> type_uuids;
+  std::vector<ObservedJoinDescriptorRoleV1> observed_roles;
   const auto collect = [&](const DescriptorBatch& batch) {
     for (std::size_t column = 0; column < batch.columns.size(); ++column) {
-      const auto& descriptor = batch.columns[column].descriptor;
+      const auto& observed_column = batch.columns[column];
+      const auto& descriptor = observed_column.descriptor;
       const auto type_uuid =
           CanonicalJoinDescriptorField(descriptor, "type_uuid");
       if (!internal_api::QowCanonicalDescriptorIdentityV1(descriptor) ||
@@ -126,6 +294,7 @@ DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
       }
       descriptor_uuids.insert(descriptor.descriptor_uuid.canonical);
       type_uuids.insert(*type_uuid);
+      observed_roles.push_back({&observed_column, *type_uuid});
     }
     return DescriptorRuntimeDiagnostic{};
   };
@@ -134,7 +303,21 @@ DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
   validation = collect(right_batch);
   if (!validation.ok) return validation;
   for (const auto descriptor_uuid : descriptor_uuids) {
-    if (type_uuids.contains(descriptor_uuid)) {
+    if (!type_uuids.contains(descriptor_uuid)) continue;
+    const bool exact_boolean_alias =
+        std::ranges::all_of(observed_roles, [&](const auto& observed) {
+          if (observed.column->descriptor.descriptor_uuid.canonical !=
+                  descriptor_uuid &&
+              observed.type_uuid != descriptor_uuid) {
+            return true;
+          }
+          CanonicalBooleanJoinAliasCarrierV1 boolean;
+          return DecodeExactCanonicalBooleanJoinAliasCarrierV1(
+                     *observed.column, &boolean) &&
+                 boolean.datatype_descriptor_uuid == descriptor_uuid &&
+                 boolean.type_uuid == descriptor_uuid;
+        });
+    if (!exact_boolean_alias) {
       return Refusal(
           "SBLR.PLAN_TREE.INVALID_HANDLE",
           "join descriptor and type identity domains are not independent");

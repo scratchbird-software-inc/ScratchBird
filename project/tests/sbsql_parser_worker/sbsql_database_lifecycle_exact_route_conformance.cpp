@@ -15,11 +15,14 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
-
-#include "../database_lifecycle/credentialed_database_fixture.hpp"
+#include "sblr_opcode_registry.hpp"
+#include "scratchbird/engine/sblr_envelope.hpp"
+#include "hash_digest.hpp"
+#include "memory.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -40,8 +43,6 @@ constexpr std::string_view kAttachOperation = "lifecycle.attach_database";
 constexpr std::string_view kAttachOpcode = "SBLR_LIFECYCLE_ATTACH_DATABASE";
 constexpr std::string_view kCreateOperation = "lifecycle.create_database";
 constexpr std::string_view kCreateOpcode = "SBLR_LIFECYCLE_CREATE_DATABASE";
-constexpr std::string_view kCreateBootstrapRefusalDiagnostic =
-    api::kEngineCreateLifecycleBootstrapRequiredDiagnostic;
 constexpr std::string_view kDetachOperation = "lifecycle.detach_database";
 constexpr std::string_view kDetachOpcode = "SBLR_LIFECYCLE_DETACH_DATABASE";
 constexpr std::string_view kDropOperation = "lifecycle.drop_database";
@@ -151,6 +152,16 @@ bool ApiResultHasField(const api::EngineApiResult& result,
   return false;
 }
 
+std::string ApiResultField(const api::EngineApiResult& result,
+                           std::string_view name) {
+  for (const auto& row : result.result_shape.rows) {
+    for (const auto& field : row.fields) {
+      if (field.first == name) return field.second.encoded_value;
+    }
+  }
+  return {};
+}
+
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
@@ -192,6 +203,256 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
   return artifacts;
 }
 
+using CanonicalBytes = std::vector<std::uint8_t>;
+
+std::array<std::uint8_t, 16> AdmissionUuid(std::uint8_t suffix) {
+  std::array<std::uint8_t, 16> value{};
+  value[0] = 0x12;
+  value[1] = 0x34;
+  value[6] = 0x70;
+  value[8] = 0x80;
+  value[15] = suffix;
+  return value;
+}
+
+std::string AdmissionUuidText(const std::array<std::uint8_t, 16>& value) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string text;
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 4 || index == 6 || index == 8 || index == 10) {
+      text.push_back('-');
+    }
+    text.push_back(kHex[value[index] >> 4]);
+    text.push_back(kHex[value[index] & 0x0f]);
+  }
+  return text;
+}
+
+sblr::SblrLifecycleCreateDatabaseDescriptorV1 LifecycleCreateDescriptor() {
+  sblr::SblrLifecycleCreateDatabaseDescriptorV1 descriptor;
+  descriptor.operation_uuid = AdmissionUuid(0x50);
+  descriptor.statement_receipt_uuid = AdmissionUuid(0x51);
+  descriptor.database_uuid = AdmissionUuid(0x52);
+  descriptor.database_name_uuid = AdmissionUuid(0x53);
+  descriptor.owner_uuid = AdmissionUuid(0x54);
+  descriptor.catalog_snapshot_uuid = AdmissionUuid(0x55);
+  descriptor.catalog_generation = 71;
+  descriptor.security_context_uuid = AdmissionUuid(0x56);
+  descriptor.policy_snapshot_uuid = AdmissionUuid(0x57);
+  descriptor.policy_generation = 72;
+  descriptor.transaction_uuid = AdmissionUuid(0x58);
+  descriptor.transaction_generation = 73;
+  descriptor.durability_profile_uuid = AdmissionUuid(0x59);
+  descriptor.resource_budget_uuid = AdmissionUuid(0x5a);
+  descriptor.resource_budget_generation = 74;
+  descriptor.executor_availability_generation = 1;
+  descriptor.descriptor_evidence_uuid = AdmissionUuid(0x5b);
+  const auto option_hash = scratchbird::core::hash::ComputeSha256Digest(
+      descriptor.option_vector);
+  Require(option_hash.ok(), "lifecycle create option hash unavailable");
+  descriptor.option_vector_sha256 = option_hash.digest;
+  return descriptor;
+}
+
+sblr::SblrOperand LifecycleCreateOperand() {
+  sblr::SblrOperand operand;
+  operand.type = "lifecycle_create_database_descriptor.v1";
+  operand.name = "database";
+  operand.ordinal = 1;
+  operand.value_kind =
+      sblr::SblrValueKind::lifecycle_create_database_descriptor;
+  operand.value_body = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV1(
+      LifecycleCreateDescriptor());
+  Require(!operand.value_body.empty(),
+          "lifecycle create descriptor did not encode");
+  return operand;
+}
+
+void RequireLifecycleCreateDescriptorCodec() {
+  const auto encoded = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV1(
+      LifecycleCreateDescriptor());
+  Require(encoded.size() == 320,
+          "lifecycle create descriptor size mismatch");
+  sblr::SblrLifecycleCreateDatabaseDescriptorV1 decoded;
+  std::string detail;
+  Require(sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV1(
+              encoded.data(), encoded.size(), &decoded, &detail),
+          "lifecycle create descriptor round trip failed");
+  auto malformed = encoded;
+  malformed[0] = 'X';
+  Require(!sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV1(
+              malformed.data(), malformed.size(), &decoded, &detail),
+          "lifecycle create descriptor admitted wrong magic");
+  Require(!sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV1(
+              encoded.data(), encoded.size() - 1, &decoded, &detail),
+          "lifecycle create descriptor admitted truncation");
+  malformed = encoded;
+  malformed.push_back(0);
+  Require(!sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV1(
+              malformed.data(), malformed.size(), &decoded, &detail),
+          "lifecycle create descriptor admitted trailing bytes");
+}
+
+CanonicalBytes AdmissionU16(std::uint16_t value) {
+  CanonicalBytes out;
+  scratchbird::engine::SblrAppendU16(out, value);
+  return out;
+}
+
+CanonicalBytes AdmissionU32(std::uint32_t value) {
+  CanonicalBytes out;
+  scratchbird::engine::SblrAppendU32(out, value);
+  return out;
+}
+
+CanonicalBytes AdmissionU64(std::uint64_t value) {
+  CanonicalBytes out;
+  scratchbird::engine::SblrAppendU64(out, value);
+  return out;
+}
+
+CanonicalBytes AdmissionStruct(std::uint32_t tag, std::uint8_t value) {
+  CanonicalBytes out;
+  scratchbird::engine::SblrAppendU32(out, tag);
+  scratchbird::engine::SblrAppendU16(out, 1);
+  scratchbird::engine::SblrAppendU16(out, 0);
+  scratchbird::engine::SblrAppendU64(out, 1);
+  out.push_back(value);
+  return out;
+}
+
+CanonicalBytes AdmissionInline(const CanonicalBytes& payload) {
+  CanonicalBytes out{1};
+  scratchbird::engine::SblrAppendU64(out, payload.size());
+  out.insert(out.end(), payload.begin(), payload.end());
+  return out;
+}
+
+CanonicalBytes AdmissionOptionalUuid(
+    const std::array<std::uint8_t, 16>& value) {
+  CanonicalBytes out{1};
+  out.insert(out.end(), value.begin(), value.end());
+  return out;
+}
+
+scratchbird::server::ServerSblrAdmissionRequest CanonicalAdmissionRequest(
+    const LifecycleRouteCase& route) {
+  namespace public_sblr = scratchbird::engine;
+  const auto parser_uuid = AdmissionUuid(0x31);
+  const auto dialect_uuid = AdmissionUuid(0x22);
+  const auto registry_uuid = AdmissionUuid(0x32);
+  const auto user_uuid = AdmissionUuid(0x42);
+
+  const auto* registry = sblr::LookupSblrOpcode(route.opcode);
+  Require(registry != nullptr,
+          std::string("database lifecycle canonical admission opcode registry row missing: ") +
+              std::string(route.opcode));
+  auto operation = sblr::MakeSblrEnvelope(registry->operation_id,
+                                           registry->opcode,
+                                           "database-lifecycle-canonical-admission");
+  operation.opcode_code = registry->code;
+  operation.parser_package_uuid = AdmissionUuidText(parser_uuid);
+  operation.registry_snapshot_uuid = AdmissionUuidText(registry_uuid);
+  operation.requires_security_context = registry->requires_security_context;
+  operation.requires_transaction_context = registry->requires_transaction_context;
+  operation.requires_cluster_authority = registry->requires_cluster_authority;
+  operation.parser_resolved_names_to_uuids = true;
+  if (route.operation_id == kCreateOperation) {
+    operation.operands.push_back(LifecycleCreateOperand());
+  }
+  const auto validation = sblr::ValidateSblrEnvelope(operation);
+  for (const auto& diagnostic : validation.diagnostics) {
+    std::cerr << "database lifecycle canonical operation: " << diagnostic.code
+              << ':' << diagnostic.message << '\n';
+  }
+  Require(validation.ok,
+          "database lifecycle canonical admission operation did not validate");
+  const auto sbop_text = sblr::EncodeSblrEnvelope(operation);
+  Require(!sbop_text.empty(),
+          "database lifecycle canonical admission operation did not encode");
+  const CanonicalBytes sbop(sbop_text.begin(), sbop_text.end());
+
+  public_sblr::SblrCanonicalContainer container;
+  const auto engine_uuid = AdmissionUuid(0x21);
+  const auto bundle_uuid = AdmissionUuid(0x24);
+  const auto request_uuid = AdmissionUuid(0x25);
+  std::copy(engine_uuid.begin(), engine_uuid.end(),
+            container.canonical_anchor.begin());
+  std::copy(dialect_uuid.begin(), dialect_uuid.end(),
+            container.canonical_anchor.begin() + 16);
+  std::copy(parser_uuid.begin(), parser_uuid.end(),
+            container.canonical_anchor.begin() + 32);
+  container.canonical_anchor[48] = 1;
+  container.canonical_anchor[52] = 1;
+  container.canonical_anchor[60] = 1;
+  container.canonical_anchor[68] = 1;
+  std::copy(bundle_uuid.begin(), bundle_uuid.end(),
+            container.canonical_anchor.begin() + 76);
+  container.canonical_anchor[92] = 1;
+  container.canonical_anchor[100] = 2;
+  std::copy(request_uuid.begin(), request_uuid.end(),
+            container.canonical_anchor.begin() + 116);
+  container.operation_payload = sbop;
+  const auto container_bytes = public_sblr::EncodeSblrContainer(container);
+  Require(!container_bytes.empty(),
+          "database lifecycle canonical admission container did not encode");
+
+  public_sblr::SblrExecutionEnvelopeV1 ingress;
+  auto& fields = ingress.fields;
+  const auto request_identity = AdmissionUuid(0x41);
+  fields[0] = {request_identity.begin(), request_identity.end()};
+  fields[1] = AdmissionU16(1);
+  fields[2] = AdmissionU16(0);
+  fields[3] = AdmissionU32(0x00010001);
+  fields[4] = AdmissionU16(2);
+  fields[5] = {0};
+  fields[6] = AdmissionInline(sbop);
+  fields[7] = {1};
+  const auto crc = AdmissionU32(
+      public_sblr::SblrCrc32c(sbop.data(), sbop.size()));
+  fields[7].insert(fields[7].end(), crc.begin(), crc.end());
+  fields[8] = AdmissionU64(sbop.size());
+  fields[9] = AdmissionU16(1);
+  fields[10] = AdmissionOptionalUuid(dialect_uuid);
+  fields[11] = AdmissionOptionalUuid(user_uuid);
+  fields[12] = AdmissionStruct(0x1001, 1);
+  fields[13] = AdmissionStruct(0x1002, 2);
+  fields[14] = {0};
+  fields[15] = AdmissionU64(1);
+  fields[16] = AdmissionU32(0);
+  fields[17] = AdmissionU32(0);
+  fields[18] = AdmissionU32(0);
+  fields[19] = {0};
+  fields[20] = AdmissionU32(0);
+  fields[21] = AdmissionStruct(0x1005, 5);
+  fields[22] = {0};
+  fields[23] = {0};
+  fields[24] = {0};
+  fields[25] = AdmissionU16(0);
+  fields[26] = {0};
+  fields[27] = {0};
+  const auto ingress_bytes = public_sblr::EncodeSblrExecutionEnvelopeV1(ingress);
+  Require(!ingress_bytes.empty(),
+          "database lifecycle canonical execution envelope did not encode");
+
+  scratchbird::server::ServerSblrAdmissionRequest request;
+  request.encoded_sblr_container.assign(container_bytes.begin(),
+                                        container_bytes.end());
+  request.encoded_execution_envelope.assign(ingress_bytes.begin(),
+                                             ingress_bytes.end());
+  request.admitted_parser_package_uuid = AdmissionUuidText(parser_uuid);
+  request.admitted_parser_package_version_major = 1;
+  request.admitted_registry_snapshot_uuid = AdmissionUuidText(registry_uuid);
+  request.authenticated_principal_uuid = AdmissionUuidText(user_uuid);
+  request.catalog_snapshot_uuid = AdmissionUuidText(AdmissionUuid(0x43));
+  request.engine_mga_statement_uuid = AdmissionUuidText(AdmissionUuid(0x44));
+  request.engine_mga_snapshot_uuid = AdmissionUuidText(AdmissionUuid(0x45));
+  request.catalog_epoch = 7;
+  request.security_epoch = 8;
+  request.resource_epoch = 9;
+  return request;
+}
+
 api::EngineRequestContext BaseEngineContext(std::string request_id) {
   api::EngineRequestContext context;
   context.request_id = std::move(request_id);
@@ -200,6 +461,9 @@ api::EngineRequestContext BaseEngineContext(std::string request_id) {
   context.database_uuid.canonical = "019f0000-0000-7000-8000-000000ef2001";
   context.session_uuid.canonical = "019f0000-0000-7000-8000-000000ef2002";
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000ef2003";
+  context.transaction_uuid.canonical =
+      "019f0000-0000-7000-8000-000000ef2007";
+  context.local_transaction_id = 1;
   context.node_uuid.canonical = "019f0000-0000-7000-8000-000000ef2004";
   context.cluster_uuid.canonical = "019f0000-0000-7000-8000-000000ef2005";
   context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000ef2006";
@@ -314,8 +578,8 @@ void RequireParserLoweringAndAdmission(const LifecycleRouteCase& route) {
           "database lifecycle payload database UUID-generation evidence mismatch");
   if (route.operation_id == kCreateOperation) {
     Require(Contains(artifacts.envelope.payload,
-                     "\"bootstrap_authority\":\"local_embedded_only\""),
-            "database lifecycle create payload carried public bootstrap authority");
+                     "\"bootstrap_authority\":\"engine_lifecycle\""),
+            "database lifecycle create payload omitted engine lifecycle authority");
   }
   for (const auto row_surface_id : route.row_surface_ids) {
     Require(Contains(artifacts.envelope.payload, row_surface_id),
@@ -334,11 +598,14 @@ void RequireParserLoweringAndAdmission(const LifecycleRouteCase& route) {
           "database lifecycle verifier rejected exact route");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      CanonicalAdmissionRequest(route));
   Require(admission.admitted, "server admission rejected database lifecycle route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for lifecycle route");
-  Require(admission.operation_id == route.operation_id,
+  const auto* admitted_opcode = sblr::LookupSblrOpcode(route.opcode);
+  Require(admitted_opcode != nullptr,
+          "server admission lifecycle opcode registry row disappeared");
+  Require(admission.operation_id == admitted_opcode->operation_id,
           "server admission lifecycle operation id mismatch");
   Require(admission.operation_family == kAdmissionFamily,
           "server admission lifecycle family mismatch");
@@ -347,14 +614,32 @@ void RequireParserLoweringAndAdmission(const LifecycleRouteCase& route) {
 sblr::SblrOperationEnvelope LifecycleEnvelope(std::string operation_id,
                                               std::string opcode,
                                               bool requires_security_context) {
-  auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id),
-                                         std::move(opcode),
-                                         "trace.database_lifecycle.exact_route");
-  envelope.requires_security_context = requires_security_context;
-  envelope.requires_transaction_context = false;
-  envelope.requires_cluster_authority = false;
+  const auto* registry_entry = sblr::LookupSblrOpcode(opcode);
+  Require(registry_entry != nullptr,
+          "database lifecycle opcode missing from engine registry");
+  Require(registry_entry->operation_id == operation_id ||
+              registry_entry->operation_id ==
+                  std::string("engine.op.") +
+                      std::string(operation_id).replace(
+                          0, std::string("lifecycle.").size(), "lifecycle_"),
+          "database lifecycle route-to-executor identity mismatch");
+  auto envelope = sblr::MakeSblrEnvelope(
+      registry_entry->operation_id,
+      std::move(opcode),
+      "trace.database_lifecycle.exact_route");
+  envelope.opcode_code = registry_entry->code;
+  envelope.parser_package_uuid =
+      "019f0000-0000-7000-8000-000000ef2101";
+  envelope.registry_snapshot_uuid =
+      "019f0000-0000-7000-8000-000000ef2102";
+  envelope.requires_security_context = registry_entry->requires_security_context;
+  envelope.requires_transaction_context = registry_entry->requires_transaction_context;
+  envelope.requires_cluster_authority = registry_entry->requires_cluster_authority;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
+  if (operation_id == kCreateOperation) {
+    envelope.operands.push_back(LifecycleCreateOperand());
+  }
   return envelope;
 }
 
@@ -364,11 +649,17 @@ void RequireEngineDispatch() {
   api::EngineApiRequest create_api_request;
   create_api_request.option_envelopes.push_back("allow_minimal_resource_bootstrap:true");
   create_api_request.option_envelopes.push_back("page_size:16384");
+  auto create_envelope = LifecycleEnvelope(std::string(kCreateOperation),
+                                           std::string(kCreateOpcode), true);
+  const auto create_bytes = sblr::EncodeSblrEnvelope(create_envelope);
+  Require(!create_bytes.empty(),
+          "lifecycle.create_database canonical SBOP did not encode");
+  const auto decoded_create = sblr::DecodeSblrEnvelope(create_bytes);
+  Require(decoded_create.ok,
+          "lifecycle.create_database canonical SBOP did not round trip");
   const sblr::SblrDispatchRequest create_request{
       BaseEngineContext("sbsql-database-lifecycle-create-route"),
-      LifecycleEnvelope(std::string(kCreateOperation),
-                        std::string(kCreateOpcode),
-                        false),
+      decoded_create.envelope,
       create_api_request};
   const auto created = sblr::DispatchSblrOperation(create_request);
   for (const auto& diagnostic : created.diagnostics) {
@@ -377,32 +668,20 @@ void RequireEngineDispatch() {
   Require(created.envelope_validated, "lifecycle.create_database envelope did not validate");
   Require(created.accepted, "lifecycle.create_database dispatch was not accepted");
   Require(created.dispatched_to_api, "lifecycle.create_database did not dispatch to API");
-  Require(!created.api_result.ok,
-          "lifecycle.create_database unexpectedly created a database through public SBLR");
+  Require(created.api_result.ok,
+          "lifecycle.create_database engine-owned bootstrap failed");
   Require(created.api_result.operation_id == kCreateOperation,
           "lifecycle.create_database returned wrong operation id");
-  Require(ApiResultHasDiagnostic(created.api_result, kCreateBootstrapRefusalDiagnostic),
-          "lifecycle.create_database missing bootstrap-boundary refusal diagnostic");
-  Require(!std::filesystem::exists(std::filesystem::path(kDatabasePath)),
-          "public lifecycle.create_database created a database file");
-  for (const auto suffix : {".sb.local_password_auth",
-                            ".sb.security_principal_events",
-                            ".sb.txn_publish",
-                            ".sb.txn_publish.tmp"}) {
-    Require(!std::filesystem::exists(std::filesystem::path(std::string(kDatabasePath) + suffix)),
-            "public lifecycle.create_database created a security or transaction sidecar");
-  }
-
-  const auto fixture =
-      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
-          std::filesystem::path(kDatabasePath), {});
-  Require(fixture.ok(), "credentialed lifecycle fixture database create failed");
-  const auto database_uuid =
-      scratchbird::core::uuid::UuidToString(fixture.state.database_uuid.value);
-  const auto filespace_uuid =
-      scratchbird::core::uuid::UuidToString(fixture.state.filespace_uuid.value);
-  Require(!database_uuid.empty(), "credentialed lifecycle fixture database UUID missing");
-  Require(!filespace_uuid.empty(), "credentialed lifecycle fixture filespace UUID missing");
+  Require(ApiResultHasEvidence(created.api_result, "identity_authority", "engine"),
+          "lifecycle.create_database missing engine identity authority evidence");
+  Require(ApiResultHasEvidence(created.api_result, "mga_lifecycle_evidence", "tx1_committed"),
+          "lifecycle.create_database missing durable bootstrap evidence");
+  Require(std::filesystem::exists(std::filesystem::path(kDatabasePath)),
+          "lifecycle.create_database did not create the database file");
+  const auto database_uuid = ApiResultField(created.api_result, "database_uuid");
+  const auto filespace_uuid = ApiResultField(created.api_result, "filespace_uuid");
+  Require(!database_uuid.empty(), "engine-created lifecycle database UUID missing");
+  Require(!filespace_uuid.empty(), "engine-created lifecycle filespace UUID missing");
 
   auto open_context = BaseEngineContext("sbsql-database-lifecycle-open-route");
   open_context.database_uuid.canonical = database_uuid;
@@ -814,9 +1093,9 @@ void RequireRoutes() {
        kCreateOperation,
        kCreateOpcode,
        "EngineCreateLifecycle",
-       "right.local_embedded_first_principal_bootstrap",
-       false,
-       false,
+       "right.lifecycle_create",
+       true,
+       true,
        {"SBSQL-EB95D772BD63"}},
       {"OPEN DATABASE qa_lifecycle",
        "",
@@ -981,7 +1260,14 @@ void RequireRoutes() {
 }  // namespace
 
 int main() {
+  const auto memory_fixture =
+      scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+          scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+          "sbsql_database_lifecycle_exact_route_conformance");
+  Require(memory_fixture.ok() && memory_fixture.fixture_mode,
+          "database lifecycle memory fixture configuration failed");
   RequireRegistryEvidence();
+  RequireLifecycleCreateDescriptorCodec();
   RequireRoutes();
   RequireEngineDispatch();
   RemoveEngineFiles();

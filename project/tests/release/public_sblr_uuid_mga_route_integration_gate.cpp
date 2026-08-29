@@ -10,16 +10,24 @@
 #include "api_types.hpp"
 #include "catalog/datatype_index_optimizer_admission_api.hpp"
 #include "database_lifecycle.hpp"
+#include "hash_digest.hpp"
 #include "index_route_capability.hpp"
 #include "local_transaction_store.hpp"
 #include "memory.hpp"
 #include "query/plan_api.hpp"
+#include "security/authorization_api.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_registry.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "sblr_transaction_commit_runtime.hpp"
 #include "transaction/transaction_api.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -189,6 +197,11 @@ api::EngineRequestContext Context(const Fixture& fixture,
   context.principal_uuid.canonical = UuidText(fixture.principal_uuid);
   context.session_uuid.canonical = UuidText(fixture.session_uuid);
   context.statement_uuid.canonical = UuidText(MakeUuid(UuidKind::object, 11));
+  context.statement_metadata_snapshot_uuid.canonical =
+      UuidText(MakeUuid(UuidKind::object, 13));
+  context.catalog_epoch_uuid.canonical =
+      UuidText(MakeUuid(UuidKind::object, 14));
+  context.statement_metadata_snapshot_engine_owned = true;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -209,6 +222,20 @@ api::EngineRequestContext Context(const Fixture& fixture,
       {context.principal_uuid, "principal"});
   context.authorization_context.evidence_tags.push_back(
       "public_sblr_uuid_mga_route_integration_gate");
+  context.optimizer_capability_snapshot_uuid.canonical =
+      UuidText(MakeUuid(UuidKind::object, 15));
+  context.optimizer_resource_snapshot_uuid.canonical =
+      UuidText(MakeUuid(UuidKind::object, 16));
+  context.optimizer_route_snapshot_uuid.canonical =
+      UuidText(MakeUuid(UuidKind::object, 17));
+  context.optimizer_route_epoch = 23;
+  context.optimizer_route_generation = 29;
+  context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
+  context.optimizer_maximum_candidate_count = 4096;
+  context.optimizer_maximum_memo_groups = 512;
+  context.optimizer_maximum_search_steps = 16384;
+  context.optimizer_maximum_planning_time_ns = 10'000'000;
+  context.current_monotonic_ns = "31000000";
   AddGrant(&context, fixture.relation_uuid, "OBS_INDEX_PROFILE_READ", 20);
   AddGrant(&context, fixture.relation_uuid, "OBS_AGENT_STATE_READ", 21);
   return context;
@@ -217,28 +244,39 @@ api::EngineRequestContext Context(const Fixture& fixture,
 sblr::SblrOperationEnvelope Envelope(std::string operation_id,
                                      std::string opcode,
                                      std::string trace_key) {
+  const auto* registry_entry = sblr::LookupSblrOperation(operation_id);
+  if (registry_entry == nullptr) {
+    std::cerr << "public route operation is absent from the canonical SBLR "
+                 "registry: "
+              << operation_id << '\n';
+    std::exit(EXIT_FAILURE);
+  }
+  if (registry_entry->opcode != opcode) {
+    std::cerr << "public route opcode mnemonic drifted for " << operation_id
+              << ": expected " << registry_entry->opcode << " got " << opcode
+              << '\n';
+    std::exit(EXIT_FAILURE);
+  }
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id),
                                          std::move(opcode),
                                          std::move(trace_key));
-  envelope.source_artifact_map.policy_status =
-      "non_authoritative_render_metadata";
-  envelope.source_artifact_map.source_hash = "sha256:pcr006-render-metadata";
-  envelope.source_artifact_map.render_metadata_only = true;
-  envelope.source_artifact_map.symbols.push_back(
-      {"object_display_name",
-       "route_target",
-       "",
-       "customer_lookup",
-       "local",
-       "sha256:pcr006-symbol",
-       false,
-       false});
+  envelope.opcode_code = registry_entry->code;
+  envelope.result_shape = registry_entry->result_contract;
+  envelope.parser_package_uuid =
+      UuidText(MakeUuid(UuidKind::object, 40));
+  envelope.registry_snapshot_uuid =
+      UuidText(MakeUuid(UuidKind::object, 41));
+  envelope.contains_sql_text = false;
+  envelope.parser_resolved_names_to_uuids = true;
+  envelope.requires_security_context = true;
   return envelope;
 }
 
 sblr::SblrDispatchResult Dispatch(const api::EngineRequestContext& context,
                                   sblr::SblrOperationEnvelope envelope,
                                   api::EngineApiRequest api_request = {}) {
+  api_request.context = context;
+  api_request.operation_id = envelope.operation_id;
   sblr::SblrDispatchRequest request;
   request.context = context;
   request.envelope = std::move(envelope);
@@ -297,42 +335,113 @@ Fixture CreateFixture(const std::filesystem::path& root) {
   return fixture;
 }
 
-api::EngineApiRequest PlanApiRequest(const Fixture& fixture) {
-  api::EngineApiRequest request;
-  request.target_object.uuid.canonical = UuidText(fixture.relation_uuid);
-  request.target_object.object_kind = "table";
-  request.descriptors.push_back(Descriptor("int64", fixture.descriptor_uuid));
-  request.option_envelopes.push_back("target_object_uuid:" +
-                                     UuidText(fixture.relation_uuid));
-  request.option_envelopes.push_back("target_object_kind:table");
-  request.option_envelopes.push_back("query_operation:descriptor_validation");
-  request.option_envelopes.push_back("execute:true");
-  request.option_envelopes.push_back("catalog_stats_digest:pcr006.catalog.stats");
-  request.option_envelopes.push_back("stats_epoch:7");
-  request.option_envelopes.push_back("sbsfc085_surface_id:PCR-006");
-  request.option_envelopes.push_back(
-      "sbsfc085_runtime_evidence_kind:public_sblr_uuid_mga_route");
-  request.option_envelopes.push_back(
-      "sbsfc085_runtime_evidence_id:pcr006.integration");
-  request.option_envelopes.push_back(
-      "sbsfc085_descriptor_role:query_plan_descriptor");
-  request.option_envelopes.push_back(
-      "sbsfc085_descriptor_ref:sys.query.plan_descriptor");
+std::string EncodeHex(std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (const unsigned char ch : value) {
+    encoded.push_back(kHex[ch >> 4]);
+    encoded.push_back(kHex[ch & 0x0f]);
+  }
+  return encoded;
+}
 
-  api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
-      "relation-0-row-" + UuidText(MakeUuid(UuidKind::object, 30));
-  row.fields.push_back({"id", TypedValue("int64", "42")});
-  request.rows.push_back(std::move(row));
-  return request;
+void AppendLittleEndianU64(std::vector<std::uint8_t>* output,
+                           std::uint64_t value) {
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    output->push_back(
+        static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
+  }
+}
+
+void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
+  std::uint32_t ordinal = 1;
+  for (auto& operand : envelope->operands) {
+    if (!operand.name.empty() &&
+        std::all_of(operand.name.begin(), operand.name.end(),
+                    [](const unsigned char ch) {
+                      return ch >= '0' && ch <= '9';
+                    })) {
+      operand.name = "slot_" + operand.name;
+    }
+    const auto value = std::move(operand.value);
+    operand.value.clear();
+    operand.value_kind = sblr::SblrValueKind::literal_typed;
+    operand.value_body.assign(16, 0);
+    operand.value_body.front() = 0x73;
+    AppendLittleEndianU64(&operand.value_body, value.size());
+    operand.value_body.insert(operand.value_body.end(), value.begin(),
+                              value.end());
+    operand.ordinal = ordinal++;
+  }
+}
+
+sblr::SblrOperationEnvelope QueryExecuteEnvelope(
+    const api::EngineRequestContext& context) {
+  constexpr std::string_view kInt64TypeUuid =
+      "019d0000-0000-7000-8000-00000000d711";
+  auto envelope =
+      Envelope("query.execute", "SBLR_QUERY_EXECUTE", "pcr006.query");
+  envelope.requires_transaction_context = true;
+
+  const std::string descriptor_uuid =
+      UuidText(MakeUuid(UuidKind::object, 50));
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       UuidText(MakeUuid(UuidKind::object, 51))},
+      {"uuid", "relational_catalog_epoch_uuid",
+       context.catalog_epoch_uuid.canonical},
+      {"uuid", "relational_security_context_uuid",
+       context.authorization_context.authority_uuid.canonical},
+      {"uuid", "relational_statement_uuid", context.statement_uuid.canonical},
+      {"uuid", "relational_owning_transaction_uuid",
+       context.transaction_uuid.canonical},
+      {"uuid", "relational_statement_snapshot_uuid",
+       context.statement_snapshot_uuid.canonical},
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       context.statement_metadata_snapshot_uuid.canonical},
+      {"uint64", "relational_local_transaction_id",
+       std::to_string(context.local_transaction_id)},
+      {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+       std::to_string(
+           context.snapshot_visible_through_local_transaction_id)},
+      {"uint32", "relational_root_node_id", "1"},
+      {"relational_descriptor_v1", "1",
+       descriptor_uuid + "|" + std::string(kInt64TypeUuid) +
+           "|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|3432"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_output_v1", "1", "1|1|1|1|0|" + EncodeHex("id")},
+      {"relational_node_v1", "1", "13|0|-|1|1"},
+      {"relational_node_binding_v1", "1",
+       EncodeHex("values.literal-table.v1") + "|1|-|-|-"},
+  };
+  FinalizeProductionOperands(&envelope);
+  return envelope;
 }
 
 bool ProveSblrEnvelopeAuthority() {
   bool ok = true;
-  auto accepted = Envelope("query.plan_operation",
-                           "SBLR_QUERY_PLAN_OPERATION",
+  auto accepted = Envelope("engine.op.txn_begin",
+                           "SBLR_TXN_BEGIN",
                            "pcr006.accepted");
-  accepted.requires_transaction_context = true;
+  accepted.requires_transaction_context = false;
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  accepted.operands.push_back(std::move(operand));
   ok = Expect(sblr::ValidateSblrEnvelope(accepted).ok,
               "valid SBLR envelope was rejected") &&
        ok;
@@ -343,110 +452,173 @@ bool ProveSblrEnvelopeAuthority() {
   ok = Expect(!sql_result.ok, "SBLR envelope accepted SQL text") && ok;
   bool sql_diag = false;
   for (const auto& diagnostic : sql_result.diagnostics) {
-    sql_diag = sql_diag || diagnostic.code == "SB_SBLR_SQL_TEXT_FORBIDDEN";
+    sql_diag = sql_diag ||
+               diagnostic.code ==
+                   "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY";
   }
   ok = Expect(sql_diag, "SBLR SQL-text refusal diagnostic missing") && ok;
 
-  auto unresolved_names = accepted;
-  unresolved_names.parser_resolved_names_to_uuids = false;
-  const auto unresolved_result = sblr::ValidateSblrEnvelope(unresolved_names);
-  ok = Expect(!unresolved_result.ok,
-              "SBLR envelope accepted unresolved parser names") &&
+  auto identity_mismatch = accepted;
+  ++identity_mismatch.opcode_code;
+  const auto mismatch_result = sblr::ValidateSblrEnvelope(identity_mismatch);
+  ok = Expect(!mismatch_result.ok,
+              "SBLR envelope accepted mismatched public opcode identity") &&
        ok;
-  bool name_diag = false;
-  for (const auto& diagnostic : unresolved_result.diagnostics) {
-    name_diag = name_diag ||
-                diagnostic.code == "SB_SBLR_NAMES_NOT_RESOLVED_TO_UUIDS";
+  bool mismatch_diag = false;
+  for (const auto& diagnostic : mismatch_result.diagnostics) {
+    mismatch_diag = mismatch_diag ||
+                    diagnostic.code ==
+                        "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
   }
-  ok = Expect(name_diag, "SBLR unresolved-name diagnostic missing") && ok;
+  ok = Expect(mismatch_diag,
+              "SBLR public opcode-identity refusal diagnostic missing") &&
+       ok;
   return ok;
 }
 
+struct RouteTransactionEvidence {
+  scratchbird::core::hash::Digest256 begin_admission_sha256{};
+};
+
 bool BeginRouteTransaction(Fixture const& fixture,
-                           api::EngineRequestContext* context) {
+                           api::EngineRequestContext* context,
+                           RouteTransactionEvidence* evidence) {
   auto envelope =
-      Envelope("transaction.begin", "SBLR_TRANSACTION_BEGIN", "pcr006.begin");
+      Envelope("engine.op.txn_begin", "SBLR_TXN_BEGIN", "pcr006.begin");
   envelope.requires_transaction_context = false;
 
-  api::EngineApiRequest api_request;
-  api_request.option_envelopes.push_back("transaction_read_mode:read_write");
-  api_request.option_envelopes.push_back("fail_closed:true");
-  const auto begun = Dispatch(*context, std::move(envelope), api_request);
-  if (!ExpectDispatchOk(begun, "SBLR transaction.begin dispatch failed")) {
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  auto body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  if (!Expect(!body.empty(),
+              "canonical transaction-begin options failed to encode")) {
     return false;
   }
-  if (!Expect(HasEvidence(begun.api_result, "mga_authority",
-                          "durable_transaction_inventory"),
-              "begin did not report durable MGA inventory authority") ||
-      !Expect(HasEvidence(begun.api_result, "transaction_admission",
-                          "engine_mga_admitted"),
-              "begin did not report engine MGA admission") ||
-      !Expect(!begun.api_result.transaction_uuid.canonical.empty(),
-              "begin did not allocate transaction UUID") ||
-      !Expect(begun.api_result.local_transaction_id != 0,
-              "begin did not allocate local transaction id")) {
+  const auto admission_sha =
+      scratchbird::core::hash::ComputeSha256Digest(body);
+  if (!Expect(admission_sha.ok(),
+              "canonical transaction-begin evidence hash failed")) {
     return false;
   }
-  context->transaction_uuid = begun.api_result.transaction_uuid;
-  context->local_transaction_id = begun.api_result.local_transaction_id;
+  evidence->begin_admission_sha256 = admission_sha.digest;
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = std::move(body);
+  envelope.operands.push_back(std::move(operand));
+
+  const auto admitted = Dispatch(*context, std::move(envelope));
+  if (!ExpectDispatchOk(admitted,
+                        "canonical SBLR transaction-begin admission failed") ||
+      !Expect(admitted.api_result.local_transaction_id == 0 &&
+                  admitted.api_result.transaction_uuid.canonical.empty(),
+              "transaction-begin admission published engine MGA state")) {
+    return false;
+  }
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = *context;
+  begin.operation_id = "transaction.begin";
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  if (!ExpectApiOk(begun,
+                   "engine-owned transaction begin failed after admission") ||
+      !Expect(!begun.transaction_uuid.canonical.empty() &&
+                  begun.local_transaction_id != 0,
+              "engine-owned begin did not publish an MGA identity") ||
+      !Expect(HasEvidence(begun, "mga_authority",
+                          "durable_transaction_inventory") &&
+                  HasEvidence(begun, "transaction_admission",
+                              "engine_mga_admitted"),
+              "engine-owned begin did not report durable MGA authority")) {
+    return false;
+  }
+  context->transaction_uuid = begun.transaction_uuid;
+  context->local_transaction_id = begun.local_transaction_id;
   context->snapshot_visible_through_local_transaction_id =
-      begun.api_result.local_transaction_id;
+      begun.snapshot_visible_through_local_transaction_id;
+  context->transaction_isolation_level = begun.isolation_level;
+
+  api::EnginePublishStatementSnapshotRequest publish;
+  publish.context = *context;
+  const auto published = api::EnginePublishStatementSnapshot(publish);
+  if (!ExpectApiOk(published,
+                   "engine-owned statement snapshot publication failed")) {
+    return false;
+  }
+  context->statement_snapshot_uuid = published.statement_snapshot_uuid;
+  context->snapshot_visible_through_local_transaction_id =
+      published.snapshot_vector.visible_committed_high_watermark;
   (void)fixture;
   return true;
 }
 
 bool ProveRoutePlanning(const Fixture& fixture,
                         const api::EngineRequestContext& context) {
-  auto envelope = Envelope("query.plan_operation",
-                           "SBLR_QUERY_PLAN_OPERATION",
-                           "pcr006.plan");
-  envelope.requires_transaction_context = true;
-  const auto planned = Dispatch(context, std::move(envelope),
-                                PlanApiRequest(fixture));
-  return ExpectDispatchOk(planned, "SBLR query.plan_operation dispatch failed") &&
-         Expect(HasEvidenceKind(planned.api_result, "optimizer_metric_input"),
-                "optimizer did not consume catalog/runtime statistics") &&
-         Expect(HasEvidenceKind(planned.api_result,
-                                "optimizer_selected_candidate"),
-                "optimizer did not select a physical candidate") &&
-         Expect(HasEvidence(planned.api_result, "parser_executes_sql", "false"),
-                "optimizer route did not reject parser SQL execution authority") &&
-         Expect(HasEvidence(planned.api_result, "parser_claims_transaction_finality",
-                            "false"),
-                "optimizer route did not reject parser transaction authority");
+  (void)fixture;
+  const auto executed = sblr::DispatchSblrOperation(
+      {context, QueryExecuteEnvelope(context), api::EngineApiRequest{},
+       std::nullopt});
+  return ExpectDispatchOk(executed,
+                          "canonical query.execute descriptor DAG failed") &&
+         Expect(executed.logical_graph_populated &&
+                    executed.optimizer_admitted && executed.optimizer_selected &&
+                    executed.physical_dag_published &&
+                    executed.physical_dag_executed &&
+                    executed.runtime_actuals_attached &&
+                    executed.canonical_result_published,
+                "query.execute did not complete the canonical QOW route") &&
+         Expect(executed.api_result.result_shape.rows.size() == 1 &&
+                    executed.api_result.result_shape.rows.front().fields.size() ==
+                        1 &&
+                    executed.api_result.result_shape.rows.front()
+                            .fields.front()
+                            .first == "id" &&
+                    executed.api_result.result_shape.rows.front()
+                            .fields.front()
+                            .second.descriptor.canonical_type_name == "int64" &&
+                    executed.api_result.result_shape.rows.front()
+                            .fields.front()
+                            .second.encoded_value == "42",
+                "query.execute did not publish the independent one-row int64 "
+                "result");
 }
 
 bool ProveSecurityAuthorization(const Fixture& fixture,
                                 const api::EngineRequestContext& context) {
-  auto envelope =
-      Envelope("security.authorize", "SBLR_SECURITY_AUTHORIZE", "pcr006.auth");
-  envelope.requires_transaction_context = true;
-  api::EngineApiRequest request;
+  api::EngineAuthorizeRequest request;
+  request.context = context;
+  request.operation_id = "security.authorize";
   request.target_object.uuid.canonical = UuidText(fixture.relation_uuid);
   request.target_object.object_kind = "table";
-  request.option_envelopes.push_back("right:OBS_INDEX_PROFILE_READ");
-  const auto authorized = Dispatch(context, std::move(envelope), request);
-  bool ok = ExpectDispatchOk(authorized, "security authorize dispatch failed");
-  ok = Expect(HasEvidence(authorized.api_result, "authorization_authority",
+  request.required_right = "OBS_INDEX_PROFILE_READ";
+  const auto authorized = api::EngineAuthorize(request);
+  bool ok = ExpectApiOk(authorized, "security authorization failed");
+  ok = Expect(authorized.authorized &&
+                  HasEvidence(authorized, "authorization_authority",
                           "materialized_authorization_context"),
               "authorization did not use materialized engine context") &&
        ok;
 
-  auto cluster_envelope = Envelope("security.authorize",
-                                   "SBLR_SECURITY_AUTHORIZE",
-                                   "pcr006.cluster_auth");
-  cluster_envelope.requires_transaction_context = true;
-  api::EngineApiRequest cluster_request;
+  api::EngineAuthorizeRequest cluster_request;
+  cluster_request.context = context;
+  cluster_request.operation_id = "security.authorize";
   cluster_request.target_object.uuid.canonical = UuidText(fixture.relation_uuid);
   cluster_request.target_object.object_kind = "cluster_route";
-  cluster_request.option_envelopes.push_back("right:OBS_CLUSTER_HEALTH_INSPECT");
-  const auto refused = Dispatch(context, std::move(cluster_envelope),
-                                cluster_request);
-  ok = Expect(refused.accepted && refused.dispatched_to_api,
-              "cluster authorization did not reach engine API") &&
-       ok;
-  ok = Expect(!refused.api_result.ok &&
-                  HasDiagnostic(refused.api_result,
+  cluster_request.required_right = "OBS_CLUSTER_HEALTH_INSPECT";
+  cluster_request.require_cluster_authority = true;
+  const auto refused = api::EngineAuthorize(cluster_request);
+  ok = Expect(!refused.ok && refused.cluster_authority_required &&
+                  HasDiagnostic(refused,
                                 "SECURITY.CLUSTER.AUTHORITY_REQUIRED"),
               "cluster authorization did not fail closed without provider") &&
        ok;
@@ -507,19 +679,63 @@ bool ProveIndexDatatypeAndAgentBoundaries(const Fixture& fixture) {
   return ok;
 }
 
-bool CommitRouteTransaction(api::EngineRequestContext* context) {
-  auto envelope = Envelope("transaction.commit",
-                           "SBLR_TRANSACTION_COMMIT",
+bool CommitRouteTransaction(api::EngineRequestContext* context,
+                            const RouteTransactionEvidence& evidence) {
+  auto envelope = Envelope("engine.op.txn_commit",
+                           "SBLR_TXN_COMMIT",
                            "pcr006.commit");
   envelope.requires_transaction_context = true;
-  const auto committed = Dispatch(*context, std::move(envelope));
+
+  const auto parsed_transaction =
+      uuid::ParseUuid(context->transaction_uuid.canonical);
+  if (!Expect(parsed_transaction.ok(),
+              "transaction UUID is not canonical before commit")) {
+    return false;
+  }
+  sblr::SblrTransactionCommitOptionsV1 options;
+  std::copy(parsed_transaction.value.bytes.begin(),
+            parsed_transaction.value.bytes.end(),
+            options.transaction_uuid.begin());
+  options.local_transaction_id = context->local_transaction_id;
+  options.admitted_handle_evidence_sha256 = evidence.begin_admission_sha256;
+  options.commit_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  auto body = sblr::EncodeSblrTransactionCommitOptionsV1(&options);
+  if (!Expect(!body.empty(),
+              "canonical transaction-commit options failed to encode")) {
+    return false;
+  }
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.commit.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_commit_options;
+  operand.value_body = std::move(body);
+  envelope.operands.push_back(std::move(operand));
+
+  const auto admitted = Dispatch(*context, std::move(envelope));
+  if (!ExpectDispatchOk(admitted,
+                        "canonical SBLR transaction-commit admission failed")) {
+    return false;
+  }
+
+  api::EngineCommitTransactionRequest commit;
+  commit.context = *context;
+  commit.operation_id = "transaction.commit";
+  const auto committed = api::EngineCommitTransaction(commit);
   const bool ok =
-      ExpectDispatchOk(committed, "SBLR transaction.commit dispatch failed") &&
-      Expect(HasEvidence(committed.api_result, "mga_authority",
-                         "durable_transaction_inventory"),
-             "commit did not report durable MGA inventory authority");
+      ExpectApiOk(committed,
+                  "engine-owned transaction commit failed after admission") &&
+      Expect(committed.engine_finality_known &&
+                 committed.commit_finality_state ==
+                     "committed_by_engine_inventory" &&
+                 HasEvidence(committed, "mga_authority",
+                             "durable_transaction_inventory"),
+             "engine-owned commit did not publish durable MGA finality");
   context->local_transaction_id = 0;
   context->transaction_uuid.canonical.clear();
+  context->statement_snapshot_uuid.canonical.clear();
   return ok;
 }
 
@@ -574,13 +790,14 @@ int main(int argc, char** argv) {
   const Fixture fixture = CreateFixture(cleanup.root);
   api::EngineRequestContext context =
       Context(fixture, "public-sblr-uuid-mga-route-integration");
+  RouteTransactionEvidence transaction_evidence;
 
   ok = ProveSblrEnvelopeAuthority() && ok;
-  ok = BeginRouteTransaction(fixture, &context) && ok;
+  ok = BeginRouteTransaction(fixture, &context, &transaction_evidence) && ok;
   ok = ProveRoutePlanning(fixture, context) && ok;
   ok = ProveSecurityAuthorization(fixture, context) && ok;
   ok = ProveIndexDatatypeAndAgentBoundaries(fixture) && ok;
-  ok = CommitRouteTransaction(&context) && ok;
+  ok = CommitRouteTransaction(&context, transaction_evidence) && ok;
   ok = ProveMGAInventoryFinality(fixture) && ok;
   ok = ProveClusterSblrFailsClosed(context) && ok;
 

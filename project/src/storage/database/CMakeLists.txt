@@ -15,8 +15,12 @@ endif()
 if(NOT TARGET sb_core_agents)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/agents ${CMAKE_CURRENT_BINARY_DIR}/core_agents)
 endif()
+if(NOT TARGET sb_core_hash)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/hash ${CMAKE_CURRENT_BINARY_DIR}/core_hash)
+endif()
 
 add_library(sb_storage_database
+  database_local_private_relation_locator.cpp
   database_lifecycle.cpp
   database_dirty_manifest.cpp
   local_transaction_store.cpp
@@ -29,4 +33,4 @@ add_library(sb_storage_database
 
 target_compile_features(sb_storage_database PUBLIC cxx_std_17)
 target_include_directories(sb_storage_database PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(sb_storage_database PUBLIC sb_core_platform sb_core_uuid sb_core_memory sb_core_metrics sb_core_agents sb_core_resources sb_core_catalog sb_storage_disk sb_storage_page)
+target_link_libraries(sb_storage_database PUBLIC sb_core_platform sb_core_uuid sb_core_hash sb_core_memory sb_core_metrics sb_core_agents sb_core_resources sb_core_catalog sb_storage_disk sb_storage_page)

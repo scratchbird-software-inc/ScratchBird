@@ -59,8 +59,10 @@ The frozen exported C ABI symbol set is:
 - `sb_engine_open`
 - `sb_engine_result_class`
 - `sb_engine_result_completion`
+- `sb_engine_result_descriptor_v1`
 - `sb_engine_result_diagnostics`
 - `sb_engine_result_next_batch`
+- `sb_engine_result_next_typed_batch_v2`
 - `sb_engine_result_payload`
 - `sb_engine_result_release`
 - `sb_engine_result_summary`
@@ -70,6 +72,19 @@ The frozen exported C ABI symbol set is:
 - `sb_engine_transaction_begin`
 - `sb_engine_transaction_commit`
 - `sb_engine_transaction_rollback`
+
+## Typed Result Binary Views
+
+`PUBLIC-ENGINE-TYPED-RESULT-BINARY-V1` adds the immutable
+`sb_engine_binary_view_v1_t`, `sb_engine_result_descriptor_view_v1_t`, and
+`sb_engine_row_batch_view_v2_t` carriers. The descriptor accessor exposes the
+exact `ResultDescriptorVectorV1`; the typed-batch accessor exposes the exact
+`RowDataPacketV1` with its four query-result UUIDs, descriptor and batch
+evidence, direct end-of-stream state, or cursor-stream identity. The result
+handle owns every returned byte pointer until its next mutating call or
+release. Legacy string payload and v1 batch accessors refuse typed row handles.
+Finality tokens, message vectors, and private cursor authorities remain owned
+inside the engine/server boundary and are not public binary-view fields.
 
 ## Public Surfaces
 

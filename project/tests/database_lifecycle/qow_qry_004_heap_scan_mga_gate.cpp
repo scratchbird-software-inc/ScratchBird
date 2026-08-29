@@ -1218,7 +1218,7 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   physical.executor_capability_abi_version = 1;
   physical.cost_vector_uuid =
       NewUuidText(platform::UuidKind::object, salt + 5);
-  physical.memory_bytes_required = 1024;
+  physical.memory_bytes_required = 4 * 1024 * 1024;
   physical.engine_capability_validated = true;
   physical.mga_statement_context = request.physical_dag.mga_statement_context;
   request.physical_dag.nodes.push_back(physical);
@@ -1900,6 +1900,233 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
   Rollback(empty_reader);
 }
 
+void ValidateStreamingCountStarMatrix(Fixture& fixture) {
+  const std::string relation_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 7200);
+  auto writer = Begin(fixture, "qow-heap-count-writer");
+  PersistTable(fixture, writer, relation_uuid);
+  InsertRows(fixture, writer, relation_uuid,
+             {Int64Row(1), Int64Row(2), NullRow()});
+  Commit(writer);
+
+  auto reader = QueryContext(Begin(fixture, "qow-heap-count-reader"),
+                             relation_uuid, fixture.salt + 7210);
+  api::MgaVisibleHeapRelationCountRequest request;
+  request.relation_uuid = relation_uuid;
+  request.maximum_decoded_bytes = 8 * 1024 * 1024;
+  request.maximum_memory_bytes = 8 * 1024 * 1024;
+  request.cancellation_requested = [] { return false; };
+  const auto initial = api::CountVisibleMgaHeapRelation(reader, request);
+  Require(initial.ok && !initial.diagnostic.error &&
+              initial.visible_row_count == 3 &&
+              initial.scanned_row_version_count == 3 &&
+              initial.visibility_recheck_count == 3 &&
+              initial.decoded_byte_count != 0 &&
+              initial.storage_bytes_read >= initial.decoded_byte_count &&
+              initial.current_live_memory_bytes <=
+                  initial.peak_live_memory_bytes &&
+              initial.peak_live_memory_bytes <= initial.memory_grant_bytes &&
+              initial.memory_grant_bytes == request.maximum_memory_bytes &&
+              initial.memory_receipt_complete,
+          "streaming COUNT(*) did not publish an exact bounded MGA receipt");
+
+  auto concurrent = Begin(fixture, "qow-heap-count-concurrent-writer");
+  InsertRows(fixture, concurrent, relation_uuid, {Int64Row(4)});
+  const auto while_active = api::CountVisibleMgaHeapRelation(reader, request);
+  Require(while_active.ok && while_active.visible_row_count == 3 &&
+              while_active.invisible_row_version_count >= 1,
+          "streaming COUNT(*) admitted another transaction's active row");
+  Commit(concurrent);
+  const auto after_snapshot_commit =
+      api::CountVisibleMgaHeapRelation(reader, request);
+  Require(after_snapshot_commit.ok &&
+              after_snapshot_commit.visible_row_count == 3,
+          "streaming COUNT(*) changed a statement-stable snapshot");
+
+  auto bounded = request;
+  bounded.maximum_memory_bytes = 1;
+  const auto bounded_refusal =
+      api::CountVisibleMgaHeapRelation(reader, bounded);
+  Require(!bounded_refusal.ok &&
+              bounded_refusal.failure_category ==
+                  api::MgaHeapReadFailureCategoryV1::kResource &&
+              bounded_refusal.visible_row_count == 0 &&
+              !bounded_refusal.memory_receipt_complete,
+          "streaming COUNT(*) exceeded its memory grant instead of refusing");
+
+  auto cancelled = request;
+  cancelled.cancellation_requested = [] { return true; };
+  const auto cancellation =
+      api::CountVisibleMgaHeapRelation(reader, cancelled);
+  Require(!cancellation.ok && cancellation.cancellation_observed &&
+              cancellation.failure_category ==
+                  api::MgaHeapReadFailureCategoryV1::kCancellation &&
+              cancellation.visible_row_count == 0,
+          "streaming COUNT(*) did not observe deterministic cancellation");
+  Rollback(reader);
+
+  auto current_reader = QueryContext(
+      Begin(fixture, "qow-heap-count-current-reader"), relation_uuid,
+      fixture.salt + 7220);
+  const auto current =
+      api::CountVisibleMgaHeapRelation(current_reader, request);
+  Require(current.ok && current.visible_row_count == 4 &&
+              current.scanned_row_version_count == 4 &&
+              current.memory_receipt_complete,
+          "streaming COUNT(*) did not count the newly visible committed row");
+
+  std::vector<std::string> streamed_values;
+  const auto retained_bytes = [&]() {
+    std::uint64_t bytes = sizeof(streamed_values) +
+                          streamed_values.capacity() * sizeof(std::string);
+    for (const auto& value : streamed_values) {
+      bytes += value.capacity() + 1;
+    }
+    return bytes;
+  };
+  api::MgaVisibleHeapRelationStreamRequest stream;
+  stream.relation_uuid = relation_uuid;
+  stream.maximum_decoded_bytes_per_pass = 8 * 1024 * 1024;
+  stream.maximum_memory_bytes = 8 * 1024 * 1024;
+  stream.maximum_consumer_growth_bytes_per_row = 1024;
+  stream.cancellation_requested = [] { return false; };
+  stream.prepare_consumer_for_visible_rows =
+      [&](const api::MgaRelationStorageDescriptor& descriptor,
+          const std::uint64_t visible_rows, std::uint64_t* row_growth) {
+        if (descriptor.relation_uuid.canonical != relation_uuid ||
+            visible_rows > std::numeric_limits<std::size_t>::max() ||
+            row_growth == nullptr) {
+          return false;
+        }
+        *row_growth = 1024;
+        streamed_values.reserve(static_cast<std::size_t>(visible_rows));
+        return true;
+      };
+  stream.consumer_retained_memory_bytes = retained_bytes;
+  stream.consume_visible_row = [&](const std::uint64_t source_ordinal,
+                                   const api::CrudRowVersionRecord& row) {
+    if (source_ordinal == 0 || row.values.size() != 1 ||
+        row.values.front().first != "value") {
+      return false;
+    }
+    streamed_values.push_back(row.values.front().second);
+    return true;
+  };
+  const auto streamed =
+      api::StreamVisibleMgaHeapRelation(current_reader, stream);
+  std::ranges::sort(streamed_values);
+  Require(streamed.ok && !streamed.diagnostic.error &&
+              streamed.complete_mga_chain_validation &&
+              streamed.exact_segment_extent_revalidated &&
+              streamed.complete_value_delivery &&
+              !streamed.delivery_stopped_by_bound &&
+              streamed.visible_row_count == 4 &&
+              streamed.delivered_row_count == 4 &&
+              streamed.scanned_row_version_count == 4 &&
+              streamed.second_pass_scanned_row_version_count == 4 &&
+              streamed.second_pass_decoded_byte_count != 0 &&
+              streamed.second_pass_storage_bytes_read >=
+                  streamed.second_pass_decoded_byte_count &&
+              streamed.decoded_byte_count >= current.decoded_byte_count * 2 &&
+              streamed.storage_bytes_read >= streamed.decoded_byte_count &&
+              streamed.current_live_memory_bytes <=
+                  streamed.peak_live_memory_bytes &&
+              streamed.peak_live_memory_bytes <=
+                  streamed.memory_grant_bytes &&
+              streamed.memory_receipt_complete &&
+              streamed_values ==
+                  std::vector<std::string>{"1", "2", "4", "<NULL>"},
+          "two-pass visible-row stream lost MGA, extent, row, or memory authority");
+
+  auto stream_delivery_bounded = stream;
+  stream_delivery_bounded.maximum_delivered_visible_rows = 1;
+  streamed_values.clear();
+  const auto bounded_delivery =
+      api::StreamVisibleMgaHeapRelation(current_reader,
+                                        stream_delivery_bounded);
+  Require(bounded_delivery.ok &&
+              bounded_delivery.complete_mga_chain_validation &&
+              bounded_delivery.exact_segment_extent_revalidated &&
+              !bounded_delivery.complete_value_delivery &&
+              bounded_delivery.delivery_stopped_by_bound &&
+              bounded_delivery.visible_row_count == 4 &&
+              bounded_delivery.delivered_row_count == 1 &&
+              bounded_delivery.scanned_row_version_count == 4 &&
+              bounded_delivery.second_pass_scanned_row_version_count == 1 &&
+              bounded_delivery.second_pass_decoded_byte_count != 0 &&
+              bounded_delivery.second_pass_decoded_byte_count <
+                  streamed.second_pass_decoded_byte_count &&
+              bounded_delivery.memory_receipt_complete &&
+              streamed_values.size() == 1,
+          "bounded value delivery did not stop immediately after one selected row");
+
+  auto stream_zero_delivery = stream;
+  stream_zero_delivery.maximum_delivered_visible_rows = 0;
+  streamed_values.clear();
+  const auto zero_delivery =
+      api::StreamVisibleMgaHeapRelation(current_reader, stream_zero_delivery);
+  Require(zero_delivery.ok &&
+              zero_delivery.complete_mga_chain_validation &&
+              zero_delivery.exact_segment_extent_revalidated &&
+              !zero_delivery.complete_value_delivery &&
+              zero_delivery.delivery_stopped_by_bound &&
+              zero_delivery.visible_row_count == 4 &&
+              zero_delivery.delivered_row_count == 0 &&
+              zero_delivery.scanned_row_version_count == 4 &&
+              zero_delivery.second_pass_scanned_row_version_count == 0 &&
+              zero_delivery.second_pass_decoded_byte_count == 0 &&
+              zero_delivery.second_pass_storage_bytes_read == 0 &&
+              zero_delivery.memory_receipt_complete &&
+              streamed_values.empty(),
+          "zero delivery bound skipped or weakened first-pass MGA authority");
+
+  auto zero_delivery_tiny_decode = stream_zero_delivery;
+  zero_delivery_tiny_decode.maximum_decoded_bytes_per_pass = 1;
+  const auto zero_delivery_decode_refusal =
+      api::StreamVisibleMgaHeapRelation(current_reader,
+                                        zero_delivery_tiny_decode);
+  Require(!zero_delivery_decode_refusal.ok &&
+              zero_delivery_decode_refusal.failure_category ==
+                  api::MgaHeapReadFailureCategoryV1::kResource &&
+              !zero_delivery_decode_refusal.complete_mga_chain_validation &&
+              zero_delivery_decode_refusal.delivered_row_count == 0 &&
+              zero_delivery_decode_refusal.second_pass_decoded_byte_count == 0,
+          "zero delivery bound bypassed the complete first-pass decode authority");
+
+  auto stream_bounded = stream;
+  stream_bounded.maximum_memory_bytes = 1;
+  streamed_values.clear();
+  const auto stream_resource_refusal =
+      api::StreamVisibleMgaHeapRelation(current_reader, stream_bounded);
+  Require(!stream_resource_refusal.ok &&
+              stream_resource_refusal.failure_category ==
+                  api::MgaHeapReadFailureCategoryV1::kResource &&
+              stream_resource_refusal.delivered_row_count == 0 &&
+              !stream_resource_refusal.memory_receipt_complete,
+          "two-pass visible-row stream exceeded its grant instead of refusing");
+
+  bool cancel_stream = false;
+  streamed_values.clear();
+  auto stream_cancelled = stream;
+  stream_cancelled.cancellation_requested = [&] { return cancel_stream; };
+  stream_cancelled.consume_visible_row =
+      [&](const std::uint64_t, const api::CrudRowVersionRecord& row) {
+        if (row.values.size() != 1) return false;
+        streamed_values.push_back(row.values.front().second);
+        cancel_stream = true;
+        return true;
+      };
+  const auto stream_cancellation =
+      api::StreamVisibleMgaHeapRelation(current_reader, stream_cancelled);
+  Require(!stream_cancellation.ok &&
+              stream_cancellation.cancellation_observed &&
+              stream_cancellation.failure_category ==
+                  api::MgaHeapReadFailureCategoryV1::kCancellation &&
+              stream_cancellation.delivered_row_count == 1,
+          "two-pass visible-row stream did not cancel deterministically between rows");
+  Rollback(current_reader);
+}
+
 // QOW-TEST-QRY-004-HEAP-DISPATCH-V1
 void ValidatePhysicalHeapDispatchMatrix(Fixture& fixture) {
   auto reader = QueryContext(Begin(fixture, "qow-heap-dispatch-reader"),
@@ -2182,8 +2409,8 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
   result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
   RequireAtomicDispatchFailure(result,
                                "denied heap dispatch published a result");
-  Require(result.execution_started && !result.data_access_observed,
-          "pre-read callback refusal retained generic read truth");
+  Require(!result.execution_started && !result.data_access_observed,
+          "pre-read authority refusal entered physical execution");
 
   std::size_t cancellation_probes = 0;
   mutated = baseline;
@@ -4343,6 +4570,84 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
   Rollback(reader);
 }
 
+void ValidateCanonicalInt128GroupedSumMatrix() {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d714";
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int128";
+  descriptor.encoded_descriptor =
+      "type_uuid=019d0000-0000-7000-8000-00000000d715;"
+      "nullability=nullable";
+
+  exec::CanonicalInt128SumStateV1 all_null;
+  auto transition =
+      exec::TransitionCanonicalInt128SumV1(&all_null, true, 0);
+  Require(transition.ok && !all_null.nonnull_value_seen,
+          "grouped SUM NULL transition changed accumulator state");
+  auto finalized =
+      exec::FinalizeCanonicalInt128SumV1(all_null, descriptor);
+  Require(finalized.diagnostic.ok && finalized.value.is_null &&
+              finalized.value.state == api::EngineValueState::sql_null &&
+              finalized.value.encoded_value.empty() &&
+              finalized.value.binary_value.empty(),
+          "grouped SUM all-NULL group did not finalize as SQL NULL");
+
+  exec::CanonicalInt128SumStateV1 widened;
+  Require(exec::TransitionCanonicalInt128SumV1(
+              &widened, false, std::numeric_limits<std::int64_t>::max())
+              .ok &&
+              exec::TransitionCanonicalInt128SumV1(&widened, false, 1).ok,
+          "grouped SUM did not widen beyond INT64_MAX");
+  finalized = exec::FinalizeCanonicalInt128SumV1(widened, descriptor);
+  Require(finalized.diagnostic.ok && !finalized.value.is_null &&
+              finalized.value.state == api::EngineValueState::value &&
+              finalized.value.encoded_value.empty() &&
+              finalized.value.binary_value.size() == 16 &&
+              std::ranges::all_of(
+                  finalized.value.binary_value | std::views::take(7),
+                  [](const auto byte) { return byte == 0; }) &&
+              finalized.value.binary_value[7] == 0x80 &&
+              std::ranges::all_of(
+                  finalized.value.binary_value | std::views::drop(8),
+                  [](const auto byte) { return byte == 0; }),
+          "grouped SUM widened result is not exact signed 16-byte LE");
+
+  exec::CanonicalInt128SumStateV1 maximum;
+  maximum.signed_little_endian.fill(0xff);
+  maximum.signed_little_endian.back() = 0x7f;
+  maximum.nonnull_value_seen = true;
+  const auto maximum_before = maximum;
+  transition = exec::TransitionCanonicalInt128SumV1(&maximum, false, 1);
+  Require(!transition.ok &&
+              transition.diagnostic_code == "NUMERIC.INT128.OVERFLOW" &&
+              maximum.signed_little_endian ==
+                  maximum_before.signed_little_endian,
+          "grouped SUM accepted or mutated an overflowing positive transition");
+
+  exec::CanonicalInt128SumStateV1 minimum;
+  minimum.signed_little_endian.fill(0);
+  minimum.signed_little_endian.back() = 0x80;
+  minimum.nonnull_value_seen = true;
+  const auto minimum_before = minimum;
+  transition = exec::TransitionCanonicalInt128SumV1(&minimum, false, -1);
+  Require(!transition.ok &&
+              transition.diagnostic_code == "NUMERIC.INT128.OVERFLOW" &&
+              minimum.signed_little_endian ==
+                  minimum_before.signed_little_endian,
+          "grouped SUM accepted or mutated an overflowing negative transition");
+
+  auto malformed_descriptor = descriptor;
+  malformed_descriptor.descriptor_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d711";
+  finalized = exec::FinalizeCanonicalInt128SumV1(widened,
+                                                  malformed_descriptor);
+  Require(!finalized.diagnostic.ok &&
+              finalized.diagnostic.diagnostic_code ==
+                  "DATATYPE.DESCRIPTOR_INVALID",
+          "grouped SUM finalized through a substituted result descriptor");
+}
+
 }  // namespace
 
 int main() {
@@ -4361,6 +4666,8 @@ int main() {
   ValidateStorageNullabilityCarrierMatrix(fixture);
   ValidatePhysicalHeapDispatchMatrix(fixture);
   ValidatePhysicalHeapDispatchRefusals(fixture);
+  ValidateStreamingCountStarMatrix(fixture);
+  ValidateCanonicalInt128GroupedSumMatrix();
   ValidatePositiveAndVisibilityMatrix(fixture);
   ValidateBindingSecurityAndResourceRefusals(fixture);
   ValidateOptimizerSelectedHeapTableSampleMatrix(fixture);

@@ -91,8 +91,6 @@ def release_claim_for(final_status: str, cluster_scope: str) -> str:
         return "public_sbsql_e2e_implemented"
     if final_status == "cluster_provider_route_passed" and cluster_scope == "cluster_private":
         return "cluster_public_fail_closed_provider_gated"
-    if final_status == "exact_refusal_passed" and cluster_scope == "cluster_private":
-        return "cluster_public_fail_closed_provider_gated"
     if final_status == "exact_refusal_passed":
         return "public_exact_refusal_implemented"
     return "not_releasable"
@@ -221,10 +219,10 @@ def main() -> int:
     blocked_rows = sum(1 for row in output_rows if row["release_status"] == "blocked")
     residual_risk_rows = sum(1 for row in output_rows if row["remaining_risk"] != "none")
     auth_pending_rows = sum(
-        1 for row in output_rows if "authenticated_route_fixture_status=pending_authoring" in row["remaining_risk"]
+        1 for row in output_rows if "authenticated_route_fixture_status=" in row["remaining_risk"]
     )
     round_trip_pending_rows = sum(
-        1 for row in output_rows if "sblr_round_trip_fixture_status=pending_authoring" in row["remaining_risk"]
+        1 for row in output_rows if "sblr_round_trip_fixture_status=" in row["remaining_risk"]
     )
 
     output_csv = artifact_root / OUTPUT_CSV_NAME

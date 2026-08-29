@@ -61,13 +61,20 @@ Current limits:
 
 ## Compatibility Parser Scope
 
-The public source tree includes 25 compatibility parser lanes. Their current
-beta status is documented in `docs/compatibility-parsers/README.md`.
+The public source tree includes 25 compatibility parser lanes. Their retained
+pre-hold beta evidence is documented in `docs/compatibility-parsers/README.md`.
 
-The bounded public claim is that the surfaced beta parser operations are
-classified as mapped, emulated, parser-only, or deterministic refusal, and the
-current replay/isolation gate group passes. This is not a production-readiness
-claim and is not a promise of drop-in compatibility with any reference system.
+Those parser workers and their parser-support UDRs are temporarily excluded
+from standard builds while the common SBLR boundary stabilizes. They are
+retained in source and require `SB_BUILD_COMPATIBILITY_PARSERS=ON`; public
+release presets keep that gate OFF.
+
+The retained pre-hold evidence classifies surfaced beta parser operations as
+mapped, emulated, parser-only, or deterministic refusal, and records a passing
+replay/isolation gate group against its historical SBLR baseline. It does not
+establish compatibility with the in-progress SBLR baseline. This is not a
+production-readiness claim or a promise of drop-in compatibility with any
+reference system.
 
 Raw upstream regression payloads and built original/reference tools are local
 test inputs. The public repository tracks acquisition scripts, manifests, and

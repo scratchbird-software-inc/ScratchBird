@@ -147,7 +147,7 @@ def classify_row(row: dict[str, str]) -> dict[str, str]:
             "implementation_target": "project/src/cluster_provider;project/src/cluster_provider_stub;private_cluster_provider_when_linked",
             "required_tests": f"project/tests/sbsql_parser_worker/generated/full_surface/cluster_private_refusal/{surface_id}.fixture.yaml",
             "decision_status": "implementation_required_by_user_directive",
-            "notes": "native_future row carrying cluster_scope=cluster_private; implement through the compile-gated cluster provider boundary. Default/open-core builds must return SBLR.CLUSTER.SUPPORT_NOT_ENABLED from the no-cluster provider; cluster-enabled builds must return cluster.provider.stub.v1/SBLR.CLUSTER.STUB_RESPONSE from the separate provider target until the private provider is linked.",
+            "notes": "native_future row carrying cluster_scope=cluster_private; implement through the compile-gated cluster provider boundary. Default/open-core builds must return SBLR.CLUSTER.SUPPORT_NOT_ENABLED from the no-cluster provider; cluster-enabled builds must route through the compile-link-only stub provider, which reports supports_execution=false and returns cluster.provider.stub.v1/SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY until the private provider is linked.",
         }
 
     owner, target = assign_owner(name)

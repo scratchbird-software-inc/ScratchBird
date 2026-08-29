@@ -75,6 +75,12 @@ import re
 import sys
 from pathlib import Path
 
+from plan_import_rows_generated_evidence import (
+    binary_round_trip_override,
+    normalize_fixture_status,
+    validate_authoritative_runtime_inputs,
+)
+
 
 REGISTRY_CSV = (
     "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
@@ -122,6 +128,7 @@ CANONICAL_CONTAINER_HEADER_SIZE = "40"
 FORBIDDEN_AUTHORITY = "sql_text;identifier_names;parser_branch_names;reference_command_names;operation_family_only_routing"
 EXECUTION_AUTHORITY = "mga_copy_on_write;no_wal_authority;sblr_envelope_with_uuid_and_descriptor_authority_only"
 PENDING = "pending_canonical_authority_entry"
+BRIDGE_CLUSTER_ROUTE_SURFACE_ID = "SBSQL-D50EC7C4422E"
 FIXTURE_KIND = "sblr_binary_round_trip"
 ALLOWED_AUTHORED_FIXTURE_STATUSES = {
     "fixture_authored",
@@ -226,6 +233,23 @@ def native_now_manifest_phases(operation_id: str, authority_status: str) -> dict
     }
 
 
+def lifecycle_create_manifest_phases(authority_status: str) -> dict[str, str]:
+    return {
+        "expected_canonical_function_or_api_operation_id": "engine.op.lifecycle_create_database",
+        "parse_phase_expectation": "parse_sbsql_text_to_cst_pass",
+        "bind_phase_expectation": "bind_to_bound_ast_with_uuid_and_descriptor_pass_no_names_as_authority",
+        "lower_phase_expectation": "lower_bound_ast_to_sblrexecutionenvelope_v3_with_canonical_operation_id_pass_no_text_branch_or_reference_command_as_authority",
+        "binary_serialize_phase_expectation": "serialize_envelope_to_canonical_container_magic_0x53424C52_with_40byte_header_crc32c_deterministic_byte_identical_pass",
+        "verify_phase_expectation": "verifier_admit_container_with_magic_version_length_checksum_and_payload_authority_pass",
+        "binary_deserialize_phase_expectation": "deserialize_bytes_to_byte_identical_sblrexecutionenvelope_v3_pass",
+        "dispatch_phase_expectation": "engine_dispatch_by_canonical_function_or_api_operation_id_pass_reject_family_only_routing",
+        "execute_phase_expectation": "engine_dispatch_creates_database_with_engine_assigned_identities_and_durable_tx1_evidence",
+        "render_phase_expectation": "renderer_emit_lifecycle_create_result_with_database_and_filespace_uuids",
+        "byte_identical_round_trip_required": "yes",
+        "notes": "The canonical SBLR container serializes, verifies, deserializes, and admits the exact engine.op.lifecycle_create_database executor identity. Dispatch reaches EngineCreateLifecycle, which creates the database with engine-assigned database/filespace UUIDs and durable tx1 evidence while preserving parser no-storage and no-finality authority. Round-trip authority source=" + authority_status + ".",
+    }
+
+
 def exact_refusal_manifest_phases(operation_id: str, authority_status: str) -> dict[str, str]:
     return {
         "expected_canonical_function_or_api_operation_id": operation_id,
@@ -277,6 +301,23 @@ def cluster_private_phases() -> dict[str, str]:
     }
 
 
+def bridge_cluster_exact_refusal_phases(authority_status: str) -> dict[str, str]:
+    return {
+        "expected_canonical_function_or_api_operation_id": "bridge.cluster_route",
+        "parse_phase_expectation": "parse_bridge_cluster_route_to_cst_pass",
+        "bind_phase_expectation": "bind_bridge_context_and_transaction_descriptor_pass_no_names_as_authority",
+        "lower_phase_expectation": "lower_to_sblr_bridge_operation_v3_bridge_cluster_route_SBLR_BRIDGE_VALIDATE_pass",
+        "binary_serialize_phase_expectation": "not_applicable_exact_refusal_test_makes_no_canonical_container_round_trip_claim",
+        "verify_phase_expectation": "sblr_verifier_and_canonical_server_admission_pass",
+        "binary_deserialize_phase_expectation": "not_applicable_no_binary_container_claim_for_trusted_udr_exact_refusal",
+        "dispatch_phase_expectation": "trusted_udr_dispatch_refuses_UDR_BRIDGE_UNSUPPORTED_after_canonical_sblr_admission",
+        "execute_phase_expectation": "not_applicable_exact_refusal_before_bridge_or_cluster_execution",
+        "render_phase_expectation": "renderer_emits_UDR_BRIDGE_UNSUPPORTED_canonical_message_vector",
+        "byte_identical_round_trip_required": "not_applicable_no_round_trip_in_public_build",
+        "notes": "Bridge cluster route is a Core refusal-only surface. Parse, bind, lowering, verifier, and canonical server admission preserve bridge.cluster_route/SBLR_BRIDGE_VALIDATE identity; trusted parser-support UDR dispatch then returns UDR.BRIDGE.UNSUPPORTED. No provider-route success, binary round-trip claim, private cluster execution, parser finality, or WAL authority is asserted. Round-trip authority source=" + authority_status + ".",
+    }
+
+
 def canonical_operation_from_manifest(manifest_row: dict[str, str] | None) -> tuple[str, str]:
     if not manifest_row:
         return "", ""
@@ -304,6 +345,8 @@ def main() -> int:
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
 
+    validate_authoritative_runtime_inputs(root)
+
     surfaces = read_csv(root / REGISTRY_CSV)
     oracle = read_csv(artifact_root / ORACLE_MATRIX_NAME)
     manifest = read_csv(artifact_root / PER_ROW_MANIFEST_NAME)
@@ -326,10 +369,17 @@ def main() -> int:
         manifest_row = manifest_by_id.get(surface_id)
         manifest_operation_id, manifest_authority = canonical_operation_from_manifest(manifest_row)
 
-        if surface["cluster_scope"] == "cluster_private":
+        if surface_id == BRIDGE_CLUSTER_ROUTE_SURFACE_ID:
+            oracle_status = f"per_row_manifest_{manifest_authority}"
+            phases = bridge_cluster_exact_refusal_phases(oracle_status)
+        elif surface["cluster_scope"] == "cluster_private":
             phases = cluster_private_phases()
         elif status == "native_now":
-            if (manifest_row and manifest_row.get("final_state") == "exact_refusal_passed"
+            if (surface_id == "SBSQL-EB95D772BD63"
+                    and manifest_row and manifest_row.get("final_state") == "e2e_passed"):
+                oracle_status = f"per_row_manifest_{manifest_authority}"
+                phases = lifecycle_create_manifest_phases(oracle_status)
+            elif (manifest_row and manifest_row.get("final_state") == "exact_refusal_passed"
                     and manifest_operation_id):
                 oracle_status = f"per_row_manifest_{manifest_authority}"
                 phases = exact_refusal_manifest_phases(manifest_operation_id, oracle_status)
@@ -366,7 +416,11 @@ def main() -> int:
             "fixture_status": "pending_authoring",
         }
         ledger_row.update(phases)
-        ledger_row["fixture_status"] = fixture_status_for(root, ledger_row["fixture_path"], surface_id)
+        ledger_row = binary_round_trip_override(ledger_row)
+        ledger_row["fixture_status"] = normalize_fixture_status(
+            surface_id,
+            fixture_status_for(root, ledger_row["fixture_path"], surface_id),
+        )
         output_rows.append(ledger_row)
 
         status_counts[status] = status_counts.get(status, 0) + 1

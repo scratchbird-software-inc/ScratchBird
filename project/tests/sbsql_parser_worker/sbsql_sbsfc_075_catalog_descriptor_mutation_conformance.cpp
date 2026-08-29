@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -18,6 +19,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -55,7 +58,7 @@ struct CaseRow {
 };
 
 const CaseRow kCases[] = {
-    {"SBSQL-02482A768886", "create_materialized_view_stmt", "CREATE MATERIALIZED VIEW mv AS SELECT 1;", "catalog.mutation.create_materialized_view", "SBLR_CATALOG_MUTATION_CREATE_MATERIALIZED_VIEW", "materialized_view", false},
+    {"SBSQL-02482A768886", "create_materialized_view_stmt", "CREATE MATERIALIZED VIEW mv AS SELECT category, SUM(amount) AS total FROM source GROUP BY category;", "engine.op.ddl_create_materialized_view", "SBLR_DDL_CREATE_MATERIALIZED_VIEW", "materialized_view", false},
     {"SBSQL-0D79A271D250", "create_cast_stmt", "CREATE CAST cast_one;", "catalog.mutation.create_cast", "SBLR_CATALOG_MUTATION_CREATE_CAST", "cast", false},
     {"SBSQL-0E2166CCB037", "create_server_stmt", "CREATE SERVER srv;", "catalog.mutation.create_server", "SBLR_CATALOG_MUTATION_CREATE_SERVER", "server", false},
     {"SBSQL-1C0806816BB8", "show_storage_buffer_io_index", "SHOW STORAGE BUFFER IO INDEX;", "catalog.mutation.show_storage_buffer_io_index", "SBLR_CATALOG_MUTATION_SHOW_STORAGE_BUFFER_IO_INDEX", "storage_buffer_io_index", false},
@@ -91,7 +94,7 @@ const CaseRow kCases[] = {
     {"SBSQL-C75FEC2CAA69", "alter_reference_action", "ALTER REFERENCE d SET PROFILE p;", "catalog.mutation.alter_reference", "SBLR_CATALOG_MUTATION_ALTER_REFERENCE", "reference", true},
     {"SBSQL-CAB8A126ED9E", "create_pipeline_stmt", "CREATE PIPELINE pipe;", "catalog.mutation.create_pipeline", "SBLR_CATALOG_MUTATION_CREATE_PIPELINE", "pipeline", false},
     {"SBSQL-CDF9CAB99BFE", "create_collation_stmt", "CREATE COLLATION coll;", "catalog.mutation.create_collation", "SBLR_CATALOG_MUTATION_CREATE_COLLATION", "collation", false},
-    {"SBSQL-D13498FA0EF4", "create_type_stmt", "CREATE TYPE typ;", "catalog.mutation.create_type", "SBLR_CATALOG_MUTATION_CREATE_TYPE", "type", false},
+    {"SBSQL-D13498FA0EF4", "create_type_stmt", "CREATE TYPE typ;", "engine.op.ddl_create_type", "SBLR_DDL_CREATE_TYPE", "type", false},
     {"SBSQL-DDC745405168", "alter_view_action", "ALTER VIEW v SET CHECK OPTION;", "catalog.mutation.alter_view", "SBLR_CATALOG_MUTATION_ALTER_VIEW", "view", true},
     {"SBSQL-E56EBC2407A0", "create_udr_stmt", "CREATE UDR udr_one;", "catalog.mutation.create_udr", "SBLR_CATALOG_MUTATION_CREATE_UDR", "udr", false},
     {"SBSQL-E589270E0A27", "create_tenant_stmt", "CREATE TENANT tenant_one;", "catalog.mutation.create_tenant", "SBLR_CATALOG_MUTATION_CREATE_TENANT", "tenant", false},
@@ -142,6 +145,11 @@ bool HasEvidence(const api::EngineApiResult& result,
   return false;
 }
 
+bool IsExactCoreCase(const CaseRow& row) {
+  return row.operation_id == "engine.op.ddl_create_materialized_view" ||
+         row.operation_id == "engine.op.ddl_create_type";
+}
+
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
@@ -186,7 +194,9 @@ PipelineArtifacts RunPipeline(const CaseRow& row, std::size_t index) {
   artifacts.cst = BuildCst(std::string(row.sql));
   artifacts.ast = BuildAst(artifacts.cst);
   std::vector<std::string> resolved;
-  if (row.needs_uuid) resolved.push_back(TargetUuidFor(index));
+  if (row.needs_uuid || row.operation_id == "engine.op.ddl_create_materialized_view") {
+    resolved.push_back(TargetUuidFor(index));
+  }
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session, resolved);
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
@@ -233,6 +243,24 @@ void RequireExactLowering(const CaseRow& row,
           "SBSFC-075 engine API operation id mismatch");
   Require(artifacts.envelope.sblr_opcode == row.opcode,
           "SBSFC-075 SBLR opcode mismatch");
+  const bool exact_materialized_view =
+      row.operation_id == "engine.op.ddl_create_materialized_view";
+  if (exact_materialized_view) {
+    Require(sblr::LookupSblrOperation("catalog.mutation.create_materialized_view") == nullptr,
+            "retired duplicate CREATE MATERIALIZED VIEW identity remained admitted");
+    Require(HasValue(artifacts.envelope.required_authority_steps,
+                     "authority.engine.ddl_create_materialized_view_api_required"),
+            "SBSFC-075 materialized-view DDL authority missing");
+    Require(Contains(artifacts.envelope.payload,
+                     "\"catalog_envelope_kind\":\"create_view_ddl\""),
+            "SBSFC-075 materialized-view payload kind missing");
+    Require(Contains(artifacts.envelope.payload,
+                     "\"view_materialized\":true"),
+            "SBSFC-075 materialized-view payload identity missing");
+    Require(Contains(artifacts.envelope.payload,
+                     "\"view_query_shape\":\"grouped_summary_relation\""),
+            "SBSFC-075 materialized-view query descriptor missing");
+  } else {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.engine.catalog_descriptor_mutation_api_required"),
           "SBSFC-075 catalog descriptor mutation API authority missing");
@@ -268,13 +296,15 @@ void RequireExactLowering(const CaseRow& row,
   Require(Contains(artifacts.envelope.payload,
                    "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
           "SBSFC-075 payload missing metadata-only name authority");
+  }
   Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
           "SBSFC-075 payload exposed SQL text");
   if (row.needs_uuid) {
     Require(Contains(artifacts.envelope.payload, TargetUuidFor(index)),
             "SBSFC-075 payload missing UUID-bound target");
   }
-  if (!row.needs_uuid && std::string_view(row.sql).rfind("CREATE ", 0) == 0) {
+  if (!exact_materialized_view && !row.needs_uuid &&
+      std::string_view(row.sql).rfind("CREATE ", 0) == 0) {
     Require(Contains(artifacts.envelope.payload, "\"name\":\""),
             "SBSFC-075 create payload missing requested object name");
   }
@@ -286,7 +316,7 @@ void RequireExactLowering(const CaseRow& row,
           "SBSFC-075 payload carried WAL authority");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected SBSFC-075 exact route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for SBSFC-075");
@@ -356,37 +386,88 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000075202";
   context.current_schema_uuid.canonical = std::string(kSchemaUuid);
   context.security_context_present = true;
+  context.authorization_context.present = true;
+  context.authorization_context.principal_uuid.canonical =
+      context.principal_uuid.canonical;
+  context.authorization_context.authority_uuid.canonical =
+      "019f0000-0000-7000-8000-000000075203";
+  api::EngineAuthorizationSubject subject;
+  subject.subject_uuid = context.principal_uuid;
+  subject.subject_kind = "user";
+  context.authorization_context.effective_subjects.push_back(std::move(subject));
+  api::EngineMaterializedAuthorizationGrant type_ddl;
+  type_ddl.subject_uuid = context.principal_uuid;
+  type_ddl.subject_kind = "user";
+  type_ddl.target_uuid.canonical = "*";
+  type_ddl.right = "TYPE_DDL";
+  context.authorization_context.grants.push_back(std::move(type_ddl));
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:CATALOG_MUTATE");
+  context.trace_tags.push_back("right:TYPE_DDL");
   return context;
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
                                                  const std::string& database_uuid) {
   auto context = EngineContext(path, database_uuid);
-  auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
-                                         "SBLR_TRANSACTION_BEGIN",
-                                         "trace.sbsfc075.transaction.begin");
+  auto envelope = scratchbird::test::sbsql::
+      BuildCanonicalEngineSblrEnvelopeForTest(
+          "engine.op.txn_begin",
+          "SBLR_TXN_BEGIN",
+          "trace.sbsfc075.transaction.begin");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  envelope.operands.push_back(std::move(operand));
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
   Require(result.envelope_validated, "SBSFC-075 transaction begin envelope rejected");
   Require(result.accepted, "SBSFC-075 transaction begin not accepted");
-  Require(result.api_result.ok, "SBSFC-075 transaction begin failed");
-  context.local_transaction_id = result.api_result.local_transaction_id;
-  context.transaction_uuid = result.api_result.transaction_uuid;
+  Require(result.api_result.ok, "SBSFC-075 transaction begin admission failed");
+  Require(result.api_result.local_transaction_id == 0,
+          "SBSFC-075 SBLR admission published transaction state");
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok, "SBSFC-075 public ABI transaction begin failed");
+  Require(begun.local_transaction_id != 0,
+          "SBSFC-075 public ABI transaction identity missing");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
   return context;
 }
 
 sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
-  auto envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
-                                         std::string(row.opcode),
-                                         "trace.sbsfc075.catalog_descriptor_mutation");
+  auto envelope = scratchbird::test::sbsql::
+      BuildCanonicalEngineSblrEnvelopeForTest(
+          row.operation_id,
+          row.opcode,
+          "trace.sbsfc075.catalog_descriptor_mutation");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;
@@ -399,12 +480,19 @@ api::EngineApiRequest EngineMutationRequest(const CaseRow& row, std::size_t inde
   request.target_schema.uuid.canonical = std::string(kSchemaUuid);
   request.target_schema.object_kind = "schema";
   request.target_object.uuid.canonical = TargetUuidFor(index + 200);
-  request.target_object.object_kind = std::string(row.object_kind);
+  request.target_object.object_kind =
+      row.operation_id == "engine.op.ddl_create_type"
+          ? "structured_type_descriptor"
+          : std::string(row.object_kind);
   request.localized_names.push_back({"en", "primary", "", "catalog_descriptor_target", true});
   request.option_envelopes.push_back(std::string("catalog_authority:sys.catalog.") + std::string(row.canonical_name));
   request.option_envelopes.push_back(std::string("descriptor_ref:sys.catalog.") + std::string(row.object_kind));
   request.option_envelopes.push_back("mga_catalog_commit_required:true");
   request.option_envelopes.push_back("parser_executes_sql:false");
+  if (row.operation_id == "engine.op.ddl_create_type") {
+    request.option_envelopes.push_back("structured_family:composite");
+    request.option_envelopes.push_back("field:id:uint64");
+  }
   return request;
 }
 
@@ -413,6 +501,7 @@ void RequireEngineDispatch(const std::filesystem::path& path,
   auto context = BeginEngineTransaction(path, database_uuid);
   for (std::size_t index = 0; index < std::size(kCases); ++index) {
     const auto& row = kCases[index];
+    if (!IsExactCoreCase(row)) continue;
     const sblr::SblrDispatchRequest request{
         context,
         EngineEnvelope(row),
@@ -430,6 +519,18 @@ void RequireEngineDispatch(const std::filesystem::path& path,
     Require(result.api_result.ok, "EngineCatalogDescriptorMutation failed");
     Require(result.api_result.operation_id == row.operation_id,
             "EngineCatalogDescriptorMutation operation id drifted");
+    if (row.operation_id == "engine.op.ddl_create_type") {
+      Require(sblr::LookupSblrOperation("catalog.mutation.create_type") == nullptr,
+              "retired duplicate CREATE TYPE SBLR identity remained admitted");
+      Require(HasEvidence(result.api_result, "structured_family", "composite"),
+              "EngineCreateStructuredType family evidence missing");
+      continue;
+    }
+    if (row.operation_id == "engine.op.ddl_create_materialized_view") {
+      Require(sblr::LookupSblrOperation("catalog.mutation.create_materialized_view") == nullptr,
+              "retired duplicate CREATE MATERIALIZED VIEW identity remained admitted");
+      continue;
+    }
     Require(result.api_result.primary_object.object_kind == row.object_kind,
             "EngineCatalogDescriptorMutation object kind drifted");
     Require(HasEvidence(result.api_result, "api_behavior_event", row.operation_id),
@@ -452,6 +553,11 @@ int main() {
   for (std::size_t index = 0; index < std::size(kCases); ++index) {
     const auto& row = kCases[index];
     RequireRegistryEvidence(row);
+    if (!IsExactCoreCase(row)) {
+      Require(sblr::LookupSblrOperation(row.operation_id) == nullptr,
+              "SBSFC-075 code-zero inventory identity remained executable");
+      continue;
+    }
     const auto artifacts = RunPipeline(row, index);
     RequireExactLowering(row, artifacts, index);
   }

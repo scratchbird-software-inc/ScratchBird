@@ -24,6 +24,8 @@ import re
 import sys
 from pathlib import Path
 
+from plan_import_rows_generated_evidence import PLAN_IMPORT_ROWS_SURFACE_IDS
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FULL_SURFACE_ARTIFACT_ROOT = (
@@ -76,12 +78,14 @@ RELEASE_COLUMNS = (
     "family",
     "final_status",
     "release_claim",
+    "diagnostic_refs",
     "remaining_risk",
     "release_status",
 )
 IDENTITY_COLUMNS = ("fixed_uuid_v7", "canonical_name", "surface_kind", "family")
 ALLOWED_CLOSURE_STATUS_PAIRS = {
     ("e2e_passed", "e2e_passed"),
+    ("exact_refusal_passed", "exact_refusal_passed"),
     ("exact_refusal_passed", "cluster_provider_route_passed"),
     ("e2e_passed", "cluster_provider_route_passed"),
 }
@@ -228,7 +232,11 @@ def validate_inputs(
         if backlog_row["validation_fixture_id"] != oracle_row["fixture_id"]:
             fail(f"{surface_id} fixture identifier disagreement between public artifacts")
         status_pair = (backlog_row["status"], release_row["final_status"])
-        if status_pair not in ALLOWED_CLOSURE_STATUS_PAIRS:
+        plan_import_pending = (
+            surface_id in PLAN_IMPORT_ROWS_SURFACE_IDS
+            and status_pair == ("e2e_passed", "pending")
+        )
+        if status_pair not in ALLOWED_CLOSURE_STATUS_PAIRS and not plan_import_pending:
             fail(
                 f"{surface_id} unsupported public closure-status pair: "
                 f"backlog={status_pair[0]} release={status_pair[1]}"
@@ -299,6 +307,10 @@ def spec_body(
         ("Final acceptance rule", backlog["final_acceptance_rule"]),
         ("Closure action", backlog["closure_action"]),
     )
+    if backlog["surface_id"] in PLAN_IMPORT_ROWS_SURFACE_IDS:
+        route_rows += (
+            ("Canonical diagnostic precedence", release["diagnostic_refs"]),
+        )
     closure_rows = (
         ("Backlog closure status", backlog["status"]),
         ("Release final status", release["final_status"]),

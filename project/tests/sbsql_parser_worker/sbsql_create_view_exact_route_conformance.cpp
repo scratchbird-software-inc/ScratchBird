@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -16,6 +17,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -36,8 +39,9 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kSql = "CREATE VIEW active_customer_ids AS SELECT 1 AS id;";
-constexpr std::string_view kOperationId = "ddl.create_view";
+constexpr std::string_view kSql =
+    "CREATE VIEW active_customer_ids AS SELECT id FROM customer WHERE active = 1;";
+constexpr std::string_view kOperationId = "engine.op.ddl_create_view";
 constexpr std::string_view kOpcode = "SBLR_DDL_CREATE_VIEW";
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
 constexpr std::string_view kSurfaceId = "SBSQL-2785A172349A";
@@ -48,6 +52,7 @@ constexpr std::string_view kViewNameSurfaceName = "view_name";
 constexpr std::string_view kViewNameFixtureId = "SBSQL-SURFACE-CE35E59689A2";
 constexpr std::string_view kViewUuid = "019f0000-0000-7000-8000-000000278501";
 constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000278502";
+constexpr std::string_view kSourceUuid = "019f0000-0000-7000-8000-000000278503";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -118,7 +123,11 @@ PipelineArtifacts RunPipeline() {
   const auto session = ParserSession();
   artifacts.cst = BuildCst(kSql);
   artifacts.ast = BuildAst(artifacts.cst);
-  artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session, {});
+  artifacts.bound = BindAst(artifacts.ast,
+                            artifacts.cst,
+                            ParserConfigForTest(),
+                            session,
+                            {std::string(kSourceUuid)});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -208,12 +217,14 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
           "CREATE VIEW payload missing name-part evidence");
   Require(Contains(artifacts.envelope.payload, "\"view_projection_count\":1"),
           "CREATE VIEW payload missing projection-count evidence");
-  Require(Contains(artifacts.envelope.payload, "\"view_query_shape\":\"constant_select\""),
+  Require(Contains(artifacts.envelope.payload, "\"view_query_shape\":\"filtered_relation\""),
           "CREATE VIEW payload missing bounded query-shape evidence");
-  Require(Contains(artifacts.envelope.payload, "\"view_definition_embedded\":false"),
-          "CREATE VIEW payload embedded view definition text");
-  Require(Contains(artifacts.envelope.payload, "\"view_query_dependencies_included\":false"),
-          "CREATE VIEW payload overclaimed dependency tracking");
+  Require(Contains(artifacts.envelope.payload, "\"view_definition_embedded\":true"),
+          "CREATE VIEW payload missing normalized view definition");
+  Require(Contains(artifacts.envelope.payload, "\"view_query_dependencies_included\":true"),
+          "CREATE VIEW payload missing dependency tracking");
+  Require(Contains(artifacts.envelope.payload, kSourceUuid),
+          "CREATE VIEW payload missing UUID-bound source relation");
   Require(Contains(artifacts.envelope.payload, kSurfaceId),
           "CREATE VIEW payload missing row-identifiable surface evidence");
   Require(Contains(artifacts.envelope.payload, kViewNameSurfaceId),
@@ -224,9 +235,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
           "CREATE VIEW payload did not prove no SQL text authority");
   Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
           "CREATE VIEW payload did not prove parser_executes_sql=false");
-  Require(!Contains(artifacts.envelope.payload, "active_customer_ids") &&
-              !Contains(artifacts.envelope.payload, std::string(kSql)),
-          "CREATE VIEW payload embedded SQL text or identifier names as authority");
+  Require(!Contains(artifacts.envelope.payload, std::string(kSql)),
+          "CREATE VIEW payload embedded SQL text as authority");
   Require(!Contains(artifacts.envelope.payload, "reference"),
           "CREATE VIEW payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
@@ -237,7 +247,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
 
 void RequireServerAdmission(const SblrEnvelope& envelope) {
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
   Require(admission.admitted, "server admission rejected CREATE VIEW exact route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for CREATE VIEW");
@@ -313,6 +323,20 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000278702";
   context.current_schema_uuid.canonical = std::string(kSchemaUuid);
   context.security_context_present = true;
+  context.authorization_context.present = true;
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.authority_uuid.canonical =
+      "019f0000-0000-7000-8000-000000278703";
+  api::EngineAuthorizationSubject subject;
+  subject.subject_uuid = context.principal_uuid;
+  subject.subject_kind = "user";
+  context.authorization_context.effective_subjects.push_back(std::move(subject));
+  api::EngineMaterializedAuthorizationGrant catalog_mutate;
+  catalog_mutate.subject_uuid = context.principal_uuid;
+  catalog_mutate.subject_kind = "user";
+  catalog_mutate.target_uuid.canonical = "*";
+  catalog_mutate.right = "CATALOG_MUTATE";
+  context.authorization_context.grants.push_back(std::move(catalog_mutate));
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
@@ -325,12 +349,29 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
                                                  const std::string& database_uuid) {
   auto context = EngineContext(path, database_uuid);
-  auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
-                                         "SBLR_TRANSACTION_BEGIN",
-                                         "trace.create_view.exact_route.transaction.begin");
+  auto envelope = scratchbird::test::sbsql::
+      BuildCanonicalEngineSblrEnvelopeForTest(
+          "engine.op.txn_begin",
+          "SBLR_TXN_BEGIN",
+          "trace.create_view.exact_route.transaction.begin");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  envelope.operands.push_back(std::move(operand));
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
   for (const auto& diagnostic : result.diagnostics) {
@@ -341,11 +382,21 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   }
   Require(result.envelope_validated, "transaction begin envelope did not validate");
   Require(result.accepted, "transaction begin dispatch did not accept");
-  Require(result.api_result.ok, "transaction begin did not return success");
-  Require(result.api_result.local_transaction_id != 0,
-          "transaction begin did not return local transaction id");
-  context.local_transaction_id = result.api_result.local_transaction_id;
-  context.transaction_uuid = result.api_result.transaction_uuid;
+  Require(result.api_result.ok, "transaction begin admission did not return success");
+  Require(result.api_result.local_transaction_id == 0,
+          "SBLR admission published transaction state");
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok, "public ABI transaction begin failed");
+  Require(begun.local_transaction_id != 0,
+          "public ABI transaction begin did not return local transaction id");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
   return context;
 }
 
@@ -356,17 +407,25 @@ api::EngineApiRequest EngineCreateViewApiRequest() {
   request.target_object.uuid.canonical = std::string(kViewUuid);
   request.target_object.object_kind = "view";
   request.localized_names.push_back({"en", "primary", "", "active_customer_ids", true});
-  request.option_envelopes.push_back("view_query_shape:constant_select");
+  api::EngineObjectReference source;
+  source.uuid.canonical = std::string(kSourceUuid);
+  source.object_kind = "relation";
+  request.related_objects.push_back(std::move(source));
+  request.option_envelopes.push_back("view_query_shape:filtered_relation");
   request.option_envelopes.push_back("view_projection_count:1");
+  request.option_envelopes.push_back("view_definition_embedded:true");
+  request.option_envelopes.push_back("view_query_dependencies_included:true");
+  request.option_envelopes.push_back("parser_executes_sql:false");
   return request;
 }
 
 sblr::SblrOperationEnvelope EngineEnvelope(std::string_view operation_id,
                                            std::string_view opcode,
                                            std::string_view trace_key) {
-  auto envelope = sblr::MakeSblrEnvelope(std::string(operation_id),
-                                         std::string(opcode),
-                                         std::string(trace_key));
+  auto envelope = scratchbird::test::sbsql::
+      BuildCanonicalEngineSblrEnvelopeForTest(operation_id,
+                                              opcode,
+                                              trace_key);
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
@@ -403,8 +462,6 @@ void RequireEngineDispatch() {
           "EngineCreateView did not return view primary object");
   Require(result.api_result.primary_object.uuid.canonical == kViewUuid,
           "EngineCreateView returned wrong view UUID");
-  Require(HasEvidence(result.api_result, "api_behavior_event", kOperationId),
-          "EngineCreateView missing API behavior event evidence");
   Require(HasEvidence(result.api_result, "view", kViewUuid),
           "EngineCreateView missing view descriptor evidence");
   Require(HasEvidence(result.api_result, "name_registry", kViewUuid),

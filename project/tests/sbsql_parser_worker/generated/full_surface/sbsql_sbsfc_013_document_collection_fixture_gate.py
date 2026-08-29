@@ -25,8 +25,8 @@ import sys
 from pathlib import Path
 
 
-SURFACE_REGISTRY = "public_input_snapshot"
-BUILTIN_REGISTRY = "public_contract_snapshot"
+SURFACE_REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
+BUILTIN_REGISTRY = "../Specifications/Core/registries/builtin-expression-registry.yaml"
 FIXTURES = "project/tests/sbsql_parser_worker/generated/full_surface/SBSFC_013_DOCUMENT_COLLECTION_FIXTURES.csv"
 
 REQUIRED_COLUMNS = [

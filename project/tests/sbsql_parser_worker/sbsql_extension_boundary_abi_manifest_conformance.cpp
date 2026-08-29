@@ -11,6 +11,7 @@
 #include "extensibility/extension_boundary_manifest.hpp"
 #include "extensibility/parser_package_api.hpp"
 #include "extensibility/udr_api.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "sblr_dispatch.hpp"
 #include "sbu_sbsql_parser_support.hpp"
 #include "sb_udr_runtime.hpp"
@@ -74,7 +75,7 @@ std::filesystem::path MakeTempDir() {
 api::EngineRequestContext Context(const std::filesystem::path& database_path,
                                   std::uint64_t tx = 77) {
   api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-extension-boundary-abi-manifest";
   context.database_path = database_path.string();
   context.database_uuid.canonical = g_database_uuid;
@@ -93,6 +94,9 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
     }
   }
   context.security_context_present = true;
+  context.trace_tags.push_back("security.fixture_trace_authority");
+  context.trace_tags.push_back("right:UDR_MANAGE");
+  context.trace_tags.push_back("right:UDR_INVOKE");
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
@@ -236,7 +240,7 @@ void AddInvokeUdrOptions(api::EngineApiRequest* request) {
   request->option_envelopes.push_back("sblr_authorized_invocation:true");
   request->option_envelopes.push_back("operation_family:sblr.udr.operation.v3");
   request->option_envelopes.push_back("entrypoint:sbu_sbsql_parse_to_sblr");
-  request->option_envelopes.push_back("payload:select 1");
+  request->option_envelopes.push_back("payload:BEGIN TRANSACTION");
   request->option_envelopes.push_back(
       "context_packet:engine_context=trusted;resolver=public;authenticated=true");
   request->option_envelopes.push_back("memory_budget_bytes:4096");
@@ -341,7 +345,7 @@ void TestTrustedParserSupportUdrBoundary(const std::filesystem::path& database_p
       UdrRequest<api::EngineRegisterUdrPackageRequest>(database_path, descriptor);
   AddManageUdrOptions(&register_request, descriptor);
   const auto registered = api::EngineRegisterUdrPackage(register_request);
-  Require(registered.ok, "trusted parser-support UDR registration was refused");
+  RequireOk(registered, "trusted parser-support UDR registration was refused");
   Require(HasEvidence(registered, "udr_descriptor", "runtime_descriptor_validated"),
           "trusted parser-support UDR did not validate runtime descriptor");
   Require(HasEvidence(registered, "udr_provenance",
@@ -365,7 +369,7 @@ void TestTrustedParserSupportUdrBoundary(const std::filesystem::path& database_p
       UdrRequest<api::EngineInvokeUdrPackageRequest>(database_path, descriptor);
   AddInvokeUdrOptions(&invoke_request);
   const auto invoked = api::EngineInvokeUdrPackage(invoke_request);
-  Require(invoked.ok, "trusted parser-support UDR SBLR invocation was refused");
+  RequireOk(invoked, "trusted parser-support UDR SBLR invocation was refused");
   Require(HasEvidence(invoked, "sblr_authority", "SBLR_UDR_INVOKE"),
           "trusted parser-support UDR invocation did not require SBLR authority");
   Require(HasEvidence(invoked, "udr_dispatch", "entrypoint_callback_invoked"),
@@ -399,13 +403,17 @@ void TestClusterProviderBoundary() {
   context.session_uuid.canonical = "cluster-provider-boundary-session";
   context.principal_uuid.canonical = "cluster-provider-boundary-principal";
 
-  auto info_envelope = sblr::MakeSblrEnvelope(
-      std::string(cluster_provider::kClusterProviderInfoOperationId),
-      std::string(cluster_provider::kClusterProviderInfoOpcode),
-      "extension-boundary-cluster-provider-info");
+  auto info_envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          cluster_provider::kClusterProviderInfoOperationId,
+          cluster_provider::kClusterProviderInfoOpcode,
+          "extension-boundary-cluster-provider-info");
   info_envelope.requires_security_context = true;
+  info_envelope.requires_transaction_context = true;
+  info_envelope.requires_cluster_authority = true;
   sblr::SblrDispatchRequest info_request;
   info_request.context = context;
+  info_request.context.local_transaction_id = 1;
   info_request.envelope = info_envelope;
   const auto info_result = sblr::DispatchSblrOperation(info_request);
   Require(info_result.envelope_validated && info_result.accepted &&
@@ -422,11 +430,20 @@ void TestClusterProviderBoundary() {
   Require(FieldValue(info_result.api_result, "provider_version") ==
               cluster_provider::DescribeClusterProvider().provider_version,
           "cluster provider info version drifted");
+  Require(FieldValue(info_result.api_result, "support_status") ==
+              cluster_provider::DescribeClusterProvider().support_status,
+          "cluster provider info support status drifted");
+  Require(FieldValue(info_result.api_result, "supports_execution") ==
+              (cluster_provider::DescribeClusterProvider().supports_execution
+                   ? "true"
+                   : "false"),
+          "cluster provider info execution-support flag drifted");
 
-  auto cluster_envelope = sblr::MakeSblrEnvelope(
-      "cluster.inspect_state",
-      "SBLR_CLUSTER_INSPECT_STATE",
-      "extension-boundary-cluster-provider-execute");
+  auto cluster_envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "cluster.inspect_state",
+          "SBLR_CLUSTER_INSPECT_STATE",
+          "extension-boundary-cluster-provider-execute");
   cluster_envelope.requires_security_context = true;
   cluster_envelope.requires_cluster_authority = true;
   sblr::SblrDispatchRequest cluster_request;
@@ -443,15 +460,44 @@ void TestClusterProviderBoundary() {
                       cluster_provider::DescribeClusterProvider().provider_type),
           "cluster provider execution omitted provider-type evidence");
 
+  const auto provider_info = cluster_provider::DescribeClusterProvider();
   if (cluster_provider::ClusterProviderSupportsExecution()) {
     Require(cluster_result.api_result.ok,
-            "cluster-enabled provider/stub did not return success");
+            "cluster execution provider did not return success");
     Require(cluster_result.api_result.result_shape.result_kind ==
                 "cluster.provider.stub.v1",
-            "cluster provider/stub result shape drifted");
+            "cluster execution provider result shape drifted");
+  } else if (provider_info.provider_type == "compile_link_stub") {
+    Require(!cluster_result.api_result.ok && !provider_info.supports_execution &&
+                provider_info.compile_link_only &&
+                provider_info.support_status == "compile_link_only",
+            "compile-link stub advertised executable cluster support");
+    Require(cluster_result.api_result.cluster_authority_required,
+            "compile-link stub omitted cluster-authority requirement");
+    Require(HasDiagnostic(
+                cluster_result.api_result,
+                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+            "compile-link stub emitted the wrong API diagnostic");
+    Require(HasDispatchDiagnostic(
+                cluster_result,
+                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+            "compile-link stub emitted the wrong dispatch diagnostic");
+    Require(HasEvidence(cluster_result.api_result, "cluster_provider", "stub") &&
+                HasEvidence(cluster_result.api_result,
+                            "cluster_provider_type",
+                            "compile_link_stub") &&
+                HasEvidence(cluster_result.api_result,
+                            "cluster_provider_support",
+                            "compile_link_only"),
+            "compile-link stub omitted non-execution support evidence");
   } else {
     Require(!cluster_result.api_result.ok,
             "no-cluster provider executed a cluster operation");
+    Require(provider_info.provider_type == "no_cluster" &&
+                !provider_info.supports_execution &&
+                !provider_info.compile_link_only &&
+                provider_info.support_status == "not_enabled",
+            "no-cluster provider advertised executable cluster support");
     Require(cluster_result.api_result.cluster_authority_required,
             "no-cluster provider did not mark cluster authority as required");
     Require(HasDiagnostic(cluster_result.api_result,
@@ -463,6 +509,13 @@ void TestClusterProviderBoundary() {
     Require(provider->non_cluster_refusal_code ==
                 cluster_provider::kClusterSupportNotEnabledCode,
             "manifest no-cluster refusal code drifted");
+    Require(HasEvidence(cluster_result.api_result,
+                        "cluster_provider",
+                        "no_cluster") &&
+                HasEvidence(cluster_result.api_result,
+                            "cluster_provider_support",
+                            "not_enabled"),
+            "no-cluster provider omitted non-execution support evidence");
   }
 }
 

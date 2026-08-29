@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -299,13 +300,19 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
           "SBSFC-080 payload carried WAL/recovery authority");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          artifacts.envelope));
   if (row.cluster_profile_metadata) {
     Require(!admission.admitted,
             "SBSFC-080 cluster profile metadata route did not fail closed at server admission");
     Require(!admission.diagnostics.empty() &&
-                admission.diagnostics.front().code == "SBLR.FAMILY_RECONCILIATION_REQUIRED",
-            "SBSFC-080 cluster profile metadata route did not emit family reconciliation diagnostic");
+                (admission.diagnostics.front().code ==
+                     "SBLR.CLUSTER.SUPPORT_NOT_ENABLED" ||
+                 admission.diagnostics.front().code ==
+                     "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY" ||
+                 admission.diagnostics.front().code ==
+                     "SB_DIAG_CLUSTER_TXN_UNAVAILABLE"),
+            "SBSFC-080 cluster profile metadata route did not emit an exact cluster-state refusal");
   } else {
     if (!admission.admitted) {
       std::cerr << "SBSFC-080 admission rejected " << row.surface_id << " "
@@ -327,8 +334,12 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
   const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
   Require(opcode != nullptr, "SBSFC-080 opcode registry row missing");
   Require(opcode->opcode == row.opcode, "SBSFC-080 opcode registry drifted");
-  Require(opcode->requires_cluster_authority == false,
-          "SBSFC-080 opcode claimed cluster authority");
+  Require(opcode->requires_cluster_authority == row.cluster_profile_metadata,
+          "SBSFC-080 opcode cluster authority drifted");
+  if (row.cluster_profile_metadata) {
+    Require(opcode->support == sblr::SblrOpcodeSupport::cluster_refusal,
+            "SBSFC-080 cluster profile opcode is not cluster-gated");
+  }
 }
 
 std::uint64_t CurrentUnixMillis() {

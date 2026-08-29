@@ -23,7 +23,13 @@ DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_s
 MATRIX_NAME = "SBLR_BINARY_ROUND_TRIP_MATRIX.csv"
 FIXTURE_DIR = "project/tests/sbsql_parser_worker/generated/full_surface/sblr_binary_round_trip"
 FIXTURE_KIND = "sblr_binary_round_trip"
-ALLOWED_STATUSES = {"pending_authoring", "fixture_authored", "e2e_passed"}
+ALLOWED_STATUSES = {
+    "pending_authoring",
+    "fixture_authored",
+    "e2e_passed",
+    "exact_refusal_passed",
+}
+BRIDGE_EXACT_REFUSAL_SURFACE_ID = "SBSQL-D50EC7C4422E"
 REQUIRED_KEYS = [
     "fixture_kind",
     "fixture_status",
@@ -149,6 +155,37 @@ def main() -> int:
             errors.append(f"{surface_id} fixture lost SBLR/MGA authority model")
         if "sbsql_parser_worker" not in fields.get("per_row_ctest_label", ""):
             errors.append(f"{surface_id} fixture missing parser-worker CTest evidence")
+        if status == "exact_refusal_passed":
+            evidence = "\n".join(
+                [f"{key}={value}" for key, value in row.items()]
+                + [f"{key}={value}" for key, value in fields.items()]
+            )
+            required = (
+                "bridge.cluster_route",
+                "operation_id=bridge.cluster_route",
+                "opcode=SBLR_BRIDGE_VALIDATE",
+                "canonical_sblr_admission_before_trusted_udr_dispatch",
+                "UDR.BRIDGE.UNSUPPORTED",
+                "accepted=false",
+                "private_cluster_execution=false",
+                "not_applicable_no_round_trip_in_public_build",
+                "sbsql_exact_refusal_passed",
+            )
+            forbidden = (
+                "cluster_provider_route_passed",
+                "SBLR.CLUSTER.STUB_RESPONSE",
+                "UDR.BRIDGE.UNLICENSED",
+            )
+            if surface_id != BRIDGE_EXACT_REFUSAL_SURFACE_ID:
+                errors.append(f"{surface_id} is not an admitted exact-refusal round-trip fixture")
+            if fields.get("per_row_final_state") != "exact_refusal_passed":
+                errors.append(f"{surface_id} exact-refusal fixture lost per-row final state")
+            for token in required:
+                if token not in evidence:
+                    errors.append(f"{surface_id} exact-refusal fixture missing {token}")
+            for token in forbidden:
+                if token in evidence:
+                    errors.append(f"{surface_id} exact-refusal fixture contains forbidden {token}")
 
     fixture_root = root / FIXTURE_DIR
     if fixture_root.exists():
@@ -157,7 +194,11 @@ def main() -> int:
             if rel not in matrix_by_path:
                 errors.append(f"orphan SBLR round-trip fixture: {rel}")
 
-    authored = counts["fixture_authored"] + counts["e2e_passed"]
+    authored = (
+        counts["fixture_authored"]
+        + counts["e2e_passed"]
+        + counts["exact_refusal_passed"]
+    )
     if authored == 0:
         errors.append("no SBLR binary round-trip fixtures have been authored")
 
@@ -172,7 +213,8 @@ def main() -> int:
     print(
         "sbsql_sblr_binary_round_trip_fixture_gate=passed "
         f"rows={len(rows)} pending_authoring={counts['pending_authoring']} "
-        f"fixture_authored={counts['fixture_authored']} e2e_passed={counts['e2e_passed']}"
+        f"fixture_authored={counts['fixture_authored']} e2e_passed={counts['e2e_passed']} "
+        f"exact_refusal_passed={counts['exact_refusal_passed']}"
     )
     return 0
 

@@ -9,6 +9,7 @@
 #include "auth/auth_relay.hpp"
 #include "cache/sblr_template_cache.hpp"
 #include "sblr_admission.hpp"
+
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 
@@ -326,10 +327,10 @@ void VerifyServerSblrAdmissionCannotBeBypassed() {
 
   const auto security = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{TextOperationEnvelope(true), false});
-  Require(security.admitted &&
-              security.operation_family == "sblr.policy.operation.v3" &&
-              security.operation_id == "security.authorize",
-          "server did not reclassify security authorization through SBLR authority");
+  Require(!security.admitted &&
+              HasServerDiagnostic(security.diagnostics,
+                                  "SBLR.OPERATION.NONCANONICAL"),
+          "retired text security authorization bypassed canonical admission");
 }
 
 void VerifyParserCacheRetainsNoAuthorityOrStaleResolverEntries() {

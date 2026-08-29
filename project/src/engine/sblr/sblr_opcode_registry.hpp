@@ -53,10 +53,14 @@ enum class SblrOpcodeTransactionEffect {
   local_write,
   local_or_cluster_write,
   catalog_write,
+  publish_pending_commit,
   cluster_write,
+  replication_write,
   management,
   security,
+  security_write,
   external_audit,
+  engine_internal,
   unknown,
 };
 
@@ -67,7 +71,13 @@ enum class SblrOpcodeSecurityClass {
   admin_authorized,
   sysarch_authorized,
   event_admin,
+  event_subscribe,
+  event_publish,
+  event_inspect,
   cluster_authorized,
+  security_admin_authorized,
+  engine_internal,
+  internal_only,
   unknown,
 };
 

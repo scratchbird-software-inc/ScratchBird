@@ -22,12 +22,12 @@
     "CEIC-084",
     "CEIC-085"
   ],
-  "manifest_uuid": "95a894b9-9682-5062-8975-b5c983a85e2f",
+  "manifest_uuid": "ba915682-812f-525f-a53d-3650d09cfbe7",
   "source_commit": "be20173afae497897a79dac8a7fe33f06dd210b8",
   "source_branch": "codex/windows-gnu-core-port",
   "generated_at_utc": "2026-07-08T10:27:03-04:00",
   "generated_by": "project/tools/ceic_agent_readiness_manifest.py#CEIC_085_AGENT_READINESS_MANIFEST_TOOL",
-  "source_evidence_digest": "707b0a3f408ad6cc5d8a94bcfa8f207f67b97427d52674cd5aec49671c58ab99",
+  "source_evidence_digest": "1c9ac2fb71006ffab86f77f556ac6aecfdd4be8d173364b346b2852cd72599f8",
   "auditor": {
     "slice_id": "CEIC-085",
     "timestamp_utc": "2026-07-08T10:27:03-04:00",
@@ -321,7 +321,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-071",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-070_AGENT_SYSTEM_PROFILE_EVIDENCE.md",
-      "artifact_sha256": "249c6d92256d8930dd90d7db9b59d7e1b9fdd31fc6268464e41f7b8c3600ca79",
+      "artifact_sha256": "00ccc7de9e07d6c71a327ae0c6f04c6144fd8ecb7ce57c308dac2fa654557900",
       "artifact_state": "present",
       "ctest": "agent_system_profile_claim_gate",
       "ctest_registered": true,
@@ -332,17 +332,17 @@
           "path": "project/src/core/agents/agent_system_profile.hpp",
           "search_key": "CEIC_070_AGENT_SYSTEM_PROFILE_DURABLE_CLAIM_LEVELS",
           "surface": "durable profile claim levels",
-          "sha256": "bd6405080d5f92fc2ad9835d063e173a721e09c3711295c5ed87d5e5f2a1f6a7"
+          "sha256": "662bcfb2731f01a7a84f971b7bed952f750fdc98fe48f1235c744c5291cda1f6"
         },
         {
           "path": "project/src/core/agents/agent_system_profile.cpp",
           "search_key": "ValidateAgentSystemProfileClaim",
           "surface": "profile validation",
-          "sha256": "86f5058b6782f105398283f41ce8d5e3e693953d73a7589d18039dc2d350556d"
+          "sha256": "a89a6ef35010842d84b1aa65e8f8b0cfd8d9c572c8790535d56eeeec699108c2"
         }
       ],
-      "evidence_contract_hash": "sha256:2878e052bb01006cae8e28ddeac7115186746837a715c8dd1e4408d359dc6696",
-      "evidence_digest": "sha256:86a4416d35ffa022178142253900b3d6b2984c6080e6542b55ba1e72b49285c3",
+      "evidence_contract_hash": "sha256:59ce5e1a5ef757d7034391e0a1b19a5aaf008afc51287e11b7660734f5d34563",
+      "evidence_digest": "sha256:b2e5fc3ab8fae0d4c550ec60af634b261524c6299a380473f1cd3f4c6b7ace11",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -420,7 +420,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-072",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-071_AGENT_POLICY_LIFECYCLE_EVIDENCE.md",
-      "artifact_sha256": "8d21e208add66a49f75059b913a342d5d57b15a0a6539c67fdabbce1f2c3a1cc",
+      "artifact_sha256": "4893dfffc5d3067522f1a99b7c5d0defae6b0fa227c966f89777f9ad7f4306c6",
       "artifact_state": "present",
       "ctest": "agent_policy_lifecycle_gate",
       "ctest_registered": true,
@@ -431,23 +431,23 @@
           "path": "project/src/core/agents/agent_policy_lifecycle.hpp",
           "search_key": "CEIC_071_SIGNED_TYPED_POLICY_LIFECYCLE",
           "surface": "signed lifecycle schema",
-          "sha256": "5f9e52b83c2f0573e2cb3cd2d67a33db958a0c392a5b4f92681a58e00a2cf468"
+          "sha256": "c973d21bf47a457654cb372c3b4b19577077d8682ddc135db8b5a1082254dcda"
         },
         {
           "path": "project/src/core/agents/agent_policy_lifecycle.cpp",
           "search_key": "ValidateAgentSignedPolicyLifecycle",
           "surface": "signed lifecycle validation",
-          "sha256": "307d5a98b36159b14a30a02501760d49dc93d3e73a764560f5ed43e1b971fc32"
+          "sha256": "19ef9c610d6d6014d31967845f83828d5a82b06b81ad34d7f47e64af126960f7"
         },
         {
           "path": "project/src/core/agents/agent_policy_schema.hpp",
           "search_key": "ARHC_TYPED_POLICY_SCHEMAS_DEFAULTS",
           "surface": "typed policy schema coverage",
-          "sha256": "5cbd877f8488f0ba8f4a7825160d7240ae4e84a316221a4605292737eda93dcd"
+          "sha256": "473f3e6be25a04e440a9b147842121364b9cd6b0b38ee460383438a0cdfabe33"
         }
       ],
-      "evidence_contract_hash": "sha256:b1a1734eed288202583f42303ea0dc7dcd458c6707370e2742776a54b73c5e06",
-      "evidence_digest": "sha256:5a86a8dc688f7314a66ec4ad2e61476755eb75eef5519aacc01527e2a5d8700f",
+      "evidence_contract_hash": "sha256:16fdead19bbe2cb1e777d4999c90c242cbcd89f79897a59f74753efd2169872f",
+      "evidence_digest": "sha256:930c702c09c45556913241d3e8270b6d1175922c14778cdf4d5c11b03a9014e6",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -492,7 +492,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-073",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-072_AGENT_POLICY_OVERRIDE_RESOLUTION_EVIDENCE.md",
-      "artifact_sha256": "b197527b9aaaffde242fe7d8defd9003eeb708f25f20cd3456b54ec0f7810c82",
+      "artifact_sha256": "2bce75f9928f278c7d4e33bb853549d99963a685773c93ff2ffd1005d9fecacb",
       "artifact_state": "present",
       "ctest": "agent_policy_override_resolution_gate",
       "ctest_registered": true,
@@ -503,17 +503,17 @@
           "path": "project/src/core/agents/agent_policy_override_resolution.hpp",
           "search_key": "CEIC_072_AGENT_POLICY_OVERRIDE_RESOLUTION",
           "surface": "policy override schema",
-          "sha256": "8a186889873c68b624532d2be6fa2413782b205a4a91b0c4df993cd29b575702"
+          "sha256": "edd264518a0e5feb4ec1f2ca83ba3a559dc105ce7379cda42ea042b821555122"
         },
         {
           "path": "project/src/core/agents/agent_policy_override_resolution.cpp",
           "search_key": "ResolveAgentPolicyOverrides",
           "surface": "deterministic override resolver",
-          "sha256": "7e15d25796f7650105cd55bf7a0a7d64cb521170cf9128432ac051d37d121433"
+          "sha256": "00bf9df0a52d8e499dc6db2ca1257329d25300ee416476b570ca2b6d729da147"
         }
       ],
-      "evidence_contract_hash": "sha256:c8d177c02bfbd898eb0b597e5e79834e67073fa3fe079c606cfa2de0b6cf6f63",
-      "evidence_digest": "sha256:72f07038b9e15032de25a2e01b9bfbdace0a4c26b92fb24cc14682a8baefcd8f",
+      "evidence_contract_hash": "sha256:a7b05c23c01d5b685f90a094995fb21596cc087f2d863db3587a7f3dc821cbb0",
+      "evidence_digest": "sha256:ca406a2c1610b37bfd3ff762c74043dc6cb1590cf740db1d62880475f1078966",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -557,7 +557,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-074",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-073_AGENT_EXECUTION_LANE_GOVERNANCE_EVIDENCE.md",
-      "artifact_sha256": "56bb25099e3da070d01a1ec402c98135f12ac85b9586c26d1181417b0d7e245c",
+      "artifact_sha256": "8251b84178a702f07784cc6b65ca707f79a1f68da3e23e42f34684723f2e3b09",
       "artifact_state": "present",
       "ctest": "agent_execution_lane_governance_gate",
       "ctest_registered": true,
@@ -568,17 +568,17 @@
           "path": "project/src/core/agents/agent_execution_lane_governance.hpp",
           "search_key": "CEIC_073_AGENT_EXECUTION_LANE_GOVERNANCE",
           "surface": "lane governance schema",
-          "sha256": "a976508ff7d0ce49ac0fe6c12764cc20fcb1ed8658f3abbafac55babd3478e90"
+          "sha256": "181b93238c96bb12e6785d33796b9ed48fa16bd5ab7c6f04bc49bc8770676c28"
         },
         {
           "path": "project/src/core/agents/agent_execution_lane_governance.cpp",
           "search_key": "EvaluateAgentExecutionLaneAdmission",
           "surface": "lane admission validator",
-          "sha256": "fd52e8f9e78c9aa24e69c039f46368bd9029bcce6dfe66ecdc7b2af23431bdf1"
+          "sha256": "25dfbc9f183a806858826c655c0ed971408c5165963ac5434853e4fc60932800"
         }
       ],
-      "evidence_contract_hash": "sha256:5e280b1613b299b1240fda5d262dbb0dbfe0b652a2b7a3e1b6a72124aa3aefd1",
-      "evidence_digest": "sha256:18e21176e130501c708482116af8fc05355a7daac430cc92089e11d96a846716",
+      "evidence_contract_hash": "sha256:228dab59a7896ba79e2300fae3587df0ca4f7bf955e29d32f9c784ac8c103522",
+      "evidence_digest": "sha256:0c5eab358ce095d654cca2a2880abf4e843169c7f65545a00fc8c5950b13768c",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -625,7 +625,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-075",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-074_AGENT_METRIC_QUORUM_EVIDENCE.md",
-      "artifact_sha256": "44d8ad6f4763bee9502a1ef8930aff1a06fa2eab9ca5938958c922e70bc138ba",
+      "artifact_sha256": "92384928b80910a69147b65c34ab2349399a039a0918131a567b62301a1649cc",
       "artifact_state": "present",
       "ctest": "agent_metric_quorum_source_attestation_gate",
       "ctest_registered": true,
@@ -636,17 +636,17 @@
           "path": "project/src/core/agents/agent_metric_runtime.hpp",
           "search_key": "ARHC_STRICT_METRIC_SNAPSHOT_INTEGRATION",
           "surface": "strict metric snapshot inputs",
-          "sha256": "9f295045612d49c962e3bd231c1e4fc64a19629e51a2f634c89dc290be756a69"
+          "sha256": "f97fbb6fafd250af22e8a59af9031f9e99ae7cb3b3bceda3959c58129a5e803b"
         },
         {
           "path": "project/src/core/agents/agent_metric_runtime.cpp",
           "search_key": "EvaluateAgentObservedMetricSnapshots",
           "surface": "observed metric quorum evaluator",
-          "sha256": "bfd31cfb4686dd6b90ae49c240ee6bad175ec8a765c6bd55cba7d9e3a1316b05"
+          "sha256": "f00f7361739acbb0abaef1e3190b743482571997b61aafd734f304f04fd46758"
         }
       ],
-      "evidence_contract_hash": "sha256:1badf201c4370eb02aeb4bd6b8d3344a2b3de031a7c05fc8c416630c3eb32c30",
-      "evidence_digest": "sha256:9c281759de9fe5e06f4c0d869ec1264fe647419e7f3e3e2ef851acce1f282dd0",
+      "evidence_contract_hash": "sha256:cea1f5a17b90b7deb595392724d26250745776682013e09fe8406ddff59f9e43",
+      "evidence_digest": "sha256:5aed2886718ed1b561c48e988b46f9b1d0a55dd5bbbf692acaa0c43e5141ad9e",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -683,7 +683,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-076",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-075_AGENT_ACTION_SAFETY_ROLLOUT_EVIDENCE.md",
-      "artifact_sha256": "3cf15298ed45dbc2ff7fd67fa02cb6cd2f7416260fd0547eaa2b6057d45eeca7",
+      "artifact_sha256": "ee3701ce2afa0226e54e0eee4a02a6df2c4a801a2b9fa99e3288b6c1c3668587",
       "artifact_state": "present",
       "ctest": "agent_action_safety_rollout_gate",
       "ctest_registered": true,
@@ -694,23 +694,23 @@
           "path": "project/src/core/agents/agent_action_safety.hpp",
           "search_key": "CEIC_075_AGENT_ACTION_SAFETY_ENVELOPE",
           "surface": "action safety envelope",
-          "sha256": "bb522167b5c22dce276a492421c2614310fc609d30ddccb3af7c9fe566158517"
+          "sha256": "e3dc9d5bb25a84aa81149793369576244da2978543e99a6b4180f670e7328a47"
         },
         {
           "path": "project/src/core/agents/agent_rollout_profile.hpp",
           "search_key": "CEIC_075_AGENT_ROLLOUT_PROFILE",
           "surface": "rollout profile schema",
-          "sha256": "2071590a7fe18fd1cde7eacc10561408aef26131d68dafaa44aeecb5b421f57a"
+          "sha256": "1023820e4e10924c9ea9bd7e969666159e481dfd37bb8cf4597f46a27fa37e9d"
         },
         {
           "path": "project/src/core/agents/agent_action_dispatch.cpp",
           "search_key": "DispatchAgentAction",
           "surface": "dispatch preflight integration",
-          "sha256": "f46f3f6811280a55a9e8301ed58dbc2ae1ee0ac6f184cb74e64f9d3b9007ec75"
+          "sha256": "df7da3677a6ed84f30949f38006c79940007ef07678b9ed1f39c4ce0ecf35e90"
         }
       ],
-      "evidence_contract_hash": "sha256:78442e1867b3c18494f1827c41c7723495e379971e6c934e3fba43dd99332f7b",
-      "evidence_digest": "sha256:d4b070294e46aedc32fd504238628838470b1002c74d809cd5a1ac1cd294a929",
+      "evidence_contract_hash": "sha256:2b170b88c044775d0597e873bee089229cc33d51189c219a724140210bc3a3a6",
+      "evidence_digest": "sha256:3359d4dd228028c3cfc6b8b69e79d5f2fc6f73b75d347df710bccbc85783e9a7",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -755,7 +755,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-077",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-076_AGENT_APPROVAL_BREAK_GLASS_EVIDENCE.md",
-      "artifact_sha256": "3908a376e51541f6066f9c1a1560ed9104521ffef5e0ecfaffb887366d973f1b",
+      "artifact_sha256": "523f1047b79abf170566458312a676f8e8576afd9ea2cc5f16243ebda78d70f2",
       "artifact_state": "present",
       "ctest": "agent_approval_break_glass_workflow_gate",
       "ctest_registered": true,
@@ -766,17 +766,17 @@
           "path": "project/src/core/agents/agent_manual_approval.hpp",
           "search_key": "CEIC_076_AGENT_MANUAL_APPROVAL_WORKFLOW",
           "surface": "manual approval schema",
-          "sha256": "a6d20f0dbd440ab4facf892222ec32db56b3552b64e66440b208a95c8be9b651"
+          "sha256": "e349f76daa955416f03434135a29173b4d93040ce3457ff1d8813305ea0a4649"
         },
         {
           "path": "project/src/core/agents/agent_manual_approval.cpp",
           "search_key": "ValidateAgentManualApprovalWorkflow",
           "surface": "manual approval validation",
-          "sha256": "b2010f5bea135c9398ddd6e50c6d9a55e98867caa48ca43236f33fd3d1347dcc"
+          "sha256": "a6626d64393e51c8838a6e127e485d028448a1717ec5373ad2beb80e2a25f893"
         }
       ],
-      "evidence_contract_hash": "sha256:638012021ea2678cadd148f83230e4b146033ed482ca0e18e83ce9ba93122f68",
-      "evidence_digest": "sha256:385bed114580d842d74c079f3a6afdc2544932a4872c5860fa0541b37592ea7a",
+      "evidence_contract_hash": "sha256:90d1ee4efb54e689d24fd801ebecbc12d6082e09796a5622142d76d53b61261f",
+      "evidence_digest": "sha256:b8ee0d642ffc79af4f774193649119f039d8dc2b86db216786fcdb11f8465fbb",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -813,7 +813,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-078",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md",
-      "artifact_sha256": "6cbdcf95cc1d615fe641e8ac85a102be46b3c4722ed8b76cc2bba7402c251cbf",
+      "artifact_sha256": "aa0b99ce382629b50db6b3e4191901d167dad36b71f4651bf96c40e8eb10abca",
       "artifact_state": "present",
       "ctest": "agent_evidence_key_privacy_tamper_chain_gate",
       "ctest_registered": true,
@@ -824,17 +824,17 @@
           "path": "project/src/core/agents/agent_commercial_evidence.hpp",
           "search_key": "ARHC_AGENT_EVIDENCE_REDACTION_RETENTION_TAMPER",
           "surface": "evidence redaction retention tamper schema",
-          "sha256": "1f2d024aa1de2539cda373a0422dff0e83b787e964a70e18335c81fe2437e87c"
+          "sha256": "abf27c8d61c77921d15bde514eb5c916de4dc868cd0ff5dc43927ee3712b17a0"
         },
         {
           "path": "project/src/core/agents/agent_commercial_evidence.cpp",
           "search_key": "ValidateCommercialAgentEvidenceChain",
           "surface": "evidence chain validation",
-          "sha256": "adbc9776e98bced3b1617432f1580f1bc79014a5d47fa3e427533e038493af6e"
+          "sha256": "8e3d21bb794f50692b8164c7bae0b84c58be3d4bc0b5ebe6c1fbeead898b4be1"
         }
       ],
-      "evidence_contract_hash": "sha256:a71c93d0b93ceeb9d54ee75115bcd7b4e859c5d862612ea9f09dcc84e259fdfd",
-      "evidence_digest": "sha256:3ea92f6b336e39ab815c1f66fa242be3ed4ea26cfdbd4f42c1b352416cde2266",
+      "evidence_contract_hash": "sha256:bdbde41b547561747f20de410efcd410d76831f4678fd66cd3d724daf3b98a42",
+      "evidence_digest": "sha256:4e1be8535a3fabf11d0118ec90db961ec90e02ec3054d422ef33cdbfdea0538c",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -871,7 +871,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-079",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-078_AGENT_DEPENDENCY_LIFECYCLE_EVIDENCE.md",
-      "artifact_sha256": "67bf51be4707525a57bfcdc3955a04ed80af3fda37c9ceaf72ef8cce55dd8820",
+      "artifact_sha256": "3eb1864a4fc92bbea560d1b151064163ac4f2d5311205cd67c8ff6f49ac6010a",
       "artifact_state": "present",
       "ctest": "agent_dependency_lifecycle_dr_restore_clone_gate",
       "ctest_registered": true,
@@ -882,17 +882,17 @@
           "path": "project/src/core/agents/agent_dependency_lifecycle.hpp",
           "search_key": "CEIC_078_AGENT_DEPENDENCY_LIFECYCLE",
           "surface": "dependency lifecycle schema",
-          "sha256": "32894fa3634d832b059ff8517c0fb087ee9b55de87f677503b421888e1d1f985"
+          "sha256": "d7478ac13b9e923dd8a705179ca7451921adc40b902ce6703f33450462ff0f67"
         },
         {
           "path": "project/src/core/agents/agent_dependency_lifecycle.cpp",
           "search_key": "EvaluateAgentDependencyLifecycle",
           "surface": "dependency lifecycle evaluator",
-          "sha256": "c3b79057064573892553e257708dadfc5ceedf18b92162f60835acd8503392f8"
+          "sha256": "3cae396c206352179e42f6098ab95364da6e499f73eb0a227d80b101f8083516"
         }
       ],
-      "evidence_contract_hash": "sha256:87386b6c3c1f2d01260e9d8f98138b9c8fcacb02024dd0d3d4877dd0589b9a29",
-      "evidence_digest": "sha256:26b3412c75ea273f835c4f42ca52b296ec41f9c3a2956ce37179bb1a7104b7e2",
+      "evidence_contract_hash": "sha256:0ff1c87db165dcb5f60aab8a97e76ee014925149e4812fc038a0a6168cbea6bd",
+      "evidence_digest": "sha256:8f234261f7e268ef7b5e8d4c7de78f543df57a12d67513e6276edbd5ec400e5a",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -940,7 +940,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-080",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-079_AGENT_TENANT_COORDINATION_EVIDENCE.md",
-      "artifact_sha256": "066b1d5bf349b02ea504c1f7e440c206ea7822b62354c667a4f10f471d8a83af",
+      "artifact_sha256": "2ebac9e0c68181a7eaec716226606ceefb8dd746fd802def4bae6515a274ec1b",
       "artifact_state": "present",
       "ctest": "agent_tenant_coordination_gate",
       "ctest_registered": true,
@@ -951,17 +951,17 @@
           "path": "project/src/core/agents/agent_tenant_coordination.hpp",
           "search_key": "CEIC_079_AGENT_TENANT_COORDINATION",
           "surface": "tenant coordination schema",
-          "sha256": "c8455e0e846d6cf738a83fb0d5bf33a79f2793cc298e7857b586081acd80040e"
+          "sha256": "a804f0b68bf534922cf0b6339cbc6c385e72ebcff82170ae759106038c275ffa"
         },
         {
           "path": "project/src/core/agents/agent_tenant_coordination.cpp",
           "search_key": "EvaluateAgentTenantWorkloadCoordination",
           "surface": "tenant coordination evaluator",
-          "sha256": "08c56ef3d239d11133309add4b33f87c1e1f49326cc8bd2a274d651d8150a51e"
+          "sha256": "715a62e63dd422f1cd02e63b6bfe976a4d573bcac25e3a2365fdf71200fd1ed0"
         }
       ],
-      "evidence_contract_hash": "sha256:31f2837460ce83e13a75020ff0d9b75d035c25828da1f47b6d55e55f3aa8cd3c",
-      "evidence_digest": "sha256:d9e419dd869be4c4bd34e6132babd5abe491969df572e66bfb8be8067480ea7a",
+      "evidence_contract_hash": "sha256:a7ce09771f6e55e29ef7f245856331571617893e1d13ff2c436f9ed9f233063a",
+      "evidence_digest": "sha256:bd6bc01be97df51e83c9ab137d47a08f1b7ff6c7e872472753814c6b80b4828a",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -998,7 +998,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-081",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-080_AGENT_PACKAGE_PLUGIN_PROVENANCE_EVIDENCE.md",
-      "artifact_sha256": "7082b710e98789af963a1e4fc9fea4c269df4581e754fe051a266f7cdeefc48a",
+      "artifact_sha256": "aa7f3ed273acce7cb46edae5f350502d40c0607cf9c400215240415ace6dd376",
       "artifact_state": "present",
       "ctest": "agent_package_plugin_actuator_provenance_gate",
       "ctest_registered": true,
@@ -1009,17 +1009,17 @@
           "path": "project/src/core/agents/agent_package_provenance.hpp",
           "search_key": "CEIC_080_AGENT_PACKAGE_PLUGIN_ACTUATOR_PROVENANCE",
           "surface": "package provenance schema",
-          "sha256": "836a94143e27b554e0e869cbe7002253250c58d5ee6996eb7623f50e9f5884c5"
+          "sha256": "715b3efe44088fb3aa0454dbacd475626c841d9f63ff9805af1aea3ce5377113"
         },
         {
           "path": "project/src/core/agents/agent_package_provenance.cpp",
           "search_key": "ValidateAgentPackageProvenanceBundle",
           "surface": "package provenance validation",
-          "sha256": "c175218bb00f89a2d66a691fc6f807455fd8ae53c42d18b1e959cb150cce0a05"
+          "sha256": "cfe801fc9c5b9a5c234911d00ce71ac200054267287d9899699fbda0e6cad896"
         }
       ],
-      "evidence_contract_hash": "sha256:522e1a1ad3a31b5c5b7fbc50c01b87c6569bd9a29fe2b6362088e6e2a1647f88",
-      "evidence_digest": "sha256:2b94ecdf88fcbd80f6417a574017e554c80517202a993e4ee89b7e4bf451bf82",
+      "evidence_contract_hash": "sha256:34ab442b8370630f4071f41058cecc400a17079d49bc80874b92b89a2f7898d6",
+      "evidence_digest": "sha256:d4fdd2cf42b7bd76f90cfdfc55f66d722d27f2aafdecee90d1fa9619eaf26996",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1060,7 +1060,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-082",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-081_AGENT_REPLAY_QUARANTINE_EVIDENCE.md",
-      "artifact_sha256": "11f379d9ec7ee64601d8b8ce5f93f2ddd842ac366e40237a09e42b8d5b349f42",
+      "artifact_sha256": "0b384603ae9d36916987c72ee41d7e7339a5ac9d3ab655e89e9737e536103af4",
       "artifact_state": "present",
       "ctest": "agent_replay_compensation_quarantine_gate",
       "ctest_registered": true,
@@ -1071,17 +1071,17 @@
           "path": "project/src/core/agents/agent_replay_quarantine.hpp",
           "search_key": "CEIC_081_AGENT_REPLAY_QUARANTINE",
           "surface": "replay quarantine schema",
-          "sha256": "89580dfdd14fbc208e71fc600c945d1578eec70db5b7f286e221cfac138acbea"
+          "sha256": "6f73ab359007a7a400b20c59da6ab94672a5d0cd7d818609d2a9b6e3a294a225"
         },
         {
           "path": "project/src/core/agents/agent_replay_quarantine.cpp",
           "search_key": "ApplyAgentReplayControl",
           "surface": "replay control evaluator",
-          "sha256": "feb92fdfcd8db9a1441ace500cbadad32245887ca58d1bd2bb5261bbb36b0c75"
+          "sha256": "9bbe65d621044846f4530413cdad04d7fb0abcbdea5d5e3c9c6516ccc3ff2706"
         }
       ],
-      "evidence_contract_hash": "sha256:c7cf8951a63acc479aa9060e1fcebe426be28498d9123539c65c753e947017bf",
-      "evidence_digest": "sha256:d31a23048a6e88055e44c8029f18303b5f6e39a62fed0860f5cb90b69e9e063d",
+      "evidence_contract_hash": "sha256:9689ded0a7aff5ca9e5e1f55e3aa03e4ebed962dc5f7e3f622d4b7a45a72a2c9",
+      "evidence_digest": "sha256:0e9f8de7196077921e9e6edaa6060c5b82e5679c6fcfc6fbb746d94a10f28977",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1126,7 +1126,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-083",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-082_AGENT_NONCLUSTER_SURFACE_CLOSURE_EVIDENCE.md",
-      "artifact_sha256": "8e7a2f5d81bdb69501252532ae8c64ef3d911683bfed236c6acd4e7ed4d2c69a",
+      "artifact_sha256": "4167888033e727f534dc62cb4fb7d0405ff00dc11684ec5c978a88d96757a3ca",
       "artifact_state": "present",
       "ctest": "agent_production_exposure_gate",
       "ctest_registered": true,
@@ -1137,17 +1137,17 @@
           "path": "project/src/core/agents/agent_production_classification.hpp",
           "search_key": "ARHC_PER_AGENT_LIVE_RECOMMEND_DISABLED_CLASSIFICATION",
           "surface": "production classification schema",
-          "sha256": "61003b6aa08622e897c7d9b930dd05aa99b2015af7e12141fd2f32f0e6bc6203"
+          "sha256": "f471c32be4ea4b90b100df1ab2c288111f853f5f0824efa4439dfb1b79dababf"
         },
         {
           "path": "project/src/core/agents/agent_production_classification.cpp",
           "search_key": "ValidateAgentProductionExposureMatrix",
           "surface": "production exposure validator",
-          "sha256": "701dee3826499683db5bbb2f120da07df0d40c7d42a76a5e0d633d074787d43d"
+          "sha256": "d71940c353db97b48a93200376903618920ce1451be8e7bfb3e33bf802f78e58"
         }
       ],
-      "evidence_contract_hash": "sha256:4af0db5e2185f8857a9f70f8fdfdf9ca1787c5f0468e32e03d1e6bff2adb2560",
-      "evidence_digest": "sha256:bd7822fcd89b49ea619a5b1dac6241c697e9b83ec2210f55fd01b3b3baa1b337",
+      "evidence_contract_hash": "sha256:26b73f53e25cac8ede405d73ef117000af8a90eedc18034a4dd16c1a181a1481",
+      "evidence_digest": "sha256:9ae97edc2e7728e7a504f8d716404091680e139acbc1f25a071eeab278d8ee60",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1190,7 +1190,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-084",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-083_AGENT_MEMORY_PRESSURE_METRIC_EVIDENCE.md",
-      "artifact_sha256": "aee76d164271b3dcf318e8df03ec5386bc4c1d62a71d3aef8cb9d693a4e82d72",
+      "artifact_sha256": "76d1af81bc789c1c26d411b8e38da8ff7ada100a92b40df8bf7772735694a236",
       "artifact_state": "present",
       "ctest": "agent_memory_pressure_metric_integration_gate",
       "ctest_registered": true,
@@ -1201,17 +1201,17 @@
           "path": "project/src/core/agents/agent_memory_coupling.hpp",
           "search_key": "CEIC_083_AGENT_MEMORY_PRESSURE_METRIC_INTEGRATION",
           "surface": "agent memory pressure schema",
-          "sha256": "fea00513f0be1d3b13d76de8fac2d5d1ff168033c7ce73e7172655c8a616af1b"
+          "sha256": "c0ccfc6d56d858c70fb8f142a4c22f77b9d892acd69feba64df1e6912699b043"
         },
         {
           "path": "project/src/core/agents/agent_memory_coupling.cpp",
           "search_key": "EvaluateAgentMemoryPressureLaneIntegration",
           "surface": "memory pressure lane evaluator",
-          "sha256": "9e6ad23f3733084ddb462fcae88823702dc63a0cf9897042ddd06856226493cc"
+          "sha256": "101956cd1becf8eae143f7cfc232b36b22f88b6819a2927d0030a1a25b81b9c0"
         }
       ],
-      "evidence_contract_hash": "sha256:dd7d5b0eebd42c63719e1e41624158c8464f6c1b6eeb81661228b79cb6011fad",
-      "evidence_digest": "sha256:ed198be0d077ad21e4a7725a2637d03808a354e709a70bf9015ec92fe89b1cfa",
+      "evidence_contract_hash": "sha256:daf92e02fcd0f618f60de1fb5bcea92816e420f2e9ea27e953a9d527e4f57172",
+      "evidence_digest": "sha256:56fda91366d3bf697f9aebcd049897bb09be3bcee02248986f93b4a50704f01a",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1257,7 +1257,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-085",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-084_AGENT_INDEX_OPTIMIZER_BOUNDARY_EVIDENCE.md",
-      "artifact_sha256": "af423ba22a6b8e7fc2e8b35107b0bc36bd4d3025f5fd34447fadfa4464df4c3a",
+      "artifact_sha256": "cf1ff339ee52e387b41e0eaa0d0e950b4ced00a5060c93c8aa4ce72ff00c4cce",
       "artifact_state": "present",
       "ctest": "agent_index_optimizer_boundary_gate",
       "ctest_registered": true,
@@ -1268,23 +1268,23 @@
           "path": "project/src/core/agents/agent_optimizer_recommendation.hpp",
           "search_key": "CEIC_084_AGENT_INDEX_OPTIMIZER_BOUNDARY",
           "surface": "agent optimizer recommendation schema",
-          "sha256": "e4cf152296308d9caf03bc95ea9271e5aa742237898bf3b52ddba6a61a2dc4e5"
+          "sha256": "ac7dd5d2178e36117d8581e34b11bb12adb678514b5272dd79c75097a7e6d930"
         },
         {
           "path": "project/src/core/agents/agent_optimizer_recommendation.cpp",
           "search_key": "EvaluateAgentIndexOptimizerBoundary",
           "surface": "index optimizer boundary evaluator",
-          "sha256": "0bf2ec0eb19aee395927496ce1178ef22c9101593d0a9517a138418fc0f21609"
+          "sha256": "835617405e9ec1ddea5e83d9e794e92b1cd927272c7d65e8e907a67709446bd4"
         },
         {
           "path": "project/src/engine/optimizer/agent_optimizer_recommendation_bridge.cpp",
           "search_key": "CEIC_084_AGENT_INDEX_OPTIMIZER_BOUNDARY",
           "surface": "optimizer bridge handoff",
-          "sha256": "019bf170a58ddb5f7c2f6aa3514273f963b280c3fe14e94c89bfa9dd82400bad"
+          "sha256": "ca387d284f306ee7bfef5afb349e9d44b1696180f5bdfab50a6abe49f1057843"
         }
       ],
-      "evidence_contract_hash": "sha256:3e2fa2b5a6d8e3ba56eb95805a13300338f8a88a11eed81cc64a9aeabab7c595",
-      "evidence_digest": "sha256:eb2953d3eafcd0c3f3c99df9841e743c29e78c47a2ec57a5bc3837b603770854",
+      "evidence_contract_hash": "sha256:926f6032a33958ea7687ffa21cae97289a64a5d02bbae36877082c5b16bde54f",
+      "evidence_digest": "sha256:ef73278e996cba198b74931b437bdbb3206123943f2e21bdafe5d263a2392475",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1323,21 +1323,21 @@
       "subsystem": "memory",
       "artifact_id": "CEIC-ART-011",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-      "sha256": "390674eafe58ce7c4383439ca1e8a53c46af5e699f8859f55ef8b6e06beaf7c8",
+      "sha256": "4da7155eb59d615e7321c6d74ec712cf01c9020427465ad1766c7671792ac2b3",
       "coupling_status": "consumed_evidence_only"
     },
     {
       "subsystem": "index",
       "artifact_id": "CEIC-ART-012",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
-      "sha256": "427ce0a8b87edfbaf13959504100205a28d2f52b7589b4e75bac16f49bd8c316",
+      "sha256": "bbb4eb0d1f52154621e564a2c35b93b8abdd5274ea12655099c5688b13398d75",
       "coupling_status": "consumed_evidence_only"
     },
     {
       "subsystem": "optimizer",
       "artifact_id": "CEIC-ART-013",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
-      "sha256": "00fe3b0833feb0ad57e83661e1bffa352b65cecbcd6b0a1445239164639ced09",
+      "sha256": "421f69f2f7a70afeaaaba9dbab4351967304056b049e88c31ec248670855cd2f",
       "coupling_status": "consumed_evidence_only"
     }
   ],
@@ -1347,7 +1347,7 @@
       "slice_id": "CEIC-070",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-070_AGENT_SYSTEM_PROFILE_EVIDENCE.md",
-      "sha256": "249c6d92256d8930dd90d7db9b59d7e1b9fdd31fc6268464e41f7b8c3600ca79",
+      "sha256": "00ccc7de9e07d6c71a327ae0c6f04c6144fd8ecb7ce57c308dac2fa654557900",
       "status": "present"
     },
     {
@@ -1355,7 +1355,7 @@
       "slice_id": "CEIC-071",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-071_AGENT_POLICY_LIFECYCLE_EVIDENCE.md",
-      "sha256": "8d21e208add66a49f75059b913a342d5d57b15a0a6539c67fdabbce1f2c3a1cc",
+      "sha256": "4893dfffc5d3067522f1a99b7c5d0defae6b0fa227c966f89777f9ad7f4306c6",
       "status": "present"
     },
     {
@@ -1363,7 +1363,7 @@
       "slice_id": "CEIC-072",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-072_AGENT_POLICY_OVERRIDE_RESOLUTION_EVIDENCE.md",
-      "sha256": "b197527b9aaaffde242fe7d8defd9003eeb708f25f20cd3456b54ec0f7810c82",
+      "sha256": "2bce75f9928f278c7d4e33bb853549d99963a685773c93ff2ffd1005d9fecacb",
       "status": "present"
     },
     {
@@ -1371,7 +1371,7 @@
       "slice_id": "CEIC-073",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-073_AGENT_EXECUTION_LANE_GOVERNANCE_EVIDENCE.md",
-      "sha256": "56bb25099e3da070d01a1ec402c98135f12ac85b9586c26d1181417b0d7e245c",
+      "sha256": "8251b84178a702f07784cc6b65ca707f79a1f68da3e23e42f34684723f2e3b09",
       "status": "present"
     },
     {
@@ -1379,7 +1379,7 @@
       "slice_id": "CEIC-074",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-074_AGENT_METRIC_QUORUM_EVIDENCE.md",
-      "sha256": "44d8ad6f4763bee9502a1ef8930aff1a06fa2eab9ca5938958c922e70bc138ba",
+      "sha256": "92384928b80910a69147b65c34ab2349399a039a0918131a567b62301a1649cc",
       "status": "present"
     },
     {
@@ -1387,7 +1387,7 @@
       "slice_id": "CEIC-075",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-075_AGENT_ACTION_SAFETY_ROLLOUT_EVIDENCE.md",
-      "sha256": "3cf15298ed45dbc2ff7fd67fa02cb6cd2f7416260fd0547eaa2b6057d45eeca7",
+      "sha256": "ee3701ce2afa0226e54e0eee4a02a6df2c4a801a2b9fa99e3288b6c1c3668587",
       "status": "present"
     },
     {
@@ -1395,7 +1395,7 @@
       "slice_id": "CEIC-076",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-076_AGENT_APPROVAL_BREAK_GLASS_EVIDENCE.md",
-      "sha256": "3908a376e51541f6066f9c1a1560ed9104521ffef5e0ecfaffb887366d973f1b",
+      "sha256": "523f1047b79abf170566458312a676f8e8576afd9ea2cc5f16243ebda78d70f2",
       "status": "present"
     },
     {
@@ -1403,7 +1403,7 @@
       "slice_id": "CEIC-077",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md",
-      "sha256": "6cbdcf95cc1d615fe641e8ac85a102be46b3c4722ed8b76cc2bba7402c251cbf",
+      "sha256": "aa0b99ce382629b50db6b3e4191901d167dad36b71f4651bf96c40e8eb10abca",
       "status": "present"
     },
     {
@@ -1411,7 +1411,7 @@
       "slice_id": "CEIC-078",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-078_AGENT_DEPENDENCY_LIFECYCLE_EVIDENCE.md",
-      "sha256": "67bf51be4707525a57bfcdc3955a04ed80af3fda37c9ceaf72ef8cce55dd8820",
+      "sha256": "3eb1864a4fc92bbea560d1b151064163ac4f2d5311205cd67c8ff6f49ac6010a",
       "status": "present"
     },
     {
@@ -1419,7 +1419,7 @@
       "slice_id": "CEIC-079",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-079_AGENT_TENANT_COORDINATION_EVIDENCE.md",
-      "sha256": "066b1d5bf349b02ea504c1f7e440c206ea7822b62354c667a4f10f471d8a83af",
+      "sha256": "2ebac9e0c68181a7eaec716226606ceefb8dd746fd802def4bae6515a274ec1b",
       "status": "present"
     },
     {
@@ -1427,7 +1427,7 @@
       "slice_id": "CEIC-080",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-080_AGENT_PACKAGE_PLUGIN_PROVENANCE_EVIDENCE.md",
-      "sha256": "7082b710e98789af963a1e4fc9fea4c269df4581e754fe051a266f7cdeefc48a",
+      "sha256": "aa7f3ed273acce7cb46edae5f350502d40c0607cf9c400215240415ace6dd376",
       "status": "present"
     },
     {
@@ -1435,7 +1435,7 @@
       "slice_id": "CEIC-081",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-081_AGENT_REPLAY_QUARANTINE_EVIDENCE.md",
-      "sha256": "11f379d9ec7ee64601d8b8ce5f93f2ddd842ac366e40237a09e42b8d5b349f42",
+      "sha256": "0b384603ae9d36916987c72ee41d7e7339a5ac9d3ab655e89e9737e536103af4",
       "status": "present"
     },
     {
@@ -1443,7 +1443,7 @@
       "slice_id": "CEIC-082",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-082_AGENT_NONCLUSTER_SURFACE_CLOSURE_EVIDENCE.md",
-      "sha256": "8e7a2f5d81bdb69501252532ae8c64ef3d911683bfed236c6acd4e7ed4d2c69a",
+      "sha256": "4167888033e727f534dc62cb4fb7d0405ff00dc11684ec5c978a88d96757a3ca",
       "status": "present"
     },
     {
@@ -1451,7 +1451,7 @@
       "slice_id": "CEIC-083",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-083_AGENT_MEMORY_PRESSURE_METRIC_EVIDENCE.md",
-      "sha256": "aee76d164271b3dcf318e8df03ec5386bc4c1d62a71d3aef8cb9d693a4e82d72",
+      "sha256": "76d1af81bc789c1c26d411b8e38da8ff7ada100a92b40df8bf7772735694a236",
       "status": "present"
     },
     {
@@ -1459,7 +1459,7 @@
       "slice_id": "CEIC-084",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-084_AGENT_INDEX_OPTIMIZER_BOUNDARY_EVIDENCE.md",
-      "sha256": "af423ba22a6b8e7fc2e8b35107b0bc36bd4d3025f5fd34447fadfa4464df4c3a",
+      "sha256": "cf1ff339ee52e387b41e0eaa0d0e950b4ced00a5060c93c8aa4ce72ff00c4cce",
       "status": "present"
     },
     {
@@ -1467,7 +1467,7 @@
       "slice_id": "CEIC-085",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST_EVIDENCE.md",
-      "sha256": "f4c4b252e83e9a2bd8ad02e70b832f77a717ff79a8f67423a1aca0bbfba564bb",
+      "sha256": "11335fff64aacbac3f357fdd58687318d38516050fee42b1bfb40e150ad81671",
       "status": "present"
     },
     {
@@ -1475,7 +1475,7 @@
       "slice_id": "CEIC-024",
       "kind": "manifest",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-      "sha256": "390674eafe58ce7c4383439ca1e8a53c46af5e699f8859f55ef8b6e06beaf7c8",
+      "sha256": "4da7155eb59d615e7321c6d74ec712cf01c9020427465ad1766c7671792ac2b3",
       "status": "present"
     },
     {
@@ -1483,7 +1483,7 @@
       "slice_id": "CEIC-030",
       "kind": "manifest",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
-      "sha256": "427ce0a8b87edfbaf13959504100205a28d2f52b7589b4e75bac16f49bd8c316",
+      "sha256": "bbb4eb0d1f52154621e564a2c35b93b8abdd5274ea12655099c5688b13398d75",
       "status": "present"
     },
     {
@@ -1491,7 +1491,7 @@
       "slice_id": "CEIC-062",
       "kind": "manifest",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
-      "sha256": "00fe3b0833feb0ad57e83661e1bffa352b65cecbcd6b0a1445239164639ced09",
+      "sha256": "421f69f2f7a70afeaaaba9dbab4351967304056b049e88c31ec248670855cd2f",
       "status": "present"
     }
   ],
@@ -1527,458 +1527,458 @@
   "input_records": [
     {
       "path": "project/src/core/agents/agent_action_dispatch.cpp",
-      "sha256": "f46f3f6811280a55a9e8301ed58dbc2ae1ee0ac6f184cb74e64f9d3b9007ec75",
-      "bytes": 42017
+      "sha256": "df7da3677a6ed84f30949f38006c79940007ef07678b9ed1f39c4ce0ecf35e90",
+      "bytes": 41076
     },
     {
       "path": "project/src/core/agents/agent_action_safety.hpp",
-      "sha256": "bb522167b5c22dce276a492421c2614310fc609d30ddccb3af7c9fe566158517",
-      "bytes": 3415
+      "sha256": "e3dc9d5bb25a84aa81149793369576244da2978543e99a6b4180f670e7328a47",
+      "bytes": 3312
     },
     {
       "path": "project/src/core/agents/agent_commercial_evidence.cpp",
-      "sha256": "adbc9776e98bced3b1617432f1580f1bc79014a5d47fa3e427533e038493af6e",
-      "bytes": 31787
+      "sha256": "8e3d21bb794f50692b8164c7bae0b84c58be3d4bc0b5ebe6c1fbeead898b4be1",
+      "bytes": 31068
     },
     {
       "path": "project/src/core/agents/agent_commercial_evidence.hpp",
-      "sha256": "1f2d024aa1de2539cda373a0422dff0e83b787e964a70e18335c81fe2437e87c",
-      "bytes": 5433
+      "sha256": "abf27c8d61c77921d15bde514eb5c916de4dc868cd0ff5dc43927ee3712b17a0",
+      "bytes": 5287
     },
     {
       "path": "project/src/core/agents/agent_dependency_lifecycle.cpp",
-      "sha256": "c3b79057064573892553e257708dadfc5ceedf18b92162f60835acd8503392f8",
-      "bytes": 16493
+      "sha256": "3cae396c206352179e42f6098ab95364da6e499f73eb0a227d80b101f8083516",
+      "bytes": 16114
     },
     {
       "path": "project/src/core/agents/agent_dependency_lifecycle.hpp",
-      "sha256": "32894fa3634d832b059ff8517c0fb087ee9b55de87f677503b421888e1d1f985",
-      "bytes": 4804
+      "sha256": "d7478ac13b9e923dd8a705179ca7451921adc40b902ce6703f33450462ff0f67",
+      "bytes": 4669
     },
     {
       "path": "project/src/core/agents/agent_execution_lane_governance.cpp",
-      "sha256": "fd52e8f9e78c9aa24e69c039f46368bd9029bcce6dfe66ecdc7b2af23431bdf1",
-      "bytes": 16566
+      "sha256": "25dfbc9f183a806858826c655c0ed971408c5165963ac5434853e4fc60932800",
+      "bytes": 16159
     },
     {
       "path": "project/src/core/agents/agent_execution_lane_governance.hpp",
-      "sha256": "a976508ff7d0ce49ac0fe6c12764cc20fcb1ed8658f3abbafac55babd3478e90",
-      "bytes": 3544
+      "sha256": "181b93238c96bb12e6785d33796b9ed48fa16bd5ab7c6f04bc49bc8770676c28",
+      "bytes": 3440
     },
     {
       "path": "project/src/core/agents/agent_manual_approval.cpp",
-      "sha256": "b2010f5bea135c9398ddd6e50c6d9a55e98867caa48ca43236f33fd3d1347dcc",
-      "bytes": 21205
+      "sha256": "a6626d64393e51c8838a6e127e485d028448a1717ec5373ad2beb80e2a25f893",
+      "bytes": 20726
     },
     {
       "path": "project/src/core/agents/agent_manual_approval.hpp",
-      "sha256": "a6d20f0dbd440ab4facf892222ec32db56b3552b64e66440b208a95c8be9b651",
-      "bytes": 3957
+      "sha256": "e349f76daa955416f03434135a29173b4d93040ce3457ff1d8813305ea0a4649",
+      "bytes": 3832
     },
     {
       "path": "project/src/core/agents/agent_memory_coupling.cpp",
-      "sha256": "9e6ad23f3733084ddb462fcae88823702dc63a0cf9897042ddd06856226493cc",
-      "bytes": 48578
+      "sha256": "101956cd1becf8eae143f7cfc232b36b22f88b6819a2927d0030a1a25b81b9c0",
+      "bytes": 47485
     },
     {
       "path": "project/src/core/agents/agent_memory_coupling.hpp",
-      "sha256": "fea00513f0be1d3b13d76de8fac2d5d1ff168033c7ce73e7172655c8a616af1b",
-      "bytes": 9226
+      "sha256": "c0ccfc6d56d858c70fb8f142a4c22f77b9d892acd69feba64df1e6912699b043",
+      "bytes": 8955
     },
     {
       "path": "project/src/core/agents/agent_metric_runtime.cpp",
-      "sha256": "bfd31cfb4686dd6b90ae49c240ee6bad175ec8a765c6bd55cba7d9e3a1316b05",
-      "bytes": 33253
+      "sha256": "f00f7361739acbb0abaef1e3190b743482571997b61aafd734f304f04fd46758",
+      "bytes": 32500
     },
     {
       "path": "project/src/core/agents/agent_metric_runtime.hpp",
-      "sha256": "9f295045612d49c962e3bd231c1e4fc64a19629e51a2f634c89dc290be756a69",
-      "bytes": 6711
+      "sha256": "f97fbb6fafd250af22e8a59af9031f9e99ae7cb3b3bceda3959c58129a5e803b",
+      "bytes": 6502
     },
     {
       "path": "project/src/core/agents/agent_optimizer_recommendation.cpp",
-      "sha256": "0bf2ec0eb19aee395927496ce1178ef22c9101593d0a9517a138418fc0f21609",
-      "bytes": 23136
+      "sha256": "835617405e9ec1ddea5e83d9e794e92b1cd927272c7d65e8e907a67709446bd4",
+      "bytes": 22640
     },
     {
       "path": "project/src/core/agents/agent_optimizer_recommendation.hpp",
-      "sha256": "e4cf152296308d9caf03bc95ea9271e5aa742237898bf3b52ddba6a61a2dc4e5",
-      "bytes": 8430
+      "sha256": "ac7dd5d2178e36117d8581e34b11bb12adb678514b5272dd79c75097a7e6d930",
+      "bytes": 8202
     },
     {
       "path": "project/src/core/agents/agent_package_provenance.cpp",
-      "sha256": "c175218bb00f89a2d66a691fc6f807455fd8ae53c42d18b1e959cb150cce0a05",
-      "bytes": 15148
+      "sha256": "cfe801fc9c5b9a5c234911d00ce71ac200054267287d9899699fbda0e6cad896",
+      "bytes": 14792
     },
     {
       "path": "project/src/core/agents/agent_package_provenance.hpp",
-      "sha256": "836a94143e27b554e0e869cbe7002253250c58d5ee6996eb7623f50e9f5884c5",
-      "bytes": 5217
+      "sha256": "715b3efe44088fb3aa0454dbacd475626c841d9f63ff9805af1aea3ce5377113",
+      "bytes": 5064
     },
     {
       "path": "project/src/core/agents/agent_policy_lifecycle.cpp",
-      "sha256": "307d5a98b36159b14a30a02501760d49dc93d3e73a764560f5ed43e1b971fc32",
-      "bytes": 31981
+      "sha256": "19ef9c610d6d6014d31967845f83828d5a82b06b81ad34d7f47e64af126960f7",
+      "bytes": 31244
     },
     {
       "path": "project/src/core/agents/agent_policy_lifecycle.hpp",
-      "sha256": "5f9e52b83c2f0573e2cb3cd2d67a33db958a0c392a5b4f92681a58e00a2cf468",
-      "bytes": 4406
+      "sha256": "c973d21bf47a457654cb372c3b4b19577077d8682ddc135db8b5a1082254dcda",
+      "bytes": 4269
     },
     {
       "path": "project/src/core/agents/agent_policy_override_resolution.cpp",
-      "sha256": "7e15d25796f7650105cd55bf7a0a7d64cb521170cf9128432ac051d37d121433",
-      "bytes": 19061
+      "sha256": "00bf9df0a52d8e499dc6db2ca1257329d25300ee416476b570ca2b6d729da147",
+      "bytes": 18598
     },
     {
       "path": "project/src/core/agents/agent_policy_override_resolution.hpp",
-      "sha256": "8a186889873c68b624532d2be6fa2413782b205a4a91b0c4df993cd29b575702",
-      "bytes": 3514
+      "sha256": "edd264518a0e5feb4ec1f2ca83ba3a559dc105ce7379cda42ea042b821555122",
+      "bytes": 3406
     },
     {
       "path": "project/src/core/agents/agent_policy_schema.hpp",
-      "sha256": "5cbd877f8488f0ba8f4a7825160d7240ae4e84a316221a4605292737eda93dcd",
-      "bytes": 2235
+      "sha256": "473f3e6be25a04e440a9b147842121364b9cd6b0b38ee460383438a0cdfabe33",
+      "bytes": 2165
     },
     {
       "path": "project/src/core/agents/agent_production_classification.cpp",
-      "sha256": "701dee3826499683db5bbb2f120da07df0d40c7d42a76a5e0d633d074787d43d",
-      "bytes": 32330
+      "sha256": "d71940c353db97b48a93200376903618920ce1451be8e7bfb3e33bf802f78e58",
+      "bytes": 31620
     },
     {
       "path": "project/src/core/agents/agent_production_classification.hpp",
-      "sha256": "61003b6aa08622e897c7d9b930dd05aa99b2015af7e12141fd2f32f0e6bc6203",
-      "bytes": 4851
+      "sha256": "f471c32be4ea4b90b100df1ab2c288111f853f5f0824efa4439dfb1b79dababf",
+      "bytes": 4721
     },
     {
       "path": "project/src/core/agents/agent_replay_quarantine.cpp",
-      "sha256": "feb92fdfcd8db9a1441ace500cbadad32245887ca58d1bd2bb5261bbb36b0c75",
-      "bytes": 30223
+      "sha256": "9bbe65d621044846f4530413cdad04d7fb0abcbdea5d5e3c9c6516ccc3ff2706",
+      "bytes": 29523
     },
     {
       "path": "project/src/core/agents/agent_replay_quarantine.hpp",
-      "sha256": "89580dfdd14fbc208e71fc600c945d1578eec70db5b7f286e221cfac138acbea",
-      "bytes": 3926
+      "sha256": "6f73ab359007a7a400b20c59da6ab94672a5d0cd7d818609d2a9b6e3a294a225",
+      "bytes": 3812
     },
     {
       "path": "project/src/core/agents/agent_rollout_profile.hpp",
-      "sha256": "2071590a7fe18fd1cde7eacc10561408aef26131d68dafaa44aeecb5b421f57a",
-      "bytes": 2399
+      "sha256": "1023820e4e10924c9ea9bd7e969666159e481dfd37bb8cf4597f46a27fa37e9d",
+      "bytes": 2319
     },
     {
       "path": "project/src/core/agents/agent_system_profile.cpp",
-      "sha256": "86f5058b6782f105398283f41ce8d5e3e693953d73a7589d18039dc2d350556d",
-      "bytes": 20648
+      "sha256": "a89a6ef35010842d84b1aa65e8f8b0cfd8d9c572c8790535d56eeeec699108c2",
+      "bytes": 20142
     },
     {
       "path": "project/src/core/agents/agent_system_profile.hpp",
-      "sha256": "bd6405080d5f92fc2ad9835d063e173a721e09c3711295c5ed87d5e5f2a1f6a7",
-      "bytes": 5106
+      "sha256": "662bcfb2731f01a7a84f971b7bed952f750fdc98fe48f1235c744c5291cda1f6",
+      "bytes": 4948
     },
     {
       "path": "project/src/core/agents/agent_tenant_coordination.cpp",
-      "sha256": "08c56ef3d239d11133309add4b33f87c1e1f49326cc8bd2a274d651d8150a51e",
-      "bytes": 25878
+      "sha256": "715a62e63dd422f1cd02e63b6bfe976a4d573bcac25e3a2365fdf71200fd1ed0",
+      "bytes": 25244
     },
     {
       "path": "project/src/core/agents/agent_tenant_coordination.hpp",
-      "sha256": "c8455e0e846d6cf738a83fb0d5bf33a79f2793cc298e7857b586081acd80040e",
-      "bytes": 6454
+      "sha256": "a804f0b68bf534922cf0b6339cbc6c385e72ebcff82170ae759106038c275ffa",
+      "bytes": 6249
     },
     {
       "path": "project/src/engine/optimizer/agent_optimizer_recommendation_bridge.cpp",
-      "sha256": "019bf170a58ddb5f7c2f6aa3514273f963b280c3fe14e94c89bfa9dd82400bad",
-      "bytes": 9162
+      "sha256": "ca387d284f306ee7bfef5afb349e9d44b1696180f5bdfab50a6abe49f1057843",
+      "bytes": 8988
     },
     {
       "path": "project/tests/agents/CMakeLists.txt",
-      "sha256": "ac29df36ddd777fb31276416d7af0e038db2ed0937fc2714ebad2136badc9a13",
-      "bytes": 38278
+      "sha256": "c8e14b7f2b6b5fedab1081bb49e2c69105c7f2b9a03c88f12e59d00d48429329",
+      "bytes": 37369
     },
     {
       "path": "project/tests/agents/agent_action_safety_rollout_gate.cpp",
-      "sha256": "7737f3ed36969d2569173c1b261fba8c5ae874df205840a635e4ef83e4d8d991",
-      "bytes": 21576
+      "sha256": "e47b90c9ab402132ee8a2d3d42ca82dc8dcbf0bfd62a7bdd0eb000cc9355d4c4",
+      "bytes": 21126
     },
     {
       "path": "project/tests/agents/agent_approval_break_glass_workflow_gate.cpp",
-      "sha256": "dd32aa907adba1cb89af2e8315381a6f40443ac2c8327c45adb2e3238baeee68",
-      "bytes": 25015
+      "sha256": "7b8d0b46abeaca70946dff6bc42f544b65e4e4f66363092b16c6bae358d3caa2",
+      "bytes": 24489
     },
     {
       "path": "project/tests/agents/agent_cluster_provider_boundary_gate.cpp",
-      "sha256": "4270ee399e72325f3a9c7884287d21b0dc6bf3f470bc387905ab712a68130cab",
-      "bytes": 10664
+      "sha256": "0b768d2ad3ba252987afb601fc92fa5d9f82d0c9142824bd3ecd047bdfa94784",
+      "bytes": 10428
     },
     {
       "path": "project/tests/agents/agent_dependency_lifecycle_dr_restore_clone_gate.cpp",
-      "sha256": "3cf88f2f9a4c7896f2268e32bb7b3a5067352a732308ecb2a3ce9d30abefdf6b",
-      "bytes": 18436
+      "sha256": "ac88cae01cd24600762380ccca940f044ae67a48c70230c84f8d519b38cd1c26",
+      "bytes": 18015
     },
     {
       "path": "project/tests/agents/agent_evidence_key_privacy_tamper_chain_gate.cpp",
-      "sha256": "60cf7930867b7544370b911196ce82ef8ebb11d5e950a4aec8b70a06d282be02",
-      "bytes": 14225
+      "sha256": "3499d372424703a1c0bdc1db098a22930a1a6c4cb4937b91eb85de7772117bef",
+      "bytes": 13915
     },
     {
       "path": "project/tests/agents/agent_execution_lane_governance_gate.cpp",
-      "sha256": "7646b0103fe4d079216b8364be10ab9136943f6159826b5adf179dc2ccea2d42",
-      "bytes": 15282
+      "sha256": "7ac41055baa3f994d908508b39a37682eff52c653bbbbfaf5f0c5d38804baad6",
+      "bytes": 14934
     },
     {
       "path": "project/tests/agents/agent_index_optimizer_boundary_gate.cpp",
-      "sha256": "782b8841a4e9c1e1c7b178c9a3ec92e0823d359d24f7d3101a56d38555bd269e",
-      "bytes": 13421
+      "sha256": "764ff8f531e6b8e3db5a9403087443ae8fc2b92db393790cf55f7150736b2862",
+      "bytes": 13107
     },
     {
       "path": "project/tests/agents/agent_memory_pressure_metric_integration_gate.cpp",
-      "sha256": "2e0bfc882a3025faaaf0d37929ac40c3ca30ad16f0a57d27c9903e39f5556b8d",
-      "bytes": 20609
+      "sha256": "96a61f126e303058ff6b77930155a88ff045044e2f101bb54346b6684838d8e6",
+      "bytes": 20124
     },
     {
       "path": "project/tests/agents/agent_metric_quorum_source_attestation_gate.cpp",
-      "sha256": "e0374faf134f5bde1cdbd35a8e884a55ba8e4d7253970d407db43d23e936bb5c",
-      "bytes": 12338
+      "sha256": "26d6f8e6835bf6e774e38f31305deb62ba92b7b1a159c10d330e0cc0798843da",
+      "bytes": 12050
     },
     {
       "path": "project/tests/agents/agent_package_plugin_actuator_provenance_gate.cpp",
-      "sha256": "e90c1a8f75a48ba18c9c5ae7408b8548cf2a4a9eec00f30e275a15d7e6c8c65a",
-      "bytes": 19950
+      "sha256": "874d31bfdeecc1a25422d7ce05973cb5e1957443f1e6db2516a0cc77d6eefb22",
+      "bytes": 19529
     },
     {
       "path": "project/tests/agents/agent_policy_lifecycle_gate.cpp",
-      "sha256": "d36a29524e8bfdda1a892ae075c6141796556ec641eae74c3a216d711725ab7a",
-      "bytes": 16859
+      "sha256": "a2c72c8ecfe584c4433a54ad70924bb7cb9c7112ebe875676f9ebf8155cff601",
+      "bytes": 16457
     },
     {
       "path": "project/tests/agents/agent_policy_override_resolution_gate.cpp",
-      "sha256": "cfdc199b94c31fd466c74cfc0f405911e15267cc44e2a29b34d7643582fd5f93",
-      "bytes": 20444
+      "sha256": "1c8ddf961e35f1946c28ebd4b09a85e2d175cdf0e1938823af5ca5bcdc67befe",
+      "bytes": 19986
     },
     {
       "path": "project/tests/agents/agent_production_exposure_gate.cpp",
-      "sha256": "db06b195b67017f850ec983202f46c7364f4a616bc765eea363e44391988a12b",
-      "bytes": 22799
+      "sha256": "3b311c8f61b2a2dcfbf925fe00e0bb5f0c042de8c8363c2c71982e7f610a2764",
+      "bytes": 22338
     },
     {
       "path": "project/tests/agents/agent_replay_compensation_quarantine_gate.cpp",
-      "sha256": "5a720200de0bf30f3a6b9497cf96608d04eddc134bff0ae0966b260a0cc8842c",
-      "bytes": 20364
+      "sha256": "b7016935c2f54ab1be73b333cd007565cc9b9b94f17150d1675e2b80920a702a",
+      "bytes": 19895
     },
     {
       "path": "project/tests/agents/agent_security_crash_fixture_hardening_gate.cpp",
-      "sha256": "e1c2bf0bbbf8fe2731bd04b96d036bc7d90aff3c3b3902b89c3d81219c8a01ae",
-      "bytes": 36700
+      "sha256": "5cad7e866aa8914dd5f01f1db4a6b03d182673b163ab5339f417a0c77e01c6e9",
+      "bytes": 35959
     },
     {
       "path": "project/tests/agents/agent_security_grant_matrix_gate.cpp",
-      "sha256": "524e3f74d51a4de2029be3f1fff4e9c42b5d7f497175e6e0a9410f8e1e74f461",
-      "bytes": 16982
+      "sha256": "38a43e21e6193f4619023df1cba6598d4d6c5759a1da631028d7262bdf516044",
+      "bytes": 16616
     },
     {
       "path": "project/tests/agents/agent_system_profile_claim_gate.cpp",
-      "sha256": "7c24c585c2b679867d5c267a8a5e7b3637f5d6120a147e9070257bfb6067b54e",
-      "bytes": 15929
+      "sha256": "cdca5074029d59cbb8c9d18181ddbd304aca81a91dda2e1c119c3f857b319c5d",
+      "bytes": 15554
     },
     {
       "path": "project/tests/agents/agent_tenant_coordination_gate.cpp",
-      "sha256": "99a75004ed5247f040a0318253b6268495b2aa03f4066e9df084de1a8541a725",
-      "bytes": 17029
+      "sha256": "cd132279aa7a12f6be1b5d553e1f813cf8381d69711f620479630013e3da10fd",
+      "bytes": 16619
     },
     {
       "path": "project/tests/agents/agent_zero_grey_output_contract_gate.cpp",
-      "sha256": "7857a235419694e8f04d536b7007706ce37f3e0b595b1f7fe728aa428b4550b0",
-      "bytes": 26025
+      "sha256": "9748780de3d1a9c90ab203fd9d99adcb4cb609dc0093a853e8f3de26e4c5121f",
+      "bytes": 25487
     },
     {
       "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
-      "sha256": "d7910ddf72c441c7d5dd7ce2066c0af7a22e6c9b58bd86d581e86cdfd66e4412",
-      "bytes": 52446
+      "sha256": "d453141a1e46454ec0920351e52ea48466a16de5b94aee8a0d367249d29d1fa4",
+      "bytes": 51048
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_085_agent_readiness_manifest_gate_test.py",
-      "sha256": "d161849cedd3ca3b81a060f4a99d9bf31da0a02e7b075d35b7ea4bd647c1c18b",
-      "bytes": 12619
+      "sha256": "5ff72c207f2530c4e2ee3e1e093cb34133dd7b1fb6afde1c50bfa95a2cb0b0d0",
+      "bytes": 12331
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
-      "sha256": "fad37187bc91377e10172a8c2ec9970ba08a1fa99c4eac1d9aa754479658dd41",
-      "bytes": 13004
+      "sha256": "3ed5cee541bd71ce506f891c2882a93cc3875f5c33ced9f0c2bdbda84900855f",
+      "bytes": 12926
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ACCEPTANCE_MATRIX.csv",
-      "sha256": "838f0181d6ff9397e59a0589c2481697666a2beec9da02db4853b7ec96a6ee49",
-      "bytes": 256
+      "sha256": "3f347f008a047fb27c69226525d52239beac56c40214346d6b66dc45a85c95d1",
+      "bytes": 245
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_DEPENDENCY_MATRIX.csv",
-      "sha256": "70100f48602741cc313066090f039afbea6764c226385fd6489eec7a91858bc1",
-      "bytes": 234
+      "sha256": "bde25fdefe33f878b126d702c9d1aae8eb94da9c03facb198ebb41a53a024e69",
+      "bytes": 228
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_FINDING_TRACEABILITY_MATRIX.csv",
-      "sha256": "e6c798ff181adc11ba1be7dc9d4ac91d9be87ba3764df415e9881071f5ccc5ea",
-      "bytes": 453
+      "sha256": "cc5a044c63cab44d85740427743575dc2dc6cb1abe02d9df3a679707a4203cb6",
+      "bytes": 447
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
-      "sha256": "55c5ebad9ce5d210ccbc16a800add7fd4f847d85828459a9138bf2cd3f857599",
-      "bytes": 550
+      "sha256": "04a6d4ed7a073e233347fe25363cb4c8839e41721be728d49f1a93798f93471b",
+      "bytes": 546
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_STATUS_MATRIX.csv",
-      "sha256": "b68f989db205f0ce05d140b061ffd00202a1bec8065abe542096e5aebb288c2e",
-      "bytes": 7135
+      "sha256": "a1b2d44da0222b6afdc9a05e340977fdec0e08ad23c5240635705244672874d1",
+      "bytes": 7066
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CLAIM_BOUNDARY_MATRIX.csv",
-      "sha256": "7e02afae6a62a36cd4e29ccbf2cbeec2a1e0b8fa2779c35e8101119e443dcd79",
-      "bytes": 892
+      "sha256": "18adbc50170fd43a6d17debcc189237fc3544403f5d675b0d6b000c9c62080e6",
+      "bytes": 883
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/EVIDENCE_MANIFEST_SCHEMA.md",
-      "sha256": "a4ce7242ac607d3116296fc1a7926569152ca1752b9be156c898a5b29c059e60",
-      "bytes": 187
+      "sha256": "3c260f7572b00d847d4865f2e893a3af55494d13e896b7819ebd202b0cc64536",
+      "bytes": 183
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/INTERFACE_CONTRACTS.md",
-      "sha256": "8d7553714f9fdc4d8d5b2023c1bece265b41aeee86f5f866f205883d40c07619",
-      "bytes": 1235
+      "sha256": "7b16310ea861e445d2d570fef351b21b7f0ba56961e028e0f60ea97ddbbe62e8",
+      "bytes": 1216
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
-      "sha256": "b33c23152701c86235760767c02aabda861c67fb09b7b00f57415b934024cb27",
-      "bytes": 5899
+      "sha256": "3f47eee8891525cbef49ada01071e0c6243b184e65003cce29f9de472fb059e8",
+      "bytes": 5875
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/README.md",
-      "sha256": "986d593b824732e3ca6e8ca5c8252bff03e0f18a83b5a14d703ade004b1c1fa6",
-      "bytes": 727
+      "sha256": "6341a681e39cc239f0a267d8ca5bf7a63c71994f8457d44f7fd4d801d68b6226",
+      "bytes": 714
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-      "sha256": "390674eafe58ce7c4383439ca1e8a53c46af5e699f8859f55ef8b6e06beaf7c8",
-      "bytes": 43510
+      "sha256": "4da7155eb59d615e7321c6d74ec712cf01c9020427465ad1766c7671792ac2b3",
+      "bytes": 42551
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
-      "sha256": "427ce0a8b87edfbaf13959504100205a28d2f52b7589b4e75bac16f49bd8c316",
-      "bytes": 711654
+      "sha256": "bbb4eb0d1f52154621e564a2c35b93b8abdd5274ea12655099c5688b13398d75",
+      "bytes": 696146
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
-      "sha256": "00fe3b0833feb0ad57e83661e1bffa352b65cecbcd6b0a1445239164639ced09",
-      "bytes": 59931
+      "sha256": "421f69f2f7a70afeaaaba9dbab4351967304056b049e88c31ec248670855cd2f",
+      "bytes": 58626
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-070_AGENT_SYSTEM_PROFILE_EVIDENCE.md",
-      "sha256": "249c6d92256d8930dd90d7db9b59d7e1b9fdd31fc6268464e41f7b8c3600ca79",
-      "bytes": 124
+      "sha256": "00ccc7de9e07d6c71a327ae0c6f04c6144fd8ecb7ce57c308dac2fa654557900",
+      "bytes": 121
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-071_AGENT_POLICY_LIFECYCLE_EVIDENCE.md",
-      "sha256": "8d21e208add66a49f75059b913a342d5d57b15a0a6539c67fdabbce1f2c3a1cc",
-      "bytes": 139
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-072_AGENT_POLICY_OVERRIDE_RESOLUTION_EVIDENCE.md",
-      "sha256": "b197527b9aaaffde242fe7d8defd9003eeb708f25f20cd3456b54ec0f7810c82",
-      "bytes": 165
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-073_AGENT_EXECUTION_LANE_GOVERNANCE_EVIDENCE.md",
-      "sha256": "56bb25099e3da070d01a1ec402c98135f12ac85b9586c26d1181417b0d7e245c",
-      "bytes": 146
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-074_AGENT_METRIC_QUORUM_EVIDENCE.md",
-      "sha256": "44d8ad6f4763bee9502a1ef8930aff1a06fa2eab9ca5938958c922e70bc138ba",
-      "bytes": 133
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-075_AGENT_ACTION_SAFETY_ROLLOUT_EVIDENCE.md",
-      "sha256": "3cf15298ed45dbc2ff7fd67fa02cb6cd2f7416260fd0547eaa2b6057d45eeca7",
-      "bytes": 142
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-076_AGENT_APPROVAL_BREAK_GLASS_EVIDENCE.md",
-      "sha256": "3908a376e51541f6066f9c1a1560ed9104521ffef5e0ecfaffb887366d973f1b",
-      "bytes": 141
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md",
-      "sha256": "6cbdcf95cc1d615fe641e8ac85a102be46b3c4722ed8b76cc2bba7402c251cbf",
-      "bytes": 148
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-078_AGENT_DEPENDENCY_LIFECYCLE_EVIDENCE.md",
-      "sha256": "67bf51be4707525a57bfcdc3955a04ed80af3fda37c9ceaf72ef8cce55dd8820",
-      "bytes": 150
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-079_AGENT_TENANT_COORDINATION_EVIDENCE.md",
-      "sha256": "066b1d5bf349b02ea504c1f7e440c206ea7822b62354c667a4f10f471d8a83af",
-      "bytes": 138
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-080_AGENT_PACKAGE_PLUGIN_PROVENANCE_EVIDENCE.md",
-      "sha256": "7082b710e98789af963a1e4fc9fea4c269df4581e754fe051a266f7cdeefc48a",
-      "bytes": 142
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-081_AGENT_REPLAY_QUARANTINE_EVIDENCE.md",
-      "sha256": "11f379d9ec7ee64601d8b8ce5f93f2ddd842ac366e40237a09e42b8d5b349f42",
+      "sha256": "4893dfffc5d3067522f1a99b7c5d0defae6b0fa227c966f89777f9ad7f4306c6",
       "bytes": 136
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-082_AGENT_NONCLUSTER_SURFACE_CLOSURE_EVIDENCE.md",
-      "sha256": "8e7a2f5d81bdb69501252532ae8c64ef3d911683bfed236c6acd4e7ed4d2c69a",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-072_AGENT_POLICY_OVERRIDE_RESOLUTION_EVIDENCE.md",
+      "sha256": "2bce75f9928f278c7d4e33bb853549d99963a685773c93ff2ffd1005d9fecacb",
+      "bytes": 162
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-073_AGENT_EXECUTION_LANE_GOVERNANCE_EVIDENCE.md",
+      "sha256": "8251b84178a702f07784cc6b65ca707f79a1f68da3e23e42f34684723f2e3b09",
+      "bytes": 143
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-074_AGENT_METRIC_QUORUM_EVIDENCE.md",
+      "sha256": "92384928b80910a69147b65c34ab2349399a039a0918131a567b62301a1649cc",
+      "bytes": 130
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-075_AGENT_ACTION_SAFETY_ROLLOUT_EVIDENCE.md",
+      "sha256": "ee3701ce2afa0226e54e0eee4a02a6df2c4a801a2b9fa99e3288b6c1c3668587",
+      "bytes": 139
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-076_AGENT_APPROVAL_BREAK_GLASS_EVIDENCE.md",
+      "sha256": "523f1047b79abf170566458312a676f8e8576afd9ea2cc5f16243ebda78d70f2",
+      "bytes": 138
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md",
+      "sha256": "aa0b99ce382629b50db6b3e4191901d167dad36b71f4651bf96c40e8eb10abca",
+      "bytes": 145
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-078_AGENT_DEPENDENCY_LIFECYCLE_EVIDENCE.md",
+      "sha256": "3eb1864a4fc92bbea560d1b151064163ac4f2d5311205cd67c8ff6f49ac6010a",
+      "bytes": 147
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-079_AGENT_TENANT_COORDINATION_EVIDENCE.md",
+      "sha256": "2ebac9e0c68181a7eaec716226606ceefb8dd746fd802def4bae6515a274ec1b",
       "bytes": 135
     },
     {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-080_AGENT_PACKAGE_PLUGIN_PROVENANCE_EVIDENCE.md",
+      "sha256": "aa7f3ed273acce7cb46edae5f350502d40c0607cf9c400215240415ace6dd376",
+      "bytes": 139
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-081_AGENT_REPLAY_QUARANTINE_EVIDENCE.md",
+      "sha256": "0b384603ae9d36916987c72ee41d7e7339a5ac9d3ab655e89e9737e536103af4",
+      "bytes": 133
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-082_AGENT_NONCLUSTER_SURFACE_CLOSURE_EVIDENCE.md",
+      "sha256": "4167888033e727f534dc62cb4fb7d0405ff00dc11684ec5c978a88d96757a3ca",
+      "bytes": 132
+    },
+    {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-083_AGENT_MEMORY_PRESSURE_METRIC_EVIDENCE.md",
-      "sha256": "aee76d164271b3dcf318e8df03ec5386bc4c1d62a71d3aef8cb9d693a4e82d72",
-      "bytes": 137
+      "sha256": "76d1af81bc789c1c26d411b8e38da8ff7ada100a92b40df8bf7772735694a236",
+      "bytes": 134
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-084_AGENT_INDEX_OPTIMIZER_BOUNDARY_EVIDENCE.md",
-      "sha256": "af423ba22a6b8e7fc2e8b35107b0bc36bd4d3025f5fd34447fadfa4464df4c3a",
-      "bytes": 149
+      "sha256": "cf1ff339ee52e387b41e0eaa0d0e950b4ced00a5060c93c8aa4ce72ff00c4cce",
+      "bytes": 146
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST_EVIDENCE.md",
-      "sha256": "f4c4b252e83e9a2bd8ad02e70b832f77a717ff79a8f67423a1aca0bbfba564bb",
-      "bytes": 515
+      "sha256": "11335fff64aacbac3f357fdd58687318d38516050fee42b1bfb40e150ad81671",
+      "bytes": 510
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-090_METRICS_PRODUCER_COVERAGE_EVIDENCE.md",
-      "sha256": "a710ff139073add1a6a7a995791a1e28992730214a0f9683b59e51215385efa0",
-      "bytes": 331
+      "sha256": "0c22c94c9a75ee26785c4b8abfae4519f4b3685e9f1046e2829a0403d04eff21",
+      "bytes": 325
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-091_INTEGRATED_SUPPORT_BUNDLE_BOUNDARY_EVIDENCE.md",
-      "sha256": "7caeea2a65621ad9d1e9983600f2e2466af9f95fc5c0a2ea7f73265efbd7e526",
-      "bytes": 211
+      "sha256": "de19ad3eb08993608f9c3e5cacac84d96d916c729a3b1e4a2af31aaed9e7b45d",
+      "bytes": 207
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-092_ROUTE_CHAIN_PROOF_EVIDENCE.md",
-      "sha256": "d49721677dcbd1d41cda94245e0b2e8a9c99932cd48865e62d1b7c5809b4c7e5",
-      "bytes": 277
+      "sha256": "34ac8f481b185de90bfdde41ffdab568218f3138e35d7de00ce4709331aaa285",
+      "bytes": 271
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-093_INTEGRATED_RELIABILITY_BOUNDARY_EVIDENCE.md",
-      "sha256": "05dd09600545fbf92a5324a8e33c230fb9ad815cdc3e29248d5ee869330f502a",
-      "bytes": 209
+      "sha256": "d74af43448ef5b42801ae3998ade51b1272104e7f0e6df3d3b943590b3a3b234",
+      "bytes": 205
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-094_CROSS_PLATFORM_BOUNDARY_EVIDENCE.md",
-      "sha256": "a1cf642e599f511d5c32017dba6a3eb8aeb2c1790dc7156dc05645cc7003ac3a",
-      "bytes": 166
+      "sha256": "c328f01c8a1126b4e600f0920c468f859718bbb2d5160c7d2cffb127e2de939f",
+      "bytes": 162
     },
     {
       "path": "project/tools/ceic_agent_readiness_manifest.py",
-      "sha256": "852cfc88de468a965e0722566c275ceeac943be139bf1ed26ce4dc5c28f4ac37",
-      "bytes": 64076
+      "sha256": "cf57210fd98723b72e3da3a97b8638db9bc50a9d28463dc5a2fae2dfdb402d07",
+      "bytes": 62595
     }
   ]
 }

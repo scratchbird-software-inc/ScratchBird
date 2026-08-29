@@ -37,6 +37,13 @@ constexpr std::uint32_t kFlagPayloadChunk = 1u << 3;
 constexpr std::uint32_t kSchemaNone = 0;
 constexpr std::uint32_t kSchemaHelloRequestV1 = 1001;
 constexpr std::uint32_t kSchemaHelloAcceptV1 = 1002;
+// Core `SBPS-PAYLOAD-TLV1` typed result schemas. These names are aliases for
+// the shared parser/server payload codec and never identify the legacy
+// string-row result schemas 4004/4006/4012.
+constexpr std::uint32_t kSchemaPsExecuteResultV1 = 1043;
+constexpr std::uint32_t kSchemaPsFetchResultV1 = 1045;
+static_assert(kSchemaPsExecuteResultV1 == 1043);
+static_assert(kSchemaPsFetchResultV1 == 1045);
 constexpr std::uint32_t kSchemaMessageVectorSetV1 = 2001;
 constexpr std::uint32_t kSchemaManagementRequestV1 = 6001;
 constexpr std::uint32_t kSchemaManagementResponseV1 = 6002;
@@ -438,8 +445,8 @@ constexpr std::uint32_t kSchemaCoordinateAdminUnregisterExternalRelationResolver
 constexpr std::uint32_t kSchemaCoordinateAdminUnregisterExternalRelationResolverResultV1 = 7258;
 constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorRequestV1 = 7213;
 constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorResultV1 = 7214;
-constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectRequestV1 = 7225;
-constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectResultV1 = 7226;
+constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectRequestV1 = 7679;
+constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectResultV1 = 7680;
 constexpr std::uint32_t kSchemaCoordinateAggregateRequestV1 = 7145;
 constexpr std::uint32_t kSchemaCoordinateAggregateResultV1 = 7146;
 constexpr std::uint32_t kSchemaCoordinateGroupRequestV1 = 7147;
@@ -482,6 +489,27 @@ constexpr std::uint32_t kSchemaContextGetRequestV1 = 7399;
 constexpr std::uint32_t kSchemaContextGetResultV1 = 7400;
 constexpr std::uint32_t kSchemaStmtPrepareRequestV1 = 7401;
 constexpr std::uint32_t kSchemaStmtPrepareResultV1 = 7402;
+constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindRequestV1 = 7403;
+constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindResultV1 = 7404;
+// Private authenticated IPRQ carrier: a fixed 120-byte semantic header plus
+// zero or more 24-byte generation-free mapping demands. The success result is
+// exactly one engine-issued 24-byte import_rows_plan_descriptor reference.
+constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindRequestV1 =
+    7405;
+constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindResultV1 =
+    7406;
+// Private raw-carrier narrow-query binding coordination.  These schemas are
+// deliberately not TLV envelopes: 7707 is exactly one canonical SBQNDR01 and
+// 7708 is success-only exactly one engine-issued SBQNPB01.
+constexpr std::uint32_t kSchemaQueryNarrowBindingIssueRequestV1 = 7707;
+constexpr std::uint32_t kSchemaQueryNarrowBindingIssueResultV1 = 7708;
+// Private contextual-TEXT literal profile coordination. 7711 is exactly one
+// canonical SBTLNR02 request and 7712 is success-only exactly one
+// engine-issued SBTLNS02 result. Refusals use the correlated diagnostic pair.
+constexpr std::uint32_t kSchemaContextualTextLiteralProfileIssueRequestV2 =
+    7711;
+constexpr std::uint32_t kSchemaContextualTextLiteralProfileIssueResultV2 =
+    7712;
 constexpr std::uint32_t kSchemaCoordinateSortRequestV1 = 7149;
 constexpr std::uint32_t kSchemaCoordinateSortResultV1 = 7150;
 constexpr std::uint32_t kSchemaCoordinateLimitRequestV1 = 7151;
@@ -893,8 +921,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateAdminUnregisterExternalRelationResolverResult = 263,
   kCoordinateDdlRenameObjectVectorRequest = 218,
   kCoordinateDdlRenameObjectVectorResult = 219,
-  kCoordinateDdlRenameObjectRequest = 230,
-  kCoordinateDdlRenameObjectResult = 231,
+  kCoordinateDdlRenameObjectRequest = 666,
+  kCoordinateDdlRenameObjectResult = 667,
   kCoordinateAggregateRequest = 150,
   kCoordinateAggregateResult = 151,
   kCoordinateGroupRequest = 152,
@@ -937,6 +965,14 @@ enum class MessageType : std::uint16_t {
   kContextGetResult = 387,
   kStmtPrepareRequest = 388,
   kStmtPrepareResult = 389,
+  kCoordinateDmlUpdateRowsBindRequest = 390,
+  kCoordinateDmlUpdateRowsBindResult = 391,
+  kCoordinateDmlPlanImportRowsBindRequest = 392,
+  kCoordinateDmlPlanImportRowsBindResult = 393,
+  kQueryNarrowBindingIssueRequest = 694,
+  kQueryNarrowBindingIssueResult = 695,
+  kContextualTextLiteralProfileIssueRequest = 698,
+  kContextualTextLiteralProfileIssueResult = 699,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,
   kCoordinateLimitRequest = 156,

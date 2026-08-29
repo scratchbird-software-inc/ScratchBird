@@ -23,6 +23,8 @@
 #include "startup_state.hpp"
 #include "uuid.hpp"
 
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
+
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -602,14 +604,9 @@ void TestParserBypassAndTransactionFinalityAreRejectedOrEngineRouted() {
   Require(!embedded_sql.admitted && HasAdmissionDiagnostic(embedded_sql, "SBLR.SQL_TEXT_FORBIDDEN"),
           "DBLC-017 parser envelope containing SQL text was admitted");
 
-  const auto transaction = server::AdmitServerSblrEnvelope(server::ServerSblrAdmissionRequest{
-      "operation_id=transaction.commit\n"
-      "sblr_operation_family=sblr.transaction.control.v3\n"
-      "result_shape=engine.api.result.v1\n"
-      "diagnostic_shape=engine.diagnostic.v1\n"
-      "parser_resolved_names_to_uuids=true\n"
-      "requires_transaction_context=true\n",
-      false});
+  const auto transaction = server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "engine.op.txn_commit", "SBLR_TXN_COMMIT"));
   Require(transaction.admitted, "DBLC-017 canonical transaction SBLR was not admitted");
   Require(transaction.requires_public_abi_dispatch,
           "DBLC-017 transaction SBLR did not require engine/public-ABI dispatch");

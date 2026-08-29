@@ -13,12 +13,15 @@
 #include "ipc_server.hpp"
 #include "lifecycle.hpp"
 #include "local_transaction_store.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/spatial_api.hpp"
 #include "parser_server_client.hpp"
 #include "parsers/sbsql_worker/cache/sblr_template_cache.hpp"
 #include "parsers/sbsql_worker/metrics/parser_metrics.hpp"
 #include "parsers/sbsql_worker/wire/sbsql_test_wire.hpp"
 #include "resource_seed_pack.hpp"
+#include "canonical_query_execute.hpp"
+#include "sblr_executor_availability_registry.hpp"
 #include "server_engine_bridge/statement_context.hpp"
 #include "session_registry.hpp"
 #include "sbps.hpp"
@@ -29,6 +32,7 @@
 #include <algorithm>
 #include <chrono>
 #include <array>
+#include <charconv>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
@@ -45,6 +49,22 @@
 #include <utility>
 #include <vector>
 
+namespace scratchbird::engine::sblr {
+bool Rcp079ExactPersistedColumnDescriptorV1(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const scratchbird::engine::internal_api::
+        MgaRelationColumnStorageDescriptor& persisted);
+bool Rcp079ExactColumnarIdentifierBindingsV1(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const scratchbird::engine::internal_api::TypedRelationalDag& dag,
+    const scratchbird::engine::internal_api::RelationalDagNode& source,
+    const scratchbird::engine::internal_api::MgaRelationStorageDescriptor&
+        persisted,
+    bool has_filter,
+    bool has_project,
+    std::string* detail);
+}
+
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
@@ -57,6 +77,7 @@ namespace platform = scratchbird::core::platform;
 namespace resources = scratchbird::core::resources;
 namespace sbps = scratchbird::server::sbps;
 namespace server = scratchbird::server;
+namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 namespace sbsql = scratchbird::parser::sbsql;
 
@@ -68,6 +89,8 @@ constexpr std::string_view kFullRouteCredentialFingerprint =
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=7b622f17d15a5e6f2d5122c606937dfc"
     "76f5982782adb52b03f7b1ca024f72c9";
+constexpr std::uint64_t kDefaultMgaRelationDecodedBytesPerPass =
+    64ull * 1024ull * 1024ull;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -265,6 +288,7 @@ api::EngineRequestContext BeginTransaction(const Fixture& fixture) {
   context.transaction_uuid = begun.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
+
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       NewUuidText(platform::UuidKind::object, fixture.salt + 6);
@@ -350,7 +374,8 @@ bridge::StatementContextReceiptHandle Acquire(
     sb_engine_session_t session,
     const api::EngineRequestContext& context,
     bridge::StatementContextReceiptView* view,
-    sb_engine_status_t expected = SB_ENGINE_STATUS_OK) {
+    sb_engine_status_t expected = SB_ENGINE_STATUS_OK,
+    std::string_view expected_diagnostic_code = {}) {
   bridge::StatementContextAcquireRequest request;
   request.engine_context = &context;
   request.exact_transaction_uuid = context.transaction_uuid.canonical;
@@ -358,6 +383,38 @@ bridge::StatementContextReceiptHandle Acquire(
   sb_engine_result_t result = nullptr;
   const auto status = bridge::AcquireStatementContextReceipt(
       session, &request, &receipt, view, &result);
+  sb_engine_diagnostic_set_view_t diagnostics{};
+  const bool diagnostics_available =
+      result != nullptr &&
+      sb_engine_result_diagnostics(result, &diagnostics) ==
+          SB_ENGINE_STATUS_OK;
+  if (status != expected) {
+    std::cerr << "statement_context_acquire_status="
+              << sb_engine_status_name(status) << ':'
+              << static_cast<unsigned>(status) << ":expected="
+              << sb_engine_status_name(expected) << ':'
+              << static_cast<unsigned>(expected);
+    if (diagnostics_available && diagnostics.diagnostic_count != 0) {
+      const auto& diagnostic = diagnostics.diagnostics[0];
+      const auto text = [](const sb_engine_string_view_t value) {
+        return std::string_view(value.data == nullptr ? "" : value.data,
+                                value.data == nullptr ? 0 : value.size_bytes);
+      };
+      std::cerr << ":code=" << text(diagnostic.symbolic_code)
+                << ":key=" << text(diagnostic.message_key)
+                << ":detail=" << text(diagnostic.safe_detail);
+    }
+    std::cerr << '\n';
+  }
+  if (!expected_diagnostic_code.empty()) {
+    Require(diagnostics_available &&
+                diagnostics.diagnostic_count == 1 &&
+                std::string_view(
+                    diagnostics.diagnostics[0].symbolic_code.data,
+                    diagnostics.diagnostics[0].symbolic_code.size_bytes) ==
+                    expected_diagnostic_code,
+            "statement-context acquisition diagnostic drifted");
+  }
   if (result != nullptr) (void)sb_engine_result_release(result);
   Require(status == expected, "statement-context acquisition status drifted");
   return receipt;
@@ -421,31 +478,877 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
   return uuid::UuidToString(found->descriptor_uuid.value);
 }
 
+std::string DescriptorFieldValue(const std::string_view descriptor,
+                                 const std::string_view key) {
+  std::size_t begin = 0;
+  while (begin <= descriptor.size()) {
+    const auto end = descriptor.find(';', begin);
+    const auto field = descriptor.substr(
+        begin, end == std::string_view::npos ? descriptor.size() - begin
+                                             : end - begin);
+    const auto separator = field.find('=');
+    if (separator != std::string_view::npos &&
+        field.substr(0, separator) == key) {
+      return std::string(field.substr(separator + 1));
+    }
+    if (end == std::string_view::npos) break;
+    begin = end + 1;
+  }
+  return {};
+}
+
+std::uint64_t ExactDescriptorU64(const std::string_view descriptor,
+                                 const std::string_view key) {
+  const auto text = DescriptorFieldValue(descriptor, key);
+  std::uint64_t value = 0;
+  const auto parsed = std::from_chars(
+      text.data(), text.data() + text.size(), value, 10);
+  Require(!text.empty() && parsed.ec == std::errc{} &&
+              parsed.ptr == text.data() + text.size() && value != 0 &&
+              std::to_string(value) == text,
+          "canonical TEXT descriptor numeric field is invalid");
+  return value;
+}
+
+std::string ReplaceExactDescriptorField(std::string descriptor,
+                                        const std::string_view key,
+                                        const std::string_view replacement) {
+  const std::string prefix = std::string(key) + "=";
+  const auto begin = descriptor.find(prefix);
+  Require(begin != std::string::npos &&
+              (begin == 0 || descriptor[begin - 1] == ';') &&
+              descriptor.find(prefix, begin + prefix.size()) ==
+                  std::string::npos,
+          "canonical TEXT mutation field is absent or duplicated");
+  const auto value_begin = begin + prefix.size();
+  const auto end = descriptor.find(';', value_begin);
+  descriptor.replace(value_begin,
+                     end == std::string::npos
+                         ? descriptor.size() - value_begin
+                         : end - value_begin,
+                     replacement);
+  return descriptor;
+}
+
+std::string RemoveExactDescriptorField(std::string descriptor,
+                                       const std::string_view key) {
+  const std::string prefix = std::string(key) + "=";
+  const auto begin = descriptor.find(prefix);
+  Require(begin != std::string::npos &&
+              (begin == 0 || descriptor[begin - 1] == ';') &&
+              descriptor.find(prefix, begin + prefix.size()) ==
+                  std::string::npos,
+          "canonical TEXT removal field is absent or duplicated");
+  const auto end = descriptor.find(';', begin + prefix.size());
+  if (begin == 0) {
+    descriptor.erase(0, end == std::string::npos ? descriptor.size()
+                                                  : end + 1);
+  } else {
+    descriptor.erase(begin - 1,
+                     end == std::string::npos
+                         ? descriptor.size() - (begin - 1)
+                         : end - (begin - 1));
+  }
+  return descriptor;
+}
+
+void VerifyCanonicalTextPersistedRowAuthority(
+    const api::EngineRequestContext& receipt_context,
+    const api::MgaRelationColumnStorageDescriptor& persisted) {
+  auto runtime_descriptor = persisted.value_descriptor;
+  runtime_descriptor.descriptor_kind = "scalar";
+  const auto& encoded = runtime_descriptor.encoded_descriptor;
+  api::RelationalTypeDescriptor bound;
+  bound.descriptor_id = 1;
+  bound.descriptor_uuid = runtime_descriptor.descriptor_uuid.canonical;
+  bound.type_uuid = DescriptorFieldValue(encoded, "type_uuid");
+  bound.nullability = persisted.nullable
+                          ? api::RelationalNullability::kNullable
+                          : api::RelationalNullability::kNonNull;
+  bound.collation_uuid = persisted.collation_uuid;
+  bound.width = persisted.character_length;
+  bound.datatype_identity_authoritative = true;
+  bound.descriptor_generation =
+      ExactDescriptorU64(encoded, "datatype_descriptor_generation");
+  bound.type_generation = ExactDescriptorU64(encoded, "type_generation");
+  bound.codec_id = DescriptorFieldValue(encoded, "codec_id");
+  bound.codec_version = static_cast<std::uint16_t>(
+      ExactDescriptorU64(encoded, "codec_version"));
+  bound.codec_generation = ExactDescriptorU64(encoded, "codec_generation");
+  bound.statement_receipt_uuid =
+      receipt_context.statement_receipt_uuid.canonical;
+  bound.datatype_catalog_snapshot_uuid =
+      receipt_context.datatype_catalog_snapshot_uuid.canonical;
+  bound.datatype_catalog_generation =
+      receipt_context.datatype_catalog_generation;
+  bound.datatype_registry_generation =
+      receipt_context.datatype_registry_generation;
+  Require(!bound.descriptor_uuid.empty() && !bound.type_uuid.empty() &&
+              bound.collation_uuid.has_value() &&
+              !bound.collation_uuid->empty() && bound.width.has_value() &&
+              *bound.width != 0 && !bound.codec_id.empty() &&
+              bound.codec_version != 0 && bound.codec_generation != 0 &&
+              !bound.statement_receipt_uuid.empty(),
+          "canonical TEXT test bound is incomplete");
+
+  const auto validates = [&](const api::EngineRequestContext& context,
+                             const api::RelationalTypeDescriptor& candidate,
+                             const api::EngineDescriptor& actual) {
+    std::string detail;
+    return sblr::ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
+        context, candidate, actual, candidate.nullability, &detail);
+  };
+  std::string positive_detail;
+  const bool positive =
+      sblr::ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
+          receipt_context, bound, runtime_descriptor, bound.nullability,
+          &positive_detail);
+  if (!positive) {
+    std::cerr << "canonical_text_persisted_authority_detail="
+              << positive_detail << '\n';
+  }
+  Require(positive,
+          "exact persisted canonical TEXT authority was refused");
+
+  const auto refused_field = [&](const std::string_view key,
+                                 const std::string_view replacement,
+                                 const std::string_view message) {
+    auto changed = runtime_descriptor;
+    changed.encoded_descriptor = ReplaceExactDescriptorField(
+        changed.encoded_descriptor, key, replacement);
+    Require(!validates(receipt_context, bound, changed), message);
+  };
+  refused_field("datatype_descriptor_generation", "2",
+                "stale canonical TEXT descriptor generation was admitted");
+  refused_field("type_generation", "2",
+                "stale canonical TEXT type generation was admitted");
+  refused_field("codec_uuid",
+                "019d0000-0000-7000-8000-00000000d71b",
+                "lookalike canonical TEXT codec UUID was admitted");
+  refused_field("codec_id", "datatype.text.utf8.v2",
+                "lookalike canonical TEXT codec ID was admitted");
+  refused_field("codec_version", "2",
+                "stale canonical TEXT codec version was admitted");
+  refused_field("codec_generation", "2",
+                "stale canonical TEXT codec generation was admitted");
+  refused_field("null_encoding", "2",
+                "wrong canonical TEXT null encoding was admitted");
+  refused_field("column_uuid", "not-a-canonical-uuid",
+                "malformed canonical TEXT column UUID was admitted");
+  refused_field("charset_generation", "2",
+                "stale canonical TEXT charset generation was admitted");
+  refused_field("collation_generation", "2",
+                "stale canonical TEXT collation generation was admitted");
+  refused_field("resource_epoch",
+                std::to_string(receipt_context.resource_epoch + 1),
+                "stale canonical TEXT resource epoch was admitted");
+  refused_field("charset_uuid",
+                "019d0000-0000-7000-8000-00000000d71b",
+                "crossed canonical TEXT charset resource was admitted");
+  refused_field("nullable", persisted.nullable ? "false" : "true",
+                "crossed canonical TEXT nullability was admitted");
+  refused_field("character_length",
+                std::to_string(*bound.width + 1),
+                "crossed canonical TEXT width was admitted");
+
+  auto duplicate = runtime_descriptor;
+  duplicate.encoded_descriptor += ";codec_id=" + bound.codec_id;
+  Require(!validates(receipt_context, bound, duplicate),
+          "duplicate canonical TEXT authority field was admitted");
+  auto extra = runtime_descriptor;
+  extra.encoded_descriptor += ";precision=1";
+  Require(!validates(receipt_context, bound, extra),
+          "non-applicable canonical TEXT authority field was admitted");
+  auto missing = runtime_descriptor;
+  missing.encoded_descriptor =
+      RemoveExactDescriptorField(missing.encoded_descriptor, "codec_uuid");
+  Require(!validates(receipt_context, bound, missing),
+          "missing canonical TEXT authority field was admitted");
+  auto missing_column = runtime_descriptor;
+  missing_column.encoded_descriptor = RemoveExactDescriptorField(
+      missing_column.encoded_descriptor, "column_uuid");
+  Require(!validates(receipt_context, bound, missing_column),
+          "missing canonical TEXT column UUID was admitted");
+  auto reordered_column = runtime_descriptor;
+  const auto column_uuid = DescriptorFieldValue(
+      reordered_column.encoded_descriptor, "column_uuid");
+  reordered_column.encoded_descriptor = RemoveExactDescriptorField(
+      reordered_column.encoded_descriptor, "column_uuid");
+  reordered_column.encoded_descriptor =
+      "column_uuid=" + column_uuid + ";" +
+      reordered_column.encoded_descriptor;
+  Require(!validates(receipt_context, bound, reordered_column),
+          "reordered canonical TEXT column UUID was admitted");
+  auto noncanonical_number = runtime_descriptor;
+  noncanonical_number.encoded_descriptor = ReplaceExactDescriptorField(
+      noncanonical_number.encoded_descriptor, "codec_version", "01");
+  Require(!validates(receipt_context, bound, noncanonical_number),
+          "non-canonical canonical TEXT numeric field was admitted");
+
+  auto stale_bound = bound;
+  ++stale_bound.datatype_registry_generation;
+  Require(!validates(receipt_context, stale_bound, runtime_descriptor),
+          "stale canonical TEXT receipt registry generation was admitted");
+  auto crossed_receipt = receipt_context;
+  crossed_receipt.statement_receipt_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d71b";
+  Require(!validates(crossed_receipt, bound, runtime_descriptor),
+          "cross-receipt canonical TEXT descriptor was admitted");
+  auto non_text_shape = bound;
+  non_text_shape.precision = 1;
+  Require(!validates(receipt_context, non_text_shape, runtime_descriptor),
+          "canonical TEXT admitted decimal-only precision authority");
+
+  auto crossed_column = persisted;
+  crossed_column.value_descriptor.encoded_descriptor =
+      ReplaceExactDescriptorField(
+          crossed_column.value_descriptor.encoded_descriptor, "column_uuid",
+          "019d0000-0000-7000-8000-00000000d71b");
+  Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(
+              receipt_context, crossed_column),
+          "crossed persisted canonical TEXT column UUID was admitted");
+
+  api::TypedRelationalDag dag;
+  dag.descriptors.push_back(bound);
+  api::RelationalExpressionRecord identifier;
+  identifier.expression_id = 1;
+  identifier.expression_kind = api::RelationalExpressionKind::kIdentifier;
+  identifier.result_descriptor_id = bound.descriptor_id;
+  identifier.bound_name_uuid = persisted.column_uuid.canonical;
+  dag.expressions.push_back(std::move(identifier));
+  sblr::CanonicalRelationalExpressionRowBinding row_binding;
+  row_binding.row_descriptor_ids.push_back(bound.descriptor_id);
+  row_binding.slots.push_back(
+      {1, bound.descriptor_id, 0,
+       sblr::CanonicalRelationalExpressionRowSlotKind::input_identifier});
+  api::EngineTypedValue row_value;
+  row_value.descriptor = runtime_descriptor;
+  row_value.encoded_value = "authority-positive";
+  row_value.state = api::EngineValueState::value;
+  std::vector<api::EngineTypedValue> row_values{row_value};
+  std::string inferred;
+  std::string detail;
+  sblr::CanonicalRelationalExpressionRuntime no_authority(dag);
+  Require(!no_authority.InferTypeForConsumer(
+              1, row_binding, row_values,
+              api::EngineCanonicalExpressionConsumer::filter, &inferred,
+              &detail) &&
+              detail.find("persisted canonical TEXT authority is unavailable") !=
+                  std::string::npos,
+          "persisted canonical TEXT row was admitted without live authority");
+  sblr::CanonicalRelationalExpressionRuntimeServices services;
+  services.persisted_row_descriptor_authority =
+      [context = &receipt_context](
+          const std::uint32_t,
+          const api::RelationalTypeDescriptor& candidate_bound,
+          const api::EngineDescriptor& candidate_persisted,
+          const api::RelationalNullability effective_nullability,
+          std::string* refusal_detail) {
+        return sblr::ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
+            *context, candidate_bound, candidate_persisted,
+            effective_nullability, refusal_detail);
+      };
+  sblr::CanonicalRelationalExpressionRuntime live_authority(
+      dag, std::move(services));
+  const bool live_inferred = live_authority.InferTypeForConsumer(
+      1, row_binding, row_values,
+      api::EngineCanonicalExpressionConsumer::filter, &inferred, &detail);
+  if (!live_inferred) {
+    std::cerr << "canonical_text_live_hook_detail=" << detail << '\n';
+  }
+  Require(live_inferred && inferred == "text",
+          "live canonical TEXT row authority was not consumed");
+
+  const auto contextual_dag_for = [&](const bool literal_is_left) {
+    api::TypedRelationalDag contextual_dag;
+    contextual_dag.descriptors.push_back(bound);
+    auto literal_descriptor = bound;
+    literal_descriptor.descriptor_id = 2;
+    contextual_dag.descriptors.push_back(std::move(literal_descriptor));
+    api::RelationalTypeDescriptor boolean_descriptor;
+    boolean_descriptor.descriptor_id = 3;
+    contextual_dag.descriptors.push_back(std::move(boolean_descriptor));
+    contextual_dag.expressions.push_back(dag.expressions.front());
+    api::RelationalExpressionRecord literal;
+    literal.expression_id = 2;
+    literal.expression_kind = api::RelationalExpressionKind::kLiteral;
+    literal.result_descriptor_id = 2;
+    literal.literal_kind = api::RelationalLiteralKind::kString;
+    literal.contextual_text_literal_v2 =
+        api::RelationalExpressionRecord::ContextualTextLiteralReferenceV2{
+            11, 12, 2};
+    contextual_dag.expressions.push_back(std::move(literal));
+    api::RelationalExpressionRecord comparison;
+    comparison.expression_id = 3;
+    comparison.expression_kind = api::RelationalExpressionKind::kBinary;
+    comparison.result_descriptor_id = 3;
+    comparison.operator_name = "=";
+    comparison.child_expression_ids =
+        literal_is_left ? std::vector<std::uint32_t>{2, 1}
+                        : std::vector<std::uint32_t>{1, 2};
+    contextual_dag.expressions.push_back(std::move(comparison));
+    return contextual_dag;
+  };
+  const auto contextual_services_for =
+      [&](const std::uint32_t expected_left,
+          const std::uint32_t expected_right, const bool install_authority,
+          const bool exact_authority, std::size_t* authority_calls,
+          std::size_t* evaluator_calls) {
+        sblr::CanonicalRelationalExpressionRuntimeServices contextual_services;
+        contextual_services.persisted_row_descriptor_authority =
+            [context = &receipt_context](
+                const std::uint32_t,
+                const api::RelationalTypeDescriptor& candidate_bound,
+                const api::EngineDescriptor& candidate_persisted,
+                const api::RelationalNullability effective_nullability,
+                std::string* refusal_detail) {
+              return sblr::ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
+                  *context, candidate_bound, candidate_persisted,
+                  effective_nullability, refusal_detail);
+            };
+        contextual_services.contextual_text_equality_evaluator =
+            [evaluator_calls](
+                const std::uint32_t, const std::uint32_t,
+                const std::uint32_t, const api::EngineTypedValue&,
+                api::EngineSqlTruthValue*, std::string*, std::string*) {
+              ++*evaluator_calls;
+              return false;
+            };
+        if (install_authority) {
+          contextual_services.contextual_text_equality_type_authority =
+              [expected_left, expected_right, exact_authority,
+               authority_calls](
+                  const std::uint32_t comparison_expression_id,
+                  const std::uint32_t left_expression_id,
+                  const std::uint32_t right_expression_id,
+                  const std::uint32_t literal_expression_id,
+                  const std::uint64_t literal_occurrence,
+                  const std::uint64_t node_id,
+                  const std::uint32_t literal_descriptor_handle,
+                  std::string* refusal_detail) {
+                ++*authority_calls;
+                const bool exact =
+                    exact_authority && comparison_expression_id == 3 &&
+                    left_expression_id == expected_left &&
+                    right_expression_id == expected_right &&
+                    literal_expression_id == 2 && literal_occurrence == 11 &&
+                    node_id == 12 && literal_descriptor_handle == 2;
+                if (!exact && refusal_detail != nullptr) {
+                  *refusal_detail =
+                      "focused contextual TEXT type authority key mismatch";
+                }
+                return exact;
+              };
+        }
+        return contextual_services;
+      };
+  const auto infer_contextual = [&](api::TypedRelationalDag contextual_dag,
+                                    const std::uint32_t expected_left,
+                                    const std::uint32_t expected_right,
+                                    const bool install_authority,
+                                    const bool exact_authority,
+                                    std::size_t* authority_calls,
+                                    std::size_t* evaluator_calls,
+                                    std::string* inferred_type,
+                                    std::string* refusal_detail) {
+    auto contextual_services = contextual_services_for(
+        expected_left, expected_right, install_authority, exact_authority,
+        authority_calls, evaluator_calls);
+    sblr::CanonicalRelationalExpressionRuntime contextual_runtime(
+        contextual_dag, std::move(contextual_services));
+    return contextual_runtime.InferTypeForConsumer(
+        3, row_binding, row_values,
+        api::EngineCanonicalExpressionConsumer::filter, inferred_type,
+        refusal_detail);
+  };
+
+  const auto original_row_payload = row_values.front().encoded_value;
+  std::size_t authority_calls = 0;
+  std::size_t evaluator_calls = 0;
+  inferred.clear();
+  detail.clear();
+  Require(infer_contextual(contextual_dag_for(false), 1, 2, true, true,
+                           &authority_calls, &evaluator_calls, &inferred,
+                           &detail) &&
+              inferred == "boolean" && authority_calls == 1 &&
+              evaluator_calls == 0 &&
+              row_values.front().encoded_value == original_row_payload,
+          "contextual TEXT equality type authority was not state-neutral");
+  authority_calls = 0;
+  evaluator_calls = 0;
+  inferred.clear();
+  detail.clear();
+  Require(infer_contextual(contextual_dag_for(true), 2, 1, true, true,
+                           &authority_calls, &evaluator_calls, &inferred,
+                           &detail) &&
+              inferred == "boolean" && authority_calls == 1 &&
+              evaluator_calls == 0,
+          "reversed contextual TEXT equality type authority was refused");
+
+  const auto refuses_contextual = [&](api::TypedRelationalDag candidate,
+                                      const bool install_authority,
+                                      const bool exact_authority) {
+    std::size_t refused_authority_calls = 0;
+    std::size_t refused_evaluator_calls = 0;
+    std::string refused_type;
+    std::string refused_detail;
+    auto refused_services = contextual_services_for(
+        1, 2, install_authority, exact_authority,
+        &refused_authority_calls, &refused_evaluator_calls);
+    sblr::CanonicalRelationalExpressionRuntime refused_runtime(
+        candidate, std::move(refused_services));
+    return !refused_runtime.InferType(3, std::nullopt, &refused_type,
+                                     &refused_detail) &&
+           refused_evaluator_calls == 0;
+  };
+  auto wrong_operator = contextual_dag_for(false);
+  wrong_operator.expressions.back().operator_name = "<>";
+  Require(refuses_contextual(std::move(wrong_operator), true, true),
+          "non-equality contextual TEXT type inference was admitted");
+  auto both_contextual = contextual_dag_for(false);
+  auto second_literal = both_contextual.expressions[1];
+  second_literal.expression_id = 4;
+  second_literal.result_descriptor_id = 4;
+  second_literal.contextual_text_literal_v2->literal_descriptor_handle = 4;
+  auto second_literal_descriptor = both_contextual.descriptors[1];
+  second_literal_descriptor.descriptor_id = 4;
+  both_contextual.descriptors.push_back(std::move(second_literal_descriptor));
+  both_contextual.expressions.push_back(std::move(second_literal));
+  both_contextual.expressions[2].child_expression_ids = {2, 4};
+  Require(refuses_contextual(std::move(both_contextual), true, true),
+          "two contextual TEXT markers were admitted as one equality");
+  Require(refuses_contextual(contextual_dag_for(false), false, true),
+          "contextual TEXT inference was admitted without type authority");
+  Require(refuses_contextual(contextual_dag_for(false), true, false),
+          "crossed contextual TEXT type authority was admitted");
+  auto wrong_kind = contextual_dag_for(false);
+  wrong_kind.expressions[1].literal_kind =
+      api::RelationalLiteralKind::kNumeric;
+  Require(refuses_contextual(std::move(wrong_kind), true, true),
+          "wrong-kind contextual TEXT marker was admitted");
+  auto wrong_handle = contextual_dag_for(false);
+  wrong_handle.expressions[1]
+      .contextual_text_literal_v2->literal_descriptor_handle = 1;
+  Require(refuses_contextual(std::move(wrong_handle), true, true),
+          "crossed contextual TEXT descriptor handle was admitted");
+
+  api::TypedRelationalDag ordinary_literal_dag;
+  ordinary_literal_dag.descriptors.push_back(bound);
+  api::RelationalExpressionRecord ordinary_literal;
+  ordinary_literal.expression_id = 1;
+  ordinary_literal.expression_kind =
+      api::RelationalExpressionKind::kLiteral;
+  ordinary_literal.result_descriptor_id = 1;
+  ordinary_literal.literal_kind = api::RelationalLiteralKind::kString;
+  ordinary_literal.literal_or_parameter_ref = "ordinary-v1-text";
+  ordinary_literal_dag.expressions.push_back(std::move(ordinary_literal));
+  sblr::CanonicalRelationalExpressionRuntime ordinary_literal_runtime(
+      ordinary_literal_dag);
+  inferred.clear();
+  detail.clear();
+  Require(ordinary_literal_runtime.InferType(1, "text", &inferred, &detail) &&
+              inferred == "text",
+          "ordinary V1 string literal inference changed");
+}
+
+void VerifyCanonicalNonTextPersistedSuffixAuthority(
+    const api::EngineRequestContext& receipt_context,
+    const api::MgaRelationColumnStorageDescriptor& persisted) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto int64_row =
+      manifest.ok()
+          ? dt::LookupDatatypeCatalogRow(manifest.manifest,
+                                         dt::CanonicalTypeId::int64)
+          : dt::DatatypeCatalogManifestResult{};
+  Require(int64_row.ok() &&
+              int64_row.manifest.descriptor_rows.size() == 1 &&
+              int64_row.manifest.descriptor_rows.front()
+                  .descriptor_uuid.valid(),
+          "canonical int64 manifest row is unavailable");
+  const auto descriptor_uuid = uuid::UuidToString(
+      int64_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      receipt_context.datatype_catalog_snapshot_uuid.canonical,
+      receipt_context.datatype_catalog_generation,
+      receipt_context.datatype_registry_generation, descriptor_uuid,
+      int64_row.manifest.descriptor_rows.front().descriptor_epoch);
+  Require(identity.ok && identity.row.codec_uuid.empty() &&
+              persisted.value_descriptor.canonical_type_name == "int64" &&
+              DescriptorFieldValue(
+                  persisted.value_descriptor.encoded_descriptor,
+                  "type_uuid") == identity.row.type_uuid &&
+              persisted.value_descriptor.descriptor_uuid.canonical !=
+                  identity.row.descriptor_uuid &&
+              sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
+                                                           persisted),
+          "suffix-absent non-TEXT descriptor handle was not preserved");
+
+  auto complete = persisted;
+  const auto append = [&](const std::string_view key,
+                          const std::string& value) {
+    complete.value_descriptor.encoded_descriptor +=
+        ";" + std::string(key) + "=" + value;
+  };
+  append("datatype_descriptor_uuid", identity.row.descriptor_uuid);
+  append("datatype_descriptor_generation",
+         std::to_string(identity.row.descriptor_generation));
+  append("type_generation", std::to_string(identity.row.type_generation));
+  append("codec_id", identity.row.codec_id);
+  append("codec_version", std::to_string(identity.row.codec_version));
+  append("codec_generation", std::to_string(identity.row.codec_generation));
+  append("null_encoding", std::to_string(identity.row.null_encoding_code));
+  Require(sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
+                                                       complete),
+          "complete non-TEXT registry suffix was refused");
+
+  const auto refused_field = [&](const std::string_view key,
+                                 const std::string_view replacement,
+                                 const std::string_view message) {
+    auto changed = complete;
+    changed.value_descriptor.encoded_descriptor = ReplaceExactDescriptorField(
+        changed.value_descriptor.encoded_descriptor, key, replacement);
+    Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
+                                                          changed),
+            message);
+  };
+  refused_field("datatype_descriptor_uuid",
+                "019d0000-0000-7000-8000-00000000d71b",
+                "lookalike non-TEXT descriptor UUID suffix was admitted");
+  refused_field("datatype_descriptor_generation", "2",
+                "stale non-TEXT descriptor generation was admitted");
+  refused_field("type_generation", "2",
+                "stale non-TEXT type generation was admitted");
+  refused_field("codec_id", identity.row.codec_id + ".lookalike",
+                "lookalike non-TEXT codec ID was admitted");
+  refused_field("codec_version", "2",
+                "stale non-TEXT codec version was admitted");
+  refused_field("codec_generation", "2",
+                "stale non-TEXT codec generation was admitted");
+  refused_field("null_encoding", "1",
+                "wrong non-TEXT null encoding was admitted");
+  refused_field("codec_version", "01",
+                "non-canonical non-TEXT numeric suffix was admitted");
+
+  auto partial = persisted;
+  partial.value_descriptor.encoded_descriptor +=
+      ";datatype_descriptor_uuid=" + identity.row.descriptor_uuid;
+  Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
+                                                        partial),
+          "partial non-TEXT registry suffix was admitted");
+  auto missing = complete;
+  missing.value_descriptor.encoded_descriptor = RemoveExactDescriptorField(
+      missing.value_descriptor.encoded_descriptor, "codec_id");
+  Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
+                                                        missing),
+          "incomplete non-TEXT registry suffix was admitted");
+  auto unsupported = complete;
+  unsupported.value_descriptor.encoded_descriptor +=
+      ";codec_uuid=019d0000-0000-7000-8000-00000000d71a";
+  Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
+                                                        unsupported),
+          "unsupported non-TEXT codec UUID suffix was admitted");
+  auto unknown = complete;
+  unknown.value_descriptor.encoded_descriptor += ";codec_alias=lookalike";
+  Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
+                                                        unknown),
+          "unknown non-TEXT registry suffix was admitted");
+  auto stale_receipt = receipt_context;
+  ++stale_receipt.datatype_registry_generation;
+  Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(stale_receipt,
+                                                        complete),
+          "stale receipt admitted a non-TEXT registry suffix");
+}
+
+void VerifyRcp079ColumnarOperationAliasAuthority(
+    const api::EngineRequestContext& receipt_context,
+    const api::MgaRelationStorageDescriptor& persisted) {
+  Require(persisted.columns.size() == 3 &&
+              persisted.columns[0].canonical_name_key == "row_uuid" &&
+              persisted.columns[1].canonical_name_key == "join_key" &&
+              persisted.columns[2].canonical_name_key == "payload",
+          "columnar alias authority fixture descriptor is incomplete");
+  const auto bound_descriptor = [&](const std::size_t ordinal) {
+    const auto& column = persisted.columns[ordinal];
+    const auto& encoded = column.value_descriptor.encoded_descriptor;
+    api::RelationalTypeDescriptor descriptor;
+    descriptor.descriptor_id = static_cast<std::uint32_t>(ordinal + 1);
+    descriptor.descriptor_uuid =
+        column.value_descriptor.descriptor_uuid.canonical;
+    descriptor.type_uuid = DescriptorFieldValue(encoded, "type_uuid");
+    descriptor.nullability =
+        column.nullable ? api::RelationalNullability::kNullable
+                        : api::RelationalNullability::kNonNull;
+    if (!column.collation_uuid.empty()) {
+      descriptor.collation_uuid = column.collation_uuid;
+    }
+    if (column.character_length != 0) {
+      descriptor.width = column.character_length;
+    }
+    const auto descriptor_generation =
+        DescriptorFieldValue(encoded, "datatype_descriptor_generation");
+    if (!descriptor_generation.empty()) {
+      descriptor.datatype_identity_authoritative = true;
+      descriptor.descriptor_generation =
+          ExactDescriptorU64(encoded, "datatype_descriptor_generation");
+      descriptor.type_generation =
+          ExactDescriptorU64(encoded, "type_generation");
+      descriptor.codec_id = DescriptorFieldValue(encoded, "codec_id");
+      descriptor.codec_version = static_cast<std::uint16_t>(
+          ExactDescriptorU64(encoded, "codec_version"));
+      descriptor.codec_generation =
+          ExactDescriptorU64(encoded, "codec_generation");
+      descriptor.statement_receipt_uuid =
+          receipt_context.statement_receipt_uuid.canonical;
+      descriptor.datatype_catalog_snapshot_uuid =
+          receipt_context.datatype_catalog_snapshot_uuid.canonical;
+      descriptor.datatype_catalog_generation =
+          receipt_context.datatype_catalog_generation;
+      descriptor.datatype_registry_generation =
+          receipt_context.datatype_registry_generation;
+    }
+    return descriptor;
+  };
+  const auto make_source = [&](const std::vector<std::uint32_t>& operations,
+                               const std::vector<std::uint32_t>& outputs) {
+    api::RelationalDagNode source;
+    source.node_id = 1;
+    source.node_kind = api::RelationalDagNodeKind::kScan;
+    source.output_descriptor_ids = outputs;
+    source.bound_expression_ids = operations;
+    source.required_object_uuids = {persisted.relation_uuid.canonical};
+    source.semantic_variant_id = "SBLR_MODEL_SOURCE_V1";
+    return source;
+  };
+  const auto source_root = [&] {
+    api::RelationalExpressionRecord expression;
+    expression.expression_id = 2;
+    expression.expression_kind =
+        api::RelationalExpressionKind::kFunctionCall;
+    expression.result_descriptor_id = 1;
+    expression.bound_name_uuid = persisted.relation_uuid.canonical;
+    expression.operator_name = "COLUMNAR_SOURCE";
+    return expression;
+  };
+  const auto alias = [&](const std::uint32_t expression_id) {
+    api::RelationalExpressionRecord expression;
+    expression.expression_id = expression_id;
+    expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
+    expression.result_descriptor_id = 1;
+    expression.bound_name_uuid = persisted.relation_uuid.canonical;
+    return expression;
+  };
+  const auto column = [&](const std::uint32_t expression_id,
+                          const std::size_t ordinal) {
+    api::RelationalExpressionRecord expression;
+    expression.expression_id = expression_id;
+    expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
+    expression.result_descriptor_id =
+        static_cast<std::uint32_t>(ordinal + 1);
+    expression.bound_name_uuid =
+        persisted.columns[ordinal].column_uuid.canonical;
+    return expression;
+  };
+  const auto literal = [&](const std::uint32_t expression_id,
+                           const std::uint32_t descriptor_id) {
+    api::RelationalExpressionRecord expression;
+    expression.expression_id = expression_id;
+    expression.expression_kind = api::RelationalExpressionKind::kLiteral;
+    expression.result_descriptor_id = descriptor_id;
+    expression.literal_kind = api::RelationalLiteralKind::kNumeric;
+    expression.literal_or_parameter_ref = "1";
+    return expression;
+  };
+  const auto binary = [&](const std::uint32_t expression_id,
+                          const std::uint32_t left,
+                          const std::uint32_t right) {
+    api::RelationalExpressionRecord expression;
+    expression.expression_id = expression_id;
+    expression.expression_kind = api::RelationalExpressionKind::kBinary;
+    expression.child_expression_ids = {left, right};
+    expression.result_descriptor_id = 2;
+    expression.operator_name = ">";
+    return expression;
+  };
+  const auto operation = [&](const std::uint32_t expression_id,
+                             const std::string& name,
+                             std::vector<std::uint32_t> children,
+                             const std::uint32_t descriptor_id) {
+    api::RelationalExpressionRecord expression;
+    expression.expression_id = expression_id;
+    expression.expression_kind =
+        api::RelationalExpressionKind::kFunctionCall;
+    expression.child_expression_ids = std::move(children);
+    expression.result_descriptor_id = descriptor_id;
+    expression.operator_name = name;
+    return expression;
+  };
+  const auto base_dag = [&] {
+    api::TypedRelationalDag dag;
+    for (std::size_t ordinal = 0; ordinal < persisted.columns.size();
+         ++ordinal) {
+      dag.descriptors.push_back(bound_descriptor(ordinal));
+    }
+    dag.expressions.push_back(source_root());
+    return dag;
+  };
+  const auto filter_dag = [&] {
+    auto dag = base_dag();
+    dag.expressions.push_back(alias(3));
+    dag.expressions.push_back(column(4, 2));
+    dag.expressions.push_back(literal(5, 3));
+    dag.expressions.push_back(binary(6, 4, 5));
+    dag.expressions.push_back(operation(7, "COLUMNAR_FILTER", {3, 6}, 2));
+    dag.nodes.push_back(make_source({2, 7}, {1, 2, 3}));
+    return dag;
+  };
+  const auto project_dag = [&] {
+    auto dag = base_dag();
+    dag.expressions.push_back(alias(3));
+    dag.expressions.push_back(column(4, 2));
+    dag.expressions.push_back(column(5, 0));
+    dag.expressions.push_back(
+        operation(6, "COLUMNAR_PROJECT", {3, 4, 5}, 3));
+    // The public output starts with payload, while the source root and alias
+    // retain the exact row_uuid descriptor handle.
+    dag.nodes.push_back(make_source({2, 6}, {3, 1}));
+    return dag;
+  };
+  const auto combined_dag = [&] {
+    auto dag = project_dag();
+    dag.nodes.clear();
+    dag.expressions.push_back(alias(7));
+    dag.expressions.push_back(column(8, 1));
+    dag.expressions.push_back(literal(9, 2));
+    dag.expressions.push_back(binary(10, 8, 9));
+    dag.expressions.push_back(operation(11, "COLUMNAR_FILTER", {7, 10}, 2));
+    dag.nodes.push_back(make_source({2, 11, 6}, {3, 1}));
+    return dag;
+  };
+  const auto expression = [](auto* dag, const std::uint32_t expression_id)
+      -> api::RelationalExpressionRecord* {
+    const auto found = std::ranges::find_if(
+        dag->expressions, [&](const auto& candidate) {
+          return candidate.expression_id == expression_id;
+        });
+    return found == dag->expressions.end() ? nullptr : &*found;
+  };
+  const auto validates = [&](const api::TypedRelationalDag& dag,
+                             const bool has_filter,
+                             const bool has_project) {
+    std::string detail;
+    return !dag.nodes.empty() &&
+           sblr::Rcp079ExactColumnarIdentifierBindingsV1(
+               receipt_context, dag, dag.nodes.front(), persisted, has_filter,
+               has_project, &detail);
+  };
+
+  const auto filter = filter_dag();
+  const auto project = project_dag();
+  const auto combined = combined_dag();
+  Require(filter.expressions.back().expression_id == 7 &&
+              filter.expressions.back().child_expression_ids.front() == 3 &&
+              validates(filter, true, false),
+          "exact FILTER-only columnar alias occurrence was refused");
+  Require(project.expressions.back().expression_id == 6 &&
+              project.expressions.back().child_expression_ids.front() == 3 &&
+              project.nodes.front().output_descriptor_ids.front() == 3 &&
+              validates(project, false, true),
+          "exact PROJECT-only columnar alias occurrence was refused");
+  Require(combined.expressions[4].expression_id == 6 &&
+              combined.expressions[4].child_expression_ids.front() == 3 &&
+              combined.expressions.back().expression_id == 11 &&
+              combined.expressions.back().child_expression_ids.front() == 7 &&
+              validates(combined, true, true),
+          "exact distinct FILTER+PROJECT alias occurrences were refused");
+
+  const auto refused = [&](api::TypedRelationalDag changed,
+                           const bool has_filter,
+                           const bool has_project,
+                           const std::string_view message) {
+    Require(!validates(changed, has_filter, has_project), message);
+  };
+  auto changed = filter;
+  expression(&changed, 3)->bound_name_uuid.reset();
+  refused(std::move(changed), true, false,
+          "missing columnar alias object UUID was admitted");
+  changed = filter;
+  expression(&changed, 3)->bound_name_uuid =
+      "019d0000-0000-7000-8000-00000000d71b";
+  refused(std::move(changed), true, false,
+          "crossed columnar alias object UUID was admitted");
+  changed = filter;
+  expression(&changed, 3)->result_descriptor_id = 3;
+  refused(std::move(changed), true, false,
+          "crossed columnar alias descriptor handle was admitted");
+  changed = combined;
+  expression(&changed, 11)->child_expression_ids.front() = 3;
+  refused(std::move(changed), true, true,
+          "reused FILTER+PROJECT alias occurrence was admitted");
+  changed = filter;
+  changed.expressions.push_back(alias(12));
+  refused(std::move(changed), true, false,
+          "orphan columnar relation alias identifier was admitted");
+  changed = filter;
+  expression(&changed, 3)->operator_name = "COLUMNAR_ALIAS_LOOKALIKE";
+  refused(std::move(changed), true, false,
+          "columnar alias with an extra scalar field was admitted");
+  changed = filter;
+  expression(&changed, 3)->bound_name_uuid =
+      persisted.columns[1].column_uuid.canonical;
+  refused(std::move(changed), true, false,
+          "persisted column identifier was admitted as a relation alias");
+  changed = project;
+  expression(&changed, 4)->bound_name_uuid = persisted.relation_uuid.canonical;
+  refused(std::move(changed), false, true,
+          "relation alias UUID was admitted as a persisted column");
+}
+
 void CreateObjectBackedRelation(Fixture* fixture) {
   Require(fixture != nullptr, "object-backed fixture is missing");
-  api::EngineBeginTransactionRequest begin;
-  begin.context.trust_mode = api::EngineTrustMode::server_isolated;
-  begin.context.request_id = "qow-packet7-create-object";
-  begin.context.database_path = fixture->database_path.string();
-  begin.context.database_uuid.canonical = fixture->database_uuid;
-  begin.context.principal_uuid.canonical =
-      uuid::UuidToString(fixture->principal_uuid.value);
-  begin.context.session_uuid.canonical =
-      uuid::UuidToString(fixture->session_uuid.value);
-  begin.context.security_context_present = true;
-  begin.context.catalog_generation_id = 1;
-  begin.context.security_epoch = 1;
-  begin.context.resource_epoch = fixture->resource_epoch;
-  begin.context.name_resolution_epoch = 1;
-  begin.isolation_level = "read_committed";
-  const auto begun = api::EngineBeginTransaction(begin);
-  RequireEngineOk(begun, "object-backed fixture transaction begin failed");
+  auto context = BeginTransaction(*fixture);
+  context.request_id = "qow-packet7-create-object";
 
-  auto context = begin.context;
-  context.local_transaction_id = begun.local_transaction_id;
-  context.transaction_uuid = begun.transaction_uuid;
-  context.snapshot_visible_through_local_transaction_id =
-      begun.snapshot_visible_through_local_transaction_id;
+  // This fixture enters DDL through the private engine API rather than the
+  // normal parser-server statement path. Obtain datatype authority from the
+  // same engine-owned receipt projection used by that path; the fixture must
+  // not author the Core snapshot identity or either generation.
+  PublicSession ddl_session(*fixture, fixture->session_uuid);
+  bridge::StatementContextReceiptView ddl_receipt_view;
+  const auto ddl_receipt =
+      Acquire(ddl_session.get(), context, &ddl_receipt_view);
+  Require(static_cast<bool>(ddl_receipt),
+          "object-backed fixture datatype receipt acquisition failed");
+  api::EngineRequestContext ddl_receipt_context;
+  sb_engine_result_t ddl_receipt_copy_result = nullptr;
+  const auto ddl_receipt_copy_status =
+      bridge::CopyStatementContextEngineContextV1(
+          ddl_receipt, &ddl_receipt_context, &ddl_receipt_copy_result);
+  if (ddl_receipt_copy_result != nullptr) {
+    (void)sb_engine_result_release(ddl_receipt_copy_result);
+  }
+  Require(ddl_receipt_copy_status == SB_ENGINE_STATUS_OK,
+          "object-backed fixture datatype receipt copy failed");
+  Require(!ddl_receipt_context.datatype_catalog_snapshot_uuid.canonical.empty() &&
+              ddl_receipt_context.datatype_catalog_generation != 0 &&
+              ddl_receipt_context.datatype_registry_generation != 0 &&
+              ddl_receipt_context.datatype_catalog_snapshot_uuid.canonical ==
+                  ddl_receipt_view.literal_catalog_snapshot_uuid &&
+              ddl_receipt_context.datatype_catalog_generation ==
+                  ddl_receipt_view.literal_catalog_generation &&
+              ddl_receipt_context.datatype_registry_generation ==
+                  ddl_receipt_view.literal_registry_generation,
+          "object-backed fixture datatype receipt triplet drifted");
+  context.datatype_catalog_snapshot_uuid =
+      ddl_receipt_context.datatype_catalog_snapshot_uuid;
+  context.datatype_catalog_generation =
+      ddl_receipt_context.datatype_catalog_generation;
+  context.datatype_registry_generation =
+      ddl_receipt_context.datatype_registry_generation;
+  const auto fixture_text_descriptor = [&]() {
+    return "type=text;character_length=256;charset_uuid=" +
+           fixture->utf8_charset_uuid + ";collation_uuid=" +
+           fixture->utf8_default_collation_uuid;
+  };
 
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
@@ -476,14 +1379,14 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   auxiliary_column.descriptor.descriptor_kind = "scalar";
   auxiliary_column.descriptor.canonical_type_name = "integer";
   auxiliary_column.descriptor.encoded_descriptor = "type=integer";
-  auxiliary_column.nullable = true;
+  auxiliary_column.nullable = false;
   table.table_columns.push_back(std::move(auxiliary_column));
   api::EngineColumnDefinition nullable_order_column;
   nullable_order_column.ordinal = 2;
   nullable_order_column.names.push_back(PrimaryName("nullable_order_value"));
   nullable_order_column.descriptor.descriptor_kind = "scalar";
-  nullable_order_column.descriptor.canonical_type_name = "integer";
-  nullable_order_column.descriptor.encoded_descriptor = "type=integer";
+  nullable_order_column.descriptor.canonical_type_name = "int64";
+  nullable_order_column.descriptor.encoded_descriptor = "type=int64";
   nullable_order_column.nullable = true;
   table.table_columns.push_back(std::move(nullable_order_column));
   api::EngineColumnDefinition boolean_column;
@@ -499,10 +1402,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   text_column.names.push_back(PrimaryName("text_value"));
   text_column.descriptor.descriptor_kind = "scalar";
   text_column.descriptor.canonical_type_name = "text";
-  text_column.descriptor.encoded_descriptor =
-      "type=text;character_length=256;charset_uuid=" +
-      fixture->utf8_charset_uuid +
-      ";collation_uuid=" + fixture->utf8_default_collation_uuid;
+  text_column.descriptor.encoded_descriptor = fixture_text_descriptor();
   text_column.nullable = true;
   table.table_columns.push_back(std::move(text_column));
   RequireEngineOk(api::EngineCreateTable(table),
@@ -543,10 +1443,36 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   RequireEngineOk(api::EngineCreateTable(join_table),
                   "object-backed join fixture table create failed");
 
+  for (const auto relation_uuid : {
+           uuid::UuidToString(fixture->relation_uuid.value),
+           uuid::UuidToString(fixture->join_relation_uuid.value)}) {
+    const auto loaded =
+        api::LoadMgaRelationStorageDescriptor(context, relation_uuid);
+    if (!loaded.ok) {
+      std::cerr << loaded.diagnostic.code << ':'
+                << loaded.diagnostic.detail << '\n';
+    }
+    Require(loaded.ok, "object-backed join descriptor inspection failed");
+    for (const auto& persisted : loaded.descriptor.columns) {
+      std::cerr << "qow_join_datatype_tuple="
+                << persisted.canonical_name_key << ':'
+                << persisted.value_descriptor.descriptor_uuid.canonical << ':'
+                << DescriptorFieldValue(
+                       persisted.value_descriptor.encoded_descriptor,
+                       "type_uuid")
+                << ':' << (persisted.nullable ? 1 : 0)
+                << ":encoded="
+                << persisted.value_descriptor.encoded_descriptor << '\n';
+      if (persisted.canonical_name_key == "text_value") {
+        VerifyCanonicalTextPersistedRowAuthority(ddl_receipt_context,
+                                                 persisted);
+      }
+    }
+  }
+
   const auto uuid_type_uuid = CoreTypeUuid("uuid");
   const auto geometry_type_uuid = CoreTypeUuid("geometry");
   const auto int64_type_uuid = CoreTypeUuid("int64");
-  const auto character_type_uuid = CoreTypeUuid("character");
   const auto crs_uuid = uuid::UuidToString(fixture->spatial_crs_uuid.value);
   const auto make_column = [](const std::uint32_t ordinal,
                               std::string name,
@@ -604,12 +1530,29 @@ void CreateObjectBackedRelation(Fixture* fixture) {
       "canonical=int64;type_uuid=" + int64_type_uuid + ";nullable=false",
       false));
   columnar_table.table_columns.push_back(make_column(
-      2, "payload", "character",
-      "canonical=character;type_uuid=" + character_type_uuid +
-          ";nullable=false",
+      2, "payload", "text", fixture_text_descriptor(),
       false));
   RequireEngineOk(api::EngineCreateTable(columnar_table),
                   "object-backed columnar fixture table create failed");
+  const auto persisted_columnar = api::LoadMgaRelationStorageDescriptor(
+      context, uuid::UuidToString(fixture->columnar_relation_uuid.value));
+  Require(persisted_columnar.ok && persisted_columnar.descriptor.columns.size() ==
+                                        columnar_table.table_columns.size(),
+          "object-backed columnar descriptor inspection failed");
+  const auto persisted_join_key = std::ranges::find_if(
+      persisted_columnar.descriptor.columns, [](const auto& candidate) {
+        return candidate.canonical_name_key == "join_key";
+      });
+  Require(persisted_join_key != persisted_columnar.descriptor.columns.end(),
+          "object-backed columnar int64 descriptor is missing");
+  VerifyCanonicalNonTextPersistedSuffixAuthority(context,
+                                                  *persisted_join_key);
+  VerifyRcp079ColumnarOperationAliasAuthority(
+      ddl_receipt_context, persisted_columnar.descriptor);
+  Require(bridge::ReleaseStatementContextReceipt(ddl_receipt) ==
+              SB_ENGINE_STATUS_OK,
+          "object-backed fixture datatype receipt release failed");
+  ddl_session.End();
 
   api::EngineInsertRowsRequest insert;
   insert.context = context;
@@ -629,8 +1572,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     auxiliary_typed.encoded_value = std::to_string(100 + value);
     api::EngineTypedValue nullable_order_typed;
     nullable_order_typed.descriptor.descriptor_kind = "scalar";
-    nullable_order_typed.descriptor.canonical_type_name = "integer";
-    nullable_order_typed.descriptor.encoded_descriptor = "type=integer";
+    nullable_order_typed.descriptor.canonical_type_name = "int64";
+    nullable_order_typed.descriptor.encoded_descriptor = "type=int64";
     if (value == 2) {
       nullable_order_typed.is_null = true;
       nullable_order_typed.state = api::EngineValueState::sql_null;
@@ -650,7 +1593,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     api::EngineTypedValue text_typed;
     text_typed.descriptor.descriptor_kind = "scalar";
     text_typed.descriptor.canonical_type_name = "text";
-    text_typed.descriptor.encoded_descriptor = "type=text";
+    text_typed.descriptor.encoded_descriptor = fixture_text_descriptor();
     text_typed.encoded_value =
         value == 2 ? "beta" : "alpha";
     api::EngineRowValue row;
@@ -724,9 +1667,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
       ";crs_generation=1";
   const auto int64_descriptor =
       "canonical=int64;type_uuid=" + int64_type_uuid + ";nullable=false";
-  const auto character_descriptor =
-      "canonical=character;type_uuid=" + character_type_uuid +
-      ";nullable=false";
+  const auto text_descriptor = fixture_text_descriptor();
   const auto shared_row_uuid =
       NewUuidText(platform::UuidKind::row, fixture->salt + 100);
   const auto spatial_only_row_uuid =
@@ -781,9 +1722,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     row.fields.push_back(
         {"join_key", make_typed_value("int64", int64_descriptor,
                                       std::to_string(join_key))});
-    row.fields.push_back({"payload", make_typed_value(
-                                         "character", character_descriptor,
-                                         payload)});
+    row.fields.push_back(
+        {"payload", make_typed_value("text", text_descriptor, payload)});
     columnar_insert.input_rows.push_back(std::move(row));
   }
   columnar_insert.estimated_row_count = columnar_insert.input_rows.size();
@@ -839,7 +1779,8 @@ void PrintMessages(const sbsql::MessageVectorSet& messages) {
 void VerifyFullParserServerRoute(const Fixture& fixture,
                                  const bool join_tail_proof_only,
                                  const bool table_function_proof_only = false,
-                                 const bool match_recognize_proof_only = false) {
+                                 const bool match_recognize_proof_only = false,
+                                 const bool spatial_columnar_proof_only = false) {
   constexpr std::string_view kSourceFreeNativeSelect =
       "SELECT key_a,COUNT(*),SUM(amount) FROM (VALUES (1,5), (1,7)) "
       "AS input(key_a,amount) GROUP BY key_a;";
@@ -912,8 +1853,158 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 !parser.session().transaction_uuid.empty(),
             "full parser-server route authentication/attach failed");
 
+    const auto verify_mixed_spatial_columnar = [&] {
+      Require(
+          bridge::ContextualTextPublicAbiCarrierProofMaskForTest() == 0xFU,
+          "contextual TEXT public-ABI carrier/context proof changed");
+      Require(
+          sblr::CanonicalContextualTextRcp079RuntimeProofMaskForTest() ==
+              0xFFFFU,
+          "contextual TEXT RCP079 route/lifecycle proof changed");
+      auto mixed_model_join = parser.RunPipeline(
+          "SELECT * FROM "
+          "SPATIAL_SOURCE(qow_packet7.qow_packet7_spatial_relation) AS s "
+          "INNER JOIN "
+          "COLUMNAR_SOURCE(qow_packet7.qow_packet7_columnar_relation) AS c "
+          "ON s.row_uuid = c.row_uuid;",
+          true);
+      if (!mixed_model_join.accepted) {
+        PrintMessages(mixed_model_join.messages);
+        std::cerr << mixed_model_join.server_result_payload << '\n';
+      }
+      Require(
+          mixed_model_join.accepted &&
+              mixed_model_join.server_operation_id == "query.execute" &&
+              mixed_model_join.server_cursor_uuid.empty() &&
+              mixed_model_join.server_row_count == 1 &&
+              mixed_model_join.server_result_payload.find("payload=matched") !=
+                  std::string::npos &&
+              mixed_model_join.server_result_payload.find(
+                  "evidence=canonical.model_join_left_provider_route:"
+                  "canonical.model-provider.spatial.v1") !=
+                  std::string::npos &&
+              mixed_model_join.server_result_payload.find(
+                  "evidence=canonical.model_join_right_provider_route:"
+                  "canonical.model-provider.columnar.v1") !=
+                  std::string::npos &&
+              mixed_model_join.server_result_payload.find(
+                  "evidence=canonical.model_join_consumer_route:"
+                  "canonical.relational.join-3vl-nested.v1") !=
+                  std::string::npos,
+          "ordinary mixed spatial/columnar SBSQL did not complete the "
+          "authenticated V10 statement-receipt production route");
+
+      constexpr std::string_view kContextualColumnarFilter =
+          "SELECT * FROM "
+          "COLUMNAR_SOURCE(qow_packet7.qow_packet7_columnar_relation) AS c "
+          "WHERE COLUMNAR_FILTER(c, c.payload = 'matched');";
+
+      api::EngineRequestContext executor_admin;
+      executor_admin.trust_mode = api::EngineTrustMode::server_isolated;
+      executor_admin.request_id =
+          "qow-contextual-text-v1-executor-unavailable-proof";
+      executor_admin.database_path = fixture.database_path.string();
+      executor_admin.database_uuid.canonical = fixture.database_uuid;
+      executor_admin.security_context_present = true;
+      executor_admin.trace_tags.push_back(
+          "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
+      api::SblrExecutorAvailabilityRowIdentity literal_executor;
+      literal_executor.executor_id = api::kSblrLiteralExecutorId;
+      literal_executor.opcode_code = api::kSblrLiteralOpcodeCode;
+      literal_executor.opcode_version = api::kSblrLiteralOpcodeVersion;
+      literal_executor.operand_descriptor_id =
+          api::kSblrLiteralOperandDescriptorId;
+      literal_executor.result_descriptor_id =
+          api::kSblrLiteralResultDescriptorId;
+      literal_executor.result_descriptor_version =
+          api::kSblrLiteralResultDescriptorVersion;
+      const auto installed_literal =
+          api::LoadSblrExecutorAvailabilitySnapshot(executor_admin,
+                                                     literal_executor);
+      Require(installed_literal.ok && installed_literal.snapshot.installed,
+              "ordinary V1 literal executor baseline is unavailable");
+      api::SblrExecutorAvailabilitySetRequest revoke_literal;
+      revoke_literal.database_uuid = fixture.database_uuid;
+      revoke_literal.expected_snapshot_uuid =
+          installed_literal.snapshot.snapshot_uuid;
+      revoke_literal.expected_generation = installed_literal.snapshot.generation;
+      revoke_literal.exact_row_identity = literal_executor;
+      revoke_literal.requested_state =
+          api::SblrExecutorAvailabilityState::revoked;
+      revoke_literal.reason_code = "contextual_text_v1_independence";
+      const auto revoked_literal =
+          api::SetSblrExecutorAvailability(executor_admin, revoke_literal);
+      Require(revoked_literal.ok && !revoked_literal.snapshot.installed,
+              "ordinary V1 literal executor could not be revoked for proof");
+      const auto restore_literal_executor = [&] {
+        api::SblrExecutorAvailabilitySetRequest restore_literal;
+        restore_literal.database_uuid = fixture.database_uuid;
+        restore_literal.expected_snapshot_uuid =
+            revoked_literal.snapshot.snapshot_uuid;
+        restore_literal.expected_generation =
+            revoked_literal.snapshot.generation;
+        restore_literal.exact_row_identity = literal_executor;
+        restore_literal.requested_state =
+            installed_literal.snapshot.availability_state;
+        restore_literal.reason_code = "contextual_text_v1_restore";
+        const auto restored_literal =
+            api::SetSblrExecutorAvailability(executor_admin, restore_literal);
+        Require(
+            restored_literal.ok && restored_literal.snapshot.installed &&
+                restored_literal.snapshot.availability_state ==
+                    installed_literal.snapshot.availability_state &&
+                restored_literal.snapshot.row_identity_sha256 ==
+                    installed_literal.snapshot.row_identity_sha256,
+            "ordinary V1 literal executor proof state was not restored");
+      };
+      auto columnar_text_filter = [&] {
+        try {
+          auto result = parser.RunPipeline(kContextualColumnarFilter, true);
+          restore_literal_executor();
+          return result;
+        } catch (...) {
+          restore_literal_executor();
+          throw;
+        }
+      }();
+      if (!columnar_text_filter.accepted) {
+        PrintMessages(columnar_text_filter.messages);
+        std::cerr << columnar_text_filter.server_result_payload << '\n';
+      }
+      Require(
+          columnar_text_filter.accepted &&
+              columnar_text_filter.server_operation_id == "query.execute" &&
+              columnar_text_filter.server_cursor_uuid.empty() &&
+              columnar_text_filter.server_row_count == 1 &&
+              columnar_text_filter.server_result_payload.find(
+                  "payload=matched") != std::string::npos &&
+              columnar_text_filter.server_result_payload.find(
+                  "payload=columnar-only") == std::string::npos,
+          "standalone COLUMNAR_FILTER did not retain live canonical TEXT "
+          "descriptor authority");
+
+      auto contextual_cursor =
+          parser.RunPipeline(kContextualColumnarFilter, true, true);
+      const bool cursor_route_mismatch = std::ranges::any_of(
+          contextual_cursor.messages.diagnostics, [](const auto& diagnostic) {
+            return diagnostic.code ==
+                   "SBLR.CONTEXTUAL_TEXT_LITERAL.ROUTE_MISMATCH";
+          });
+      if (contextual_cursor.accepted || !cursor_route_mismatch) {
+        PrintMessages(contextual_cursor.messages);
+        std::cerr << contextual_cursor.server_result_payload << '\n';
+      }
+      Require(
+          !contextual_cursor.accepted && cursor_route_mismatch &&
+              contextual_cursor.server_cursor_uuid.empty() &&
+              contextual_cursor.server_row_count == 0 &&
+              contextual_cursor.server_result_payload.empty(),
+          "contextual TEXT authority entered a retained cursor result route");
+    };
+    if (spatial_columnar_proof_only) verify_mixed_spatial_columnar();
+
     if (!join_tail_proof_only && !table_function_proof_only &&
-        !match_recognize_proof_only) {
+        !match_recognize_proof_only && !spatial_columnar_proof_only) {
       auto source_free = parser.RunPipeline(kSourceFreeNativeSelect, true);
       if (!source_free.accepted) PrintMessages(source_free.messages);
       Require(source_free.accepted &&
@@ -963,7 +2054,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           return parser.RunDirectParameterizedForWire(sql, values);
         };
 
-    if (!join_tail_proof_only && !match_recognize_proof_only) {
+    if (!join_tail_proof_only && !match_recognize_proof_only &&
+        !spatial_columnar_proof_only) {
       auto generate_series = run_direct_parameterized(
           "SELECT * FROM generate_series(?, ?, ?);",
           {text_parameter("1"), text_parameter("5"), text_parameter("2")});
@@ -1036,7 +2128,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
               "generate_series admitted parser-authored literal arguments");
     }
 
-    if (!join_tail_proof_only && !table_function_proof_only) {
+    if (!join_tail_proof_only && !table_function_proof_only &&
+        !spatial_columnar_proof_only) {
       constexpr std::string_view kMatchRecognizeQuery =
           "SELECT * FROM generate_series(?, ?, ?) MATCH_RECOGNIZE ("
           "PARTITION BY generate_series ORDER BY generate_series ASC "
@@ -1076,7 +2169,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
               "bounded MATCH_RECOGNIZE admitted an unsupported output mode");
     }
 
-    if (!table_function_proof_only && !match_recognize_proof_only) {
+    if (!table_function_proof_only && !match_recognize_proof_only &&
+        !spatial_columnar_proof_only) {
 
     auto joined_literal_parameter_tail = run_direct_parameterized(
         "SELECT l.integer_value FROM "
@@ -1153,7 +2247,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
 
     if (!join_tail_proof_only && !table_function_proof_only &&
-        !match_recognize_proof_only) {
+        !match_recognize_proof_only && !spatial_columnar_proof_only) {
     auto three_way_join_limit = parser.RunPipeline(
         "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS JOIN "
         "qow_packet7.qow_packet7_join_relation AS r CROSS JOIN "
@@ -1284,37 +2378,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                       "object-backed FULL OUTER JOIN did not preserve both "
                       "unmatched sides");
 
-    auto mixed_model_join = parser.RunPipeline(
-        "SELECT * FROM "
-        "SPATIAL_SOURCE(qow_packet7.qow_packet7_spatial_relation) AS s "
-        "INNER JOIN "
-        "COLUMNAR_SOURCE(qow_packet7.qow_packet7_columnar_relation) AS c "
-        "ON s.row_uuid = c.row_uuid;",
-        true);
-    if (!mixed_model_join.accepted) {
-      PrintMessages(mixed_model_join.messages);
-      std::cerr << mixed_model_join.server_result_payload << '\n';
-    }
-    Require(
-        mixed_model_join.accepted &&
-            mixed_model_join.server_operation_id == "query.execute" &&
-            mixed_model_join.server_cursor_uuid.empty() &&
-            mixed_model_join.server_row_count == 1 &&
-            mixed_model_join.server_result_payload.find("payload=matched") !=
-                std::string::npos &&
-            mixed_model_join.server_result_payload.find(
-                "evidence=canonical.model_join_left_provider_route:"
-                "canonical.model-provider.spatial.v1") != std::string::npos &&
-            mixed_model_join.server_result_payload.find(
-                "evidence=canonical.model_join_right_provider_route:"
-                "canonical.model-provider.columnar.v1") !=
-                std::string::npos &&
-            mixed_model_join.server_result_payload.find(
-                "evidence=canonical.model_join_consumer_route:"
-                "canonical.relational.join-3vl-nested.v1") !=
-                std::string::npos,
-        "ordinary mixed spatial/columnar SBSQL did not complete the "
-        "authenticated V10 statement-receipt production route");
+    verify_mixed_spatial_columnar();
 
     const auto verify_left_only_join = [&](const std::string_view join_sql,
                                            const std::uint64_t expected_rows,
@@ -2081,6 +3145,16 @@ std::uint16_t PayloadU16(const std::vector<std::uint8_t>& payload,
          (static_cast<std::uint16_t>(payload[offset + 1]) << 8u);
 }
 
+std::uint32_t PayloadU32(const std::vector<std::uint8_t>& payload,
+                         const std::size_t offset) {
+  std::uint32_t value = 0;
+  for (std::size_t byte = 0; byte < 4; ++byte) {
+    value |= static_cast<std::uint32_t>(payload[offset + byte])
+             << (byte * 8u);
+  }
+  return value;
+}
+
 void SetPayloadU16(std::vector<std::uint8_t>* payload,
                    const std::size_t offset,
                    const std::uint16_t value) {
@@ -2092,6 +3166,15 @@ void SetPayloadU32(std::vector<std::uint8_t>* payload,
                    const std::size_t offset,
                    const std::uint32_t value) {
   for (std::size_t byte = 0; byte < 4; ++byte) {
+    (*payload)[offset + byte] =
+        static_cast<std::uint8_t>(value >> (byte * 8u));
+  }
+}
+
+void SetPayloadU64(std::vector<std::uint8_t>* payload,
+                   const std::size_t offset,
+                   const std::uint64_t value) {
+  for (std::size_t byte = 0; byte < 8; ++byte) {
     (*payload)[offset + byte] =
         static_cast<std::uint8_t>(value >> (byte * 8u));
   }
@@ -2110,6 +3193,7 @@ struct NativePayloadLayout {
   std::size_t timestamp_bytes_offset{0};
   std::size_t profile_count_offset{0};
   std::size_t profiles_offset{0};
+  std::size_t profiles_end_offset{0};
   std::uint16_t profile_count{0};
 };
 
@@ -2156,9 +3240,13 @@ std::optional<NativePayloadLayout> LocateNativePayloadLayout(
   layout.profile_count_offset = offset;
   layout.profile_count = PayloadU16(payload, offset);
   layout.profiles_offset = offset + 2;
-  if (payload.size() != layout.profiles_offset +
-                            static_cast<std::size_t>(layout.profile_count) *
-                                kProfileBytes) {
+  layout.profiles_end_offset =
+      layout.profiles_offset +
+      static_cast<std::size_t>(layout.profile_count) * kProfileBytes;
+  if ((expected_version == 11 &&
+       payload.size() < layout.profiles_end_offset) ||
+      (expected_version != 11 &&
+       payload.size() != layout.profiles_end_offset)) {
     return std::nullopt;
   }
   return layout;
@@ -3156,6 +4244,68 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                   v10_statement->second.receipt) == SB_ENGINE_STATUS_OK,
           "native V10 mutation test receipt cleanup failed");
   registry.statement_contexts_by_statement_uuid.erase(v10_statement);
+
+  // QOW-SOURCE-LIVE-STATEMENT-CONTEXT-V11-SCAN-BYTES-PROOF
+  const auto v11_projection = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 11,
+                         sbps::kSchemaAcquireStatementContextRequestV11));
+  ipc::ParserStatementContext v11_context;
+  const auto v11_layout = LocateNativePayloadLayout(v11_projection.payload, 11);
+  const auto v11_extension =
+      v11_layout.has_value() ? v11_layout->profiles_end_offset : 0;
+  const auto v11_diagnostic_rows =
+      v11_extension != 0 && v11_projection.payload.size() >= v11_extension + 260
+          ? PayloadU32(v11_projection.payload, v11_extension + 252)
+          : 0;
+  const auto v11_trailer =
+      v11_extension + 260 + static_cast<std::size_t>(v11_diagnostic_rows) * 72;
+  Require(v11_projection.accepted &&
+              v11_projection.response_schema_id ==
+                  sbps::kSchemaAcquireStatementContextResultV11 &&
+              v11_layout.has_value() && v11_layout->profile_count == 646 &&
+              v11_projection.payload.size() == v11_trailer + 776 &&
+              PayloadU16(v11_projection.payload, v11_extension) == 71 &&
+              ipc::DecodeNativeStatementContextResultPayloadV11(
+                  v11_projection.payload, &v11_context) &&
+              v11_context
+                      .preliminary_maximum_mga_relation_decoded_bytes_per_pass ==
+                  kDefaultMgaRelationDecodedBytesPerPass,
+          "native V11 MGA scan-byte projection drifted");
+  {
+    auto mutation = v11_projection.payload;
+    SetPayloadU64(&mutation, v11_trailer + 768, 0);
+    ipc::ParserStatementContext refused;
+    Require(!ipc::DecodeNativeStatementContextResultPayloadV11(
+                mutation, &refused),
+            "native V11 admitted a zero MGA scan-byte ceiling");
+  }
+  {
+    auto mutation = v11_projection.payload;
+    SetPayloadU64(&mutation, v11_trailer + 768,
+                  (1ull << 40u) + 1ull);
+    ipc::ParserStatementContext refused;
+    Require(!ipc::DecodeNativeStatementContextResultPayloadV11(
+                mutation, &refused),
+            "native V11 admitted an out-of-range MGA scan-byte ceiling");
+  }
+  {
+    auto mutation = v11_projection.payload;
+    mutation.resize(v11_trailer + 768);
+    ipc::ParserStatementContext refused;
+    Require(!ipc::DecodeNativeStatementContextResultPayloadV11(
+                mutation, &refused),
+            "native V11 admitted a truncated MGA scan-byte ceiling");
+  }
+  const auto v11_statement = registry.statement_contexts_by_statement_uuid.find(
+      v11_context.statement_uuid);
+  Require(v11_statement != registry.statement_contexts_by_statement_uuid.end() &&
+              bridge::ReleaseStatementContextReceipt(
+                  v11_statement->second.receipt) == SB_ENGINE_STATUS_OK,
+          "native V11 scan-byte receipt cleanup failed");
+  registry.statement_contexts_by_statement_uuid.erase(v11_statement);
   }
 
   const auto v8_schema_v7_version = server::HandleAcquireStatementContext(
@@ -3285,23 +4435,29 @@ int main(int argc, char** argv) {
   const bool match_recognize_proof_only =
       argc == 2 &&
       std::string_view(argv[1]) == "--match-recognize-proof-only";
+  const bool spatial_columnar_proof_only =
+      argc == 2 &&
+      std::string_view(argv[1]) == "--spatial-columnar-proof-only";
   Require(argc == 1 || join_tail_proof_only || table_function_proof_only ||
-              match_recognize_proof_only,
+              match_recognize_proof_only || spatial_columnar_proof_only,
           "unsupported qow live statement-context regression argument");
   if (join_tail_proof_only || table_function_proof_only ||
-      match_recognize_proof_only) {
+      match_recognize_proof_only || spatial_columnar_proof_only) {
     auto bootstrap_fixture = CreateFixture();
     auto full_route_fixture = CreateFixture(true);
     CreateObjectBackedRelation(&full_route_fixture);
     VerifyFullParserServerRoute(full_route_fixture, join_tail_proof_only,
                                 table_function_proof_only,
-                                match_recognize_proof_only);
+                                match_recognize_proof_only,
+                                spatial_columnar_proof_only);
     std::cout
         << (join_tail_proof_only
                 ? "qow_join_tail_literal_filter_parameter_limit=passed\n"
                 : (table_function_proof_only
                        ? "qow_table_function_generate_series=passed\n"
-                       : "qow_match_recognize_generate_series=passed\n"));
+                       : (match_recognize_proof_only
+                              ? "qow_match_recognize_generate_series=passed\n"
+                              : "qow_spatial_columnar_join=passed\n")));
     return EXIT_SUCCESS;
   }
 
@@ -3331,6 +4487,16 @@ int main(int argc, char** argv) {
   Require(!caller_forgery,
           "caller-authored statement identity returned a receipt");
 
+  auto caller_scan_authority = transaction;
+  caller_scan_authority.maximum_mga_relation_decoded_bytes_per_pass =
+      kDefaultMgaRelationDecodedBytesPerPass;
+  const auto caller_scan_forgery = Acquire(
+      owner.get(), caller_scan_authority, &refused_view,
+      SB_ENGINE_STATUS_CONFLICT,
+      "ENGINE.STATEMENT_CONTEXT.CALLER_AUTHORITY_FORBIDDEN");
+  Require(!caller_scan_forgery,
+          "caller-authored MGA scan-byte authority returned a receipt");
+
   bridge::StatementContextReceiptView first_view;
   const auto first = Acquire(owner.get(), transaction, &first_view);
   Require(first && first_view.snapshot_complete &&
@@ -3348,7 +4514,9 @@ int main(int argc, char** argv) {
   Require(first_view.optimizer_memory_budget_bytes ==
                   transaction.optimizer_memory_budget_bytes &&
               first_view.optimizer_maximum_search_steps ==
-                  transaction.optimizer_maximum_search_steps,
+                  transaction.optimizer_maximum_search_steps &&
+              first_view.maximum_mga_relation_decoded_bytes_per_pass ==
+                  kDefaultMgaRelationDecodedBytesPerPass,
           "live statement-context resource projection drifted");
   AssertDistinctReceiptIdentities(first_view);
 

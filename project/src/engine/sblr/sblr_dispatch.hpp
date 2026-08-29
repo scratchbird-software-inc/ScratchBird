@@ -9,11 +9,14 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "dml/import_api.hpp"
+#include "query/contextual_text_literal_authority.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_parameter_runtime.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,11 +24,42 @@
 
 namespace scratchbird::engine::sblr {
 
+// Receipt-owned, process-local authority for one query.execute-1.1 dispatch.
+// Prepare populates this object while the statement receipt mutex is held;
+// the admitted direct route performs the sole joint token/profile transition.
+// The move-only prepared set and lease are never copied into a plan, cursor,
+// or provider-local closure.
+struct ContextualTextDispatchActivationV2 {
+  using JointConsumeLocked = scratchbird::engine::internal_api::
+      EngineContextualTextLiteralJointConsumeResultV2 (*)(
+          void*, scratchbird::engine::internal_api::
+                     PreparedContextualTextLiteralSetV2*);
+
+  scratchbird::engine::internal_api::PreparedContextualTextLiteralSetV2
+      prepared;
+  scratchbird::engine::internal_api::ContextualTextExecutionAuthorityLeaseV2
+      lease;
+  JointConsumeLocked joint_consume_locked = nullptr;
+  void* joint_consume_context = nullptr;
+  // Receipt-lock bridge state which remains live beside this activation for
+  // the synchronous direct dispatch. Provider-owned Prepared/lease bytes are
+  // reported by the contextual authority resource estimator and are never
+  // mirrored here.
+  std::uint64_t bridge_retained_logical_bytes = 0;
+  bool joint_consumed = false;
+};
+
 struct SblrDispatchRequest {
   scratchbird::engine::internal_api::EngineRequestContext context;
   SblrOperationEnvelope envelope;
   scratchbird::engine::internal_api::EngineApiRequest api_request;
   std::optional<SblrParameterValueSetV1> parameter_value_set;
+  std::shared_ptr<ContextualTextDispatchActivationV2>
+      contextual_text_activation;
+  // Proven only by the authenticated SBOS admission bridge after observing
+  // the exact three-record begin/root/end package. Inline/direct envelopes
+  // leave this false and cannot execute standalone-only operation 793.
+  bool standalone_package_root = false;
 };
 
 struct SblrDispatchResult {
@@ -51,6 +85,11 @@ struct SblrDispatchResult {
   std::string selected_plan_uuid;
   std::string canonical_result_bytes;
   scratchbird::engine::internal_api::EngineApiResult api_result;
+  // Typed semantic extension for opcode 793. The base result remains
+  // populated for generic dispatch consumers, while this carrier preserves
+  // all twelve Core fields and the accepted IPEV without inventing bytes.
+  std::optional<scratchbird::engine::internal_api::EnginePlanImportRowsResult>
+      plan_import_rows_result;
   std::vector<SblrEnvelopeDiagnostic> diagnostics;
 };
 

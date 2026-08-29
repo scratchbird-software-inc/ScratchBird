@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agents/agent_management_api.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -90,8 +91,12 @@ bool HasRowFieldValue(const api::EngineApiResult& result,
 api::EngineRequestContext EngineContext(bool security_context_present = true) {
   api::EngineRequestContext context;
   context.request_id = "pfar-013a-agent-cluster-route";
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = security_context_present;
-  context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
+  // Provider availability and caller authority are independent.  This gate
+  // supplies cluster authority so the request reaches the configured
+  // provider boundary and can prove its exact no-provider/stub refusal.
+  context.cluster_authority_available = true;
   context.database_uuid.canonical = "019f013a-0000-7000-8000-000000000001";
   context.cluster_uuid.canonical = "019f013a-0000-7000-8000-000000000002";
   context.node_uuid.canonical = "019f013a-0000-7000-8000-000000000003";
@@ -99,6 +104,7 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.session_uuid.canonical = "019f013a-0000-7000-8000-000000000005";
   context.statement_uuid.canonical = "019f013a-0000-7000-8000-000000000006";
   context.trace_tags = {
+      "security.fixture_trace_authority",
       "right:OBS_AGENT_STATE_READ",
       "right:OBS_CLUSTER_HEALTH_INSPECT",
       "agent_cluster_route_api_provider_gate",
@@ -110,7 +116,8 @@ sblr::SblrDispatchRequest ClusterSysAgentsDispatchRequest(
     bool security_context_present = true) {
   sblr::SblrDispatchRequest request;
   request.context = EngineContext(security_context_present);
-  request.envelope = sblr::MakeSblrEnvelope(
+  request.envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
       "cluster.sys.agents",
       "SBLR_CLUSTER_SYS_AGENTS",
       "trace.pfar013a.cluster_sys_agents");

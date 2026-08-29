@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -176,7 +177,7 @@ void RequireExactLowering(const StorageTierRouteRow& row) {
           Message(row, "payload", "source SQL text leaked into payload"));
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message_key << '\n';
     for (const auto& field : diagnostic.fields) {

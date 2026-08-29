@@ -12,7 +12,9 @@
 #include "sblr_local_gateway.hpp"
 #include "../server_engine_bridge/statement_context.hpp"
 
+#include "../engine/sblr/sblr_ddl_create_index_runtime.hpp"
 #include "../engine/sblr/sblr_opcode_registry.hpp"
+#include "../engine/sblr/sblr_plan_import_rows_codec.hpp"
 #include "hash_digest.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
 
@@ -43,7 +45,7 @@ struct FamilyRule {
   bool cluster_private = false;
 };
 
-constexpr std::array<FamilyRule, 54> kServerSblrFamilies{{
+constexpr std::array<FamilyRule, 61> kServerSblrFamilies{{
     {"sblr.acceleration.gpu.v3", "acceleration.gpu.operation", false},
     {"sblr.acceleration.llvm.v3", "extensibility.compile_llvm_module", false},
     {"sblr.archive.operation.v3", "archive.operation", false},
@@ -52,33 +54,38 @@ constexpr std::array<FamilyRule, 54> kServerSblrFamilies{{
     {"sblr.bulk.export.v3", "bulk.export", false},
     {"sblr.bulk.import.v3", "bulk.import", false},
     {"sblr.catalog.introspect.v3", "catalog.get_descriptor", false},
+    {"sblr.catalog.create_table_as.v1", "engine.op.ddl_create_table_as_query_with_data", false},
     {"sblr.catalog.mutation.v3", "catalog.mutation", false},
     {"sblr.cluster.control.v3", "cluster.control_cluster", true},
     {"sblr.cluster.report.v3", "cluster.inspect_state", true},
-    {"sblr.cursor.operation.v3", "session.cursor_open", false},
+    {"sblr.cursor.operation.v3", "engine.op.cursor_open", false},
     {"sblr.database.management.v3", "lifecycle.inspect_database", false},
     {"sblr.diagnostic.control.v3", "diagnostic.control", false},
     {"sblr.diagnostic.refusal.v3", "diagnostic.refusal", false},
     {"sblr.dml.delete.v3", "dml.delete_rows", false},
     {"sblr.dml.insert.v3", "dml.insert_rows", false},
     {"sblr.dml.merge.v3", "dml.merge_rows", false},
+    {"sblr.dml.truncate.v1", "engine.op.table_truncate", false},
     {"sblr.dml.update.v3", "dml.update_rows", false},
+    {"sblr.donor.cluster.v1", "engine.op.donor_cluster_route_discover", true},
     {"sblr.event.channel.v3", "event.channel.notify", false},
     {"sblr.event.delivery.v3", "event.delivery.poll", false},
     {"sblr.event.publication.v3", "event.publication.operation", false},
     {"sblr.event.subscription.v3", "event.subscription.list", false},
     {"sblr.filespace.management.v3", "storage.manage_operation", false},
-    {"sblr.fulltext.execution.v3", "nosql.search_query", false},
-    {"sblr.graph.execution.v3", "nosql.graph_query", false},
+    {"sblr.fulltext.execution.v3", "fulltext.score", false},
+    {"sblr.graph.execution.v3", "graph.traverse", false},
     {"sblr.index.maintenance.v3", "index.maintenance", false},
     {"sblr.language.resource_control.v3", "language.session.show", false},
     {"sblr.management.control.v3", "management.control_runtime", false},
     {"sblr.management.report.v3", "management.inspect_runtime", false},
     {"sblr.migration.operation.v3", "op.show.migrations", false},
+    {"sblr.kv.structured.read.v3", "engine.op.kv_structured_read", false},
+    {"sblr.kv.structured.mutate.v3", "engine.op.kv_structured_mutate", false},
     {"sblr.metrics.read.v3", "observability.show_metrics", false},
     {"sblr.mga.control.v3", "transaction.set_characteristics", false},
     {"sblr.mga.report.v3", "observability.show_transactions", false},
-    {"sblr.optimizer.plan.v3", "query.plan_operation", false},
+    {"sblr.optimizer.plan.v3", "observability.explain_operation", false},
     {"sblr.parser.operation.v3", "extensibility.register_parser_package", false},
     {"sblr.policy.operation.v3", "security.policy.show", false},
     {"sblr.query.document.v3", "nosql.document_find", false},
@@ -93,11 +100,13 @@ constexpr std::array<FamilyRule, 54> kServerSblrFamilies{{
     {"sblr.routine.define.v3", "routine.define", false},
     {"sblr.routine.execute.v3", "routine.procedure_invoke", false},
     {"sblr.security.mutation.v3", "security.grant_right", false},
-    {"sblr.session.management.v3", "session.prepare_statement", false},
-    {"sblr.statement.management.v3", "session.prepare_statement", false},
+    {"sblr.session.management.v3", "connection.open", false},
+    {"sblr.statement.management.v3", "statement.prepare", false},
     {"sblr.transaction.control.v3", "transaction.control", false},
     {"sblr.udr.operation.v3", "extensibility.invoke_udr_package", false},
-    {"sblr.vector.execution.v3", "nosql.vector_search", false},
+    {"sblr.vector.execution.v3", "vector.search", false},
+    {"sblr.versioned.history.read.v3", "engine.op.bitemporal_as_of", false},
+    {"sblr.versioned.history.mutate.v3", "engine.op.verifiable_history_prove", false},
 }};
 
 constexpr std::array<std::string_view, 1> kFailClosedSblrFamilies{{
@@ -172,11 +181,20 @@ bool StartsWith(std::string_view value, std::string_view prefix) {
 }
 
 bool IsClusterOperationId(std::string_view operation_id) {
-  return StartsWith(operation_id, "cluster.") ||
-         StartsWith(operation_id, "op.cluster.") ||
-         StartsWith(operation_id, "op.show.cluster.") ||
-         operation_id == "op.show.cluster_gpu_placement" ||
-         StartsWith(operation_id, "placement.cluster.");
+  return StartsWith(operation_id, "cluster.");
+}
+
+bool IsAgentReportOperationId(std::string_view operation_id) {
+  return operation_id == "agents.list" ||
+         operation_id == "agents.show" ||
+         operation_id == "agents.metrics.get" ||
+         operation_id == "agents.policy.get" ||
+         operation_id == "agents.evidence.list" ||
+         operation_id == "agents.audit.list" ||
+         operation_id == "agents.actions.list" ||
+         operation_id == "agents.overrides.list" ||
+         operation_id == "agents.policy.validate" ||
+         operation_id == "agents.policy.simulate";
 }
 
 bool IsMemoryControlOperationId(std::string_view operation_id) {
@@ -355,30 +373,24 @@ bool IsPublicExactOperationId(std::string_view operation_id) {
          operation_id == "op.sbsql.surface_replay" ||
          operation_id == "op.show.users" ||
          operation_id == "op.show.version" ||
-         operation_id == "op.show.wait_events" ||
-         operation_id == "versioned.bitemporal.show_periods" ||
-         operation_id == "versioned.bitemporal.show_history" ||
-         operation_id == "dml.for_portion_of_period";
+         operation_id == "op.show.wait_events";
 }
 
 std::optional<std::string> FamilyForClusterOperationId(std::string_view operation_id) {
   if (operation_id == "cluster.control_cluster" ||
+      operation_id == "cluster.agent.control" ||
       operation_id == "cluster.profile_operation" ||
       operation_id == "cluster.route" ||
       operation_id == "cluster.prepare_remote_participant_insert" ||
       operation_id == "cluster.validate_insert_route_fence" ||
-      operation_id == "cluster.place_object" ||
-      StartsWith(operation_id, "op.cluster.") ||
-      StartsWith(operation_id, "placement.cluster.")) {
+      operation_id == "cluster.place_object") {
     return "sblr.cluster.control.v3";
   }
   if (operation_id == "cluster.inspect_state" ||
       operation_id == "cluster.inspect_provider" ||
       operation_id == "cluster.inspect_routing_plan" ||
       operation_id == "cluster.sys.agents" ||
-      operation_id == "op.show.cluster_gpu_placement" ||
-      StartsWith(operation_id, "cluster.agent.") ||
-      StartsWith(operation_id, "op.show.cluster")) {
+      StartsWith(operation_id, "cluster.agent.")) {
     return "sblr.cluster.report.v3";
   }
   if (operation_id == "cluster.inspect_replication") {
@@ -395,13 +407,6 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
       operation_id == "op.show.migration" ||
       operation_id == "op.show.migrations") {
     return "sblr.migration.operation.v3";
-  }
-  if (operation_id == "versioned.bitemporal.show_periods" ||
-      operation_id == "versioned.bitemporal.show_history") {
-    return "sblr.management.report.v3";
-  }
-  if (operation_id == "dml.for_portion_of_period") {
-    return "sblr.dml.update.v3";
   }
   if (operation_id == "op.show.audit" ||
       operation_id == "op.show.discovery_rights" ||
@@ -424,9 +429,13 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
     return "sblr.catalog.introspect.v3";
   }
   if (operation_id == "management.control_runtime" ||
-      StartsWith(operation_id, "agents.") ||
       StartsWith(operation_id, "op.management.")) {
     return "sblr.management.control.v3";
+  }
+  if (StartsWith(operation_id, "agents.")) {
+    return IsAgentReportOperationId(operation_id)
+               ? "sblr.management.report.v3"
+               : "sblr.management.control.v3";
   }
   if (StartsWith(operation_id, "memory.")) {
     return IsMemoryControlOperationId(operation_id) ? "sblr.management.control.v3"
@@ -502,12 +511,31 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
 
 bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
   return IsClusterOperationId(operation_id) ||
+         operation_id == "engine.op.migration_begin_donor" ||
+         operation_id == "engine.op.bitemporal_as_of" ||
+         operation_id == "engine.op.verifiable_history_prove" ||
+         operation_id == "engine.op.ddl_create_view" ||
+         operation_id == "engine.op.ddl_create_materialized_view" ||
+         operation_id == "engine.op.ddl_create_type" ||
+         operation_id == "engine.op.ddl_alter_type" ||
+         operation_id == "engine.op.ddl_drop_type" ||
+         operation_id == "engine.op.catalog_introspect" ||
+         operation_id == "engine.op.function_call" ||
+         operation_id == "engine.op.cast" ||
+         operation_id == "engine.op.compare" ||
+         operation_id == "engine.op.domain_operation" ||
+         operation_id == "engine.op.update" ||
+         operation_id == "engine.op.delete" ||
+         operation_id == "engine.op.bitemporal_for_versions_between" ||
+         operation_id == "engine.op.kv_structured_read" ||
+         operation_id == "engine.op.kv_structured_mutate" ||
          operation_id == "engine.op.ddl_drop_rewrite_rule" ||
          operation_id == "ddl.comment_on_object" ||
          operation_id == "engine.op.ddl_validate_constraint" ||
          IsPublicExactOperationId(operation_id) ||
          StartsWith(operation_id, "bridge.") ||
          StartsWith(operation_id, "index.") ||
+         StartsWith(operation_id, "engine.op.lifecycle_") ||
          StartsWith(operation_id, "lifecycle.") ||
          StartsWith(operation_id, "transaction.") ||
          StartsWith(operation_id, "observability.") ||
@@ -516,7 +544,6 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "dml.update_rows" ||
          operation_id == "dml.delete_rows" ||
          operation_id == "dml.merge_rows" ||
-         operation_id == "dml.for_portion_of_period" ||
          operation_id == "dml.plan_import_rows" ||
          operation_id == "dml.execute_import_rows" ||
          operation_id == "dml.execute_native_bulk_ingest" ||
@@ -533,17 +560,11 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "catalog.lookup_object" ||
          operation_id == "catalog.list_children" ||
          operation_id == "catalog.get_dependencies" ||
-         operation_id == "catalog.type.show" ||
-         operation_id == "catalog.type.show_all" ||
          operation_id == "query.bind_expression" ||
          operation_id == "query.bind_predicate" ||
          operation_id == "query.bind_projection" ||
          operation_id == "query.cast_value" ||
          operation_id == "query.extract_value" ||
-         operation_id == "query.structured_type.constructor" ||
-         operation_id == "query.structured_type.cast" ||
-         operation_id == "query.structured_type.compare" ||
-         operation_id == "query.structured_type.serialize" ||
          operation_id == "query.set_operation" ||
          operation_id == "query.apply_numeric_operation" ||
          operation_id == "query.canonicalize_document_value" ||
@@ -595,6 +616,7 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "management.prepare_support_bundle" ||
          operation_id == "management.inspect_runtime" ||
          operation_id == "management.control_runtime" ||
+         operation_id == "acceleration.gpu.operation" ||
          operation_id == "storage.manage_operation" ||
          IsStorageTierMigrationOperationId(operation_id) ||
          StartsWith(operation_id, "filespace.") ||
@@ -1134,6 +1156,16 @@ std::optional<std::string> FamilyForLegacyEnvelope(std::string_view encoded) {
 }
 
 std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
+  if (operation_id == "engine.op.ddl_create_table_as_query_with_data" ||
+      operation_id == "engine.op.ddl_create_table_as_query_with_no_data") {
+    return "sblr.catalog.create_table_as.v1";
+  }
+  if (operation_id == "engine.op.table_truncate") {
+    return "sblr.dml.truncate.v1";
+  }
+  if (operation_id.starts_with("engine.op.donor_cluster_")) {
+    return "sblr.donor.cluster.v1";
+  }
   if (operation_id == "engine.op.ddl_refresh_materialized_view" || operation_id == "engine.op.ddl_drop_materialized_view" || operation_id == "engine.op.ddl_drop_package" || operation_id == "engine.op.ddl_drop_synonym" || operation_id == "engine.op.ddl_alter_package") {
     return "sblr.catalog.mutation.v3";
   }
@@ -1142,6 +1174,42 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   }
   if (operation_id.starts_with("bridge.")) {
     return "sblr.bridge.operation.v3";
+  }
+  if (operation_id == "engine.op.migration_begin_donor") {
+    return "sblr.migration.operation.v3";
+  }
+  if (operation_id == "engine.op.bitemporal_as_of") {
+    return "sblr.versioned.history.read.v3";
+  }
+  if (operation_id == "engine.op.verifiable_history_prove") {
+    return "sblr.versioned.history.mutate.v3";
+  }
+  if (operation_id == "engine.op.kv_structured_read") {
+    return "sblr.kv.structured.read.v3";
+  }
+  if (operation_id == "engine.op.kv_structured_mutate") {
+    return "sblr.kv.structured.mutate.v3";
+  }
+  if (operation_id == "engine.op.ddl_create_view" ||
+      operation_id == "engine.op.ddl_create_materialized_view" ||
+      operation_id == "engine.op.ddl_create_type" ||
+      operation_id == "engine.op.ddl_alter_type" ||
+      operation_id == "engine.op.ddl_drop_type") {
+    return "sblr.catalog.mutation.v3";
+  }
+  if (operation_id == "engine.op.catalog_introspect") {
+    return "sblr.catalog.introspect.v3";
+  }
+  if (operation_id == "engine.op.function_call" ||
+      operation_id == "engine.op.cast" ||
+      operation_id == "engine.op.compare" ||
+      operation_id == "engine.op.domain_operation") {
+    return "sblr.query.relational.v3";
+  }
+  if (operation_id == "engine.op.update") return "sblr.dml.update.v3";
+  if (operation_id == "engine.op.delete") return "sblr.dml.delete.v3";
+  if (operation_id == "engine.op.bitemporal_for_versions_between") {
+    return "sblr.versioned.history.read.v3";
   }
   if (IsPublicExactOperationId(operation_id)) {
     const std::string family = PublicExactFamilyForOperationId(operation_id);
@@ -1160,6 +1228,8 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   if (operation_id.starts_with("backup.")) {
     return "sblr.backup.operation.v3";
   }
+  if (operation_id == "bulk.import") return "sblr.bulk.import.v3";
+  if (operation_id == "bulk.export") return "sblr.bulk.export.v3";
   if (operation_id.starts_with("replication.")) {
     return "sblr.replication.operation.v3";
   }
@@ -1181,9 +1251,7 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id == "catalog.map_uuid_to_name" ||
       operation_id == "catalog.lookup_object" ||
       operation_id == "catalog.list_children" ||
-      operation_id == "catalog.get_dependencies" ||
-      operation_id == "catalog.type.show" ||
-      operation_id == "catalog.type.show_all") {
+      operation_id == "catalog.get_dependencies") {
     return "sblr.catalog.introspect.v3";
   }
   if (operation_id.starts_with("ddl.") ||
@@ -1223,7 +1291,11 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
     return "sblr.query.relational.v3";
   }
   if (operation_id.starts_with("dml.")) return std::nullopt;
+  if (operation_id == "transaction.set_characteristics") {
+    return "sblr.mga.control.v3";
+  }
   if (operation_id.starts_with("transaction.")) return "sblr.transaction.control.v3";
+  if (operation_id == "engine.op.cursor_open") return "sblr.cursor.operation.v3";
   if (operation_id == "storage.manage_operation" ||
       IsStorageTierMigrationOperationId(operation_id) ||
       operation_id.starts_with("filespace.") ||
@@ -1263,9 +1335,13 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   if (operation_id == "management.control_runtime" ||
       operation_id == "management.set_config" ||
       operation_id == "management.reset_config" ||
-      operation_id == "management.prepare_support_bundle" ||
-      operation_id.starts_with("agents.")) {
+      operation_id == "management.prepare_support_bundle") {
     return "sblr.management.control.v3";
+  }
+  if (operation_id.starts_with("agents.")) {
+    return IsAgentReportOperationId(operation_id)
+               ? "sblr.management.report.v3"
+               : "sblr.management.control.v3";
   }
   if (operation_id.starts_with("memory.")) {
     return IsMemoryControlOperationId(operation_id) ? "sblr.management.control.v3"
@@ -1284,8 +1360,12 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id == "management.inspect_config") {
     return "sblr.management.report.v3";
   }
-  if (operation_id.starts_with("lifecycle.")) {
+  if (operation_id.starts_with("lifecycle.") ||
+      operation_id.starts_with("engine.op.lifecycle_")) {
     return "sblr.database.management.v3";
+  }
+  if (operation_id == "nosql.backpressure_debt_plan") {
+    return "sblr.optimizer.plan.v3";
   }
   if (operation_id.starts_with("nosql.key_value") ||
       operation_id.starts_with("nosql.kv")) {
@@ -1309,24 +1389,20 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id.starts_with("nosql.timeseries")) {
     return "sblr.query.timeseries.v3";
   }
-  if (operation_id.starts_with("nosql.fulltext")) return "sblr.fulltext.execution.v3";
+  if (operation_id.starts_with("nosql.fulltext") ||
+      operation_id.starts_with("fulltext.")) {
+    return "sblr.fulltext.execution.v3";
+  }
   if (operation_id.starts_with("nosql.")) return std::nullopt;
   if (operation_id == "versioned.bitemporal.as_of" ||
       operation_id == "versioned.bitemporal.as_of_valid_time" ||
       operation_id == "versioned.bitemporal.period_overlap" ||
       operation_id == "versioned.bitemporal.for_versions_between" ||
-      operation_id == "versioned.bitemporal.show_periods" ||
-      operation_id == "versioned.bitemporal.show_history" ||
       operation_id == "versioned.diff" ||
       operation_id == "versioned.hash_read" ||
       operation_id == "versioned.status_read") {
-    if (operation_id == "versioned.bitemporal.show_periods" ||
-        operation_id == "versioned.bitemporal.show_history") {
-      return "sblr.management.report.v3";
-    }
     return "sblr.query.relational.v3";
   }
-  if (operation_id == "dml.for_portion_of_period") return "sblr.dml.update.v3";
   if (operation_id == "versioned.branch.create" ||
       operation_id == "versioned.branch.delete" ||
       operation_id == "versioned.tag" ||
@@ -1346,15 +1422,21 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   if (operation_id.starts_with("event.subscription.")) return "sblr.event.subscription.v3";
   if (operation_id.starts_with("event.delivery.")) return "sblr.event.delivery.v3";
   if (operation_id.starts_with("event.publication.")) return "sblr.event.publication.v3";
+  if (operation_id.starts_with("graph.")) return "sblr.graph.execution.v3";
+  if (operation_id.starts_with("vector.")) return "sblr.vector.execution.v3";
   if (operation_id.starts_with("session.cursor_")) {
     return "sblr.cursor.operation.v3";
   }
-  if (operation_id.starts_with("session.notification.") ||
-      operation_id.starts_with("session.prepare") ||
+  if (operation_id.starts_with("session.notification.")) {
+    return "sblr.event.channel.v3";
+  }
+  if (operation_id.starts_with("session.prepare") ||
       operation_id.starts_with("session.statement")) {
     return "sblr.session.management.v3";
   }
   if (operation_id.starts_with("session.")) return "sblr.session.management.v3";
+  if (operation_id.starts_with("connection.")) return "sblr.session.management.v3";
+  if (operation_id.starts_with("statement.")) return "sblr.statement.management.v3";
   if (operation_id.starts_with("extensibility.register_udr_package") ||
       operation_id.starts_with("extensibility.alter_udr_package") ||
       operation_id.starts_with("extensibility.load_udr_package") ||
@@ -1375,13 +1457,19 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id.starts_with("gpu.")) {
     return "sblr.acceleration.gpu.v3";
   }
+  if (operation_id.starts_with("acceleration.gpu.")) {
+    return "sblr.acceleration.gpu.v3";
+  }
   if (operation_id.starts_with("routine.define")) return "sblr.routine.define.v3";
   if (operation_id == "routine.procedure_invoke" ||
       operation_id == "routine.function_invoke" ||
       operation_id.starts_with("routine.execute")) {
     return "sblr.routine.execute.v3";
   }
-  if (operation_id.starts_with("diagnostic.refusal")) return "sblr.diagnostic.refusal.v3";
+  if (operation_id == "engine.op.diagnostic_refusal" ||
+      operation_id.starts_with("diagnostic.refusal")) {
+    return "sblr.diagnostic.refusal.v3";
+  }
   if (operation_id.starts_with("diagnostic.")) return "sblr.diagnostic.control.v3";
   if (operation_id.starts_with("mga.control.")) return "sblr.mga.control.v3";
   if (operation_id.starts_with("mga.report.")) return "sblr.mga.report.v3";
@@ -1778,13 +1866,111 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     }
     return rejected;
   }
-  const auto* opcode = scratchbird::engine::sblr::LookupSblrOpcodeCode(
-      operation.envelope.opcode_code);
-  if (opcode == nullptr || opcode->operation_id != operation.envelope.operation_id ||
-      opcode->opcode != operation.envelope.opcode) {
+  const auto opcode_identity =
+      scratchbird::engine::sblr::ValidateSblrOpcodeIdentity(
+          operation.envelope.opcode_code, operation.envelope.operation_id,
+          operation.envelope.opcode);
+  const auto* opcode = opcode_identity.entry;
+  if (!opcode_identity.ok || opcode == nullptr) {
     return Reject("SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
                   "The SBOP numeric code, key, and mnemonic do not bind one registry row.",
                   "opcode_registry_identity_mismatch");
+  }
+  const auto exact_ddl_create_index = [](const auto& root) {
+    return root.opcode_code == 1540 &&
+           root.opcode == "SBLR_DDL_CREATE_INDEX" &&
+           root.operation_id == "engine.op.ddl_create_index";
+  };
+  const auto valid_ddl_create_index_operand = [](const auto& root) {
+    if (root.operands.size() != 1) return false;
+    const auto& operand = root.operands.front();
+    if (operand.ordinal != 1 || operand.type != "create_index_descriptor" ||
+        operand.name != "index" ||
+        operand.value_kind != scratchbird::engine::sblr::SblrValueKind::create_index_descriptor) {
+      return false;
+    }
+    scratchbird::engine::sblr::SblrDdlCreateIndexDescriptorV1 descriptor;
+    std::string detail;
+    return scratchbird::engine::sblr::DecodeSblrDdlCreateIndexDescriptorV1(
+        operand.value_body.data(), operand.value_body.size(), &descriptor,
+        &detail, true);
+  };
+  const auto exact_plan_import_rows = [](const auto& root) {
+    return root.opcode_code ==
+               scratchbird::engine::sblr::kPlanImportRowsOpcodeCodeV1 &&
+           root.opcode == "SBLR_DML_PLAN_IMPORT_ROWS" &&
+           root.operation_id == "dml.plan_import_rows";
+  };
+  const auto valid_plan_import_rows_operand = [](const auto& root) {
+    if (root.operands.size() != 1) return false;
+    const auto& operand = root.operands.front();
+    if (operand.ordinal != 1 ||
+        operand.type != "import_rows_plan_descriptor" ||
+        operand.name != "request" ||
+        operand.value_kind !=
+            scratchbird::engine::sblr::SblrValueKind::descriptor_ref) {
+      return false;
+    }
+    scratchbird::engine::sblr::PlanImportRowsDescriptorRefV1 descriptor;
+    scratchbird::engine::sblr::PlanImportRowsCodecDiagnosticV1 diagnostic;
+    return scratchbird::engine::sblr::DecodePlanImportRowsDescriptorRefV1(
+        operand.value_body.data(), operand.value_body.size(), &descriptor,
+        &diagnostic);
+  };
+  bool contains_ddl_create_index = false;
+  bool contains_plan_import_rows = false;
+  if (opcode_stream) {
+    for (std::size_t i = 1;
+         i + 1 < decoded_stream.stream.operations.size(); ++i) {
+      if (exact_ddl_create_index(decoded_stream.stream.operations[i])) {
+        contains_ddl_create_index = true;
+      }
+      if (exact_plan_import_rows(decoded_stream.stream.operations[i])) {
+        contains_plan_import_rows = true;
+      }
+    }
+    if (contains_ddl_create_index &&
+        decoded_stream.stream.operations.size() != 3) {
+      return Reject("SBLR.OPERAND_INVALID",
+                    "Canonical CREATE INDEX must be the standalone package root.",
+                    "ddl_create_index_not_standalone_package_root");
+    }
+    if (contains_ddl_create_index &&
+        !valid_ddl_create_index_operand(decoded_stream.stream.operations[1])) {
+      return Reject("SBLR.OPERAND_INVALID",
+                    "Canonical CREATE INDEX operand structure is invalid.",
+                    "ddl_create_index_operand_invalid");
+    }
+    if (contains_plan_import_rows &&
+        decoded_stream.stream.operations.size() != 3) {
+      return Reject("SBLR.OPERAND_INVALID",
+                    "Canonical import planning must be the standalone package root.",
+                    "dml_plan_import_rows_not_standalone_package_root");
+    }
+    if (contains_plan_import_rows &&
+        !valid_plan_import_rows_operand(decoded_stream.stream.operations[1])) {
+      return Reject("SBLR.OPERAND_INVALID",
+                    "Canonical import planning operand structure is invalid.",
+                    "dml_plan_import_rows_operand_invalid");
+    }
+  } else if (exact_ddl_create_index(operation.envelope)) {
+    if (!valid_ddl_create_index_operand(operation.envelope)) {
+      return Reject("SBLR.OPERAND_INVALID",
+                    "Canonical CREATE INDEX operand structure is invalid.",
+                    "ddl_create_index_operand_invalid");
+    }
+    return Reject("SBLR.OPERAND_INVALID",
+                  "Canonical CREATE INDEX must use a standalone package root.",
+                  "ddl_create_index_inline_operation_forbidden");
+  } else if (exact_plan_import_rows(operation.envelope)) {
+    if (!valid_plan_import_rows_operand(operation.envelope)) {
+      return Reject("SBLR.OPERAND_INVALID",
+                    "Canonical import planning operand structure is invalid.",
+                    "dml_plan_import_rows_operand_invalid");
+    }
+    return Reject("SBLR.OPERAND_INVALID",
+                  "Canonical import planning must use a standalone package root.",
+                  "dml_plan_import_rows_inline_operation_forbidden");
   }
 
   const auto uuid_text = [](const std::uint8_t* uuid) {
@@ -1871,6 +2057,20 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
                   "Engine-owned catalog, security, resource, and MGA context is required.",
                   "engine_owned_context_missing");
+  }
+  for (const auto& operand : operation.envelope.operands) {
+    if (operand.name == "internal_engine_api_operation_id") {
+      return Reject(
+          "SBSQL.SURFACE.NOT_ADMITTED",
+          "Internal Engine API operations are not admitted through the public SBsql SBLR surface.",
+          "internal_engine_api_not_external_sblr_callable");
+    }
+    if (operand.name == "unlisted_engine_api_operation_id") {
+      return Reject(
+          "SBSQL.SURFACE.NOT_ADMITTED",
+          "Operations absent from the Core operation matrix are not admitted through the public SBsql SBLR surface.",
+          "operation_not_manifest_listed");
+    }
   }
   // Cluster-required roots are deliberately admitted to the engine gateway
   // even when cluster authority is unavailable.  The configured no-cluster or
@@ -2011,6 +2211,11 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     token->package_executor_evidence.canonical_payload_sha256 =
         token->operation_sha256;
   }
+  if (contains_ddl_create_index) {
+    return Reject("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                  "Canonical CREATE INDEX executor evidence is not accepted.",
+                  "ddl_create_index_executor_evidence_not_accepted");
+  }
   std::vector<std::uint8_t> binding;
   constexpr std::string_view kDomain = "ScratchBird.SBLR.AdmissionToken.V1";
   binding.insert(binding.end(), kDomain.begin(), kDomain.end());
@@ -2095,12 +2300,12 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   const auto& published_operation =
       opcode_stream ? decoded_stream.stream.operations[1]
                     : operation.envelope;
-  const auto* published_opcode =
-      scratchbird::engine::sblr::LookupSblrOpcodeCode(
-          published_operation.opcode_code);
-  if (published_opcode == nullptr ||
-      published_opcode->operation_id != published_operation.operation_id ||
-      published_opcode->opcode != published_operation.opcode) {
+  const auto published_opcode_identity =
+      scratchbird::engine::sblr::ValidateSblrOpcodeIdentity(
+          published_operation.opcode_code, published_operation.operation_id,
+          published_operation.opcode);
+  const auto* published_opcode = published_opcode_identity.entry;
+  if (!published_opcode_identity.ok || published_opcode == nullptr) {
     return Reject("SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
                   "The published operation must bind the contained root registry row.",
                   "published_root_opcode_registry_identity_mismatch");

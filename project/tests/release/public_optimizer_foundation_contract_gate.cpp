@@ -1235,7 +1235,12 @@ bool ValidateModelFamilyOptimizerOwnedProfiles() {
 
 bool ValidateCrossJoinSemantics() {
   std::vector<opt::JoinRelationNode> relations = {
-      {Uuid(401), 6, 64}, {Uuid(402), 7, 64}};
+      {.relation_uuid = Uuid(401),
+       .estimated_rows = 6,
+       .memory_profile_bytes = 64},
+      {.relation_uuid = Uuid(402),
+       .estimated_rows = 7,
+       .memory_profile_bytes = 64}};
   opt::JoinPredicateEdge cross;
   cross.left_relation_uuid = relations[0].relation_uuid;
   cross.right_relation_uuid = relations[1].relation_uuid;

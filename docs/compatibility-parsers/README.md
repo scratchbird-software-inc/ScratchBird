@@ -6,11 +6,13 @@ ScratchBird-owned outcomes. They do not make the ScratchBird engine execute
 reference SQL, and they do not give a reference parser storage, recovery,
 security, file-system, cluster, or transaction authority.
 
-Current public beta status: the 25 parser lanes in
+Last verified beta status before the SBLR stabilization hold: the 25 parser lanes in
 `compatibility-parser-status.csv` have public gate evidence that every surfaced
 operation in the beta parser declarations is either mapped to ScratchBird
 authority, emulated through a controlled ScratchBird route, handled as
 parser-only metadata/presentation, or refused with a deterministic diagnostic.
+That retained evidence is historical and does not assert compatibility with the
+in-progress SBLR baseline.
 
 Per-parser searchable surface status is generated under
 [`parsers/`](parsers/README.md). Open the parser page for the compatibility
@@ -18,8 +20,28 @@ surface you are using and search for the functionality name to see its exact
 implementation status, route/SBLR target, refusal policy, diagnostic, and source
 anchor.
 
-This is not a drop-in compatibility claim. It is a parser-boundary and
-conformance-gate claim for the current beta source tree.
+This is not a drop-in compatibility claim. It records the bounded
+parser-boundary and conformance-gate claim established before the stabilization
+hold; it is not a current-SBLR conformance claim.
+
+## Temporary build status
+
+The compatibility parser implementations and their evidence remain available
+for review, but non-SBsql parser workers, same-family parser-support UDRs, and
+their executable tests are temporarily excluded from the standard build while
+the shared SBLR contract stabilizes. Standard builds keep the SBsql parser and
+Core/SBLR verification surfaces enabled.
+
+An isolated compatibility build must opt in with
+`-DSB_BUILD_COMPATIBILITY_PARSERS=ON`. This switch is intentionally OFF in the
+public release presets. Static compatibility-profile and imported-evidence
+gates may remain enabled because they do not compile or execute a compatibility
+parser.
+
+Use a fresh build directory and fresh install prefix when changing this gate.
+Reconfiguring an existing tree stops owning compatibility targets, but it does
+not delete parser binaries or configuration files produced by an earlier
+compatibility-enabled build or install.
 
 ## Public Lanes
 
@@ -110,7 +132,8 @@ The public CTest suite contains the reference-parser gate family:
 - `parser_compatibility_replay_proof_gate`
 - `parser_dialect_isolation_audit_gate`
 
-The current local verification run for the replay closure group passed:
+The retained pre-hold local verification run for the replay closure group
+passed:
 
 ```text
 reference_native_tool_harness_contract_conformance ......... Passed
@@ -133,8 +156,10 @@ ctest --test-dir build/reference-parser-master-r0 \
   --output-on-failure
 ```
 
-For a fresh build, enable the normal project test profile so CMake turns on
-`SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS` and
+For a fresh compatibility build, enable both the normal project test profile
+and `SB_BUILD_COMPATIBILITY_PARSERS=ON`. The test profile then turns on
+`SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS`; static compatibility
+regression gates remain independently controlled by
 `SB_BUILD_COMPAT_REGRESSION_GATES`.
 
 ## Public Payload Boundary

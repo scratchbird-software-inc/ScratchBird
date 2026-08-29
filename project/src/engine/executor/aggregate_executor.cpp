@@ -4597,7 +4597,8 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
     const DescriptorBatch& execution_input_batch,
     const ExecutorColumnDescriptor& execution_count_column,
     const bool borrowed_execution_carriers,
-    const bool borrowed_count_column) {
+    const bool borrowed_count_column,
+    const std::optional<std::uint64_t> exact_input_cardinality) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -4667,8 +4668,18 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
       execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
 
-  if (execution_input_batch.rows.size() >
-      static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+  if (exact_input_cardinality.has_value() &&
+      !execution_input_batch.rows.empty()) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
+        "streaming COUNT(*) input schema unexpectedly contains rows"));
+  }
+  const std::uint64_t input_cardinality =
+      exact_input_cardinality.value_or(
+          static_cast<std::uint64_t>(execution_input_batch.rows.size()));
+
+  if (input_cardinality >
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
     return refuse(Refusal("QOW-DIAG-QRY-007-AGGREGATE-OVERFLOW-V1",
                           "COUNT(*) exceeds int64 result width"));
   }
@@ -4677,7 +4688,7 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
       AggregateNodeMemoryGrant(execution_dag, *selected_node);
   std::size_t input_payload_bytes = 0;
   std::size_t output_payload_bytes = 1;
-  auto remaining_count = execution_input_batch.rows.size();
+  auto remaining_count = input_cardinality;
   do {
     if (!CheckedAggregateFinalizationAdd(&output_payload_bytes, 1)) {
       return refuse(Refusal(
@@ -4705,8 +4716,7 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
 
   EngineTypedValue count_value;
   count_value.descriptor = execution_count_column.descriptor;
-  count_value.encoded_value =
-      std::to_string(execution_input_batch.rows.size());
+  count_value.encoded_value = std::to_string(input_cardinality);
   count_value.state = EngineValueState::value;
   result.output_batch.columns.reserve(1);
   result.output_batch.columns.push_back(execution_count_column);
@@ -4738,7 +4748,7 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request) {
   return ExecuteCanonicalDescriptorCountStarBound(
       request, request.physical_dag, request.input_batch,
-      request.count_column, false, false);
+      request.count_column, false, false, std::nullopt);
 }
 
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
@@ -4747,7 +4757,7 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const DescriptorBatch& borrowed_input_batch) {
   return ExecuteCanonicalDescriptorCountStarBound(
       request, borrowed_execution_dag, borrowed_input_batch,
-      request.count_column, true, false);
+      request.count_column, true, false, std::nullopt);
 }
 
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
@@ -4757,7 +4767,19 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const ExecutorColumnDescriptor& borrowed_count_column) {
   return ExecuteCanonicalDescriptorCountStarBound(
       request, borrowed_execution_dag, borrowed_input_batch,
-      borrowed_count_column, true, true);
+      borrowed_count_column, true, true, std::nullopt);
+}
+
+CanonicalDescriptorCountResult
+ExecuteCanonicalDescriptorCountStarExactCardinality(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_schema,
+    const ExecutorColumnDescriptor& borrowed_count_column,
+    const std::uint64_t exact_input_cardinality) {
+  return ExecuteCanonicalDescriptorCountStarBound(
+      request, borrowed_execution_dag, borrowed_input_schema,
+      borrowed_count_column, true, true, exact_input_cardinality);
 }
 
 // QOW-SOURCE-QRY-011-REGISTRY-V1

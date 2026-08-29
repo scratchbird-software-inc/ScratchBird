@@ -9,6 +9,7 @@
 #include "cluster_provider/cluster_provider.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -449,6 +450,13 @@ void VerifyCompiledProviderBoundary() {
   const bool no_cluster = info.provider_type == "no_cluster";
   const bool compile_stub = info.provider_type == "compile_link_stub";
   Require(no_cluster || compile_stub, "unexpected public cluster provider type");
+  if (no_cluster) {
+    Require(info.support_status == "not_enabled",
+            "no-cluster provider support status drift");
+  } else {
+    Require(info.compile_link_only && info.support_status == "compile_link_only",
+            "compile-link-stub provider support status drift");
+  }
   const auto result =
       cluster_provider::ExecuteClusterOperation(ProviderRequest("cluster.query.plan_distributed"));
   Require(!result.ok && result.cluster_authority_required,
@@ -470,25 +478,30 @@ void VerifyCompiledProviderBoundary() {
   Require(HasEvidence(result, "cluster_provider_route_admission", "false"),
           "fail-closed provider route evidence missing");
 
-  auto local_query = sblr::MakeSblrEnvelope("query.plan_operation",
-                                            "SBLR_QUERY_PLAN_OPERATION",
-                                            "FSE-P7-local-query-refusal");
-  local_query.requires_cluster_authority = true;
-  local_query.source_artifact_map.policy_status = "non_authoritative_render_metadata";
-  local_query.source_artifact_map.source_identity = "fse-p7:local-query-refusal";
-  local_query.source_artifact_map.source_hash = "sha256:fse-p7-local-query-refusal";
-  local_query.source_artifact_map.contains_sql_text = false;
-  local_query.source_artifact_map.raw_sql_text_authoritative = false;
-  const auto local_query_admission = server::AdmitServerSblrEnvelope(
-      server::ServerSblrAdmissionRequest{sblr::EncodeSblrEnvelope(local_query), true});
-  Require(!local_query_admission.admitted &&
-              HasAdmissionDiagnostic(local_query_admission,
-                                     "SBLR.CLUSTER_MAPPING.UNAVAILABLE"),
-          "local query.plan_operation was usable as cluster query authority");
+  const auto canonical_probe =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION",
+          "FSE-P7-retired-raw-SBOP-proof");
+  const auto retired_canonical_sbop = server::AdmitServerSblrEnvelope(
+      server::ServerSblrAdmissionRequest{
+          sblr::EncodeSblrEnvelope(canonical_probe), true});
+  Require(!retired_canonical_sbop.admitted &&
+              HasAdmissionDiagnostic(retired_canonical_sbop,
+                                     "SBLR.OPERATION.NONCANONICAL"),
+          "exact SBOP bypassed the canonical container/SBEE admission chain");
+
+  const auto canonical = server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION"));
+  Require(canonical.admitted &&
+              canonical.operation_id == "observability.show_version",
+          "canonical SBEE/SBLR/SBOP admission route was not executable");
 
   const auto raw_sql = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{"select * from fse_p7_forbidden", false});
-  Require(!raw_sql.admitted && HasAdmissionDiagnostic(raw_sql, "SBLR.SQL_TEXT_FORBIDDEN"),
+  Require(!raw_sql.admitted &&
+              HasAdmissionDiagnostic(raw_sql,
+                                     "SBLR.OPERATION.NONCANONICAL"),
           "raw SQL text was admitted as authoritative SBLR");
 }
 

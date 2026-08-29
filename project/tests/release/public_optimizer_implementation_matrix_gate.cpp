@@ -570,8 +570,12 @@ void ApplyJoinProof(MatrixRow* row) {
 
   const auto optimized = opt::OptimizeLogicalPlanWithStatistics(logical, JoinStatistics());
   std::vector<opt::JoinRelationNode> debug_relations = {
-      {"rel.pcr060.join.left", 1000, 0},
-      {"rel.pcr060.join.right", 500, 0}};
+      {.relation_uuid = "rel.pcr060.join.left",
+       .estimated_rows = 1000,
+       .memory_profile_bytes = 0},
+      {.relation_uuid = "rel.pcr060.join.right",
+       .estimated_rows = 500,
+       .memory_profile_bytes = 0}};
   opt::JoinPredicateEdge debug_edge;
   debug_edge.left_relation_uuid = debug_relations[0].relation_uuid;
   debug_edge.right_relation_uuid = debug_relations[1].relation_uuid;

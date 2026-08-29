@@ -250,7 +250,16 @@ def git_tracked_paths(ctx: Context, root: Path) -> set[str]:
     except ValueError:
         return set()
     result = subprocess.run(
-        ["git", "-C", str(ctx.repo_root), "ls-files", "--", rel_root],
+        [
+            "git",
+            "-c",
+            f"safe.directory={ctx.repo_root}",
+            "-C",
+            str(ctx.repo_root),
+            "ls-files",
+            "--",
+            rel_root,
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

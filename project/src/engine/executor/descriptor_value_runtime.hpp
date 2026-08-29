@@ -1393,6 +1393,24 @@ struct CanonicalHeapRelationAcquisitionRequest {
   const std::function<bool()>* borrowed_cancellation_requested = nullptr;
   CanonicalExecutionMgaAuthority mga_authority;
   const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
+  // True only for the exact two-node relation.source.v1 ->
+  // aggregate.global-count-star.v1 DAG.  The heap executor revalidates that
+  // shape before using the streaming MGA cardinality path.
+  bool exact_global_count_star_consumer = false;
+};
+
+struct CanonicalExactCountStarCardinality {
+  std::uint16_t abi_version = 1;
+  std::uint64_t visible_row_count = 0;
+  std::uint64_t scanned_row_version_count = 0;
+  std::uint64_t decoded_byte_count = 0;
+  std::uint64_t storage_bytes_read = 0;
+  std::uint64_t visibility_recheck_count = 0;
+  std::uint64_t invisible_row_version_count = 0;
+  std::uint64_t tombstone_row_count = 0;
+  bool engine_mga_snapshot_bound = false;
+  bool visibility_rechecks_complete = false;
+  bool value_payloads_not_materialized = false;
 };
 
 struct CanonicalHeapRelationAcquisitionCounters {
@@ -1443,6 +1461,8 @@ struct CanonicalHeapRelationAcquisitionResult {
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
+  std::optional<CanonicalExactCountStarCardinality>
+      exact_count_star_cardinality;
 };
 
 enum class CanonicalHeapTableSampleMethod : std::uint8_t {
@@ -1513,6 +1533,11 @@ struct CanonicalPhysicalDispatchInput {
   // causal ABI; this payload is the engine-owned value channel and is never
   // reconstructed from parser text or an opaque handle.
   std::optional<DescriptorBatch> materialized_output_batch;
+  // An exact global COUNT(*) consumer may receive this engine-owned
+  // cardinality instead of one materialized tuple per visible heap row.  The
+  // accompanying typed batch carries schema only and must contain no rows.
+  std::optional<CanonicalExactCountStarCardinality>
+      exact_count_star_cardinality;
   PhysicalMgaStatementContext mga_statement_context;
 };
 
@@ -1617,6 +1642,8 @@ struct CanonicalPhysicalDispatchStepResult {
   // canonical selected-DAG route consumes the root batch at the shared result
   // ABI boundary; the dispatcher never reconstructs it from an opaque handle.
   std::optional<DescriptorBatch> materialized_output_batch;
+  std::optional<CanonicalExactCountStarCardinality>
+      exact_count_star_cardinality;
   bool execution_started = false;
   bool execution_finished = false;
   bool counters_captured_after_finish = false;
@@ -3174,6 +3201,17 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch,
     const ExecutorColumnDescriptor& borrowed_count_column);
+// Exact MGA-visible cardinality path for a schema-only input batch produced by
+// the bounded streaming heap COUNT(*) source.  No physical input tuples are
+// synthesized; the aggregate still validates the selected DAG, MGA authority,
+// result descriptor, int64 width, and memory receipt.
+CanonicalDescriptorCountResult
+ExecuteCanonicalDescriptorCountStarExactCardinality(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_schema,
+    const ExecutorColumnDescriptor& borrowed_count_column,
+    std::uint64_t exact_input_cardinality);
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
 DescriptorRuntimeDiagnostic BindCanonicalAggregateEqualityAuthorityProfile(
@@ -3513,6 +3551,23 @@ scratchbird::engine::internal_api::EngineTypedValue EvaluateDescriptorDomainMeth
     const scratchbird::engine::internal_api::EngineTypedValue& value,
     const std::string& security_token,
     DescriptorRuntimeDiagnostic* diagnostic = nullptr);
+struct CanonicalInt128SumStateV1 {
+  std::array<std::uint8_t, 16> signed_little_endian{};
+  bool nonnull_value_seen = false;
+};
+
+struct CanonicalInt128SumFinalizeResultV1 {
+  DescriptorRuntimeDiagnostic diagnostic;
+  scratchbird::engine::internal_api::EngineTypedValue value;
+};
+
+DescriptorRuntimeDiagnostic TransitionCanonicalInt128SumV1(
+    CanonicalInt128SumStateV1* state,
+    bool input_is_null,
+    std::int64_t input_value);
+CanonicalInt128SumFinalizeResultV1 FinalizeCanonicalInt128SumV1(
+    const CanonicalInt128SumStateV1& state,
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor);
 Int64DecodeResult DecodeInt64Value(const scratchbird::engine::internal_api::EngineTypedValue& value);
 bool IsCanonicalBoundedSignedIntegerDescriptor(
     const scratchbird::engine::internal_api::EngineDescriptor& descriptor);

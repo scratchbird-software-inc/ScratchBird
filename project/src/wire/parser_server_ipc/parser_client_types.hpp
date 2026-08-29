@@ -165,6 +165,10 @@ struct ParserStatementContext {
   std::uint64_t preliminary_catalog_generation{0};
   std::uint64_t preliminary_security_epoch{0};
   std::uint64_t preliminary_resource_epoch{0};
+  // Schema 7032 v71 copy-only projection of the exact engine-issued statement
+  // resource policy.  Parsers may copy it into SBQNDR01 but may not default,
+  // narrow, widen, or alias it to any other resource or result bound.
+  std::uint64_t preliminary_maximum_mga_relation_decoded_bytes_per_pass{0};
   std::string preliminary_mga_snapshot_uuid;
   std::uint16_t preliminary_extension_version{0};
   std::string preliminary_prepared_statement_uuid;
@@ -268,6 +272,10 @@ struct ParserStatementContext {
   std::uint64_t preliminary_ddl_create_table_executor_availability_generation{0};
   std::uint64_t preliminary_ddl_create_index_executor_availability_generation{0};
   std::uint64_t preliminary_ddl_drop_index_executor_availability_generation{0};
+  // Schema 7032 v70+ copy-only projection of the exact engine-issued TXBH for
+  // `transaction`.  The parser may copy these bytes into TXCO/TXRO binding;
+  // possession of them is never private transaction-handle authority.
+  std::vector<std::uint8_t> preliminary_active_transaction_handle;
   std::string literal_preliminary_receipt_uuid;
   std::string literal_catalog_snapshot_uuid;
   std::uint64_t literal_catalog_generation{0};

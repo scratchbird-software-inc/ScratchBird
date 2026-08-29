@@ -88,6 +88,16 @@ struct RelationalTypeDescriptor {
   std::optional<std::uint32_t> width;
   std::optional<std::uint32_t> precision;
   std::optional<std::uint32_t> scale;
+  bool datatype_identity_authoritative{false};
+  std::uint64_t descriptor_generation{0};
+  std::uint64_t type_generation{0};
+  std::string codec_id;
+  std::uint16_t codec_version{0};
+  std::uint64_t codec_generation{0};
+  std::string statement_receipt_uuid;
+  std::string datatype_catalog_snapshot_uuid;
+  std::uint64_t datatype_catalog_generation{0};
+  std::uint64_t datatype_registry_generation{0};
 };
 
 struct RelationalExpressionRecord {
@@ -116,6 +126,16 @@ struct RelationalExpressionRecord {
     std::array<std::uint8_t,32> canonical_value_sha256{};
   };
   std::optional<ParameterTypedValueV1> parameter_typed_value_v1;
+  // query.execute-1.1 keeps d718/gen1 in the ordinary descriptor table.  This
+  // structural marker carries only the exact SBXN occurrence/node/handle
+  // coordinates required to resolve the receipt-owned contextual lease.
+  struct ContextualTextLiteralReferenceV2 {
+    std::uint64_t literal_occurrence{0};
+    std::uint64_t node_id{0};
+    std::uint32_t literal_descriptor_handle{0};
+  };
+  std::optional<ContextualTextLiteralReferenceV2>
+      contextual_text_literal_v2;
 };
 
 struct RelationalOutputRecord {

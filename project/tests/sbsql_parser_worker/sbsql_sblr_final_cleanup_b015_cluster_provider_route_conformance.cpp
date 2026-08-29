@@ -8,6 +8,7 @@
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -47,6 +49,11 @@ struct RouteRow {
   std::string_view result_shape;
   bool engine_api_command;
   bool requires_transaction_context;
+  std::uint16_t opcode_code = 0;
+  std::string_view operand_contract;
+  std::string_view result_contract;
+  sblr::SblrOpcodeTransactionEffect transaction_effect =
+      sblr::SblrOpcodeTransactionEffect::none;
 };
 
 constexpr std::array<RouteRow, 24> kExactRows{{
@@ -77,14 +84,14 @@ constexpr std::array<RouteRow, 24> kExactRows{{
 }};
 
 constexpr std::array<RouteRow, 8> kApiRows{{
-    {"cluster.sys.agents", "ENGINE CLUSTER SYS AGENTS", "cluster.sys.agents", "SBLR_CLUSTER_SYS_AGENTS", "cluster.provider.stub.v1", true, false},
-    {"cluster.inspect_state", "ENGINE CLUSTER INSPECT STATE", "cluster.inspect_state", "SBLR_CLUSTER_INSPECT_STATE", "cluster.provider.stub.v1", true, false},
-    {"cluster.inspect_routing_plan", "ENGINE CLUSTER INSPECT ROUTING PLAN", "cluster.inspect_routing_plan", "SBLR_CLUSTER_INSPECT_ROUTING_PLAN", "cluster.provider.stub.v1", true, false},
-    {"cluster.control_cluster", "ENGINE CLUSTER CONTROL CLUSTER", "cluster.control_cluster", "SBLR_CLUSTER_CONTROL_CLUSTER", "cluster.provider.stub.v1", true, false},
-    {"cluster.prepare_remote_participant_insert", "ENGINE CLUSTER PREPARE REMOTE PARTICIPANT INSERT", "cluster.prepare_remote_participant_insert", "SBLR_CLUSTER_PREPARE_REMOTE_PARTICIPANT_INSERT", "cluster.provider.stub.v1", true, true},
-    {"cluster.validate_insert_route_fence", "ENGINE CLUSTER VALIDATE INSERT ROUTE FENCE", "cluster.validate_insert_route_fence", "SBLR_CLUSTER_VALIDATE_INSERT_ROUTE_FENCE", "cluster.provider.stub.v1", true, true},
-    {"cluster.place_object", "ENGINE CLUSTER PLACE OBJECT", "cluster.place_object", "SBLR_CLUSTER_PLACE_OBJECT", "cluster.provider.stub.v1", true, true},
-    {"cluster.inspect_replication", "ENGINE CLUSTER INSPECT REPLICATION", "cluster.inspect_replication", "SBLR_CLUSTER_INSPECT_REPLICATION", "cluster.provider.stub.v1", true, false},
+    {"cluster.sys.agents", "ENGINE CLUSTER SYS AGENTS", "cluster.sys.agents", "SBLR_CLUSTER_SYS_AGENTS", "cluster.provider.stub.v1", true, false, 0x0B44u, "cluster_sys_agents_request", "cluster_sys_agents_result", sblr::SblrOpcodeTransactionEffect::read},
+    {"cluster.inspect_state", "ENGINE CLUSTER INSPECT STATE", "cluster.inspect_state", "SBLR_CLUSTER_INSPECT_STATE", "cluster.provider.stub.v1", true, false, 0x0B42u, "cluster_inspect_request", "cluster_inspection_result", sblr::SblrOpcodeTransactionEffect::read},
+    {"cluster.inspect_routing_plan", "ENGINE CLUSTER INSPECT ROUTING PLAN", "cluster.inspect_routing_plan", "SBLR_CLUSTER_INSPECT_ROUTING_PLAN", "cluster.provider.stub.v1", true, false, 0x0B45u, "cluster_inspect_routing_plan_request", "cluster_routing_plan_result", sblr::SblrOpcodeTransactionEffect::read},
+    {"cluster.control_cluster", "ENGINE CLUSTER CONTROL CLUSTER", "cluster.control_cluster", "SBLR_CLUSTER_CONTROL_CLUSTER", "cluster.provider.stub.v1", true, false, 0x0B41u, "cluster_control_request", "cluster_operation_result", sblr::SblrOpcodeTransactionEffect::cluster_write},
+    {"cluster.prepare_remote_participant_insert", "ENGINE CLUSTER PREPARE REMOTE PARTICIPANT INSERT", "cluster.prepare_remote_participant_insert", "SBLR_CLUSTER_PREPARE_REMOTE_PARTICIPANT_INSERT", "cluster.provider.stub.v1", true, true, 0x0B46u, "cluster_remote_participant_insert_request", "cluster_remote_participant_insert_result", sblr::SblrOpcodeTransactionEffect::cluster_write},
+    {"cluster.validate_insert_route_fence", "ENGINE CLUSTER VALIDATE INSERT ROUTE FENCE", "cluster.validate_insert_route_fence", "SBLR_CLUSTER_VALIDATE_INSERT_ROUTE_FENCE", "cluster.provider.stub.v1", true, true, 0x0B47u, "cluster_insert_route_fence_request", "cluster_insert_route_fence_result", sblr::SblrOpcodeTransactionEffect::cluster_write},
+    {"cluster.place_object", "ENGINE CLUSTER PLACE OBJECT", "cluster.place_object", "SBLR_CLUSTER_PLACE_OBJECT", "cluster.provider.stub.v1", true, true, 0x0B48u, "cluster_place_object_request", "cluster_place_object_result", sblr::SblrOpcodeTransactionEffect::cluster_write},
+    {"cluster.inspect_replication", "ENGINE CLUSTER INSPECT REPLICATION", "cluster.inspect_replication", "SBLR_CLUSTER_INSPECT_REPLICATION", "cluster.provider.stub.v1", true, false, 0x0B43u, "cluster_inspect_request", "cluster_replication_result", sblr::SblrOpcodeTransactionEffect::read},
 }};
 
 struct SurfaceEvidenceRow {
@@ -296,6 +303,7 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
 api::EngineRequestContext EngineContext(bool security_context_present = true) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sblr-final-cleanup-b015";
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = security_context_present;
   context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
   context.database_path = "/tmp/sbsql_sblr_final_cleanup_b015.sbdb";
@@ -314,38 +322,32 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.resource_epoch = 163;
   context.trace_tags = {
       "security.bootstrap",
+      "security.fixture_trace_authority",
       "group:ROOT",
       "role:ROOT",
       "right:CLUSTER_INSPECT",
       "right:CLUSTER_CONTROL",
+      "right:OBS_CLUSTER_HEALTH_INSPECT",
+      "right:OBS_AGENT_STATE_READ",
   };
   return context;
 }
 
 sblr::SblrOperationEnvelope EngineEnvelope(const RouteRow& row) {
-  auto envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
-                                         std::string(row.opcode),
-                                         std::string("trace.b015.") +
-                                             std::string(row.label));
+  const auto* entry = sblr::LookupSblrOperation(row.operation_id);
+  Require(entry != nullptr,
+          EvidenceMessage(row, "registry", "canonical operation id missing"));
+  auto envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          row.operation_id,
+          row.opcode,
+          std::string("trace.cluster_provider_route.") + std::string(row.label));
   envelope.result_shape = row.result_shape;
   envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = row.requires_transaction_context;
-  envelope.requires_cluster_authority = true;
+  envelope.requires_security_context = entry->requires_security_context;
+  envelope.requires_transaction_context = entry->requires_transaction_context;
+  envelope.requires_cluster_authority = entry->requires_cluster_authority;
   envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  return envelope;
-}
-
-sblr::SblrOperationEnvelope SurfaceEnvelope(const SurfaceEvidenceRow& row) {
-  auto envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
-                                         "SBLR_CLUSTER_PROFILE_OPERATION",
-                                         std::string("trace.b015.surface.") +
-                                             std::string(row.canonical_name));
-  envelope.result_shape = "cluster.provider.stub.v1";
-  envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
-  envelope.requires_security_context = true;
-  envelope.requires_cluster_authority = true;
   envelope.parser_resolved_names_to_uuids = true;
   return envelope;
 }
@@ -354,12 +356,38 @@ void RequireRegistryAndDispatch(const RouteRow& row) {
   const auto* entry = sblr::LookupSblrOperation(row.operation_id);
   Require(entry != nullptr, EvidenceMessage(row, "registry", "operation id missing"));
   Require(entry->opcode == row.opcode, EvidenceMessage(row, "registry", "opcode mismatch"));
+  Require(entry->code != 0,
+          EvidenceMessage(row, "registry", "canonical opcode code is zero"));
+  Require(entry->code == row.opcode_code,
+          EvidenceMessage(row, "registry", "canonical opcode code changed"));
+  std::size_t operation_identity_count = 0;
+  std::size_t opcode_identity_count = 0;
+  std::size_t code_identity_count = 0;
+  for (const auto& candidate : sblr::StaticSblrOpcodeRegistry()) {
+    if (candidate.operation_id == row.operation_id) ++operation_identity_count;
+    if (candidate.opcode == row.opcode) ++opcode_identity_count;
+    if (candidate.code == row.opcode_code) ++code_identity_count;
+  }
+  Require(operation_identity_count == 1 && opcode_identity_count == 1 &&
+              code_identity_count == 1,
+          EvidenceMessage(row, "registry", "canonical identity is not unique"));
+  Require(entry->operand_contract == row.operand_contract &&
+              entry->result_contract == row.result_contract,
+          EvidenceMessage(row, "registry", "operand/result contract mismatch"));
+  Require(entry->transaction_effect == row.transaction_effect,
+          EvidenceMessage(row, "registry", "transaction-effect contract mismatch"));
+  Require(entry->security_class == sblr::SblrOpcodeSecurityClass::cluster_authorized,
+          EvidenceMessage(row, "registry", "security class is not cluster-authorized"));
   Require(entry->category == sblr::SblrOpcodeCategory::cluster,
           EvidenceMessage(row, "registry", "operation is not in the cluster category"));
   Require(entry->support == sblr::SblrOpcodeSupport::cluster_refusal,
           EvidenceMessage(row, "registry", "operation does not preserve cluster-boundary support"));
   Require(entry->requires_cluster_authority,
           EvidenceMessage(row, "registry", "operation does not require cluster authority"));
+  Require(entry->requires_transaction_context == row.requires_transaction_context,
+          EvidenceMessage(row, "registry", "transaction-context contract mismatch"));
+  Require(entry->executor_evidence_required && entry->executor_evidence_accepted,
+          EvidenceMessage(row, "registry", "exact executor evidence is not accepted"));
 
   const auto envelope = EngineEnvelope(row);
   const auto opcode_validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
@@ -385,6 +413,12 @@ void RequireRegistryAndDispatch(const RouteRow& row) {
           EvidenceMessage(row, "dispatch", "engine envelope validation failed"));
   Require(dispatch.accepted && dispatch.dispatched_to_api,
           EvidenceMessage(row, "dispatch", "operation did not reach API dispatch"));
+  Require(dispatch.api_result.operation_id == row.operation_id,
+          EvidenceMessage(row, "dispatch", "provider changed operation identity"));
+  Require(HasEvidence(dispatch.api_result, "cluster_operation", row.operation_id),
+          EvidenceMessage(row, "dispatch", "provider route evidence missing"));
+  Require(!HasEvidence(dispatch.api_result, "cluster_provider_dispatch", "false"),
+          EvidenceMessage(row, "dispatch", "operation fell through to a local API route"));
   if (ClusterProviderCompileLinkStubBuild()) {
     Require(!dispatch.api_result.ok,
             EvidenceMessage(row, "dispatch", "cluster-stub build executed route"));
@@ -406,6 +440,10 @@ void RequireRegistryAndDispatch(const RouteRow& row) {
                         "cluster_provider_name",
                         "scratchbird.cluster.compile_link_stub_provider"),
             EvidenceMessage(row, "dispatch", "cluster-stub provider name evidence missing"));
+    Require(HasEvidence(dispatch.api_result,
+                        "cluster_provider_route_admission_diagnostic",
+                        cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+            EvidenceMessage(row, "dispatch", "cluster-stub route admission diagnostic changed"));
   } else if (cluster_provider::ClusterProviderSupportsExecution()) {
     Require(dispatch.api_result.ok,
             EvidenceMessage(row, "dispatch", "cluster provider did not return ok"));
@@ -420,71 +458,98 @@ void RequireRegistryAndDispatch(const RouteRow& row) {
             EvidenceMessage(row, "dispatch", "non-cluster dispatch vector missing"));
     Require(!HasApiDiagnosticCode(dispatch.api_result, "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY"),
             EvidenceMessage(row, "dispatch", "non-cluster build called the stub provider"));
-  }
-}
-
-void RequireSurfaceProviderEvidence(const SurfaceEvidenceRow& row) {
-  sblr::SblrDispatchRequest request;
-  request.context = EngineContext();
-  request.envelope = SurfaceEnvelope(row);
-  request.api_request.context = request.context;
-  request.api_request.operation_id = std::string(row.operation_id);
-  Require(request.envelope.result_shape == "cluster.provider.stub.v1",
-          EvidenceMessage(row, "envelope", "surface result shape is not provider-boundary stub"));
-  Require(request.envelope.requires_cluster_authority,
-          EvidenceMessage(row, "envelope", "surface route does not require cluster authority"));
-  Require(request.envelope.parser_resolved_names_to_uuids,
-          EvidenceMessage(row, "envelope", "surface route did not preserve resolved-name requirement"));
-  Require(!request.envelope.contains_sql_text,
-          EvidenceMessage(row, "envelope", "surface route embedded SQL text"));
-  const auto dispatch = sblr::DispatchSblrOperation(request);
-  Require(dispatch.envelope_validated,
-          EvidenceMessage(row, "dispatch", "surface envelope validation failed"));
-  Require(dispatch.accepted && dispatch.dispatched_to_api,
-          EvidenceMessage(row, "dispatch", "surface route did not enter provider boundary"));
-  if (ClusterProviderCompileLinkStubBuild()) {
-    Require(!dispatch.api_result.ok,
-            EvidenceMessage(row, "dispatch", "surface route executed in cluster-stub build"));
-    Require(dispatch.api_result.cluster_authority_required,
-            EvidenceMessage(row, "dispatch", "surface stub result did not require cluster authority"));
-    Require(dispatch.api_result.result_shape.result_kind == "cluster.provider.stub.v1",
-            EvidenceMessage(row, "dispatch", "surface stub result kind changed"));
-    Require(HasApiDiagnosticCode(
-                dispatch.api_result,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
-            EvidenceMessage(row, "dispatch", "surface stub compile-link vector missing"));
-    Require(HasDispatchDiagnosticCode(
-                dispatch,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
-            EvidenceMessage(row, "dispatch", "surface stub dispatch vector missing"));
-    Require(HasEvidence(dispatch.api_result, "cluster_provider", "stub"),
-            EvidenceMessage(row, "dispatch", "surface stub provider evidence missing"));
-    Require(HasEvidence(dispatch.api_result,
-                        "cluster_provider_name",
-                        "scratchbird.cluster.compile_link_stub_provider"),
-            EvidenceMessage(row, "dispatch", "surface stub provider name evidence missing"));
-  } else if (cluster_provider::ClusterProviderSupportsExecution()) {
-    Require(dispatch.api_result.ok,
-            EvidenceMessage(row, "dispatch", "surface route did not receive provider response"));
-  } else {
-    Require(!dispatch.api_result.ok,
-            EvidenceMessage(row, "dispatch", "surface route executed in non-cluster build"));
-    Require(dispatch.api_result.cluster_authority_required,
-            EvidenceMessage(row, "dispatch", "surface unsupported result did not require cluster authority"));
-    Require(HasApiDiagnosticCode(dispatch.api_result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
-            EvidenceMessage(row, "dispatch", "surface unsupported vector missing"));
-    Require(HasDispatchDiagnosticCode(dispatch, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
-            EvidenceMessage(row, "dispatch", "surface dispatch unsupported vector missing"));
-    Require(!HasApiDiagnosticCode(dispatch.api_result, "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY"),
-            EvidenceMessage(row, "dispatch", "surface route called stub provider in non-cluster build"));
     Require(HasEvidence(dispatch.api_result, "cluster_provider", "no_cluster"),
-            EvidenceMessage(row, "dispatch", "surface no-cluster provider evidence missing"));
+            EvidenceMessage(row, "dispatch", "non-cluster provider evidence missing"));
+    Require(HasEvidence(dispatch.api_result,
+                        "cluster_provider_route_admission_diagnostic",
+                        cluster_provider::kClusterHandshakeExternalProviderRequiredCode),
+            EvidenceMessage(row, "dispatch", "non-cluster route admission diagnostic changed"));
   }
-  Require(!HasEvidence(dispatch.api_result, "private_cluster_execution", "true"),
-          EvidenceMessage(row, "dispatch", "surface route claimed private cluster execution"));
 }
 
-void RequireLowering(const RouteRow& row) {
+std::string ReadEvidenceFile(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  Require(in.good(), std::string("evidence file missing: ") + path.string());
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+void RequireSurfacePublicRefusalEvidence(const SurfaceEvidenceRow& row) {
+  const auto generated_root =
+      std::filesystem::path(SCRATCHBIRD_PROJECT_SOURCE_DIR) /
+      "tests/sbsql_parser_worker/generated/full_surface";
+  const auto authenticated = ReadEvidenceFile(
+      generated_root / "authenticated_route" /
+      (std::string(row.surface_id) + ".route.yaml"));
+  const auto round_trip = ReadEvidenceFile(
+      generated_root / "sblr_binary_round_trip" /
+      (std::string(row.surface_id) + ".round_trip.yaml"));
+
+  Require(Contains(authenticated,
+                   std::string("surface_id: \"") + std::string(row.surface_id) + "\""),
+          EvidenceMessage(row, "evidence", "authenticated surface id mismatch"));
+  Require(Contains(authenticated,
+                   std::string("canonical_name: \"") +
+                       std::string(row.canonical_name) + "\""),
+          EvidenceMessage(row, "evidence", "authenticated canonical name mismatch"));
+  Require(Contains(authenticated, "cluster_scope: \"cluster_private\""),
+          EvidenceMessage(row, "evidence", "cluster-private scope missing"));
+  Require(Contains(
+              authenticated,
+              "expected_authorization_refused_outcome: \"refused_with_SBSQL_SURFACE_NOT_ADMITTED_at_parser_or_lowering_admission_no_cluster_execution_path_in_public_build\""),
+          EvidenceMessage(row, "evidence", "public exact-refusal outcome changed"));
+  Require(Contains(authenticated,
+                   "expected_diagnostic_codes: \"SBSQL.SURFACE.NOT_ADMITTED;"),
+          EvidenceMessage(row, "evidence", "exact refusal diagnostic missing"));
+  Require(Contains(
+              round_trip,
+              "lower_phase_expectation: \"lower_refuses_with_SBSQL_SURFACE_NOT_ADMITTED_or_SBSQL_CLUSTER_AUTHORITY_REQUIRED_no_envelope_emitted_in_public_build\""),
+          EvidenceMessage(row, "evidence", "no-envelope lowering contract changed"));
+  Require(Contains(
+              round_trip,
+              "dispatch_phase_expectation: \"not_applicable_no_dispatch_path_in_public_build_cluster_execution_paths_are_private_only\""),
+          EvidenceMessage(row, "evidence", "no-dispatch contract changed"));
+  Require(sblr::LookupSblrOperation(row.operation_id) == nullptr,
+          EvidenceMessage(row, "registry", "grammar/control term was aliased as an operation"));
+}
+
+void RequirePublicClusterRefusal(const RouteRow& row) {
+  const auto artifacts = RunPipeline(row.sql);
+  Require(!artifacts.cst.messages.has_errors(),
+          EvidenceMessage(row, "pipeline", "recognized syntax failed CST construction"));
+  Require(!artifacts.ast.messages.has_errors(),
+          EvidenceMessage(row, "pipeline", "recognized syntax failed AST construction"));
+  Require(artifacts.bound.bound,
+          EvidenceMessage(row, "pipeline", "recognized syntax did not bind"));
+  Require(!artifacts.bound.requires_name_resolution,
+          EvidenceMessage(row, "pipeline", "refusal required parser-side name resolution"));
+  Require(!artifacts.verifier.admitted,
+          EvidenceMessage(row, "pipeline", "public cluster surface was admitted"));
+  Require(HasDiagnosticCode(artifacts.envelope.messages,
+                            "SBSQL.SURFACE.NOT_ADMITTED") &&
+              HasDiagnosticCode(artifacts.verifier.messages,
+                                "SBSQL.SURFACE.NOT_ADMITTED"),
+          EvidenceMessage(row, "pipeline", "exact Core refusal diagnostic missing"));
+  Require(artifacts.envelope.operation_id == row.operation_id &&
+              artifacts.envelope.sblr_opcode == row.opcode,
+          EvidenceMessage(row, "pipeline", "recognized private surface identity changed"));
+  Require(artifacts.envelope.exact_emulated_diagnostic,
+          EvidenceMessage(row, "pipeline", "diagnostic-only route marker missing"));
+  Require(artifacts.envelope.payload.empty(),
+          EvidenceMessage(row, "pipeline", "public refusal emitted an executable envelope"));
+  Require(!HasValue(artifacts.envelope.required_authority_steps,
+                    "authority.cluster.provider_dispatch_required") &&
+              !HasValue(artifacts.envelope.required_authority_steps,
+                        "authority.engine.cluster_provider_boundary_required") &&
+              !HasValue(artifacts.envelope.descriptor_refs, "sys.cluster.provider") &&
+              !HasValue(artifacts.envelope.policy_refs,
+                        "cluster_provider_boundary_policy"),
+          EvidenceMessage(row, "authority", "public refusal retained provider dispatch authority"));
+  Require(sblr::LookupSblrOperation(row.operation_id) == nullptr &&
+              sblr::LookupSblrOpcode(row.opcode) == nullptr,
+          EvidenceMessage(row, "registry", "private parser surface leaked into the public opcode registry"));
+}
+
+void RequireEngineApiLowering(const RouteRow& row) {
   const auto artifacts = RunPipeline(row.sql);
   Require(artifacts.bound.bound, EvidenceMessage(row, "pipeline", "row did not bind"));
   Require(!artifacts.bound.requires_name_resolution,
@@ -505,10 +570,8 @@ void RequireLowering(const RouteRow& row) {
           EvidenceMessage(row, "payload", "cluster provider dispatch flag missing"));
   Require(Contains(artifacts.envelope.payload, "\"private_cluster_execution\":false"),
           EvidenceMessage(row, "payload", "private cluster execution flag missing"));
-  Require(Contains(artifacts.envelope.payload,
-                   row.engine_api_command ? "\"engine_api_command_route\":true"
-                                          : "\"public_sbsql_exact_command\":true"),
-          EvidenceMessage(row, "payload", "expected route marker missing"));
+  Require(Contains(artifacts.envelope.payload, "\"engine_api_command_route\":true"),
+          EvidenceMessage(row, "payload", "engine API route marker missing"));
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.engine.cluster_provider_boundary_required"),
           EvidenceMessage(row, "authority", "provider-boundary authority missing"));
@@ -529,10 +592,11 @@ void RequireLowering(const RouteRow& row) {
   Require(HasValue(artifacts.envelope.policy_refs, "cluster_provider_boundary_policy"),
           EvidenceMessage(row, "authority", "cluster provider boundary policy missing"));
 
-  server::ServerSblrAdmissionRequest admission_request;
-  admission_request.encoded_sblr_envelope = artifacts.envelope.payload;
-  const auto admission = server::AdmitServerSblrEnvelope(admission_request);
-  Require(admission.admitted, EvidenceMessage(row, "admission", "server rejected parser JSON envelope"));
+  const auto admission = server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          artifacts.envelope, true));
+  Require(admission.admitted,
+          EvidenceMessage(row, "admission", "server rejected canonical engine API envelope"));
   Require(admission.operation_id == row.operation_id,
           EvidenceMessage(row, "admission", "server changed cluster operation id"));
   Require(admission.operation_family == ExpectedAdmissionFamily(row),
@@ -561,13 +625,21 @@ void RequireProviderInfoRoute() {
 
   sblr::SblrDispatchRequest request;
   request.context = EngineContext();
-  request.envelope = sblr::MakeSblrEnvelope("cluster.inspect_provider",
-                                            "SBLR_CLUSTER_INSPECT_PROVIDER",
-                                            "trace.b015.provider_info");
+  request.envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "cluster.inspect_provider",
+          "SBLR_CLUSTER_INSPECT_PROVIDER",
+          "trace.cluster_provider_info");
   request.envelope.result_shape = "cluster.provider.info.v1";
   request.envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
-  request.envelope.requires_security_context = true;
-  request.envelope.requires_cluster_authority = false;
+  const auto* entry = sblr::LookupSblrOperation("cluster.inspect_provider");
+  Require(entry != nullptr && entry->code == 0x0B3Du &&
+              entry->executor_evidence_required &&
+              entry->executor_evidence_accepted,
+          "SHOW CLUSTER PROVIDER canonical registry contract changed");
+  request.envelope.requires_security_context = entry->requires_security_context;
+  request.envelope.requires_transaction_context = entry->requires_transaction_context;
+  request.envelope.requires_cluster_authority = entry->requires_cluster_authority;
   request.api_request.context = request.context;
   request.api_request.operation_id = "cluster.inspect_provider";
   const auto dispatch = sblr::DispatchSblrOperation(request);
@@ -587,63 +659,21 @@ void RequireProviderInfoRoute() {
 }
 
 void RequireRefusalPreservation() {
-  const auto unknown_family =
-      server::AdmitServerSblrEnvelope({"sblr.not.real.v3", false});
-  Require(!unknown_family.admitted &&
-              !unknown_family.diagnostics.empty() &&
-              unknown_family.diagnostics.front().code ==
-                  "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED",
-          "unknown SBLR family refusal changed");
-
-  const auto raw_sql = server::AdmitServerSblrEnvelope({"SELECT 1", false});
-  Require(!raw_sql.admitted &&
-              !raw_sql.diagnostics.empty() &&
-              raw_sql.diagnostics.front().code == "SBLR.SQL_TEXT_FORBIDDEN",
-          "raw SQL refusal changed");
-
-  const std::string duplicate_text =
-      "operation_id=cluster.inspect_state\n"
-      "operation_id=cluster.inspect_routing_plan\n"
-      "result_shape=cluster.provider.stub.v1\n"
-      "diagnostic_shape=diagnostic.canonical_message_vector\n"
-      "parser_resolved_names_to_uuids=true\n"
-      "requires_cluster_authority=true\n";
-  const auto duplicate_text_result =
-      server::AdmitServerSblrEnvelope({duplicate_text, false});
-  Require(!duplicate_text_result.admitted &&
-              !duplicate_text_result.diagnostics.empty() &&
-              duplicate_text_result.diagnostics.front().code ==
-                  "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD",
-          "duplicate text-field refusal changed");
-
-  const std::string duplicate_json =
-      "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
-      "\"operation_family\":\"sblr.cluster.private_operation.v3\","
-      "\"operation_id\":\"cluster.inspect_state\","
-      "\"operation_id\":\"cluster.inspect_routing_plan\","
-      "\"result_shape\":\"cluster.provider.stub.v1\","
-      "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\"}";
-  const auto duplicate_json_result =
-      server::AdmitServerSblrEnvelope({duplicate_json, false});
-  Require(!duplicate_json_result.admitted &&
-              !duplicate_json_result.diagnostics.empty() &&
-              duplicate_json_result.diagnostics.front().code ==
-                  "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD",
-          "duplicate JSON-field refusal changed");
-
-  const std::string sql_text_json =
-      "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
-      "\"operation_family\":\"sblr.cluster.private_operation.v3\","
-      "\"operation_id\":\"cluster.inspect_state\","
-      "\"result_shape\":\"cluster.provider.stub.v1\","
-      "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\","
-      "\"sql_text\":\"SELECT 1\"}";
-  const auto sql_text_json_result =
-      server::AdmitServerSblrEnvelope({sql_text_json, false});
-  Require(!sql_text_json_result.admitted &&
-              !sql_text_json_result.diagnostics.empty() &&
-              sql_text_json_result.diagnostics.front().code == "SBLR.SQL_TEXT_FORBIDDEN",
-          "JSON SQL-text refusal changed");
+  static constexpr std::array<std::string_view, 5> kRetiredInputs{{
+      "sblr.not.real.v3",
+      "SELECT 1",
+      "operation_id=cluster.inspect_state\noperation_id=cluster.inspect_routing_plan\n",
+      "{\"operation_id\":\"cluster.inspect_state\",\"operation_id\":\"cluster.inspect_routing_plan\"}",
+      "{\"operation_id\":\"cluster.inspect_state\",\"sql_text\":\"SELECT 1\"}",
+  }};
+  for (const auto retired_input : kRetiredInputs) {
+    server::ServerSblrAdmissionRequest request;
+    request.encoded_sblr_envelope = retired_input;
+    const auto result = server::AdmitServerSblrEnvelope(request);
+    Require(!result.admitted && !result.diagnostics.empty() &&
+                result.diagnostics.front().code == "SBLR.OPERATION.NONCANONICAL",
+            "retired text/JSON admission did not fail closed as noncanonical");
+  }
 }
 
 void RequireProductionSourceIntegrity() {
@@ -693,15 +723,14 @@ void RequireProductionSourceIntegrity() {
 
 int Main() {
   for (const auto& row : kExactRows) {
-    RequireLowering(row);
-    RequireRegistryAndDispatch(row);
+    RequirePublicClusterRefusal(row);
   }
   for (const auto& row : kApiRows) {
-    RequireLowering(row);
+    RequireEngineApiLowering(row);
     RequireRegistryAndDispatch(row);
   }
   for (const auto& row : kSurfaceEvidenceRows) {
-    RequireSurfaceProviderEvidence(row);
+    RequireSurfacePublicRefusalEvidence(row);
   }
   RequireProviderInfoRoute();
   RequireRefusalPreservation();

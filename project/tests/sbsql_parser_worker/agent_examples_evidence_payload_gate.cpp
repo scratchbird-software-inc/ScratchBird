@@ -10,6 +10,7 @@
 #include "agents/agent_management_api.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -157,12 +158,24 @@ sblr::SblrDispatchRequest DispatchRequest(const ExampleRoute& route,
   request.envelope = sblr::MakeSblrEnvelope(std::string(route.operation_id),
                                             std::string(route.opcode),
                                             "trace.pfar020a.agent_examples");
+  const auto* registry = sblr::LookupSblrOperation(route.operation_id);
+  Require(registry != nullptr,
+          std::string(route.operation_id) + " canonical registry row missing");
+  Require(registry->opcode == route.opcode,
+          std::string(route.operation_id) + " canonical opcode mismatch");
+  request.envelope.opcode_code = registry->code;
+  request.envelope.parser_package_uuid =
+      GeneratedUuid(platform::UuidKind::object, 207);
+  request.envelope.registry_snapshot_uuid =
+      GeneratedUuid(platform::UuidKind::object, 208);
   request.envelope.result_shape = route.cluster_scoped ? "cluster.provider.stub.v1"
                                                        : "agent.command_surface.v1";
   request.envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
-  request.envelope.requires_security_context = true;
-  request.envelope.requires_transaction_context = !route.cluster_scoped;
-  request.envelope.requires_cluster_authority = route.cluster_scoped;
+  request.envelope.requires_security_context = registry->requires_security_context;
+  request.envelope.requires_transaction_context =
+      registry->requires_transaction_context;
+  request.envelope.requires_cluster_authority =
+      registry->requires_cluster_authority;
   request.api_request.context = request.context;
   request.api_request.operation_id = std::string(route.operation_id);
   return request;
@@ -309,7 +322,7 @@ void RequireLoweringRoute(const ExampleRoute& route) {
           std::string(route.sql) + " allowed parser-side execution");
 
   const auto admission = server::AdmitServerSblrEnvelope(
-      server::ServerSblrAdmissionRequest{envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
   Require(admission.admitted,
           std::string(route.sql) + " server admission rejected route");
   Require(admission.operation_id == route.operation_id,

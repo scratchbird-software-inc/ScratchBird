@@ -294,6 +294,156 @@ api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
   return descriptor;
 }
 
+constexpr std::string_view kCanonicalBooleanDescriptorTypeUuid =
+    "01000000-626f-7f6c-a561-6e0000000000";
+
+api::EngineDescriptor CanonicalBooleanAliasDescriptor(
+    const bool nullable,
+    const std::string_view datatype_descriptor_uuid =
+        kCanonicalBooleanDescriptorTypeUuid,
+    const std::uint64_t datatype_descriptor_generation = 1,
+    const std::string_view type_uuid = kCanonicalBooleanDescriptorTypeUuid,
+    const std::uint64_t type_generation = 1,
+    const std::string_view codec_id = "datatype.boolean.u8.v1",
+    const std::uint16_t codec_version = 1,
+    const std::uint64_t codec_generation = 1,
+    const std::uint8_t null_encoding = 1) {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical = std::string(datatype_descriptor_uuid);
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "boolean";
+  descriptor.encoded_descriptor =
+      "datatype_descriptor_uuid=" + std::string(datatype_descriptor_uuid) +
+      ";datatype_descriptor_generation=" +
+      std::to_string(datatype_descriptor_generation) +
+      ";type_uuid=" + std::string(type_uuid) + ";type_generation=" +
+      std::to_string(type_generation) + ";codec_id=" +
+      std::string(codec_id) + ";codec_version=" +
+      std::to_string(codec_version) + ";codec_generation=" +
+      std::to_string(codec_generation) + ";null_encoding=" +
+      std::to_string(null_encoding) + ";nullability=" +
+      (nullable ? "nullable" : "non_null");
+  return descriptor;
+}
+
+exec::DescriptorBatch CanonicalBooleanAliasBatch(
+    api::EngineDescriptor descriptor = CanonicalBooleanAliasDescriptor(true)) {
+  return exec::MakeDescriptorBatch(
+      {{"boolean_value", std::move(descriptor), true, 801}}, {});
+}
+
+bool ValidateCanonicalBooleanJoinAliasException() {
+  bool passed = true;
+  const auto right = exec::MakeDescriptorBatch(
+      {{"right_id",
+        Descriptor("019f0000-0000-7200-8000-000000008011",
+                   "019f0000-0000-7300-8000-000000008012"),
+        true, 802}},
+      {});
+  const auto exact = exec::ValidateCanonicalJoinDescriptorRoleDomains(
+      CanonicalBooleanAliasBatch(), right);
+  passed &= Require(exact.ok,
+                    "exact canonical boolean descriptor/type alias refused");
+  const auto exact_non_null = exec::ValidateCanonicalJoinDescriptorRoleDomains(
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(false)),
+      right);
+  passed &= Require(
+      exact_non_null.ok,
+      "exact non-null canonical boolean descriptor/type alias refused");
+
+  const auto expect_collision_refusal = [&](exec::DescriptorBatch left,
+                                            const std::string_view detail) {
+    const auto diagnostic =
+        exec::ValidateCanonicalJoinDescriptorRoleDomains(left, right);
+    passed &= Require(
+        !diagnostic.ok &&
+            diagnostic.diagnostic_code == "SBLR.PLAN_TREE.INVALID_HANDLE" &&
+            diagnostic.detail ==
+                "join descriptor and type identity domains are not independent",
+        detail);
+  };
+
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(
+          true, kCanonicalBooleanDescriptorTypeUuid, 2)),
+      "stale canonical boolean descriptor generation was admitted");
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(
+          true, kCanonicalBooleanDescriptorTypeUuid, 1,
+          kCanonicalBooleanDescriptorTypeUuid, 2)),
+      "stale canonical boolean type generation was admitted");
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(
+          true, kCanonicalBooleanDescriptorTypeUuid, 1,
+          kCanonicalBooleanDescriptorTypeUuid, 1,
+          "datatype.boolean.lookalike.v1")),
+      "canonical boolean codec lookalike was admitted");
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(
+          true, kCanonicalBooleanDescriptorTypeUuid, 1,
+          kCanonicalBooleanDescriptorTypeUuid, 1,
+          "datatype.boolean.u8.v1", 1, 2)),
+      "stale canonical boolean codec generation was admitted");
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(
+          true, kCanonicalBooleanDescriptorTypeUuid, 1,
+          kCanonicalBooleanDescriptorTypeUuid, 1,
+          "datatype.boolean.u8.v1", 2)),
+      "stale canonical boolean codec version was admitted");
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(
+          true, kCanonicalBooleanDescriptorTypeUuid, 1,
+          kCanonicalBooleanDescriptorTypeUuid, 1,
+          "datatype.boolean.u8.v1", 1, 1, 2)),
+      "wrong canonical boolean null encoding was admitted");
+
+  auto extra = CanonicalBooleanAliasDescriptor(true);
+  extra.encoded_descriptor += ";unbound_extra=1";
+  expect_collision_refusal(CanonicalBooleanAliasBatch(std::move(extra)),
+                           "extra boolean alias carrier field was admitted");
+  auto duplicate = CanonicalBooleanAliasDescriptor(true);
+  duplicate.encoded_descriptor += ";codec_generation=1";
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(std::move(duplicate)),
+      "duplicate boolean alias carrier field was admitted");
+  auto missing = CanonicalBooleanAliasDescriptor(true);
+  const auto missing_begin =
+      missing.encoded_descriptor.find(";codec_version=");
+  const auto missing_end =
+      missing.encoded_descriptor.find(';', missing_begin + 1);
+  missing.encoded_descriptor.erase(missing_begin,
+                                   missing_end - missing_begin);
+  expect_collision_refusal(CanonicalBooleanAliasBatch(std::move(missing)),
+                           "incomplete boolean alias carrier was admitted");
+  auto reordered = CanonicalBooleanAliasDescriptor(true);
+  const auto codec_field = reordered.encoded_descriptor.find(";codec_id=");
+  reordered.encoded_descriptor =
+      reordered.encoded_descriptor.substr(codec_field + 1) + ";" +
+      reordered.encoded_descriptor.substr(0, codec_field);
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(std::move(reordered)),
+      "noncanonical boolean alias carrier serialization was admitted");
+  auto nullability_mismatch = CanonicalBooleanAliasBatch();
+  nullability_mismatch.columns.front().nullable = false;
+  expect_collision_refusal(
+      std::move(nullability_mismatch),
+      "boolean alias containing-slot nullability mismatch was admitted");
+
+  auto non_boolean = CanonicalBooleanAliasDescriptor(true);
+  non_boolean.canonical_type_name = "int64";
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(std::move(non_boolean)),
+      "non-boolean descriptor/type alias was admitted");
+
+  constexpr std::string_view kLookalikeUuid =
+      "01000000-626f-7f6c-a561-6e0000000001";
+  expect_collision_refusal(
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(
+          true, kLookalikeUuid, 1, kLookalikeUuid)),
+      "boolean UUID lookalike was admitted");
+  return passed;
+}
+
 exec::CanonicalDescriptorInnerJoinRequest Request() {
   const auto left_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000007401",
@@ -440,7 +590,10 @@ bool ValidatePhysicalInnerJoin() {
 }  // namespace
 
 int main() {
-  if (!ValidatePhysicalInnerJoin()) return 1;
+  if (!ValidatePhysicalInnerJoin() ||
+      !ValidateCanonicalBooleanJoinAliasException()) {
+    return 1;
+  }
   std::cout << "QOW-TEST-QRY-007-JOIN-V1: PASS\n";
   return 0;
 }

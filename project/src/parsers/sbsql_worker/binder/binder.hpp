@@ -47,6 +47,15 @@ struct NativeDescriptorBindingInput {
   // Names never replace descriptor/type UUID authority.
   std::string canonical_type_name;
   std::string element_profile;
+  std::uint64_t descriptor_generation{0};
+  std::uint64_t type_generation{0};
+  std::string codec_id;
+  std::uint16_t codec_version{0};
+  std::uint64_t codec_generation{0};
+  std::string statement_receipt_uuid;
+  std::string datatype_catalog_snapshot_uuid;
+  std::uint64_t datatype_catalog_generation{0};
+  std::uint64_t datatype_registry_generation{0};
 };
 
 struct NativeExpressionBindingInput {
@@ -163,6 +172,15 @@ struct BoundDescriptorAstRecord {
   BoundWidthPrecisionScale width_precision_scale;
   std::string canonical_type_name;
   std::string element_profile;
+  std::uint64_t descriptor_generation{0};
+  std::uint64_t type_generation{0};
+  std::string codec_id;
+  std::uint16_t codec_version{0};
+  std::uint64_t codec_generation{0};
+  std::string statement_receipt_uuid;
+  std::string datatype_catalog_snapshot_uuid;
+  std::uint64_t datatype_catalog_generation{0};
+  std::uint64_t datatype_registry_generation{0};
 };
 
 struct BoundExpressionAstRecord {

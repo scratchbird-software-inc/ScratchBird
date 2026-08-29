@@ -1488,6 +1488,8 @@ std::string NativeAggregateProjectionFormName(
     NativeAggregateProjectionForm form) {
   switch (form) {
     case NativeAggregateProjectionForm::kNone: return "none";
+    case NativeAggregateProjectionForm::kKeySumInt128:
+      return "key_sum_int128";
     case NativeAggregateProjectionForm::kKeyCountSum:
       return "key_count_sum";
     case NativeAggregateProjectionForm::kKeysCountSum:

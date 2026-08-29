@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -176,7 +177,7 @@ void RequireServerAdmission(const SblrEnvelope& envelope,
                             std::string_view operation_id,
                             std::string_view opcode) {
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
   Require(admission.admitted, "EDR-036 server admission rejected route");
   Require(admission.requires_public_abi_dispatch,
           "EDR-036 server admission did not require public ABI dispatch");

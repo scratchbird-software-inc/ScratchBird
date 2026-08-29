@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 
@@ -38,16 +39,16 @@ struct OpcodeRow {
 };
 
 constexpr std::array<OpcodeRow, 10> kRows{{
-    {"acceleration.llvm.invalidate", "SBLR_ACCEL_LLVM_INVALIDATE", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
-    {"acceleration.gpu.policy_set", "SBLR_ACCEL_GPU_POLICY_SET", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
-    {"acceleration.gpu.compile", "SBLR_ACCEL_GPU_COMPILE", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
-    {"acceleration.gpu.inspect", "SBLR_ACCEL_GPU_INSPECT", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
-    {"acceleration.gpu.invalidate", "SBLR_ACCEL_GPU_INVALIDATE", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
-    {"versioned.verifiable_history.prove", "SBLR_VERIFIABLE_HISTORY_PROVE", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
-    {"versioned.verify_proof_descriptor", "SBLR_VERIFY_PROOF_DESCRIPTOR", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
-    {"versioned.merge", "SBLR_VERSIONED_MERGE", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
-    {"versioned.hash_read", "SBLR_VERSIONED_HASH_READ", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
-    {"versioned.status_read", "SBLR_VERSIONED_STATUS_READ", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
+    {"engine.op.accel_llvm_invalidate", "SBLR_ACCEL_LLVM_INVALIDATE", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
+    {"engine.op.accel_gpu_policy_set", "SBLR_ACCEL_GPU_POLICY_SET", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
+    {"engine.op.accel_gpu_compile", "SBLR_ACCEL_GPU_COMPILE", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
+    {"engine.op.accel_gpu_inspect", "SBLR_ACCEL_GPU_INSPECT", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
+    {"engine.op.accel_gpu_invalidate", "SBLR_ACCEL_GPU_INVALIDATE", "acceleration-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true},
+    {"engine.op.verifiable_history_prove", "SBLR_VERIFIABLE_HISTORY_PROVE", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
+    {"engine.op.verify_proof_descriptor", "SBLR_VERIFY_PROOF_DESCRIPTOR", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
+    {"engine.op.versioned_merge", "SBLR_VERSIONED_MERGE", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
+    {"engine.op.versioned_hash_read", "SBLR_VERSIONED_HASH_READ", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
+    {"engine.op.versioned_status_read", "SBLR_VERSIONED_STATUS_READ", "versioned-history-execution", sblr::SblrOpcodeCategory::data_mutation, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true},
 }};
 
 void Require(bool condition, std::string_view message) {
@@ -79,7 +80,8 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = row.requires_transaction_context;
   envelope.requires_cluster_authority = false;
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      envelope);
 }
 
 void RequireCanonicalLookupAndMetadata(const OpcodeRow& row) {
@@ -107,6 +109,11 @@ void RequireCanonicalLookupAndMetadata(const OpcodeRow& row) {
   Require(!by_opcode->cluster_private,
           EvidenceMessage(row, "authority", "non-cluster opcode is marked cluster-private"));
 
+  Require(by_opcode->executor_id == row.operation_id,
+          EvidenceMessage(row, "executor", "Core executor binding drifted"));
+  Require(by_opcode->executor_evidence_required,
+          EvidenceMessage(row, "executor", "Core executor evidence gate is not required"));
+
   const auto* by_operation = sblr::LookupSblrOperation(row.operation_id);
   Require(by_operation == by_opcode,
           EvidenceMessage(row, "lookup", "operation lookup did not return canonical entry"));
@@ -118,10 +125,23 @@ void RequireCanonicalEnvelopeValidation(const OpcodeRow& row) {
   Require(envelope_validation.ok,
           EvidenceMessage(row, "envelope", "base engine envelope rejected valid canonical opcode"));
 
+  const auto* entry = sblr::LookupSblrOperation(row.operation_id);
+  Require(entry != nullptr,
+          EvidenceMessage(row, "opcode_validation", "canonical operation disappeared"));
   const auto opcode_validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
+  if (!entry->executor_evidence_accepted) {
+    Require(!opcode_validation.ok &&
+                opcode_validation.diagnostic_id ==
+                    "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" &&
+                opcode_validation.diagnostic_id ==
+                    entry->missing_executor_evidence_diagnostic,
+            EvidenceMessage(row, "opcode_validation",
+                            "missing executor evidence did not fail closed"));
+    return;
+  }
   Require(opcode_validation.ok,
           EvidenceMessage(row, "opcode_validation", "canonical opcode validation failed"));
-  Require(opcode_validation.entry != nullptr &&
+  Require(opcode_validation.entry == entry &&
               opcode_validation.entry->opcode == row.opcode,
           EvidenceMessage(row, "opcode_validation", "validation did not bind canonical entry"));
 
@@ -148,39 +168,44 @@ void RequireCanonicalEnvelopeValidation(const OpcodeRow& row) {
           EvidenceMessage(row, "cluster_flag", "non-cluster opcode rejected harmless cluster flag"));
 }
 
-void RequireAliasPreservation() {
-  struct AliasRow {
+void RequireCanonicalOperationPreservation() {
+  struct CanonicalOperationRow {
     std::string_view operation_id;
     std::string_view opcode;
   };
-  constexpr std::array<AliasRow, 12> aliases{{
+  constexpr std::array<CanonicalOperationRow, 10> canonical_operations{{
       {"storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION"},
-      {"artifact.export_catalog", "SBLR_ARTIFACT_EXPORT_CATALOG"},
-      {"artifact.import_catalog", "SBLR_ARTIFACT_IMPORT_CATALOG"},
       {"management.inspect_runtime", "SBLR_MANAGEMENT_INSPECT_RUNTIME"},
       {"management.control_runtime", "SBLR_MANAGEMENT_CONTROL_RUNTIME"},
       {"observability.show_metrics", "SBLR_OBSERVABILITY_SHOW_METRICS"},
-      {"mga.show_horizons", "SBLR_MGA_SHOW_HORIZONS"},
-      {"database.attach", "SBLR_DATABASE_ATTACH"},
-      {"cluster.replication.consumer.subscribe", "SBLR_REPL_CONSUMER_SUBSCRIBE"},
+      {"engine.op.mga_show_horizons", "SBLR_MGA_SHOW_HORIZONS"},
+      {"engine.op.database_attach", "SBLR_DATABASE_ATTACH"},
+      {"engine.op.repl_consumer_subscribe", "SBLR_REPL_CONSUMER_SUBSCRIBE"},
       {"graph.traverse", "SBLR_GRAPH_TRAVERSE"},
-      {"system.config.set", "SBLR_SYSTEM_CONFIG_SET"},
-      {"acceleration.llvm.inspect", "SBLR_ACCEL_LLVM_INSPECT"},
+      {"engine.op.system_config_set", "SBLR_SYSTEM_CONFIG_SET"},
+      {"engine.op.accel_llvm_inspect", "SBLR_ACCEL_LLVM_INSPECT"},
   }};
 
-  for (const auto& alias : aliases) {
-    const auto* entry = sblr::LookupSblrOperation(alias.operation_id);
+  for (const auto& canonical : canonical_operations) {
+    const auto* entry = sblr::LookupSblrOperation(canonical.operation_id);
     Require(entry != nullptr, "existing canonical registry operation disappeared");
-    Require(entry->opcode == alias.opcode, "existing canonical registry opcode changed");
+    Require(entry->opcode == canonical.opcode, "existing canonical registry opcode changed");
 
-    auto envelope = sblr::MakeSblrEnvelope(std::string(alias.operation_id),
-                                           std::string(alias.opcode),
-                                           "opcode-alias-preservation");
+    auto envelope = sblr::MakeSblrEnvelope(std::string(canonical.operation_id),
+                                           std::string(canonical.opcode),
+                                           "opcode-canonical-preservation");
     envelope.requires_security_context = entry->requires_security_context;
     envelope.requires_transaction_context = entry->requires_transaction_context;
     envelope.requires_cluster_authority = entry->requires_cluster_authority;
     const auto validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
-    Require(validation.ok, "existing canonical registry validation regressed");
+    if (entry->executor_evidence_accepted) {
+      Require(validation.ok, "canonical operation validation regressed");
+    } else {
+      Require(entry->executor_evidence_required && !validation.ok &&
+                  validation.diagnostic_id ==
+                      "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+              "canonical operation did not fail closed on missing executor evidence");
+    }
   }
 }
 
@@ -198,7 +223,7 @@ void RequireUnknownAndMismatchDiagnostics() {
               unknown_operation_validation.diagnostic_id == "SB_DIAG_SBLR_UNKNOWN_OPERATION",
           "unknown operation diagnostic changed");
 
-  auto mismatch = sblr::MakeSblrEnvelope("acceleration.llvm.invalidate",
+  auto mismatch = sblr::MakeSblrEnvelope("engine.op.accel_llvm_invalidate",
                                          "SBLR_NOT_A_REAL_OPCODE",
                                          "opcode-mismatch");
   mismatch.requires_transaction_context = true;
@@ -292,7 +317,7 @@ int main() {
     RequireCanonicalLookupAndMetadata(row);
     RequireCanonicalEnvelopeValidation(row);
   }
-  RequireAliasPreservation();
+  RequireCanonicalOperationPreservation();
   RequireUnknownAndMismatchDiagnostics();
   std::cout << "sbsql_sblr_final_cleanup_b014_opcode_registry_conformance=passed\n";
   return EXIT_SUCCESS;

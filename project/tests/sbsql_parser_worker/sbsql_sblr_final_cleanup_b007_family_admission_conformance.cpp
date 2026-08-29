@@ -11,6 +11,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 
+#include "canonical_sblr_admission_test_helper.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -48,10 +50,10 @@ constexpr std::array<FamilyRow, 47> kFamilies{{
     {"sblr.catalog.introspect.v3", "catalog.get_descriptor", false},
     {"sblr.cluster.control.v3", "cluster.control_cluster", true},
     {"sblr.cluster.report.v3", "cluster.inspect_state", true},
-    {"sblr.cursor.operation.v3", "session.cursor_open", false},
+    {"sblr.cursor.operation.v3", "engine.op.cursor_open", false},
     {"sblr.database.management.v3", "lifecycle.inspect_database", false},
     {"sblr.diagnostic.control.v3", "diagnostic.control", false},
-    {"sblr.diagnostic.refusal.v3", "diagnostic.refusal", false},
+    {"sblr.diagnostic.refusal.v3", "engine.op.diagnostic_refusal", false},
     {"sblr.dml.delete.v3", "dml.delete_rows", false},
     {"sblr.dml.insert.v3", "dml.insert_rows", false},
     {"sblr.dml.merge.v3", "dml.merge_rows", false},
@@ -61,15 +63,15 @@ constexpr std::array<FamilyRow, 47> kFamilies{{
     {"sblr.event.publication.v3", "event.publication.operation", false},
     {"sblr.event.subscription.v3", "event.subscription.list", false},
     {"sblr.filespace.management.v3", "storage.manage_operation", false},
-    {"sblr.fulltext.execution.v3", "nosql.search_query", false},
-    {"sblr.graph.execution.v3", "nosql.graph_query", false},
+    {"sblr.fulltext.execution.v3", "fulltext.score", false},
+    {"sblr.graph.execution.v3", "graph.traverse", false},
     {"sblr.index.maintenance.v3", "index.maintenance", false},
     {"sblr.management.control.v3", "management.control_runtime", false},
     {"sblr.management.report.v3", "management.inspect_runtime", false},
     {"sblr.metrics.read.v3", "observability.show_metrics", false},
     {"sblr.mga.control.v3", "transaction.set_characteristics", false},
     {"sblr.mga.report.v3", "observability.show_transactions", false},
-    {"sblr.optimizer.plan.v3", "query.plan_operation", false},
+    {"sblr.optimizer.plan.v3", "observability.explain_operation", false},
     {"sblr.parser.operation.v3", "extensibility.register_parser_package", false},
     {"sblr.policy.operation.v3", "security.policy.show", false},
     {"sblr.query.document.v3", "nosql.document_find", false},
@@ -81,11 +83,11 @@ constexpr std::array<FamilyRow, 47> kFamilies{{
     {"sblr.replication.consumer.v3", "cluster.inspect_replication", true},
     {"sblr.replication.operation.v3", "replication.operation", false},
     {"sblr.routine.define.v3", "routine.define", false},
-    {"sblr.routine.execute.v3", "extensibility.invoke_udr_package", false},
+    {"sblr.routine.execute.v3", "routine.procedure_invoke", false},
     {"sblr.security.mutation.v3", "security.grant_right", false},
-    {"sblr.session.management.v3", "session.prepare_statement", false},
-    {"sblr.statement.management.v3", "session.prepare_statement", false},
-    {"sblr.vector.execution.v3", "nosql.vector_search", false},
+    {"sblr.session.management.v3", "connection.open", false},
+    {"sblr.statement.management.v3", "statement.prepare", false},
+    {"sblr.vector.execution.v3", "vector.search", false},
 }};
 
 void Require(bool condition, std::string_view message) {
@@ -97,10 +99,6 @@ void Require(bool condition, std::string_view message) {
 
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
-}
-
-bool StartsWith(std::string_view value, std::string_view prefix) {
-  return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
 
 bool HasAdmissionDiagnostic(const scratchbird::server::ServerSblrAdmissionResult& result,
@@ -136,19 +134,6 @@ std::string EvidenceMessage(const FamilyRow& row,
   return out;
 }
 
-std::string ParserJsonEnvelope(const FamilyRow& row) {
-  std::string json;
-  json += "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
-  json += "\"operation_family\":\"";
-  json += row.family;
-  json += "\",\"operation_id\":\"";
-  json += row.operation_id;
-  json += "\",\"result_shape\":\"result.shape.family_admission\",";
-  json += "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\",";
-  json += "\"contains_sql_text\":false}";
-  return json;
-}
-
 scratchbird::server::ServerSblrAdmissionResult Admit(std::string payload,
                                                      bool cluster_authority = false) {
   return scratchbird::server::AdmitServerSblrEnvelope(
@@ -157,32 +142,32 @@ scratchbird::server::ServerSblrAdmissionResult Admit(std::string payload,
 }
 
 void RequireFamilyAdmission(const FamilyRow& row) {
-  const auto json_admission = Admit(ParserJsonEnvelope(row));
-  Require(json_admission.admitted,
-          EvidenceMessage(row, "parser_json", "exact operation_family was rejected"));
-  Require(json_admission.operation_family == row.family,
-          EvidenceMessage(row, "parser_json", "operation family changed"));
-  Require(json_admission.operation_id == row.operation_id,
-          EvidenceMessage(row, "parser_json", "operation id changed"));
-
-  const auto family_only_admission = Admit(std::string(row.family));
-  Require(family_only_admission.admitted,
-          EvidenceMessage(row, "family_only", "plain family payload was rejected"));
-  Require(family_only_admission.operation_family == row.family,
-          EvidenceMessage(row, "family_only", "plain family payload changed family"));
+  const auto* registry_entry = sblr::LookupSblrOperation(row.operation_id);
+  Require(registry_entry != nullptr,
+          EvidenceMessage(row, "canonical", "exact operation id is not registered"));
+  Require(registry_entry->code != 0,
+          EvidenceMessage(row, "canonical", "exact operation has no numeric opcode"));
+  const auto canonical_admission = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          row.operation_id, registry_entry->opcode));
 
   if (row.cluster_private) {
-    Require(family_only_admission.requires_public_abi_dispatch,
-            EvidenceMessage(row, "cluster_boundary", "cluster family did not require dispatch boundary"));
-    Require(StartsWith(family_only_admission.operation_id, "cluster."),
-            EvidenceMessage(row, "cluster_boundary", "cluster family did not use a cluster operation"));
-    Require(json_admission.requires_public_abi_dispatch,
-            EvidenceMessage(row, "cluster_boundary", "cluster JSON route did not require dispatch boundary"));
+    Require(canonical_admission.admitted,
+            EvidenceMessage(row, "cluster_boundary",
+                            "cluster root did not reach the configured provider boundary"));
+    Require(canonical_admission.operation_family == row.family,
+            EvidenceMessage(row, "cluster_boundary",
+                            "cluster operation family changed before provider dispatch"));
+    Require(canonical_admission.operation_id == row.operation_id,
+            EvidenceMessage(row, "cluster_boundary",
+                            "cluster operation id changed before provider dispatch"));
   } else {
-    Require(!StartsWith(family_only_admission.operation_family, "sblr.cluster."),
-            EvidenceMessage(row, "noncluster_boundary", "non-cluster family became cluster-private"));
-    Require(!StartsWith(family_only_admission.operation_id, "cluster."),
-            EvidenceMessage(row, "noncluster_boundary", "non-cluster family used a cluster operation"));
+    Require(canonical_admission.admitted,
+            EvidenceMessage(row, "canonical", "exact operation was rejected"));
+    Require(canonical_admission.operation_family == row.family,
+            EvidenceMessage(row, "canonical", "operation family changed"));
+    Require(canonical_admission.operation_id == row.operation_id,
+            EvidenceMessage(row, "canonical", "operation id changed"));
   }
 }
 
@@ -194,13 +179,13 @@ void RequireRejectionPathsPreserved() {
       "\"result_shape\":\"result.shape.family_admission\","
       "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\"}");
   Require(!unknown.admitted, "unknown SBLR family was admitted");
-  Require(HasAdmissionDiagnostic(unknown, "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"),
-          "unknown SBLR family did not return revalidation failure");
+  Require(HasAdmissionDiagnostic(unknown, "SBLR.OPERATION.NONCANONICAL"),
+          "retired JSON family did not return canonical admission refusal");
 
   const auto raw_sql = Admit("SELECT 1");
   Require(!raw_sql.admitted, "raw SQL payload was admitted");
-  Require(HasAdmissionDiagnostic(raw_sql, "SBLR.SQL_TEXT_FORBIDDEN"),
-          "raw SQL payload did not return SQL-text refusal");
+  Require(HasAdmissionDiagnostic(raw_sql, "SBLR.OPERATION.NONCANONICAL"),
+          "retired raw SQL field did not return canonical admission refusal");
 
   const auto sql_text = Admit(
       "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
@@ -210,8 +195,8 @@ void RequireRejectionPathsPreserved() {
       "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\","
       "\"sql_text\":\"SELECT 1\"}");
   Require(!sql_text.admitted, "JSON SQL-text marker was admitted");
-  Require(HasAdmissionDiagnostic(sql_text, "SBLR.SQL_TEXT_FORBIDDEN"),
-          "JSON SQL-text marker did not return SQL-text refusal");
+  Require(HasAdmissionDiagnostic(sql_text, "SBLR.OPERATION.NONCANONICAL"),
+          "retired JSON SQL-text marker did not return canonical refusal");
 
   const auto duplicate_json = Admit(
       "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
@@ -221,8 +206,8 @@ void RequireRejectionPathsPreserved() {
       "\"result_shape\":\"result.shape.family_admission\","
       "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\"}");
   Require(!duplicate_json.admitted, "duplicate JSON family field was admitted");
-  Require(HasAdmissionDiagnostic(duplicate_json, "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD"),
-          "duplicate JSON field did not return duplicate-field refusal");
+  Require(HasAdmissionDiagnostic(duplicate_json, "SBLR.OPERATION.NONCANONICAL"),
+          "duplicate retired JSON did not return canonical admission refusal");
 
   const auto nested_authority_evidence = Admit(
       "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
@@ -235,13 +220,10 @@ void RequireRejectionPathsPreserved() {
       "\"operation_id\":\"firebird.query.select\","
       "\"result_shape\":\"parser.evidence.result\","
       "\"diagnostic_shape\":\"parser.evidence.diagnostic\"}}");
-  Require(nested_authority_evidence.admitted,
-          "nested JSON evidence keys were treated as duplicate root authority fields");
-  Require(nested_authority_evidence.operation_family ==
-              "sblr.optimizer.plan.v3" &&
-              nested_authority_evidence.operation_id ==
-                  "query.plan_operation",
-          "nested JSON evidence keys changed root admission authority");
+  Require(!nested_authority_evidence.admitted &&
+              HasAdmissionDiagnostic(nested_authority_evidence,
+                                     "SBLR.OPERATION.NONCANONICAL"),
+          "nested retired JSON evidence bypassed canonical admission");
 
   const auto nested_before_root_authority = Admit(
       "{\"parser_evidence\":{"
@@ -255,13 +237,10 @@ void RequireRejectionPathsPreserved() {
       "\"operation_id\":\"query.plan_operation\","
       "\"result_shape\":\"result.shape.family_admission\","
       "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\"}");
-  Require(nested_before_root_authority.admitted,
-          "nested JSON evidence before root fields overrode root admission authority");
-  Require(nested_before_root_authority.operation_family ==
-              "sblr.optimizer.plan.v3" &&
-              nested_before_root_authority.operation_id ==
-                  "query.plan_operation",
-          "root JSON authority was not selected after preceding nested evidence");
+  Require(!nested_before_root_authority.admitted &&
+              HasAdmissionDiagnostic(nested_before_root_authority,
+                                     "SBLR.OPERATION.NONCANONICAL"),
+          "nested-before-root retired JSON bypassed canonical admission");
 
   const auto duplicate_text = Admit(
       "operation_id=query.plan_operation\n"
@@ -272,8 +251,8 @@ void RequireRejectionPathsPreserved() {
       "parser_resolved_names_to_uuids=true\n"
       "requires_cluster_authority=false\n");
   Require(!duplicate_text.admitted, "duplicate text operation field was admitted");
-  Require(HasAdmissionDiagnostic(duplicate_text, "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD"),
-          "duplicate text field did not return duplicate-field refusal");
+  Require(HasAdmissionDiagnostic(duplicate_text, "SBLR.OPERATION.NONCANONICAL"),
+          "duplicate retired text did not return canonical admission refusal");
 
   const auto missing_result = Admit(
       "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
@@ -281,8 +260,8 @@ void RequireRejectionPathsPreserved() {
       "\"operation_id\":\"query.plan_operation\","
       "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\"}");
   Require(!missing_result.admitted, "missing result shape was admitted");
-  Require(HasAdmissionDiagnostic(missing_result, "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"),
-          "missing result shape did not return revalidation failure");
+  Require(HasAdmissionDiagnostic(missing_result, "SBLR.OPERATION.NONCANONICAL"),
+          "retired JSON missing result shape did not return canonical refusal");
 
   const auto missing_diagnostic = Admit(
       "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
@@ -290,8 +269,8 @@ void RequireRejectionPathsPreserved() {
       "\"operation_id\":\"query.plan_operation\","
       "\"result_shape\":\"result.shape.family_admission\"}");
   Require(!missing_diagnostic.admitted, "missing diagnostic shape was admitted");
-  Require(HasAdmissionDiagnostic(missing_diagnostic, "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"),
-          "missing diagnostic shape did not return revalidation failure");
+  Require(HasAdmissionDiagnostic(missing_diagnostic, "SBLR.OPERATION.NONCANONICAL"),
+          "retired JSON missing diagnostic shape did not return canonical refusal");
 
   const auto unresolved_text = Admit(
       "operation_id=query.plan_operation\n"
@@ -301,8 +280,8 @@ void RequireRejectionPathsPreserved() {
       "parser_resolved_names_to_uuids=false\n"
       "requires_cluster_authority=false\n");
   Require(!unresolved_text.admitted, "unresolved text envelope was admitted");
-  Require(HasAdmissionDiagnostic(unresolved_text, "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"),
-          "unresolved text envelope did not return revalidation failure");
+  Require(HasAdmissionDiagnostic(unresolved_text, "SBLR.OPERATION.NONCANONICAL"),
+          "unresolved retired text did not return canonical refusal");
 
   const auto unsupported_version = Admit(
       "{\"envelope\":\"SBLRExecutionEnvelope.v2\","
@@ -312,8 +291,8 @@ void RequireRejectionPathsPreserved() {
       "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\"}");
   Require(!unsupported_version.admitted, "unsupported envelope version was admitted");
   Require(HasAdmissionDiagnostic(unsupported_version,
-                                 "PARSER_SERVER_IPC.SBLR_ENVELOPE_VERSION_UNSUPPORTED"),
-          "unsupported envelope version did not return version diagnostic");
+                                 "SBLR.OPERATION.NONCANONICAL"),
+          "unsupported retired JSON did not return canonical refusal");
 }
 
 api::EngineRequestContext EngineContext() {
@@ -337,9 +316,10 @@ void RequireClusterProviderBoundary() {
   }};
 
   for (const auto& row : rows) {
-    auto envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
-                                           std::string(row.opcode),
-                                           "family-admission-cluster-boundary");
+    auto envelope =
+        scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+            row.operation_id, row.opcode,
+            "family-admission-cluster-boundary");
     envelope.requires_security_context = true;
     envelope.requires_cluster_authority = true;
 

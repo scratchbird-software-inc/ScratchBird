@@ -6,9 +6,189 @@
 #define SCRATCHBIRD_IA01_PACKAGE_FIXTURE_ONLY
 #include "ia01_package_cancellation_fault_test.cpp"
 
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
+#include "engine/sblr/sblr_ddl_alter_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_index_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_type_runtime.hpp"
 #include "hash_digest.hpp"
 
 namespace {
+Submission BuildCreateIndexSubmission(
+    const Fixture& fixture,
+    const bridge::StatementContextReceiptView& view,
+    std::string_view parser_uuid) {
+  auto submission = BuildSubmission(fixture, view, parser_uuid);
+  const auto package = RawUuid(view.bound_ast_uuid);
+
+  sblr::SblrDdlCreateIndexDescriptorV1 descriptor;
+  descriptor.body[0] = 1;
+  descriptor.availability = 1;
+  auto member = sblr::MakeSblrEnvelope(
+      "engine.op.ddl_create_index", "SBLR_DDL_CREATE_INDEX",
+      "ia01.public_abi.create_index");
+  member.opcode_code = 1540;
+  member.result_shape = "ddl_result";
+  member.diagnostic_shape = "diagnostic_vector";
+  member.parser_package_uuid = parser_uuid;
+  member.registry_snapshot_uuid = view.catalog_epoch_uuid;
+  member.requires_security_context = true;
+  member.requires_transaction_context = true;
+  member.parser_resolved_names_to_uuids = true;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "create_index_descriptor";
+  operand.name = "index";
+  operand.value_kind = sblr::SblrValueKind::create_index_descriptor;
+  operand.value_body =
+      sblr::EncodeSblrDdlCreateIndexDescriptorV1(descriptor, true);
+  member.operands.push_back(std::move(operand));
+
+  sblr::SblrOpcodeStream package_stream;
+  package_stream.package_descriptor_uuid = view.bound_ast_uuid;
+  package_stream.registry_snapshot_uuid = view.catalog_epoch_uuid;
+  package_stream.operations.push_back(
+      Frame(true, parser_uuid, view.catalog_epoch_uuid, package));
+  package_stream.operations.push_back(std::move(member));
+  package_stream.operations.push_back(
+      Frame(false, parser_uuid, view.catalog_epoch_uuid, package));
+  submission.stream = sblr::EncodeSblrOpcodeStream(package_stream);
+  Require(!submission.stream.empty(),
+          "canonical CREATE INDEX SBOS encoding failed");
+
+  auto container = wire::DecodeSblrContainerBytes(
+      reinterpret_cast<const std::uint8_t*>(submission.container.data()),
+      submission.container.size());
+  Require(container.status == wire::SblrCodecStatus::ok,
+          "base CREATE INDEX container decoding failed");
+  container.container.canonical_anchor[100] = 1;
+  container.container.canonical_anchor[101] = 0;
+  container.container.operation_payload = submission.stream;
+  const auto outer = wire::EncodeSblrContainer(container.container);
+  Require(!outer.empty(), "CREATE INDEX container encoding failed");
+
+  auto ingress = wire::DecodeSblrExecutionEnvelopeV1Bytes(
+      reinterpret_cast<const std::uint8_t*>(submission.ingress.data()),
+      submission.ingress.size());
+  Require(ingress.status == wire::SblrCodecStatus::ok,
+          "base CREATE INDEX execution envelope decoding failed");
+  auto& fields = ingress.envelope.fields;
+  fields[4] = V16(1);
+  fields[5] = {1};
+  U64(&fields[5], submission.stream.size());
+  fields[5].insert(fields[5].end(), submission.stream.begin(),
+                   submission.stream.end());
+  fields[6] = {0};
+  fields[7] = {1};
+  U32(&fields[7], wire::SblrCrc32c(submission.stream.data(),
+                                   submission.stream.size()));
+  fields[8] = V64(submission.stream.size());
+  const auto execution = wire::EncodeSblrExecutionEnvelopeV1(ingress.envelope);
+  Require(!execution.empty(), "CREATE INDEX execution envelope encoding failed");
+
+  submission.container.assign(outer.begin(), outer.end());
+  submission.ingress.assign(execution.begin(), execution.end());
+  return submission;
+}
+
+struct TypeDdlProfile {
+  const char* operation_id;
+  const char* opcode;
+  std::uint16_t opcode_code;
+  const char* operand_type;
+  sblr::SblrValueKind value_kind;
+};
+
+Submission BuildTypeDdlSubmission(
+    const Fixture& fixture,
+    const bridge::StatementContextReceiptView& view,
+    std::string_view parser_uuid,
+    const TypeDdlProfile& profile) {
+  auto submission = BuildSubmission(fixture, view, parser_uuid);
+  auto operation = sblr::MakeSblrEnvelope(
+      profile.operation_id, profile.opcode, "ia01.public_abi.ddl_type");
+  operation.opcode_code = profile.opcode_code;
+  operation.result_shape = "ddl_result";
+  operation.diagnostic_shape = "diagnostic_vector";
+  operation.parser_package_uuid = parser_uuid;
+  operation.registry_snapshot_uuid = view.catalog_epoch_uuid;
+  operation.requires_security_context = true;
+  operation.requires_transaction_context = true;
+  operation.requires_cluster_authority = false;
+  operation.parser_resolved_names_to_uuids = true;
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = profile.operand_type;
+  operand.name = "type";
+  operand.value_kind = profile.value_kind;
+  if (profile.opcode_code == 1569) {
+    sblr::SblrDdlCreateTypeDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    operand.value_body =
+        sblr::EncodeSblrDdlCreateTypeDescriptorV1(descriptor, true);
+  } else if (profile.opcode_code == 1570) {
+    sblr::SblrDdlAlterTypeDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    operand.value_body =
+        sblr::EncodeSblrDdlAlterTypeDescriptorV1(descriptor, true);
+  } else {
+    sblr::SblrDdlDropTypeDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    operand.value_body =
+        sblr::EncodeSblrDdlDropTypeDescriptorV1(descriptor, true);
+  }
+  Require(!operand.value_body.empty(), "TYPE DDL descriptor encoding failed");
+  operation.operands.push_back(std::move(operand));
+  const auto encoded_operation = sblr::EncodeSblrEnvelope(operation);
+  Require(!encoded_operation.empty(), "canonical TYPE DDL SBOP encoding failed");
+  submission.stream.assign(encoded_operation.begin(), encoded_operation.end());
+
+  auto container = wire::DecodeSblrContainerBytes(
+      reinterpret_cast<const std::uint8_t*>(submission.container.data()),
+      submission.container.size());
+  Require(container.status == wire::SblrCodecStatus::ok,
+          "base TYPE DDL container decoding failed");
+  container.container.canonical_anchor[100] = 2;
+  container.container.canonical_anchor[101] = 0;
+  container.container.operation_payload = submission.stream;
+  const auto outer = wire::EncodeSblrContainer(container.container);
+  Require(!outer.empty(), "TYPE DDL container encoding failed");
+
+  auto ingress = wire::DecodeSblrExecutionEnvelopeV1Bytes(
+      reinterpret_cast<const std::uint8_t*>(submission.ingress.data()),
+      submission.ingress.size());
+  Require(ingress.status == wire::SblrCodecStatus::ok,
+          "base TYPE DDL execution envelope decoding failed");
+  auto& fields = ingress.envelope.fields;
+  fields[4] = V16(2);
+  fields[5] = {0};
+  fields[6] = {1};
+  U64(&fields[6], submission.stream.size());
+  fields[6].insert(fields[6].end(), submission.stream.begin(),
+                   submission.stream.end());
+  fields[7] = {1};
+  U32(&fields[7], wire::SblrCrc32c(submission.stream.data(),
+                                   submission.stream.size()));
+  fields[8] = V64(submission.stream.size());
+  const auto execution = wire::EncodeSblrExecutionEnvelopeV1(ingress.envelope);
+  Require(!execution.empty(), "TYPE DDL execution envelope encoding failed");
+
+  submission.container.assign(outer.begin(), outer.end());
+  submission.ingress.assign(execution.begin(), execution.end());
+  return submission;
+}
+
+std::array<std::uint8_t, 32> Digest(const void* bytes, std::size_t size) {
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      static_cast<const std::uint8_t*>(bytes), size);
+  Require(digest.ok(), "canonical admission SHA-256 failed");
+  return digest.digest;
+}
+
 std::array<std::uint8_t, 32> Binding(
     const bridge::StatementContextDispatchRequest& request) {
   Bytes bytes;
@@ -80,7 +260,9 @@ bridge::StatementContextDispatchRequest DispatchRequest(
     bridge::StatementContextReceiptHandle receipt,
     sb_engine_session_t session,
     bridge::StatementPackageAdmissionReservationHandle reservation,
-    const server::ServerSblrAdmissionToken& token) {
+    const server::ServerSblrAdmissionToken& token,
+    bridge::StatementSblrPayloadKind payload_kind =
+        bridge::StatementSblrPayloadKind::kOpcodeStream) {
   bridge::StatementContextDispatchRequest request;
   request.receipt = receipt;
   request.engine_session = session;
@@ -99,8 +281,7 @@ bridge::StatementContextDispatchRequest DispatchRequest(
   request.security_epoch = token->security_epoch;
   request.resource_epoch = token->resource_epoch;
   request.package_admission_reservation = reservation;
-  request.admitted_payload_kind =
-      bridge::StatementSblrPayloadKind::kOpcodeStream;
+  request.admitted_payload_kind = payload_kind;
   request.gateway_evidence.source =
       bridge::StatementGatewayEvidenceSource::kLocalObserved;
   request.gateway_evidence.disposition =
@@ -151,6 +332,40 @@ int main() {
     cancellation_probes.fetch_add(1, std::memory_order_relaxed);
     return false;
   };
+  const api::SblrExecutorAvailabilityRowIdentity create_index_identity{
+      api::kSblrDdlCreateIndexExecutorId,
+      api::kSblrDdlCreateIndexOpcodeCode,
+      api::kSblrDdlCreateIndexOpcodeVersion,
+      api::kSblrDdlCreateIndexOperandDescriptorId,
+      api::kSblrDdlCreateIndexResultDescriptorId,
+      api::kSblrDdlCreateIndexResultDescriptorVersion};
+  const auto create_index_bootstrap =
+      api::LoadSblrExecutorAvailabilitySnapshot(context,
+                                                create_index_identity);
+  Require(create_index_bootstrap.ok &&
+              create_index_bootstrap.snapshot.installed &&
+              create_index_bootstrap.snapshot.generation != 0,
+          "CREATE INDEX availability bootstrap failed");
+  auto availability_admin_context = context;
+  availability_admin_context.trace_tags.push_back(
+      "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
+  api::SblrExecutorAvailabilitySetRequest advance_create_index;
+  advance_create_index.database_uuid = context.database_uuid.canonical;
+  advance_create_index.expected_snapshot_uuid =
+      create_index_bootstrap.snapshot.snapshot_uuid;
+  advance_create_index.expected_generation =
+      create_index_bootstrap.snapshot.generation;
+  advance_create_index.exact_row_identity = create_index_identity;
+  advance_create_index.requested_state =
+      api::SblrExecutorAvailabilityState::installed;
+  advance_create_index.reason_code = "test.statement_context_projection";
+  const auto advanced_create_index = api::SetSblrExecutorAvailability(
+      availability_admin_context, advance_create_index);
+  Require(advanced_create_index.ok &&
+              advanced_create_index.snapshot.installed &&
+              advanced_create_index.snapshot.generation ==
+                  create_index_bootstrap.snapshot.generation + 1,
+          "CREATE INDEX availability generation advance failed");
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
   acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
@@ -162,6 +377,91 @@ int main() {
               SB_ENGINE_STATUS_OK,
           "CSC-TEST-002319|CSC-TEST-002323 receipt acquisition failed");
   if (acquire_result) (void)sb_engine_result_release(acquire_result);
+  const auto current_create_index =
+      api::LoadCurrentSblrExecutorAvailabilitySnapshot(
+          context, create_index_identity);
+  Require(current_create_index.ok &&
+              current_create_index.snapshot.generation ==
+                  advanced_create_index.snapshot.generation &&
+              view.ddl_create_index_executor_availability_generation ==
+                  current_create_index.snapshot.generation &&
+              view.ddl_create_index_executor_availability_generation !=
+              view.ddl_create_table_executor_availability_generation,
+          "statement context aliased CREATE INDEX availability generation");
+
+  const std::array<TypeDdlProfile, 3> type_profiles{{
+      {"engine.op.ddl_create_type", "SBLR_DDL_CREATE_TYPE", 1569,
+       "create_type_descriptor", sblr::SblrValueKind::create_type_descriptor},
+      {"engine.op.ddl_alter_type", "SBLR_DDL_ALTER_TYPE", 1570,
+       "alter_type_descriptor", sblr::SblrValueKind::alter_type_descriptor},
+      {"engine.op.ddl_drop_type", "SBLR_DDL_DROP_TYPE", 1571,
+       "drop_type_descriptor", sblr::SblrValueKind::drop_type_descriptor},
+  }};
+  for (std::size_t index = 0; index != type_profiles.size(); ++index) {
+    const auto type_parser_uuid =
+        Text(NewUuid(platform::UuidKind::object, 610 + index));
+    const auto type_submission = BuildTypeDdlSubmission(
+        fixture, view, type_parser_uuid, type_profiles[index]);
+    server::ServerSblrAdmissionRequest type_admission;
+    type_admission.encoded_sblr_container = type_submission.container;
+    type_admission.encoded_execution_envelope = type_submission.ingress;
+    type_admission.admitted_parser_package_uuid = type_parser_uuid;
+    type_admission.admitted_parser_package_version_major = 1;
+    type_admission.admitted_registry_snapshot_uuid = view.catalog_epoch_uuid;
+    type_admission.authenticated_principal_uuid = Text(fixture.principal_uuid);
+    type_admission.catalog_snapshot_uuid =
+        view.statement_metadata_snapshot_uuid;
+    type_admission.engine_mga_statement_uuid = view.statement_uuid;
+    type_admission.engine_mga_snapshot_uuid = view.statement_snapshot_uuid;
+    type_admission.catalog_epoch = view.catalog_generation_id;
+    type_admission.security_epoch = view.security_epoch;
+    type_admission.resource_epoch = view.resource_epoch;
+    type_admission.route_snapshot_uuid = view.optimizer_route_snapshot_uuid;
+    type_admission.route_epoch = view.optimizer_route_epoch;
+    type_admission.route_generation = view.optimizer_route_generation;
+    type_admission.security_snapshot_uuid = view.security_context_uuid;
+    type_admission.security_observation_generation = view.security_epoch;
+    type_admission.route_snapshot_engine_owned = true;
+    type_admission.security_snapshot_engine_owned = true;
+    const auto type_admitted =
+        server::AdmitServerSblrEnvelope(type_admission);
+    Require(type_admitted.admitted && type_admitted.admission_token,
+            "canonical standalone TYPE DDL admission failed");
+
+    const auto type_dispatch = DispatchRequest(
+        receipt, session.session, {}, type_admitted.admission_token,
+        bridge::StatementSblrPayloadKind::kOperationEnvelope);
+    sb_engine_result_t type_result = nullptr;
+    const auto type_status = bridge::DispatchStatementContextReceipt(
+        &type_dispatch, &type_result);
+    Require(type_status == SB_ENGINE_STATUS_UNSUPPORTED &&
+                type_result != nullptr,
+            "standalone TYPE DDL did not reach shared evidence gate");
+    sb_engine_diagnostic_set_view_t type_diagnostics{};
+    Require(sb_engine_result_diagnostics(type_result, &type_diagnostics) ==
+                SB_ENGINE_STATUS_OK &&
+                type_diagnostics.diagnostic_count == 1 &&
+                std::string_view(
+                    type_diagnostics.diagnostics[0].symbolic_code.data,
+                    type_diagnostics.diagnostics[0]
+                        .symbolic_code.size_bytes) ==
+                    "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+            "standalone TYPE DDL diagnostic drifted");
+    sb_engine_command_completion_view_v1_t type_completion{};
+    const auto type_completion_status =
+        sb_engine_result_completion(type_result, &type_completion);
+    Require(type_completion_status != SB_ENGINE_STATUS_OK ||
+                (type_completion.operation_id.size_bytes == 0 &&
+                 type_completion.affected_rows == 0),
+            "standalone TYPE DDL published command completion");
+    bridge::StatementQueryExecuteResultHandleView type_handle;
+    Require(bridge::ReadStatementQueryExecuteResultHandle(
+                type_result, &type_handle) != SB_ENGINE_STATUS_OK,
+            "standalone TYPE DDL published a result handle");
+    Require(cancellation_probes.load(std::memory_order_relaxed) == 0,
+            "standalone TYPE DDL consulted cancellation before evidence");
+    (void)sb_engine_result_release(type_result);
+  }
 
   const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 602));
   const auto submission = BuildSubmission(fixture, view, parser_uuid);
@@ -209,6 +509,173 @@ int main() {
   const auto admitted = server::AdmitServerSblrEnvelope(admission);
   Require(admitted.admitted && admitted.admission_token,
           "CSC-TEST-002319|CSC-TEST-002323 canonical package admission failed");
+
+  const auto create_index_submission =
+      BuildCreateIndexSubmission(fixture, view, parser_uuid);
+  bridge::StatementPackageAdmissionReservationRequest
+      create_index_reservation_request;
+  create_index_reservation_request.receipt = receipt;
+  create_index_reservation_request.canonical_payload_bytes =
+      create_index_submission.stream.data();
+  create_index_reservation_request.canonical_payload_size =
+      create_index_submission.stream.size();
+  create_index_reservation_request.payload_kind =
+      bridge::StatementSblrPayloadKind::kOpcodeStream;
+  bridge::StatementPackageAdmissionReservationHandle
+      create_index_reservation_handle;
+  bridge::StatementPackageAdmissionReservationView
+      create_index_reservation_view;
+  reservation_result = nullptr;
+  Require(bridge::AcquireStatementPackageAdmissionReservation(
+              &create_index_reservation_request,
+              &create_index_reservation_handle,
+              &create_index_reservation_view,
+              &reservation_result) == SB_ENGINE_STATUS_OK,
+          "canonical CREATE INDEX reservation acquisition failed");
+  if (reservation_result) (void)sb_engine_result_release(reservation_result);
+  Require(create_index_reservation_view.record_count == 3,
+          "canonical CREATE INDEX reservation record count drifted");
+
+  bridge::StatementContextDispatchRequest create_index_dispatch;
+  create_index_dispatch.receipt = receipt;
+  create_index_dispatch.engine_session = session.session;
+  create_index_dispatch.canonical_container_bytes.assign(
+      create_index_submission.container.begin(),
+      create_index_submission.container.end());
+  create_index_dispatch.canonical_execution_envelope_bytes.assign(
+      create_index_submission.ingress.begin(),
+      create_index_submission.ingress.end());
+  create_index_dispatch.canonical_operation_bytes =
+      create_index_submission.stream;
+  create_index_dispatch.container_sha256 = Digest(
+      create_index_submission.container.data(),
+      create_index_submission.container.size());
+  create_index_dispatch.execution_envelope_sha256 = Digest(
+      create_index_submission.ingress.data(),
+      create_index_submission.ingress.size());
+  create_index_dispatch.operation_sha256 = Digest(
+      create_index_submission.stream.data(),
+      create_index_submission.stream.size());
+  create_index_dispatch.authenticated_principal_uuid =
+      Text(fixture.principal_uuid);
+  create_index_dispatch.catalog_snapshot_uuid =
+      view.statement_metadata_snapshot_uuid;
+  create_index_dispatch.engine_mga_statement_uuid = view.statement_uuid;
+  create_index_dispatch.engine_mga_snapshot_uuid =
+      view.statement_snapshot_uuid;
+  create_index_dispatch.catalog_epoch = view.catalog_generation_id;
+  create_index_dispatch.security_epoch = view.security_epoch;
+  create_index_dispatch.resource_epoch = view.resource_epoch;
+  create_index_dispatch.package_admission_reservation =
+      create_index_reservation_handle;
+  create_index_dispatch.admitted_payload_kind =
+      bridge::StatementSblrPayloadKind::kOpcodeStream;
+  create_index_dispatch.gateway_evidence.source =
+      bridge::StatementGatewayEvidenceSource::kLocalObserved;
+  create_index_dispatch.gateway_evidence.disposition =
+      bridge::StatementGatewayDisposition::kPassThrough;
+  create_index_dispatch.gateway_evidence.provider_observation_generation = 1;
+  create_index_dispatch.gateway_evidence.canonical_payload_sha256 =
+      create_index_dispatch.operation_sha256;
+  create_index_dispatch.gateway_evidence.route_snapshot_uuid =
+      view.optimizer_route_snapshot_uuid;
+  create_index_dispatch.gateway_evidence.route_epoch =
+      view.optimizer_route_epoch;
+  create_index_dispatch.gateway_evidence.route_generation =
+      view.optimizer_route_generation;
+  create_index_dispatch.gateway_evidence.security_snapshot_uuid =
+      view.security_context_uuid;
+  create_index_dispatch.gateway_evidence.security_epoch = view.security_epoch;
+  create_index_dispatch.gateway_evidence.security_observation_generation =
+      view.security_epoch;
+  create_index_dispatch.gateway_evidence.cluster_context_active =
+      view.cluster_context_active;
+  create_index_dispatch.gateway_evidence.cluster_transaction_active =
+      view.cluster_transaction_active;
+  create_index_dispatch.gateway_evidence.route_fence_present =
+      view.route_fence_present;
+  create_index_dispatch.package_executor_evidence.begin_executor_id =
+      "engine.op.package_begin";
+  create_index_dispatch.package_executor_evidence.end_executor_id =
+      "engine.op.package_end";
+  create_index_dispatch.package_executor_evidence.registry_snapshot_uuid =
+      view.catalog_epoch_uuid;
+  create_index_dispatch.package_executor_evidence
+      .executor_evidence_generation = 1;
+  create_index_dispatch.package_executor_evidence.canonical_payload_sha256 =
+      create_index_dispatch.operation_sha256;
+  create_index_dispatch.admission_binding_sha256 =
+      Binding(create_index_dispatch);
+
+  for (unsigned attempt = 0; attempt != 2; ++attempt) {
+    sb_engine_result_t create_index_result = nullptr;
+    const auto create_index_status =
+        bridge::DispatchStatementContextReceipt(&create_index_dispatch,
+                                                &create_index_result);
+    Require(create_index_status == SB_ENGINE_STATUS_UNSUPPORTED &&
+                create_index_result != nullptr,
+            "canonical CREATE INDEX did not refuse static evidence");
+    sb_engine_diagnostic_set_view_t create_index_diagnostics{};
+    Require(sb_engine_result_diagnostics(create_index_result,
+                                         &create_index_diagnostics) ==
+                SB_ENGINE_STATUS_OK &&
+                create_index_diagnostics.diagnostic_count == 1 &&
+                std::string_view(
+                    create_index_diagnostics.diagnostics[0]
+                        .symbolic_code.data,
+                    create_index_diagnostics.diagnostics[0]
+                        .symbolic_code.size_bytes) ==
+                    "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+            "canonical CREATE INDEX diagnostic drifted");
+    sb_engine_command_completion_view_v1_t create_index_completion{};
+    const auto create_index_completion_status = sb_engine_result_completion(
+        create_index_result, &create_index_completion);
+    Require(create_index_completion_status != SB_ENGINE_STATUS_OK ||
+                (create_index_completion.operation_id.size_bytes == 0 &&
+                 create_index_completion.affected_rows == 0),
+            "canonical CREATE INDEX published command completion");
+    bridge::StatementQueryExecuteResultHandleView create_index_handle;
+    Require(bridge::ReadStatementQueryExecuteResultHandle(
+                create_index_result, &create_index_handle) !=
+                SB_ENGINE_STATUS_OK,
+            "canonical CREATE INDEX published a query result handle");
+    Require(cancellation_probes.load(std::memory_order_relaxed) == 0,
+            "canonical CREATE INDEX consulted cancellation before evidence");
+    (void)sb_engine_result_release(create_index_result);
+  }
+  auto mislabeled_create_index = create_index_dispatch;
+  mislabeled_create_index.admitted_payload_kind =
+      bridge::StatementSblrPayloadKind::kOperationEnvelope;
+  mislabeled_create_index.admission_binding_sha256 =
+      Binding(mislabeled_create_index);
+  sb_engine_result_t mislabeled_result = nullptr;
+  Require(bridge::DispatchStatementContextReceipt(
+              &mislabeled_create_index, &mislabeled_result) ==
+              SB_ENGINE_STATUS_SECURITY_DENIED &&
+              mislabeled_result != nullptr,
+          "physical CREATE INDEX SBOS bypassed payload classification");
+  sb_engine_diagnostic_set_view_t mislabeled_diagnostics{};
+  Require(sb_engine_result_diagnostics(mislabeled_result,
+                                       &mislabeled_diagnostics) ==
+              SB_ENGINE_STATUS_OK &&
+              mislabeled_diagnostics.diagnostic_count == 1 &&
+              std::string_view(
+                  mislabeled_diagnostics.diagnostics[0].symbolic_code.data,
+                  mislabeled_diagnostics.diagnostics[0]
+                      .symbolic_code.size_bytes) ==
+                  "SBLR.INGRESS_REVALIDATION_FAILED" &&
+              cancellation_probes.load(std::memory_order_relaxed) == 0,
+          "mislabeled CREATE INDEX payload diagnostic drifted");
+  (void)sb_engine_result_release(mislabeled_result);
+  Require(bridge::ReleaseStatementPackageAdmissionReservation(
+              create_index_reservation_handle,
+              bridge::StatementPackageReservationReleaseReason::kRelease) ==
+              SB_ENGINE_STATUS_OK &&
+              bridge::ReleaseStatementPackageAdmissionReservation(
+                  create_index_reservation_handle,
+                  bridge::StatementPackageReservationReleaseReason::
+                      kRelease) == SB_ENGINE_STATUS_ALREADY_RELEASED,
+          "CREATE INDEX evidence refusal consumed its reservation");
 
   auto dispatch = DispatchRequest(receipt, session.session, reservation_handle,
                                   admitted.admission_token);

@@ -692,6 +692,10 @@ sb_agent_runtime_cpp_gate(
 add_executable(agent_cluster_route_api_provider_gate
   agent_cluster_route_api_provider_gate.cpp)
 target_compile_features(agent_cluster_route_api_provider_gate PRIVATE cxx_std_17)
+target_include_directories(agent_cluster_route_api_provider_gate PRIVATE
+  "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker"
+  "${PROJECT_SOURCE_DIR}/src/server"
+)
 target_link_libraries(agent_cluster_route_api_provider_gate PRIVATE
   sb_engine_internal_api
   sb_engine_sblr

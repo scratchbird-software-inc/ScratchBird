@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 
-SURFACE_REGISTRY = "public_input_snapshot"
+SURFACE_REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
 SEED_REGISTRY = "project/src/engine/functions/registry/function_seed_registry.cpp"
 LOWERING = "project/src/parsers/sbsql_worker/lowering/lowering.cpp"
 FIXTURES = "project/tests/sbsql_parser_worker/generated/full_surface/SBSFC_039_XML_DOCUMENT_QUERY_SCALAR_HELPER_FIXTURES.csv"

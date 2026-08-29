@@ -124,26 +124,32 @@ std::array<std::uint8_t, 16> AddSession(ServerSessionRegistry* registry,
   session.session_uuid = sbps::MakeUuidV7Bytes();
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_claim = std::string(principal);
+  session.embedded_in_process = true;
   session.database_path = path.string();
   session.database_uuid = std::move(database_uuid);
   session.effective_user_uuid = sbps::MakeUuidV7Bytes();
   session.local_transaction_id = local_transaction_id;
+  session.engine_authorization_trace_tags.push_back(
+      "security.fixture_trace_authority");
   if (principal == "admin") {
-    session.engine_authorization_trace_tags = {
+    session.engine_authorization_trace_tags.insert(
+        session.engine_authorization_trace_tags.end(), {
         "right:OBS_MANAGEMENT_CONTROL",
         "right:OBS_MANAGEMENT_INSPECT",
         "right:OBS_CONFIG_CONTROL",
         "right:OBS_METRICS_READ_ALL",
-        "right:SUPPORT_EXPORT"};
+        "right:SUPPORT_EXPORT"});
   } else if (principal == "operator") {
-    session.engine_authorization_trace_tags = {
+    session.engine_authorization_trace_tags.insert(
+        session.engine_authorization_trace_tags.end(), {
         "right:OBS_MANAGEMENT_INSPECT",
         "right:OBS_CONFIG_INSPECT",
-        "right:OBS_METRICS_READ_ALL"};
+        "right:OBS_METRICS_READ_ALL"});
   } else if (principal == "auditor") {
-    session.engine_authorization_trace_tags = {
+    session.engine_authorization_trace_tags.insert(
+        session.engine_authorization_trace_tags.end(), {
         "right:OBS_CONFIG_INSPECT",
-        "right:OBS_METRICS_READ_ALL"};
+        "right:OBS_METRICS_READ_ALL"});
   }
   registry->sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
   registry->auth_contexts_by_uuid[scratchbird::server::UuidBytesToText(session.auth_context_uuid)] = session;

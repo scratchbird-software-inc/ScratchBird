@@ -280,9 +280,9 @@ CachedOptimizerPlan CachedPlan(const OptimizerPlanCacheKeyInput& input) {
 
 JoinGraph InnerJoinGraph() {
   std::vector<JoinRelationNode> relations = {
-      {"rel.big", 10000, false},
-      {"rel.medium", 200, false},
-      {"rel.small", 10, false},
+      {.relation_uuid = "rel.big", .estimated_rows = 10000},
+      {.relation_uuid = "rel.medium", .estimated_rows = 200},
+      {.relation_uuid = "rel.small", .estimated_rows = 10},
   };
   std::vector<JoinPredicateEdge> predicates;
   JoinPredicateEdge big_medium;
@@ -301,8 +301,8 @@ JoinGraph InnerJoinGraph() {
 
 JoinGraph BarrierJoinGraph(const OptimizerDifferentialCase& test_case) {
   std::vector<JoinRelationNode> relations = {
-      {"rel.big", 10000, false},
-      {"rel.small", 10, false},
+      {.relation_uuid = "rel.big", .estimated_rows = 10000},
+      {.relation_uuid = "rel.small", .estimated_rows = 10},
   };
   JoinPredicateEdge edge;
   edge.left_relation_uuid = "rel.big";

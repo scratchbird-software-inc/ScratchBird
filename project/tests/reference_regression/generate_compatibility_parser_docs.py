@@ -131,17 +131,20 @@ def render_parser_page(lane: dict[str, str], rows: list[dict[str, str]]) -> str:
         "",
         f"Release batch: `{lane['batch']}`",
         "",
-        f"Public beta status: `{lane['public_beta_status']}`",
+        f"Retained pre-hold beta evidence status: `{lane['public_beta_status']}`",
         "",
         f"Declared public surfaces covered: `{len(rows)}`",
         "",
         f"Surface digest: `{digest_rows(rows)}`",
         "",
         "This page is generated from the public compatibility parser remap matrix. "
-        "Every row below is a declared beta parser surface and states whether it is "
-        "supported through ScratchBird SBLR/parser-support routing, routed to a "
-        "cluster/provider boundary, documented as presentation-only behavior, or "
-        "explicitly refused with a deterministic diagnostic.",
+        "Its status and support wording records the last verified pre-hold SBLR "
+        "baseline; it is historical evidence and is not a claim of executable "
+        "conformance to the in-progress SBLR contract. Every row below is a declared "
+        "beta parser surface and states whether it was supported through ScratchBird "
+        "SBLR/parser-support routing, routed to a cluster/provider boundary, "
+        "documented as presentation-only behavior, or explicitly refused with a "
+        "deterministic diagnostic.",
         "",
         "The ScratchBird engine remains SBLR/UUID-only. Compatibility SQL is parsed "
         "outside the engine, and accepted work is still revalidated by ScratchBird "
@@ -216,9 +219,11 @@ def render_index(lanes: list[dict[str, str]], grouped: dict[str, list[dict[str, 
         "This directory contains one generated status page per public compatibility "
         "parser lane. Each page is generated from the public compatibility parser "
         "remap matrix and is checked by CTest so every declared surface has a "
-        "searchable support, route, or refusal entry.",
+        "searchable support, route, or refusal entry. All statuses are retained "
+        "pre-hold evidence and do not claim conformance to the in-progress SBLR "
+        "contract.",
         "",
-        "| Parser | Reference profile | Batch | Declared surfaces | Public status |",
+        "| Parser | Reference profile | Batch | Declared surfaces | Retained pre-hold status |",
         "| --- | --- | --- | ---: | --- |",
     ]
     for lane in lanes:

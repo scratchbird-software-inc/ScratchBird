@@ -22,8 +22,13 @@ trap cleanup EXIT
 
 mkdir -p "${WORK_ROOT}"
 
-ABI_FIXTURE="${BUILD_ROOT}/tests/engine_public_abi/sb_engine_public_abi_cpp_fixture"
-SBLR_FIXTURE="${BUILD_ROOT}/tests/engine_public_abi/sb_engine_public_sblr_admission_fixture"
+TARGET_PLATFORM="${SB_PUBLIC_TARGET_PLATFORM:-}"
+if [[ -z "${TARGET_PLATFORM}" && -f "${BUILD_ROOT}/CMakeCache.txt" ]]; then
+  TARGET_PLATFORM="$(sed -n 's/^SB_PUBLIC_TARGET_PLATFORM:[^=]*=//p' "${BUILD_ROOT}/CMakeCache.txt" | head -n 1)"
+fi
+TARGET_PLATFORM="${TARGET_PLATFORM:-linux}"
+ABI_FIXTURE="${BUILD_ROOT}/output/${TARGET_PLATFORM}/bin/sb_engine_public_abi_cpp_fixture"
+SBLR_FIXTURE="${BUILD_ROOT}/output/${TARGET_PLATFORM}/bin/sb_engine_public_sblr_admission_fixture"
 
 for fixture in "${ABI_FIXTURE}" "${SBLR_FIXTURE}"; do
   if [[ ! -x "${fixture}" ]]; then

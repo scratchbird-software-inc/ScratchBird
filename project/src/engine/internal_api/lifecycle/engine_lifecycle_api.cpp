@@ -12,7 +12,10 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "database_lifecycle.hpp"
 #include "extensibility/extensibility_support.hpp"
+#include "uuid.hpp"
 
+#include <chrono>
+#include <cstdint>
 #include <string>
 
 namespace scratchbird::engine::internal_api {
@@ -41,6 +44,20 @@ bool OptionBool(const EngineApiRequest& request, const std::string& prefix, bool
   if (value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "on") { return true; }
   if (value == "0" || value == "false" || value == "FALSE" || value == "no" || value == "off") { return false; }
   return fallback;
+}
+
+std::uint32_t OptionU32(const EngineApiRequest& request,
+                        const std::string& prefix,
+                        std::uint32_t fallback) {
+  const auto value = OptionValue(request, prefix);
+  if (value.empty()) return fallback;
+  std::uint64_t parsed = 0;
+  for (const char ch : value) {
+    if (ch < '0' || ch > '9') return fallback;
+    parsed = parsed * 10u + static_cast<std::uint64_t>(ch - '0');
+    if (parsed > UINT32_MAX) return fallback;
+  }
+  return static_cast<std::uint32_t>(parsed);
 }
 
 EngineApiDiagnostic LifecycleDiagnostic(const std::string& operation_id,
@@ -334,11 +351,88 @@ EngineOpenLifecycleResult EngineOpenLifecycle(const EngineOpenLifecycleRequest& 
 
 EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleRequest& request) {
   constexpr const char* operation = "lifecycle.create_database";
-  return LifecycleFailure<EngineCreateLifecycleResult>(
-      request.context,
-      operation,
-      std::string(kEngineCreateLifecycleBootstrapRequiredDiagnostic),
-      "database_creation_requires_explicit_local_embedded_first_principal_bootstrap");
+  auto authority = ValidateLifecycleAuthority<EngineCreateLifecycleResult>(
+      request, operation, true);
+  if (!authority.ok) return authority;
+  if (request.context.transaction_uuid.canonical.empty() ||
+      request.context.local_transaction_id == 0) {
+    return LifecycleFailure<EngineCreateLifecycleResult>(
+        request.context, operation, "MGA.TRANSACTION.INVALID",
+        "authenticated_management_transaction_required");
+  }
+  if (request.context.cluster_transaction_active ||
+      request.context.route_fence_present) {
+    return LifecycleFailure<EngineCreateLifecycleResult>(
+        request.context, operation,
+        "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+        "cluster_create_requires_registered_cluster_gateway");
+  }
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    return LifecycleFailure<EngineCreateLifecycleResult>(
+        request.context, operation, "PROCESS.CANCELLED",
+        "database_create_cancelled_before_bootstrap");
+  }
+
+  const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto database_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::database, now);
+  const auto filespace_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::filespace, now + 1u);
+  if (!database_uuid.ok() || !filespace_uuid.ok()) {
+    return LifecycleFailure<EngineCreateLifecycleResult>(
+        request.context, operation, "DATABASE.CREATE_FAILED",
+        "engine_owned_database_identity_generation_failed");
+  }
+
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = request.context.database_path;
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = OptionU32(request, "page_size:", 16384u);
+  create.creation_unix_epoch_millis = now;
+  create.resource_seed_pack_root = OptionValue(request, "resource_seed_pack_root:");
+  create.allow_minimal_resource_bootstrap =
+      OptionBool(request, "allow_minimal_resource_bootstrap:", false);
+  create.require_resource_seed_pack =
+      !create.allow_minimal_resource_bootstrap;
+  create.bootstrap_principal_name =
+      OptionValue(request, "bootstrap_principal_name:");
+  create.bootstrap_credential_fingerprint =
+      OptionValue(request, "bootstrap_credential_fingerprint:");
+  create.require_bootstrap_principal =
+      !create.bootstrap_principal_name.empty();
+  create.allow_uncredentialed_bootstrap = false;
+  create.allow_overwrite = false;
+
+  const auto created =
+      scratchbird::storage::database::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    return LifecycleStorageFailure<EngineCreateLifecycleResult>(
+        request, operation, created, "DATABASE.CREATE_FAILED");
+  }
+
+  const auto database_uuid_text = scratchbird::core::uuid::UuidToString(
+      created.state.database_uuid.value);
+  const auto filespace_uuid_text = scratchbird::core::uuid::UuidToString(
+      created.state.filespace_uuid.value);
+  auto result = MakeApiBehaviorSuccess<EngineCreateLifecycleResult>(
+      request.context, operation);
+  result.primary_object.uuid.canonical = database_uuid_text;
+  result.primary_object.object_kind = "database";
+  AddApiBehaviorRow(&result,
+                    {{"operation_uuid", request.context.request_id},
+                     {"database_uuid", database_uuid_text},
+                     {"filespace_uuid", filespace_uuid_text},
+                     {"lifecycle_state", "ready"},
+                     {"publication_barrier", "durable"},
+                     {"creation_evidence_uuid", request.context.request_id}});
+  AddApiBehaviorEvidence(&result, "engine_lifecycle", "database_created");
+  AddApiBehaviorEvidence(&result, "identity_authority", "engine");
+  AddApiBehaviorEvidence(&result, "mga_lifecycle_evidence", "tx1_committed");
+  return result;
 }
 
 EngineAttachLifecycleResult EngineAttachLifecycle(const EngineAttachLifecycleRequest& request) {

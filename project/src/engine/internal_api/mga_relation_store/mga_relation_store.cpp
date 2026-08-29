@@ -10,22 +10,31 @@
 
 #include "api_diagnostics.hpp"
 #include "agents/index_garbage_cleanup_agent.hpp"
+#include "catalog/name_resolution_api.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
+#include "query/contextual_text_policy_registry_v2.hpp"
+#include "query/contextual_text_target_authority_resolver_v2.hpp"
 #include "query/plan_api.hpp"
 #include "secondary_index_delta_merge.hpp"
 #include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction_state.hpp"
+#include "typed_update_carrier_codec.hpp"
 #include "uuid.hpp"
 #include "hash_digest.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cctype>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -51,6 +60,16 @@
 #include <unordered_set>
 #include <utility>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace scratchbird::engine::internal_api {
 namespace {
 
@@ -58,6 +77,40 @@ namespace agents = scratchbird::core::agents::implemented_agents;
 namespace idx = scratchbird::core::index;
 
 constexpr const char* kRowStoreMagic = "SBMGA1";
+constexpr std::string_view kSealedTableMetadataKindV2 =
+    "TABLE_METADATA_SEALED_DESCRIPTOR_V2";
+constexpr std::string_view kSealedTableMetadataFormatV2 =
+    "mga_sealed_contextual_text_sidecar_set_v2";
+namespace sealed_table_metadata_field_v2 {
+inline constexpr std::size_t kMagic = 0;
+inline constexpr std::size_t kRecordKind = 1;
+inline constexpr std::size_t kCreatorTx = 2;
+inline constexpr std::size_t kEventSequence = 3;
+inline constexpr std::size_t kFormat = 4;
+inline constexpr std::size_t kSealState = 5;
+inline constexpr std::size_t kTableUuid = 6;
+inline constexpr std::size_t kDefaultName = 7;
+inline constexpr std::size_t kColumns = 8;
+inline constexpr std::size_t kTemporary = 9;
+inline constexpr std::size_t kTemporaryScope = 10;
+inline constexpr std::size_t kTemporarySessionUuid = 11;
+inline constexpr std::size_t kOnCommitAction = 12;
+inline constexpr std::size_t kRelationDescriptorUuid = 13;
+inline constexpr std::size_t kRelationDescriptorGeneration = 14;
+inline constexpr std::size_t kDescriptorFieldCount = 15;
+inline constexpr std::size_t kDescriptorFieldBytes = 16;
+inline constexpr std::size_t kContextualSidecarCount = 17;
+inline constexpr std::size_t kDescriptorFields = 18;
+inline constexpr std::size_t kFieldCount = 19;
+}  // namespace sealed_table_metadata_field_v2
+constexpr std::string_view kDmlUpdateStatementSavepointCreateKind =
+    "DML_UPDATE_STATEMENT_SAVEPOINT_CREATE_V1";
+constexpr std::string_view kDmlUpdateStatementSavepointRollbackKind =
+    "DML_UPDATE_STATEMENT_SAVEPOINT_ROLLBACK_V1";
+constexpr std::string_view kDmlUpdateStatementSavepointReleaseKind =
+    "DML_UPDATE_STATEMENT_SAVEPOINT_RELEASE_V1";
+constexpr std::string_view kDmlUpdateStatementSavepointEvidenceDomain =
+    "ScratchBird.MgaDmlUpdateStatementSavepointAuthority.V1";
 constexpr const char* kDescriptorMagic = "SBMGADESC1";
 constexpr const char* kEventSequenceAllocatorMagic = "SBMGAEVSEQ1";
 constexpr std::string_view kLineHexFieldPrefix = "SBHEX:";
@@ -70,6 +123,34 @@ constexpr std::string_view kLegacyBigintTypeUuid =
     "67000000-696e-7436-b400-000000000000";
 constexpr std::string_view kCanonicalBigintTypeUuid =
     "019d0000-0000-7000-8000-00000000d712";
+constexpr std::string_view kInt32MigrationFormat =
+    "datatype_int32_identity_migration_v1";
+constexpr std::string_view kInt32MigrationId =
+    "core.datatype.int32.identity.v1";
+constexpr std::string_view kLegacyInt32DescriptorUuid =
+    "66000000-696e-7433-b200-000000000000";
+constexpr std::string_view kLegacyInt32TypeUuid =
+    "66000000-696e-7433-b200-000000000000";
+constexpr std::string_view kCanonicalInt32DescriptorUuid =
+    "019d0000-0000-7000-8000-00000000d716";
+constexpr std::string_view kCanonicalInt32TypeUuid =
+    "019d0000-0000-7000-8000-00000000d717";
+constexpr std::string_view kTextMigrationFormat =
+    "datatype_text_identity_migration_v1";
+constexpr std::string_view kTextMigrationId =
+    "core.datatype.text.identity.v1";
+constexpr std::string_view kLegacyTextDescriptorUuid =
+    "2c010000-6368-7172-a163-746572000000";
+constexpr std::string_view kLegacyTextTypeUuid =
+    "2c010000-6368-7172-a163-746572000000";
+constexpr std::string_view kCanonicalTextDescriptorUuid =
+    "019d0000-0000-7000-8000-00000000d718";
+constexpr std::string_view kCanonicalTextTypeUuid =
+    "019d0000-0000-7000-8000-00000000d719";
+constexpr std::string_view kCanonicalTextCodecUuid =
+    "019d0000-0000-7000-8000-00000000d71a";
+constexpr std::string_view kCanonicalTextCodecId =
+    "datatype.text.utf8.v1";
 
 std::string CanonicalBigintMigrationPayload(
     const MgaBigintIdentityMigrationRequest& request,
@@ -78,7 +159,53 @@ std::string CanonicalBigintMigrationPayload(
     std::string_view transaction_uuid,
     const std::vector<CrudTableRecord>& tables,
     const std::vector<std::string>& decision_hashes);
+std::string CanonicalInt32MigrationPayload(
+    const MgaInt32IdentityMigrationRequest& request,
+    std::uint64_t creator_tx,
+    std::uint64_t event_sequence,
+    std::string_view transaction_uuid,
+    const std::vector<CrudTableRecord>& tables,
+    const std::vector<std::string>& decision_hashes);
+std::string CanonicalTextMigrationPayload(
+    const MgaTextIdentityMigrationRequest& request,
+    std::uint64_t creator_tx,
+    std::uint64_t event_sequence,
+    std::string_view transaction_uuid,
+    std::string_view datatype_catalog_snapshot_uuid,
+    std::uint64_t datatype_catalog_generation,
+    std::uint64_t datatype_registry_generation,
+    const std::vector<CrudTableRecord>& tables,
+    const std::vector<CrudSealedRelationDescriptorSnapshot>&
+        relation_descriptor_snapshots,
+    const std::vector<std::string>& decision_hashes);
+bool CanonicalNonNilMigrationUuid(std::string_view value);
+bool ExactCanonicalTextIdentityAuthorityAvailable(
+    const EngineRequestContext& context);
+bool ExactCanonicalMigratedTextDescriptor(const EngineRequestContext& context,
+                                          std::string_view descriptor,
+                                          std::string_view column_uuid);
+bool RewriteLegacyTextDescriptor(const EngineRequestContext& context,
+                                 std::string* descriptor,
+                                 std::string_view column_uuid);
 std::string Sha256Tagged(std::string_view payload);
+
+struct MgaContextualTextProjectionMaterialV2 {
+  EnginePublicRelationProjectionV3 public_projection;
+  std::vector<MgaContextualTextProjectedColumnV2> projected_columns;
+};
+
+bool CopyContextualUuidV2(std::string_view text,
+                          MgaContextualTextUuidV2* output,
+                          bool allow_nil = false);
+std::vector<MgaContextualTextDescriptorFieldPairV2>
+RawContextualDescriptorFieldsV2(
+    const std::vector<std::pair<std::string, std::string>>& fields);
+bool BuildMgaContextualTextProjectionMaterialV2(
+    const EngineRequestContext& context,
+    const MgaRelationStorageDescriptor& relation,
+    const EngineContextualTextPolicyRowSetV2& exact_policy_rows,
+    MgaContextualTextProjectionMaterialV2* output,
+    EngineApiDiagnostic* diagnostic);
 
 using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;
 using scratchbird::transaction::mga::LookupLocalTransaction;
@@ -162,6 +289,16 @@ std::string LargeValueStorePath(const EngineRequestContext& context) {
 
 std::string SavepointStorePath(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_savepoints";
+}
+
+std::string DmlUpdateDurableOperationStorePath(
+    const EngineRequestContext& context) {
+  return context.database_path + ".sb.mga_durable_operations";
+}
+
+std::string DmlUpdateStatementSavepointBinaryStorePath(
+    const EngineRequestContext& context) {
+  return context.database_path + ".sb.mga_update_statement_savepoints.v1";
 }
 
 std::mutex& ScopedRelationSummaryMutex() {
@@ -773,6 +910,107 @@ std::string_view ScopedRowBinaryPayloadView(const EngineTypedValue& typed) {
   return std::string_view(typed.encoded_value);
 }
 
+bool ScopedRowBinaryCanonicalPayload(const EngineTypedValue& typed,
+                                     std::string* payload) {
+  if (payload == nullptr || typed.isSqlNull()) {
+    return false;
+  }
+  payload->clear();
+  const std::string type_name = ScopedRowBinaryTypeName(typed);
+  const auto append_little_endian = [&](std::uint64_t value,
+                                        std::size_t width) {
+    payload->reserve(width);
+    for (std::size_t byte = 0; byte < width; ++byte) {
+      payload->push_back(static_cast<char>((value >> (byte * 8u)) & 0xffu));
+    }
+  };
+  const auto required_binary_width = [&]() -> std::size_t {
+    if (type_name == "boolean") return 1;
+    if (type_name == "int32") return 4;
+    if (type_name == "int64" || type_name == "uint64" ||
+        type_name == "real64") {
+      return 8;
+    }
+    return 0;
+  }();
+  if (!typed.binary_value.empty()) {
+    if (required_binary_width != 0 &&
+        typed.binary_value.size() != required_binary_width) {
+      return false;
+    }
+    payload->assign(
+        reinterpret_cast<const char*>(typed.binary_value.data()),
+        typed.binary_value.size());
+    return true;
+  }
+
+  const std::string_view text = typed.encoded_value;
+  if (type_name == "boolean") {
+    if (text == "true" || text == "1") {
+      payload->push_back('\x01');
+      return true;
+    }
+    if (text == "false" || text == "0") {
+      payload->push_back('\x00');
+      return true;
+    }
+    return false;
+  }
+  if (type_name == "int32") {
+    std::int32_t value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(),
+                                        value, 10);
+    if (text.empty() || parsed.ec != std::errc{} ||
+        parsed.ptr != text.data() + text.size()) {
+      return false;
+    }
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    append_little_endian(bits, sizeof(bits));
+    return true;
+  }
+  if (type_name == "int64") {
+    std::int64_t value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(),
+                                        value, 10);
+    if (text.empty() || parsed.ec != std::errc{} ||
+        parsed.ptr != text.data() + text.size()) {
+      return false;
+    }
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    append_little_endian(bits, sizeof(bits));
+    return true;
+  }
+  if (type_name == "uint64") {
+    std::uint64_t value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(),
+                                        value, 10);
+    if (text.empty() || parsed.ec != std::errc{} ||
+        parsed.ptr != text.data() + text.size()) {
+      return false;
+    }
+    append_little_endian(value, sizeof(value));
+    return true;
+  }
+  if (type_name == "real64") {
+    double value = 0.0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(),
+                                        value);
+    if (text.empty() || parsed.ec != std::errc{} ||
+        parsed.ptr != text.data() + text.size() || !std::isfinite(value)) {
+      return false;
+    }
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    append_little_endian(bits, sizeof(bits));
+    return true;
+  }
+
+  payload->assign(text.data(), text.size());
+  return true;
+}
+
 std::size_t ScopedRowBinaryBatchEstimateBytes(
     const std::vector<CrudRowVersionRecord>& rows,
     std::span<const EngineRowValue> typed_rows,
@@ -906,7 +1144,9 @@ bool AppendScopedRowBinaryBatch(std::string* out,
     }
     for (const auto& [_, typed] : typed_row.fields) {
       if (typed.isSqlNull()) { continue; }
-      if (!AppendBinaryString(out, ScopedRowBinaryPayloadView(typed))) {
+      std::string canonical_payload;
+      if (!ScopedRowBinaryCanonicalPayload(typed, &canonical_payload) ||
+          !AppendBinaryString(out, canonical_payload)) {
         return false;
       }
     }
@@ -1020,7 +1260,9 @@ bool AppendScopedRowIdentityBinaryBatch(
     }
     for (const auto& [_, typed] : typed_row.fields) {
       if (typed.isSqlNull()) { continue; }
-      if (!AppendBinaryString(out, ScopedRowBinaryPayloadView(typed))) {
+      std::string canonical_payload;
+      if (!ScopedRowBinaryCanonicalPayload(typed, &canonical_payload) ||
+          !AppendBinaryString(out, canonical_payload)) {
         return false;
       }
     }
@@ -3176,6 +3418,22 @@ MgaEventSequenceRangeReservation ReserveEventSequenceRange(
   return reservation;
 }
 
+void AbandonDeferredEventSequenceReservation(
+    const MgaEventSequenceRangeReservation& reservation) {
+  if (!reservation.ok || reservation.stream_kind.empty() ||
+      reservation.stream_path.empty()) {
+    return;
+  }
+  const std::lock_guard<std::mutex> guard(EventSequenceCacheMutex());
+  const std::string key = EventSequenceStreamKey(
+      reservation.stream_kind, reservation.stream_path);
+  const auto found = EventSequenceCache().find(key);
+  if (found != EventSequenceCache().end() &&
+      found->second == reservation.next) {
+    found->second = reservation.first;
+  }
+}
+
 std::uint64_t ScanNextRowEventSequence(const EngineRequestContext& context) {
   std::uint64_t max_sequence = 0;
   for (const auto& line : ReadLines(RowStorePath(context))) {
@@ -3217,9 +3475,13 @@ std::uint64_t ScanNextMetadataEventSequence(const EngineRequestContext& context)
   for (const auto& line : ReadLines(MetadataStorePath(context))) {
     const auto fields = SplitTabs(line);
     if (fields.size() >= 4 && fields[0] == kRowStoreMagic &&
-        (fields[1] == "TABLE_METADATA" || fields[1] == "INDEX_METADATA" ||
+        (fields[1] == "TABLE_METADATA" ||
+         fields[1] == kSealedTableMetadataKindV2 ||
+         fields[1] == "INDEX_METADATA" ||
          fields[1] == "CONSTRAINT_MUTATION_BATCH" ||
-         fields[1] == "BIGINT_IDENTITY_MIGRATION_BATCH")) {
+         fields[1] == "BIGINT_IDENTITY_MIGRATION_BATCH" ||
+         fields[1] == "INT32_IDENTITY_MIGRATION_BATCH" ||
+         fields[1] == "TEXT_IDENTITY_MIGRATION_BATCH")) {
       max_sequence = std::max(max_sequence, ParseU64(fields[3]));
     }
   }
@@ -3409,6 +3671,197 @@ std::string BigintMigrationDecisionHash(
   field("new_type_uuid", kCanonicalBigintTypeUuid);
   field("old_row_generation", std::to_string(row.old_row_generation));
   field("new_row_generation", std::to_string(new_row_generation));
+  return Sha256Tagged(payload);
+}
+
+std::string CanonicalInt32MigrationPayload(
+    const MgaInt32IdentityMigrationRequest& request,
+    std::uint64_t creator_tx,
+    std::uint64_t event_sequence,
+    std::string_view transaction_uuid,
+    const std::vector<CrudTableRecord>& tables,
+    const std::vector<std::string>& decision_hashes) {
+  std::string payload;
+  auto field = [&](std::string_view key, std::string_view value) {
+    AppendCanonicalBatchField(&payload, key, value);
+  };
+  field("format_version", kInt32MigrationFormat);
+  field("seal_state", "sealed");
+  field("migration_id", request.migration_id);
+  field("creator_tx", std::to_string(creator_tx));
+  field("event_sequence", std::to_string(event_sequence));
+  field("transaction_uuid", transaction_uuid);
+  field("prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid);
+  field("new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid);
+  field("prior_catalog_generation",
+        std::to_string(request.prior_catalog_generation));
+  field("new_catalog_generation",
+        std::to_string(request.new_catalog_generation));
+  field("mutation_count", std::to_string(request.rows.size()));
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    const auto& row = request.rows[i];
+    const auto& table = tables[i];
+    field("object_uuid", row.object_uuid);
+    field("column_uuid", row.column_uuid);
+    field("old_descriptor_uuid", kLegacyInt32DescriptorUuid);
+    field("new_descriptor_uuid", kCanonicalInt32DescriptorUuid);
+    field("old_type_uuid", kLegacyInt32TypeUuid);
+    field("new_type_uuid", kCanonicalInt32TypeUuid);
+    field("old_row_generation", std::to_string(row.old_row_generation));
+    field("new_row_generation", std::to_string(table.event_sequence));
+    field("decision_sha256", decision_hashes[i]);
+    field("table_default_name", table.default_name);
+    field("table_columns", EncodeCrudPairs(table.columns));
+  }
+  return payload;
+}
+
+std::string Int32MigrationDecisionHash(
+    const MgaInt32IdentityMigrationRequest& request,
+    const MgaInt32IdentityMigrationRow& row,
+    std::uint64_t new_row_generation,
+    std::string_view transaction_uuid) {
+  std::string payload;
+  auto field = [&](std::string_view key, std::string_view value) {
+    AppendCanonicalBatchField(&payload, key, value);
+  };
+  field("migration_id", request.migration_id);
+  field("transaction_uuid", transaction_uuid);
+  field("prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid);
+  field("new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid);
+  field("prior_catalog_generation",
+        std::to_string(request.prior_catalog_generation));
+  field("new_catalog_generation",
+        std::to_string(request.new_catalog_generation));
+  field("object_uuid", row.object_uuid);
+  field("column_uuid", row.column_uuid);
+  field("old_descriptor_uuid", kLegacyInt32DescriptorUuid);
+  field("new_descriptor_uuid", kCanonicalInt32DescriptorUuid);
+  field("old_type_uuid", kLegacyInt32TypeUuid);
+  field("new_type_uuid", kCanonicalInt32TypeUuid);
+  field("old_row_generation", std::to_string(row.old_row_generation));
+  field("new_row_generation", std::to_string(new_row_generation));
+  return Sha256Tagged(payload);
+}
+
+std::string CanonicalTextMigrationPayload(
+    const MgaTextIdentityMigrationRequest& request,
+    std::uint64_t creator_tx,
+    std::uint64_t event_sequence,
+    std::string_view transaction_uuid,
+    std::string_view datatype_catalog_snapshot_uuid,
+    std::uint64_t datatype_catalog_generation,
+    std::uint64_t datatype_registry_generation,
+    const std::vector<CrudTableRecord>& tables,
+    const std::vector<CrudSealedRelationDescriptorSnapshot>&
+        relation_descriptor_snapshots,
+    const std::vector<std::string>& decision_hashes) {
+  std::string payload;
+  auto field = [&](std::string_view key, std::string_view value) {
+    AppendCanonicalBatchField(&payload, key, value);
+  };
+  field("format_version", kTextMigrationFormat);
+  field("seal_state", "sealed");
+  field("migration_id", request.migration_id);
+  field("creator_tx", std::to_string(creator_tx));
+  field("event_sequence", std::to_string(event_sequence));
+  field("transaction_uuid", transaction_uuid);
+  field("datatype_catalog_snapshot_uuid", datatype_catalog_snapshot_uuid);
+  field("datatype_catalog_generation",
+        std::to_string(datatype_catalog_generation));
+  field("datatype_registry_generation",
+        std::to_string(datatype_registry_generation));
+  field("prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid);
+  field("new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid);
+  field("prior_catalog_generation",
+        std::to_string(request.prior_catalog_generation));
+  field("new_catalog_generation",
+        std::to_string(request.new_catalog_generation));
+  field("mutation_count", std::to_string(request.rows.size()));
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    const auto& row = request.rows[i];
+    const auto& table = tables[i];
+    field("object_uuid", row.object_uuid);
+    field("column_uuid", row.column_uuid);
+    field("old_descriptor_uuid", kLegacyTextDescriptorUuid);
+    field("new_descriptor_uuid", kCanonicalTextDescriptorUuid);
+    field("old_type_uuid", kLegacyTextTypeUuid);
+    field("new_type_uuid", kCanonicalTextTypeUuid);
+    field("new_codec_uuid", kCanonicalTextCodecUuid);
+    field("new_codec_id", kCanonicalTextCodecId);
+    field("new_codec_version", "1");
+    field("new_codec_generation", "1");
+    field("old_row_generation", std::to_string(row.old_row_generation));
+    field("new_row_generation", std::to_string(table.event_sequence));
+    field("decision_sha256", decision_hashes[i]);
+    field("table_default_name", table.default_name);
+    field("table_columns", EncodeCrudPairs(table.columns));
+    const auto& snapshot = relation_descriptor_snapshots[i];
+    field("relation_descriptor_uuid", snapshot.relation_descriptor_uuid);
+    field("relation_descriptor_generation",
+          std::to_string(snapshot.relation_descriptor_generation));
+    field("descriptor_field_count",
+          std::to_string(snapshot.descriptor_field_count));
+    field("descriptor_field_bytes",
+          std::to_string(snapshot.descriptor_field_bytes));
+    field("contextual_sidecar_count",
+          std::to_string(snapshot.contextual_sidecar_count));
+    field("relation_descriptor_fields",
+          EncodeCrudPairs(snapshot.descriptor_fields));
+  }
+  return payload;
+}
+
+std::string TextMigrationDecisionHash(
+    const MgaTextIdentityMigrationRequest& request,
+    const MgaTextIdentityMigrationRow& row,
+    std::uint64_t new_row_generation,
+    std::string_view transaction_uuid,
+    std::string_view datatype_catalog_snapshot_uuid,
+    std::uint64_t datatype_catalog_generation,
+    std::uint64_t datatype_registry_generation,
+    const CrudSealedRelationDescriptorSnapshot& relation_snapshot) {
+  std::string payload;
+  auto field = [&](std::string_view key, std::string_view value) {
+    AppendCanonicalBatchField(&payload, key, value);
+  };
+  field("migration_id", request.migration_id);
+  field("transaction_uuid", transaction_uuid);
+  field("datatype_catalog_snapshot_uuid", datatype_catalog_snapshot_uuid);
+  field("datatype_catalog_generation",
+        std::to_string(datatype_catalog_generation));
+  field("datatype_registry_generation",
+        std::to_string(datatype_registry_generation));
+  field("prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid);
+  field("new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid);
+  field("prior_catalog_generation",
+        std::to_string(request.prior_catalog_generation));
+  field("new_catalog_generation",
+        std::to_string(request.new_catalog_generation));
+  field("object_uuid", row.object_uuid);
+  field("column_uuid", row.column_uuid);
+  field("old_descriptor_uuid", kLegacyTextDescriptorUuid);
+  field("new_descriptor_uuid", kCanonicalTextDescriptorUuid);
+  field("old_type_uuid", kLegacyTextTypeUuid);
+  field("new_type_uuid", kCanonicalTextTypeUuid);
+  field("new_codec_uuid", kCanonicalTextCodecUuid);
+  field("new_codec_id", kCanonicalTextCodecId);
+  field("new_codec_version", "1");
+  field("new_codec_generation", "1");
+  field("old_row_generation", std::to_string(row.old_row_generation));
+  field("new_row_generation", std::to_string(new_row_generation));
+  field("relation_descriptor_uuid",
+        relation_snapshot.relation_descriptor_uuid);
+  field("relation_descriptor_generation",
+        std::to_string(relation_snapshot.relation_descriptor_generation));
+  field("descriptor_field_count",
+        std::to_string(relation_snapshot.descriptor_field_count));
+  field("descriptor_field_bytes",
+        std::to_string(relation_snapshot.descriptor_field_bytes));
+  field("contextual_sidecar_count",
+        std::to_string(relation_snapshot.contextual_sidecar_count));
+  field("relation_descriptor_fields",
+        EncodeCrudPairs(relation_snapshot.descriptor_fields));
   return Sha256Tagged(payload);
 }
 
@@ -4963,7 +5416,13 @@ struct SavepointParsedState {
            std::vector<std::pair<std::uint64_t, std::uint64_t>>>
       normalized_row_rollback_ranges;
   bool row_rollback_ranges_normalized = false;
+  bool update_statement_authority_corrupt = false;
 };
+
+bool ApplyDmlUpdateBinarySavepointRecords(
+    const EngineRequestContext& context,
+    SavepointParsedState* state,
+    std::string* refusal_detail = nullptr);
 
 void ApplySavepointRecordLine(const std::string& line,
                               SavepointParsedState* state) {
@@ -4971,6 +5430,20 @@ void ApplySavepointRecordLine(const std::string& line,
   const auto fields = SplitTabs(line);
   if (fields.size() < 5 || fields[0] != kRowStoreMagic) return;
   const std::string& kind = fields[1];
+  const bool update_statement_create =
+      kind == kDmlUpdateStatementSavepointCreateKind;
+  const bool update_statement_rollback =
+      kind == kDmlUpdateStatementSavepointRollbackKind;
+  const bool update_statement_release =
+      kind == kDmlUpdateStatementSavepointReleaseKind;
+  if (update_statement_create || update_statement_rollback ||
+      update_statement_release) {
+    // UPDATE statement identity/barrier authority is binary MGA durability.
+    // A historical host-text record is never admitted as a compatibility
+    // authority and forces current transaction reads to fail closed.
+    state->update_statement_authority_corrupt = true;
+    return;
+  }
   const std::uint64_t tx = ParseU64(fields[2]);
   const std::string name = DecodeCrudTextLocal(fields[3]);
   SavepointCutoffs cutoffs;
@@ -5032,6 +5505,19 @@ SavepointParsedState ParseSavepoints(const EngineRequestContext& context) {
   for (const auto& line : ReadLines(SavepointStorePath(context))) {
     ApplySavepointRecordLine(line, &state);
   }
+  std::string ignored_detail;
+  if (!ApplyDmlUpdateBinarySavepointRecords(context, &state,
+                                            &ignored_detail)) {
+    state.update_statement_authority_corrupt = true;
+  }
+  if (state.update_statement_authority_corrupt &&
+      context.local_transaction_id != 0) {
+    SavepointRollbackRange fail_closed;
+    fail_closed.cutoffs = {};
+    state.rollback_ranges[context.local_transaction_id].push_back(
+        fail_closed);
+    state.active_savepoints.erase(context.local_transaction_id);
+  }
   NormalizeSavepointRowRollbackRanges(&state);
   return state;
 }
@@ -5060,6 +5546,16 @@ bool ParseSavepointsBounded(const EngineRequestContext& context,
   const auto raw_size = std::filesystem::file_size(path, ignored);
   if (!AccountHeapReadWait(control, size_started)) return false;
   if (ignored) {
+    std::string durable_detail;
+    if (!ApplyDmlUpdateBinarySavepointRecords(context, state,
+                                               &durable_detail) ||
+        state->update_statement_authority_corrupt) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+      control->refusal_detail = durable_detail.empty()
+                                    ? "heap_read_update_savepoint_corrupt"
+                                    : durable_detail;
+      return false;
+    }
     NormalizeSavepointRowRollbackRanges(state);
     return true;
   }
@@ -5156,6 +5652,16 @@ bool ParseSavepointsBounded(const EngineRequestContext& context,
     return false;
   }
   if (!line.empty()) ApplySavepointRecordLine(line, state);
+  std::string durable_detail;
+  if (!ApplyDmlUpdateBinarySavepointRecords(context, state,
+                                             &durable_detail) ||
+      state->update_statement_authority_corrupt) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = durable_detail.empty()
+                                  ? "heap_read_update_savepoint_corrupt"
+                                  : durable_detail;
+    return false;
+  }
   NormalizeSavepointRowRollbackRanges(state);
   return true;
 }
@@ -5276,6 +5782,8 @@ struct MgaMetadataCacheKey {
 struct MgaMetadataCacheEntry {
   std::vector<CrudTableRecord> tables;
   std::vector<CrudIndexRecord> indexes;
+  std::vector<CrudSealedRelationDescriptorSnapshot>
+      sealed_relation_descriptor_snapshots;
   std::uint64_t max_event_sequence = 0;
 };
 
@@ -5423,6 +5931,44 @@ EngineApiDiagnostic OverlayMgaTransactionAuthority(const EngineRequestContext& c
     }
   }
   return OkDiagnostic();
+}
+
+bool ExactTextMigrationCreatorTransaction(
+    const EngineRequestContext& context,
+    const std::uint64_t creator_tx,
+    const std::string_view transaction_uuid) {
+  if (creator_tx == 0 || transaction_uuid.empty()) return false;
+  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
+      scratchbird::core::platform::UuidKind::transaction,
+      std::string(transaction_uuid));
+  if (!parsed.ok()) return false;
+  const auto inventory =
+      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!inventory.ok()) return false;
+  const auto exact = LookupLocalTransaction(
+      inventory.inventory, MakeLocalTransactionId(creator_tx));
+  return exact.ok() &&
+         exact.entry.identity.transaction_uuid.value == parsed.value.value;
+}
+
+bool TextMigrationLineageCreatorVisible(
+    const EngineRequestContext& context,
+    const std::uint64_t migration_creator_tx,
+    const std::uint64_t candidate_creator_tx) {
+  if (candidate_creator_tx == 0) return true;
+  const auto inventory =
+      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!inventory.ok()) return false;
+  const auto exact = LookupLocalTransaction(
+      inventory.inventory, MakeLocalTransactionId(candidate_creator_tx));
+  if (!exact.ok()) return false;
+  if (exact.entry.state == TransactionState::committed ||
+      exact.entry.state == TransactionState::archived) {
+    return true;
+  }
+  return candidate_creator_tx == migration_creator_tx &&
+         (exact.entry.state == TransactionState::active ||
+          exact.entry.state == TransactionState::prepared);
 }
 
 std::set<std::string> VisibleRetiredTemporaryTableMetadata(
@@ -5598,6 +6144,10 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       state->indexes.insert(state->indexes.end(),
                             cached->second.indexes.begin(),
                             cached->second.indexes.end());
+      state->sealed_relation_descriptor_snapshots.insert(
+          state->sealed_relation_descriptor_snapshots.end(),
+          cached->second.sealed_relation_descriptor_snapshots.begin(),
+          cached->second.sealed_relation_descriptor_snapshots.end());
       state->max_event_sequence =
           std::max(state->max_event_sequence,
                    cached->second.max_event_sequence);
@@ -5631,6 +6181,141 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       decoded.max_event_sequence =
           std::max(decoded.max_event_sequence, ParseU64(fields[3]));
       decoded.tables.push_back(std::move(table));
+    } else if (fields[1] == kSealedTableMetadataKindV2) {
+      namespace stf = sealed_table_metadata_field_v2;
+      const auto canonical_u64 = [&](const std::size_t index,
+                                     std::uint64_t* output,
+                                     const bool allow_zero) {
+        if (output == nullptr || index >= fields.size() ||
+            fields[index].empty()) {
+          return false;
+        }
+        const std::uint64_t parsed = ParseU64(fields[index]);
+        if ((!allow_zero && parsed == 0) ||
+            std::to_string(parsed) != fields[index]) {
+          return false;
+        }
+        *output = parsed;
+        return true;
+      };
+      std::uint64_t creator_tx = 0;
+      std::uint64_t event_sequence = 0;
+      std::uint64_t descriptor_generation = 0;
+      std::uint64_t descriptor_field_count = 0;
+      std::uint64_t descriptor_field_bytes = 0;
+      std::uint64_t contextual_sidecar_count_u64 = 0;
+      if (fields.size() != stf::kFieldCount ||
+          fields[stf::kMagic] != kRowStoreMagic ||
+          fields[stf::kRecordKind] != kSealedTableMetadataKindV2 ||
+          fields[stf::kFormat] != kSealedTableMetadataFormatV2 ||
+          fields[stf::kSealState] != "sealed" ||
+          !canonical_u64(stf::kCreatorTx, &creator_tx, false) ||
+          !canonical_u64(stf::kEventSequence, &event_sequence, false) ||
+          !canonical_u64(stf::kRelationDescriptorGeneration,
+                         &descriptor_generation, false) ||
+          !canonical_u64(stf::kDescriptorFieldCount,
+                         &descriptor_field_count, false) ||
+          !canonical_u64(stf::kDescriptorFieldBytes,
+                         &descriptor_field_bytes, false) ||
+          !canonical_u64(stf::kContextualSidecarCount,
+                         &contextual_sidecar_count_u64, true) ||
+          contextual_sidecar_count_u64 >
+              std::numeric_limits<std::uint32_t>::max() ||
+          !CanonicalNonNilMigrationUuid(fields[stf::kTableUuid]) ||
+          !CanonicalNonNilMigrationUuid(
+              fields[stf::kRelationDescriptorUuid]) ||
+          (fields[stf::kTemporary] != "0" &&
+           fields[stf::kTemporary] != "1")) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata",
+            "sealed_table_metadata_v2_header_invalid");
+      }
+      CrudTableRecord table;
+      table.creator_tx = creator_tx;
+      table.event_sequence = event_sequence;
+      table.table_uuid = fields[stf::kTableUuid];
+      table.default_name = DecodeCrudTextLocal(fields[stf::kDefaultName]);
+      table.columns = DecodeCrudPairs(fields[stf::kColumns]);
+      table.temporary = fields[stf::kTemporary] == "1";
+      table.temporary_scope = fields[stf::kTemporaryScope];
+      table.temporary_session_uuid =
+          fields[stf::kTemporarySessionUuid];
+      table.on_commit_action = fields[stf::kOnCommitAction];
+      const auto complete_fields =
+          DecodeCrudPairs(fields[stf::kDescriptorFields]);
+      if (EncodeCrudText(table.default_name) !=
+              fields[stf::kDefaultName] ||
+          EncodeCrudPairs(table.columns) != fields[stf::kColumns] ||
+          EncodeCrudPairs(complete_fields) !=
+              fields[stf::kDescriptorFields] ||
+          complete_fields.size() != descriptor_field_count) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata",
+            "sealed_table_metadata_v2_vector_invalid");
+      }
+      const auto descriptor =
+          DeserializeMgaRelationStorageDescriptor(complete_fields);
+      const auto descriptor_validation =
+          ValidateMgaRelationStorageDescriptor(descriptor);
+      const auto base_fields =
+          SerializeMgaRelationStorageDescriptor(descriptor);
+      if (descriptor_validation.error || base_fields.empty() ||
+          complete_fields.size() < base_fields.size() + 1 ||
+          !std::equal(base_fields.begin(), base_fields.end(),
+                      complete_fields.begin()) ||
+          descriptor.database_uuid.canonical !=
+              context.database_uuid.canonical ||
+          descriptor.relation_uuid.canonical != table.table_uuid ||
+          descriptor.relation_generation != event_sequence ||
+          descriptor.descriptor_uuid.canonical !=
+              fields[stf::kRelationDescriptorUuid] ||
+          descriptor.descriptor_generation != descriptor_generation) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata",
+            "sealed_table_metadata_v2_descriptor_invalid");
+      }
+      std::vector<MgaContextualTextDescriptorFieldPairV2> raw_fields;
+      raw_fields.reserve(complete_fields.size());
+      for (const auto& [key, value] : complete_fields) {
+        raw_fields.push_back(
+            {{key.begin(), key.end()}, {value.begin(), value.end()}});
+      }
+      MgaContextualTextRawBytesV2 canonical_vector;
+      std::uint64_t canonical_vector_bytes = 0;
+      MgaContextualTextSidecarSetDiagnosticV2 sidecar_diagnostic;
+      const auto& final_pair = complete_fields.back();
+      if (final_pair.first != kMgaContextualTextSidecarSetSealKeyV2 ||
+          final_pair.second.size() !=
+              MgaContextualTextSha256V2{}.size() ||
+          !SerializeMgaContextualTextDescriptorFieldVectorV2(
+              raw_fields, &canonical_vector, &canonical_vector_bytes,
+              &sidecar_diagnostic) ||
+          canonical_vector_bytes != descriptor_field_bytes) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata",
+            "sealed_table_metadata_v2_seal_or_extent_invalid");
+      }
+      if (MetadataEventRolledBackBySavepoint(
+              savepoints, creator_tx, event_sequence)) {
+        continue;
+      }
+      CrudSealedRelationDescriptorSnapshot snapshot;
+      snapshot.creator_tx = creator_tx;
+      snapshot.event_sequence = event_sequence;
+      snapshot.relation_uuid = table.table_uuid;
+      snapshot.relation_descriptor_uuid =
+          fields[stf::kRelationDescriptorUuid];
+      snapshot.relation_descriptor_generation = descriptor_generation;
+      snapshot.descriptor_field_count = descriptor_field_count;
+      snapshot.descriptor_field_bytes = descriptor_field_bytes;
+      snapshot.contextual_sidecar_count =
+          static_cast<std::uint32_t>(contextual_sidecar_count_u64);
+      snapshot.descriptor_fields = complete_fields;
+      decoded.max_event_sequence =
+          std::max(decoded.max_event_sequence, event_sequence);
+      decoded.tables.push_back(std::move(table));
+      decoded.sealed_relation_descriptor_snapshots.push_back(
+          std::move(snapshot));
     } else if (fields[1] == "CONSTRAINT_MUTATION_BATCH") {
       // The constraint metadata and its table-column projection are sealed in
       // this one physical record.  The immutable relation-storage descriptor
@@ -5868,6 +6553,563 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       decoded.tables.insert(decoded.tables.end(),
                             std::make_move_iterator(tables.begin()),
                             std::make_move_iterator(tables.end()));
+    } else if (fields[1] == "INT32_IDENTITY_MIGRATION_BATCH") {
+      constexpr std::size_t kHeaderFields = 14;
+      constexpr std::size_t kFieldsPerRow = 15;
+      if (fields.size() < kHeaderFields) continue;
+      const std::uint64_t creator_tx = ParseU64(fields[2]);
+      const std::uint64_t event_sequence = ParseU64(fields[3]);
+      const std::uint64_t mutation_count = ParseU64(fields[13]);
+      if (mutation_count == 0 ||
+          fields.size() != kHeaderFields + mutation_count * kFieldsPerRow) {
+        continue;
+      }
+      if (creator_tx == 0 || event_sequence == 0 ||
+          fields[4] != kInt32MigrationFormat || fields[5] != "sealed" ||
+          fields[6].size() != 71 || !fields[6].starts_with("sha256:") ||
+          fields[7] != kInt32MigrationId || fields[8].empty() ||
+          ParseU64(fields[11]) == 0 ||
+          ParseU64(fields[12]) != ParseU64(fields[11]) + 1) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "int32_migration_batch_invalid");
+      }
+      MgaInt32IdentityMigrationRequest request;
+      request.migration_id = fields[7];
+      request.prior_catalog_snapshot_uuid = fields[9];
+      request.new_catalog_snapshot_uuid = fields[10];
+      request.prior_catalog_generation = ParseU64(fields[11]);
+      request.new_catalog_generation = ParseU64(fields[12]);
+      std::vector<CrudTableRecord> tables;
+      std::vector<std::string> decisions;
+      std::set<std::pair<std::string, std::string>> identities;
+      std::map<std::string, std::string> table_projections;
+      std::map<std::string, CrudTableRecord> unique_tables;
+      for (std::size_t i = 0; i < mutation_count; ++i) {
+        const std::size_t base = kHeaderFields + i * kFieldsPerRow;
+        MgaInt32IdentityMigrationRow row;
+        row.object_uuid = fields[base];
+        row.column_uuid = fields[base + 1];
+        row.old_row_generation = ParseU64(fields[base + 6]);
+        if (fields[base + 2] != kLegacyInt32DescriptorUuid ||
+            fields[base + 3] != kCanonicalInt32DescriptorUuid ||
+            fields[base + 4] != kLegacyInt32TypeUuid ||
+            fields[base + 5] != kCanonicalInt32TypeUuid ||
+            row.old_row_generation == 0 ||
+            ParseU64(fields[base + 7]) != event_sequence ||
+            fields[base + 8].size() != 71 ||
+            !fields[base + 8].starts_with("sha256:") ||
+            !identities.emplace(row.object_uuid, row.column_uuid).second) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "int32_migration_batch_conflict");
+        }
+        CrudTableRecord table;
+        table.creator_tx = creator_tx;
+        table.event_sequence = event_sequence;
+        table.table_uuid = row.object_uuid;
+        table.default_name = DecodeCrudTextLocal(fields[base + 9]);
+        table.columns = DecodeCrudPairs(fields[base + 10]);
+        table.temporary = fields[base + 11] == "1";
+        table.temporary_scope = fields[base + 12];
+        table.temporary_session_uuid = fields[base + 13];
+        table.on_commit_action = fields[base + 14];
+        if (table.temporary || !table.temporary_scope.empty() ||
+            !table.temporary_session_uuid.empty() ||
+            !table.on_commit_action.empty()) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "int32_migration_temporary_unsupported");
+        }
+        const std::string projection =
+            fields[base + 9] + "\n" + fields[base + 10] + "\n" +
+            fields[base + 11] + "\n" + fields[base + 12] + "\n" +
+            fields[base + 13] + "\n" + fields[base + 14];
+        const auto prior_projection = table_projections.find(row.object_uuid);
+        if (prior_projection != table_projections.end() &&
+            prior_projection->second != projection) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "int32_migration_object_projection_conflict");
+        }
+        table_projections[row.object_uuid] = projection;
+        unique_tables[row.object_uuid] = table;
+        request.rows.push_back(std::move(row));
+        decisions.push_back(fields[base + 8]);
+        tables.push_back(std::move(table));
+      }
+      for (std::size_t i = 0; i < request.rows.size(); ++i) {
+        const std::string expected_decision = Int32MigrationDecisionHash(
+            request, request.rows[i], tables[i].event_sequence, fields[8]);
+        if (!scratchbird::core::hash::ConstantTimeEqual(
+                expected_decision, decisions[i])) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "int32_migration_decision_hash_mismatch");
+        }
+      }
+      const std::string payload = CanonicalInt32MigrationPayload(
+          request, creator_tx, event_sequence, fields[8], tables, decisions);
+      if (!scratchbird::core::hash::ConstantTimeEqual(
+              Sha256Tagged(payload), fields[6])) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "int32_migration_batch_hash_mismatch");
+      }
+      if (MetadataEventRolledBackBySavepoint(savepoints, creator_tx,
+                                             event_sequence)) {
+        continue;
+      }
+      decoded.max_event_sequence =
+          std::max(decoded.max_event_sequence, event_sequence);
+      for (auto& [object_uuid, table] : unique_tables) {
+        (void)object_uuid;
+        decoded.tables.push_back(std::move(table));
+      }
+    } else if (fields[1] == "TEXT_IDENTITY_MIGRATION_BATCH") {
+      constexpr std::size_t kHeaderFields = 17;
+      constexpr std::size_t kFieldsPerRow = 25;
+      if (fields.size() < kHeaderFields) continue;
+      const std::uint64_t creator_tx = ParseU64(fields[2]);
+      const std::uint64_t event_sequence = ParseU64(fields[3]);
+      const std::uint64_t datatype_catalog_generation = ParseU64(fields[14]);
+      const std::uint64_t datatype_registry_generation = ParseU64(fields[15]);
+      const std::uint64_t mutation_count = ParseU64(fields[16]);
+      if (mutation_count == 0 ||
+          std::to_string(mutation_count) != fields[16] ||
+          mutation_count >
+              (std::numeric_limits<std::size_t>::max() - kHeaderFields) /
+                  kFieldsPerRow ||
+          fields.size() != kHeaderFields + mutation_count * kFieldsPerRow) {
+        continue;
+      }
+      if (creator_tx == 0 || event_sequence == 0 ||
+          fields[4] != kTextMigrationFormat || fields[5] != "sealed" ||
+          fields[6].size() != 71 || !fields[6].starts_with("sha256:") ||
+          fields[7] != kTextMigrationId || fields[8].empty() ||
+          !ExactTextMigrationCreatorTransaction(context, creator_tx,
+                                                fields[8]) ||
+          !CanonicalNonNilMigrationUuid(fields[9]) ||
+          !CanonicalNonNilMigrationUuid(fields[10]) ||
+          fields[9] == fields[10] ||
+          ParseU64(fields[11]) == 0 ||
+          ParseU64(fields[11]) ==
+              std::numeric_limits<std::uint64_t>::max() ||
+          ParseU64(fields[12]) != ParseU64(fields[11]) + 1 ||
+          !CanonicalNonNilMigrationUuid(fields[13]) ||
+          fields[13] !=
+              context.datatype_catalog_snapshot_uuid.canonical ||
+          datatype_catalog_generation == 0 ||
+          std::to_string(datatype_catalog_generation) != fields[14] ||
+          datatype_catalog_generation !=
+              context.datatype_catalog_generation ||
+          datatype_registry_generation == 0 ||
+          std::to_string(datatype_registry_generation) != fields[15] ||
+          datatype_registry_generation !=
+              context.datatype_registry_generation ||
+          !ExactCanonicalTextIdentityAuthorityAvailable(context)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "text_migration_batch_invalid");
+      }
+      MgaTextIdentityMigrationRequest request;
+      request.migration_id = fields[7];
+      request.prior_catalog_snapshot_uuid = fields[9];
+      request.new_catalog_snapshot_uuid = fields[10];
+      request.prior_catalog_generation = ParseU64(fields[11]);
+      request.new_catalog_generation = ParseU64(fields[12]);
+      std::vector<CrudTableRecord> tables;
+      std::vector<CrudSealedRelationDescriptorSnapshot>
+          relation_descriptor_snapshots;
+      std::vector<std::string> decisions;
+      std::set<std::pair<std::string, std::string>> identities;
+      std::map<std::string, std::string> table_projections;
+      std::map<std::string, std::string> descriptor_projections;
+      std::map<std::string, CrudTableRecord> unique_tables;
+      std::map<std::string, CrudSealedRelationDescriptorSnapshot>
+          unique_descriptors;
+      for (std::size_t i = 0; i < mutation_count; ++i) {
+        const std::size_t base = kHeaderFields + i * kFieldsPerRow;
+        if (!CanonicalNonNilMigrationUuid(fields[base]) ||
+            !CanonicalNonNilMigrationUuid(fields[base + 1]) ||
+            !identities.emplace(fields[base], fields[base + 1]).second) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "text_migration_batch_conflict");
+        }
+      }
+      for (std::size_t i = 0; i < mutation_count; ++i) {
+        const std::size_t base = kHeaderFields + i * kFieldsPerRow;
+        MgaTextIdentityMigrationRow row;
+        row.object_uuid = fields[base];
+        row.column_uuid = fields[base + 1];
+        row.old_row_generation = ParseU64(fields[base + 10]);
+        if (fields[base + 2] != kLegacyTextDescriptorUuid ||
+            fields[base + 3] != kCanonicalTextDescriptorUuid ||
+            fields[base + 4] != kLegacyTextTypeUuid ||
+            fields[base + 5] != kCanonicalTextTypeUuid ||
+            fields[base + 6] != kCanonicalTextCodecUuid ||
+            fields[base + 7] != kCanonicalTextCodecId ||
+            fields[base + 8] != "1" || fields[base + 9] != "1" ||
+            row.old_row_generation == 0 ||
+            ParseU64(fields[base + 11]) != event_sequence ||
+            fields[base + 12].size() != 71 ||
+            !fields[base + 12].starts_with("sha256:")) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "text_migration_batch_conflict");
+        }
+        CrudTableRecord table;
+        table.creator_tx = creator_tx;
+        table.event_sequence = event_sequence;
+        table.table_uuid = row.object_uuid;
+        table.default_name = DecodeCrudTextLocal(fields[base + 13]);
+        table.columns = DecodeCrudPairs(fields[base + 14]);
+        table.temporary = fields[base + 21] == "1";
+        table.temporary_scope = fields[base + 22];
+        table.temporary_session_uuid = fields[base + 23];
+        table.on_commit_action = fields[base + 24];
+        if (fields[base + 21] != "0" || table.temporary ||
+            EncodeCrudText(table.default_name) != fields[base + 13] ||
+            EncodeCrudPairs(table.columns) != fields[base + 14] ||
+            !table.temporary_scope.empty() ||
+            !table.temporary_session_uuid.empty() ||
+            !table.on_commit_action.empty()) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "text_migration_temporary_unsupported");
+        }
+
+        std::size_t migrated_table_columns = 0;
+        std::string migrated_column_name;
+        std::string migrated_column_descriptor;
+        for (const auto& [column_name, descriptor] : table.columns) {
+          if (!ExactCanonicalMigratedTextDescriptor(context, descriptor,
+                                                     row.column_uuid)) {
+            continue;
+          }
+          ++migrated_table_columns;
+          migrated_column_name = column_name;
+          migrated_column_descriptor = descriptor;
+        }
+        const auto relation_fields = DecodeCrudPairs(fields[base + 15]);
+        if (EncodeCrudPairs(relation_fields) != fields[base + 15]) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_relation_descriptor_encoding_invalid");
+        }
+        const auto relation_descriptor =
+            DeserializeMgaRelationStorageDescriptor(relation_fields);
+        const auto relation_validation =
+            ValidateMgaRelationStorageDescriptor(relation_descriptor);
+        std::size_t migrated_storage_columns = 0;
+        for (const auto& column : relation_descriptor.columns) {
+          if (column.column_uuid.canonical != row.column_uuid) continue;
+          if (column.canonical_name_key != migrated_column_name ||
+              column.value_descriptor.descriptor_uuid.canonical !=
+                  kCanonicalTextDescriptorUuid ||
+              column.value_descriptor.encoded_descriptor !=
+                  migrated_column_descriptor ||
+              column.column_generation != event_sequence) {
+            return MakeInvalidRequestDiagnostic(
+                "mga.relation_metadata",
+                "text_migration_relation_descriptor_conflict");
+          }
+          ++migrated_storage_columns;
+        }
+        if (migrated_table_columns != 1 || migrated_storage_columns != 1 ||
+            relation_validation.error ||
+            relation_descriptor.database_uuid.canonical !=
+                context.database_uuid.canonical ||
+            relation_descriptor.relation_uuid.canonical != row.object_uuid ||
+            relation_descriptor.relation_generation != event_sequence) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_relation_descriptor_invalid");
+        }
+        const auto base_relation_fields =
+            SerializeMgaRelationStorageDescriptor(relation_descriptor);
+        const std::uint64_t descriptor_generation =
+            ParseU64(fields[base + 17]);
+        const std::uint64_t descriptor_field_count =
+            ParseU64(fields[base + 18]);
+        const std::uint64_t descriptor_field_bytes =
+            ParseU64(fields[base + 19]);
+        const std::uint64_t contextual_sidecar_count =
+            ParseU64(fields[base + 20]);
+        if (!CanonicalNonNilMigrationUuid(fields[base + 16]) ||
+            fields[base + 16] !=
+                relation_descriptor.descriptor_uuid.canonical ||
+            descriptor_generation == 0 ||
+            descriptor_generation !=
+                relation_descriptor.descriptor_generation ||
+            std::to_string(descriptor_generation) != fields[base + 17] ||
+            descriptor_field_count == 0 ||
+            std::to_string(descriptor_field_count) != fields[base + 18] ||
+            descriptor_field_bytes == 0 ||
+            std::to_string(descriptor_field_bytes) != fields[base + 19] ||
+            contextual_sidecar_count >
+                std::numeric_limits<std::uint32_t>::max() ||
+            std::to_string(contextual_sidecar_count) != fields[base + 20] ||
+            relation_fields.size() != descriptor_field_count ||
+            relation_fields.size() < base_relation_fields.size() + 1 ||
+            !std::equal(base_relation_fields.begin(),
+                        base_relation_fields.end(),
+                        relation_fields.begin()) ||
+            relation_fields.back().first !=
+                kMgaContextualTextSidecarSetSealKeyV2 ||
+            relation_fields.back().second.size() !=
+                MgaContextualTextSha256V2{}.size()) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_relation_descriptor_seal_invalid");
+        }
+        EngineContextualTextPolicyRowSetV2 policy_rows;
+        if (contextual_sidecar_count != 0) {
+          const auto policy =
+              LoadCurrentEngineContextualTextPolicyRowSetForPublicationV2();
+          if (!policy.ok) return policy.diagnostic;
+          policy_rows = policy.rows;
+        }
+        MgaContextualTextProjectionMaterialV2 projection_material;
+        EngineApiDiagnostic projection_diagnostic;
+        if (!BuildMgaContextualTextProjectionMaterialV2(
+                context, relation_descriptor, policy_rows,
+                &projection_material, &projection_diagnostic)) {
+          return projection_diagnostic;
+        }
+        CrudSealedRelationDescriptorSnapshot relation_snapshot;
+        relation_snapshot.creator_tx = creator_tx;
+        relation_snapshot.event_sequence = event_sequence;
+        relation_snapshot.relation_uuid = row.object_uuid;
+        relation_snapshot.relation_descriptor_uuid = fields[base + 16];
+        relation_snapshot.relation_descriptor_generation =
+            descriptor_generation;
+        relation_snapshot.descriptor_field_count = descriptor_field_count;
+        relation_snapshot.descriptor_field_bytes = descriptor_field_bytes;
+        relation_snapshot.contextual_sidecar_count =
+            static_cast<std::uint32_t>(contextual_sidecar_count);
+        relation_snapshot.descriptor_fields = relation_fields;
+        MgaContextualTextSidecarSetV2 candidate_set;
+        candidate_set.owner.creator_transaction_id = creator_tx;
+        candidate_set.owner.event_sequence = event_sequence;
+        candidate_set.owner.relation_descriptor_generation =
+            descriptor_generation;
+        if (!CopyContextualUuidV2(row.object_uuid,
+                                  &candidate_set.owner.relation_uuid) ||
+            !CopyContextualUuidV2(
+                relation_snapshot.relation_descriptor_uuid,
+                &candidate_set.owner.relation_descriptor_uuid)) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_relation_descriptor_owner_invalid");
+        }
+        candidate_set.descriptor_field_count = descriptor_field_count;
+        candidate_set.descriptor_field_bytes = descriptor_field_bytes;
+        candidate_set.contextual_sidecar_count =
+            relation_snapshot.contextual_sidecar_count;
+        candidate_set.descriptor_fields =
+            RawContextualDescriptorFieldsV2(relation_fields);
+        std::copy(relation_fields.back().second.begin(),
+                  relation_fields.back().second.end(),
+                  candidate_set.seal_sha256.begin());
+        const auto raw_base_fields =
+            RawContextualDescriptorFieldsV2(base_relation_fields);
+        MgaContextualTextSidecarSetDiagnosticV2 sidecar_diagnostic;
+        if (!ValidateMgaContextualTextSidecarSetV2(
+                candidate_set.owner, raw_base_fields,
+                projection_material.projected_columns, candidate_set,
+                &sidecar_diagnostic)) {
+          return MakeEngineApiDiagnostic(
+              sidecar_diagnostic.code.empty()
+                  ? "CTB.TEXT.DESCRIPTOR_INVALID"
+                  : sidecar_diagnostic.code,
+              "mga.relation_metadata.text_migration_sidecar_invalid",
+              sidecar_diagnostic.detail, true);
+        }
+
+        // A seal is a transition from an exact visible provisional row, not
+        // an authority to inject a self-consistent canonical replacement. The
+        // prior table row and its persisted physical descriptor must both be
+        // present, visible, and byte-for-byte transform into this sealed row.
+        const CrudTableRecord* prior_table = nullptr;
+        std::uint64_t newest_prior_generation = 0;
+        for (const auto& candidate : decoded.tables) {
+          if (candidate.table_uuid != row.object_uuid ||
+              candidate.event_sequence >= event_sequence ||
+              !TextMigrationLineageCreatorVisible(
+                  context, creator_tx, candidate.creator_tx)) {
+            continue;
+          }
+          newest_prior_generation =
+              std::max(newest_prior_generation, candidate.event_sequence);
+          if (candidate.event_sequence != row.old_row_generation) continue;
+          if (prior_table != nullptr) {
+            return MakeInvalidRequestDiagnostic(
+                "mga.relation_metadata",
+                "text_migration_prior_lineage_ambiguous");
+          }
+          prior_table = &candidate;
+        }
+        if (prior_table == nullptr ||
+            newest_prior_generation != row.old_row_generation ||
+            prior_table->temporary || !prior_table->temporary_scope.empty() ||
+            !prior_table->temporary_session_uuid.empty() ||
+            !prior_table->on_commit_action.empty()) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_prior_lineage_missing");
+        }
+        const auto persisted =
+            LoadDescriptorFieldsByRelation(context, row.object_uuid);
+        const auto prior_fields = persisted.find(row.object_uuid);
+        if (prior_fields == persisted.end()) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_prior_relation_projection_missing");
+        }
+        auto expected_relation =
+            DeserializeMgaRelationStorageDescriptor(prior_fields->second);
+        if (ValidateMgaRelationStorageDescriptor(expected_relation).error ||
+            expected_relation.database_uuid.canonical !=
+                context.database_uuid.canonical ||
+            expected_relation.relation_uuid.canonical != row.object_uuid ||
+            expected_relation.relation_generation !=
+                row.old_row_generation) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_prior_relation_projection_invalid");
+        }
+        CrudTableRecord expected_table = *prior_table;
+        expected_table.creator_tx = creator_tx;
+        expected_table.event_sequence = event_sequence;
+        std::size_t migrated_lineage_columns = 0;
+        for (auto& column : expected_relation.columns) {
+          const auto prior_column = std::find_if(
+              expected_table.columns.begin(), expected_table.columns.end(),
+              [&](const auto& candidate) {
+                return candidate.first == column.canonical_name_key;
+              });
+          const auto sealed_column = std::find_if(
+              table.columns.begin(), table.columns.end(),
+              [&](const auto& candidate) {
+                return candidate.first == column.canonical_name_key;
+              });
+          if (prior_column == expected_table.columns.end() ||
+              sealed_column == table.columns.end() ||
+              column.value_descriptor.encoded_descriptor !=
+                  prior_column->second) {
+            return MakeInvalidRequestDiagnostic(
+                "mga.relation_metadata",
+                "text_migration_prior_relation_column_invalid");
+          }
+          const bool declared = identities.contains(
+              {row.object_uuid, column.column_uuid.canonical});
+          if (!declared) {
+            if (prior_column->second != sealed_column->second) {
+              return MakeInvalidRequestDiagnostic(
+                  "mga.relation_metadata",
+                  "text_migration_undeclared_column_transition");
+            }
+            continue;
+          }
+          if (column.column_generation != row.old_row_generation ||
+              !RewriteLegacyTextDescriptor(
+                  context,
+                  &column.value_descriptor.encoded_descriptor,
+                  column.column_uuid.canonical) ||
+              column.value_descriptor.encoded_descriptor !=
+                  sealed_column->second) {
+            return MakeInvalidRequestDiagnostic(
+                "mga.relation_metadata",
+                "text_migration_prior_relation_column_invalid");
+          }
+          prior_column->second = sealed_column->second;
+          column.value_descriptor.descriptor_uuid.canonical =
+              std::string(kCanonicalTextDescriptorUuid);
+          column.value_descriptor.canonical_type_name = "text";
+          column.column_generation = event_sequence;
+          ++migrated_lineage_columns;
+        }
+        expected_relation.relation_generation = event_sequence;
+        const auto declared_for_object = std::count_if(
+            identities.begin(), identities.end(), [&](const auto& identity) {
+              return identity.first == row.object_uuid;
+            });
+        if (migrated_lineage_columns != declared_for_object ||
+            expected_table.default_name != table.default_name ||
+            expected_table.columns != table.columns ||
+            expected_table.temporary != table.temporary ||
+            expected_table.temporary_scope != table.temporary_scope ||
+            expected_table.temporary_session_uuid !=
+                table.temporary_session_uuid ||
+            expected_table.on_commit_action != table.on_commit_action ||
+            SerializeMgaRelationStorageDescriptor(expected_relation) !=
+                base_relation_fields) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_prior_relation_transition_invalid");
+        }
+
+        const std::string table_projection =
+            fields[base + 13] + "\n" + fields[base + 14] + "\n" +
+            fields[base + 21] + "\n" + fields[base + 22] + "\n" +
+            fields[base + 23] + "\n" + fields[base + 24];
+        const auto prior_table_projection =
+            table_projections.find(row.object_uuid);
+        if (prior_table_projection != table_projections.end() &&
+            prior_table_projection->second != table_projection) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_object_projection_conflict");
+        }
+        const auto prior_descriptor =
+            descriptor_projections.find(row.object_uuid);
+        if (prior_descriptor != descriptor_projections.end() &&
+            prior_descriptor->second != fields[base + 15]) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_relation_projection_conflict");
+        }
+        table_projections[row.object_uuid] = table_projection;
+        descriptor_projections[row.object_uuid] = fields[base + 15];
+        unique_tables[row.object_uuid] = table;
+        unique_descriptors[row.object_uuid] = relation_snapshot;
+        request.rows.push_back(std::move(row));
+        decisions.push_back(fields[base + 12]);
+        relation_descriptor_snapshots.push_back(
+            std::move(relation_snapshot));
+        tables.push_back(std::move(table));
+      }
+      for (std::size_t i = 0; i < request.rows.size(); ++i) {
+        const std::string expected_decision = TextMigrationDecisionHash(
+            request, request.rows[i], tables[i].event_sequence, fields[8],
+            fields[13], datatype_catalog_generation,
+            datatype_registry_generation,
+            relation_descriptor_snapshots[i]);
+        if (!scratchbird::core::hash::ConstantTimeEqual(
+                expected_decision, decisions[i])) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "text_migration_decision_hash_mismatch");
+        }
+      }
+      const std::string payload = CanonicalTextMigrationPayload(
+          request, creator_tx, event_sequence, fields[8], fields[13],
+          datatype_catalog_generation, datatype_registry_generation, tables,
+          relation_descriptor_snapshots, decisions);
+      if (!scratchbird::core::hash::ConstantTimeEqual(
+              Sha256Tagged(payload), fields[6])) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "text_migration_batch_hash_mismatch");
+      }
+      if (MetadataEventRolledBackBySavepoint(savepoints, creator_tx,
+                                             event_sequence)) {
+        continue;
+      }
+      decoded.max_event_sequence =
+          std::max(decoded.max_event_sequence, event_sequence);
+      for (auto& [object_uuid, table] : unique_tables) {
+        (void)object_uuid;
+        decoded.tables.push_back(std::move(table));
+      }
+      for (auto& [object_uuid, descriptor] : unique_descriptors) {
+        (void)object_uuid;
+        decoded.sealed_relation_descriptor_snapshots.push_back(
+            std::move(descriptor));
+      }
     } else if (fields[1] == "INDEX_METADATA") {
       if (fields.size() < 17) {
         return MakeInvalidRequestDiagnostic("mga.relation_metadata", "index_metadata_invalid");
@@ -5909,6 +7151,10 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
   state->indexes.insert(state->indexes.end(),
                         decoded.indexes.begin(),
                         decoded.indexes.end());
+  state->sealed_relation_descriptor_snapshots.insert(
+      state->sealed_relation_descriptor_snapshots.end(),
+      decoded.sealed_relation_descriptor_snapshots.begin(),
+      decoded.sealed_relation_descriptor_snapshots.end());
   state->max_event_sequence =
       std::max(state->max_event_sequence, decoded.max_event_sequence);
   {
@@ -6002,6 +7248,822 @@ StrictRelationDescriptorFields(const std::string& descriptor) {
     start = end + 1;
   }
   return fields;
+}
+
+bool ReplaceExactRelationDescriptorIdentities(
+    std::string* descriptor,
+    const std::map<std::string,
+                   std::pair<std::string_view, std::string_view>>& replacements) {
+  if (descriptor == nullptr || replacements.empty()) return false;
+  struct Edit {
+    std::size_t begin{0};
+    std::size_t size{0};
+    std::string replacement;
+  };
+  std::vector<Edit> edits;
+  std::set<std::string> found;
+  std::size_t start = 0;
+  while (start <= descriptor->size()) {
+    const std::size_t end = descriptor->find(';', start);
+    const std::size_t part_end =
+        end == std::string::npos ? descriptor->size() : end;
+    const std::size_t equals = descriptor->find('=', start);
+    if (equals == std::string::npos || equals >= part_end) return false;
+    const std::string key = RelationDescriptorLowerAscii(
+        RelationDescriptorTrimAscii(
+            descriptor->substr(start, equals - start)));
+    if (key.empty()) return false;
+    const auto replacement = replacements.find(key);
+    if (replacement != replacements.end()) {
+      if (!found.emplace(key).second) return false;
+      std::size_t value_begin = equals + 1;
+      while (value_begin < part_end &&
+             std::isspace(static_cast<unsigned char>((*descriptor)[value_begin]))) {
+        ++value_begin;
+      }
+      std::size_t value_end = part_end;
+      while (value_end > value_begin &&
+             std::isspace(static_cast<unsigned char>((*descriptor)[value_end - 1]))) {
+        --value_end;
+      }
+      if (descriptor->substr(value_begin, value_end - value_begin) !=
+          replacement->second.first) {
+        return false;
+      }
+      edits.push_back({value_begin,
+                       value_end - value_begin,
+                       std::string(replacement->second.second)});
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  if (found.size() != replacements.size()) return false;
+  for (auto edit = edits.rbegin(); edit != edits.rend(); ++edit) {
+    descriptor->replace(edit->begin, edit->size, edit->replacement);
+  }
+  return true;
+}
+
+bool CanonicalNonNilMigrationUuid(const std::string_view value) {
+  if (value.empty()) return false;
+  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(value));
+  return parsed.ok() &&
+         !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
+         scratchbird::core::uuid::UuidToString(parsed.value) == value;
+}
+
+bool ExactCanonicalTextIdentityAuthorityAvailable(
+    const EngineRequestContext& context) {
+  if (!CanonicalNonNilMigrationUuid(
+          context.datatype_catalog_snapshot_uuid.canonical) ||
+      context.datatype_catalog_generation == 0 ||
+      context.datatype_registry_generation == 0) {
+    return false;
+  }
+  const auto identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_generation,
+          context.datatype_registry_generation,
+          std::string(kCanonicalTextDescriptorUuid), 1);
+  return identity.ok &&
+         identity.row.catalog_snapshot_uuid ==
+             context.datatype_catalog_snapshot_uuid.canonical &&
+         identity.row.catalog_generation ==
+             context.datatype_catalog_generation &&
+         identity.row.registry_generation ==
+             context.datatype_registry_generation &&
+         identity.row.descriptor_uuid == kCanonicalTextDescriptorUuid &&
+         identity.row.descriptor_generation == 1 &&
+         identity.row.type_uuid == kCanonicalTextTypeUuid &&
+         identity.row.type_generation == 1 &&
+         identity.row.codec_uuid == kCanonicalTextCodecUuid &&
+         identity.row.codec_id == kCanonicalTextCodecId &&
+         identity.row.codec_version == 1 &&
+         identity.row.codec_generation == 1 &&
+         identity.row.canonical_name == "text" &&
+         identity.row.null_supported &&
+         identity.row.null_encoding_code == 1 &&
+         identity.row.canonical_value_variable_width &&
+         identity.row.canonical_value_exact_zero_is_width_marker &&
+         identity.row.canonical_value_minimum_bytes == 0 &&
+         identity.row.canonical_value_maximum_bytes == 16777216 &&
+         identity.row.canonical_value_exact_bytes == 0 &&
+         identity.row.canonical_charset == "UTF-8" &&
+         identity.row.shortest_form_utf8_required &&
+         !identity.row.implicit_normalization_allowed &&
+         identity.row.descriptor_bound_collation_required &&
+         identity.row.empty_value_distinct_from_sql_null &&
+         identity.row.sql_null_requires_zero_payload &&
+         identity.row.variable_width_storage_without_truncation &&
+         identity.row.invalid_encoding_diagnostic_id ==
+             "CTB.TEXT.INVALID_ENCODING";
+}
+
+bool ExactTextDescriptorResourceShape(
+    const EngineRequestContext& context,
+    const std::map<std::string, std::string>& fields) {
+  static const std::set<std::string> kAllowedFields{
+      "type", "canonical", "nullable", "default", "column_uuid",
+      "datatype_descriptor_uuid", "datatype_descriptor_generation",
+      "type_uuid", "type_generation", "codec_uuid", "codec_id",
+      "codec_version", "codec_generation", "null_encoding",
+      "charset_uuid", "charset_generation", "collation_uuid",
+      "collation_generation", "resource_epoch", "character_length",
+      "primary_key", "pk", "unique", "unique_key", "generated",
+      "identity", "domain_uuid", "candidate_key_constraint_uuid",
+      "candidate_key_descriptor_uuid", "key_descriptor_uuid",
+      "support_uuid", "support_index_uuid", "index_uuid",
+      "support_family", "candidate_key_class"};
+  for (const auto& [key, value] : fields) {
+    (void)value;
+    if (!kAllowedFields.contains(key)) return false;
+  }
+  const auto type = fields.find("type");
+  const auto canonical = fields.find("canonical");
+  if ((type == fields.end()) == (canonical == fields.end())) return false;
+  const auto& type_name =
+      type != fields.end() ? type->second : canonical->second;
+  if (RelationDescriptorLowerAscii(type_name) != "text") return false;
+
+  const auto nullable = fields.find("nullable");
+  if (nullable == fields.end() ||
+      (nullable->second != "true" && nullable->second != "false") ||
+      fields.contains("nullability")) {
+    return false;
+  }
+  const auto charset = fields.find("charset_uuid");
+  const auto charset_generation = fields.find("charset_generation");
+  const auto collation = fields.find("collation_uuid");
+  const auto collation_generation = fields.find("collation_generation");
+  const auto resource_epoch = fields.find("resource_epoch");
+  const bool has_resource_authority =
+      charset != fields.end() || charset_generation != fields.end() ||
+      collation != fields.end() || collation_generation != fields.end() ||
+      resource_epoch != fields.end();
+  if (has_resource_authority) {
+    if (charset == fields.end() || charset_generation == fields.end() ||
+        collation == fields.end() || collation_generation == fields.end() ||
+        resource_epoch == fields.end()) {
+      return false;
+    }
+    const auto parse_exact_u64 = [](const std::string& text,
+                                    std::uint64_t* value) {
+      if (value == nullptr || text.empty()) return false;
+      const auto parsed = std::from_chars(
+          text.data(), text.data() + text.size(), *value, 10);
+      return parsed.ec == std::errc{} &&
+             parsed.ptr == text.data() + text.size() && *value != 0 &&
+             std::to_string(*value) == text;
+    };
+    std::uint64_t charset_generation_value = 0;
+    std::uint64_t collation_generation_value = 0;
+    std::uint64_t resource_epoch_value = 0;
+    if (!parse_exact_u64(charset_generation->second,
+                         &charset_generation_value) ||
+        !parse_exact_u64(collation_generation->second,
+                         &collation_generation_value) ||
+        !parse_exact_u64(resource_epoch->second, &resource_epoch_value) ||
+        resource_epoch_value != context.resource_epoch) {
+      return false;
+    }
+    EngineUuid charset_uuid;
+    charset_uuid.canonical = charset->second;
+    const auto live_charset = LookupEngineResourceDescriptorByUuid(
+        context, charset_uuid, "charset");
+    EngineUuid collation_uuid;
+    collation_uuid.canonical = collation->second;
+    const auto live_collation = LookupEngineResourceDescriptorByUuid(
+        context, collation_uuid, "collation");
+    if (!live_charset.ok || !live_collation.ok ||
+        live_charset.resource_descriptor.resource_uuid.canonical !=
+            charset->second ||
+        live_collation.resource_descriptor.resource_uuid.canonical !=
+            collation->second ||
+        live_collation.resource_descriptor.parent_resource_uuid.canonical !=
+            charset->second ||
+        live_charset.resource_descriptor.family_epoch !=
+            charset_generation_value ||
+        live_collation.resource_descriptor.family_epoch !=
+            collation_generation_value ||
+        live_charset.resource_descriptor.resource_epoch !=
+            resource_epoch_value ||
+        live_collation.resource_descriptor.resource_epoch !=
+            resource_epoch_value) {
+      return false;
+    }
+  }
+  const auto length = fields.find("character_length");
+  if (length != fields.end()) {
+    std::uint64_t parsed = 0;
+    const auto converted = std::from_chars(
+        length->second.data(), length->second.data() + length->second.size(),
+        parsed, 10);
+    if (length->second.empty() || converted.ec != std::errc{} ||
+        converted.ptr != length->second.data() + length->second.size() ||
+        parsed == 0 || parsed > 16777216 ||
+        std::to_string(parsed) != length->second) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ExactCanonicalMigratedTextDescriptor(
+    const EngineRequestContext& context,
+    const std::string_view descriptor,
+    const std::string_view column_uuid) {
+  if (!ExactCanonicalTextIdentityAuthorityAvailable(context) ||
+      !CanonicalNonNilMigrationUuid(column_uuid)) {
+    return false;
+  }
+  const auto fields = StrictRelationDescriptorFields(std::string(descriptor));
+  if (!fields || !ExactTextDescriptorResourceShape(context, *fields)) {
+    return false;
+  }
+  const auto exact = [&](const std::string_view key,
+                         const std::string_view value) {
+    const auto found = fields->find(std::string(key));
+    return found != fields->end() && found->second == value;
+  };
+  return exact("column_uuid", column_uuid) &&
+         exact("datatype_descriptor_uuid", kCanonicalTextDescriptorUuid) &&
+         exact("datatype_descriptor_generation", "1") &&
+         exact("type_uuid", kCanonicalTextTypeUuid) &&
+         exact("type_generation", "1") &&
+         exact("codec_uuid", kCanonicalTextCodecUuid) &&
+         exact("codec_id", kCanonicalTextCodecId) &&
+         exact("codec_version", "1") &&
+         exact("codec_generation", "1") &&
+         exact("null_encoding", "1");
+}
+
+bool RewriteLegacyTextDescriptor(const EngineRequestContext& context,
+                                 std::string* descriptor,
+                                 const std::string_view column_uuid) {
+  if (descriptor == nullptr ||
+      !ExactCanonicalTextIdentityAuthorityAvailable(context) ||
+      !CanonicalNonNilMigrationUuid(column_uuid)) {
+    return false;
+  }
+  const auto fields = StrictRelationDescriptorFields(*descriptor);
+  if (!fields || !ExactTextDescriptorResourceShape(context, *fields)) {
+    return false;
+  }
+  const auto exact = [&](const std::string_view key,
+                         const std::string_view value) {
+    const auto found = fields->find(std::string(key));
+    return found != fields->end() && found->second == value;
+  };
+  if (!exact("datatype_descriptor_uuid", kLegacyTextDescriptorUuid) ||
+      !exact("type_uuid", kLegacyTextTypeUuid)) {
+    return false;
+  }
+  const auto carried_column = fields->find("column_uuid");
+  if (carried_column != fields->end() &&
+      carried_column->second != column_uuid) {
+    return false;
+  }
+  for (const std::string_view key : {
+           "datatype_descriptor_generation", "type_generation",
+           "codec_uuid", "codec_id", "codec_version",
+           "codec_generation", "null_encoding"}) {
+    if (fields->contains(std::string(key))) return false;
+  }
+  const std::map<std::string,
+                 std::pair<std::string_view, std::string_view>> replacements{
+      {"datatype_descriptor_uuid",
+       {kLegacyTextDescriptorUuid, kCanonicalTextDescriptorUuid}},
+      {"type_uuid", {kLegacyTextTypeUuid, kCanonicalTextTypeUuid}}};
+  if (!ReplaceExactRelationDescriptorIdentities(descriptor, replacements)) {
+    return false;
+  }
+  const auto append = [&](const std::string_view key,
+                          const std::string_view value) {
+    if (!descriptor->empty()) descriptor->push_back(';');
+    descriptor->append(key);
+    descriptor->push_back('=');
+    descriptor->append(value);
+  };
+  if (carried_column == fields->end()) append("column_uuid", column_uuid);
+  append("datatype_descriptor_generation", "1");
+  append("type_generation", "1");
+  append("codec_uuid", kCanonicalTextCodecUuid);
+  append("codec_id", kCanonicalTextCodecId);
+  append("codec_version", "1");
+  append("codec_generation", "1");
+  append("null_encoding", "1");
+  return ExactCanonicalMigratedTextDescriptor(
+      context, *descriptor, column_uuid);
+}
+
+EngineApiDiagnostic ContextualTextMgaDiagnostic(std::string detail) {
+  return MakeEngineApiDiagnostic(
+      "CTB.TEXT.DESCRIPTOR_INVALID",
+      "mga.contextual_text_sidecar_set_v2.invalid",
+      std::move(detail), true);
+}
+
+bool CopyContextualUuidV2(const std::string_view text,
+                          MgaContextualTextUuidV2* output,
+                          const bool allow_nil) {
+  if (output == nullptr) return false;
+  *output = {};
+  if (text.empty()) return allow_nil;
+  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
+  if (!parsed.ok() ||
+      (!allow_nil && scratchbird::core::uuid::IsNilUuid(parsed.value)) ||
+      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
+    return false;
+  }
+  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
+            output->begin());
+  return true;
+}
+
+std::string ContextualUuidTextV2(const MgaContextualTextUuidV2& value) {
+  constexpr char kHex[] = "0123456789abcdef";
+  if (std::ranges::none_of(
+          value, [](const std::uint8_t byte) { return byte != 0; })) {
+    return {};
+  }
+  std::string text;
+  text.reserve(36);
+  for (std::size_t index = 0; index != value.size(); ++index) {
+    if (index == 4 || index == 6 || index == 8 || index == 10) {
+      text.push_back('-');
+    }
+    text.push_back(kHex[value[index] >> 4]);
+    text.push_back(kHex[value[index] & 0x0f]);
+  }
+  return text;
+}
+
+bool ParseCanonicalPositiveU64(
+    const std::map<std::string, std::string>& fields,
+    const std::string_view key,
+    std::uint64_t* output) {
+  if (output == nullptr) return false;
+  const auto found = fields.find(std::string(key));
+  if (found == fields.end() || found->second.empty()) return false;
+  std::uint64_t parsed = 0;
+  const auto converted = std::from_chars(
+      found->second.data(), found->second.data() + found->second.size(),
+      parsed, 10);
+  if (converted.ec != std::errc{} ||
+      converted.ptr != found->second.data() + found->second.size() ||
+      parsed == 0 || std::to_string(parsed) != found->second) {
+    return false;
+  }
+  *output = parsed;
+  return true;
+}
+
+std::vector<MgaContextualTextDescriptorFieldPairV2>
+RawContextualDescriptorFieldsV2(
+    const std::vector<std::pair<std::string, std::string>>& fields) {
+  std::vector<MgaContextualTextDescriptorFieldPairV2> raw;
+  raw.reserve(fields.size());
+  for (const auto& [key, value] : fields) {
+    raw.push_back({{key.begin(), key.end()}, {value.begin(), value.end()}});
+  }
+  return raw;
+}
+
+bool BuildMgaContextualTextProjectionMaterialV2(
+    const EngineRequestContext& context,
+    const MgaRelationStorageDescriptor& relation,
+    const EngineContextualTextPolicyRowSetV2& exact_policy_rows,
+    MgaContextualTextProjectionMaterialV2* output,
+    EngineApiDiagnostic* diagnostic) {
+  if (output == nullptr || diagnostic == nullptr) return false;
+  *output = {};
+  if (relation.database_uuid.canonical != context.database_uuid.canonical ||
+      relation.descriptor_generation == 0 || relation.columns.empty() ||
+      !CopyContextualUuidV2(relation.descriptor_uuid.canonical,
+                           &output->public_projection
+                                .relation_descriptor_uuid) ||
+      !CopyContextualUuidV2(relation.relation_uuid.canonical,
+                           &output->public_projection.relation_uuid) ||
+      !CopyContextualUuidV2(relation.schema_uuid.canonical,
+                           &output->public_projection.schema_uuid)) {
+    *diagnostic = ContextualTextMgaDiagnostic(
+        "relation projection identity is invalid");
+    return false;
+  }
+  const bool catalog_context_exact =
+      CanonicalNonNilMigrationUuid(
+          context.datatype_catalog_snapshot_uuid.canonical) &&
+      context.datatype_catalog_generation == 1 &&
+      context.datatype_registry_generation == 1 &&
+      CopyContextualUuidV2(
+          context.datatype_catalog_snapshot_uuid.canonical,
+          &output->public_projection.catalog_snapshot_uuid);
+  output->public_projection.relation_descriptor_generation =
+      relation.descriptor_generation;
+  output->public_projection.resource_epoch = context.resource_epoch;
+  output->public_projection.catalog_generation =
+      context.datatype_catalog_generation;
+  output->public_projection.registry_generation =
+      context.datatype_registry_generation;
+  if (relation.columns.size() >
+      std::numeric_limits<std::uint32_t>::max()) {
+    *diagnostic = ContextualTextMgaDiagnostic(
+        "relation projection generation or extent is invalid");
+    return false;
+  }
+
+  output->public_projection.columns.reserve(relation.columns.size());
+  output->projected_columns.reserve(relation.columns.size());
+  std::set<std::uint32_t> ordinals;
+  std::set<std::string> column_uuids;
+  for (const auto& column : relation.columns) {
+    EnginePublicRelationProjectionColumnV3 projected;
+    MgaContextualTextProjectedColumnV2 contextual;
+    if (!ordinals.insert(column.ordinal).second ||
+        !column_uuids.insert(column.column_uuid.canonical).second ||
+        !CopyContextualUuidV2(column.column_uuid.canonical,
+                             &projected.column_uuid) ||
+        !CopyContextualUuidV2(column.column_uuid.canonical,
+                             &contextual.column_uuid) ||
+        !CopyContextualUuidV2(
+            column.value_descriptor.descriptor_uuid.canonical,
+            &projected.descriptor_uuid) ||
+        !CopyContextualUuidV2(
+            column.value_descriptor.descriptor_uuid.canonical,
+            &contextual.projected_datatype_descriptor_uuid)) {
+      *diagnostic = ContextualTextMgaDiagnostic(
+          "projected column identity is invalid or duplicated");
+      return false;
+    }
+    projected.ordinal = column.ordinal;
+    projected.canonical_name = column.canonical_name_key;
+    projected.descriptor_kind = column.value_descriptor.descriptor_kind;
+    projected.canonical_type_name =
+        column.value_descriptor.canonical_type_name;
+    projected.encoded_type_descriptor =
+        column.value_descriptor.encoded_descriptor;
+    if (column.nullable) projected.attributes |= 0x01u;
+    if (column.generated) projected.attributes |= 0x02u;
+    if (column.identity_column) projected.attributes |= 0x04u;
+    projected.character_length = column.character_length;
+    contextual.column_ordinal = column.ordinal;
+    if (catalog_context_exact) {
+      contextual.projected_datatype_catalog_generation =
+          context.datatype_catalog_generation;
+      contextual.projected_datatype_registry_generation =
+          context.datatype_registry_generation;
+      contextual.projected_resource_epoch = context.resource_epoch;
+      contextual.projected_datatype_catalog_snapshot_uuid =
+          output->public_projection.catalog_snapshot_uuid;
+    }
+
+    std::optional<EngineResolvedResourceDescriptor> charset;
+    std::optional<EngineResolvedResourceDescriptor> collation;
+    if (!column.charset_uuid.empty()) {
+      EngineUuid requested;
+      requested.canonical = column.charset_uuid;
+      const auto live = LookupEngineResourceDescriptorByUuid(
+          context, requested, "charset");
+      if (!live.ok || !live.resource_descriptor.present ||
+          live.resource_descriptor.resource_uuid.canonical !=
+              column.charset_uuid ||
+          live.resource_descriptor.resource_epoch != context.resource_epoch ||
+          live.resource_descriptor.family_epoch == 0 ||
+          live.resource_descriptor.max_bytes == 0 ||
+          live.resource_descriptor.min_bytes == 0 ||
+          live.resource_descriptor.max_bytes <
+              live.resource_descriptor.min_bytes ||
+          !CopyContextualUuidV2(column.charset_uuid,
+                               &projected.charset_uuid)) {
+        *diagnostic = ContextualTextMgaDiagnostic(
+            "projected charset resource is stale or invalid");
+        return false;
+      }
+      charset = live.resource_descriptor;
+      projected.charset_name = charset->canonical_name;
+      projected.charset_min_bytes = charset->min_bytes;
+      projected.charset_max_bytes = charset->max_bytes;
+      if (charset->variable_width) projected.attributes |= 0x08u;
+    }
+    if (!column.collation_uuid.empty()) {
+      EngineUuid requested;
+      requested.canonical = column.collation_uuid;
+      const auto live = LookupEngineResourceDescriptorByUuid(
+          context, requested, "collation");
+      if (!live.ok || !live.resource_descriptor.present ||
+          live.resource_descriptor.resource_uuid.canonical !=
+              column.collation_uuid ||
+          live.resource_descriptor.parent_resource_uuid.canonical !=
+              column.charset_uuid ||
+          live.resource_descriptor.resource_epoch != context.resource_epoch ||
+          live.resource_descriptor.family_epoch == 0 ||
+          !CopyContextualUuidV2(column.collation_uuid,
+                               &projected.collation_uuid)) {
+        *diagnostic = ContextualTextMgaDiagnostic(
+            "projected collation resource is stale or invalid");
+        return false;
+      }
+      collation = live.resource_descriptor;
+      projected.collation_name = collation->canonical_name;
+    }
+    if (column.charset_uuid.empty() != column.collation_uuid.empty()) {
+      *diagnostic = ContextualTextMgaDiagnostic(
+          "projected charset and collation authority is incomplete");
+      return false;
+    }
+
+    const auto datatype = catalog_context_exact
+        ? scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+              context.datatype_catalog_snapshot_uuid.canonical,
+              context.datatype_catalog_generation,
+              context.datatype_registry_generation,
+              column.value_descriptor.descriptor_uuid.canonical, 1)
+        : scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1{};
+    if (datatype.ok) {
+      const auto& row = datatype.row;
+      projected.identity_present = true;
+      projected.descriptor_generation = row.descriptor_generation;
+      projected.type_generation = row.type_generation;
+      projected.codec_id = row.codec_id;
+      projected.codec_version = row.codec_version;
+      projected.codec_generation = row.codec_generation;
+      projected.canonical_value_width = row.canonical_value_bytes;
+      projected.null_encoding = row.null_encoding_code;
+      contextual.projected_datatype_descriptor_generation =
+          row.descriptor_generation;
+      if (!CopyContextualUuidV2(row.type_uuid, &projected.type_uuid) ||
+          projected.null_encoding == 0) {
+        *diagnostic = ContextualTextMgaDiagnostic(
+            "projected datatype registry row is invalid");
+        return false;
+      }
+    }
+
+    const bool canonical_text_identity =
+        column.value_descriptor.descriptor_uuid.canonical ==
+        kCanonicalTextDescriptorUuid;
+    if (canonical_text_identity) {
+      if (!catalog_context_exact || context.resource_epoch == 0 ||
+          !ExactCanonicalTextIdentityAuthorityAvailable(context) ||
+          !datatype.ok ||
+          !scratchbird::core::datatypes::
+              IsExactCanonicalTextTypeCodecIdentityV1(datatype.row) ||
+          !ExactCanonicalMigratedTextDescriptor(
+              context, column.value_descriptor.encoded_descriptor,
+              column.column_uuid.canonical) ||
+          projected.canonical_type_name != "text" ||
+          projected.canonical_value_width != 0 ||
+          projected.null_encoding != 1) {
+        *diagnostic = ContextualTextMgaDiagnostic(
+            "canonical d718 column does not match its exact registry row");
+        return false;
+      }
+      const auto encoded_fields = StrictRelationDescriptorFields(
+          column.value_descriptor.encoded_descriptor);
+      if (!encoded_fields) {
+        *diagnostic = ContextualTextMgaDiagnostic(
+            "canonical d718 encoded descriptor is not exact");
+        return false;
+      }
+      const bool comparable = charset.has_value() && collation.has_value();
+      if (comparable) {
+        std::uint64_t charset_generation = 0;
+        std::uint64_t collation_generation = 0;
+        std::uint64_t carried_resource_epoch = 0;
+        const auto exact_field = [&](const std::string_view key,
+                                     const std::string_view value) {
+          const auto found = encoded_fields->find(std::string(key));
+          return found != encoded_fields->end() && found->second == value;
+        };
+        if (!exact_field("charset_uuid", column.charset_uuid) ||
+            !exact_field("collation_uuid", column.collation_uuid) ||
+            !ParseCanonicalPositiveU64(*encoded_fields,
+                                       "charset_generation",
+                                       &charset_generation) ||
+            !ParseCanonicalPositiveU64(*encoded_fields,
+                                       "collation_generation",
+                                       &collation_generation) ||
+            !ParseCanonicalPositiveU64(*encoded_fields, "resource_epoch",
+                                       &carried_resource_epoch) ||
+            charset_generation != charset->family_epoch ||
+            collation_generation != collation->family_epoch ||
+            carried_resource_epoch != context.resource_epoch) {
+          *diagnostic = ContextualTextMgaDiagnostic(
+              "canonical d718 resource authority differs from live rows");
+          return false;
+        }
+        const auto carried_length = encoded_fields->find("character_length");
+        if ((column.character_length == 0) !=
+                (carried_length == encoded_fields->end()) ||
+            (carried_length != encoded_fields->end() &&
+             carried_length->second !=
+                 std::to_string(column.character_length))) {
+          *diagnostic = ContextualTextMgaDiagnostic(
+              "canonical d718 character limit differs from projection");
+          return false;
+        }
+        sblr::ContextualTextDescriptorV2 descriptor;
+        descriptor.flags = 1;
+        descriptor.malformed_sequence_policy = 1;
+        descriptor.null_encoding = 1;
+        descriptor.descriptor_uuid = projected.descriptor_uuid;
+        descriptor.descriptor_generation = datatype.row.descriptor_generation;
+        descriptor.type_uuid = projected.type_uuid;
+        descriptor.type_generation = datatype.row.type_generation;
+        if (!CopyContextualUuidV2(datatype.row.codec_uuid,
+                                  &descriptor.codec_uuid)) {
+          *diagnostic = ContextualTextMgaDiagnostic(
+              "canonical d718 codec UUID is invalid");
+          return false;
+        }
+        descriptor.codec_version = datatype.row.codec_version;
+        descriptor.codec_generation = datatype.row.codec_generation;
+        descriptor.character_limit =
+            column.character_length == 0
+                ? std::numeric_limits<std::uint64_t>::max()
+                : column.character_length;
+        if (column.character_length == 0) {
+          descriptor.byte_limit = std::numeric_limits<std::uint64_t>::max();
+        } else if (column.character_length >
+                   std::numeric_limits<std::uint64_t>::max() /
+                       charset->max_bytes) {
+          *diagnostic = ContextualTextMgaDiagnostic(
+              "canonical d718 byte limit overflows u64");
+          return false;
+        } else {
+          descriptor.byte_limit =
+              static_cast<std::uint64_t>(column.character_length) *
+              charset->max_bytes;
+        }
+        descriptor.charset_uuid = projected.charset_uuid;
+        descriptor.charset_generation = charset_generation;
+        descriptor.collation_uuid = projected.collation_uuid;
+        descriptor.collation_generation = collation_generation;
+        descriptor.normalization_policy_uuid =
+            exact_policy_rows.normalization.identity_uuid;
+        descriptor.normalization_policy_generation =
+            exact_policy_rows.normalization.generation;
+        descriptor.render_policy_uuid = exact_policy_rows.render.identity_uuid;
+        descriptor.render_policy_generation =
+            exact_policy_rows.render.generation;
+        descriptor.canonicalization_profile_uuid =
+            exact_policy_rows.canonicalization.identity_uuid;
+        descriptor.canonicalization_profile_generation =
+            exact_policy_rows.canonicalization.generation;
+        descriptor.comparison_contract_uuid =
+            exact_policy_rows.comparison.identity_uuid;
+        descriptor.comparison_contract_generation =
+            exact_policy_rows.comparison.generation;
+        descriptor.equality_operation_uuid =
+            exact_policy_rows.equality.identity_uuid;
+        descriptor.equality_operation_generation =
+            exact_policy_rows.equality.generation;
+        descriptor.datatype_catalog_snapshot_uuid =
+            output->public_projection.catalog_snapshot_uuid;
+        descriptor.datatype_catalog_generation =
+            context.datatype_catalog_generation;
+        descriptor.datatype_registry_generation =
+            context.datatype_registry_generation;
+        descriptor.resource_epoch = context.resource_epoch;
+        contextual.comparable_persisted_text = true;
+        contextual.expected_text_descriptor = std::move(descriptor);
+      }
+    }
+    output->public_projection.columns.push_back(std::move(projected));
+    output->projected_columns.push_back(std::move(contextual));
+  }
+
+  *diagnostic = OkDiagnostic();
+  return true;
+}
+
+struct MgaSealedContextualTextDescriptorMaterialV2 {
+  MgaRelationStorageDescriptor relation_descriptor;
+  std::vector<MgaContextualTextDescriptorFieldPairV2> base_fields;
+  MgaContextualTextProjectionMaterialV2 projection;
+  MgaContextualTextSidecarSetV2 sealed_set;
+};
+
+bool BindFreshCanonicalTextColumnIdentitiesV2(
+    CrudTableRecord* table,
+    MgaRelationStorageDescriptor* relation_descriptor,
+    EngineApiDiagnostic* diagnostic) {
+  if (table == nullptr || relation_descriptor == nullptr ||
+      diagnostic == nullptr ||
+      table->columns.size() != relation_descriptor->columns.size()) {
+    if (diagnostic != nullptr) {
+      *diagnostic = ContextualTextMgaDiagnostic(
+          "fresh table and relation column projections differ");
+    }
+    return false;
+  }
+  std::set<std::string> column_uuids;
+  for (std::size_t index = 0; index != table->columns.size(); ++index) {
+    auto& table_column = table->columns[index];
+    auto& relation_column = relation_descriptor->columns[index];
+    if (table_column.first != relation_column.canonical_name_key) {
+      *diagnostic = ContextualTextMgaDiagnostic(
+          "fresh table and relation column order differs");
+      return false;
+    }
+    if (relation_column.value_descriptor.descriptor_uuid.canonical ==
+        kCanonicalTextDescriptorUuid) {
+      const auto fields =
+          StrictRelationDescriptorFields(table_column.second);
+      if (!fields) {
+        *diagnostic = ContextualTextMgaDiagnostic(
+            "fresh canonical d718 descriptor is malformed");
+        return false;
+      }
+      const auto carried = fields->find("column_uuid");
+      if (carried != fields->end()) {
+        if (!CanonicalNonNilMigrationUuid(carried->second)) {
+          *diagnostic = ContextualTextMgaDiagnostic(
+              "fresh canonical d718 column UUID is invalid");
+          return false;
+        }
+        relation_column.column_uuid.canonical = carried->second;
+      } else {
+        if (!CanonicalNonNilMigrationUuid(
+                relation_column.column_uuid.canonical)) {
+          *diagnostic = ContextualTextMgaDiagnostic(
+              "fresh canonical d718 generated column UUID is invalid");
+          return false;
+        }
+        if (!table_column.second.empty()) table_column.second.push_back(';');
+        table_column.second.append("column_uuid=");
+        table_column.second.append(relation_column.column_uuid.canonical);
+      }
+      relation_column.value_descriptor.encoded_descriptor =
+          table_column.second;
+    }
+    if (!CanonicalNonNilMigrationUuid(
+            relation_column.column_uuid.canonical) ||
+        !column_uuids.insert(relation_column.column_uuid.canonical).second) {
+      *diagnostic = ContextualTextMgaDiagnostic(
+          "fresh relation column UUID is invalid or duplicated");
+      return false;
+    }
+  }
+  *diagnostic = OkDiagnostic();
+  return true;
+}
+
+bool BuildMgaSealedContextualTextDescriptorMaterialV2(
+    const EngineRequestContext& context,
+    const CrudTableRecord& table,
+    MgaRelationStorageDescriptor relation_descriptor,
+    const EngineContextualTextPolicyRowSetV2& exact_policy_rows,
+    MgaSealedContextualTextDescriptorMaterialV2* output,
+    EngineApiDiagnostic* diagnostic) {
+  if (output == nullptr || diagnostic == nullptr) return false;
+  *output = {};
+  if (table.creator_tx == 0 || table.event_sequence == 0 ||
+      relation_descriptor.relation_uuid.canonical != table.table_uuid ||
+      relation_descriptor.relation_generation != table.event_sequence) {
+    *diagnostic = ContextualTextMgaDiagnostic(
+        "sealed descriptor table or relation owner is invalid");
+    return false;
+  }
+  MgaSealedContextualTextDescriptorMaterialV2 material;
+  material.relation_descriptor = std::move(relation_descriptor);
+  const auto base = SerializeMgaRelationStorageDescriptor(
+      material.relation_descriptor);
+  material.base_fields = RawContextualDescriptorFieldsV2(base);
+  if (!BuildMgaContextualTextProjectionMaterialV2(
+          context, material.relation_descriptor, exact_policy_rows,
+          &material.projection, diagnostic)) {
+    return false;
+  }
+  MgaContextualTextSidecarSetOwnerV2 owner;
+  owner.creator_transaction_id = table.creator_tx;
+  owner.event_sequence = table.event_sequence;
+  owner.relation_descriptor_generation =
+      material.relation_descriptor.descriptor_generation;
+  if (!CopyContextualUuidV2(table.table_uuid, &owner.relation_uuid) ||
+      !CopyContextualUuidV2(
+          material.relation_descriptor.descriptor_uuid.canonical,
+          &owner.relation_descriptor_uuid)) {
+    *diagnostic = ContextualTextMgaDiagnostic(
+        "sealed descriptor owner UUID is invalid");
+    return false;
+  }
+  MgaContextualTextSidecarSetDiagnosticV2 sidecar_diagnostic;
+  if (!BuildMgaContextualTextSidecarSetV2(
+          owner, material.base_fields, material.projection.projected_columns,
+          &material.sealed_set, &sidecar_diagnostic)) {
+    *diagnostic = MakeEngineApiDiagnostic(
+        sidecar_diagnostic.code.empty()
+            ? "CTB.TEXT.DESCRIPTOR_INVALID"
+            : sidecar_diagnostic.code,
+        "mga.contextual_text_sidecar_set_v2.build_failed",
+        sidecar_diagnostic.detail, true);
+    return false;
+  }
+  *output = std::move(material);
+  *diagnostic = OkDiagnostic();
+  return true;
 }
 
 std::string RelationDescriptorFieldOrEmpty(
@@ -6697,6 +8759,20 @@ std::uint64_t CurrentMgaRelationMetadataEventSequence(
   return next == 0 ? 0 : next - 1;
 }
 
+std::uint64_t CurrentMgaSavepointAuthorityGeneration(
+    const EngineRequestContext& context) {
+  if (context.database_path.empty()) {
+    return 0;
+  }
+  std::error_code ignored;
+  const auto bytes = std::filesystem::file_size(SavepointStorePath(context),
+                                                ignored);
+  if (ignored || bytes > std::numeric_limits<std::uint64_t>::max()) {
+    return 0;
+  }
+  return static_cast<std::uint64_t>(bytes);
+}
+
 MgaRelationIndexOnlyProofEligibilityResult
 CanUseMgaRelationIndexOnlyProofForInsertTarget(
     const EngineRequestContext& context,
@@ -6892,15 +8968,30 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
   std::set<std::string> retired_private_tables;
   for (const auto& line : ReadLines(MetadataStorePath(context))) {
     const auto fields = SplitTabs(line);
-    if (fields.size() >= 11 && fields[0] == kRowStoreMagic &&
-        fields[1] == "TABLE_METADATA" && fields[7] == "1") {
-      temporary_tables.insert(fields[4]);
+    const bool legacy_temporary_table =
+        fields.size() >= 11 && fields[0] == kRowStoreMagic &&
+        fields[1] == "TABLE_METADATA" && fields[7] == "1";
+    const bool sealed_temporary_table =
+        fields.size() == sealed_table_metadata_field_v2::kFieldCount &&
+        fields[0] == kRowStoreMagic &&
+        fields[1] == kSealedTableMetadataKindV2 &&
+        fields[sealed_table_metadata_field_v2::kTemporary] == "1";
+    if (legacy_temporary_table || sealed_temporary_table) {
       const auto authority = classify_event(ParseU64(fields[2]));
       if (authority != EventAuthority::kCommitted) { continue; }
-      if (fields[8] == "global") {
-        durable_global_tables.insert(fields[4]);
+      const std::size_t table_uuid_index =
+          sealed_temporary_table
+              ? sealed_table_metadata_field_v2::kTableUuid
+              : 4;
+      const std::size_t temporary_scope_index =
+          sealed_temporary_table
+              ? sealed_table_metadata_field_v2::kTemporaryScope
+              : 8;
+      temporary_tables.insert(fields[table_uuid_index]);
+      if (fields[temporary_scope_index] == "global") {
+        durable_global_tables.insert(fields[table_uuid_index]);
       } else {
-        committed_private_tables.insert(fields[4]);
+        committed_private_tables.insert(fields[table_uuid_index]);
       }
     } else if (fields.size() >= 7 && fields[0] == kRowStoreMagic &&
                fields[1] == "TABLE_METADATA_RETIRED") {
@@ -7301,6 +9392,58 @@ MgaRelationStatisticsResult EstimateMgaCatalogStatistics(const EngineRequestCont
   return result;
 }
 
+struct VisibleSealedRelationDescriptorSelection {
+  bool found = false;
+  bool conflict = false;
+  CrudSealedRelationDescriptorSnapshot snapshot;
+  std::vector<std::pair<std::string, std::string>> fields;
+};
+
+VisibleSealedRelationDescriptorSelection
+SelectVisibleSealedRelationDescriptorSnapshot(
+    const EngineRequestContext& context,
+    const CrudState& state,
+    const CrudTableRecord& table) {
+  VisibleSealedRelationDescriptorSelection result;
+  const CrudSealedRelationDescriptorSnapshot* newest = nullptr;
+  std::size_t newest_count = 0;
+  for (const auto& candidate : state.sealed_relation_descriptor_snapshots) {
+    if (candidate.relation_uuid != table.table_uuid ||
+        !CrudCreatorVisible(state, candidate.creator_tx,
+                            candidate.event_sequence,
+                            context.local_transaction_id)) {
+      continue;
+    }
+    if (newest == nullptr ||
+        candidate.event_sequence > newest->event_sequence) {
+      newest = &candidate;
+      newest_count = 1;
+    } else if (candidate.event_sequence == newest->event_sequence) {
+      ++newest_count;
+    }
+  }
+  if (newest == nullptr) {
+    return result;
+  }
+  // Once a relation has a sealed descriptor lineage, a later ordinary table
+  // row without an equally visible sealed descriptor cannot fall back to the
+  // pre-migration sidecar. That would resurrect the provisional TEXT identity.
+  if (newest->event_sequence < table.event_sequence) {
+    result.conflict = true;
+    return result;
+  }
+  if (newest_count != 1 || newest->event_sequence != table.event_sequence ||
+      newest->creator_tx != table.creator_tx ||
+      newest->descriptor_fields.empty()) {
+    result.conflict = true;
+    return result;
+  }
+  result.found = true;
+  result.snapshot = *newest;
+  result.fields = newest->descriptor_fields;
+  return result;
+}
+
 EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContext& context,
                                                        const CrudTableRecord& table,
                                                        const std::vector<CrudIndexRecord>& indexes,
@@ -7308,14 +9451,26 @@ EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContex
   const auto persisted =
       LoadDescriptorFieldsByRelation(context, table.table_uuid);
   const auto existing = persisted.find(table.table_uuid);
-  const auto fields = existing == persisted.end()
-                          ? BuildPersistedMgaRelationDescriptorFields(context, table, indexes)
-                          : existing->second;
+  const auto state = LoadMgaRelationStoreState(context);
+  if (!state.ok) return state.diagnostic;
+  const auto sealed = SelectVisibleSealedRelationDescriptorSnapshot(
+      context, state.state.crud_metadata, table);
+  if (sealed.conflict) {
+    return MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor",
+        "sealed_relation_descriptor_snapshot_conflict");
+  }
+  const auto fields = sealed.found
+                          ? sealed.fields
+                          : (existing == persisted.end()
+                                 ? BuildPersistedMgaRelationDescriptorFields(
+                                       context, table, indexes)
+                                 : existing->second);
   MgaRelationStorageDescriptor built =
       BuildMgaRelationStorageDescriptorFromCrudMetadata(context, table, indexes, fields);
   const auto validated = ValidateMgaRelationStorageDescriptor(built);
   if (validated.error) { return validated; }
-  if (existing == persisted.end()) {
+  if (!sealed.found && existing == persisted.end()) {
     const auto persisted_diagnostic = PersistDescriptorFields(context, table.table_uuid, fields);
     if (persisted_diagnostic.error) { return persisted_diagnostic; }
   }
@@ -7407,7 +9562,15 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
   const auto persisted =
       LoadDescriptorFieldsByRelation(context, relation_uuid);
   const auto fields = persisted.find(relation_uuid);
-  if (fields == persisted.end()) {
+  const auto sealed = SelectVisibleSealedRelationDescriptorSnapshot(
+      context, metadata, *table);
+  if (sealed.conflict) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor.load",
+        "sealed_relation_descriptor_snapshot_conflict");
+    return result;
+  }
+  if (!sealed.found && fields == persisted.end()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.relation_descriptor.load", "persisted_descriptor_required");
     return result;
@@ -7415,13 +9578,277 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
   const auto indexes = VisibleCrudIndexesForTable(
       metadata, relation_uuid, context.local_transaction_id);
   result.descriptor = BuildMgaRelationStorageDescriptorFromCrudMetadata(
-      context, *table, indexes, fields->second);
+      context, *table, indexes,
+      sealed.found ? sealed.fields : fields->second);
   const auto validated =
       ValidateMgaRelationStorageDescriptor(result.descriptor);
   if (validated.error) {
     result.diagnostic = validated;
     return result;
   }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+MgaVisibleContextualTextSidecarSnapshotLoadResultV2
+LoadVisibleMgaContextualTextSidecarSnapshotV2(
+    const EngineRequestContext& context,
+    const std::string& relation_uuid,
+    const std::string& relation_descriptor_uuid,
+    const std::uint64_t relation_descriptor_generation) {
+  constexpr const char* kOperation =
+      "mga.contextual_text_sidecar_snapshot.load";
+  MgaVisibleContextualTextSidecarSnapshotLoadResultV2 result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        "CTB.TEXT.DESCRIPTOR_INVALID", kOperation, std::move(detail), true);
+    return result;
+  };
+  if (!CanonicalNonNilMigrationUuid(relation_uuid) ||
+      !CanonicalNonNilMigrationUuid(relation_descriptor_uuid) ||
+      relation_descriptor_generation == 0) {
+    return refuse("exact relation descriptor identity required");
+  }
+
+  const auto loaded_descriptor =
+      LoadMgaRelationStorageDescriptor(context, relation_uuid);
+  if (!loaded_descriptor.ok) {
+    result.diagnostic = loaded_descriptor.diagnostic;
+    return result;
+  }
+  if (loaded_descriptor.descriptor.relation_uuid.canonical != relation_uuid ||
+      loaded_descriptor.descriptor.descriptor_uuid.canonical !=
+          relation_descriptor_uuid ||
+      loaded_descriptor.descriptor.descriptor_generation !=
+          relation_descriptor_generation) {
+    return refuse("visible relation descriptor identity does not match claim");
+  }
+
+  CrudState metadata;
+  const auto metadata_loaded = LoadMgaMetadata(&metadata, context);
+  if (metadata_loaded.error) {
+    result.diagnostic = metadata_loaded;
+    return result;
+  }
+  const auto inventory =
+      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!inventory.ok()) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        inventory.diagnostic.diagnostic_code.empty()
+            ? "SB-MGA-TXN-INV-LOAD-FAILED"
+            : inventory.diagnostic.diagnostic_code,
+        inventory.diagnostic.message_key.empty()
+            ? "mga.transaction_inventory.load_failed"
+            : inventory.diagnostic.message_key,
+        inventory.diagnostic.remediation_hint, true);
+    return result;
+  }
+  for (const auto& entry : inventory.inventory.entries) {
+    if (!entry.identity.local_id.valid()) continue;
+    metadata.transactions[entry.identity.local_id.value] =
+        MgaTransactionStateName(entry.state);
+    metadata.max_transaction_id = std::max(
+        metadata.max_transaction_id, entry.identity.local_id.value);
+  }
+  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
+  FilterMgaTemporaryObjectsForSession(context, &metadata);
+  const auto table = FindVisibleCrudTable(
+      metadata, relation_uuid, context.local_transaction_id);
+  if (!table) return refuse("relation is not visible");
+  const auto selected = SelectVisibleSealedRelationDescriptorSnapshot(
+      context, metadata, *table);
+  if (!selected.found || selected.conflict) {
+    return refuse("one exact sealed descriptor snapshot is required");
+  }
+  const auto& persisted = selected.snapshot;
+  if (persisted.creator_tx != table->creator_tx ||
+      persisted.event_sequence != table->event_sequence ||
+      persisted.relation_uuid != relation_uuid ||
+      persisted.relation_descriptor_uuid != relation_descriptor_uuid ||
+      persisted.relation_descriptor_generation !=
+          relation_descriptor_generation ||
+      persisted.descriptor_field_count == 0 ||
+      persisted.descriptor_field_bytes == 0 ||
+      persisted.descriptor_fields.empty()) {
+    return refuse("sealed descriptor owner or complete-vector header differs");
+  }
+
+  MgaVisibleContextualTextSidecarSnapshotV2 snapshot;
+  snapshot.table = *table;
+  snapshot.relation_descriptor = loaded_descriptor.descriptor;
+  const auto copy_uuid = [](const std::string& text,
+                            MgaContextualTextUuidV2* output) {
+    if (output == nullptr) return false;
+    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
+    if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
+        scratchbird::core::uuid::UuidToString(parsed.value) != text) {
+      return false;
+    }
+    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
+              output->begin());
+    return true;
+  };
+  snapshot.owner.creator_transaction_id = persisted.creator_tx;
+  snapshot.owner.event_sequence = persisted.event_sequence;
+  snapshot.owner.relation_descriptor_generation =
+      persisted.relation_descriptor_generation;
+  if (!copy_uuid(persisted.relation_uuid,
+                 &snapshot.owner.relation_uuid) ||
+      !copy_uuid(persisted.relation_descriptor_uuid,
+                 &snapshot.owner.relation_descriptor_uuid)) {
+    return refuse("sealed descriptor owner UUID is invalid");
+  }
+
+  const auto base_fields = SerializeMgaRelationStorageDescriptor(
+      snapshot.relation_descriptor);
+  snapshot.base_descriptor_fields.reserve(base_fields.size());
+  for (const auto& [key, value] : base_fields) {
+    snapshot.base_descriptor_fields.push_back(
+        {{key.begin(), key.end()}, {value.begin(), value.end()}});
+  }
+  snapshot.sealed_sidecar_set.owner = snapshot.owner;
+  snapshot.sealed_sidecar_set.descriptor_field_count =
+      persisted.descriptor_field_count;
+  snapshot.sealed_sidecar_set.descriptor_field_bytes =
+      persisted.descriptor_field_bytes;
+  snapshot.sealed_sidecar_set.contextual_sidecar_count =
+      persisted.contextual_sidecar_count;
+  snapshot.sealed_sidecar_set.descriptor_fields.reserve(
+      persisted.descriptor_fields.size());
+  for (const auto& [key, value] : persisted.descriptor_fields) {
+    snapshot.sealed_sidecar_set.descriptor_fields.push_back(
+        {{key.begin(), key.end()}, {value.begin(), value.end()}});
+  }
+  if (snapshot.sealed_sidecar_set.descriptor_fields.size() <
+          snapshot.base_descriptor_fields.size() + 1 ||
+      !std::equal(snapshot.base_descriptor_fields.begin(),
+                  snapshot.base_descriptor_fields.end(),
+                  snapshot.sealed_sidecar_set.descriptor_fields.begin())) {
+    return refuse("sealed descriptor base field order or bytes changed");
+  }
+  const auto& final_pair =
+      snapshot.sealed_sidecar_set.descriptor_fields.back();
+  const std::string final_key(final_pair.key_raw_bytes.begin(),
+                              final_pair.key_raw_bytes.end());
+  if (final_key != kMgaContextualTextSidecarSetSealKeyV2 ||
+      final_pair.value_raw_bytes.size() !=
+          snapshot.sealed_sidecar_set.seal_sha256.size()) {
+    return refuse("sealed descriptor final seal pair is invalid");
+  }
+  std::copy(final_pair.value_raw_bytes.begin(),
+            final_pair.value_raw_bytes.end(),
+            snapshot.sealed_sidecar_set.seal_sha256.begin());
+  MgaContextualTextRawBytesV2 canonical_fields;
+  std::uint64_t canonical_field_bytes = 0;
+  MgaContextualTextSidecarSetDiagnosticV2 sidecar_diagnostic;
+  if (!SerializeMgaContextualTextDescriptorFieldVectorV2(
+          snapshot.sealed_sidecar_set.descriptor_fields,
+          &canonical_fields, &canonical_field_bytes,
+          &sidecar_diagnostic) ||
+      snapshot.sealed_sidecar_set.descriptor_field_count !=
+          snapshot.sealed_sidecar_set.descriptor_fields.size() ||
+      snapshot.sealed_sidecar_set.descriptor_field_bytes !=
+          canonical_field_bytes) {
+    return refuse(sidecar_diagnostic.detail.empty()
+                      ? "sealed descriptor vector count or byte total differs"
+                      : sidecar_diagnostic.detail);
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  result.snapshot = std::move(snapshot);
+  return result;
+}
+
+MgaContextualTextTargetSelectionResultV2
+SelectVisibleMgaContextualTextTargetV2(
+    const EngineRequestContext& context,
+    const sblr::ContextualTextLiteralDemandV2& structural_claim,
+    const EngineContextualTextPolicyRowSetV2& exact_policy_rows) {
+  constexpr const char* kOperation =
+      "mga.contextual_text_target.select_visible_v2";
+  MgaContextualTextTargetSelectionResultV2 result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        "CTB.TEXT.DESCRIPTOR_INVALID", kOperation, std::move(detail), true);
+    return result;
+  };
+  const std::string relation_uuid =
+      ContextualUuidTextV2(structural_claim.relation_uuid);
+  const std::string descriptor_uuid =
+      ContextualUuidTextV2(structural_claim.relation_descriptor_uuid);
+  const std::string column_uuid =
+      ContextualUuidTextV2(structural_claim.column_uuid);
+  if (!CanonicalNonNilMigrationUuid(relation_uuid) ||
+      !CanonicalNonNilMigrationUuid(descriptor_uuid) ||
+      !CanonicalNonNilMigrationUuid(column_uuid) ||
+      structural_claim.relation_descriptor_generation == 0) {
+    return refuse("contextual target structural identity is invalid");
+  }
+  EngineApiDiagnostic policy_diagnostic;
+  if (!RevalidateEngineContextualTextPolicyRowSetV2(
+          context, exact_policy_rows, &policy_diagnostic)) {
+    result.diagnostic = std::move(policy_diagnostic);
+    return result;
+  }
+
+  auto loaded = LoadVisibleMgaContextualTextSidecarSnapshotV2(
+      context, relation_uuid, descriptor_uuid,
+      structural_claim.relation_descriptor_generation);
+  if (!loaded.ok) {
+    result.diagnostic = std::move(loaded.diagnostic);
+    return result;
+  }
+  MgaContextualTextProjectionMaterialV2 projection;
+  EngineApiDiagnostic projection_diagnostic;
+  if (!BuildMgaContextualTextProjectionMaterialV2(
+          context, loaded.snapshot.relation_descriptor, exact_policy_rows,
+          &projection, &projection_diagnostic)) {
+    result.diagnostic = std::move(projection_diagnostic);
+    return result;
+  }
+  const auto target = std::ranges::find_if(
+      projection.projected_columns,
+      [&](const MgaContextualTextProjectedColumnV2& candidate) {
+        return candidate.column_ordinal == structural_claim.column_ordinal &&
+               candidate.column_uuid == structural_claim.column_uuid;
+      });
+  if (target == projection.projected_columns.end() ||
+      !target->comparable_persisted_text) {
+    return refuse(
+        "claimed target is not one exact comparable persisted d718 column");
+  }
+
+  MgaContextualTextSidecarSetDiagnosticV2 sidecar_diagnostic;
+  if (!ValidateMgaContextualTextSidecarSetV2(
+          loaded.snapshot.owner, loaded.snapshot.base_descriptor_fields,
+          projection.projected_columns, loaded.snapshot.sealed_sidecar_set,
+          &sidecar_diagnostic)) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        sidecar_diagnostic.code.empty()
+            ? "CTB.TEXT.DESCRIPTOR_INVALID"
+            : sidecar_diagnostic.code,
+        kOperation, sidecar_diagnostic.detail, true);
+    return result;
+  }
+  std::vector<std::uint8_t> exact_projection;
+  EngineApiDiagnostic encoded_diagnostic;
+  if (!EncodeEnginePublicRelationProjectionV3(
+          projection.public_projection, &exact_projection,
+          &encoded_diagnostic)) {
+    result.diagnostic = std::move(encoded_diagnostic);
+    return result;
+  }
+
+  result.selection.exact_public_relation_projection_v3 =
+      std::move(exact_projection);
+  result.selection.sidecar_owner = loaded.snapshot.owner;
+  result.selection.base_descriptor_fields =
+      std::move(loaded.snapshot.base_descriptor_fields);
+  result.selection.projected_columns =
+      std::move(projection.projected_columns);
+  result.selection.sealed_sidecar_set =
+      std::move(loaded.snapshot.sealed_sidecar_set);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   return result;
@@ -8408,6 +10835,2082 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
     const EngineRequestContext& context,
     const MgaVisibleHeapRelationReadRequest& request) {
   return ReadVisibleMgaHeapRelationObserved(context, request, nullptr);
+}
+
+namespace {
+
+constexpr std::uint32_t kStreamingCountNoFallback =
+    std::numeric_limits<std::uint32_t>::max();
+constexpr std::uint64_t kStreamingCountScratchBytes = 128 * 1024;
+constexpr std::uint32_t kStreamingCountMaximumMetadataStringBytes =
+    64 * 1024;
+
+struct StreamingVisibleSelection {
+  std::vector<std::uint8_t> visible_source_ordinals;
+  std::string text_path;
+  std::string binary_path;
+  std::uint64_t text_bytes = 0;
+  std::uint64_t binary_bytes = 0;
+};
+
+struct StreamingCountIdentity {
+  std::array<std::uint8_t, 16> canonical_bytes{};
+  std::uint32_t fallback_ordinal = kStreamingCountNoFallback;
+};
+
+struct StreamingCountRowVersion {
+  StreamingCountIdentity row_uuid;
+  StreamingCountIdentity version_uuid;
+  StreamingCountIdentity previous_version_uuid;
+  std::uint64_t creator_tx = 0;
+  std::uint64_t event_sequence = 0;
+  std::uint64_t previous_sequence = 0;
+  std::uint64_t source_ordinal = 0;
+  bool has_previous_version = false;
+  bool deleted = false;
+  bool temporary_session_visible = false;
+  bool creator_visible = false;
+};
+
+bool StreamingCountIdentityLess(
+    const StreamingCountIdentity& left,
+    const StreamingCountIdentity& right,
+    const std::vector<std::string>& fallbacks) {
+  const bool left_canonical =
+      left.fallback_ordinal == kStreamingCountNoFallback;
+  const bool right_canonical =
+      right.fallback_ordinal == kStreamingCountNoFallback;
+  if (left_canonical != right_canonical) return left_canonical;
+  if (left_canonical) {
+    return std::lexicographical_compare(
+        left.canonical_bytes.begin(), left.canonical_bytes.end(),
+        right.canonical_bytes.begin(), right.canonical_bytes.end());
+  }
+  if (left.fallback_ordinal >= fallbacks.size() ||
+      right.fallback_ordinal >= fallbacks.size()) {
+    return left.fallback_ordinal < right.fallback_ordinal;
+  }
+  return fallbacks[left.fallback_ordinal] <
+         fallbacks[right.fallback_ordinal];
+}
+
+bool StreamingCountIdentityEqual(
+    const StreamingCountIdentity& left,
+    const StreamingCountIdentity& right,
+    const std::vector<std::string>& fallbacks) {
+  return !StreamingCountIdentityLess(left, right, fallbacks) &&
+         !StreamingCountIdentityLess(right, left, fallbacks);
+}
+
+std::optional<std::uint64_t> StreamingCountMetadataMemoryBytes(
+    const std::vector<StreamingCountRowVersion>& rows,
+    const std::vector<std::string>& fallback_identities,
+    const SavepointParsedState& savepoints,
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::uint64_t transient_string_bytes = 0) {
+  std::uint64_t bytes = sizeof(MgaVisibleHeapRelationCountResult) +
+                        sizeof(rows) + sizeof(fallback_identities) +
+                        kStreamingCountScratchBytes;
+  std::uint64_t allocation_bytes = 0;
+  const auto descriptor_bytes =
+      HeapReadStorageDescriptorMemoryBytes(descriptor);
+  const auto savepoint_bytes = HeapReadSavepointMemoryBytes(savepoints);
+  if (!descriptor_bytes.has_value() || !savepoint_bytes.has_value() ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(rows.capacity()),
+          sizeof(StreamingCountRowVersion), &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(fallback_identities.capacity()),
+          sizeof(std::string), &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+      !CheckedHeapReadMemoryAdd(*descriptor_bytes, &bytes) ||
+      !CheckedHeapReadMemoryAdd(*savepoint_bytes, &bytes) ||
+      !CheckedHeapReadMemoryAdd(transient_string_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& identity : fallback_identities) {
+    if (!AccountHeapReadOwnedString(identity, &bytes)) return std::nullopt;
+  }
+  return bytes;
+}
+
+bool ObserveStreamingCountMemory(
+    const std::vector<StreamingCountRowVersion>& rows,
+    const std::vector<std::string>& fallback_identities,
+    const SavepointParsedState& savepoints,
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::uint64_t maximum_memory_bytes,
+    std::uint64_t* peak_memory_bytes,
+    std::string* detail,
+    const std::uint64_t transient_string_bytes = 0) {
+  const auto live = StreamingCountMetadataMemoryBytes(
+      rows, fallback_identities, savepoints, descriptor,
+      transient_string_bytes);
+  if (!live.has_value()) {
+    if (detail != nullptr) {
+      *detail = "heap_count_memory_receipt_overflow";
+    }
+    return false;
+  }
+  if (peak_memory_bytes != nullptr) {
+    *peak_memory_bytes = std::max(*peak_memory_bytes, *live);
+  }
+  if (maximum_memory_bytes == 0 || *live > maximum_memory_bytes) {
+    if (detail != nullptr) {
+      *detail = "heap_count_maximum_memory_bytes_exceeded";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool ReserveStreamingCountRows(
+    const std::uint64_t additional_rows,
+    std::vector<StreamingCountRowVersion>* rows,
+    const std::vector<std::string>& fallback_identities,
+    const SavepointParsedState& savepoints,
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::uint64_t maximum_memory_bytes,
+    std::uint64_t* peak_memory_bytes,
+    std::string* detail) {
+  if (rows == nullptr ||
+      additional_rows > std::numeric_limits<std::size_t>::max() ||
+      static_cast<std::size_t>(additional_rows) >
+          std::numeric_limits<std::size_t>::max() - rows->size()) {
+    if (detail != nullptr) *detail = "heap_count_row_metadata_overflow";
+    return false;
+  }
+  const auto required = rows->size() +
+                        static_cast<std::size_t>(additional_rows);
+  if (required > rows->capacity()) {
+    std::uint64_t projected_bytes = 0;
+    std::uint64_t structural_bytes = 0;
+    const auto descriptor_bytes =
+        HeapReadStorageDescriptorMemoryBytes(descriptor);
+    const auto savepoint_bytes = HeapReadSavepointMemoryBytes(savepoints);
+    if (!descriptor_bytes.has_value() || !savepoint_bytes.has_value() ||
+        !CheckedHeapReadMemoryMultiply(required,
+                                       sizeof(StreamingCountRowVersion),
+                                       &structural_bytes) ||
+        !CheckedHeapReadMemoryAdd(
+            sizeof(MgaVisibleHeapRelationCountResult) + sizeof(*rows) +
+                sizeof(fallback_identities) + kStreamingCountScratchBytes,
+            &projected_bytes) ||
+        !CheckedHeapReadMemoryAdd(structural_bytes, &projected_bytes) ||
+        !CheckedHeapReadMemoryAdd(*descriptor_bytes, &projected_bytes) ||
+        !CheckedHeapReadMemoryAdd(*savepoint_bytes, &projected_bytes)) {
+      if (detail != nullptr) *detail = "heap_count_memory_receipt_overflow";
+      return false;
+    }
+    for (const auto& identity : fallback_identities) {
+      if (!AccountHeapReadOwnedString(identity, &projected_bytes)) {
+        if (detail != nullptr) *detail = "heap_count_memory_receipt_overflow";
+        return false;
+      }
+    }
+    if (projected_bytes > maximum_memory_bytes) {
+      if (detail != nullptr) {
+        *detail = "heap_count_maximum_memory_bytes_exceeded";
+      }
+      return false;
+    }
+    rows->reserve(required);
+  }
+  return ObserveStreamingCountMemory(
+      *rows, fallback_identities, savepoints, descriptor,
+      maximum_memory_bytes, peak_memory_bytes, detail);
+}
+
+bool ParseStreamingCountIdentity(
+    const std::string_view text,
+    std::vector<std::string>* fallback_identities,
+    StreamingCountIdentity* identity,
+    const bool allow_empty,
+    const SavepointParsedState& savepoints,
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::vector<StreamingCountRowVersion>& rows,
+    const std::uint64_t maximum_memory_bytes,
+    std::uint64_t* peak_memory_bytes,
+    std::string* detail) {
+  if (fallback_identities == nullptr || identity == nullptr ||
+      (!allow_empty && text.empty())) {
+    if (detail != nullptr) *detail = "heap_count_row_identity_invalid";
+    return false;
+  }
+  if (text.empty()) {
+    *identity = {};
+    return true;
+  }
+  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
+  if (parsed.ok()) {
+    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
+              identity->canonical_bytes.begin());
+    identity->fallback_ordinal = kStreamingCountNoFallback;
+    return true;
+  }
+  if (fallback_identities->size() >= kStreamingCountNoFallback ||
+      text.size() > kStreamingCountMaximumMetadataStringBytes) {
+    if (detail != nullptr) *detail = "heap_count_row_identity_invalid";
+    return false;
+  }
+  const std::uint64_t transient =
+      static_cast<std::uint64_t>(text.size()) + 1 + sizeof(std::string);
+  if (!ObserveStreamingCountMemory(
+          rows, *fallback_identities, savepoints, descriptor,
+          maximum_memory_bytes, peak_memory_bytes, detail, transient)) {
+    return false;
+  }
+  fallback_identities->emplace_back(text);
+  identity->fallback_ordinal = static_cast<std::uint32_t>(
+      fallback_identities->size() - 1);
+  return ObserveStreamingCountMemory(
+      rows, *fallback_identities, savepoints, descriptor,
+      maximum_memory_bytes, peak_memory_bytes, detail);
+}
+
+class StreamingCountBinaryReader {
+ public:
+  StreamingCountBinaryReader(
+      std::string path, const std::uint64_t authorized_bytes,
+      const std::uint64_t maximum_decoded_bytes,
+      const std::function<bool()>* cancellation_requested,
+      MgaVisibleHeapRelationCountResult* result,
+      HeapReadRuntimeObservation* runtime_observation,
+      std::string* detail)
+      : path_(std::move(path)),
+        remaining_(authorized_bytes),
+        physical_remaining_(authorized_bytes),
+        maximum_decoded_bytes_(maximum_decoded_bytes),
+        cancellation_requested_(cancellation_requested),
+        result_(result),
+        runtime_observation_(runtime_observation),
+        detail_(detail) {}
+
+  bool Open() {
+    const auto started = std::chrono::steady_clock::now();
+    input_.open(path_, std::ios::binary);
+    ObserveWait(started);
+    if (!input_) return Fail("heap_count_scoped_binary_open_failed");
+    return true;
+  }
+
+  bool ReadU8(std::uint8_t* value) {
+    return ReadExact(reinterpret_cast<char*>(value), 1);
+  }
+
+  bool ReadU16(std::uint16_t* value) {
+    std::array<std::uint8_t, 2> bytes{};
+    if (!ReadExact(reinterpret_cast<char*>(bytes.data()), bytes.size())) {
+      return false;
+    }
+    *value = static_cast<std::uint16_t>(bytes[0]) |
+             (static_cast<std::uint16_t>(bytes[1]) << 8U);
+    return true;
+  }
+
+  bool ReadU32(std::uint32_t* value) {
+    std::array<std::uint8_t, 4> bytes{};
+    if (!ReadExact(reinterpret_cast<char*>(bytes.data()), bytes.size())) {
+      return false;
+    }
+    *value = 0;
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+      *value |= static_cast<std::uint32_t>(bytes[index]) << (index * 8U);
+    }
+    return true;
+  }
+
+  bool ReadU64(std::uint64_t* value) {
+    std::array<std::uint8_t, 8> bytes{};
+    if (!ReadExact(reinterpret_cast<char*>(bytes.data()), bytes.size())) {
+      return false;
+    }
+    *value = 0;
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+      *value |= static_cast<std::uint64_t>(bytes[index]) << (index * 8U);
+    }
+    return true;
+  }
+
+  bool ReadUuid(StreamingCountIdentity* identity) {
+    if (identity == nullptr) return Fail("heap_count_row_identity_invalid");
+    identity->fallback_ordinal = kStreamingCountNoFallback;
+    return ReadExact(
+        reinterpret_cast<char*>(identity->canonical_bytes.data()),
+        identity->canonical_bytes.size());
+  }
+
+  bool ReadUuidText(std::string* value) {
+    if (value == nullptr) return Fail("heap_stream_row_identity_invalid");
+    scratchbird::core::platform::Uuid uuid;
+    if (!ReadExact(reinterpret_cast<char*>(uuid.bytes.data()),
+                   uuid.bytes.size())) {
+      return false;
+    }
+    *value = scratchbird::core::uuid::UuidToString(uuid);
+    return true;
+  }
+
+  bool ReadString(std::string* value, const bool allow_empty) {
+    std::uint32_t size = 0;
+    if (value == nullptr || !ReadU32(&size) || size > remaining_ ||
+        size > kStreamingCountMaximumMetadataStringBytes ||
+        (!allow_empty && size == 0)) {
+      return Fail("heap_count_binary_string_invalid");
+    }
+    value->resize(size);
+    return size == 0 || ReadExact(value->data(), size);
+  }
+
+  bool SkipString(const bool allow_empty) {
+    std::uint32_t size = 0;
+    return ReadU32(&size) && size <= remaining_ &&
+           size <= kStreamingCountMaximumMetadataStringBytes &&
+           (allow_empty || size != 0) && Skip(size);
+  }
+
+  bool SkipPayloadString() {
+    std::uint32_t size = 0;
+    return ReadU32(&size) && size <= remaining_ && Skip(size);
+  }
+
+  bool ReadPayloadString(std::string* value,
+                         const std::uint64_t maximum_payload_bytes) {
+    std::uint32_t size = 0;
+    if (value == nullptr || !ReadU32(&size) || size > remaining_ ||
+        size > maximum_payload_bytes) {
+      return Fail("heap_stream_binary_payload_invalid");
+    }
+    value->resize(size);
+    return size == 0 || ReadExact(value->data(), size);
+  }
+
+  bool ReadFixedPayload(std::string* value,
+                        const std::size_t size,
+                        const std::uint64_t maximum_payload_bytes) {
+    if (value == nullptr || size > maximum_payload_bytes ||
+        size > remaining_) {
+      return Fail("heap_stream_binary_payload_invalid");
+    }
+    value->resize(size);
+    return size == 0 || ReadExact(value->data(), size);
+  }
+
+  bool Skip(const std::uint64_t bytes) {
+    if (bytes > remaining_) return Fail("heap_count_binary_truncated");
+    std::array<char, 64 * 1024> scratch{};
+    std::uint64_t remaining = bytes;
+    while (remaining != 0) {
+      const auto chunk = static_cast<std::size_t>(
+          std::min<std::uint64_t>(remaining, scratch.size()));
+      if (!ReadExact(scratch.data(), chunk)) return false;
+      remaining -= chunk;
+    }
+    return true;
+  }
+
+  bool Finish() {
+    if (remaining_ != 0) return Fail("heap_count_binary_trailing_bytes");
+    const auto started = std::chrono::steady_clock::now();
+    const auto next = input_.peek();
+    ObserveWait(started);
+    if (next != std::char_traits<char>::eof()) {
+      return Fail("heap_count_scoped_binary_grew_during_read");
+    }
+    return !input_.bad() || Fail("heap_count_scoped_binary_read_failed");
+  }
+
+  [[nodiscard]] std::uint64_t remaining() const { return remaining_; }
+  [[nodiscard]] bool cancellation_observed() const {
+    return cancellation_observed_;
+  }
+
+ private:
+  bool ReadExact(char* destination, const std::size_t bytes) {
+    if (destination == nullptr || bytes > remaining_) {
+      return Fail("heap_count_binary_truncated");
+    }
+    std::size_t copied = 0;
+    while (copied != bytes) {
+      if (buffer_offset_ == buffer_size_ && !FillBuffer()) return false;
+      const auto available = buffer_size_ - buffer_offset_;
+      const auto chunk = std::min(available, bytes - copied);
+      std::memcpy(destination + copied, buffer_.data() + buffer_offset_,
+                  chunk);
+      buffer_offset_ += chunk;
+      copied += chunk;
+      remaining_ -= chunk;
+      if (result_ == nullptr ||
+          result_->decoded_byte_count >
+              std::numeric_limits<std::uint64_t>::max() - chunk) {
+        return Fail("heap_count_byte_counter_overflow");
+      }
+      result_->decoded_byte_count += chunk;
+      if (result_->decoded_byte_count > maximum_decoded_bytes_) {
+        return Fail("heap_count_maximum_decoded_bytes_exceeded");
+      }
+    }
+    return true;
+  }
+
+  bool FillBuffer() {
+    if (physical_remaining_ == 0) {
+      return Fail("heap_count_binary_truncated");
+    }
+    if (Cancelled()) return false;
+    const auto chunk = static_cast<std::size_t>(
+        std::min<std::uint64_t>(physical_remaining_, buffer_.size()));
+    const auto started = std::chrono::steady_clock::now();
+    input_.read(buffer_.data(), static_cast<std::streamsize>(chunk));
+    ObserveWait(started);
+    if (input_.gcount() != static_cast<std::streamsize>(chunk) ||
+        input_.bad()) {
+      return Fail("heap_count_scoped_binary_read_failed");
+    }
+    if (result_ == nullptr ||
+        result_->storage_bytes_read >
+            std::numeric_limits<std::uint64_t>::max() - chunk) {
+      return Fail("heap_count_byte_counter_overflow");
+    }
+    result_->storage_bytes_read += chunk;
+    physical_remaining_ -= chunk;
+    buffer_offset_ = 0;
+    buffer_size_ = chunk;
+    return true;
+  }
+
+  bool Cancelled() {
+    if (cancellation_requested_ != nullptr && *cancellation_requested_ &&
+        (*cancellation_requested_)()) {
+      cancellation_observed_ = true;
+      if (result_ != nullptr) result_->cancellation_observed = true;
+      return Fail("heap_count_cancelled_during_physical_read");
+    }
+    return false;
+  }
+
+  bool Fail(const std::string_view detail) {
+    if (detail_ != nullptr && detail_->empty()) detail_->assign(detail);
+    return false;
+  }
+
+  void ObserveWait(const std::chrono::steady_clock::time_point started) {
+    if (runtime_observation_ == nullptr) return;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    if (elapsed < 0 ||
+        static_cast<std::uintmax_t>(elapsed) >
+            std::numeric_limits<std::uint64_t>::max() ||
+        runtime_observation_->operator_wait_ns >
+            std::numeric_limits<std::uint64_t>::max() -
+                static_cast<std::uint64_t>(elapsed)) {
+      runtime_observation_->complete = false;
+      return;
+    }
+    runtime_observation_->operator_wait_ns +=
+        static_cast<std::uint64_t>(elapsed);
+  }
+
+  std::string path_;
+  std::ifstream input_;
+  std::uint64_t remaining_ = 0;
+  std::uint64_t physical_remaining_ = 0;
+  std::array<char, 64 * 1024> buffer_{};
+  std::size_t buffer_offset_ = 0;
+  std::size_t buffer_size_ = 0;
+  std::uint64_t maximum_decoded_bytes_ = 0;
+  const std::function<bool()>* cancellation_requested_ = nullptr;
+  MgaVisibleHeapRelationCountResult* result_ = nullptr;
+  HeapReadRuntimeObservation* runtime_observation_ = nullptr;
+  std::string* detail_ = nullptr;
+  bool cancellation_observed_ = false;
+};
+
+bool StreamingCountCreatorVisible(
+    const std::uint64_t creator,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor& snapshot,
+    const std::map<std::uint64_t, std::string>& transaction_states) {
+  if (creator == 0) return false;
+  const auto transaction = transaction_states.find(creator);
+  if (transaction == transaction_states.end()) return false;
+  if (creator == snapshot.owning_transaction.value) {
+    return transaction->second == "active" ||
+           transaction->second == "preparing" ||
+           transaction->second == "prepared";
+  }
+  if (transaction->second != "committed" &&
+      transaction->second != "archived") {
+    return false;
+  }
+  if (snapshot.visible_committed_high_watermark == 0 ||
+      creator > snapshot.visible_committed_high_watermark) {
+    return false;
+  }
+  return !std::binary_search(
+             snapshot.active_excluded_local_transaction_ids.begin(),
+             snapshot.active_excluded_local_transaction_ids.end(), creator) &&
+         !std::binary_search(
+             snapshot.in_doubt_excluded_local_transaction_ids.begin(),
+             snapshot.in_doubt_excluded_local_transaction_ids.end(), creator);
+}
+
+bool AppendStreamingCountRow(
+    StreamingCountRowVersion row,
+    const std::string_view table_uuid,
+    const std::string_view required_relation_uuid,
+    const SavepointParsedState& savepoints,
+    const MgaRelationStorageDescriptor& descriptor,
+    std::vector<StreamingCountRowVersion>* rows,
+    const std::vector<std::string>& fallback_identities,
+    const std::uint64_t maximum_memory_bytes,
+    std::uint64_t* peak_memory_bytes,
+    MgaVisibleHeapRelationCountResult* result,
+    std::string* detail) {
+  if (rows == nullptr || result == nullptr ||
+      table_uuid != required_relation_uuid) {
+    if (detail != nullptr) {
+      *detail = "scoped_heap_row_relation_identity_mismatch";
+    }
+    return false;
+  }
+  if (result->scanned_row_version_count ==
+      std::numeric_limits<std::uint64_t>::max()) {
+    if (detail != nullptr) *detail = "heap_count_row_counter_overflow";
+    return false;
+  }
+  ++result->scanned_row_version_count;
+  row.source_ordinal = result->scanned_row_version_count;
+  if (RowEventRolledBackBySavepoint(savepoints, row.creator_tx,
+                                    row.event_sequence)) {
+    if (result->invisible_row_version_count ==
+        std::numeric_limits<std::uint64_t>::max()) {
+      if (detail != nullptr) *detail = "heap_count_row_counter_overflow";
+      return false;
+    }
+    ++result->invisible_row_version_count;
+    return true;
+  }
+  result->current_relation_base_generation = std::max(
+      result->current_relation_base_generation, row.event_sequence);
+  if (!ReserveStreamingCountRows(
+          1, rows, fallback_identities, savepoints, descriptor,
+          maximum_memory_bytes, peak_memory_bytes, detail)) {
+    return false;
+  }
+  rows->push_back(std::move(row));
+  return ObserveStreamingCountMemory(
+      *rows, fallback_identities, savepoints, descriptor,
+      maximum_memory_bytes, peak_memory_bytes, detail);
+}
+
+bool DecodeStreamingCountBinaryFile(
+    const std::string& path,
+    const std::uint64_t authorized_file_bytes,
+    const std::string& relation_uuid,
+    const std::string& session_uuid,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor& snapshot,
+    const std::map<std::uint64_t, std::string>& transaction_states,
+    const SavepointParsedState& savepoints,
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::uint64_t maximum_decoded_bytes,
+    const std::uint64_t maximum_memory_bytes,
+    const std::function<bool()>* cancellation_requested,
+    std::vector<StreamingCountRowVersion>* rows,
+    std::vector<std::string>* fallback_identities,
+    std::uint64_t* peak_memory_bytes,
+    MgaVisibleHeapRelationCountResult* result,
+    HeapReadRuntimeObservation* runtime_observation,
+    std::string* detail) {
+  if (rows == nullptr || fallback_identities == nullptr || result == nullptr ||
+      detail == nullptr) {
+    return false;
+  }
+  StreamingCountBinaryReader reader(
+      path, authorized_file_bytes, maximum_decoded_bytes,
+      cancellation_requested, result, runtime_observation, detail);
+  if (!reader.Open()) return false;
+  while (reader.remaining() != 0) {
+    std::array<char, 8> magic{};
+    std::uint16_t version = 0;
+    std::uint16_t flags = 0;
+    std::uint32_t column_count = 0;
+    std::uint64_t row_count = 0;
+    if (!reader.Skip(0) ||
+        !reader.ReadU8(reinterpret_cast<std::uint8_t*>(&magic[0])) ||
+        !reader.ReadU8(reinterpret_cast<std::uint8_t*>(&magic[1])) ||
+        !reader.ReadU8(reinterpret_cast<std::uint8_t*>(&magic[2])) ||
+        !reader.ReadU8(reinterpret_cast<std::uint8_t*>(&magic[3])) ||
+        !reader.ReadU8(reinterpret_cast<std::uint8_t*>(&magic[4])) ||
+        !reader.ReadU8(reinterpret_cast<std::uint8_t*>(&magic[5])) ||
+        !reader.ReadU8(reinterpret_cast<std::uint8_t*>(&magic[6])) ||
+        !reader.ReadU8(reinterpret_cast<std::uint8_t*>(&magic[7])) ||
+        std::string_view(magic.data(), magic.size()) !=
+            kScopedRowBinaryBatchMagic ||
+        !reader.ReadU16(&version) || !reader.ReadU16(&flags) ||
+        !reader.ReadU32(&column_count) || !reader.ReadU64(&row_count) ||
+        (version != 1 && version != kScopedRowBinaryLegacyTypedVersion &&
+         version != kScopedRowBinaryVersion &&
+         version != kScopedRowBinaryNativePacketVersion) ||
+        flags != 0 || column_count == 0 || column_count > 4096) {
+      if (detail->empty()) *detail = "heap_count_scoped_binary_header_invalid";
+      return false;
+    }
+    for (std::uint32_t column = 0; column < column_count; ++column) {
+      if (!reader.SkipString(false)) return false;
+    }
+    std::vector<std::uint8_t> native_tags;
+    if (version == kScopedRowBinaryNativePacketVersion) {
+      native_tags.reserve(column_count);
+      for (std::uint32_t column = 0; column < column_count; ++column) {
+        std::uint8_t tag = 0;
+        if (!reader.ReadU8(&tag) ||
+            ScopedRowNativePacketTypeName(tag).empty()) {
+          if (detail->empty()) {
+            *detail = "heap_count_scoped_binary_type_invalid";
+          }
+          return false;
+        }
+        native_tags.push_back(tag);
+      }
+    } else if (version >= kScopedRowBinaryLegacyTypedVersion) {
+      for (std::uint32_t column = 0; column < column_count; ++column) {
+        if (!reader.SkipString(false)) return false;
+      }
+    }
+
+    const bool compact_batch = version >= kScopedRowBinaryVersion;
+    std::uint64_t compact_first_event_sequence = 0;
+    std::uint64_t compact_creator_tx = 0;
+    std::string compact_table_uuid;
+    std::string compact_temporary_session_uuid;
+    std::uint8_t compact_flags = 0;
+    if (compact_batch &&
+        (!reader.ReadU64(&compact_first_event_sequence) ||
+         !reader.ReadU64(&compact_creator_tx) ||
+         !reader.ReadString(&compact_table_uuid, false) ||
+         !reader.ReadString(&compact_temporary_session_uuid, true) ||
+         !reader.ReadU8(&compact_flags) || compact_flags != 0 ||
+         compact_table_uuid != relation_uuid ||
+         (row_count != 0 &&
+          row_count - 1 > std::numeric_limits<std::uint64_t>::max() -
+                              compact_first_event_sequence))) {
+      if (detail->empty()) {
+        *detail = "heap_count_scoped_binary_compact_header_invalid";
+      }
+      return false;
+    }
+    const std::uint64_t null_bitmap_bytes =
+        (static_cast<std::uint64_t>(column_count) + 7U) / 8U;
+    const std::uint64_t minimum_row_bytes =
+        (compact_batch ? 32U : 45U) + null_bitmap_bytes;
+    if (minimum_row_bytes == 0 ||
+        row_count > reader.remaining() / minimum_row_bytes ||
+        !ReserveStreamingCountRows(
+            row_count, rows, *fallback_identities, savepoints, descriptor,
+            maximum_memory_bytes, peak_memory_bytes, detail)) {
+      if (detail->empty()) *detail = "heap_count_row_count_exceeds_segment";
+      return false;
+    }
+    std::vector<std::uint8_t> null_bitmap(
+        static_cast<std::size_t>(null_bitmap_bytes));
+    for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
+      StreamingCountRowVersion row;
+      std::string row_table_uuid;
+      std::string row_uuid;
+      std::string version_uuid;
+      std::string previous_version_uuid;
+      std::string temporary_session_uuid;
+      std::uint8_t deleted = 0;
+      if (compact_batch) {
+        row.creator_tx = compact_creator_tx;
+        row.event_sequence = compact_first_event_sequence + row_index;
+        row_table_uuid = compact_table_uuid;
+        row.temporary_session_visible =
+            compact_temporary_session_uuid.empty() ||
+            compact_temporary_session_uuid == session_uuid;
+        if (!reader.ReadUuid(&row.row_uuid) ||
+            !reader.ReadUuid(&row.version_uuid)) {
+          return false;
+        }
+      } else {
+        if (!reader.ReadU64(&row.creator_tx) ||
+            !reader.ReadU64(&row.event_sequence) ||
+            !reader.ReadU64(&row.previous_sequence) ||
+            !reader.ReadU8(&deleted) ||
+            !reader.ReadString(&row_table_uuid, false) ||
+            !reader.ReadString(&row_uuid, false) ||
+            !reader.ReadString(&version_uuid, false) ||
+            !reader.ReadString(&previous_version_uuid, true) ||
+            !reader.ReadString(&temporary_session_uuid, true) ||
+            !ParseStreamingCountIdentity(
+                row_uuid, fallback_identities, &row.row_uuid, false,
+                savepoints, descriptor, *rows, maximum_memory_bytes,
+                peak_memory_bytes, detail) ||
+            !ParseStreamingCountIdentity(
+                version_uuid, fallback_identities, &row.version_uuid, false,
+                savepoints, descriptor, *rows, maximum_memory_bytes,
+                peak_memory_bytes, detail)) {
+          return false;
+        }
+        row.deleted = deleted != 0;
+        row.has_previous_version = !previous_version_uuid.empty();
+        if (row.has_previous_version &&
+            !ParseStreamingCountIdentity(
+                previous_version_uuid, fallback_identities,
+                &row.previous_version_uuid, false, savepoints, descriptor,
+                *rows, maximum_memory_bytes, peak_memory_bytes, detail)) {
+          return false;
+        }
+        row.temporary_session_visible = temporary_session_uuid.empty() ||
+                                        temporary_session_uuid == session_uuid;
+      }
+      row.creator_visible = StreamingCountCreatorVisible(
+          row.creator_tx, snapshot, transaction_states);
+      for (std::size_t byte = 0; byte < null_bitmap.size(); ++byte) {
+        if (!reader.ReadU8(&null_bitmap[byte])) return false;
+      }
+      for (std::uint32_t column = 0; column < column_count; ++column) {
+        const bool is_null =
+            (null_bitmap[column / 8U] &
+             static_cast<std::uint8_t>(1U << (column % 8U))) != 0;
+        if (is_null) continue;
+        if (version == kScopedRowBinaryNativePacketVersion) {
+          const auto tag = native_tags[column];
+          if ((tag == 3 && !reader.Skip(1)) ||
+              (tag == 4 && !reader.Skip(4)) ||
+              ((tag == 2 || tag == 5 || tag == 6) && !reader.Skip(8)) ||
+              ((tag == 1 || tag == 7) && !reader.SkipPayloadString())) {
+            return false;
+          }
+        } else if (!reader.SkipPayloadString()) {
+          return false;
+        }
+      }
+      if (!AppendStreamingCountRow(
+              std::move(row), row_table_uuid, relation_uuid, savepoints,
+              descriptor, rows, *fallback_identities,
+              maximum_memory_bytes, peak_memory_bytes, result, detail)) {
+        return false;
+      }
+    }
+  }
+  if (!reader.Finish()) {
+    result->cancellation_observed = reader.cancellation_observed();
+    return false;
+  }
+  return true;
+}
+
+std::vector<std::string_view> StreamingCountTextFields(
+    const std::string& line) {
+  std::vector<std::string_view> fields;
+  fields.reserve(12);
+  std::size_t begin = 0;
+  while (begin <= line.size()) {
+    const auto end = line.find('\t', begin);
+    fields.emplace_back(line.data() + begin,
+                        end == std::string::npos ? line.size() - begin
+                                                 : end - begin);
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return fields;
+}
+
+bool DecodeStreamingCountTextFile(
+    const std::string& path,
+    const std::uint64_t authorized_file_bytes,
+    const std::string& relation_uuid,
+    const std::string& session_uuid,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor& snapshot,
+    const std::map<std::uint64_t, std::string>& transaction_states,
+    const SavepointParsedState& savepoints,
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::uint64_t maximum_decoded_bytes,
+    const std::uint64_t maximum_memory_bytes,
+    const std::function<bool()>* cancellation_requested,
+    std::vector<StreamingCountRowVersion>* rows,
+    std::vector<std::string>* fallback_identities,
+    std::uint64_t* peak_memory_bytes,
+    MgaVisibleHeapRelationCountResult* result,
+    HeapReadRuntimeObservation* runtime_observation,
+    std::string* detail) {
+  if (rows == nullptr || fallback_identities == nullptr || result == nullptr ||
+      detail == nullptr) {
+    return false;
+  }
+  const auto open_started = std::chrono::steady_clock::now();
+  std::ifstream input(path, std::ios::binary);
+  const auto observe_wait = [&](const auto started) {
+    if (runtime_observation == nullptr) return;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    if (elapsed < 0 ||
+        static_cast<std::uintmax_t>(elapsed) >
+            std::numeric_limits<std::uint64_t>::max() ||
+        runtime_observation->operator_wait_ns >
+            std::numeric_limits<std::uint64_t>::max() -
+                static_cast<std::uint64_t>(elapsed)) {
+      runtime_observation->complete = false;
+      return;
+    }
+    runtime_observation->operator_wait_ns +=
+        static_cast<std::uint64_t>(elapsed);
+  };
+  observe_wait(open_started);
+  if (!input) {
+    *detail = "heap_count_scoped_text_open_failed";
+    return false;
+  }
+  // Retain only fields 0..9 and the optional temporary-session field. Field
+  // 10 is the encoded value payload and can be arbitrarily large; COUNT(*)
+  // must validate and count row-version metadata without materializing it.
+  std::string line_metadata;
+  std::uint32_t line_tab_count = 0;
+  std::array<char, 64 * 1024> chunk{};
+  std::uint64_t remaining = authorized_file_bytes;
+  const auto consume_line = [&](const std::string& current) {
+    const auto fields = StreamingCountTextFields(current);
+    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
+        fields[1] != "ROW_VERSION") {
+      return true;
+    }
+    StreamingCountRowVersion row;
+    row.creator_tx = ParseU64(std::string(fields[2]));
+    row.event_sequence = ParseU64(std::string(fields[3]));
+    row.deleted = fields[7] == "1";
+    row.previous_sequence = ParseU64(std::string(fields[9]));
+    row.has_previous_version = !fields[8].empty();
+    row.temporary_session_visible =
+        fields.size() < 12 || fields[11].empty() ||
+        fields[11] == session_uuid;
+    row.creator_visible = StreamingCountCreatorVisible(
+        row.creator_tx, snapshot, transaction_states);
+    if (!ParseStreamingCountIdentity(
+            fields[5], fallback_identities, &row.row_uuid, false,
+            savepoints, descriptor, *rows, maximum_memory_bytes,
+            peak_memory_bytes, detail) ||
+        !ParseStreamingCountIdentity(
+            fields[6], fallback_identities, &row.version_uuid, false,
+            savepoints, descriptor, *rows, maximum_memory_bytes,
+            peak_memory_bytes, detail) ||
+        (row.has_previous_version &&
+         !ParseStreamingCountIdentity(
+             fields[8], fallback_identities, &row.previous_version_uuid,
+             false, savepoints, descriptor, *rows, maximum_memory_bytes,
+             peak_memory_bytes, detail))) {
+      return false;
+    }
+    return AppendStreamingCountRow(
+        std::move(row), fields[4], relation_uuid, savepoints, descriptor,
+        rows, *fallback_identities, maximum_memory_bytes,
+        peak_memory_bytes, result, detail);
+  };
+  while (remaining != 0) {
+    if (cancellation_requested != nullptr && *cancellation_requested &&
+        (*cancellation_requested)()) {
+      result->cancellation_observed = true;
+      *detail = "heap_count_cancelled_during_physical_read";
+      return false;
+    }
+    const auto requested = static_cast<std::size_t>(
+        std::min<std::uint64_t>(remaining, chunk.size()));
+    const auto read_started = std::chrono::steady_clock::now();
+    input.read(chunk.data(), static_cast<std::streamsize>(requested));
+    observe_wait(read_started);
+    if (input.gcount() != static_cast<std::streamsize>(requested) ||
+        input.bad()) {
+      *detail = "heap_count_scoped_text_read_failed";
+      return false;
+    }
+    remaining -= requested;
+    if (result->storage_bytes_read >
+            std::numeric_limits<std::uint64_t>::max() - requested ||
+        result->decoded_byte_count >
+            std::numeric_limits<std::uint64_t>::max() - requested) {
+      *detail = "heap_count_byte_counter_overflow";
+      return false;
+    }
+    result->storage_bytes_read += requested;
+    result->decoded_byte_count += requested;
+    if (result->decoded_byte_count > maximum_decoded_bytes) {
+      *detail = "heap_count_maximum_decoded_bytes_exceeded";
+      return false;
+    }
+    for (std::size_t index = 0; index < requested; ++index) {
+      const char value = chunk[index];
+      if (value == '\n') {
+        if (!ObserveStreamingCountMemory(
+                *rows, *fallback_identities, savepoints, descriptor,
+                maximum_memory_bytes, peak_memory_bytes, detail,
+                static_cast<std::uint64_t>(line_metadata.capacity()) + 1) ||
+            !consume_line(line_metadata)) {
+          return false;
+        }
+        line_metadata.clear();
+        line_tab_count = 0;
+        continue;
+      }
+      const bool payload_byte = line_tab_count == 10 && value != '\t';
+      if (payload_byte) continue;
+      if (line_metadata.size() >=
+          kStreamingCountMaximumMetadataStringBytes) {
+        *detail = "heap_count_text_record_exceeds_metadata_bound";
+        return false;
+      }
+      line_metadata.push_back(value);
+      if (value == '\t' &&
+          line_tab_count != std::numeric_limits<std::uint32_t>::max()) {
+        ++line_tab_count;
+      }
+      if ((index & 4095U) == 0 &&
+          !ObserveStreamingCountMemory(
+              *rows, *fallback_identities, savepoints, descriptor,
+              maximum_memory_bytes, peak_memory_bytes, detail,
+              static_cast<std::uint64_t>(line_metadata.capacity()) + 1)) {
+        return false;
+      }
+    }
+  }
+  if (!line_metadata.empty() && !consume_line(line_metadata)) return false;
+  const auto peek_started = std::chrono::steady_clock::now();
+  const auto next = input.peek();
+  observe_wait(peek_started);
+  if (next != std::char_traits<char>::eof()) {
+    *detail = "heap_count_scoped_text_grew_during_read";
+    return false;
+  }
+  return !input.bad();
+}
+
+bool ValidateAndCountStreamingRows(
+    std::vector<StreamingCountRowVersion>* rows,
+    const std::vector<std::string>& fallback_identities,
+    const std::function<bool()>* cancellation_requested,
+    MgaVisibleHeapRelationCountResult* result,
+    std::string* detail,
+    std::vector<std::uint8_t>* visible_source_ordinals = nullptr) {
+  if (rows == nullptr || result == nullptr || detail == nullptr) return false;
+  const auto cancelled = [&](const std::string_view phase) {
+    if (cancellation_requested != nullptr && *cancellation_requested &&
+        (*cancellation_requested)()) {
+      result->cancellation_observed = true;
+      *detail = "heap_count_cancelled_" + std::string(phase);
+      return true;
+    }
+    return false;
+  };
+  if (cancelled("before_chain_validation")) return false;
+  const auto version_less = [&](const auto& left, const auto& right) {
+    if (StreamingCountIdentityLess(left.version_uuid, right.version_uuid,
+                                   fallback_identities)) {
+      return true;
+    }
+    if (StreamingCountIdentityLess(right.version_uuid, left.version_uuid,
+                                   fallback_identities)) {
+      return false;
+    }
+    return left.source_ordinal < right.source_ordinal;
+  };
+  std::sort(rows->begin(), rows->end(), version_less);
+  for (std::size_t index = 0; index < rows->size(); ++index) {
+    if ((index & 1023U) == 0 && cancelled("during_chain_validation")) {
+      return false;
+    }
+    const auto& row = (*rows)[index];
+    if (index != 0 && StreamingCountIdentityEqual(
+                          (*rows)[index - 1].version_uuid, row.version_uuid,
+                          fallback_identities)) {
+      *detail = "duplicate_row_version_uuid";
+      return false;
+    }
+    if (!row.has_previous_version) continue;
+    const auto previous = std::lower_bound(
+        rows->begin(), rows->end(), row,
+        [&](const auto& candidate, const auto& sought) {
+          return StreamingCountIdentityLess(
+              candidate.version_uuid, sought.previous_version_uuid,
+              fallback_identities);
+        });
+    if (previous == rows->end() ||
+        !StreamingCountIdentityEqual(
+            previous->version_uuid, row.previous_version_uuid,
+            fallback_identities)) {
+      *detail = "previous_row_version_missing";
+      return false;
+    }
+    if (!StreamingCountIdentityEqual(previous->row_uuid, row.row_uuid,
+                                     fallback_identities)) {
+      *detail = "previous_row_version_wrong_chain";
+      return false;
+    }
+    if (previous->event_sequence >= row.event_sequence) {
+      *detail = "previous_row_version_not_older";
+      return false;
+    }
+    if (row.previous_sequence != 0 &&
+        previous->event_sequence != row.previous_sequence) {
+      *detail = "previous_row_version_sequence_mismatch";
+      return false;
+    }
+  }
+  if (cancelled("before_visibility_projection")) return false;
+  const auto row_less = [&](const auto& left, const auto& right) {
+    if (StreamingCountIdentityLess(left.row_uuid, right.row_uuid,
+                                   fallback_identities)) {
+      return true;
+    }
+    if (StreamingCountIdentityLess(right.row_uuid, left.row_uuid,
+                                   fallback_identities)) {
+      return false;
+    }
+    if (left.event_sequence != right.event_sequence) {
+      return left.event_sequence < right.event_sequence;
+    }
+    return left.source_ordinal < right.source_ordinal;
+  };
+  std::sort(rows->begin(), rows->end(), row_less);
+  std::size_t begin = 0;
+  while (begin < rows->size()) {
+    if ((begin & 1023U) == 0 && cancelled("during_visibility_projection")) {
+      return false;
+    }
+    std::size_t end = begin + 1;
+    while (end < rows->size() &&
+           StreamingCountIdentityEqual((*rows)[begin].row_uuid,
+                                       (*rows)[end].row_uuid,
+                                       fallback_identities)) {
+      ++end;
+    }
+    const StreamingCountRowVersion* newest_visible = nullptr;
+    for (std::size_t index = begin; index < end; ++index) {
+      if (result->visibility_recheck_count ==
+          std::numeric_limits<std::uint64_t>::max()) {
+        *detail = "heap_count_visibility_counter_overflow";
+        return false;
+      }
+      ++result->visibility_recheck_count;
+      const auto& row = (*rows)[index];
+      if (!row.temporary_session_visible || !row.creator_visible) {
+        if (result->invisible_row_version_count ==
+            std::numeric_limits<std::uint64_t>::max()) {
+          *detail = "heap_count_visibility_counter_overflow";
+          return false;
+        }
+        ++result->invisible_row_version_count;
+        continue;
+      }
+      if (newest_visible == nullptr ||
+          newest_visible->event_sequence < row.event_sequence) {
+        newest_visible = &row;
+      }
+    }
+    if (newest_visible != nullptr) {
+      if (newest_visible->deleted) {
+        if (result->tombstone_row_count ==
+            std::numeric_limits<std::uint64_t>::max()) {
+          *detail = "heap_count_tombstone_counter_overflow";
+          return false;
+        }
+        ++result->tombstone_row_count;
+      } else {
+        if (result->visible_row_count ==
+            std::numeric_limits<std::uint64_t>::max()) {
+          *detail = "heap_count_result_overflow";
+          return false;
+        }
+        ++result->visible_row_count;
+        if (visible_source_ordinals != nullptr) {
+          if (newest_visible->source_ordinal == 0 ||
+              newest_visible->source_ordinal >=
+                  visible_source_ordinals->size()) {
+            *detail = "heap_count_visible_source_ordinal_invalid";
+            return false;
+          }
+          (*visible_source_ordinals)[newest_visible->source_ordinal] = 1;
+        }
+      }
+    }
+    begin = end;
+  }
+  return !cancelled("before_publication");
+}
+
+bool ObserveVisibleStreamMemory(
+    const MgaVisibleHeapRelationStreamRequest& request,
+    const MgaRelationStorageDescriptor& descriptor,
+    const StreamingVisibleSelection& selection,
+    const CrudRowVersionRecord* transient_row,
+    const std::uint64_t consumer_retained_bytes,
+    const std::uint64_t prospective_consumer_growth_bytes,
+    std::uint64_t* peak_memory_bytes,
+    std::string* detail) {
+  if (peak_memory_bytes == nullptr || detail == nullptr) return false;
+  const auto descriptor_bytes =
+      HeapReadStorageDescriptorMemoryBytes(descriptor);
+  std::uint64_t live = sizeof(MgaVisibleHeapRelationStreamResult) +
+                       sizeof(selection) +
+                       static_cast<std::uint64_t>(
+                           selection.visible_source_ordinals.capacity()) +
+                       kStreamingCountScratchBytes;
+  if (!descriptor_bytes.has_value() ||
+      !CheckedHeapReadMemoryAdd(*descriptor_bytes, &live) ||
+      !AccountHeapReadOwnedString(selection.text_path, &live) ||
+      !AccountHeapReadOwnedString(selection.binary_path, &live) ||
+      !CheckedHeapReadMemoryAdd(consumer_retained_bytes, &live) ||
+      !CheckedHeapReadMemoryAdd(prospective_consumer_growth_bytes, &live)) {
+    *detail = "heap_stream_memory_receipt_overflow";
+    return false;
+  }
+  if (transient_row != nullptr) {
+    std::uint64_t row_bytes = sizeof(CrudRowVersionRecord);
+    if (!AccountHeapReadRowDynamicMemoryBytes(*transient_row, &row_bytes) ||
+        !CheckedHeapReadMemoryAdd(row_bytes, &live)) {
+      *detail = "heap_stream_memory_receipt_overflow";
+      return false;
+    }
+  }
+  *peak_memory_bytes = std::max(*peak_memory_bytes, live);
+  if (request.maximum_memory_bytes == 0 ||
+      live > request.maximum_memory_bytes) {
+    *detail = "heap_stream_maximum_memory_bytes_exceeded";
+    return false;
+  }
+  return true;
+}
+
+bool StreamConsumerMemory(
+    const MgaVisibleHeapRelationStreamRequest& request,
+    std::uint64_t* bytes,
+    std::string* detail) {
+  if (bytes == nullptr || detail == nullptr ||
+      !request.consumer_retained_memory_bytes) {
+    if (detail != nullptr) *detail = "heap_stream_consumer_receipt_required";
+    return false;
+  }
+  try {
+    *bytes = request.consumer_retained_memory_bytes();
+    return true;
+  } catch (...) {
+    *detail = "heap_stream_consumer_receipt_probe_failed";
+    return false;
+  }
+}
+
+bool VisibleStreamDeliveryBoundReached(
+    const MgaVisibleHeapRelationStreamRequest& request,
+    const MgaVisibleHeapRelationStreamResult& result) {
+  return request.maximum_delivered_visible_rows.has_value() &&
+         result.delivered_row_count >=
+             *request.maximum_delivered_visible_rows;
+}
+
+bool PublishVisibleStreamSecondPassCounters(
+    const MgaVisibleHeapRelationCountResult& phase,
+    MgaVisibleHeapRelationStreamResult* result,
+    std::string* detail) {
+  if (result == nullptr || detail == nullptr ||
+      phase.storage_bytes_read >
+          std::numeric_limits<std::uint64_t>::max() -
+              result->storage_bytes_read ||
+      phase.decoded_byte_count >
+          std::numeric_limits<std::uint64_t>::max() -
+              result->decoded_byte_count ||
+      phase.storage_bytes_read >
+          std::numeric_limits<std::uint64_t>::max() -
+              result->second_pass_storage_bytes_read ||
+      phase.decoded_byte_count >
+          std::numeric_limits<std::uint64_t>::max() -
+              result->second_pass_decoded_byte_count) {
+    if (detail != nullptr) *detail = "heap_stream_second_pass_counter_overflow";
+    return false;
+  }
+  result->storage_bytes_read += phase.storage_bytes_read;
+  result->decoded_byte_count += phase.decoded_byte_count;
+  result->second_pass_storage_bytes_read += phase.storage_bytes_read;
+  result->second_pass_decoded_byte_count += phase.decoded_byte_count;
+  return true;
+}
+
+bool DeliverVisibleStreamRow(
+    const MgaVisibleHeapRelationStreamRequest& request,
+    const MgaRelationStorageDescriptor& descriptor,
+    const StreamingVisibleSelection& selection,
+    const std::uint64_t source_ordinal,
+    const CrudRowVersionRecord& row,
+    MgaVisibleHeapRelationStreamResult* result,
+    std::string* detail) {
+  if (result == nullptr || detail == nullptr ||
+      !request.consume_visible_row) {
+    if (detail != nullptr) *detail = "heap_stream_consumer_required";
+    return false;
+  }
+  std::uint64_t before = 0;
+  if (!StreamConsumerMemory(request, &before, detail) ||
+      !ObserveVisibleStreamMemory(
+          request, descriptor, selection, &row, before,
+          request.maximum_consumer_growth_bytes_per_row,
+          &result->peak_live_memory_bytes, detail)) {
+    return false;
+  }
+  bool accepted = false;
+  try {
+    accepted = request.consume_visible_row(source_ordinal, row);
+  } catch (...) {
+    *detail = "heap_stream_consumer_threw";
+    return false;
+  }
+  if (!accepted) {
+    *detail = "heap_stream_consumer_refused_row";
+    return false;
+  }
+  std::uint64_t after = 0;
+  if (!StreamConsumerMemory(request, &after, detail) || after < before ||
+      after - before > request.maximum_consumer_growth_bytes_per_row ||
+      !ObserveVisibleStreamMemory(
+          request, descriptor, selection, nullptr, after, 0,
+          &result->peak_live_memory_bytes, detail)) {
+    if (detail->empty()) *detail = "heap_stream_consumer_receipt_invalid";
+    return false;
+  }
+  if (result->delivered_row_count ==
+      std::numeric_limits<std::uint64_t>::max()) {
+    *detail = "heap_stream_delivered_row_count_overflow";
+    return false;
+  }
+  ++result->delivered_row_count;
+  const auto& cancellation_requested =
+      request.borrowed_cancellation_requested == nullptr
+          ? request.cancellation_requested
+          : *request.borrowed_cancellation_requested;
+  try {
+    if (cancellation_requested && cancellation_requested()) {
+      result->cancellation_observed = true;
+      *detail = "heap_stream_cancelled_after_row_delivery";
+      return false;
+    }
+  } catch (...) {
+    *detail = "heap_stream_cancellation_probe_failed";
+    return false;
+  }
+  return true;
+}
+
+bool DecodeVisibleStreamTextFile(
+    const MgaVisibleHeapRelationStreamRequest& request,
+    const std::string& relation_uuid,
+    const StreamingVisibleSelection& selection,
+    std::uint64_t* source_ordinal,
+    MgaVisibleHeapRelationStreamResult* result,
+    std::string* detail) {
+  if (source_ordinal == nullptr || result == nullptr || detail == nullptr ||
+      selection.text_bytes == 0) {
+    return selection.text_bytes == 0;
+  }
+  MgaVisibleHeapRelationCountResult phase;
+  StreamingCountBinaryReader reader(
+      selection.text_path, selection.text_bytes,
+      request.maximum_decoded_bytes_per_pass,
+      request.borrowed_cancellation_requested == nullptr
+          ? &request.cancellation_requested
+          : request.borrowed_cancellation_requested,
+      &phase, nullptr, detail);
+  if (!reader.Open()) return false;
+  std::string line;
+  const auto consume_line = [&]() {
+    const auto fields = StreamingCountTextFields(line);
+    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
+        fields[1] != "ROW_VERSION") {
+      return true;
+    }
+    if (*source_ordinal == std::numeric_limits<std::uint64_t>::max()) {
+      *detail = "heap_stream_source_ordinal_overflow";
+      return false;
+    }
+    ++*source_ordinal;
+    if (*source_ordinal >= selection.visible_source_ordinals.size()) {
+      *detail = "heap_stream_source_ordinal_out_of_range";
+      return false;
+    }
+    if (fields[4] != relation_uuid) {
+      *detail = "heap_stream_relation_identity_mismatch";
+      return false;
+    }
+    if (selection.visible_source_ordinals[*source_ordinal] == 0) return true;
+    CrudRowVersionRecord row;
+    row.creator_tx = ParseU64(std::string(fields[2]));
+    row.event_sequence = ParseU64(std::string(fields[3]));
+    row.sequence = row.event_sequence;
+    row.table_uuid.assign(fields[4]);
+    row.row_uuid.assign(fields[5]);
+    row.version_uuid.assign(fields[6]);
+    row.deleted = fields[7] == "1";
+    row.previous_version_uuid.assign(fields[8]);
+    row.previous_sequence = ParseU64(std::string(fields[9]));
+    row.values = DecodeCrudPairsWithKeyCache(std::string(fields[10]), nullptr);
+    if (fields.size() >= 12) row.temporary_session_uuid.assign(fields[11]);
+    return DeliverVisibleStreamRow(request, result->descriptor, selection,
+                                   *source_ordinal, row, result, detail);
+  };
+  while (reader.remaining() != 0) {
+    std::uint8_t byte = 0;
+    if (!reader.ReadU8(&byte)) return false;
+    if (byte == '\n') {
+      if (!consume_line()) return false;
+      line.clear();
+      if (VisibleStreamDeliveryBoundReached(request, *result)) {
+        return PublishVisibleStreamSecondPassCounters(phase, result, detail);
+      }
+      continue;
+    }
+    std::uint64_t consumer_bytes = 0;
+    if (!StreamConsumerMemory(request, &consumer_bytes, detail) ||
+        line.size() >= request.maximum_memory_bytes ||
+        !ObserveVisibleStreamMemory(
+            request, result->descriptor, selection, nullptr,
+            consumer_bytes + static_cast<std::uint64_t>(line.size()) + 2,
+            0, &result->peak_live_memory_bytes, detail)) {
+      if (detail->empty()) *detail = "heap_stream_text_record_exceeds_memory_grant";
+      return false;
+    }
+    line.push_back(static_cast<char>(byte));
+  }
+  if (!line.empty() && !consume_line()) return false;
+  if (!reader.Finish()) {
+    result->cancellation_observed = reader.cancellation_observed();
+    return false;
+  }
+  return PublishVisibleStreamSecondPassCounters(phase, result, detail);
+}
+
+bool DecodeVisibleStreamBinaryFile(
+    const MgaVisibleHeapRelationStreamRequest& request,
+    const std::string& relation_uuid,
+    const StreamingVisibleSelection& selection,
+    std::uint64_t* source_ordinal,
+    MgaVisibleHeapRelationStreamResult* result,
+    std::string* detail) {
+  if (source_ordinal == nullptr || result == nullptr || detail == nullptr ||
+      selection.binary_bytes == 0) {
+    return selection.binary_bytes == 0;
+  }
+  MgaVisibleHeapRelationCountResult phase;
+  StreamingCountBinaryReader reader(
+      selection.binary_path, selection.binary_bytes,
+      request.maximum_decoded_bytes_per_pass,
+      request.borrowed_cancellation_requested == nullptr
+          ? &request.cancellation_requested
+          : request.borrowed_cancellation_requested,
+      &phase, nullptr, detail);
+  if (!reader.Open()) return false;
+  while (reader.remaining() != 0) {
+    std::array<char, 8> magic{};
+    std::uint16_t version = 0;
+    std::uint16_t flags = 0;
+    std::uint32_t column_count = 0;
+    std::uint64_t row_count = 0;
+    for (auto& byte : magic) {
+      if (!reader.ReadU8(reinterpret_cast<std::uint8_t*>(&byte))) return false;
+    }
+    if (std::string_view(magic.data(), magic.size()) !=
+            kScopedRowBinaryBatchMagic ||
+        !reader.ReadU16(&version) || !reader.ReadU16(&flags) ||
+        !reader.ReadU32(&column_count) || !reader.ReadU64(&row_count) ||
+        (version != 1 && version != kScopedRowBinaryLegacyTypedVersion &&
+         version != kScopedRowBinaryVersion &&
+         version != kScopedRowBinaryNativePacketVersion) ||
+        flags != 0 || column_count == 0 || column_count > 4096) {
+      *detail = "heap_stream_scoped_binary_header_invalid";
+      return false;
+    }
+    std::vector<std::string> field_order;
+    field_order.reserve(column_count);
+    for (std::uint32_t column = 0; column < column_count; ++column) {
+      std::string field;
+      if (!reader.ReadString(&field, false)) return false;
+      field_order.push_back(std::move(field));
+    }
+    std::vector<std::string> field_types;
+    std::vector<std::uint8_t> native_tags;
+    field_types.reserve(column_count);
+    native_tags.reserve(column_count);
+    if (version == kScopedRowBinaryNativePacketVersion) {
+      for (std::uint32_t column = 0; column < column_count; ++column) {
+        std::uint8_t tag = 0;
+        const auto name = reader.ReadU8(&tag)
+                              ? ScopedRowNativePacketTypeName(tag)
+                              : std::string_view{};
+        if (name.empty()) {
+          *detail = "heap_stream_scoped_binary_type_invalid";
+          return false;
+        }
+        native_tags.push_back(tag);
+        field_types.emplace_back(name);
+      }
+    } else if (version >= kScopedRowBinaryLegacyTypedVersion) {
+      for (std::uint32_t column = 0; column < column_count; ++column) {
+        std::string type;
+        if (!reader.ReadString(&type, false)) return false;
+        field_types.push_back(std::move(type));
+      }
+    } else {
+      field_types.assign(column_count, "text");
+    }
+    const bool compact = version >= kScopedRowBinaryVersion;
+    std::uint64_t compact_first_sequence = 0;
+    std::uint64_t compact_creator_tx = 0;
+    std::string compact_table_uuid;
+    std::string compact_session_uuid;
+    std::uint8_t compact_flags = 0;
+    if (compact &&
+        (!reader.ReadU64(&compact_first_sequence) ||
+         !reader.ReadU64(&compact_creator_tx) ||
+         !reader.ReadString(&compact_table_uuid, false) ||
+         !reader.ReadString(&compact_session_uuid, true) ||
+         !reader.ReadU8(&compact_flags) || compact_flags != 0 ||
+         compact_table_uuid != relation_uuid ||
+         (row_count != 0 &&
+          row_count - 1 > std::numeric_limits<std::uint64_t>::max() -
+                              compact_first_sequence))) {
+      *detail = "heap_stream_scoped_binary_compact_header_invalid";
+      return false;
+    }
+    const std::uint64_t bitmap_bytes =
+        (static_cast<std::uint64_t>(column_count) + 7U) / 8U;
+    if (bitmap_bytes > std::numeric_limits<std::size_t>::max()) {
+      *detail = "heap_stream_null_bitmap_overflow";
+      return false;
+    }
+    std::vector<std::uint8_t> null_bitmap(
+        static_cast<std::size_t>(bitmap_bytes));
+    for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
+      if (*source_ordinal == std::numeric_limits<std::uint64_t>::max()) {
+        *detail = "heap_stream_source_ordinal_overflow";
+        return false;
+      }
+      ++*source_ordinal;
+      if (*source_ordinal >= selection.visible_source_ordinals.size()) {
+        *detail = "heap_stream_source_ordinal_out_of_range";
+        return false;
+      }
+      const bool selected =
+          selection.visible_source_ordinals[*source_ordinal] != 0;
+      CrudRowVersionRecord row;
+      std::uint8_t deleted = 0;
+      if (compact) {
+        row.creator_tx = compact_creator_tx;
+        row.event_sequence = compact_first_sequence + row_index;
+        row.sequence = row.event_sequence;
+        row.table_uuid = compact_table_uuid;
+        row.temporary_session_uuid = compact_session_uuid;
+        if (selected) {
+          if (!reader.ReadUuidText(&row.row_uuid) ||
+              !reader.ReadUuidText(&row.version_uuid)) {
+            return false;
+          }
+        } else if (!reader.Skip(32)) {
+          return false;
+        }
+      } else {
+        std::string table_uuid;
+        std::string row_uuid;
+        std::string version_uuid;
+        std::string previous_uuid;
+        std::string session_uuid;
+        if (!reader.ReadU64(&row.creator_tx) ||
+            !reader.ReadU64(&row.event_sequence) ||
+            !reader.ReadU64(&row.previous_sequence) ||
+            !reader.ReadU8(&deleted) ||
+            !reader.ReadString(&table_uuid, false) ||
+            !reader.ReadString(&row_uuid, false) ||
+            !reader.ReadString(&version_uuid, false) ||
+            !reader.ReadString(&previous_uuid, true) ||
+            !reader.ReadString(&session_uuid, true) ||
+            table_uuid != relation_uuid) {
+          *detail = "heap_stream_scoped_binary_row_header_invalid";
+          return false;
+        }
+        row.sequence = row.event_sequence;
+        row.deleted = deleted != 0;
+        if (selected) {
+          row.table_uuid = std::move(table_uuid);
+          row.row_uuid = std::move(row_uuid);
+          row.version_uuid = std::move(version_uuid);
+          row.previous_version_uuid = std::move(previous_uuid);
+          row.temporary_session_uuid = std::move(session_uuid);
+        }
+      }
+      for (auto& byte : null_bitmap) {
+        if (!reader.ReadU8(&byte)) return false;
+      }
+      if (selected) row.values.reserve(column_count);
+      for (std::uint32_t column = 0; column < column_count; ++column) {
+        const bool is_null =
+            (null_bitmap[column / 8U] &
+             static_cast<std::uint8_t>(1U << (column % 8U))) != 0;
+        if (is_null) {
+          if (selected) row.values.push_back({field_order[column], "<NULL>"});
+          continue;
+        }
+        if (!selected) {
+          if (version == kScopedRowBinaryNativePacketVersion) {
+            const auto tag = native_tags[column];
+            if ((tag == 3 && !reader.Skip(1)) ||
+                (tag == 4 && !reader.Skip(4)) ||
+                ((tag == 2 || tag == 5 || tag == 6) && !reader.Skip(8)) ||
+                ((tag == 1 || tag == 7) && !reader.SkipPayloadString())) {
+              return false;
+            }
+          } else if (!reader.SkipPayloadString()) {
+            return false;
+          }
+          continue;
+        }
+        std::string payload;
+        if (version == kScopedRowBinaryNativePacketVersion) {
+          const auto tag = native_tags[column];
+          const std::size_t fixed =
+              tag == 3 ? 1 : (tag == 4 ? 4 :
+                              ((tag == 2 || tag == 5 || tag == 6) ? 8 : 0));
+          if (fixed != 0) {
+            if (!reader.ReadFixedPayload(
+                    &payload, fixed, request.maximum_memory_bytes)) {
+              return false;
+            }
+          } else if (!reader.ReadPayloadString(
+                         &payload, request.maximum_memory_bytes)) {
+            return false;
+          }
+        } else if (!reader.ReadPayloadString(
+                       &payload, request.maximum_memory_bytes)) {
+          return false;
+        }
+        row.values.push_back(
+            {field_order[column],
+             ScopedRowBinaryMaterializeValue(field_types[column], payload)});
+      }
+      if (selected &&
+          !DeliverVisibleStreamRow(request, result->descriptor, selection,
+                                   *source_ordinal, row, result, detail)) {
+        return false;
+      }
+      if (VisibleStreamDeliveryBoundReached(request, *result)) {
+        return PublishVisibleStreamSecondPassCounters(phase, result, detail);
+      }
+    }
+  }
+  if (!reader.Finish()) {
+    result->cancellation_observed = reader.cancellation_observed();
+    return false;
+  }
+  return PublishVisibleStreamSecondPassCounters(phase, result, detail);
+}
+
+}  // namespace
+
+static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
+    const EngineRequestContext& context,
+    const MgaVisibleHeapRelationCountRequest& request,
+    HeapReadRuntimeObservation* runtime_observation,
+    const PreparedMgaHeapReadAuthority* prepared_authority = nullptr,
+    StreamingVisibleSelection* visible_selection = nullptr) {
+  MgaVisibleHeapRelationCountResult result;
+  result.memory_grant_bytes = request.maximum_memory_bytes;
+  const auto refuse = [&](std::string detail,
+                          const MgaHeapReadFailureCategoryV1 category) {
+    result.ok = false;
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_count", std::move(detail));
+    result.failure_category =
+        result.cancellation_observed
+            ? MgaHeapReadFailureCategoryV1::kCancellation
+            : category;
+    result.visible_row_count = 0;
+    result.current_live_memory_bytes = 0;
+    result.memory_receipt_complete = false;
+    return result;
+  };
+  const auto& cancellation_requested =
+      request.borrowed_cancellation_requested == nullptr
+          ? request.cancellation_requested
+          : *request.borrowed_cancellation_requested;
+  const auto& relation_uuid = request.borrowed_relation_uuid == nullptr
+                                  ? request.relation_uuid
+                                  : *request.borrowed_relation_uuid;
+  HeapReadRuntimeObservation owned_runtime_observation;
+  auto* const effective_runtime_observation =
+      runtime_observation == nullptr ? &owned_runtime_observation
+                                     : runtime_observation;
+  if (relation_uuid.empty() || context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty()) {
+    return refuse("exact_relation_transaction_and_snapshot_required",
+                  MgaHeapReadFailureCategoryV1::kMgaContext);
+  }
+  if (request.maximum_decoded_bytes == 0 ||
+      request.maximum_memory_bytes == 0) {
+    return refuse("nonzero_heap_count_resource_bounds_required",
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  if (!cancellation_requested) {
+    return refuse("engine_cancellation_probe_required",
+                  MgaHeapReadFailureCategoryV1::kInvalidRequest);
+  }
+  if (cancellation_requested()) {
+    result.cancellation_observed = true;
+    return refuse("heap_count_cancelled_before_descriptor_load",
+                  MgaHeapReadFailureCategoryV1::kCancellation);
+  }
+
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(context.database_path);
+  PreparedMgaHeapReadAuthority owned_authority;
+  if (prepared_authority == nullptr) {
+    auto prepared = PrepareMgaHeapReadAuthority(context, relation_uuid);
+    if (!prepared.ok) {
+      result.diagnostic = std::move(prepared.diagnostic);
+      result.failure_category = MgaHeapReadFailureCategoryV1::kCatalog;
+      return result;
+    }
+    owned_authority = std::move(prepared.authority);
+    prepared_authority = &owned_authority;
+  }
+  if (prepared_authority->relation_uuid != relation_uuid ||
+      prepared_authority->database_uuid != context.database_uuid.canonical ||
+      prepared_authority->statement_uuid != context.statement_uuid.canonical ||
+      prepared_authority->transaction_uuid !=
+          context.transaction_uuid.canonical ||
+      prepared_authority->statement_snapshot_uuid !=
+          context.statement_snapshot_uuid.canonical ||
+      prepared_authority->statement_metadata_snapshot_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      prepared_authority->catalog_epoch_uuid !=
+          context.catalog_epoch_uuid.canonical ||
+      prepared_authority->authorization_authority_uuid !=
+          context.authorization_context.authority_uuid.canonical ||
+      prepared_authority->catalog_generation !=
+          context.catalog_generation_id ||
+      prepared_authority->security_epoch !=
+          context.authorization_context.security_epoch ||
+      prepared_authority->policy_epoch !=
+          context.authorization_context.policy_epoch ||
+      prepared_authority->local_transaction_id !=
+          context.local_transaction_id ||
+      !prepared_authority->snapshot_vector.inventory_authoritative ||
+      !prepared_authority->snapshot_vector.complete) {
+    return refuse("prepared_heap_count_authority_is_stale",
+                  MgaHeapReadFailureCategoryV1::kMgaContext);
+  }
+  result.descriptor = prepared_authority->descriptor;
+  result.current_relation_base_generation =
+      prepared_authority->current_relation_base_generation;
+
+  BoundedScopedRowReadControl savepoint_control;
+  savepoint_control.maximum_row_versions =
+      std::numeric_limits<std::uint64_t>::max();
+  savepoint_control.maximum_bytes = request.maximum_decoded_bytes;
+  savepoint_control.maximum_memory_bytes = request.maximum_memory_bytes;
+  savepoint_control.cancellation_requested = &cancellation_requested;
+  savepoint_control.runtime_observation = effective_runtime_observation;
+  SavepointParsedState savepoints;
+  const auto descriptor_memory =
+      HeapReadStorageDescriptorMemoryBytes(result.descriptor);
+  if (!descriptor_memory.has_value()) {
+    return refuse("heap_count_authority_memory_receipt_overflow",
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  savepoint_control.retained_parent_memory_bytes =
+      sizeof(result) + *descriptor_memory + kStreamingCountScratchBytes;
+  if (!ParseSavepointsBounded(
+          context, &savepoint_control,
+          savepoint_control.retained_parent_memory_bytes, &savepoints)) {
+    result.cancellation_observed = savepoint_control.cancellation_observed;
+    result.peak_live_memory_bytes = savepoint_control.peak_live_memory_bytes;
+    return refuse(savepoint_control.refusal_detail.empty()
+                      ? "bounded_savepoint_read_failed"
+                      : savepoint_control.refusal_detail,
+                  savepoint_control.failure_category ==
+                          MgaHeapReadFailureCategoryV1::kNone
+                      ? MgaHeapReadFailureCategoryV1::kResource
+                      : savepoint_control.failure_category);
+  }
+  result.storage_bytes_read =
+      effective_runtime_observation->storage_bytes_read;
+
+  std::vector<StreamingCountRowVersion> rows;
+  std::vector<std::string> fallback_identities;
+  std::string detail;
+  result.peak_live_memory_bytes = savepoint_control.peak_live_memory_bytes;
+  if (!ObserveStreamingCountMemory(
+          rows, fallback_identities, savepoints, result.descriptor,
+          request.maximum_memory_bytes, &result.peak_live_memory_bytes,
+          &detail)) {
+    return refuse(detail, MgaHeapReadFailureCategoryV1::kResource);
+  }
+
+  const std::string text_path = ScopedRowStorePath(context, relation_uuid);
+  const std::string binary_path =
+      ScopedRowBinaryStorePath(context, relation_uuid);
+  const bool text_exists = FileExistsAndNotEmpty(text_path);
+  const bool binary_exists = FileExistsAndNotEmpty(binary_path);
+  result.scoped_physical_segment_used = text_exists || binary_exists;
+  const auto authorize_file = [&](const std::string& path,
+                                  std::uint64_t* bytes) {
+    std::error_code ignored;
+    const auto size = std::filesystem::file_size(path, ignored);
+    if (bytes == nullptr || ignored ||
+        size == static_cast<std::uintmax_t>(-1) ||
+        size > std::numeric_limits<std::uint64_t>::max()) {
+      detail = "heap_count_scoped_segment_size_unavailable";
+      return false;
+    }
+    *bytes = static_cast<std::uint64_t>(size);
+    return true;
+  };
+  std::uint64_t text_bytes = 0;
+  std::uint64_t binary_bytes = 0;
+  if ((text_exists && !authorize_file(text_path, &text_bytes)) ||
+      (binary_exists && !authorize_file(binary_path, &binary_bytes)) ||
+      text_bytes > request.maximum_decoded_bytes ||
+      binary_bytes > request.maximum_decoded_bytes - text_bytes) {
+    return refuse(detail.empty()
+                      ? "heap_count_maximum_decoded_bytes_exceeded"
+                      : detail,
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  if (visible_selection != nullptr) {
+    visible_selection->text_path = text_path;
+    visible_selection->binary_path = binary_path;
+    visible_selection->text_bytes = text_bytes;
+    visible_selection->binary_bytes = binary_bytes;
+  }
+  if (text_exists &&
+      !DecodeStreamingCountTextFile(
+          text_path, text_bytes, relation_uuid,
+          context.session_uuid.canonical, prepared_authority->snapshot_vector,
+          prepared_authority->transaction_states, savepoints,
+          result.descriptor, request.maximum_decoded_bytes,
+          request.maximum_memory_bytes, &cancellation_requested, &rows,
+          &fallback_identities, &result.peak_live_memory_bytes, &result,
+          effective_runtime_observation, &detail)) {
+    return refuse(detail.empty() ? "heap_count_scoped_text_decode_failed"
+                                 : detail,
+                  result.cancellation_observed
+                      ? MgaHeapReadFailureCategoryV1::kCancellation
+                      : MgaHeapReadFailureCategoryV1::kCorruptStorage);
+  }
+  if (binary_exists &&
+      !DecodeStreamingCountBinaryFile(
+          binary_path, binary_bytes, relation_uuid,
+          context.session_uuid.canonical, prepared_authority->snapshot_vector,
+          prepared_authority->transaction_states, savepoints,
+          result.descriptor, request.maximum_decoded_bytes,
+          request.maximum_memory_bytes, &cancellation_requested, &rows,
+          &fallback_identities, &result.peak_live_memory_bytes, &result,
+          effective_runtime_observation, &detail)) {
+    return refuse(detail.empty() ? "heap_count_scoped_binary_decode_failed"
+                                 : detail,
+                  result.cancellation_observed
+                      ? MgaHeapReadFailureCategoryV1::kCancellation
+                      : MgaHeapReadFailureCategoryV1::kCorruptStorage);
+  }
+  if (visible_selection != nullptr) {
+    if (result.scanned_row_version_count ==
+            std::numeric_limits<std::uint64_t>::max() ||
+        result.scanned_row_version_count + 1 >
+            std::numeric_limits<std::size_t>::max()) {
+      return refuse("heap_count_visible_source_bitmap_overflow",
+                    MgaHeapReadFailureCategoryV1::kResource);
+    }
+    const auto metadata_memory = StreamingCountMetadataMemoryBytes(
+        rows, fallback_identities, savepoints, result.descriptor);
+    std::uint64_t selection_memory = 0;
+    if (!metadata_memory.has_value() ||
+        !CheckedHeapReadMemoryAdd(
+            result.scanned_row_version_count + 1, &selection_memory) ||
+        !CheckedHeapReadMemoryAdd(*metadata_memory, &selection_memory) ||
+        selection_memory > request.maximum_memory_bytes) {
+      return refuse("heap_count_visible_source_bitmap_exceeds_memory_grant",
+                    MgaHeapReadFailureCategoryV1::kResource);
+    }
+    result.peak_live_memory_bytes =
+        std::max(result.peak_live_memory_bytes, selection_memory);
+    visible_selection->visible_source_ordinals.assign(
+        static_cast<std::size_t>(result.scanned_row_version_count + 1), 0);
+  }
+  if (!ValidateAndCountStreamingRows(
+          &rows, fallback_identities, &cancellation_requested, &result,
+          &detail,
+          visible_selection == nullptr
+              ? nullptr
+              : &visible_selection->visible_source_ordinals)) {
+    return refuse(detail.empty() ? "heap_count_visibility_failed" : detail,
+                  result.cancellation_observed
+                      ? MgaHeapReadFailureCategoryV1::kCancellation
+                      : MgaHeapReadFailureCategoryV1::kCorruptStorage);
+  }
+  if (!ObserveStreamingCountMemory(
+          rows, fallback_identities, savepoints, result.descriptor,
+          request.maximum_memory_bytes, &result.peak_live_memory_bytes,
+          &detail)) {
+    return refuse(detail, MgaHeapReadFailureCategoryV1::kResource);
+  }
+  result.ok = true;
+  result.failure_category = MgaHeapReadFailureCategoryV1::kNone;
+  result.diagnostic = OkDiagnostic();
+  result.current_live_memory_bytes = sizeof(result) + *descriptor_memory;
+  if (!AccountHeapReadOwnedString(result.diagnostic.code,
+                                  &result.current_live_memory_bytes) ||
+      !AccountHeapReadOwnedString(result.diagnostic.message_key,
+                                  &result.current_live_memory_bytes) ||
+      !AccountHeapReadOwnedString(result.diagnostic.detail,
+                                  &result.current_live_memory_bytes)) {
+    return refuse("heap_count_memory_receipt_overflow",
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  result.peak_live_memory_bytes = std::max(
+      result.peak_live_memory_bytes, result.current_live_memory_bytes);
+  result.memory_receipt_complete =
+      result.current_live_memory_bytes <= result.peak_live_memory_bytes &&
+      result.peak_live_memory_bytes <= result.memory_grant_bytes;
+  if (!result.memory_receipt_complete) {
+    return refuse("heap_count_memory_receipt_incomplete",
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  effective_runtime_observation->storage_bytes_read =
+      result.storage_bytes_read;
+  effective_runtime_observation->decoded_bytes = result.decoded_byte_count;
+  return result;
+}
+
+MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelation(
+    const EngineRequestContext& context,
+    const MgaVisibleHeapRelationCountRequest& request) {
+  return CountVisibleMgaHeapRelationObserved(context, request, nullptr);
+}
+
+MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelation(
+    const EngineRequestContext& context,
+    const MgaVisibleHeapRelationStreamRequest& request) {
+  MgaVisibleHeapRelationStreamResult result;
+  result.memory_grant_bytes = request.maximum_memory_bytes;
+  const auto refuse = [&](std::string detail,
+                          const MgaHeapReadFailureCategoryV1 category) {
+    result.ok = false;
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_stream", std::move(detail));
+    result.failure_category =
+        result.cancellation_observed
+            ? MgaHeapReadFailureCategoryV1::kCancellation
+            : category;
+    result.memory_receipt_complete = false;
+    return result;
+  };
+  const auto& relation_uuid = request.borrowed_relation_uuid == nullptr
+                                  ? request.relation_uuid
+                                  : *request.borrowed_relation_uuid;
+  const auto& cancellation_requested =
+      request.borrowed_cancellation_requested == nullptr
+          ? request.cancellation_requested
+          : *request.borrowed_cancellation_requested;
+  if (relation_uuid.empty() || request.maximum_decoded_bytes_per_pass == 0 ||
+      request.maximum_memory_bytes == 0 || !cancellation_requested ||
+      !request.prepare_consumer_for_visible_rows ||
+      !request.consumer_retained_memory_bytes ||
+      !request.consume_visible_row) {
+    return refuse("complete_stream_identity_bounds_and_callbacks_required",
+                  MgaHeapReadFailureCategoryV1::kInvalidRequest);
+  }
+  if (cancellation_requested()) {
+    result.cancellation_observed = true;
+    return refuse("heap_stream_cancelled_before_visibility_pass",
+                  MgaHeapReadFailureCategoryV1::kCancellation);
+  }
+
+  // The same recursive engine inventory guard spans both physical passes.
+  // Engine-owned MGA append/finality routes therefore cannot change the
+  // authorized segment extents between visibility selection and delivery.
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(context.database_path);
+  StreamingVisibleSelection selection;
+  MgaVisibleHeapRelationCountRequest count_request;
+  count_request.borrowed_relation_uuid = &relation_uuid;
+  count_request.maximum_decoded_bytes =
+      request.maximum_decoded_bytes_per_pass;
+  count_request.maximum_memory_bytes = request.maximum_memory_bytes;
+  count_request.borrowed_cancellation_requested = &cancellation_requested;
+  auto counted = CountVisibleMgaHeapRelationObserved(
+      context, count_request, nullptr, nullptr, &selection);
+  result.visible_row_count = counted.visible_row_count;
+  result.current_relation_base_generation =
+      counted.current_relation_base_generation;
+  result.scanned_row_version_count = counted.scanned_row_version_count;
+  result.decoded_byte_count = counted.decoded_byte_count;
+  result.storage_bytes_read = counted.storage_bytes_read;
+  result.visibility_recheck_count = counted.visibility_recheck_count;
+  result.invisible_row_version_count = counted.invisible_row_version_count;
+  result.tombstone_row_count = counted.tombstone_row_count;
+  result.scoped_physical_segment_used =
+      counted.scoped_physical_segment_used;
+  result.cancellation_observed = counted.cancellation_observed;
+  result.peak_live_memory_bytes = counted.peak_live_memory_bytes;
+  if (!counted.ok) {
+    result.diagnostic = std::move(counted.diagnostic);
+    result.failure_category = counted.failure_category;
+    return result;
+  }
+  result.descriptor = std::move(counted.descriptor);
+  result.complete_mga_chain_validation = true;
+
+  const auto exact_extent = [](const std::string& path,
+                               const std::uint64_t expected) {
+    std::error_code ignored;
+    const bool exists = std::filesystem::exists(path, ignored);
+    if (ignored) return false;
+    if (!exists) return expected == 0;
+    const auto size = std::filesystem::file_size(path, ignored);
+    return !ignored && size != static_cast<std::uintmax_t>(-1) &&
+           size <= std::numeric_limits<std::uint64_t>::max() &&
+           static_cast<std::uint64_t>(size) == expected;
+  };
+  if (!exact_extent(selection.text_path, selection.text_bytes) ||
+      !exact_extent(selection.binary_path, selection.binary_bytes)) {
+    return refuse("heap_stream_scoped_segment_changed_between_passes",
+                  MgaHeapReadFailureCategoryV1::kCorruptStorage);
+  }
+  std::uint64_t consumer_bytes = 0;
+  std::string detail;
+  auto prepared_request = request;
+  bool consumer_prepared = false;
+  try {
+    consumer_prepared = prepared_request.prepare_consumer_for_visible_rows(
+        result.descriptor, result.visible_row_count,
+        &prepared_request.maximum_consumer_growth_bytes_per_row);
+  } catch (...) {
+    return refuse("heap_stream_consumer_preparation_threw",
+                  MgaHeapReadFailureCategoryV1::kInvalidRequest);
+  }
+  if (!consumer_prepared) {
+    return refuse("heap_stream_consumer_preparation_refused",
+                  MgaHeapReadFailureCategoryV1::kInvalidRequest);
+  }
+  const auto delivery_target =
+      request.maximum_delivered_visible_rows.has_value()
+          ? std::min(result.visible_row_count,
+                     *request.maximum_delivered_visible_rows)
+          : result.visible_row_count;
+  if (delivery_target != 0 &&
+      prepared_request.maximum_consumer_growth_bytes_per_row == 0) {
+    return refuse("heap_stream_consumer_growth_bound_required",
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  if (!StreamConsumerMemory(prepared_request, &consumer_bytes, &detail) ||
+      !ObserveVisibleStreamMemory(
+          prepared_request, result.descriptor, selection, nullptr,
+          consumer_bytes, 0,
+          &result.peak_live_memory_bytes, &detail)) {
+    return refuse(detail.empty() ? "heap_stream_memory_admission_failed"
+                                 : detail,
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  std::uint64_t source_ordinal = 0;
+  bool value_pass_ok = true;
+  if (delivery_target != 0) {
+    value_pass_ok = DecodeVisibleStreamTextFile(
+        prepared_request, relation_uuid, selection, &source_ordinal, &result,
+        &detail);
+    if (value_pass_ok &&
+        !VisibleStreamDeliveryBoundReached(prepared_request, result)) {
+      value_pass_ok = DecodeVisibleStreamBinaryFile(
+          prepared_request, relation_uuid, selection, &source_ordinal, &result,
+          &detail);
+    }
+  }
+  result.second_pass_scanned_row_version_count = source_ordinal;
+  if (!value_pass_ok) {
+    const bool cancelled = result.cancellation_observed ||
+                           detail.find("cancelled") != std::string::npos;
+    result.cancellation_observed = cancelled;
+    const bool resource = detail.find("memory") != std::string::npos ||
+                          detail.find("maximum") != std::string::npos ||
+                          detail.find("overflow") != std::string::npos;
+    return refuse(detail.empty() ? "heap_stream_value_pass_failed" : detail,
+                  cancelled
+                      ? MgaHeapReadFailureCategoryV1::kCancellation
+                      : (resource ? MgaHeapReadFailureCategoryV1::kResource
+                                  : MgaHeapReadFailureCategoryV1::kCorruptStorage));
+  }
+  try {
+    if (cancellation_requested()) {
+      result.cancellation_observed = true;
+      return refuse("heap_stream_cancelled_before_value_publication",
+                    MgaHeapReadFailureCategoryV1::kCancellation);
+    }
+  } catch (...) {
+    return refuse("heap_stream_cancellation_probe_failed",
+                  MgaHeapReadFailureCategoryV1::kCancellation);
+  }
+  result.complete_value_delivery =
+      result.delivered_row_count == result.visible_row_count;
+  result.delivery_stopped_by_bound =
+      request.maximum_delivered_visible_rows.has_value() &&
+      *request.maximum_delivered_visible_rows < result.visible_row_count &&
+      result.delivered_row_count == *request.maximum_delivered_visible_rows;
+  if (result.delivered_row_count != delivery_target ||
+      source_ordinal > result.scanned_row_version_count ||
+      (!request.maximum_delivered_visible_rows.has_value() &&
+       (source_ordinal != result.scanned_row_version_count ||
+        !result.complete_value_delivery)) ||
+      (!result.complete_value_delivery &&
+       !result.delivery_stopped_by_bound)) {
+    return refuse("heap_stream_visibility_selection_cardinality_mismatch",
+                  MgaHeapReadFailureCategoryV1::kCorruptStorage);
+  }
+  if (!exact_extent(selection.text_path, selection.text_bytes) ||
+      !exact_extent(selection.binary_path, selection.binary_bytes)) {
+    return refuse("heap_stream_scoped_segment_changed_during_value_pass",
+                  MgaHeapReadFailureCategoryV1::kCorruptStorage);
+  }
+  result.exact_segment_extent_revalidated = true;
+  if (!StreamConsumerMemory(prepared_request, &consumer_bytes, &detail) ||
+      !ObserveVisibleStreamMemory(
+          prepared_request, result.descriptor, selection, nullptr,
+          consumer_bytes, 0,
+          &result.peak_live_memory_bytes, &detail)) {
+    return refuse(detail.empty() ? "heap_stream_final_memory_receipt_failed"
+                                 : detail,
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  const auto descriptor_bytes =
+      HeapReadStorageDescriptorMemoryBytes(result.descriptor);
+  result.current_live_memory_bytes =
+      sizeof(result) + sizeof(selection) +
+      static_cast<std::uint64_t>(
+          selection.visible_source_ordinals.capacity()) +
+      consumer_bytes;
+  if (!descriptor_bytes.has_value() ||
+      !CheckedHeapReadMemoryAdd(*descriptor_bytes,
+                                &result.current_live_memory_bytes) ||
+      !AccountHeapReadOwnedString(selection.text_path,
+                                  &result.current_live_memory_bytes) ||
+      !AccountHeapReadOwnedString(selection.binary_path,
+                                  &result.current_live_memory_bytes)) {
+    return refuse("heap_stream_final_memory_receipt_overflow",
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  result.peak_live_memory_bytes = std::max(
+      result.peak_live_memory_bytes, result.current_live_memory_bytes);
+  result.memory_receipt_complete =
+      result.current_live_memory_bytes <= result.peak_live_memory_bytes &&
+      result.peak_live_memory_bytes <= result.memory_grant_bytes;
+  if (!result.memory_receipt_complete) {
+    return refuse("heap_stream_final_memory_receipt_incomplete",
+                  MgaHeapReadFailureCategoryV1::kResource);
+  }
+  result.ok = true;
+  result.failure_category = MgaHeapReadFailureCategoryV1::kNone;
+  result.diagnostic = OkDiagnostic();
+  return result;
 }
 
 EngineApiDiagnostic AppendMgaRowVersion(const EngineRequestContext& context,
@@ -9839,6 +14342,143 @@ EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
   return OkDiagnostic();
 }
 
+EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+    const EngineRequestContext& context,
+    const CrudTableRecord& table,
+    const std::vector<CrudIndexRecord>& indexes,
+    MgaRelationStorageDescriptor* descriptor) {
+  constexpr const char* kOperation =
+      "mga.relation_metadata.table_create.sealed_descriptor_v2";
+  if (descriptor == nullptr) {
+    return MakeInvalidRequestDiagnostic(kOperation, "descriptor_output_required");
+  }
+  *descriptor = {};
+  if (context.database_path.empty()) {
+    return MakeInvalidRequestDiagnostic(kOperation, "database_path_required");
+  }
+  const auto authority =
+      ValidateMgaMutatingTransactionAuthority(context, kOperation);
+  if (authority.error) return authority;
+  if (!CanonicalNonNilMigrationUuid(table.table_uuid) ||
+      table.columns.empty()) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "table_identity_or_columns_invalid");
+  }
+
+  std::vector<std::string> allocator_lines;
+  const auto reservation = ReserveEventSequenceRange(
+      context, "relation_metadata", MetadataStorePath(context), 1,
+      [&context]() { return ScanNextMetadataEventSequence(context); },
+      &allocator_lines);
+  if (!reservation.ok) return reservation.diagnostic;
+  const auto abandon_reservation = [&]() {
+    AbandonDeferredEventSequenceReservation(reservation);
+    allocator_lines.clear();
+  };
+
+  CrudTableRecord writable = table;
+  writable.creator_tx = context.local_transaction_id;
+  writable.event_sequence = reservation.first;
+  auto base_fields = BuildPersistedMgaRelationDescriptorFields(
+      context, writable, indexes);
+  auto relation_descriptor =
+      DeserializeMgaRelationStorageDescriptor(base_fields);
+  EngineApiDiagnostic material_diagnostic;
+  if (!BindFreshCanonicalTextColumnIdentitiesV2(
+          &writable, &relation_descriptor, &material_diagnostic)) {
+    abandon_reservation();
+    return material_diagnostic;
+  }
+  const auto validated =
+      ValidateMgaRelationStorageDescriptor(relation_descriptor);
+  if (validated.error) {
+    abandon_reservation();
+    return validated;
+  }
+
+  const bool requires_contextual_policy = std::ranges::any_of(
+      relation_descriptor.columns, [](const auto& column) {
+        return column.value_descriptor.descriptor_uuid.canonical ==
+                   kCanonicalTextDescriptorUuid &&
+               !column.charset_uuid.empty() &&
+               !column.collation_uuid.empty();
+      });
+  EngineContextualTextPolicyRowSetV2 policy_rows;
+  if (requires_contextual_policy) {
+    const auto policy =
+        LoadCurrentEngineContextualTextPolicyRowSetForPublicationV2();
+    if (!policy.ok) {
+      abandon_reservation();
+      return policy.diagnostic;
+    }
+    policy_rows = policy.rows;
+  }
+  MgaSealedContextualTextDescriptorMaterialV2 material;
+  if (!BuildMgaSealedContextualTextDescriptorMaterialV2(
+          context, writable, std::move(relation_descriptor), policy_rows,
+          &material, &material_diagnostic)) {
+    abandon_reservation();
+    return material_diagnostic;
+  }
+
+  std::vector<std::pair<std::string, std::string>> complete_fields;
+  complete_fields.reserve(material.sealed_set.descriptor_fields.size());
+  for (const auto& field : material.sealed_set.descriptor_fields) {
+    complete_fields.emplace_back(
+        std::string(field.key_raw_bytes.begin(), field.key_raw_bytes.end()),
+        std::string(field.value_raw_bytes.begin(), field.value_raw_bytes.end()));
+  }
+  if (complete_fields.empty() ||
+      complete_fields.size() !=
+          material.sealed_set.descriptor_field_count ||
+      complete_fields.back().first !=
+          kMgaContextualTextSidecarSetSealKeyV2 ||
+      complete_fields.back().second.size() !=
+          material.sealed_set.seal_sha256.size()) {
+    abandon_reservation();
+    return ContextualTextMgaDiagnostic(
+        "sealed descriptor vector header or final seal is invalid");
+  }
+
+  namespace stf = sealed_table_metadata_field_v2;
+  std::vector<std::string> fields(stf::kFieldCount);
+  fields[stf::kMagic] = kRowStoreMagic;
+  fields[stf::kRecordKind] = std::string(kSealedTableMetadataKindV2);
+  fields[stf::kCreatorTx] = std::to_string(writable.creator_tx);
+  fields[stf::kEventSequence] = std::to_string(writable.event_sequence);
+  fields[stf::kFormat] = std::string(kSealedTableMetadataFormatV2);
+  fields[stf::kSealState] = "sealed";
+  fields[stf::kTableUuid] = writable.table_uuid;
+  fields[stf::kDefaultName] = EncodeCrudText(writable.default_name);
+  fields[stf::kColumns] = EncodeCrudPairs(writable.columns);
+  fields[stf::kTemporary] = writable.temporary ? "1" : "0";
+  fields[stf::kTemporaryScope] = writable.temporary_scope;
+  fields[stf::kTemporarySessionUuid] = writable.temporary_session_uuid;
+  fields[stf::kOnCommitAction] = writable.on_commit_action;
+  fields[stf::kRelationDescriptorUuid] =
+      material.relation_descriptor.descriptor_uuid.canonical;
+  fields[stf::kRelationDescriptorGeneration] =
+      std::to_string(material.relation_descriptor.descriptor_generation);
+  fields[stf::kDescriptorFieldCount] =
+      std::to_string(material.sealed_set.descriptor_field_count);
+  fields[stf::kDescriptorFieldBytes] =
+      std::to_string(material.sealed_set.descriptor_field_bytes);
+  fields[stf::kContextualSidecarCount] =
+      std::to_string(material.sealed_set.contextual_sidecar_count);
+  fields[stf::kDescriptorFields] = EncodeCrudPairs(complete_fields);
+  if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
+    abandon_reservation();
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "sealed_table_descriptor_append_failed");
+  }
+  // The sealed line is the atomic recovery authority. The allocator record is
+  // acceleration only and is published after that one visibility barrier.
+  (void)AppendDeferredEventSequenceAllocatorLines(
+      context, &allocator_lines, nullptr);
+  *descriptor = std::move(material.relation_descriptor);
+  return OkDiagnostic();
+}
+
 EngineApiDiagnostic AppendMgaConstraintMutationBatch(
     const EngineRequestContext& context,
     const MgaConstraintMutationBatch& batch) {
@@ -10561,6 +15201,678 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
       {"new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid},
       {"prior_catalog_generation", std::to_string(request.prior_catalog_generation)},
       {"new_catalog_generation", std::to_string(request.new_catalog_generation)},
+      {"decision_sha256", result.decision_sha256}};
+  return result;
+}
+
+MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
+    const EngineRequestContext& context,
+    const MgaInt32IdentityMigrationRequest& request) {
+  constexpr const char* kOperation = "mga.int32_identity_migration";
+  MgaInt32IdentityMigrationResult result;
+  auto refuse = [&](std::string code, std::string key, std::string detail) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        std::move(code), std::move(key), std::move(detail));
+    return result;
+  };
+  if (context.database_path.empty() || context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty()) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "int32_identity_migration_context_invalid",
+                  "active MGA transaction and database path required");
+  }
+  const auto authority = ValidateMgaMutatingTransactionAuthority(
+      context, kOperation);
+  if (authority.error) {
+    result.diagnostic = authority;
+    return result;
+  }
+  if (request.migration_id != kInt32MigrationId || request.rows.empty() ||
+      request.prior_catalog_snapshot_uuid.empty() ||
+      request.new_catalog_snapshot_uuid.empty() ||
+      request.prior_catalog_snapshot_uuid == request.new_catalog_snapshot_uuid ||
+      request.prior_catalog_generation == 0 ||
+      request.new_catalog_generation != request.prior_catalog_generation + 1 ||
+      (!context.statement_metadata_snapshot_uuid.canonical.empty() &&
+       context.statement_metadata_snapshot_uuid.canonical !=
+           request.prior_catalog_snapshot_uuid)) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "int32_identity_migration_snapshot_stale",
+                  "exact prior snapshot and consecutive catalog generation required");
+  }
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse("PROCESS.CANCELLED",
+                  "int32_identity_migration_cancelled_before_publication",
+                  "cancellation was observed before the sealed batch append");
+  }
+
+  const auto current = LoadMgaRelationStoreState(context);
+  if (!current.ok) {
+    result.diagnostic = current.diagnostic;
+    return result;
+  }
+  std::set<std::pair<std::string, std::string>> identities;
+  std::map<std::string, std::uint64_t> object_generations;
+  std::map<std::string, CrudTableRecord> updated_by_object;
+  for (const auto& requested : request.rows) {
+    if (requested.object_uuid.empty() || requested.column_uuid.empty() ||
+        requested.old_row_generation == 0 ||
+        !identities.emplace(requested.object_uuid,
+                            requested.column_uuid).second) {
+      return refuse("CORE.AUTHORITY.CONFLICT",
+                    "int32_identity_migration_multiple_mapping",
+                    "each object and column identity must occur exactly once");
+    }
+    const auto object_generation = object_generations.find(
+        requested.object_uuid);
+    if (object_generation != object_generations.end() &&
+        object_generation->second != requested.old_row_generation) {
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "int32_identity_migration_row_generation_stale",
+                    requested.object_uuid);
+    }
+    object_generations[requested.object_uuid] = requested.old_row_generation;
+
+    auto updated = updated_by_object.find(requested.object_uuid);
+    if (updated == updated_by_object.end()) {
+      const CrudTableRecord* exact = nullptr;
+      std::uint64_t newest_visible_generation = 0;
+      for (const auto& table : current.state.crud_metadata.tables) {
+        if (table.table_uuid != requested.object_uuid ||
+            !CrudCreatorVisible(current.state.crud_metadata,
+                                table.creator_tx,
+                                table.event_sequence,
+                                context.local_transaction_id)) {
+          continue;
+        }
+        newest_visible_generation =
+            std::max(newest_visible_generation, table.event_sequence);
+        if (table.event_sequence != requested.old_row_generation) continue;
+        if (exact != nullptr) {
+          return refuse("CORE.AUTHORITY.CONFLICT",
+                        "int32_identity_migration_multiple_mapping",
+                        "multiple visible rows share the expected generation");
+        }
+        exact = &table;
+      }
+      if (exact == nullptr ||
+          newest_visible_generation != requested.old_row_generation) {
+        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                      "int32_identity_migration_row_generation_stale",
+                      requested.object_uuid);
+      }
+      if (exact->temporary || !exact->temporary_scope.empty() ||
+          !exact->temporary_session_uuid.empty() ||
+          !exact->on_commit_action.empty()) {
+        return refuse("CORE.AUTHORITY.CONFLICT",
+                      "int32_identity_migration_temporary_unsupported",
+                      requested.object_uuid);
+      }
+      updated = updated_by_object.emplace(requested.object_uuid, *exact).first;
+    }
+
+    std::size_t matched_columns = 0;
+    for (auto& [column_name, descriptor] : updated->second.columns) {
+      (void)column_name;
+      const auto descriptor_fields = StrictRelationDescriptorFields(descriptor);
+      if (!descriptor_fields) {
+        return refuse("CORE.AUTHORITY.CONFLICT",
+                      "int32_identity_migration_descriptor_contradiction",
+                      requested.object_uuid);
+      }
+      const auto column = descriptor_fields->find("column_uuid");
+      if (column == descriptor_fields->end() ||
+          column->second != requested.column_uuid) {
+        continue;
+      }
+      ++matched_columns;
+      const auto descriptor_uuid =
+          descriptor_fields->find("datatype_descriptor_uuid");
+      const auto type_uuid = descriptor_fields->find("type_uuid");
+      if (descriptor_uuid == descriptor_fields->end() ||
+          type_uuid == descriptor_fields->end() ||
+          descriptor_uuid->second != kLegacyInt32DescriptorUuid ||
+          type_uuid->second != kLegacyInt32TypeUuid) {
+        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                      "int32_identity_migration_legacy_identity_required",
+                      requested.column_uuid);
+      }
+      const std::map<std::string,
+                     std::pair<std::string_view, std::string_view>> replacements{
+          {"datatype_descriptor_uuid",
+           {kLegacyInt32DescriptorUuid, kCanonicalInt32DescriptorUuid}},
+          {"type_uuid", {kLegacyInt32TypeUuid, kCanonicalInt32TypeUuid}}};
+      if (!ReplaceExactRelationDescriptorIdentities(&descriptor,
+                                                     replacements)) {
+        return refuse("CORE.AUTHORITY.CONFLICT",
+                      "int32_identity_migration_multiple_mapping",
+                      requested.column_uuid);
+      }
+    }
+    if (matched_columns != 1) {
+      return refuse("CORE.AUTHORITY.CONFLICT",
+                    "int32_identity_migration_column_mapping_conflict",
+                    requested.column_uuid);
+    }
+  }
+
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse("PROCESS.CANCELLED",
+                  "int32_identity_migration_cancelled_before_publication",
+                  "cancellation was observed before the sealed batch append");
+  }
+  const auto reservation = ReserveEventSequenceRange(
+      context, "relation_metadata", MetadataStorePath(context), 1,
+      [&context]() { return ScanNextMetadataEventSequence(context); });
+  if (!reservation.ok) {
+    result.diagnostic = reservation.diagnostic;
+    return result;
+  }
+  for (auto& [object_uuid, table] : updated_by_object) {
+    if (reservation.first <= object_generations[object_uuid]) {
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "int32_identity_migration_generation_not_advanced",
+                    object_uuid);
+    }
+    table.creator_tx = context.local_transaction_id;
+    table.event_sequence = reservation.first;
+  }
+  std::vector<CrudTableRecord> tables;
+  tables.reserve(request.rows.size());
+  for (const auto& row : request.rows) {
+    tables.push_back(updated_by_object.at(row.object_uuid));
+  }
+  std::vector<std::string> decisions;
+  decisions.reserve(request.rows.size());
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    decisions.push_back(Int32MigrationDecisionHash(
+        request, request.rows[i], tables[i].event_sequence,
+        context.transaction_uuid.canonical));
+    if (decisions.back().empty()) {
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "int32_identity_migration_hash_failed", "sha256");
+    }
+  }
+  const std::string payload = CanonicalInt32MigrationPayload(
+      request, context.local_transaction_id, reservation.first,
+      context.transaction_uuid.canonical, tables, decisions);
+  result.decision_sha256 = Sha256Tagged(payload);
+  if (result.decision_sha256.empty()) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "int32_identity_migration_hash_failed", "batch");
+  }
+  std::vector<std::string> fields{
+      kRowStoreMagic,
+      "INT32_IDENTITY_MIGRATION_BATCH",
+      std::to_string(context.local_transaction_id),
+      std::to_string(reservation.first),
+      std::string(kInt32MigrationFormat),
+      "sealed",
+      result.decision_sha256,
+      request.migration_id,
+      context.transaction_uuid.canonical,
+      request.prior_catalog_snapshot_uuid,
+      request.new_catalog_snapshot_uuid,
+      std::to_string(request.prior_catalog_generation),
+      std::to_string(request.new_catalog_generation),
+      std::to_string(request.rows.size())};
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    const auto& row = request.rows[i];
+    const auto& table = tables[i];
+    fields.insert(fields.end(), {
+        row.object_uuid,
+        row.column_uuid,
+        std::string(kLegacyInt32DescriptorUuid),
+        std::string(kCanonicalInt32DescriptorUuid),
+        std::string(kLegacyInt32TypeUuid),
+        std::string(kCanonicalInt32TypeUuid),
+        std::to_string(row.old_row_generation),
+        std::to_string(table.event_sequence),
+        decisions[i],
+        EncodeCrudText(table.default_name),
+        EncodeCrudPairs(table.columns),
+        "0", "", "", ""});
+  }
+  if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "int32_identity_migration_append_failed",
+                  "sealed batch was not published");
+  }
+  result.ok = true;
+  result.migrated_row_count = request.rows.size();
+  result.diagnostic = OkDiagnostic();
+  result.evidence = {
+      {"migration_id", request.migration_id},
+      {"transaction_uuid", context.transaction_uuid.canonical},
+      {"prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid},
+      {"new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid},
+      {"prior_catalog_generation",
+       std::to_string(request.prior_catalog_generation)},
+      {"new_catalog_generation",
+       std::to_string(request.new_catalog_generation)},
+      {"old_descriptor_uuid", std::string(kLegacyInt32DescriptorUuid)},
+      {"new_descriptor_uuid", std::string(kCanonicalInt32DescriptorUuid)},
+      {"old_type_uuid", std::string(kLegacyInt32TypeUuid)},
+      {"new_type_uuid", std::string(kCanonicalInt32TypeUuid)},
+      {"decision_sha256", result.decision_sha256}};
+  return result;
+}
+
+MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
+    const EngineRequestContext& context,
+    const MgaTextIdentityMigrationRequest& request) {
+  constexpr const char* kOperation = "mga.text_identity_migration";
+  MgaTextIdentityMigrationResult result;
+  auto refuse = [&](std::string code, std::string key, std::string detail) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        std::move(code), std::move(key), std::move(detail));
+    return result;
+  };
+  if (context.database_path.empty() || context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty()) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "text_identity_migration_context_invalid",
+                  "active MGA transaction and database path required");
+  }
+  const auto authority = ValidateMgaMutatingTransactionAuthority(
+      context, kOperation);
+  if (authority.error) {
+    result.diagnostic = authority;
+    return result;
+  }
+  if (!ExactCanonicalTextIdentityAuthorityAvailable(context) ||
+      request.migration_id != kTextMigrationId || request.rows.empty() ||
+      !CanonicalNonNilMigrationUuid(request.prior_catalog_snapshot_uuid) ||
+      !CanonicalNonNilMigrationUuid(request.new_catalog_snapshot_uuid) ||
+      request.prior_catalog_snapshot_uuid == request.new_catalog_snapshot_uuid ||
+      request.prior_catalog_generation == 0 ||
+      request.prior_catalog_generation ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      request.new_catalog_generation != request.prior_catalog_generation + 1 ||
+      context.catalog_generation_id != request.prior_catalog_generation ||
+      context.statement_metadata_snapshot_uuid.canonical !=
+          request.prior_catalog_snapshot_uuid) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "text_identity_migration_snapshot_stale",
+                  "exact prior snapshot, registry row, and consecutive catalog generation required");
+  }
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse("PROCESS.CANCELLED",
+                  "text_identity_migration_cancelled_before_publication",
+                  "cancellation was observed before the sealed batch append");
+  }
+
+  const auto current = LoadMgaRelationStoreState(context);
+  if (!current.ok) {
+    result.diagnostic = current.diagnostic;
+    return result;
+  }
+  std::set<std::pair<std::string, std::string>> identities;
+  std::map<std::string, std::uint64_t> object_generations;
+  std::map<std::string, CrudTableRecord> updated_by_object;
+  std::map<std::string, MgaRelationStorageDescriptor>
+      updated_descriptors_by_object;
+  std::map<std::string, std::set<std::string>> changed_columns_by_object;
+  for (const auto& requested : request.rows) {
+    if (!CanonicalNonNilMigrationUuid(requested.object_uuid) ||
+        !CanonicalNonNilMigrationUuid(requested.column_uuid) ||
+        requested.old_row_generation == 0 ||
+        !identities.emplace(requested.object_uuid,
+                            requested.column_uuid).second) {
+      return refuse("CORE.AUTHORITY.CONFLICT",
+                    "text_identity_migration_multiple_mapping",
+                    "each object and column identity must occur exactly once");
+    }
+    const auto object_generation = object_generations.find(
+        requested.object_uuid);
+    if (object_generation != object_generations.end() &&
+        object_generation->second != requested.old_row_generation) {
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "text_identity_migration_row_generation_stale",
+                    requested.object_uuid);
+    }
+    object_generations[requested.object_uuid] = requested.old_row_generation;
+
+    auto updated = updated_by_object.find(requested.object_uuid);
+    if (updated == updated_by_object.end()) {
+      const CrudTableRecord* exact = nullptr;
+      std::uint64_t newest_visible_generation = 0;
+      for (const auto& table : current.state.crud_metadata.tables) {
+        if (table.table_uuid != requested.object_uuid ||
+            !CrudCreatorVisible(current.state.crud_metadata,
+                                table.creator_tx,
+                                table.event_sequence,
+                                context.local_transaction_id)) {
+          continue;
+        }
+        newest_visible_generation =
+            std::max(newest_visible_generation, table.event_sequence);
+        if (table.event_sequence != requested.old_row_generation) continue;
+        if (exact != nullptr) {
+          return refuse("CORE.AUTHORITY.CONFLICT",
+                        "text_identity_migration_multiple_mapping",
+                        "multiple visible rows share the expected generation");
+        }
+        exact = &table;
+      }
+      if (exact == nullptr ||
+          newest_visible_generation != requested.old_row_generation) {
+        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                      "text_identity_migration_row_generation_stale",
+                      requested.object_uuid);
+      }
+      if (exact->temporary || !exact->temporary_scope.empty() ||
+          !exact->temporary_session_uuid.empty() ||
+          !exact->on_commit_action.empty()) {
+        return refuse("CORE.AUTHORITY.CONFLICT",
+                      "text_identity_migration_temporary_unsupported",
+                      requested.object_uuid);
+      }
+      const auto loaded_descriptor = LoadMgaRelationStorageDescriptor(
+          context, requested.object_uuid);
+      if (!loaded_descriptor.ok ||
+          loaded_descriptor.descriptor.database_uuid.canonical !=
+              context.database_uuid.canonical ||
+          loaded_descriptor.descriptor.relation_uuid.canonical !=
+              requested.object_uuid ||
+          loaded_descriptor.descriptor.relation_generation !=
+              requested.old_row_generation) {
+        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                      "text_identity_migration_relation_snapshot_stale",
+                      requested.object_uuid);
+      }
+      updated = updated_by_object.emplace(requested.object_uuid, *exact).first;
+      updated_descriptors_by_object.emplace(
+          requested.object_uuid, loaded_descriptor.descriptor);
+    }
+
+    auto& storage = updated_descriptors_by_object.at(requested.object_uuid);
+    auto storage_column = storage.columns.end();
+    std::size_t storage_matches = 0;
+    for (auto candidate = storage.columns.begin();
+         candidate != storage.columns.end(); ++candidate) {
+      if (candidate->column_uuid.canonical != requested.column_uuid) continue;
+      ++storage_matches;
+      storage_column = candidate;
+    }
+    if (storage_matches != 1 || storage_column == storage.columns.end() ||
+        storage_column->canonical_name_key.empty() ||
+        storage_column->column_generation != requested.old_row_generation ||
+        storage_column->value_descriptor.descriptor_uuid.canonical !=
+            kLegacyTextDescriptorUuid) {
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "text_identity_migration_relation_column_stale",
+                    requested.column_uuid);
+    }
+
+    std::size_t matched_columns = 0;
+    for (auto& [column_name, descriptor] : updated->second.columns) {
+      if (column_name != storage_column->canonical_name_key) continue;
+      ++matched_columns;
+      if (descriptor != storage_column->value_descriptor.encoded_descriptor ||
+          !RewriteLegacyTextDescriptor(context, &descriptor,
+                                       requested.column_uuid)) {
+        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                      "text_identity_migration_legacy_identity_required",
+                      requested.column_uuid);
+      }
+      const auto migrated_fields = StrictRelationDescriptorFields(descriptor);
+      if (!migrated_fields ||
+          migrated_fields->at("nullable") !=
+              (storage_column->nullable ? "true" : "false")) {
+        return refuse("CORE.AUTHORITY.CONFLICT",
+                      "text_identity_migration_nullability_conflict",
+                      requested.column_uuid);
+      }
+      storage_column->value_descriptor.descriptor_uuid.canonical =
+          std::string(kCanonicalTextDescriptorUuid);
+      storage_column->value_descriptor.canonical_type_name = "text";
+      storage_column->value_descriptor.encoded_descriptor = descriptor;
+      changed_columns_by_object[requested.object_uuid].insert(
+          requested.column_uuid);
+    }
+    if (matched_columns != 1) {
+      return refuse("CORE.AUTHORITY.CONFLICT",
+                    "text_identity_migration_column_mapping_conflict",
+                    requested.column_uuid);
+    }
+  }
+
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse("PROCESS.CANCELLED",
+                  "text_identity_migration_cancelled_before_publication",
+                  "cancellation was observed before the sealed batch append");
+  }
+  const bool requires_contextual_policy = std::ranges::any_of(
+      updated_descriptors_by_object, [](const auto& entry) {
+        return std::ranges::any_of(entry.second.columns,
+                                   [](const auto& column) {
+          return column.value_descriptor.descriptor_uuid.canonical ==
+                     kCanonicalTextDescriptorUuid &&
+                 !column.charset_uuid.empty() &&
+                 !column.collation_uuid.empty();
+        });
+      });
+  EngineContextualTextPolicyRowSetV2 policy_rows;
+  if (requires_contextual_policy) {
+    const auto policy =
+        LoadCurrentEngineContextualTextPolicyRowSetForPublicationV2();
+    if (!policy.ok) {
+      result.diagnostic = policy.diagnostic;
+      return result;
+    }
+    policy_rows = policy.rows;
+  }
+  std::vector<std::string> allocator_lines;
+  const auto reservation = ReserveEventSequenceRange(
+      context, "relation_metadata", MetadataStorePath(context), 1,
+      [&context]() { return ScanNextMetadataEventSequence(context); },
+      &allocator_lines);
+  if (!reservation.ok) {
+    result.diagnostic = reservation.diagnostic;
+    return result;
+  }
+  const auto abandon_reservation = [&]() {
+    AbandonDeferredEventSequenceReservation(reservation);
+    allocator_lines.clear();
+  };
+  std::map<std::string, CrudSealedRelationDescriptorSnapshot>
+      sealed_descriptors_by_object;
+  for (auto& [object_uuid, table] : updated_by_object) {
+    if (reservation.first <= object_generations[object_uuid]) {
+      abandon_reservation();
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "text_identity_migration_generation_not_advanced",
+                    object_uuid);
+    }
+    table.creator_tx = context.local_transaction_id;
+    table.event_sequence = reservation.first;
+    auto& descriptor = updated_descriptors_by_object.at(object_uuid);
+    descriptor.relation_generation = reservation.first;
+    for (auto& column : descriptor.columns) {
+      if (changed_columns_by_object[object_uuid].contains(
+              column.column_uuid.canonical)) {
+        column.column_generation = reservation.first;
+      }
+    }
+    const auto descriptor_validation =
+        ValidateMgaRelationStorageDescriptor(descriptor);
+    if (descriptor_validation.error) {
+      abandon_reservation();
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "text_identity_migration_relation_descriptor_invalid",
+                    descriptor_validation.detail);
+    }
+    const auto serialized = SerializeMgaRelationStorageDescriptor(descriptor);
+    if (DeserializeMgaRelationStorageDescriptor(serialized)
+            .relation_generation != reservation.first) {
+      abandon_reservation();
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "text_identity_migration_relation_descriptor_roundtrip_failed",
+                    object_uuid);
+    }
+    MgaSealedContextualTextDescriptorMaterialV2 material;
+    EngineApiDiagnostic material_diagnostic;
+    if (!BuildMgaSealedContextualTextDescriptorMaterialV2(
+            context, table, descriptor, policy_rows, &material,
+            &material_diagnostic)) {
+      abandon_reservation();
+      return refuse("CTB.TEXT.DESCRIPTOR_INVALID",
+                    "text_identity_migration_sidecar_set_invalid",
+                    material_diagnostic.detail);
+    }
+    CrudSealedRelationDescriptorSnapshot snapshot;
+    snapshot.creator_tx = table.creator_tx;
+    snapshot.event_sequence = table.event_sequence;
+    snapshot.relation_uuid = object_uuid;
+    snapshot.relation_descriptor_uuid =
+        material.relation_descriptor.descriptor_uuid.canonical;
+    snapshot.relation_descriptor_generation =
+        material.relation_descriptor.descriptor_generation;
+    snapshot.descriptor_field_count =
+        material.sealed_set.descriptor_field_count;
+    snapshot.descriptor_field_bytes =
+        material.sealed_set.descriptor_field_bytes;
+    snapshot.contextual_sidecar_count =
+        material.sealed_set.contextual_sidecar_count;
+    snapshot.descriptor_fields.reserve(
+        material.sealed_set.descriptor_fields.size());
+    for (const auto& field : material.sealed_set.descriptor_fields) {
+      snapshot.descriptor_fields.emplace_back(
+          std::string(field.key_raw_bytes.begin(),
+                      field.key_raw_bytes.end()),
+          std::string(field.value_raw_bytes.begin(),
+                      field.value_raw_bytes.end()));
+    }
+    sealed_descriptors_by_object.emplace(object_uuid, std::move(snapshot));
+  }
+
+  std::vector<CrudTableRecord> tables;
+  std::vector<CrudSealedRelationDescriptorSnapshot>
+      relation_descriptor_snapshots;
+  tables.reserve(request.rows.size());
+  relation_descriptor_snapshots.reserve(request.rows.size());
+  for (const auto& row : request.rows) {
+    tables.push_back(updated_by_object.at(row.object_uuid));
+    relation_descriptor_snapshots.push_back(
+        sealed_descriptors_by_object.at(row.object_uuid));
+  }
+  std::vector<std::string> decisions;
+  decisions.reserve(request.rows.size());
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    decisions.push_back(TextMigrationDecisionHash(
+        request, request.rows[i], tables[i].event_sequence,
+        context.transaction_uuid.canonical,
+        context.datatype_catalog_snapshot_uuid.canonical,
+        context.datatype_catalog_generation,
+        context.datatype_registry_generation,
+        relation_descriptor_snapshots[i]));
+    if (decisions.back().empty()) {
+      abandon_reservation();
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "text_identity_migration_hash_failed", "sha256");
+    }
+  }
+  const std::string payload = CanonicalTextMigrationPayload(
+      request, context.local_transaction_id, reservation.first,
+      context.transaction_uuid.canonical,
+      context.datatype_catalog_snapshot_uuid.canonical,
+      context.datatype_catalog_generation,
+      context.datatype_registry_generation,
+      tables, relation_descriptor_snapshots, decisions);
+  result.decision_sha256 = Sha256Tagged(payload);
+  if (result.decision_sha256.empty()) {
+    abandon_reservation();
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "text_identity_migration_hash_failed", "batch");
+  }
+  std::vector<std::string> fields{
+      kRowStoreMagic,
+      "TEXT_IDENTITY_MIGRATION_BATCH",
+      std::to_string(context.local_transaction_id),
+      std::to_string(reservation.first),
+      std::string(kTextMigrationFormat),
+      "sealed",
+      result.decision_sha256,
+      request.migration_id,
+      context.transaction_uuid.canonical,
+      request.prior_catalog_snapshot_uuid,
+      request.new_catalog_snapshot_uuid,
+      std::to_string(request.prior_catalog_generation),
+      std::to_string(request.new_catalog_generation),
+      context.datatype_catalog_snapshot_uuid.canonical,
+      std::to_string(context.datatype_catalog_generation),
+      std::to_string(context.datatype_registry_generation),
+      std::to_string(request.rows.size())};
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    const auto& row = request.rows[i];
+    const auto& table = tables[i];
+    const auto& snapshot = relation_descriptor_snapshots[i];
+    fields.insert(fields.end(), {
+        row.object_uuid,
+        row.column_uuid,
+        std::string(kLegacyTextDescriptorUuid),
+        std::string(kCanonicalTextDescriptorUuid),
+        std::string(kLegacyTextTypeUuid),
+        std::string(kCanonicalTextTypeUuid),
+        std::string(kCanonicalTextCodecUuid),
+        std::string(kCanonicalTextCodecId),
+        "1",
+        "1",
+        std::to_string(row.old_row_generation),
+        std::to_string(table.event_sequence),
+        decisions[i],
+        EncodeCrudText(table.default_name),
+        EncodeCrudPairs(table.columns),
+        EncodeCrudPairs(snapshot.descriptor_fields),
+        snapshot.relation_descriptor_uuid,
+        std::to_string(snapshot.relation_descriptor_generation),
+        std::to_string(snapshot.descriptor_field_count),
+        std::to_string(snapshot.descriptor_field_bytes),
+        std::to_string(snapshot.contextual_sidecar_count),
+        "0", "", "", ""});
+  }
+  if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
+    abandon_reservation();
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "text_identity_migration_append_failed",
+                  "sealed batch and relation descriptor were not published");
+  }
+  // The sealed metadata line is authoritative and can bootstrap the allocator
+  // on restart. Publish allocator acceleration only after the one-line seal;
+  // failure here cannot turn an already-visible migration into a refusal.
+  (void)AppendDeferredEventSequenceAllocatorLines(
+      context, &allocator_lines, nullptr);
+  result.ok = true;
+  result.migrated_row_count = request.rows.size();
+  result.diagnostic = OkDiagnostic();
+  result.evidence = {
+      {"migration_id", request.migration_id},
+      {"transaction_uuid", context.transaction_uuid.canonical},
+      {"datatype_catalog_snapshot_uuid",
+       context.datatype_catalog_snapshot_uuid.canonical},
+      {"datatype_catalog_generation",
+       std::to_string(context.datatype_catalog_generation)},
+      {"datatype_registry_generation",
+       std::to_string(context.datatype_registry_generation)},
+      {"prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid},
+      {"new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid},
+      {"prior_catalog_generation",
+       std::to_string(request.prior_catalog_generation)},
+      {"new_catalog_generation",
+       std::to_string(request.new_catalog_generation)},
+      {"old_descriptor_uuid", std::string(kLegacyTextDescriptorUuid)},
+      {"new_descriptor_uuid", std::string(kCanonicalTextDescriptorUuid)},
+      {"old_type_uuid", std::string(kLegacyTextTypeUuid)},
+      {"new_type_uuid", std::string(kCanonicalTextTypeUuid)},
+      {"new_codec_uuid", std::string(kCanonicalTextCodecUuid)},
+      {"new_codec_id", std::string(kCanonicalTextCodecId)},
+      {"new_codec_version", "1"},
+      {"new_codec_generation", "1"},
       {"decision_sha256", result.decision_sha256}};
   return result;
 }
@@ -12144,6 +17456,4402 @@ EngineApiDiagnostic ApplyMgaTemporaryCleanupActions(
   return OkDiagnostic();
 }
 
+namespace {
+
+constexpr std::array<std::uint8_t, 8> kDmlUpdateDurableFrameMagic{{
+    'S', 'B', 'M', 'D', 'U', 'O', 'P', '1'}};
+constexpr std::uint16_t kDmlUpdateDurableFrameVersion = 1;
+constexpr std::uint32_t kDmlUpdateDurableFrameHeaderBytes = 352;
+constexpr std::uint64_t kDmlUpdateDurableMaximumFrameBytes =
+    static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max());
+constexpr std::string_view kDmlUpdateDurableFrameEvidenceDomain =
+    "ScratchBird.MgaDmlUpdateDurableOperationFrame.V1";
+
+enum class DmlUpdateDurableFrameKindV1 : std::uint16_t {
+  authority_snapshot = 1,
+  journal = 2,
+  statement_savepoint = 3,
+  recovery_observation = 4,
+  authority_reservation = 5,
+  // Contains the already encoded canonical journal frame that may be
+  // published after the statement barrier without any further
+  // encode/hash/allocation step.
+  prepared_successor = 6,
+  // Durable tombstone for a prepared publication successor that was
+  // cancelled before the publication barrier.  The tombstone names the exact
+  // staged successor in its fixed frame fields; recovery clears that staged
+  // successor before considering any later aborted successor.
+  prepared_successor_invalidated = 7,
+};
+
+struct DmlUpdateDurableFrameV1 {
+  DmlUpdateDurableFrameKindV1 kind =
+      DmlUpdateDurableFrameKindV1::authority_snapshot;
+  MgaDmlUpdateDurableOperationIdentityV1 identity;
+  std::uint64_t sequence = 0;
+  std::uint8_t state = 0;
+  std::uint8_t flags = 0;
+  MgaDmlUpdateDurableSha256V1 prior_record_sha256{};
+  MgaDmlUpdateDurableSha256V1 record_evidence_sha256{};
+  std::vector<std::uint8_t> payload;
+};
+
+struct DmlUpdateDurableFrameLoadV1 {
+  bool ok = false;
+  bool missing = false;
+  std::string detail;
+  std::vector<DmlUpdateDurableFrameV1> frames;
+};
+
+void DmlUpdateDurablePutU16(std::vector<std::uint8_t>* bytes,
+                            std::size_t offset, std::uint16_t value) {
+  (*bytes)[offset] = static_cast<std::uint8_t>(value & 0xffu);
+  (*bytes)[offset + 1] =
+      static_cast<std::uint8_t>((value >> 8u) & 0xffu);
+}
+
+void DmlUpdateDurablePutU32(std::vector<std::uint8_t>* bytes,
+                            std::size_t offset, std::uint32_t value) {
+  for (std::size_t index = 0; index < 4; ++index) {
+    (*bytes)[offset + index] =
+        static_cast<std::uint8_t>((value >> (index * 8u)) & 0xffu);
+  }
+}
+
+void DmlUpdateDurablePutU64(std::vector<std::uint8_t>* bytes,
+                            std::size_t offset, std::uint64_t value) {
+  for (std::size_t index = 0; index < 8; ++index) {
+    (*bytes)[offset + index] =
+        static_cast<std::uint8_t>((value >> (index * 8u)) & 0xffu);
+  }
+}
+
+bool DmlUpdateDurableReadU16(std::span<const std::uint8_t> bytes,
+                             std::size_t offset, std::uint16_t* value) {
+  if (value == nullptr || offset > bytes.size() ||
+      bytes.size() - offset < 2) {
+    return false;
+  }
+  *value = static_cast<std::uint16_t>(bytes[offset]) |
+           (static_cast<std::uint16_t>(bytes[offset + 1]) << 8u);
+  return true;
+}
+
+bool DmlUpdateDurableReadU32(std::span<const std::uint8_t> bytes,
+                             std::size_t offset, std::uint32_t* value) {
+  if (value == nullptr || offset > bytes.size() ||
+      bytes.size() - offset < 4) {
+    return false;
+  }
+  std::uint32_t parsed = 0;
+  for (std::size_t index = 0; index < 4; ++index) {
+    parsed |= static_cast<std::uint32_t>(bytes[offset + index])
+              << (index * 8u);
+  }
+  *value = parsed;
+  return true;
+}
+
+bool DmlUpdateDurableReadU64(std::span<const std::uint8_t> bytes,
+                             std::size_t offset, std::uint64_t* value) {
+  if (value == nullptr || offset > bytes.size() ||
+      bytes.size() - offset < 8) {
+    return false;
+  }
+  std::uint64_t parsed = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    parsed |= static_cast<std::uint64_t>(bytes[offset + index])
+              << (index * 8u);
+  }
+  *value = parsed;
+  return true;
+}
+
+bool DmlUpdateDurableZero(std::span<const std::uint8_t> bytes) {
+  return std::all_of(bytes.begin(), bytes.end(),
+                     [](std::uint8_t value) { return value == 0; });
+}
+
+bool DmlUpdateDurableUuidBytes(
+    std::string_view uuid, std::array<std::uint8_t, 16>* bytes) {
+  if (bytes == nullptr || uuid.empty()) return false;
+  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(uuid));
+  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
+      scratchbird::core::uuid::UuidToString(parsed.value) != uuid) {
+    return false;
+  }
+  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
+            bytes->begin());
+  return true;
+}
+
+bool DmlUpdateDurableTypedUuid(
+    std::string_view uuid, scratchbird::wire::TypedUpdateUuid* bytes) {
+  if (bytes == nullptr) return false;
+  std::array<std::uint8_t, 16> parsed{};
+  if (!DmlUpdateDurableUuidBytes(uuid, &parsed)) return false;
+  std::copy(parsed.begin(), parsed.end(), bytes->begin());
+  return true;
+}
+
+std::string DmlUpdateDurableUuidText(
+    std::span<const std::uint8_t> bytes) {
+  if (bytes.size() != 16 || DmlUpdateDurableZero(bytes)) return {};
+  scratchbird::core::platform::Uuid value{};
+  std::copy(bytes.begin(), bytes.end(), value.bytes.begin());
+  return scratchbird::core::uuid::UuidToString(value);
+}
+
+std::string DmlUpdateDurableTypedUuidText(
+    const scratchbird::wire::TypedUpdateUuid& bytes) {
+  return DmlUpdateDurableUuidText(
+      std::span<const std::uint8_t>(bytes.data(), bytes.size()));
+}
+
+bool DmlUpdateDurablePutUuid(std::vector<std::uint8_t>* bytes,
+                             std::size_t offset, std::string_view uuid) {
+  if (bytes == nullptr || offset > bytes->size() ||
+      bytes->size() - offset < 16) {
+    return false;
+  }
+  std::array<std::uint8_t, 16> parsed{};
+  if (!DmlUpdateDurableUuidBytes(uuid, &parsed)) return false;
+  std::copy(parsed.begin(), parsed.end(), bytes->begin() + offset);
+  return true;
+}
+
+bool DmlUpdateDurableBaseIdentityValid(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity) {
+  std::array<std::uint8_t, 16> ignored{};
+  return DmlUpdateDurableUuidBytes(identity.database_uuid, &ignored) &&
+         DmlUpdateDurableUuidBytes(identity.owning_transaction_uuid,
+                                   &ignored) &&
+         identity.owning_local_transaction_id != 0 &&
+         DmlUpdateDurableUuidBytes(
+             identity.authenticated_statement_receipt_uuid, &ignored) &&
+         DmlUpdateDurableUuidBytes(identity.operation_uuid, &ignored) &&
+         DmlUpdateDurableUuidBytes(identity.descriptor_uuid, &ignored) &&
+         identity.descriptor_generation != 0 &&
+         DmlUpdateDurableUuidBytes(identity.recovery_token_uuid, &ignored) &&
+         identity.recovery_generation != 0;
+}
+
+bool DmlUpdateDurableIdentityValid(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity) {
+  std::array<std::uint8_t, 16> ignored{};
+  return DmlUpdateDurableBaseIdentityValid(identity) &&
+         identity.operation_generation != 0 &&
+         DmlUpdateDurableUuidBytes(identity.validated_durable_handle_uuid,
+                                   &ignored) &&
+         identity.validated_durable_handle_generation != 0 &&
+         DmlUpdateDurableUuidBytes(identity.reserved_statement_barrier_uuid,
+                                   &ignored) &&
+         identity.reserved_statement_barrier_generation != 0;
+}
+
+bool DmlUpdateDurableIdentityMatchesContext(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationIdentityV1& identity) {
+  return !context.database_path.empty() &&
+         DmlUpdateDurableIdentityValid(identity) &&
+         context.database_uuid.canonical == identity.database_uuid &&
+         context.transaction_uuid.canonical ==
+             identity.owning_transaction_uuid &&
+         context.local_transaction_id == identity.owning_local_transaction_id &&
+         context.statement_receipt_uuid.canonical ==
+             identity.authenticated_statement_receipt_uuid;
+}
+
+std::string DmlUpdateDurableDescriptorPath(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationIdentityV1& identity) {
+  return DmlUpdateDurableOperationStorePath(context) + "/" +
+         identity.descriptor_uuid + ".duop";
+}
+
+std::string DmlUpdateDurableSavepointPath(
+    const EngineRequestContext& context, std::string_view savepoint_uuid) {
+  return DmlUpdateStatementSavepointBinaryStorePath(context) + "/" +
+         std::string(savepoint_uuid) + ".dups";
+}
+
+MgaDmlUpdateDurableSha256V1 DmlUpdateDurableSha256(
+    std::span<const std::uint8_t> bytes) {
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      bytes.data(), bytes.size());
+  return digest.ok() ? digest.digest : MgaDmlUpdateDurableSha256V1{};
+}
+
+MgaDmlUpdateDurableSha256V1 DmlUpdateDurableFrameSha256(
+    std::span<const std::uint8_t> header_without_checksum) {
+  std::vector<std::uint8_t> material;
+  material.reserve(kDmlUpdateDurableFrameEvidenceDomain.size() +
+                   header_without_checksum.size());
+  material.insert(material.end(),
+                  kDmlUpdateDurableFrameEvidenceDomain.begin(),
+                  kDmlUpdateDurableFrameEvidenceDomain.end());
+  material.insert(material.end(), header_without_checksum.begin(),
+                  header_without_checksum.end());
+  return DmlUpdateDurableSha256(material);
+}
+
+bool DmlUpdateDurableEncodeFrame(
+    const DmlUpdateDurableFrameV1& frame,
+    std::vector<std::uint8_t>* encoded) {
+  const bool savepoint_frame =
+      frame.kind == DmlUpdateDurableFrameKindV1::statement_savepoint;
+  if (encoded == nullptr ||
+      !(savepoint_frame
+            ? DmlUpdateDurableBaseIdentityValid(frame.identity)
+            : DmlUpdateDurableIdentityValid(frame.identity)) ||
+      frame.payload.size() > kDmlUpdateDurableMaximumFrameBytes ||
+      static_cast<std::uint64_t>(frame.payload.size()) >
+          std::numeric_limits<std::uint64_t>::max() -
+              kDmlUpdateDurableFrameHeaderBytes) {
+    return false;
+  }
+  std::vector<std::uint8_t> header(kDmlUpdateDurableFrameHeaderBytes, 0);
+  std::copy(kDmlUpdateDurableFrameMagic.begin(),
+            kDmlUpdateDurableFrameMagic.end(), header.begin());
+  DmlUpdateDurablePutU16(&header, 8, kDmlUpdateDurableFrameVersion);
+  DmlUpdateDurablePutU16(
+      &header, 10, static_cast<std::uint16_t>(frame.kind));
+  DmlUpdateDurablePutU32(&header, 12,
+                         kDmlUpdateDurableFrameHeaderBytes);
+  DmlUpdateDurablePutU64(
+      &header, 16,
+      kDmlUpdateDurableFrameHeaderBytes + frame.payload.size());
+  DmlUpdateDurablePutU64(&header, 24, frame.payload.size());
+  if (!DmlUpdateDurablePutUuid(&header, 32, frame.identity.database_uuid) ||
+      !DmlUpdateDurablePutUuid(
+          &header, 48, frame.identity.owning_transaction_uuid) ||
+      !DmlUpdateDurablePutUuid(
+          &header, 72,
+          frame.identity.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateDurablePutUuid(&header, 88, frame.identity.operation_uuid) ||
+      !DmlUpdateDurablePutUuid(&header, 112,
+                               frame.identity.descriptor_uuid) ||
+      !DmlUpdateDurablePutUuid(&header, 136,
+                               frame.identity.recovery_token_uuid) ||
+      (!savepoint_frame &&
+       !DmlUpdateDurablePutUuid(
+           &header, 160,
+           frame.identity.validated_durable_handle_uuid)) ||
+      (!savepoint_frame &&
+       !DmlUpdateDurablePutUuid(
+           &header, 184,
+           frame.identity.reserved_statement_barrier_uuid))) {
+    return false;
+  }
+  DmlUpdateDurablePutU64(
+      &header, 64, frame.identity.owning_local_transaction_id);
+  DmlUpdateDurablePutU64(&header, 104,
+                         frame.identity.operation_generation);
+  DmlUpdateDurablePutU64(&header, 128,
+                         frame.identity.descriptor_generation);
+  DmlUpdateDurablePutU64(&header, 152,
+                         frame.identity.recovery_generation);
+  DmlUpdateDurablePutU64(
+      &header, 176, frame.identity.validated_durable_handle_generation);
+  DmlUpdateDurablePutU64(
+      &header, 200, frame.identity.reserved_statement_barrier_generation);
+  DmlUpdateDurablePutU64(&header, 208, frame.sequence);
+  header[216] = frame.state;
+  header[217] = frame.flags;
+  std::copy(frame.prior_record_sha256.begin(),
+            frame.prior_record_sha256.end(), header.begin() + 224);
+  std::copy(frame.record_evidence_sha256.begin(),
+            frame.record_evidence_sha256.end(), header.begin() + 256);
+  const auto payload_sha = DmlUpdateDurableSha256(frame.payload);
+  std::copy(payload_sha.begin(), payload_sha.end(), header.begin() + 288);
+  const auto frame_sha = DmlUpdateDurableFrameSha256(
+      std::span<const std::uint8_t>(header).first(320));
+  std::copy(frame_sha.begin(), frame_sha.end(), header.begin() + 320);
+  if (DmlUpdateDurableZero(payload_sha) || DmlUpdateDurableZero(frame_sha)) {
+    return false;
+  }
+  encoded->clear();
+  encoded->reserve(header.size() + frame.payload.size());
+  encoded->insert(encoded->end(), header.begin(), header.end());
+  encoded->insert(encoded->end(), frame.payload.begin(), frame.payload.end());
+  return true;
+}
+
+bool DmlUpdateDurableDecodeFrame(
+    std::span<const std::uint8_t> encoded,
+    DmlUpdateDurableFrameV1* frame, std::string* detail) {
+  const auto fail = [&](std::string reason) {
+    if (detail != nullptr) *detail = std::move(reason);
+    return false;
+  };
+  if (frame == nullptr || encoded.size() < kDmlUpdateDurableFrameHeaderBytes) {
+    return fail("durable_frame_header_truncated");
+  }
+  if (!std::equal(kDmlUpdateDurableFrameMagic.begin(),
+                  kDmlUpdateDurableFrameMagic.end(), encoded.begin())) {
+    return fail("durable_frame_magic_invalid");
+  }
+  std::uint16_t version = 0;
+  std::uint16_t kind = 0;
+  std::uint32_t header_bytes = 0;
+  std::uint64_t total_bytes = 0;
+  std::uint64_t payload_bytes = 0;
+  if (!DmlUpdateDurableReadU16(encoded, 8, &version) ||
+      !DmlUpdateDurableReadU16(encoded, 10, &kind) ||
+      !DmlUpdateDurableReadU32(encoded, 12, &header_bytes) ||
+      !DmlUpdateDurableReadU64(encoded, 16, &total_bytes) ||
+      !DmlUpdateDurableReadU64(encoded, 24, &payload_bytes) ||
+      version != kDmlUpdateDurableFrameVersion ||
+      header_bytes != kDmlUpdateDurableFrameHeaderBytes ||
+      total_bytes != encoded.size() ||
+      payload_bytes != encoded.size() - header_bytes ||
+      payload_bytes > kDmlUpdateDurableMaximumFrameBytes ||
+      (kind < static_cast<std::uint16_t>(
+                  DmlUpdateDurableFrameKindV1::authority_snapshot) ||
+       kind > static_cast<std::uint16_t>(
+                  DmlUpdateDurableFrameKindV1::prepared_successor_invalidated)) ||
+      !DmlUpdateDurableZero(encoded.subspan(218, 6))) {
+    return fail("durable_frame_extent_or_header_invalid");
+  }
+  frame->kind = static_cast<DmlUpdateDurableFrameKindV1>(kind);
+  frame->identity.database_uuid =
+      DmlUpdateDurableUuidText(encoded.subspan(32, 16));
+  frame->identity.owning_transaction_uuid =
+      DmlUpdateDurableUuidText(encoded.subspan(48, 16));
+  frame->identity.authenticated_statement_receipt_uuid =
+      DmlUpdateDurableUuidText(encoded.subspan(72, 16));
+  frame->identity.operation_uuid =
+      DmlUpdateDurableUuidText(encoded.subspan(88, 16));
+  frame->identity.descriptor_uuid =
+      DmlUpdateDurableUuidText(encoded.subspan(112, 16));
+  frame->identity.recovery_token_uuid =
+      DmlUpdateDurableUuidText(encoded.subspan(136, 16));
+  frame->identity.validated_durable_handle_uuid =
+      DmlUpdateDurableUuidText(encoded.subspan(160, 16));
+  frame->identity.reserved_statement_barrier_uuid =
+      DmlUpdateDurableUuidText(encoded.subspan(184, 16));
+  if (!DmlUpdateDurableReadU64(
+          encoded, 64, &frame->identity.owning_local_transaction_id) ||
+      !DmlUpdateDurableReadU64(
+          encoded, 104, &frame->identity.operation_generation) ||
+      !DmlUpdateDurableReadU64(
+          encoded, 128, &frame->identity.descriptor_generation) ||
+      !DmlUpdateDurableReadU64(
+          encoded, 152, &frame->identity.recovery_generation) ||
+      !DmlUpdateDurableReadU64(
+          encoded, 176,
+          &frame->identity.validated_durable_handle_generation) ||
+      !DmlUpdateDurableReadU64(
+          encoded, 200,
+          &frame->identity.reserved_statement_barrier_generation) ||
+      !DmlUpdateDurableReadU64(encoded, 208, &frame->sequence) ||
+      !(static_cast<DmlUpdateDurableFrameKindV1>(kind) ==
+                DmlUpdateDurableFrameKindV1::statement_savepoint
+            ? DmlUpdateDurableBaseIdentityValid(frame->identity)
+            : DmlUpdateDurableIdentityValid(frame->identity))) {
+    return fail("durable_frame_identity_invalid");
+  }
+  frame->state = encoded[216];
+  frame->flags = encoded[217];
+  std::copy_n(encoded.begin() + 224, 32,
+              frame->prior_record_sha256.begin());
+  std::copy_n(encoded.begin() + 256, 32,
+              frame->record_evidence_sha256.begin());
+  MgaDmlUpdateDurableSha256V1 payload_sha{};
+  MgaDmlUpdateDurableSha256V1 frame_sha{};
+  std::copy_n(encoded.begin() + 288, 32, payload_sha.begin());
+  std::copy_n(encoded.begin() + 320, 32, frame_sha.begin());
+  const auto payload = encoded.subspan(header_bytes, payload_bytes);
+  if (DmlUpdateDurableSha256(payload) != payload_sha ||
+      DmlUpdateDurableFrameSha256(encoded.first(320)) != frame_sha) {
+    return fail("durable_frame_checksum_invalid");
+  }
+  frame->payload.assign(payload.begin(), payload.end());
+  return true;
+}
+
+DmlUpdateDurableFrameLoadV1 DmlUpdateDurableLoadFrames(
+    const std::string& path) {
+  DmlUpdateDurableFrameLoadV1 result;
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    std::error_code ignored;
+    result.missing = !std::filesystem::exists(path, ignored);
+    result.ok = result.missing;
+    result.detail = result.missing ? std::string{}
+                                   : "durable_store_open_failed";
+    return result;
+  }
+  while (true) {
+    std::vector<std::uint8_t> header(kDmlUpdateDurableFrameHeaderBytes, 0);
+    input.read(reinterpret_cast<char*>(header.data()),
+               static_cast<std::streamsize>(header.size()));
+    const auto header_read = input.gcount();
+    if (header_read == 0 && input.eof()) break;
+    if (header_read != static_cast<std::streamsize>(header.size())) {
+      result.detail = "durable_store_partial_frame_header";
+      return result;
+    }
+    std::uint64_t total_bytes = 0;
+    std::uint64_t payload_bytes = 0;
+    if (!DmlUpdateDurableReadU64(header, 16, &total_bytes) ||
+        !DmlUpdateDurableReadU64(header, 24, &payload_bytes) ||
+        total_bytes != kDmlUpdateDurableFrameHeaderBytes + payload_bytes ||
+        payload_bytes > kDmlUpdateDurableMaximumFrameBytes ||
+        payload_bytes >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+      result.detail = "durable_store_frame_extent_invalid";
+      return result;
+    }
+    std::vector<std::uint8_t> encoded;
+    try {
+      encoded.reserve(static_cast<std::size_t>(total_bytes));
+      encoded.insert(encoded.end(), header.begin(), header.end());
+      const auto old_size = encoded.size();
+      encoded.resize(old_size + static_cast<std::size_t>(payload_bytes));
+    } catch (const std::bad_alloc&) {
+      result.detail = "durable_store_frame_allocation_failed";
+      return result;
+    }
+    input.read(
+        reinterpret_cast<char*>(encoded.data() + header.size()),
+        static_cast<std::streamsize>(payload_bytes));
+    if (input.gcount() != static_cast<std::streamsize>(payload_bytes)) {
+      result.detail = "durable_store_partial_frame_payload";
+      return result;
+    }
+    DmlUpdateDurableFrameV1 decoded;
+    if (!DmlUpdateDurableDecodeFrame(encoded, &decoded, &result.detail)) {
+      return result;
+    }
+    result.frames.push_back(std::move(decoded));
+  }
+  if (input.bad()) {
+    result.detail = "durable_store_read_failed";
+    return result;
+  }
+  result.ok = true;
+  return result;
+}
+
+bool DmlUpdateDurableEnsureDirectory(const std::string& directory) {
+  std::error_code error;
+  if (!std::filesystem::create_directories(directory, error) && error) {
+    return false;
+  }
+#if defined(_WIN32)
+  return true;
+#else
+  const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return false;
+  const bool ok = ::fsync(fd) == 0;
+  ::close(fd);
+  return ok;
+#endif
+}
+
+class DmlUpdateDurableFileLock final {
+ public:
+  explicit DmlUpdateDurableFileLock(const std::string& data_path) {
+    const std::string path = data_path + ".lock";
+#if defined(_WIN32)
+    handle_ = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                          OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle_ == INVALID_HANDLE_VALUE) return;
+    OVERLAPPED overlapped{};
+    if (LockFileEx(handle_, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD,
+                   &overlapped) == 0) {
+      CloseHandle(handle_);
+      handle_ = INVALID_HANDLE_VALUE;
+      return;
+    }
+    ok_ = true;
+#else
+    fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd_ < 0) return;
+    if (::flock(fd_, LOCK_EX) != 0) {
+      ::close(fd_);
+      fd_ = -1;
+      return;
+    }
+    ok_ = true;
+#endif
+  }
+
+  ~DmlUpdateDurableFileLock() {
+#if defined(_WIN32)
+    if (handle_ != INVALID_HANDLE_VALUE) {
+      OVERLAPPED overlapped{};
+      UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &overlapped);
+      CloseHandle(handle_);
+    }
+#else
+    if (fd_ >= 0) {
+      (void)::flock(fd_, LOCK_UN);
+      ::close(fd_);
+    }
+#endif
+  }
+
+  bool ok() const { return ok_; }
+
+ private:
+  bool ok_ = false;
+#if defined(_WIN32)
+  HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+  int fd_ = -1;
+#endif
+};
+
+std::atomic<std::uint64_t> g_dml_update_durable_prepare_calls{0};
+std::atomic<std::uint64_t> g_dml_update_durable_frame_encode_calls{0};
+std::atomic<std::uint64_t> g_dml_update_durable_checksum_calls{0};
+std::atomic<std::uint64_t> g_dml_update_durable_commit_calls{0};
+std::atomic<std::uint64_t> g_dml_update_durable_commit_write_calls{0};
+std::atomic<std::uint64_t> g_dml_update_durable_commit_fsync_calls{0};
+std::atomic<std::uint64_t> g_dml_update_durable_recovery_calls{0};
+std::atomic<std::uint64_t> g_dml_update_durable_observation_encode_calls{0};
+std::atomic<MgaDmlUpdateDurableFaultCutpointV1>
+    g_dml_update_durable_fault_cutpoint{
+        MgaDmlUpdateDurableFaultCutpointV1::none};
+
+bool DmlUpdateDurableFault(MgaDmlUpdateDurableFaultCutpointV1 cutpoint) {
+  return g_dml_update_durable_fault_cutpoint.load(
+             std::memory_order_acquire) == cutpoint;
+}
+
+enum class DmlUpdateDurableRawAppendResultV1 : std::uint8_t {
+  ok,
+  write_failed,
+  fsync_failed,
+  after_fsync_ack_lost,
+};
+
+DmlUpdateDurableRawAppendResultV1 DmlUpdateDurableAppendEncodedFrame(
+    const std::string& path, std::span<const std::uint8_t> encoded,
+    bool successor_commit) {
+  if (encoded.empty()) return DmlUpdateDurableRawAppendResultV1::write_failed;
+#if defined(_WIN32)
+  HANDLE handle = CreateFileA(path.c_str(), FILE_APPEND_DATA,
+                              FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return DmlUpdateDurableRawAppendResultV1::write_failed;
+  }
+  std::size_t offset = 0;
+  bool write_ok = true;
+  while (offset < encoded.size()) {
+    DWORD written = 0;
+    const DWORD request = static_cast<DWORD>(std::min<std::size_t>(
+        encoded.size() - offset, std::numeric_limits<DWORD>::max()));
+    if (WriteFile(handle, encoded.data() + offset, request, &written,
+                  nullptr) == 0 || written == 0) {
+      write_ok = false;
+      break;
+    }
+    offset += written;
+  }
+  if (successor_commit) {
+    g_dml_update_durable_commit_write_calls.fetch_add(
+        1, std::memory_order_relaxed);
+  }
+  if (!write_ok ||
+      (successor_commit &&
+       DmlUpdateDurableFault(
+           MgaDmlUpdateDurableFaultCutpointV1::after_successor_write_before_fsync))) {
+    CloseHandle(handle);
+    return DmlUpdateDurableRawAppendResultV1::write_failed;
+  }
+  const bool fsync_ok = FlushFileBuffers(handle) != 0;
+  if (successor_commit) {
+    g_dml_update_durable_commit_fsync_calls.fetch_add(
+        1, std::memory_order_relaxed);
+  }
+  CloseHandle(handle);
+#else
+  const int fd = ::open(path.c_str(),
+                        O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  if (fd < 0) return DmlUpdateDurableRawAppendResultV1::write_failed;
+  std::size_t offset = 0;
+  bool write_ok = true;
+  while (offset < encoded.size()) {
+    const ssize_t written =
+        ::write(fd, encoded.data() + offset, encoded.size() - offset);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) {
+      write_ok = false;
+      break;
+    }
+    offset += static_cast<std::size_t>(written);
+  }
+  if (successor_commit) {
+    g_dml_update_durable_commit_write_calls.fetch_add(
+        1, std::memory_order_relaxed);
+  }
+  if (!write_ok ||
+      (successor_commit &&
+       DmlUpdateDurableFault(
+           MgaDmlUpdateDurableFaultCutpointV1::after_successor_write_before_fsync))) {
+    ::close(fd);
+    return DmlUpdateDurableRawAppendResultV1::write_failed;
+  }
+  const bool fsync_ok = ::fsync(fd) == 0;
+  if (successor_commit) {
+    g_dml_update_durable_commit_fsync_calls.fetch_add(
+        1, std::memory_order_relaxed);
+  }
+  ::close(fd);
+#endif
+  if (!fsync_ok) return DmlUpdateDurableRawAppendResultV1::fsync_failed;
+  if (successor_commit &&
+      DmlUpdateDurableFault(
+          MgaDmlUpdateDurableFaultCutpointV1::after_successor_fsync_before_ack)) {
+    return DmlUpdateDurableRawAppendResultV1::after_fsync_ack_lost;
+  }
+  return DmlUpdateDurableRawAppendResultV1::ok;
+}
+
+bool DmlUpdateDurableAppendFrame(const std::string& path,
+                                 const DmlUpdateDurableFrameV1& frame) {
+  std::vector<std::uint8_t> encoded;
+  if (!DmlUpdateDurableEncodeFrame(frame, &encoded)) return false;
+  return DmlUpdateDurableAppendEncodedFrame(path, encoded, false) ==
+         DmlUpdateDurableRawAppendResultV1::ok;
+}
+
+// Replace the complete descriptor extent only after its new contents are
+// durable. PublishBound uses this path because the authority snapshot and the
+// root DUJR are one admission decision: recovery may observe the old
+// reservation or the complete bound operation, never a snapshot without its
+// root journal extent.
+bool DmlUpdateDurableReplaceFileAtomically(
+    const std::string& path, std::span<const std::uint8_t> bytes) {
+  if (bytes.empty()) return false;
+  const std::string temporary = path + ".publish.tmp";
+  std::error_code ignored;
+  std::filesystem::remove(temporary, ignored);
+#if defined(_WIN32)
+  HANDLE handle = CreateFileA(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  std::size_t offset = 0;
+  bool write_ok = true;
+  while (offset < bytes.size()) {
+    DWORD written = 0;
+    const DWORD request = static_cast<DWORD>(std::min<std::size_t>(
+        bytes.size() - offset, std::numeric_limits<DWORD>::max()));
+    if (WriteFile(handle, bytes.data() + offset, request, &written, nullptr) ==
+            0 ||
+        written == 0) {
+      write_ok = false;
+      break;
+    }
+    offset += written;
+  }
+  const bool durable = write_ok && FlushFileBuffers(handle) != 0;
+  CloseHandle(handle);
+  if (!durable ||
+      MoveFileExA(temporary.c_str(), path.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
+    std::filesystem::remove(temporary, ignored);
+    return false;
+  }
+  return true;
+#else
+  const int fd = ::open(temporary.c_str(),
+                        O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) return false;
+  std::size_t offset = 0;
+  bool write_ok = true;
+  while (offset < bytes.size()) {
+    const ssize_t written =
+        ::write(fd, bytes.data() + offset, bytes.size() - offset);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) {
+      write_ok = false;
+      break;
+    }
+    offset += static_cast<std::size_t>(written);
+  }
+  const bool durable = write_ok && ::fsync(fd) == 0;
+  ::close(fd);
+  if (!durable || ::rename(temporary.c_str(), path.c_str()) != 0) {
+    std::filesystem::remove(temporary, ignored);
+    return false;
+  }
+  const std::filesystem::path parent =
+      std::filesystem::path(path).parent_path();
+  const int directory_fd =
+      ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory_fd < 0) return false;
+  const bool directory_durable = ::fsync(directory_fd) == 0;
+  ::close(directory_fd);
+  return directory_durable;
+#endif
+}
+
+bool DmlUpdateDurableBytesEqualUuid(
+    std::span<const std::uint8_t> bytes, std::size_t offset,
+    std::string_view uuid) {
+  std::array<std::uint8_t, 16> expected{};
+  return DmlUpdateDurableUuidBytes(uuid, &expected) &&
+         offset <= bytes.size() && bytes.size() - offset >= expected.size() &&
+         std::equal(expected.begin(), expected.end(), bytes.begin() + offset);
+}
+
+bool DmlUpdateDurableBytesEqual(
+    std::span<const std::uint8_t> left, std::size_t left_offset,
+    std::span<const std::uint8_t> right, std::size_t right_offset,
+    std::size_t count) {
+  return left_offset <= left.size() && left.size() - left_offset >= count &&
+         right_offset <= right.size() && right.size() - right_offset >= count &&
+         std::equal(left.begin() + left_offset,
+                    left.begin() + left_offset + count,
+                    right.begin() + right_offset);
+}
+
+bool DmlUpdateDurableCarrierHeader(
+    std::span<const std::uint8_t> bytes, std::string_view magic,
+    std::uint16_t header_bytes, bool exact_total) {
+  std::uint16_t version = 0;
+  std::uint16_t parsed_header = 0;
+  std::uint32_t total = 0;
+  std::uint32_t flags = 0;
+  return magic.size() == 4 && bytes.size() >= 16 &&
+         std::equal(magic.begin(), magic.end(), bytes.begin()) &&
+         DmlUpdateDurableReadU16(bytes, 4, &version) && version == 1 &&
+         DmlUpdateDurableReadU16(bytes, 6, &parsed_header) &&
+         parsed_header == header_bytes &&
+         DmlUpdateDurableReadU32(bytes, 8, &total) &&
+         total == bytes.size() &&
+         (!exact_total || total == header_bytes) &&
+         DmlUpdateDurableReadU32(bytes, 12, &flags) && flags == 0;
+}
+
+bool DmlUpdateDurableVectorCarrier(
+    std::span<const std::uint8_t> bytes, std::string_view magic,
+    std::uint32_t minimum_count, std::uint32_t maximum_count,
+    std::uint32_t fixed_record_bytes, std::uint32_t* record_count = nullptr) {
+  std::uint32_t count = 0;
+  std::uint32_t exact_records = 0;
+  if (!DmlUpdateDurableCarrierHeader(bytes, magic, 104, false) ||
+      !DmlUpdateDurableReadU32(bytes, 64, &count) ||
+      !DmlUpdateDurableReadU32(bytes, 68, &exact_records) ||
+      count < minimum_count || count > maximum_count ||
+      exact_records != bytes.size() - 104) {
+    return false;
+  }
+  if (fixed_record_bytes != 0 &&
+      (count > std::numeric_limits<std::uint32_t>::max() /
+                   fixed_record_bytes ||
+       exact_records != count * fixed_record_bytes)) {
+    return false;
+  }
+  if (record_count != nullptr) *record_count = count;
+  return true;
+}
+
+bool DmlUpdateDurableSnapshotShallowValid(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    const MgaDmlUpdateDurableAuthoritySnapshotV1& snapshot,
+    std::uint64_t* structural_occurrence_id,
+    std::string* detail) {
+  const auto fail = [&](std::string reason) {
+    if (detail != nullptr) *detail = std::move(reason);
+    return false;
+  };
+  const auto descriptor = std::span<const std::uint8_t>(
+      snapshot.descriptor_dudc);
+  if (!DmlUpdateDurableCarrierHeader(descriptor, "DUDC", 712, true) ||
+      !DmlUpdateDurableBytesEqualUuid(descriptor, 16,
+                                      identity.descriptor_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          descriptor, 40, identity.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(descriptor, 64,
+                                      identity.operation_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          descriptor, 88, identity.owning_transaction_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(descriptor, 624,
+                                      identity.recovery_token_uuid)) {
+    return fail("durable_snapshot_descriptor_identity_invalid");
+  }
+  std::uint64_t descriptor_generation = 0;
+  std::uint64_t operation_generation = 0;
+  std::uint64_t local_transaction_id = 0;
+  std::uint64_t recovery_generation = 0;
+  std::uint64_t structural_occurrence = 0;
+  if (!DmlUpdateDurableReadU64(descriptor, 32, &descriptor_generation) ||
+      !DmlUpdateDurableReadU64(descriptor, 56, &structural_occurrence) ||
+      !DmlUpdateDurableReadU64(descriptor, 80, &operation_generation) ||
+      !DmlUpdateDurableReadU64(descriptor, 104, &local_transaction_id) ||
+      !DmlUpdateDurableReadU64(descriptor, 640, &recovery_generation) ||
+      descriptor_generation != identity.descriptor_generation ||
+      operation_generation != identity.operation_generation ||
+      structural_occurrence == 0 ||
+      local_transaction_id != identity.owning_local_transaction_id ||
+      recovery_generation != identity.recovery_generation) {
+    return fail("durable_snapshot_descriptor_generation_invalid");
+  }
+  if (structural_occurrence_id != nullptr) {
+    *structural_occurrence_id = structural_occurrence;
+  }
+
+  struct VectorRule {
+    const std::vector<std::uint8_t>* bytes;
+    std::string_view magic;
+    std::size_t descriptor_reference_offset;
+    std::uint32_t minimum_count;
+    std::uint32_t maximum_count;
+    std::uint32_t fixed_record_bytes;
+  };
+  const std::array<VectorRule, 5> vectors{{
+      {&snapshot.assignment_vector_duav, "DUAV", 248, 1, 1024, 0},
+      {&snapshot.predicate_vector_duev, "DUEV", 312, 1, 3, 0},
+      {&snapshot.row_policy_vector_dupv, "DUPV", 384, 0, 2, 176},
+      {&snapshot.constraint_vector_ducv, "DUCV", 448, 0, 1048576, 160},
+      {&snapshot.trigger_vector_dutv, "DUTV", 512, 0, 1048576, 192},
+  }};
+  for (const auto& vector : vectors) {
+    const auto bytes = std::span<const std::uint8_t>(*vector.bytes);
+    std::uint32_t count = 0;
+    std::uint64_t vector_generation = 0;
+    std::uint64_t referenced_generation = 0;
+    if (!DmlUpdateDurableVectorCarrier(
+            bytes, vector.magic, vector.minimum_count, vector.maximum_count,
+            vector.fixed_record_bytes, &count) ||
+        (vector.magic == "DUEV" && count != 1 && count != 3) ||
+        !DmlUpdateDurableBytesEqual(bytes, 16, descriptor,
+                                    vector.descriptor_reference_offset, 16) ||
+        !DmlUpdateDurableReadU64(bytes, 32, &vector_generation) ||
+        !DmlUpdateDurableReadU64(
+            descriptor, vector.descriptor_reference_offset + 16,
+            &referenced_generation) ||
+        vector_generation != referenced_generation ||
+        !DmlUpdateDurableBytesEqualUuid(bytes, 40,
+                                        identity.descriptor_uuid) ||
+        !DmlUpdateDurableReadU64(bytes, 56, &vector_generation) ||
+        vector_generation != identity.descriptor_generation) {
+      return fail("durable_snapshot_vector_identity_invalid");
+    }
+  }
+
+  const auto order =
+      std::span<const std::uint8_t>(snapshot.target_order_duor);
+  const auto budget =
+      std::span<const std::uint8_t>(snapshot.resource_budget_dubr);
+  const auto recovery =
+      std::span<const std::uint8_t>(snapshot.recovery_token_durc);
+  const auto source_policies =
+      std::span<const std::uint8_t>(snapshot.source_policy_vector_dusv);
+  const auto security_proof =
+      std::span<const std::uint8_t>(snapshot.security_snapshot_proof_dusp);
+  if (!DmlUpdateDurableCarrierHeader(order, "DUOR", 160, true) ||
+      !DmlUpdateDurableBytesEqual(order, 16, descriptor, 576, 24) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          order, 40, identity.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateDurableCarrierHeader(budget, "DUBR", 208, true) ||
+      !DmlUpdateDurableBytesEqual(budget, 16, descriptor, 600, 24) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          budget, 40, identity.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          budget, 56, identity.owning_transaction_uuid) ||
+      !DmlUpdateDurableCarrierHeader(recovery, "DURC", 208, true) ||
+      !DmlUpdateDurableBytesEqual(recovery, 16, descriptor, 624, 24) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          recovery, 16, identity.recovery_token_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          recovery, 40, identity.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          recovery, 56, identity.owning_transaction_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(recovery, 72,
+                                      identity.operation_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(recovery, 88,
+                                      identity.descriptor_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          recovery, 136, identity.validated_durable_handle_uuid)) {
+    return fail("durable_snapshot_scalar_authority_invalid");
+  }
+  std::uint64_t scalar_generation = 0;
+  if (!DmlUpdateDurableReadU64(recovery, 32, &scalar_generation) ||
+      scalar_generation != identity.recovery_generation ||
+      !DmlUpdateDurableReadU64(recovery, 104, &scalar_generation) ||
+      scalar_generation != identity.descriptor_generation ||
+      !DmlUpdateDurableReadU64(recovery, 152, &scalar_generation) ||
+      scalar_generation != identity.validated_durable_handle_generation) {
+    return fail("durable_snapshot_recovery_generation_invalid");
+  }
+
+  std::uint32_t source_policy_count = 0;
+  std::uint32_t effective_policy_count = 0;
+  std::uint32_t proof_effective_count = 0;
+  std::uint32_t proof_source_count = 0;
+  if (!DmlUpdateDurableVectorCarrier(source_policies, "DUSV", 0, 1048576,
+                                     256, &source_policy_count) ||
+      !DmlUpdateDurableVectorCarrier(
+          snapshot.row_policy_vector_dupv, "DUPV", 0, 2, 176,
+          &effective_policy_count) ||
+      !DmlUpdateDurableCarrierHeader(security_proof, "DUSP", 576, true) ||
+      !DmlUpdateDurableReadU32(security_proof, 352,
+                               &proof_effective_count) ||
+      !DmlUpdateDurableReadU32(security_proof, 356,
+                               &proof_source_count) ||
+      proof_effective_count != effective_policy_count ||
+      proof_source_count != source_policy_count ||
+      ((effective_policy_count == 0) != (source_policy_count == 0)) ||
+      security_proof[360] != 1 ||
+      !DmlUpdateDurableZero(security_proof.subspan(361, 7)) ||
+      !DmlUpdateDurableZero(security_proof.subspan(560, 16)) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          security_proof, 80, identity.database_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          security_proof, 96,
+          identity.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          security_proof, 112, identity.owning_transaction_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          security_proof, 136, identity.operation_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          security_proof, 160, identity.recovery_token_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          security_proof, 280, identity.descriptor_uuid) ||
+      !DmlUpdateDurableBytesEqual(
+          security_proof, 304, descriptor, 384, 24) ||
+      !DmlUpdateDurableBytesEqual(
+          security_proof, 328, source_policies, 16, 24) ||
+      !DmlUpdateDurableBytesEqual(
+          security_proof, 368, descriptor, 680, 32) ||
+      !DmlUpdateDurableBytesEqual(
+          security_proof, 400, descriptor, 416, 32) ||
+      !DmlUpdateDurableBytesEqual(
+          security_proof, 496, source_policies, 72, 32) ||
+      DmlUpdateDurableSha256(descriptor) !=
+          [&] {
+            MgaDmlUpdateDurableSha256V1 value{};
+            std::copy_n(security_proof.begin() + 432, 32, value.begin());
+            return value;
+          }() ||
+      DmlUpdateDurableSha256(snapshot.row_policy_vector_dupv) !=
+          [&] {
+            MgaDmlUpdateDurableSha256V1 value{};
+            std::copy_n(security_proof.begin() + 464, 32, value.begin());
+            return value;
+          }()) {
+    return fail("durable_snapshot_security_authority_invalid");
+  }
+  std::uint64_t scalar = 0;
+  const std::array<std::pair<std::size_t, std::uint64_t>, 6>
+      security_generations{{
+          {128, identity.owning_local_transaction_id},
+          {152, identity.operation_generation},
+          {176, identity.recovery_generation},
+          {296, identity.descriptor_generation},
+          {344, [&] {
+             std::uint64_t value = 0;
+             (void)DmlUpdateDurableReadU64(source_policies, 32, &value);
+             return value;
+           }()},
+          {32, [&] {
+             std::uint64_t value = 0;
+             (void)DmlUpdateDurableReadU64(security_proof, 32, &value);
+             return value;
+           }()},
+      }};
+  for (const auto& [offset, expected] : security_generations) {
+    if (!DmlUpdateDurableReadU64(security_proof, offset, &scalar) ||
+        scalar == 0 || scalar != expected) {
+      return fail("durable_snapshot_security_generation_invalid");
+    }
+  }
+
+  // The MGA store does not merely preserve carrier-shaped bytes.  It accepts
+  // a bound snapshot only after the canonical carrier codec has validated the
+  // complete set and the two recovery-only security carriers byte-for-byte.
+  // This remains a storage admission check; the UPDATE consumer performs the
+  // live datatype/operator/security/catalog revalidation before publication.
+  scratchbird::wire::TypedUpdateCarrierSet carriers;
+  scratchbird::wire::TypedUpdateSecurityPolicySourceVector typed_sources;
+  scratchbird::wire::TypedUpdateSecuritySnapshotProof typed_proof;
+  scratchbird::wire::TypedUpdateDatatypeAuthorityVector typed_datatypes;
+  scratchbird::wire::TypedUpdateBuiltinOperatorAuthorityVector typed_operators;
+  scratchbird::wire::TypedUpdateCarrierError carrier_error;
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateDescriptor(
+          snapshot.descriptor_dudc, &carriers.descriptor, &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateAssignmentVector(
+          snapshot.assignment_vector_duav, &carriers.assignments,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdatePredicateVector(
+          snapshot.predicate_vector_duev, &carriers.predicate,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateRowPolicyVector(
+          snapshot.row_policy_vector_dupv, &carriers.row_policies,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateConstraintVector(
+          snapshot.constraint_vector_ducv, &carriers.constraints,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateTriggerVector(
+          snapshot.trigger_vector_dutv, &carriers.triggers,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateTargetOrder(
+          snapshot.target_order_duor, &carriers.target_order,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateResourceBudget(
+          snapshot.resource_budget_dubr, &carriers.resource_budget,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateRecoveryToken(
+          snapshot.recovery_token_durc, &carriers.recovery_token,
+          &carrier_error) ||
+      !scratchbird::wire::ValidateTypedUpdateCarrierSet(carriers,
+                                                         &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateSecurityPolicySourceVector(
+          snapshot.source_policy_vector_dusv, &typed_sources,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateSecuritySnapshotProof(
+          snapshot.security_snapshot_proof_dusp, &typed_proof,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
+          snapshot.datatype_authority_vector_dudv, &typed_datatypes,
+          &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateBuiltinOperatorAuthorityVector(
+          snapshot.builtin_operator_authority_vector_duov, &typed_operators,
+          &carrier_error) ||
+      !scratchbird::wire::ValidateTypedUpdateDatatypeOperatorAuthority(
+          carriers.descriptor, carriers.assignments, carriers.predicate,
+          typed_datatypes, typed_operators, &carrier_error)) {
+    return fail("durable_snapshot_canonical_carrier_invalid:" +
+                carrier_error.field + ":" + carrier_error.detail);
+  }
+  if (typed_sources.identity.owner_descriptor_uuid !=
+          carriers.descriptor.descriptor_uuid ||
+      typed_sources.identity.owner_descriptor_generation !=
+          carriers.descriptor.descriptor_generation ||
+      typed_proof.descriptor_uuid != carriers.descriptor.descriptor_uuid ||
+      typed_proof.descriptor_generation !=
+          carriers.descriptor.descriptor_generation ||
+      typed_proof.source_policy_vector_uuid !=
+          typed_sources.identity.vector_uuid ||
+      typed_proof.source_policy_vector_generation !=
+          typed_sources.identity.vector_generation ||
+      typed_proof.source_policy_count != typed_sources.records.size() ||
+      carriers.recovery_token.durable_registry_uuid !=
+          [&] {
+            scratchbird::wire::TypedUpdateUuid value{};
+            (void)DmlUpdateDurableTypedUuid(
+                identity.validated_durable_handle_uuid, &value);
+            return value;
+          }() ||
+      carriers.recovery_token.durable_registry_generation !=
+          identity.validated_durable_handle_generation) {
+    return fail("durable_snapshot_typed_recovery_authority_mismatch");
+  }
+  return true;
+}
+
+constexpr std::array<std::uint8_t, 8> kDmlUpdateDurableSnapshotMagic{{
+    'S', 'B', 'M', 'D', 'U', 'A', 'S', '1'}};
+constexpr std::uint16_t kDmlUpdateDurableSnapshotVersion = 1;
+constexpr std::uint16_t kDmlUpdateDurableSnapshotHeaderBytes = 128;
+constexpr std::size_t kDmlUpdateDurableSnapshotCarrierCount = 13;
+constexpr std::uint64_t kDmlUpdateDurableMaximumSnapshotBytes =
+    64ULL * 1024ULL * 1024ULL;
+
+std::array<const std::vector<std::uint8_t>*,
+           kDmlUpdateDurableSnapshotCarrierCount>
+DmlUpdateDurableSnapshotCarriers(
+    const MgaDmlUpdateDurableAuthoritySnapshotV1& snapshot) {
+  return {{&snapshot.assignment_vector_duav,
+           &snapshot.predicate_vector_duev,
+           &snapshot.row_policy_vector_dupv,
+           &snapshot.constraint_vector_ducv,
+           &snapshot.trigger_vector_dutv,
+           &snapshot.target_order_duor,
+           &snapshot.resource_budget_dubr,
+           &snapshot.recovery_token_durc,
+           &snapshot.source_policy_vector_dusv,
+           &snapshot.security_snapshot_proof_dusp,
+           &snapshot.datatype_authority_vector_dudv,
+           &snapshot.builtin_operator_authority_vector_duov,
+           &snapshot.descriptor_dudc}};
+}
+
+std::array<std::vector<std::uint8_t>*,
+           kDmlUpdateDurableSnapshotCarrierCount>
+DmlUpdateDurableMutableSnapshotCarriers(
+    MgaDmlUpdateDurableAuthoritySnapshotV1* snapshot) {
+  return {{&snapshot->assignment_vector_duav,
+           &snapshot->predicate_vector_duev,
+           &snapshot->row_policy_vector_dupv,
+           &snapshot->constraint_vector_ducv,
+           &snapshot->trigger_vector_dutv,
+           &snapshot->target_order_duor,
+           &snapshot->resource_budget_dubr,
+           &snapshot->recovery_token_durc,
+           &snapshot->source_policy_vector_dusv,
+           &snapshot->security_snapshot_proof_dusp,
+           &snapshot->datatype_authority_vector_dudv,
+           &snapshot->builtin_operator_authority_vector_duov,
+           &snapshot->descriptor_dudc}};
+}
+
+bool DmlUpdateDurableAddSize(std::uint64_t* total, std::uint64_t value) {
+  if (total == nullptr || value > kDmlUpdateDurableMaximumSnapshotBytes ||
+      *total > kDmlUpdateDurableMaximumSnapshotBytes - value) {
+    return false;
+  }
+  *total += value;
+  return true;
+}
+
+bool DmlUpdateDurableEncodeSnapshot(
+    const MgaDmlUpdateDurableAuthoritySnapshotV1& snapshot,
+    std::vector<std::uint8_t>* payload) {
+  if (payload == nullptr) return false;
+  const auto carriers = DmlUpdateDurableSnapshotCarriers(snapshot);
+  std::uint64_t total = kDmlUpdateDurableSnapshotHeaderBytes;
+  for (const auto* carrier : carriers) {
+    if (carrier == nullptr || carrier->empty() ||
+        !DmlUpdateDurableAddSize(&total, carrier->size())) {
+      return false;
+    }
+  }
+  if (total > std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  try {
+    payload->assign(static_cast<std::size_t>(total), 0);
+  } catch (const std::bad_alloc&) {
+    return false;
+  }
+  std::copy(kDmlUpdateDurableSnapshotMagic.begin(),
+            kDmlUpdateDurableSnapshotMagic.end(), payload->begin());
+  DmlUpdateDurablePutU16(payload, 8, kDmlUpdateDurableSnapshotVersion);
+  DmlUpdateDurablePutU16(payload, 10,
+                         kDmlUpdateDurableSnapshotHeaderBytes);
+  DmlUpdateDurablePutU32(payload, 12, static_cast<std::uint32_t>(total));
+  for (std::size_t index = 0; index < carriers.size(); ++index) {
+    DmlUpdateDurablePutU64(payload, 16 + index * 8,
+                           carriers[index]->size());
+  }
+  std::size_t cursor = kDmlUpdateDurableSnapshotHeaderBytes;
+  for (const auto* carrier : carriers) {
+    std::copy(carrier->begin(), carrier->end(), payload->begin() + cursor);
+    cursor += carrier->size();
+  }
+  return cursor == payload->size();
+}
+
+bool DmlUpdateDurableDecodeSnapshot(
+    std::span<const std::uint8_t> payload,
+    MgaDmlUpdateDurableAuthoritySnapshotV1* snapshot,
+    std::string* detail) {
+  const auto fail = [&](std::string reason) {
+    if (detail != nullptr) *detail = std::move(reason);
+    return false;
+  };
+  std::uint16_t version = 0;
+  std::uint16_t header = 0;
+  std::uint32_t total = 0;
+  if (snapshot == nullptr || payload.size() < kDmlUpdateDurableSnapshotHeaderBytes ||
+      payload.size() > kDmlUpdateDurableMaximumSnapshotBytes ||
+      !std::equal(kDmlUpdateDurableSnapshotMagic.begin(),
+                  kDmlUpdateDurableSnapshotMagic.end(), payload.begin()) ||
+      !DmlUpdateDurableReadU16(payload, 8, &version) ||
+      !DmlUpdateDurableReadU16(payload, 10, &header) ||
+      !DmlUpdateDurableReadU32(payload, 12, &total) ||
+      version != kDmlUpdateDurableSnapshotVersion ||
+      header != kDmlUpdateDurableSnapshotHeaderBytes ||
+      total != payload.size() ||
+      !DmlUpdateDurableZero(payload.subspan(120, 8))) {
+    return fail("durable_snapshot_payload_header_invalid");
+  }
+  MgaDmlUpdateDurableAuthoritySnapshotV1 decoded;
+  const auto carriers = DmlUpdateDurableMutableSnapshotCarriers(&decoded);
+  std::size_t cursor = kDmlUpdateDurableSnapshotHeaderBytes;
+  for (std::size_t index = 0; index < carriers.size(); ++index) {
+    std::uint64_t bytes = 0;
+    if (!DmlUpdateDurableReadU64(payload, 16 + index * 8, &bytes) ||
+        bytes == 0 || bytes > payload.size() - cursor) {
+      return fail("durable_snapshot_payload_carrier_extent_invalid");
+    }
+    carriers[index]->assign(payload.begin() + cursor,
+                            payload.begin() + cursor + bytes);
+    cursor += static_cast<std::size_t>(bytes);
+  }
+  if (cursor != payload.size()) {
+    return fail("durable_snapshot_payload_authority_extent_invalid");
+  }
+  *snapshot = std::move(decoded);
+  return true;
+}
+
+struct DmlUpdateDurableParsedJournalV1 {
+  std::uint64_t sequence = 0;
+  MgaDmlUpdateDurableJournalStateV1 state =
+      MgaDmlUpdateDurableJournalStateV1::bound;
+  MgaDmlUpdateDurableSha256V1 prior{};
+  MgaDmlUpdateDurableSha256V1 evidence{};
+};
+
+bool DmlUpdateDurableJournalShallowValid(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    const MgaDmlUpdateDurableAuthoritySnapshotV1& snapshot,
+    std::span<const std::uint8_t> bytes,
+    DmlUpdateDurableParsedJournalV1* parsed, std::string* detail) {
+  const auto fail = [&](std::string reason) {
+    if (detail != nullptr) *detail = std::move(reason);
+    return false;
+  };
+  if (parsed == nullptr ||
+      (bytes.size() != 968 && bytes.size() != 1224) ||
+      !DmlUpdateDurableCarrierHeader(bytes, "DUJR", 256, false)) {
+    return fail("durable_journal_extent_invalid");
+  }
+  const std::uint8_t state = bytes[16];
+  if (state < static_cast<std::uint8_t>(
+                  MgaDmlUpdateDurableJournalStateV1::bound) ||
+      state > static_cast<std::uint8_t>(
+                  MgaDmlUpdateDurableJournalStateV1::aborted) ||
+      !DmlUpdateDurableZero(bytes.subspan(17, 7)) ||
+      !DmlUpdateDurableZero(bytes.subspan(188, 4)) ||
+      !DmlUpdateDurableBytesEqualUuid(bytes, 32, identity.database_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(bytes, 48,
+                                      identity.descriptor_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          bytes, 72, identity.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(
+          bytes, 88, identity.owning_transaction_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(bytes, 112,
+                                      identity.operation_uuid) ||
+      !DmlUpdateDurableBytesEqualUuid(bytes, 128,
+                                      identity.recovery_token_uuid)) {
+    return fail("durable_journal_identity_invalid");
+  }
+  std::uint64_t descriptor_generation = 0;
+  std::uint64_t local_transaction_id = 0;
+  std::uint64_t recovery_generation = 0;
+  std::uint32_t descriptor_bytes = 0;
+  std::uint32_t result_bytes = 0;
+  std::uint32_t payload_bytes = 0;
+  if (!DmlUpdateDurableReadU64(bytes, 24, &parsed->sequence) ||
+      !DmlUpdateDurableReadU64(bytes, 64, &descriptor_generation) ||
+      !DmlUpdateDurableReadU64(bytes, 104, &local_transaction_id) ||
+      !DmlUpdateDurableReadU64(bytes, 144, &recovery_generation) ||
+      !DmlUpdateDurableReadU32(bytes, 176, &descriptor_bytes) ||
+      !DmlUpdateDurableReadU32(bytes, 180, &result_bytes) ||
+      !DmlUpdateDurableReadU32(bytes, 184, &payload_bytes) ||
+      descriptor_generation != identity.descriptor_generation ||
+      local_transaction_id != identity.owning_local_transaction_id ||
+      recovery_generation != identity.recovery_generation ||
+      descriptor_bytes != 712 || payload_bytes != 712 + result_bytes ||
+      bytes.size() != 256 + payload_bytes ||
+      !DmlUpdateDurableBytesEqual(
+          bytes, 256, snapshot.descriptor_dudc, 0, 712)) {
+    return fail("durable_journal_payload_or_generation_invalid");
+  }
+  const auto typed_state =
+      static_cast<MgaDmlUpdateDurableJournalStateV1>(state);
+  const bool requires_result =
+      typed_state == MgaDmlUpdateDurableJournalStateV1::prepared ||
+      typed_state == MgaDmlUpdateDurableJournalStateV1::published;
+  if ((requires_result && result_bytes != 256) ||
+      (!requires_result && result_bytes != 0)) {
+    return fail("durable_journal_state_extent_invalid");
+  }
+  parsed->state = typed_state;
+  std::copy_n(bytes.begin() + 192, 32, parsed->prior.begin());
+  std::copy_n(bytes.begin() + 224, 32, parsed->evidence.begin());
+  if (DmlUpdateDurableZero(parsed->evidence)) {
+    return fail("durable_journal_evidence_missing");
+  }
+  return true;
+}
+
+bool DmlUpdateDurableJournalExtentMatchesBytes(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    const MgaDmlUpdateDurableAuthoritySnapshotV1& snapshot,
+    const MgaDmlUpdateDurableJournalExtentV1& extent,
+    std::string* detail) {
+  DmlUpdateDurableParsedJournalV1 parsed;
+  if (!DmlUpdateDurableJournalShallowValid(
+          identity, snapshot, extent.exact_dujr_bytes, &parsed, detail)) {
+    return false;
+  }
+  if (parsed.sequence != extent.journal_sequence ||
+      parsed.state != extent.lifecycle_state ||
+      parsed.prior != extent.prior_record_sha256 ||
+      parsed.evidence != extent.record_evidence_sha256) {
+    if (detail != nullptr) {
+      *detail = "durable_journal_supplied_metadata_mismatch";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool DmlUpdateDurableLegalTransition(
+    MgaDmlUpdateDurableJournalStateV1 prior,
+    MgaDmlUpdateDurableJournalStateV1 next) {
+  switch (prior) {
+    case MgaDmlUpdateDurableJournalStateV1::bound:
+      return next == MgaDmlUpdateDurableJournalStateV1::intent ||
+             next == MgaDmlUpdateDurableJournalStateV1::aborted;
+    case MgaDmlUpdateDurableJournalStateV1::intent:
+      return next == MgaDmlUpdateDurableJournalStateV1::prepared ||
+             next == MgaDmlUpdateDurableJournalStateV1::aborted;
+    case MgaDmlUpdateDurableJournalStateV1::prepared:
+      return next == MgaDmlUpdateDurableJournalStateV1::published ||
+             next == MgaDmlUpdateDurableJournalStateV1::aborted;
+    case MgaDmlUpdateDurableJournalStateV1::published:
+    case MgaDmlUpdateDurableJournalStateV1::aborted:
+      return false;
+  }
+  return false;
+}
+
+EngineApiDiagnostic DmlUpdateDurableDiagnostic(
+    std::string code, std::string key, std::string detail = {}) {
+  return MakeEngineApiDiagnostic(std::move(code), std::move(key),
+                                 std::move(detail), true);
+}
+
+MgaDmlUpdateDurableOperationMutationResultV1 DmlUpdateDurableMutation(
+    MgaDmlUpdateDurableOperationOutcomeV1 outcome, std::string detail = {}) {
+  MgaDmlUpdateDurableOperationMutationResultV1 result;
+  result.outcome = outcome;
+  if (result.ok()) {
+    result.diagnostic = OkDiagnostic();
+  } else {
+    const bool stale = outcome == MgaDmlUpdateDurableOperationOutcomeV1::stale;
+    const bool denied =
+        outcome == MgaDmlUpdateDurableOperationOutcomeV1::access_denied;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        denied ? "SECURITY.ACCESS_DENIED"
+               : stale ? "MGA.TRANSACTION.STALE" : "DML.UPDATE_FAILED",
+        denied ? "sblr.dml_update_rows.durable_operation_denied"
+               : stale ? "sblr.dml_update_rows.durable_operation_stale"
+                       : "sblr.dml_update_rows.durable_operation_failed",
+        std::move(detail));
+  }
+  return result;
+}
+
+std::string DmlUpdateDurablePathForLookup(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationLookupV1& lookup) {
+  std::array<std::uint8_t, 16> ignored{};
+  if (context.database_path.empty() ||
+      !DmlUpdateDurableUuidBytes(lookup.descriptor_uuid, &ignored) ||
+      lookup.descriptor_generation == 0 ||
+      lookup.structural_occurrence_id == 0) {
+    return {};
+  }
+  return DmlUpdateDurableOperationStorePath(context) + "/" +
+         lookup.descriptor_uuid + ".duop";
+}
+
+bool DmlUpdateDurableSameReservationRequest(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableAuthorityReservationRequestV1& request,
+    const MgaDmlUpdateDurableOperationIdentityV1& identity) {
+  return identity.database_uuid == context.database_uuid.canonical &&
+         identity.owning_transaction_uuid ==
+             context.transaction_uuid.canonical &&
+         identity.owning_local_transaction_id ==
+             context.local_transaction_id &&
+         identity.authenticated_statement_receipt_uuid ==
+             context.statement_receipt_uuid.canonical &&
+         identity.operation_uuid == request.operation_uuid &&
+         identity.operation_generation == request.operation_generation &&
+         identity.descriptor_uuid == request.descriptor_uuid &&
+         identity.descriptor_generation == request.descriptor_generation &&
+         identity.recovery_token_uuid == request.recovery_token_uuid &&
+         identity.recovery_generation == request.recovery_generation;
+}
+
+std::string DmlUpdateDurableFreshIdentity(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    std::string_view other = {}) {
+  for (std::size_t attempt = 0; attempt < 16; ++attempt) {
+    const std::string candidate = GenerateCrudEngineUuid("object");
+    std::array<std::uint8_t, 16> ignored{};
+    if (DmlUpdateDurableUuidBytes(candidate, &ignored) &&
+        candidate != identity.database_uuid &&
+        candidate != identity.owning_transaction_uuid &&
+        candidate != identity.authenticated_statement_receipt_uuid &&
+        candidate != identity.operation_uuid &&
+        candidate != identity.descriptor_uuid &&
+        candidate != identity.recovery_token_uuid && candidate != other) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+std::string DmlUpdateDurableQuarantinePath(const std::string& path) {
+  return path + ".quarantine";
+}
+
+bool DmlUpdateDurableIsQuarantined(const std::string& path) {
+  std::error_code error;
+  return std::filesystem::exists(DmlUpdateDurableQuarantinePath(path), error) &&
+         !error;
+}
+
+bool DmlUpdateDurableWriteQuarantine(const std::string& path) {
+  const std::array<std::uint8_t, 16> marker{{
+      'S', 'B', 'M', 'D', 'U', 'Q', '1', 0, 1, 0, 0, 0, 0, 0, 0, 0}};
+  const std::string quarantine = DmlUpdateDurableQuarantinePath(path);
+#if defined(_WIN32)
+  HANDLE handle = CreateFileA(quarantine.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok = WriteFile(handle, marker.data(), marker.size(), &written,
+                            nullptr) != 0 &&
+                  written == marker.size() && FlushFileBuffers(handle) != 0;
+  CloseHandle(handle);
+  return ok;
+#else
+  const int fd = ::open(quarantine.c_str(),
+                        O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) return false;
+  std::size_t offset = 0;
+  while (offset < marker.size()) {
+    const ssize_t written =
+        ::write(fd, marker.data() + offset, marker.size() - offset);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) {
+      ::close(fd);
+      return false;
+    }
+    offset += static_cast<std::size_t>(written);
+  }
+  const bool ok = ::fsync(fd) == 0;
+  ::close(fd);
+  return ok;
+#endif
+}
+
+struct DmlUpdateDurableStoredOperationV1 {
+  bool ok = false;
+  bool missing = false;
+  bool reservation_only = false;
+  bool snapshot_present = false;
+  bool quarantined = false;
+  std::string detail;
+  MgaDmlUpdateDurableOperationIdentityV1 identity;
+  MgaDmlUpdateDurableAuthoritySnapshotV1 snapshot;
+  std::vector<MgaDmlUpdateDurableJournalExtentV1> journal;
+  bool staged_successor_present = false;
+  MgaDmlUpdateDurableJournalExtentV1 staged_successor;
+  std::vector<std::uint8_t> staged_encoded_journal_frame;
+  std::vector<std::uint8_t> latest_dumo;
+  std::uint64_t structural_occurrence_id = 0;
+};
+
+DmlUpdateDurableStoredOperationV1 DmlUpdateDurableLoadOperation(
+    const std::string& path, bool quarantine_on_corruption) {
+  DmlUpdateDurableStoredOperationV1 result;
+  if (DmlUpdateDurableIsQuarantined(path)) {
+    result.quarantined = true;
+    result.detail = "durable_operation_quarantined";
+    return result;
+  }
+  const auto loaded = DmlUpdateDurableLoadFrames(path);
+  if (!loaded.ok) {
+    result.missing = loaded.missing;
+    result.detail = loaded.detail;
+    if (!loaded.missing && quarantine_on_corruption) {
+      result.quarantined = DmlUpdateDurableWriteQuarantine(path);
+    }
+    return result;
+  }
+  if (loaded.missing || loaded.frames.empty()) {
+    result.missing = true;
+    return result;
+  }
+  auto corrupt = [&](std::string detail) {
+    result.detail = std::move(detail);
+    if (quarantine_on_corruption) {
+      result.quarantined = DmlUpdateDurableWriteQuarantine(path);
+    }
+    return result;
+  };
+  const auto& reservation = loaded.frames.front();
+  if (reservation.kind !=
+          DmlUpdateDurableFrameKindV1::authority_reservation ||
+      reservation.sequence != 0 || reservation.state != 0 ||
+      reservation.flags != 0 || !reservation.payload.empty() ||
+      !DmlUpdateDurableZero(reservation.prior_record_sha256) ||
+      !DmlUpdateDurableZero(reservation.record_evidence_sha256)) {
+    return corrupt("durable_reservation_frame_invalid");
+  }
+  result.identity = reservation.identity;
+  if (loaded.frames.size() == 1) {
+    result.ok = true;
+    result.reservation_only = true;
+    return result;
+  }
+  const auto& snapshot = loaded.frames[1];
+  if (snapshot.kind != DmlUpdateDurableFrameKindV1::authority_snapshot ||
+      snapshot.identity != result.identity || snapshot.sequence != 0 ||
+      snapshot.state != 0 || snapshot.flags != 0 ||
+      !DmlUpdateDurableZero(snapshot.prior_record_sha256) ||
+      !DmlUpdateDurableZero(snapshot.record_evidence_sha256) ||
+      !DmlUpdateDurableDecodeSnapshot(snapshot.payload, &result.snapshot,
+                                      &result.detail) ||
+      !DmlUpdateDurableSnapshotShallowValid(
+          result.identity, result.snapshot,
+          &result.structural_occurrence_id, &result.detail)) {
+    return corrupt(result.detail.empty() ? "durable_snapshot_frame_invalid"
+                                         : result.detail);
+  }
+  result.snapshot_present = true;
+  std::size_t cursor = 2;
+  for (; cursor < loaded.frames.size(); ++cursor) {
+    const auto& frame = loaded.frames[cursor];
+    if (frame.identity != result.identity || frame.flags != 0) {
+      return corrupt("durable_frame_cross_identity");
+    }
+    if (frame.kind == DmlUpdateDurableFrameKindV1::recovery_observation) {
+      if (frame.payload.size() != 416 ||
+          !std::equal(frame.payload.begin(), frame.payload.begin() + 4,
+                      "DUMO")) {
+        return corrupt("durable_observation_extent_invalid");
+      }
+      result.latest_dumo = frame.payload;
+      continue;
+    }
+    if (frame.kind ==
+        DmlUpdateDurableFrameKindV1::prepared_successor_invalidated) {
+      if (!result.staged_successor_present || !frame.payload.empty() ||
+          frame.sequence != result.staged_successor.journal_sequence ||
+          frame.state != static_cast<std::uint8_t>(
+                             result.staged_successor.lifecycle_state) ||
+          frame.prior_record_sha256 !=
+              result.staged_successor.prior_record_sha256 ||
+          frame.record_evidence_sha256 !=
+              result.staged_successor.record_evidence_sha256) {
+        return corrupt("durable_prepared_successor_invalidation_invalid");
+      }
+      result.staged_successor_present = false;
+      result.staged_successor = {};
+      result.staged_encoded_journal_frame.clear();
+      continue;
+    }
+    if (frame.kind == DmlUpdateDurableFrameKindV1::prepared_successor) {
+      if (result.journal.empty() || result.staged_successor_present ||
+          frame.flags != 0 || frame.payload.empty()) {
+        return corrupt("durable_prepared_successor_position_invalid");
+      }
+      DmlUpdateDurableFrameV1 staged_frame;
+      if (!DmlUpdateDurableDecodeFrame(frame.payload, &staged_frame,
+                                       &result.detail) ||
+          staged_frame.kind != DmlUpdateDurableFrameKindV1::journal ||
+          staged_frame.identity != result.identity ||
+          staged_frame.flags != 0 ||
+          frame.sequence != staged_frame.sequence ||
+          frame.state != staged_frame.state ||
+          frame.prior_record_sha256 !=
+              staged_frame.prior_record_sha256 ||
+          frame.record_evidence_sha256 !=
+              staged_frame.record_evidence_sha256) {
+        return corrupt(result.detail.empty()
+                           ? "durable_prepared_successor_frame_invalid"
+                           : result.detail);
+      }
+      MgaDmlUpdateDurableJournalExtentV1 staged_extent;
+      staged_extent.journal_sequence = staged_frame.sequence;
+      staged_extent.lifecycle_state =
+          static_cast<MgaDmlUpdateDurableJournalStateV1>(staged_frame.state);
+      staged_extent.prior_record_sha256 =
+          staged_frame.prior_record_sha256;
+      staged_extent.record_evidence_sha256 =
+          staged_frame.record_evidence_sha256;
+      staged_extent.exact_dujr_bytes = staged_frame.payload;
+      const auto& prior = result.journal.back();
+      if (!DmlUpdateDurableJournalExtentMatchesBytes(
+              result.identity, result.snapshot, staged_extent,
+              &result.detail) ||
+          staged_extent.journal_sequence != prior.journal_sequence + 1 ||
+          staged_extent.prior_record_sha256 !=
+              prior.record_evidence_sha256 ||
+          !DmlUpdateDurableLegalTransition(
+              prior.lifecycle_state, staged_extent.lifecycle_state)) {
+        return corrupt(result.detail.empty()
+                           ? "durable_prepared_successor_cas_invalid"
+                           : result.detail);
+      }
+      result.staged_successor_present = true;
+      result.staged_successor = std::move(staged_extent);
+      result.staged_encoded_journal_frame = frame.payload;
+      continue;
+    }
+    if (frame.kind != DmlUpdateDurableFrameKindV1::journal) {
+      return corrupt("durable_frame_kind_invalid");
+    }
+    MgaDmlUpdateDurableJournalExtentV1 extent;
+    extent.journal_sequence = frame.sequence;
+    extent.lifecycle_state =
+        static_cast<MgaDmlUpdateDurableJournalStateV1>(frame.state);
+    extent.prior_record_sha256 = frame.prior_record_sha256;
+    extent.record_evidence_sha256 = frame.record_evidence_sha256;
+    extent.exact_dujr_bytes = frame.payload;
+    if (!DmlUpdateDurableJournalExtentMatchesBytes(
+            result.identity, result.snapshot, extent, &result.detail)) {
+      return corrupt(result.detail);
+    }
+    if (result.journal.empty()) {
+      if (extent.journal_sequence != 1 ||
+          extent.lifecycle_state !=
+              MgaDmlUpdateDurableJournalStateV1::bound ||
+          !DmlUpdateDurableZero(extent.prior_record_sha256)) {
+        return corrupt("durable_journal_root_invalid");
+      }
+    } else {
+      const auto& prior = result.journal.back();
+      if (extent.journal_sequence != prior.journal_sequence + 1 ||
+          extent.prior_record_sha256 != prior.record_evidence_sha256 ||
+          !DmlUpdateDurableLegalTransition(prior.lifecycle_state,
+                                           extent.lifecycle_state)) {
+        return corrupt("durable_journal_chain_forked");
+      }
+    }
+    if (result.staged_successor_present) {
+      if (extent != result.staged_successor) {
+        return corrupt("durable_prepared_successor_commit_mismatch");
+      }
+      result.staged_successor_present = false;
+      result.staged_successor = {};
+      result.staged_encoded_journal_frame.clear();
+    }
+    result.journal.push_back(std::move(extent));
+  }
+  if (result.journal.empty()) {
+    result.reservation_only = false;
+  }
+  result.ok = true;
+  return result;
+}
+
+DmlUpdateDurableFrameV1 DmlUpdateDurableJournalFrame(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    const MgaDmlUpdateDurableJournalExtentV1& extent) {
+  DmlUpdateDurableFrameV1 frame;
+  frame.kind = DmlUpdateDurableFrameKindV1::journal;
+  frame.identity = identity;
+  frame.sequence = extent.journal_sequence;
+  frame.state = static_cast<std::uint8_t>(extent.lifecycle_state);
+  frame.prior_record_sha256 = extent.prior_record_sha256;
+  frame.record_evidence_sha256 = extent.record_evidence_sha256;
+  frame.payload = extent.exact_dujr_bytes;
+  return frame;
+}
+
+bool DmlUpdateDurableEncodePreparedInvalidation(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    const MgaDmlUpdateDurableJournalExtentV1& staged,
+    std::vector<std::uint8_t>* encoded) {
+  DmlUpdateDurableFrameV1 invalidation;
+  invalidation.kind =
+      DmlUpdateDurableFrameKindV1::prepared_successor_invalidated;
+  invalidation.identity = identity;
+  invalidation.sequence = staged.journal_sequence;
+  invalidation.state =
+      static_cast<std::uint8_t>(staged.lifecycle_state);
+  invalidation.prior_record_sha256 = staged.prior_record_sha256;
+  invalidation.record_evidence_sha256 = staged.record_evidence_sha256;
+  g_dml_update_durable_frame_encode_calls.fetch_add(
+      1, std::memory_order_relaxed);
+  g_dml_update_durable_checksum_calls.fetch_add(
+      2, std::memory_order_relaxed);
+  return DmlUpdateDurableEncodeFrame(invalidation, encoded);
+}
+
+constexpr std::size_t kDmlUpdateStatementSavepointJournalFields = 27;
+
+struct DmlUpdateStatementSavepointJournalRecordV1 {
+  MgaDmlUpdateStatementSavepointAuthorityV1 authority;
+  std::string private_marker;
+  std::uint64_t journal_sequence = 0;
+  SavepointCutoffs cutoffs;
+  std::uint64_t row_upper_event_sequence = 0;
+  std::uint64_t metadata_upper_event_sequence = 0;
+  std::uint64_t index_upper_event_sequence = 0;
+  MgaDmlUpdateStatementAuthoritySha256V1 prior_record_sha256{};
+};
+
+std::mutex& DmlUpdateStatementSavepointJournalMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+EngineApiDiagnostic DmlUpdateStatementSavepointDiagnostic(
+    std::string code, std::string key, std::string detail = {}) {
+  return MakeEngineApiDiagnostic(std::move(code), std::move(key),
+                                 std::move(detail), true);
+}
+
+MgaDmlUpdateStatementSavepointAuthorityResultV1
+DmlUpdateStatementSavepointFailure(std::string code, std::string key,
+                                   std::string detail = {}) {
+  MgaDmlUpdateStatementSavepointAuthorityResultV1 result;
+  result.diagnostic = DmlUpdateStatementSavepointDiagnostic(
+      std::move(code), std::move(key), std::move(detail));
+  return result;
+}
+
+bool DmlUpdateStatementParseU64(std::string_view text,
+                                std::uint64_t* value) {
+  if (value == nullptr || text.empty()) return false;
+  std::uint64_t parsed = 0;
+  const auto converted =
+      std::from_chars(text.data(), text.data() + text.size(), parsed, 10);
+  if (converted.ec != std::errc{} ||
+      converted.ptr != text.data() + text.size()) {
+    return false;
+  }
+  *value = parsed;
+  return true;
+}
+
+bool DmlUpdateStatementParseUuid(
+    std::string_view text, std::array<std::uint8_t, 16>* bytes = nullptr) {
+  if (text.empty()) return false;
+  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
+  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
+      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
+    return false;
+  }
+  if (bytes != nullptr) {
+    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
+              bytes->begin());
+  }
+  return true;
+}
+
+bool DmlUpdateStatementShaNonzero(
+    const MgaDmlUpdateStatementAuthoritySha256V1& value) {
+  return std::any_of(value.begin(), value.end(),
+                     [](std::uint8_t byte) { return byte != 0; });
+}
+
+std::string DmlUpdateStatementShaHex(
+    const MgaDmlUpdateStatementAuthoritySha256V1& value) {
+  return scratchbird::core::hash::HexLower(value);
+}
+
+bool DmlUpdateStatementParseSha(
+    std::string_view text, MgaDmlUpdateStatementAuthoritySha256V1* value) {
+  if (value == nullptr || text.size() != value->size() * 2) return false;
+  MgaDmlUpdateStatementAuthoritySha256V1 parsed{};
+  for (std::size_t index = 0; index < parsed.size(); ++index) {
+    const int high = HexValue(text[index * 2]);
+    const int low = HexValue(text[index * 2 + 1]);
+    if (high < 0 || low < 0) return false;
+    parsed[index] = static_cast<std::uint8_t>((high << 4) | low);
+  }
+  *value = parsed;
+  return true;
+}
+
+void DmlUpdateStatementAppendU64(std::vector<std::uint8_t>* bytes,
+                                 std::uint64_t value) {
+  for (std::size_t offset = 0; offset < 8; ++offset) {
+    bytes->push_back(
+        static_cast<std::uint8_t>((value >> (offset * 8)) & 0xffu));
+  }
+}
+
+bool DmlUpdateStatementAppendUuid(std::vector<std::uint8_t>* bytes,
+                                  std::string_view uuid,
+                                  bool optional = false) {
+  if (optional && uuid.empty()) {
+    bytes->insert(bytes->end(), 16, 0);
+    return true;
+  }
+  std::array<std::uint8_t, 16> parsed{};
+  if (!DmlUpdateStatementParseUuid(uuid, &parsed)) return false;
+  bytes->insert(bytes->end(), parsed.begin(), parsed.end());
+  return true;
+}
+
+MgaDmlUpdateStatementAuthoritySha256V1
+DmlUpdateStatementSavepointRecordSha256(
+    const DmlUpdateStatementSavepointJournalRecordV1& record) {
+  std::vector<std::uint8_t> material;
+  material.reserve(kDmlUpdateStatementSavepointEvidenceDomain.size() + 257);
+  material.insert(material.end(),
+                  kDmlUpdateStatementSavepointEvidenceDomain.begin(),
+                  kDmlUpdateStatementSavepointEvidenceDomain.end());
+  material.push_back(1);
+  material.push_back(static_cast<std::uint8_t>(record.authority.lifecycle));
+  material.push_back(record.authority.publication_barrier_present ? 1 : 0);
+  DmlUpdateStatementAppendU64(&material, record.journal_sequence);
+  DmlUpdateStatementAppendU64(&material,
+                              record.cutoffs.row_event_sequence);
+  DmlUpdateStatementAppendU64(&material,
+                              record.cutoffs.metadata_event_sequence);
+  DmlUpdateStatementAppendU64(&material,
+                              record.cutoffs.index_event_sequence);
+  DmlUpdateStatementAppendU64(&material, record.row_upper_event_sequence);
+  DmlUpdateStatementAppendU64(&material,
+                              record.metadata_upper_event_sequence);
+  DmlUpdateStatementAppendU64(&material, record.index_upper_event_sequence);
+  const auto& binding = record.authority.binding;
+  if (!DmlUpdateStatementAppendUuid(&material, binding.database_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material,
+                                    binding.owning_transaction_uuid) ||
+      !DmlUpdateStatementAppendUuid(
+          &material, binding.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material, binding.operation_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material, binding.descriptor_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material, binding.recovery_token_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material,
+                                    record.authority.savepoint_uuid) ||
+      !DmlUpdateStatementAppendUuid(
+          &material, record.authority.publication_barrier_uuid, true)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(&material,
+                              binding.owning_local_transaction_id);
+  DmlUpdateStatementAppendU64(&material, binding.descriptor_generation);
+  DmlUpdateStatementAppendU64(&material, binding.recovery_generation);
+  DmlUpdateStatementAppendU64(&material,
+                              record.authority.savepoint_generation);
+  DmlUpdateStatementAppendU64(
+      &material, record.authority.publication_barrier_generation);
+  material.insert(material.end(), record.prior_record_sha256.begin(),
+                  record.prior_record_sha256.end());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material);
+  return digest.ok() ? digest.digest
+                     : MgaDmlUpdateStatementAuthoritySha256V1{};
+}
+
+std::string DmlUpdateStatementPrivateSavepointMarker(
+    std::string_view savepoint_uuid) {
+  if (!DmlUpdateStatementParseUuid(savepoint_uuid)) return {};
+  std::string marker = "__sblr_dml_update_rows_";
+  marker.reserve(marker.size() + 32);
+  for (const char value : savepoint_uuid) {
+    if (value != '-') marker.push_back(value);
+  }
+  return marker;
+}
+
+MgaDmlUpdateDurableOperationIdentityV1
+DmlUpdateStatementDurableIdentity(
+    const MgaDmlUpdateStatementSavepointBindingV1& binding) {
+  MgaDmlUpdateDurableOperationIdentityV1 identity;
+  identity.database_uuid = binding.database_uuid;
+  identity.owning_transaction_uuid = binding.owning_transaction_uuid;
+  identity.owning_local_transaction_id =
+      binding.owning_local_transaction_id;
+  identity.authenticated_statement_receipt_uuid =
+      binding.authenticated_statement_receipt_uuid;
+  identity.operation_uuid = binding.operation_uuid;
+  identity.descriptor_uuid = binding.descriptor_uuid;
+  identity.descriptor_generation = binding.descriptor_generation;
+  identity.recovery_token_uuid = binding.recovery_token_uuid;
+  identity.recovery_generation = binding.recovery_generation;
+  return identity;
+}
+
+bool DmlUpdateStatementEncodeBinaryPayload(
+    const DmlUpdateStatementSavepointJournalRecordV1& record,
+    std::vector<std::uint8_t>* payload) {
+  if (payload == nullptr) return false;
+  payload->assign(136, 0);
+  if (!DmlUpdateDurablePutUuid(payload, 0,
+                               record.authority.savepoint_uuid) ||
+      !DmlUpdateDurablePutUuid(
+          payload, 24, record.authority.publication_barrier_uuid)) {
+    return false;
+  }
+  DmlUpdateDurablePutU64(payload, 16,
+                         record.authority.savepoint_generation);
+  DmlUpdateDurablePutU64(
+      payload, 40, record.authority.publication_barrier_generation);
+  (*payload)[48] = record.authority.publication_barrier_present ? 1 : 0;
+  (*payload)[49] =
+      static_cast<std::uint8_t>(record.authority.lifecycle);
+  DmlUpdateDurablePutU64(payload, 56,
+                         record.cutoffs.row_event_sequence);
+  DmlUpdateDurablePutU64(payload, 64,
+                         record.cutoffs.metadata_event_sequence);
+  DmlUpdateDurablePutU64(payload, 72,
+                         record.cutoffs.index_event_sequence);
+  DmlUpdateDurablePutU64(payload, 80, record.row_upper_event_sequence);
+  DmlUpdateDurablePutU64(payload, 88,
+                         record.metadata_upper_event_sequence);
+  DmlUpdateDurablePutU64(payload, 96,
+                         record.index_upper_event_sequence);
+  std::copy(record.authority.durable_presence_sha256.begin(),
+            record.authority.durable_presence_sha256.end(),
+            payload->begin() + 104);
+  return true;
+}
+
+bool DmlUpdateStatementDecodeBinaryFrame(
+    const DmlUpdateDurableFrameV1& frame,
+    DmlUpdateStatementSavepointJournalRecordV1* record) {
+  if (record == nullptr ||
+      frame.kind != DmlUpdateDurableFrameKindV1::statement_savepoint ||
+      frame.flags != 0 || frame.payload.size() != 136 ||
+      frame.sequence < 1 || frame.sequence > 2 ||
+      frame.state < static_cast<std::uint8_t>(
+                        MgaDmlUpdateStatementSavepointLifecycleV1::active) ||
+      frame.state > static_cast<std::uint8_t>(
+                        MgaDmlUpdateStatementSavepointLifecycleV1::released) ||
+      !DmlUpdateDurableZero(
+          std::span<const std::uint8_t>(frame.payload).subspan(50, 6))) {
+    return false;
+  }
+  record->authority.binding.database_uuid = frame.identity.database_uuid;
+  record->authority.binding.owning_transaction_uuid =
+      frame.identity.owning_transaction_uuid;
+  record->authority.binding.owning_local_transaction_id =
+      frame.identity.owning_local_transaction_id;
+  record->authority.binding.authenticated_statement_receipt_uuid =
+      frame.identity.authenticated_statement_receipt_uuid;
+  record->authority.binding.operation_uuid = frame.identity.operation_uuid;
+  record->authority.binding.descriptor_uuid = frame.identity.descriptor_uuid;
+  record->authority.binding.descriptor_generation =
+      frame.identity.descriptor_generation;
+  record->authority.binding.recovery_token_uuid =
+      frame.identity.recovery_token_uuid;
+  record->authority.binding.recovery_generation =
+      frame.identity.recovery_generation;
+  record->authority.savepoint_uuid = DmlUpdateDurableUuidText(
+      std::span<const std::uint8_t>(frame.payload).subspan(0, 16));
+  record->authority.publication_barrier_uuid = DmlUpdateDurableUuidText(
+      std::span<const std::uint8_t>(frame.payload).subspan(24, 16));
+  if (!DmlUpdateDurableReadU64(frame.payload, 16,
+                               &record->authority.savepoint_generation) ||
+      !DmlUpdateDurableReadU64(
+          frame.payload, 40,
+          &record->authority.publication_barrier_generation) ||
+      !DmlUpdateDurableReadU64(frame.payload, 56,
+                               &record->cutoffs.row_event_sequence) ||
+      !DmlUpdateDurableReadU64(frame.payload, 64,
+                               &record->cutoffs.metadata_event_sequence) ||
+      !DmlUpdateDurableReadU64(frame.payload, 72,
+                               &record->cutoffs.index_event_sequence) ||
+      !DmlUpdateDurableReadU64(frame.payload, 80,
+                               &record->row_upper_event_sequence) ||
+      !DmlUpdateDurableReadU64(frame.payload, 88,
+                               &record->metadata_upper_event_sequence) ||
+      !DmlUpdateDurableReadU64(frame.payload, 96,
+                               &record->index_upper_event_sequence)) {
+    return false;
+  }
+  record->authority.publication_barrier_present = frame.payload[48] != 0;
+  record->authority.lifecycle =
+      static_cast<MgaDmlUpdateStatementSavepointLifecycleV1>(
+          frame.payload[49]);
+  std::copy_n(frame.payload.begin() + 104, 32,
+              record->authority.durable_presence_sha256.begin());
+  record->journal_sequence = frame.sequence;
+  record->prior_record_sha256 = frame.prior_record_sha256;
+  record->private_marker = DmlUpdateStatementPrivateSavepointMarker(
+      record->authority.savepoint_uuid);
+  const bool terminal =
+      record->authority.lifecycle !=
+      MgaDmlUpdateStatementSavepointLifecycleV1::active;
+  const bool barrier_shape =
+      DmlUpdateStatementParseUuid(
+          record->authority.publication_barrier_uuid) &&
+      record->authority.publication_barrier_generation == 1 &&
+      record->authority.publication_barrier_uuid !=
+          record->authority.savepoint_uuid &&
+      record->authority.publication_barrier_present ==
+          (record->authority.lifecycle ==
+           MgaDmlUpdateStatementSavepointLifecycleV1::released);
+  const bool active_shape =
+      record->authority.lifecycle !=
+          MgaDmlUpdateStatementSavepointLifecycleV1::active ||
+      (record->row_upper_event_sequence == 0 &&
+       record->metadata_upper_event_sequence == 0 &&
+       record->index_upper_event_sequence == 0 &&
+       !DmlUpdateStatementShaNonzero(record->prior_record_sha256));
+  const bool release_shape =
+      record->authority.lifecycle !=
+          MgaDmlUpdateStatementSavepointLifecycleV1::released ||
+      (record->row_upper_event_sequence == 0 &&
+       record->metadata_upper_event_sequence == 0 &&
+       record->index_upper_event_sequence == 0);
+  const bool rollback_shape =
+      record->authority.lifecycle !=
+          MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back ||
+      (record->row_upper_event_sequence >=
+           record->cutoffs.row_event_sequence &&
+       record->metadata_upper_event_sequence >=
+           record->cutoffs.metadata_event_sequence &&
+       record->index_upper_event_sequence >=
+           record->cutoffs.index_event_sequence);
+  const auto expected = DmlUpdateStatementSavepointRecordSha256(*record);
+  return frame.state == frame.payload[49] &&
+         record->authority.savepoint_generation == 1 &&
+         DmlUpdateStatementParseUuid(record->authority.savepoint_uuid) &&
+         !record->private_marker.empty() &&
+         record->journal_sequence == (terminal ? 2 : 1) && barrier_shape &&
+         active_shape && release_shape && rollback_shape &&
+         frame.record_evidence_sha256 ==
+             record->authority.durable_presence_sha256 &&
+         DmlUpdateStatementShaNonzero(expected) &&
+         expected == record->authority.durable_presence_sha256;
+}
+
+bool DmlUpdateStatementLoadBinaryChain(
+    const EngineRequestContext& context, std::string_view savepoint_uuid,
+    std::vector<DmlUpdateStatementSavepointJournalRecordV1>* records,
+    std::string* detail) {
+  if (records == nullptr || !DmlUpdateStatementParseUuid(savepoint_uuid)) {
+    if (detail != nullptr) *detail = "savepoint_identity_invalid";
+    return false;
+  }
+  const std::string path =
+      DmlUpdateDurableSavepointPath(context, savepoint_uuid);
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) {
+    if (detail != nullptr) *detail = "savepoint_store_lock_failed";
+    return false;
+  }
+  const auto loaded = DmlUpdateDurableLoadFrames(path);
+  if (!loaded.ok || loaded.missing || loaded.frames.empty() ||
+      loaded.frames.size() > 2) {
+    if (detail != nullptr) {
+      *detail = loaded.detail.empty() ? "savepoint_identity_unknown"
+                                     : loaded.detail;
+    }
+    return false;
+  }
+  records->clear();
+  records->reserve(loaded.frames.size());
+  for (const auto& frame : loaded.frames) {
+    DmlUpdateStatementSavepointJournalRecordV1 record;
+    if (!DmlUpdateStatementDecodeBinaryFrame(frame, &record) ||
+        record.authority.savepoint_uuid != savepoint_uuid) {
+      if (detail != nullptr) *detail = "savepoint_binary_record_invalid";
+      return false;
+    }
+    records->push_back(std::move(record));
+  }
+  const auto& first = records->front();
+  if (first.journal_sequence != 1 ||
+      first.authority.lifecycle !=
+          MgaDmlUpdateStatementSavepointLifecycleV1::active ||
+      DmlUpdateStatementShaNonzero(first.prior_record_sha256)) {
+    if (detail != nullptr) *detail = "savepoint_binary_chain_root_invalid";
+    return false;
+  }
+  if (records->size() == 2) {
+    const auto& terminal = records->back();
+    if (terminal.journal_sequence != 2 ||
+        terminal.authority.lifecycle ==
+            MgaDmlUpdateStatementSavepointLifecycleV1::active ||
+        terminal.authority.binding != first.authority.binding ||
+        terminal.authority.publication_barrier_uuid !=
+            first.authority.publication_barrier_uuid ||
+        terminal.authority.publication_barrier_generation !=
+            first.authority.publication_barrier_generation ||
+        terminal.prior_record_sha256 !=
+            first.authority.durable_presence_sha256) {
+      if (detail != nullptr) *detail = "savepoint_binary_chain_forked";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool DmlUpdateStatementAppendBinaryRecord(
+    const EngineRequestContext& context,
+    const DmlUpdateStatementSavepointJournalRecordV1& record) {
+  const std::string directory =
+      DmlUpdateStatementSavepointBinaryStorePath(context);
+  if (!DmlUpdateDurableEnsureDirectory(directory)) return false;
+  const std::string path =
+      DmlUpdateDurableSavepointPath(context,
+                                    record.authority.savepoint_uuid);
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) return false;
+  const auto loaded = DmlUpdateDurableLoadFrames(path);
+  if (!loaded.ok) return false;
+  if ((record.journal_sequence == 1 && !loaded.frames.empty()) ||
+      (record.journal_sequence == 2 && loaded.frames.size() != 1)) {
+    return false;
+  }
+  DmlUpdateDurableFrameV1 frame;
+  frame.kind = DmlUpdateDurableFrameKindV1::statement_savepoint;
+  frame.identity =
+      DmlUpdateStatementDurableIdentity(record.authority.binding);
+  frame.sequence = record.journal_sequence;
+  frame.state = static_cast<std::uint8_t>(record.authority.lifecycle);
+  frame.prior_record_sha256 = record.prior_record_sha256;
+  frame.record_evidence_sha256 =
+      record.authority.durable_presence_sha256;
+  if (!DmlUpdateStatementEncodeBinaryPayload(record, &frame.payload)) {
+    return false;
+  }
+  return DmlUpdateDurableAppendFrame(path, frame);
+}
+
+bool ApplyDmlUpdateBinarySavepointRecords(
+    const EngineRequestContext& context, SavepointParsedState* state,
+    std::string* refusal_detail) {
+  if (state == nullptr) {
+    if (refusal_detail != nullptr) *refusal_detail = "savepoint_state_required";
+    return false;
+  }
+  const std::string directory =
+      DmlUpdateStatementSavepointBinaryStorePath(context);
+  std::error_code error;
+  if (!std::filesystem::exists(directory, error)) return !error;
+  if (error || !std::filesystem::is_directory(directory, error) || error) {
+    if (refusal_detail != nullptr) {
+      *refusal_detail = "update_savepoint_store_directory_invalid";
+    }
+    return false;
+  }
+  std::vector<std::filesystem::path> paths;
+  for (std::filesystem::directory_iterator iterator(directory, error), end;
+       !error && iterator != end; iterator.increment(error)) {
+    if (!iterator->is_regular_file(error) || error) break;
+    const auto path = iterator->path();
+    if (path.extension() == ".dups") paths.push_back(path);
+  }
+  if (error) {
+    if (refusal_detail != nullptr) {
+      *refusal_detail = "update_savepoint_store_enumeration_failed";
+    }
+    return false;
+  }
+  std::ranges::sort(paths);
+  constexpr std::size_t kMaximumDurableSavepointFiles = 1048576;
+  if (paths.size() > kMaximumDurableSavepointFiles) {
+    if (refusal_detail != nullptr) {
+      *refusal_detail = "update_savepoint_store_count_exceeded";
+    }
+    return false;
+  }
+  for (const auto& path : paths) {
+    const std::string filename = path.stem().string();
+    std::vector<DmlUpdateStatementSavepointJournalRecordV1> records;
+    std::string detail;
+    if (!DmlUpdateStatementLoadBinaryChain(context, filename, &records,
+                                            &detail)) {
+      if (refusal_detail != nullptr) {
+        *refusal_detail = detail.empty()
+                              ? "update_savepoint_store_record_invalid"
+                              : detail;
+      }
+      return false;
+    }
+    const auto& first = records.front();
+    const auto tx_id = first.authority.binding.owning_local_transaction_id;
+    const auto marker = first.private_marker;
+    const auto preexisting_tx = state->active_savepoints.find(tx_id);
+    if (preexisting_tx != state->active_savepoints.end() &&
+        preexisting_tx->second.find(marker) !=
+            preexisting_tx->second.end()) {
+      if (refusal_detail != nullptr) {
+        *refusal_detail = "update_savepoint_text_binary_contradiction";
+      }
+      return false;
+    }
+    state->active_savepoints[tx_id][marker] = first.cutoffs;
+    if (records.size() == 1) continue;
+    const auto& terminal = records.back();
+    if (terminal.authority.lifecycle ==
+        MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back) {
+      SavepointRollbackRange range;
+      range.cutoffs = terminal.cutoffs;
+      range.row_upper_event_sequence = terminal.row_upper_event_sequence;
+      range.metadata_upper_event_sequence =
+          terminal.metadata_upper_event_sequence;
+      range.index_upper_event_sequence = terminal.index_upper_event_sequence;
+      state->rollback_ranges[tx_id].push_back(range);
+    }
+    state->active_savepoints[tx_id].erase(marker);
+  }
+  return true;
+}
+
+bool DmlUpdateStatementBindingMatchesContext(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateStatementSavepointBindingV1& binding) {
+  return !context.database_path.empty() &&
+         DmlUpdateStatementParseUuid(binding.database_uuid) &&
+         binding.database_uuid == context.database_uuid.canonical &&
+         DmlUpdateStatementParseUuid(binding.owning_transaction_uuid) &&
+         binding.owning_transaction_uuid == context.transaction_uuid.canonical &&
+         binding.owning_local_transaction_id != 0 &&
+         binding.owning_local_transaction_id == context.local_transaction_id &&
+         DmlUpdateStatementParseUuid(
+             binding.authenticated_statement_receipt_uuid) &&
+         binding.authenticated_statement_receipt_uuid ==
+             context.statement_receipt_uuid.canonical &&
+         DmlUpdateStatementParseUuid(binding.operation_uuid) &&
+         DmlUpdateStatementParseUuid(binding.descriptor_uuid) &&
+         binding.descriptor_generation != 0 &&
+         DmlUpdateStatementParseUuid(binding.recovery_token_uuid) &&
+         binding.recovery_generation != 0;
+}
+
+bool DmlUpdateStatementRecordKind(
+    std::string_view kind,
+    MgaDmlUpdateStatementSavepointLifecycleV1* lifecycle) {
+  if (lifecycle == nullptr) return false;
+  if (kind == kDmlUpdateStatementSavepointCreateKind) {
+    *lifecycle = MgaDmlUpdateStatementSavepointLifecycleV1::active;
+    return true;
+  }
+  if (kind == kDmlUpdateStatementSavepointRollbackKind) {
+    *lifecycle = MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back;
+    return true;
+  }
+  if (kind == kDmlUpdateStatementSavepointReleaseKind) {
+    *lifecycle = MgaDmlUpdateStatementSavepointLifecycleV1::released;
+    return true;
+  }
+  return false;
+}
+
+bool DmlUpdateStatementParseJournalRecord(
+    const std::vector<std::string>& fields,
+    DmlUpdateStatementSavepointJournalRecordV1* record) {
+  if (record == nullptr ||
+      fields.size() != kDmlUpdateStatementSavepointJournalFields ||
+      fields[0] != kRowStoreMagic ||
+      !DmlUpdateStatementRecordKind(fields[1],
+                                    &record->authority.lifecycle) ||
+      !DmlUpdateStatementParseU64(
+          fields[2], &record->authority.binding.owning_local_transaction_id) ||
+      record->authority.binding.owning_local_transaction_id == 0 ||
+      !DmlUpdateStatementParseU64(fields[4],
+                                  &record->cutoffs.row_event_sequence) ||
+      !DmlUpdateStatementParseU64(fields[5],
+                                  &record->cutoffs.metadata_event_sequence) ||
+      !DmlUpdateStatementParseU64(fields[6],
+                                  &record->cutoffs.index_event_sequence) ||
+      !DmlUpdateStatementParseU64(fields[7],
+                                  &record->row_upper_event_sequence) ||
+      !DmlUpdateStatementParseU64(fields[8],
+                                  &record->metadata_upper_event_sequence) ||
+      !DmlUpdateStatementParseU64(fields[9],
+                                  &record->index_upper_event_sequence)) {
+    return false;
+  }
+  std::uint64_t format_version = 0;
+  if (!DmlUpdateStatementParseU64(fields[10], &format_version) ||
+      format_version != 1 ||
+      !DmlUpdateStatementParseU64(fields[11], &record->journal_sequence)) {
+    return false;
+  }
+  auto& binding = record->authority.binding;
+  binding.database_uuid = fields[12];
+  binding.owning_transaction_uuid = fields[13];
+  binding.authenticated_statement_receipt_uuid = fields[14];
+  binding.operation_uuid = fields[15];
+  binding.descriptor_uuid = fields[16];
+  if (!DmlUpdateStatementParseU64(fields[17],
+                                  &binding.descriptor_generation)) {
+    return false;
+  }
+  binding.recovery_token_uuid = fields[18];
+  if (!DmlUpdateStatementParseU64(fields[19],
+                                  &binding.recovery_generation)) {
+    return false;
+  }
+  record->authority.savepoint_uuid = fields[20];
+  if (!DmlUpdateStatementParseU64(
+          fields[21], &record->authority.savepoint_generation)) {
+    return false;
+  }
+  record->authority.publication_barrier_uuid = fields[22];
+  if (!DmlUpdateStatementParseU64(
+          fields[23], &record->authority.publication_barrier_generation)) {
+    return false;
+  }
+  std::uint64_t barrier_present = 0;
+  if (!DmlUpdateStatementParseU64(fields[24], &barrier_present) ||
+      barrier_present > 1 ||
+      !DmlUpdateStatementParseSha(fields[25],
+                                  &record->prior_record_sha256) ||
+      !DmlUpdateStatementParseSha(
+          fields[26], &record->authority.durable_presence_sha256)) {
+    return false;
+  }
+  record->authority.publication_barrier_present = barrier_present == 1;
+  record->private_marker = DecodeCrudTextLocal(fields[3]);
+  const bool terminal =
+      record->authority.lifecycle !=
+      MgaDmlUpdateStatementSavepointLifecycleV1::active;
+  if (!DmlUpdateStatementParseUuid(binding.database_uuid) ||
+      !DmlUpdateStatementParseUuid(binding.owning_transaction_uuid) ||
+      !DmlUpdateStatementParseUuid(
+          binding.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateStatementParseUuid(binding.operation_uuid) ||
+      !DmlUpdateStatementParseUuid(binding.descriptor_uuid) ||
+      binding.descriptor_generation == 0 ||
+      !DmlUpdateStatementParseUuid(binding.recovery_token_uuid) ||
+      binding.recovery_generation == 0 ||
+      !DmlUpdateStatementParseUuid(record->authority.savepoint_uuid) ||
+      record->authority.savepoint_generation != 1 ||
+      record->private_marker != DmlUpdateStatementPrivateSavepointMarker(
+                                    record->authority.savepoint_uuid) ||
+      record->journal_sequence != (terminal ? 2 : 1)) {
+    return false;
+  }
+  if (!DmlUpdateStatementParseUuid(
+          record->authority.publication_barrier_uuid) ||
+      record->authority.publication_barrier_generation != 1 ||
+      record->authority.publication_barrier_uuid ==
+          record->authority.savepoint_uuid ||
+      record->authority.publication_barrier_uuid == binding.database_uuid ||
+      record->authority.publication_barrier_uuid ==
+          binding.owning_transaction_uuid ||
+      record->authority.publication_barrier_uuid ==
+          binding.authenticated_statement_receipt_uuid ||
+      record->authority.publication_barrier_uuid == binding.operation_uuid ||
+      record->authority.publication_barrier_uuid == binding.descriptor_uuid ||
+      record->authority.publication_barrier_uuid ==
+          binding.recovery_token_uuid ||
+      record->authority.publication_barrier_present !=
+          (record->authority.lifecycle ==
+           MgaDmlUpdateStatementSavepointLifecycleV1::released)) {
+    return false;
+  }
+  if (record->authority.lifecycle ==
+          MgaDmlUpdateStatementSavepointLifecycleV1::active &&
+      (record->row_upper_event_sequence != 0 ||
+       record->metadata_upper_event_sequence != 0 ||
+       record->index_upper_event_sequence != 0 ||
+       DmlUpdateStatementShaNonzero(record->prior_record_sha256))) {
+    return false;
+  }
+  if (record->authority.lifecycle ==
+          MgaDmlUpdateStatementSavepointLifecycleV1::released &&
+      (record->row_upper_event_sequence != 0 ||
+       record->metadata_upper_event_sequence != 0 ||
+       record->index_upper_event_sequence != 0)) {
+    return false;
+  }
+  if (record->authority.lifecycle ==
+          MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back &&
+      (record->row_upper_event_sequence <
+           record->cutoffs.row_event_sequence ||
+       record->metadata_upper_event_sequence <
+           record->cutoffs.metadata_event_sequence ||
+       record->index_upper_event_sequence <
+           record->cutoffs.index_event_sequence)) {
+    return false;
+  }
+  const auto expected = DmlUpdateStatementSavepointRecordSha256(*record);
+  return DmlUpdateStatementShaNonzero(expected) &&
+         expected == record->authority.durable_presence_sha256;
+}
+
+std::string DmlUpdateStatementEncodeJournalRecord(
+    const DmlUpdateStatementSavepointJournalRecordV1& record) {
+  std::string kind;
+  switch (record.authority.lifecycle) {
+    case MgaDmlUpdateStatementSavepointLifecycleV1::active:
+      kind = std::string(kDmlUpdateStatementSavepointCreateKind);
+      break;
+    case MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back:
+      kind = std::string(kDmlUpdateStatementSavepointRollbackKind);
+      break;
+    case MgaDmlUpdateStatementSavepointLifecycleV1::released:
+      kind = std::string(kDmlUpdateStatementSavepointReleaseKind);
+      break;
+  }
+  const auto& authority = record.authority;
+  const auto& binding = authority.binding;
+  return JoinLine(
+      {kRowStoreMagic,
+       kind,
+       std::to_string(binding.owning_local_transaction_id),
+       EncodeCrudText(record.private_marker),
+       std::to_string(record.cutoffs.row_event_sequence),
+       std::to_string(record.cutoffs.metadata_event_sequence),
+       std::to_string(record.cutoffs.index_event_sequence),
+       std::to_string(record.row_upper_event_sequence),
+       std::to_string(record.metadata_upper_event_sequence),
+       std::to_string(record.index_upper_event_sequence),
+       "1",
+       std::to_string(record.journal_sequence),
+       binding.database_uuid,
+       binding.owning_transaction_uuid,
+       binding.authenticated_statement_receipt_uuid,
+       binding.operation_uuid,
+       binding.descriptor_uuid,
+       std::to_string(binding.descriptor_generation),
+       binding.recovery_token_uuid,
+       std::to_string(binding.recovery_generation),
+       authority.savepoint_uuid,
+       std::to_string(authority.savepoint_generation),
+       authority.publication_barrier_uuid,
+       std::to_string(authority.publication_barrier_generation),
+       authority.publication_barrier_present ? "1" : "0",
+       DmlUpdateStatementShaHex(record.prior_record_sha256),
+       DmlUpdateStatementShaHex(authority.durable_presence_sha256)});
+}
+
+MgaDmlUpdateStatementSavepointAuthorityResultV1
+DmlUpdateStatementLoadSavepointAuthority(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateStatementSavepointBindingV1& binding,
+    const std::string& savepoint_uuid, std::uint64_t savepoint_generation) {
+  if (!DmlUpdateStatementBindingMatchesContext(context, binding) ||
+      !DmlUpdateStatementParseUuid(savepoint_uuid) ||
+      savepoint_generation != 1) {
+    return DmlUpdateStatementSavepointFailure(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.statement_savepoint_stale",
+        "savepoint_binding_or_generation_mismatch");
+  }
+
+  std::vector<DmlUpdateStatementSavepointJournalRecordV1> chain;
+  std::string binary_detail;
+  if (!DmlUpdateStatementLoadBinaryChain(
+          context, savepoint_uuid, &chain, &binary_detail)) {
+    return DmlUpdateStatementSavepointFailure(
+        binary_detail == "savepoint_identity_unknown"
+            ? "MGA.TRANSACTION.STALE"
+            : "DML.UPDATE_FAILED",
+        binary_detail == "savepoint_identity_unknown"
+            ? "sblr.dml_update_rows.statement_savepoint_stale"
+            : "sblr.dml_update_rows.statement_savepoint_corrupt",
+        binary_detail);
+  }
+  if (chain.empty() || chain.size() > 2 ||
+      chain.front().authority.lifecycle !=
+          MgaDmlUpdateStatementSavepointLifecycleV1::active ||
+      chain.front().journal_sequence != 1 ||
+      DmlUpdateStatementShaNonzero(chain.front().prior_record_sha256)) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_corrupt",
+        "savepoint_journal_chain_invalid");
+  }
+  if (chain.front().authority.binding != binding) {
+    return DmlUpdateStatementSavepointFailure(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.statement_savepoint_stale",
+        "savepoint_cross_authority_replay");
+  }
+  if (chain.size() == 2 &&
+      (chain.back().authority.lifecycle ==
+           MgaDmlUpdateStatementSavepointLifecycleV1::active ||
+       chain.back().authority.binding != chain.front().authority.binding ||
+       chain.back().cutoffs.row_event_sequence !=
+           chain.front().cutoffs.row_event_sequence ||
+       chain.back().cutoffs.metadata_event_sequence !=
+           chain.front().cutoffs.metadata_event_sequence ||
+       chain.back().cutoffs.index_event_sequence !=
+           chain.front().cutoffs.index_event_sequence ||
+       chain.back().authority.publication_barrier_uuid !=
+           chain.front().authority.publication_barrier_uuid ||
+       chain.back().authority.publication_barrier_generation !=
+           chain.front().authority.publication_barrier_generation ||
+       chain.back().prior_record_sha256 !=
+           chain.front().authority.durable_presence_sha256)) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_corrupt",
+        "savepoint_terminal_chain_invalid");
+  }
+
+  const auto& latest = chain.back();
+  const auto parsed_savepoints = ParseSavepoints(context);
+  if (parsed_savepoints.update_statement_authority_corrupt) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_corrupt",
+        "text_binary_savepoint_authority_contradiction");
+  }
+  bool marker_active = false;
+  const auto tx = parsed_savepoints.active_savepoints.find(
+      binding.owning_local_transaction_id);
+  if (tx != parsed_savepoints.active_savepoints.end()) {
+    marker_active =
+        tx->second.find(latest.private_marker) != tx->second.end();
+  }
+  const bool expected_active =
+      latest.authority.lifecycle ==
+      MgaDmlUpdateStatementSavepointLifecycleV1::active;
+  if (marker_active != expected_active) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_corrupt",
+        expected_active ? "active_savepoint_presence_missing"
+                        : "terminal_savepoint_and_active_marker_contradictory");
+  }
+
+  MgaDmlUpdateStatementSavepointAuthorityResultV1 result;
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  result.authority = latest.authority;
+  return result;
+}
+
+bool DmlUpdateStatementAuthorityExact(
+    const MgaDmlUpdateStatementSavepointAuthorityV1& left,
+    const MgaDmlUpdateStatementSavepointAuthorityV1& right) {
+  return left == right;
+}
+
+std::string DmlUpdateStatementFreshDistinctUuid(
+    const MgaDmlUpdateStatementSavepointBindingV1& binding,
+    std::string_view other = {}) {
+  for (std::size_t attempt = 0; attempt < 8; ++attempt) {
+    const std::string candidate = GenerateCrudEngineUuid("object");
+    if (DmlUpdateStatementParseUuid(candidate) &&
+        candidate != binding.database_uuid &&
+        candidate != binding.owning_transaction_uuid &&
+        candidate != binding.authenticated_statement_receipt_uuid &&
+        candidate != binding.operation_uuid && candidate != binding.descriptor_uuid &&
+        candidate != binding.recovery_token_uuid && candidate != other) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+MgaDmlUpdateStatementSavepointBindingV1
+DmlUpdateDurableStatementBinding(
+    const MgaDmlUpdateDurableOperationIdentityV1& identity) {
+  MgaDmlUpdateStatementSavepointBindingV1 binding;
+  binding.database_uuid = identity.database_uuid;
+  binding.owning_transaction_uuid = identity.owning_transaction_uuid;
+  binding.owning_local_transaction_id = identity.owning_local_transaction_id;
+  binding.authenticated_statement_receipt_uuid =
+      identity.authenticated_statement_receipt_uuid;
+  binding.operation_uuid = identity.operation_uuid;
+  binding.descriptor_uuid = identity.descriptor_uuid;
+  binding.descriptor_generation = identity.descriptor_generation;
+  binding.recovery_token_uuid = identity.recovery_token_uuid;
+  binding.recovery_generation = identity.recovery_generation;
+  return binding;
+}
+
+enum class DmlUpdateDurableSavepointLookupStateV1 : std::uint8_t {
+  absent = 0,
+  present = 1,
+  corrupt = 2,
+};
+
+struct DmlUpdateDurableSavepointLookupV1 {
+  DmlUpdateDurableSavepointLookupStateV1 state =
+      DmlUpdateDurableSavepointLookupStateV1::absent;
+  MgaDmlUpdateStatementSavepointAuthorityV1 authority;
+  std::string detail;
+};
+
+DmlUpdateDurableSavepointLookupV1 DmlUpdateDurableFindStatementSavepoint(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    std::string_view required_savepoint_uuid = {}) {
+  DmlUpdateDurableSavepointLookupV1 result;
+  const auto expected_binding = DmlUpdateDurableStatementBinding(identity);
+  const std::string directory =
+      DmlUpdateStatementSavepointBinaryStorePath(context);
+  std::error_code error;
+  if (!std::filesystem::exists(directory, error)) {
+    if (error) {
+      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+      result.detail = "savepoint_store_presence_failed";
+    }
+    return result;
+  }
+  if (!std::filesystem::is_directory(directory, error) || error) {
+    result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+    result.detail = "savepoint_store_directory_invalid";
+    return result;
+  }
+
+  std::vector<std::filesystem::path> paths;
+  if (!required_savepoint_uuid.empty()) {
+    if (!DmlUpdateStatementParseUuid(required_savepoint_uuid)) {
+      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+      result.detail = "required_savepoint_identity_invalid";
+      return result;
+    }
+    paths.emplace_back(DmlUpdateDurableSavepointPath(
+        context, required_savepoint_uuid));
+  } else {
+    for (std::filesystem::directory_iterator iterator(directory, error), end;
+         !error && iterator != end; iterator.increment(error)) {
+      if (!iterator->is_regular_file(error) || error) break;
+      if (iterator->path().extension() == ".dups") {
+        paths.push_back(iterator->path());
+      }
+    }
+    if (error || paths.size() > 1048576) {
+      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+      result.detail = error ? "savepoint_store_enumeration_failed"
+                            : "savepoint_store_count_exceeded";
+      return result;
+    }
+    std::ranges::sort(paths);
+  }
+
+  for (const auto& path : paths) {
+    if (!std::filesystem::exists(path, error)) {
+      if (error) {
+        result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+        result.detail = "savepoint_store_presence_failed";
+      }
+      continue;
+    }
+    const std::string uuid = path.stem().string();
+    std::vector<DmlUpdateStatementSavepointJournalRecordV1> chain;
+    std::string detail;
+    if (!DmlUpdateStatementLoadBinaryChain(context, uuid, &chain, &detail)) {
+      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+      result.detail = detail.empty() ? "savepoint_chain_invalid" : detail;
+      return result;
+    }
+    if (chain.empty() || chain.front().authority.binding != expected_binding) {
+      continue;
+    }
+    if (result.state == DmlUpdateDurableSavepointLookupStateV1::present) {
+      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+      result.detail = "multiple_statement_savepoints_for_operation";
+      return result;
+    }
+    result.state = DmlUpdateDurableSavepointLookupStateV1::present;
+    result.authority = chain.back().authority;
+  }
+  if (!required_savepoint_uuid.empty() &&
+      result.state == DmlUpdateDurableSavepointLookupStateV1::absent) {
+    result.detail = "required_savepoint_identity_unknown";
+  }
+  return result;
+}
+
+bool DmlUpdateDurableDecodeTypedJournalChain(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    const MgaDmlUpdateDurableAuthoritySnapshotV1& snapshot,
+    std::span<const MgaDmlUpdateDurableJournalExtentV1> extents,
+    std::vector<scratchbird::wire::TypedUpdateJournalRecord>* records,
+    std::string* detail) {
+  const auto fail = [&](std::string reason) {
+    if (detail != nullptr) *detail = std::move(reason);
+    return false;
+  };
+  if (records == nullptr || extents.empty() ||
+      snapshot.descriptor_dudc.size() !=
+          scratchbird::wire::kTypedUpdateDescriptorBytes) {
+    return fail("durable_journal_chain_required");
+  }
+  records->clear();
+  records->reserve(extents.size());
+  for (std::size_t index = 0; index < extents.size(); ++index) {
+    scratchbird::wire::TypedUpdateJournalChainContext chain;
+    chain.first_record = index == 0;
+    if (!chain.first_record) {
+      const auto& prior = records->back();
+      chain.prior_sequence = prior.journal_sequence;
+      chain.prior_state = prior.lifecycle_state;
+      chain.prior_record_evidence_sha256 = prior.record_evidence_sha256;
+      chain.prior_savepoint_uuid = prior.statement_savepoint_uuid;
+      chain.prior_savepoint_generation = prior.statement_savepoint_generation;
+      chain.require_same_descriptor = true;
+      std::copy(snapshot.descriptor_dudc.begin(),
+                snapshot.descriptor_dudc.end(),
+                chain.expected_descriptor_bytes.begin());
+      if (prior.lifecycle_state ==
+              scratchbird::wire::TypedUpdateJournalState::prepared) {
+        if (!prior.embedded_result_bytes.has_value() ||
+            prior.embedded_result_bytes->size() !=
+                scratchbird::wire::kTypedUpdateResultBytes) {
+          return fail("prepared_journal_result_missing");
+        }
+        std::array<scratchbird::core::platform::byte,
+                   scratchbird::wire::kTypedUpdateResultBytes> exact{};
+        std::copy(prior.embedded_result_bytes->begin(),
+                  prior.embedded_result_bytes->end(), exact.begin());
+        chain.expected_prepared_result_bytes = exact;
+      }
+      // A crash may leave a provider-owned savepoint after bound but before
+      // intent.  The bound-to-aborted codec edge can trust a nonnil savepoint
+      // only after the MGA savepoint store authenticates that exact row.
+      if (prior.lifecycle_state ==
+              scratchbird::wire::TypedUpdateJournalState::bound &&
+          extents[index].lifecycle_state ==
+              MgaDmlUpdateDurableJournalStateV1::aborted &&
+          extents[index].exact_dujr_bytes.size() >= 176 &&
+          !DmlUpdateDurableZero(std::span<const std::uint8_t>(
+              extents[index].exact_dujr_bytes).subspan(152, 16))) {
+        const std::string savepoint_uuid = DmlUpdateDurableUuidText(
+            std::span<const std::uint8_t>(extents[index].exact_dujr_bytes)
+                .subspan(152, 16));
+        std::uint64_t savepoint_generation = 0;
+        const auto authority = DmlUpdateDurableFindStatementSavepoint(
+            context, identity, savepoint_uuid);
+        if (!DmlUpdateDurableReadU64(extents[index].exact_dujr_bytes, 168,
+                                     &savepoint_generation) ||
+            authority.state !=
+                DmlUpdateDurableSavepointLookupStateV1::present ||
+            authority.authority.savepoint_uuid != savepoint_uuid ||
+            authority.authority.savepoint_generation != savepoint_generation ||
+            authority.authority.lifecycle !=
+                MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back ||
+            authority.authority.publication_barrier_uuid !=
+                identity.reserved_statement_barrier_uuid ||
+            authority.authority.publication_barrier_generation !=
+                identity.reserved_statement_barrier_generation ||
+            !DmlUpdateDurableTypedUuid(savepoint_uuid,
+                                       &chain.prior_savepoint_uuid)) {
+          return fail("bound_aborted_savepoint_authority_invalid");
+        }
+        chain.prior_savepoint_generation = savepoint_generation;
+      }
+    }
+    scratchbird::wire::TypedUpdateJournalRecord decoded;
+    scratchbird::wire::TypedUpdateCarrierError error;
+    if (!scratchbird::wire::DecodeAndValidateTypedUpdateJournalRecord(
+            extents[index].exact_dujr_bytes, chain, &decoded, &error)) {
+      return fail("durable_journal_canonical_invalid:" + error.field + ":" +
+                  error.detail);
+    }
+    records->push_back(std::move(decoded));
+  }
+  return true;
+}
+
+bool DmlUpdateDurableTransactionState(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationIdentityV1& identity,
+    scratchbird::wire::TypedUpdateTransactionState* state,
+    std::string* detail) {
+  if (state == nullptr) return false;
+  const auto inventory =
+      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!inventory.ok()) {
+    if (detail != nullptr) *detail = "transaction_inventory_load_failed";
+    return false;
+  }
+  const auto lookup = LookupLocalTransaction(
+      inventory.inventory,
+      MakeLocalTransactionId(identity.owning_local_transaction_id));
+  if (!lookup.ok() ||
+      scratchbird::core::uuid::UuidToString(
+          lookup.entry.identity.transaction_uuid.value) !=
+          identity.owning_transaction_uuid) {
+    if (detail != nullptr) *detail = "transaction_inventory_identity_missing";
+    return false;
+  }
+  switch (lookup.entry.state) {
+    case TransactionState::active:
+    case TransactionState::read_only_active:
+      *state = scratchbird::wire::TypedUpdateTransactionState::active_live;
+      return true;
+    case TransactionState::committed:
+    case TransactionState::archived:
+      *state = scratchbird::wire::TypedUpdateTransactionState::committed_final;
+      return true;
+    case TransactionState::rolled_back:
+      *state =
+          scratchbird::wire::TypedUpdateTransactionState::rolled_back_final;
+      return true;
+    case TransactionState::none:
+    case TransactionState::created:
+    case TransactionState::preparing:
+    case TransactionState::prepared:
+    case TransactionState::committing:
+    case TransactionState::rolling_back:
+    case TransactionState::limbo:
+    case TransactionState::recovering:
+    case TransactionState::failed_terminal:
+      *state =
+          scratchbird::wire::TypedUpdateTransactionState::dead_or_abandoned;
+      return true;
+  }
+  if (detail != nullptr) *detail = "transaction_inventory_state_invalid";
+  return false;
+}
+
+}  // namespace
+
+struct MgaDmlUpdateDurablePreparedSuccessorV1::Impl {
+  std::string path;
+  std::unique_ptr<DmlUpdateDurableFileLock> lock;
+  std::vector<std::uint8_t> encoded_frame;
+  std::vector<std::uint8_t> encoded_invalidation_frame;
+  EngineApiDiagnostic committed_diagnostic = OkDiagnostic();
+  EngineApiDiagnostic cancelled_diagnostic = OkDiagnostic();
+  EngineApiDiagnostic committed_ack_lost_diagnostic =
+      DmlUpdateDurableMutation(
+          MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+          "successor_committed_ack_lost").diagnostic;
+  EngineApiDiagnostic commit_write_failed_diagnostic =
+      DmlUpdateDurableMutation(
+          MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+          "successor_durable_write_failed").diagnostic;
+  bool valid = false;
+};
+
+MgaDmlUpdateDurablePreparedSuccessorV1::
+    MgaDmlUpdateDurablePreparedSuccessorV1() = default;
+MgaDmlUpdateDurablePreparedSuccessorV1::
+    ~MgaDmlUpdateDurablePreparedSuccessorV1() = default;
+MgaDmlUpdateDurablePreparedSuccessorV1::
+    MgaDmlUpdateDurablePreparedSuccessorV1(
+        MgaDmlUpdateDurablePreparedSuccessorV1&&) noexcept = default;
+MgaDmlUpdateDurablePreparedSuccessorV1&
+MgaDmlUpdateDurablePreparedSuccessorV1::operator=(
+    MgaDmlUpdateDurablePreparedSuccessorV1&&) noexcept = default;
+bool MgaDmlUpdateDurablePreparedSuccessorV1::valid() const {
+  return impl_ != nullptr && impl_->valid && impl_->lock != nullptr &&
+         impl_->lock->ok() && !impl_->encoded_frame.empty() &&
+         !impl_->encoded_invalidation_frame.empty();
+}
+
+MgaDmlUpdateValidatedDurableAuthorityHandleV1::
+    MgaDmlUpdateValidatedDurableAuthorityHandleV1() = default;
+MgaDmlUpdateValidatedDurableAuthorityHandleV1::
+    ~MgaDmlUpdateValidatedDurableAuthorityHandleV1() = default;
+MgaDmlUpdateValidatedDurableAuthorityHandleV1::
+    MgaDmlUpdateValidatedDurableAuthorityHandleV1(
+        MgaDmlUpdateValidatedDurableAuthorityHandleV1&&) noexcept = default;
+MgaDmlUpdateValidatedDurableAuthorityHandleV1&
+MgaDmlUpdateValidatedDurableAuthorityHandleV1::operator=(
+    MgaDmlUpdateValidatedDurableAuthorityHandleV1&&) noexcept = default;
+bool MgaDmlUpdateValidatedDurableAuthorityHandleV1::valid() const {
+  return impl_ != nullptr && !impl_->identity.validated_durable_handle_uuid.empty() &&
+         impl_->identity.validated_durable_handle_generation != 0 &&
+         !impl_->journal.empty() && impl_->exact_dumo.size() == 416;
+}
+
+MgaDmlUpdateDurableAuthorityReservationResultV1
+ReserveMgaDmlUpdateDurableOperationAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableAuthorityReservationRequestV1& request) {
+  MgaDmlUpdateDurableAuthorityReservationResultV1 result;
+  MgaDmlUpdateDurableOperationIdentityV1 identity;
+  identity.database_uuid = context.database_uuid.canonical;
+  identity.owning_transaction_uuid = context.transaction_uuid.canonical;
+  identity.owning_local_transaction_id = context.local_transaction_id;
+  identity.authenticated_statement_receipt_uuid =
+      context.statement_receipt_uuid.canonical;
+  identity.operation_uuid = request.operation_uuid;
+  identity.operation_generation = request.operation_generation;
+  identity.descriptor_uuid = request.descriptor_uuid;
+  identity.descriptor_generation = request.descriptor_generation;
+  identity.recovery_token_uuid = request.recovery_token_uuid;
+  identity.recovery_generation = request.recovery_generation;
+  if (context.database_path.empty() ||
+      !DmlUpdateDurableBaseIdentityValid(identity) ||
+      identity.operation_generation == 0) {
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::conflict;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.durable_reservation_invalid");
+    return result;
+  }
+  const std::string directory = DmlUpdateDurableOperationStorePath(context);
+  if (!DmlUpdateDurableEnsureDirectory(directory)) {
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.durable_reservation_storage_failed");
+    return result;
+  }
+  const std::string path = directory + "/" + identity.descriptor_uuid + ".duop";
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) {
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.durable_reservation_lock_failed");
+    return result;
+  }
+  auto current = DmlUpdateDurableLoadOperation(path, true);
+  if (current.ok) {
+    if (!DmlUpdateDurableSameReservationRequest(context, request,
+                                                 current.identity)) {
+      result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::access_denied;
+      result.diagnostic = DmlUpdateDurableDiagnostic(
+          "SECURITY.ACCESS_DENIED",
+          "sblr.dml_update_rows.durable_reservation_denied");
+      return result;
+    }
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::already_exact;
+    result.diagnostic = OkDiagnostic();
+    result.identity = current.identity;
+    return result;
+  }
+  if (!current.missing) {
+    result.outcome = current.quarantined
+                         ? MgaDmlUpdateDurableOperationOutcomeV1::quarantined
+                         : MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.durable_reservation_corrupt",
+        current.detail);
+    return result;
+  }
+  identity.validated_durable_handle_uuid =
+      DmlUpdateDurableFreshIdentity(identity);
+  identity.validated_durable_handle_generation = 1;
+  identity.reserved_statement_barrier_uuid =
+      DmlUpdateDurableFreshIdentity(
+          identity, identity.validated_durable_handle_uuid);
+  identity.reserved_statement_barrier_generation = 1;
+  if (!DmlUpdateDurableIdentityValid(identity)) {
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.durable_reservation_identity_failed");
+    return result;
+  }
+  DmlUpdateDurableFrameV1 frame;
+  frame.kind = DmlUpdateDurableFrameKindV1::authority_reservation;
+  frame.identity = identity;
+  if (!DmlUpdateDurableAppendFrame(path, frame)) {
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.durable_reservation_write_failed");
+    return result;
+  }
+  result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::committed;
+  result.diagnostic = OkDiagnostic();
+  result.identity = std::move(identity);
+  return result;
+}
+
+MgaDmlUpdateDurableOperationMutationResultV1
+AbandonMgaDmlUpdateDurableOperationAuthorityReservationV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationIdentityV1& identity) {
+  if (!DmlUpdateDurableIdentityMatchesContext(context, identity)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
+        "reservation_abandon_cross_authority");
+  }
+  const std::string path = DmlUpdateDurableDescriptorPath(context, identity);
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "reservation_abandon_lock_failed");
+  }
+  const auto current = DmlUpdateDurableLoadOperation(path, true);
+  if (current.missing) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::already_exact);
+  }
+  if (!current.ok || current.identity != identity) {
+    return DmlUpdateDurableMutation(
+        current.quarantined
+            ? MgaDmlUpdateDurableOperationOutcomeV1::quarantined
+            : MgaDmlUpdateDurableOperationOutcomeV1::stale,
+        current.detail.empty() ? "reservation_abandon_identity_mismatch"
+                               : current.detail);
+  }
+  if (!current.reservation_only || current.snapshot_present ||
+      !current.journal.empty()) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::fork_or_terminal_conflict,
+        "reservation_already_bound");
+  }
+  std::error_code error;
+  const bool removed = std::filesystem::remove(path, error);
+  if (error || !removed || !DmlUpdateDurableEnsureDirectory(
+                              DmlUpdateDurableOperationStorePath(context))) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "reservation_abandon_delete_failed");
+  }
+  return DmlUpdateDurableMutation(
+      MgaDmlUpdateDurableOperationOutcomeV1::committed);
+}
+
+MgaDmlUpdateDurableOperationMutationResultV1
+PublishMgaDmlUpdateDurableOperationBoundV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurablePublishBoundRequestV1& request) {
+  if (!DmlUpdateDurableIdentityMatchesContext(context, request.identity)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
+        "publish_bound_cross_authority");
+  }
+  std::uint64_t structural_occurrence = 0;
+  std::string detail;
+  if (!DmlUpdateDurableSnapshotShallowValid(
+          request.identity, request.authority_snapshot,
+          &structural_occurrence, &detail) ||
+      !DmlUpdateDurableJournalExtentMatchesBytes(
+          request.identity, request.authority_snapshot,
+          request.bound_journal, &detail) ||
+      request.bound_journal.journal_sequence != 1 ||
+      request.bound_journal.lifecycle_state !=
+          MgaDmlUpdateDurableJournalStateV1::bound ||
+      !DmlUpdateDurableZero(
+          request.bound_journal.prior_record_sha256)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::conflict,
+        detail.empty() ? "publish_bound_shape_invalid" : detail);
+  }
+  const std::string path =
+      DmlUpdateDurableDescriptorPath(context, request.identity);
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "publish_bound_lock_failed");
+  }
+  auto current = DmlUpdateDurableLoadOperation(path, true);
+  if (!current.ok || current.identity != request.identity) {
+    return DmlUpdateDurableMutation(
+        current.quarantined
+            ? MgaDmlUpdateDurableOperationOutcomeV1::quarantined
+            : current.missing
+                  ? MgaDmlUpdateDurableOperationOutcomeV1::stale
+                  : MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
+        current.detail.empty() ? "prebound_reservation_missing_or_mismatched"
+                               : current.detail);
+  }
+  if (current.snapshot_present) {
+    if (current.snapshot != request.authority_snapshot) {
+      return DmlUpdateDurableMutation(
+          MgaDmlUpdateDurableOperationOutcomeV1::conflict,
+          "authority_snapshot_conflict");
+    }
+    if (!current.journal.empty()) {
+      return DmlUpdateDurableMutation(
+          current.journal.front() == request.bound_journal
+              ? MgaDmlUpdateDurableOperationOutcomeV1::already_exact
+              : MgaDmlUpdateDurableOperationOutcomeV1::conflict,
+          current.journal.front() == request.bound_journal
+              ? std::string{}
+              : "bound_journal_conflict");
+    }
+  }
+
+  if (DmlUpdateDurableFault(
+          MgaDmlUpdateDurableFaultCutpointV1::before_snapshot_write)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "fault_before_snapshot_write");
+  }
+  DmlUpdateDurableFrameV1 reservation_frame;
+  reservation_frame.kind =
+      DmlUpdateDurableFrameKindV1::authority_reservation;
+  reservation_frame.identity = request.identity;
+  DmlUpdateDurableFrameV1 snapshot_frame;
+  snapshot_frame.kind = DmlUpdateDurableFrameKindV1::authority_snapshot;
+  snapshot_frame.identity = request.identity;
+  std::vector<std::uint8_t> reservation_bytes;
+  std::vector<std::uint8_t> snapshot_bytes;
+  if (!DmlUpdateDurableEncodeSnapshot(request.authority_snapshot,
+                                      &snapshot_frame.payload) ||
+      !DmlUpdateDurableEncodeFrame(reservation_frame, &reservation_bytes) ||
+      !DmlUpdateDurableEncodeFrame(snapshot_frame, &snapshot_bytes)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "authority_snapshot_encode_failed");
+  }
+  if (DmlUpdateDurableFault(
+          MgaDmlUpdateDurableFaultCutpointV1::after_snapshot_write_before_bound)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "fault_after_snapshot_before_bound");
+  }
+  const auto bound_frame =
+      DmlUpdateDurableJournalFrame(request.identity, request.bound_journal);
+  std::vector<std::uint8_t> bound_bytes;
+  if (!DmlUpdateDurableEncodeFrame(bound_frame, &bound_bytes)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "bound_journal_encode_failed");
+  }
+  std::vector<std::uint8_t> atomic_extent;
+  try {
+    atomic_extent.reserve(reservation_bytes.size() + snapshot_bytes.size() +
+                          bound_bytes.size());
+    atomic_extent.insert(atomic_extent.end(), reservation_bytes.begin(),
+                         reservation_bytes.end());
+    atomic_extent.insert(atomic_extent.end(), snapshot_bytes.begin(),
+                         snapshot_bytes.end());
+    atomic_extent.insert(atomic_extent.end(), bound_bytes.begin(),
+                         bound_bytes.end());
+  } catch (const std::bad_alloc&) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "publish_bound_extent_allocation_failed");
+  }
+  if (!DmlUpdateDurableReplaceFileAtomically(path, atomic_extent)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "publish_bound_atomic_replace_failed");
+  }
+  return DmlUpdateDurableMutation(
+      MgaDmlUpdateDurableOperationOutcomeV1::committed);
+}
+
+MgaDmlUpdateDurableOperationPrepareResultV1
+PrepareMgaDmlUpdateDurableOperationSuccessorV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableAppendSuccessorRequestV1& request) {
+  g_dml_update_durable_prepare_calls.fetch_add(1,
+                                                std::memory_order_relaxed);
+  MgaDmlUpdateDurableOperationPrepareResultV1 result;
+  const auto fail = [&](MgaDmlUpdateDurableOperationOutcomeV1 outcome,
+                        std::string detail) {
+    result.outcome = outcome;
+    result.diagnostic = DmlUpdateDurableMutation(outcome,
+                                                  std::move(detail)).diagnostic;
+    return std::move(result);
+  };
+  if (!DmlUpdateDurableIdentityMatchesContext(context, request.identity)) {
+    return fail(MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
+                "successor_cross_authority");
+  }
+  const std::string path =
+      DmlUpdateDurableDescriptorPath(context, request.identity);
+  auto lock = std::make_unique<DmlUpdateDurableFileLock>(path);
+  if (!lock->ok()) {
+    return fail(MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+                "successor_lock_failed");
+  }
+  const auto current = DmlUpdateDurableLoadOperation(path, true);
+  if (!current.ok || current.identity != request.identity ||
+      current.journal.empty()) {
+    return fail(current.quarantined
+                    ? MgaDmlUpdateDurableOperationOutcomeV1::quarantined
+                    : MgaDmlUpdateDurableOperationOutcomeV1::stale,
+                current.detail.empty() ? "durable_chain_unavailable"
+                                       : current.detail);
+  }
+  std::string detail;
+  if (!DmlUpdateDurableJournalExtentMatchesBytes(
+          request.identity, current.snapshot, request.successor, &detail)) {
+    return fail(MgaDmlUpdateDurableOperationOutcomeV1::conflict,
+                std::move(detail));
+  }
+  if (current.staged_successor_present) {
+    if (current.staged_successor == request.successor &&
+        !current.staged_encoded_journal_frame.empty()) {
+      std::vector<std::uint8_t> encoded_invalidation;
+      if (!DmlUpdateDurableEncodePreparedInvalidation(
+              request.identity, current.staged_successor,
+              &encoded_invalidation)) {
+        return fail(MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+                    "prepared_successor_invalidation_encode_failed");
+      }
+      auto impl =
+          std::make_unique<MgaDmlUpdateDurablePreparedSuccessorV1::Impl>();
+      impl->path = path;
+      impl->lock = std::move(lock);
+      impl->encoded_frame = current.staged_encoded_journal_frame;
+      impl->encoded_invalidation_frame = std::move(encoded_invalidation);
+      impl->valid = true;
+      result.prepared.impl_ = std::move(impl);
+      result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::committed;
+      result.diagnostic = OkDiagnostic();
+      return result;
+    }
+    const auto& latest = current.journal.back();
+    const bool cancelled_prepublication =
+        current.staged_successor.lifecycle_state ==
+            MgaDmlUpdateDurableJournalStateV1::published &&
+        request.successor.lifecycle_state ==
+            MgaDmlUpdateDurableJournalStateV1::aborted &&
+        current.staged_successor.journal_sequence ==
+            request.successor.journal_sequence &&
+        current.staged_successor.prior_record_sha256 ==
+            request.successor.prior_record_sha256 &&
+        latest.journal_sequence == request.expected_prior_sequence &&
+        latest.lifecycle_state == request.expected_prior_state &&
+        latest.record_evidence_sha256 ==
+            request.expected_prior_record_evidence_sha256;
+    if (!cancelled_prepublication) {
+      return fail(
+          MgaDmlUpdateDurableOperationOutcomeV1::fork_or_terminal_conflict,
+          "prepared_successor_conflict");
+    }
+    DmlUpdateDurableFrameV1 invalidation;
+    invalidation.kind =
+        DmlUpdateDurableFrameKindV1::prepared_successor_invalidated;
+    invalidation.identity = request.identity;
+    invalidation.sequence =
+        current.staged_successor.journal_sequence;
+    invalidation.state = static_cast<std::uint8_t>(
+        current.staged_successor.lifecycle_state);
+    invalidation.prior_record_sha256 =
+        current.staged_successor.prior_record_sha256;
+    invalidation.record_evidence_sha256 =
+        current.staged_successor.record_evidence_sha256;
+    if (!DmlUpdateDurableAppendFrame(path, invalidation)) {
+      return fail(MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+                  "prepared_successor_invalidation_write_failed");
+    }
+  }
+  const auto& latest = current.journal.back();
+  if (latest == request.successor) {
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::already_exact;
+    result.diagnostic = OkDiagnostic();
+    return result;
+  }
+  if (latest.lifecycle_state == MgaDmlUpdateDurableJournalStateV1::published ||
+      latest.lifecycle_state == MgaDmlUpdateDurableJournalStateV1::aborted) {
+    return fail(
+        MgaDmlUpdateDurableOperationOutcomeV1::fork_or_terminal_conflict,
+        "durable_chain_terminal");
+  }
+  if (latest.journal_sequence != request.expected_prior_sequence ||
+      latest.lifecycle_state != request.expected_prior_state ||
+      latest.record_evidence_sha256 !=
+          request.expected_prior_record_evidence_sha256 ||
+      request.successor.journal_sequence != latest.journal_sequence + 1 ||
+      request.successor.prior_record_sha256 !=
+          latest.record_evidence_sha256 ||
+      !DmlUpdateDurableLegalTransition(latest.lifecycle_state,
+                                       request.successor.lifecycle_state)) {
+    return fail(MgaDmlUpdateDurableOperationOutcomeV1::fork_or_terminal_conflict,
+                "successor_compare_and_append_conflict");
+  }
+  if (DmlUpdateDurableFault(
+          MgaDmlUpdateDurableFaultCutpointV1::before_successor_write)) {
+    return fail(MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+                "fault_before_successor_write");
+  }
+  DmlUpdateDurableFrameV1 frame =
+      DmlUpdateDurableJournalFrame(request.identity, request.successor);
+  std::vector<std::uint8_t> encoded;
+  g_dml_update_durable_frame_encode_calls.fetch_add(
+      1, std::memory_order_relaxed);
+  g_dml_update_durable_checksum_calls.fetch_add(
+      2, std::memory_order_relaxed);
+  if (!DmlUpdateDurableEncodeFrame(frame, &encoded)) {
+    return fail(MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+                "successor_prepare_encode_failed");
+  }
+  std::vector<std::uint8_t> encoded_invalidation;
+  if (!DmlUpdateDurableEncodePreparedInvalidation(
+          request.identity, request.successor, &encoded_invalidation)) {
+    return fail(MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+                "successor_invalidation_prepare_encode_failed");
+  }
+  DmlUpdateDurableFrameV1 staged;
+  staged.kind = DmlUpdateDurableFrameKindV1::prepared_successor;
+  staged.identity = request.identity;
+  staged.sequence = request.successor.journal_sequence;
+  staged.state =
+      static_cast<std::uint8_t>(request.successor.lifecycle_state);
+  staged.prior_record_sha256 = request.successor.prior_record_sha256;
+  staged.record_evidence_sha256 =
+      request.successor.record_evidence_sha256;
+  staged.payload = encoded;
+  if (!DmlUpdateDurableAppendFrame(path, staged)) {
+    return fail(MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+                "successor_prepare_stage_write_failed");
+  }
+  auto impl = std::make_unique<MgaDmlUpdateDurablePreparedSuccessorV1::Impl>();
+  impl->path = path;
+  impl->lock = std::move(lock);
+  impl->encoded_frame = std::move(encoded);
+  impl->encoded_invalidation_frame = std::move(encoded_invalidation);
+  impl->valid = true;
+  result.prepared.impl_ = std::move(impl);
+  result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::committed;
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+MgaDmlUpdateDurableOperationMutationResultV1
+CommitPreparedMgaDmlUpdateDurableOperationSuccessorV1(
+    MgaDmlUpdateDurablePreparedSuccessorV1&& prepared) {
+  g_dml_update_durable_commit_calls.fetch_add(1,
+                                               std::memory_order_relaxed);
+  if (!prepared.valid()) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::conflict,
+        "prepared_successor_invalid");
+  }
+  auto impl = std::move(prepared.impl_);
+  impl->valid = false;
+  const auto appended = DmlUpdateDurableAppendEncodedFrame(
+      impl->path, impl->encoded_frame, true);
+  if (appended == DmlUpdateDurableRawAppendResultV1::ok) {
+    MgaDmlUpdateDurableOperationMutationResultV1 result;
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::committed;
+    result.diagnostic = std::move(impl->committed_diagnostic);
+    return result;
+  }
+  if (appended ==
+      DmlUpdateDurableRawAppendResultV1::after_fsync_ack_lost) {
+    MgaDmlUpdateDurableOperationMutationResultV1 result;
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
+    result.diagnostic =
+        std::move(impl->committed_ack_lost_diagnostic);
+    return result;
+  }
+  MgaDmlUpdateDurableOperationMutationResultV1 result;
+  result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
+  result.diagnostic = std::move(impl->commit_write_failed_diagnostic);
+  return result;
+}
+
+MgaDmlUpdateDurableOperationMutationResultV1
+CancelPreparedMgaDmlUpdateDurableOperationSuccessorV1(
+    MgaDmlUpdateDurablePreparedSuccessorV1&& prepared) {
+  if (!prepared.valid()) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::conflict,
+        "prepared_successor_cancel_invalid");
+  }
+  auto impl = std::move(prepared.impl_);
+  impl->valid = false;
+  const auto appended = DmlUpdateDurableAppendEncodedFrame(
+      impl->path, impl->encoded_invalidation_frame, false);
+  if (appended == DmlUpdateDurableRawAppendResultV1::ok) {
+    MgaDmlUpdateDurableOperationMutationResultV1 result;
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::committed;
+    result.diagnostic = std::move(impl->cancelled_diagnostic);
+    return result;
+  }
+  return DmlUpdateDurableMutation(
+      MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+      "prepared_successor_cancel_write_failed");
+}
+
+MgaDmlUpdateDurableOperationMutationResultV1
+AppendMgaDmlUpdateDurableOperationSuccessorV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableAppendSuccessorRequestV1& request) {
+  auto prepared =
+      PrepareMgaDmlUpdateDurableOperationSuccessorV1(context, request);
+  if (!prepared.ok()) {
+    MgaDmlUpdateDurableOperationMutationResultV1 result;
+    result.outcome = prepared.outcome;
+    result.diagnostic = std::move(prepared.diagnostic);
+    return result;
+  }
+  return CommitPreparedMgaDmlUpdateDurableOperationSuccessorV1(
+      std::move(prepared.prepared));
+}
+
+namespace {
+
+MgaDmlUpdateDurableOperationRecoveryResultV1 DmlUpdateDurableRecoveryFailure(
+    MgaDmlUpdateDurableOperationOutcomeV1 outcome, std::string detail,
+    bool quarantined = false) {
+  MgaDmlUpdateDurableOperationRecoveryResultV1 result;
+  result.outcome = outcome;
+  result.quarantined = quarantined;
+  const bool denied =
+      outcome == MgaDmlUpdateDurableOperationOutcomeV1::access_denied;
+  const bool stale = outcome == MgaDmlUpdateDurableOperationOutcomeV1::stale;
+  result.diagnostic = DmlUpdateDurableDiagnostic(
+      denied ? "SECURITY.ACCESS_DENIED"
+             : stale ? "MGA.TRANSACTION.STALE" : "DML.UPDATE_FAILED",
+      denied ? "sblr.dml_update_rows.durable_recovery_denied"
+             : stale ? "sblr.dml_update_rows.durable_recovery_stale"
+                     : "sblr.dml_update_rows.durable_recovery_failed",
+      std::move(detail));
+  return result;
+}
+
+bool DmlUpdateDurableBuildSavepointObservation(
+    const EngineRequestContext& context,
+    const DmlUpdateDurableStoredOperationV1& current,
+    const scratchbird::wire::TypedUpdateJournalRecord& journal_head,
+    scratchbird::wire::TypedUpdateMgaRecoveryObservation* observation,
+    std::string* detail) {
+  const auto fail = [&](std::string reason) {
+    if (detail != nullptr) *detail = std::move(reason);
+    return false;
+  };
+  if (observation == nullptr) return fail("recovery_observation_required");
+
+  const auto journal_state = journal_head.lifecycle_state;
+  std::string required_savepoint_uuid;
+  const bool journal_savepoint_present =
+      !DmlUpdateDurableTypedUuidText(
+           journal_head.statement_savepoint_uuid).empty();
+  if (journal_state != scratchbird::wire::TypedUpdateJournalState::bound) {
+    required_savepoint_uuid = DmlUpdateDurableTypedUuidText(
+        journal_head.statement_savepoint_uuid);
+    const bool nil_aborted =
+        journal_state == scratchbird::wire::TypedUpdateJournalState::aborted &&
+        !journal_savepoint_present &&
+        journal_head.statement_savepoint_generation == 0;
+    if (!nil_aborted &&
+        (required_savepoint_uuid.empty() ||
+         journal_head.statement_savepoint_generation == 0)) {
+      return fail("journal_savepoint_identity_invalid");
+    }
+  }
+  DmlUpdateDurableSavepointLookupV1 savepoint;
+  if (journal_state == scratchbird::wire::TypedUpdateJournalState::bound ||
+      journal_savepoint_present) {
+    savepoint = DmlUpdateDurableFindStatementSavepoint(
+        context, current.identity, required_savepoint_uuid);
+  }
+  if (savepoint.state == DmlUpdateDurableSavepointLookupStateV1::corrupt) {
+    return fail(savepoint.detail.empty() ? "savepoint_authority_corrupt"
+                                        : savepoint.detail);
+  }
+  if (savepoint.state == DmlUpdateDurableSavepointLookupStateV1::present &&
+      (savepoint.authority.publication_barrier_uuid !=
+           current.identity.reserved_statement_barrier_uuid ||
+       savepoint.authority.publication_barrier_generation !=
+           current.identity.reserved_statement_barrier_generation)) {
+    return fail("savepoint_reserved_barrier_mismatch");
+  }
+
+  // A crash between opening the provider savepoint and appending intent leaves
+  // a bound DUJR with an active private savepoint.  DUMO forbids representing
+  // that contradictory cutpoint, so MGA rolls it back before observing the
+  // bound head and records only the resulting durable no-effect proof.
+  if (journal_state == scratchbird::wire::TypedUpdateJournalState::bound &&
+      savepoint.state == DmlUpdateDurableSavepointLookupStateV1::present &&
+      savepoint.authority.lifecycle ==
+          MgaDmlUpdateStatementSavepointLifecycleV1::active) {
+    const auto rolled_back = RollbackMgaDmlUpdateStatementSavepointAuthorityV1(
+        context, savepoint.authority);
+    if (!rolled_back.ok) {
+      return fail("bound_orphan_savepoint_rollback_failed:" +
+                  rolled_back.diagnostic.detail);
+    }
+    savepoint.authority = rolled_back.authority;
+  }
+
+  observation->statement_barrier_present = false;
+  observation->no_surviving_effect_proven = false;
+  observation->statement_savepoint_uuid = {};
+  observation->statement_savepoint_generation = 0;
+  if (savepoint.state == DmlUpdateDurableSavepointLookupStateV1::absent) {
+    if (journal_state != scratchbird::wire::TypedUpdateJournalState::bound &&
+        !(journal_state ==
+              scratchbird::wire::TypedUpdateJournalState::aborted &&
+          required_savepoint_uuid.empty())) {
+      return fail("journal_savepoint_authority_missing");
+    }
+    observation->savepoint_state =
+        scratchbird::wire::TypedUpdateSavepointState::absent;
+    observation->no_surviving_effect_proven = true;
+  } else {
+    if (!DmlUpdateDurableTypedUuid(
+            savepoint.authority.savepoint_uuid,
+            &observation->statement_savepoint_uuid)) {
+      return fail("savepoint_uuid_invalid");
+    }
+    observation->statement_savepoint_generation =
+        savepoint.authority.savepoint_generation;
+    switch (savepoint.authority.lifecycle) {
+      case MgaDmlUpdateStatementSavepointLifecycleV1::active:
+        observation->savepoint_state =
+            scratchbird::wire::TypedUpdateSavepointState::active;
+        break;
+      case MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back:
+        observation->savepoint_state =
+            scratchbird::wire::TypedUpdateSavepointState::rolled_back_final;
+        observation->no_surviving_effect_proven = true;
+        break;
+      case MgaDmlUpdateStatementSavepointLifecycleV1::released:
+        observation->savepoint_state =
+            scratchbird::wire::TypedUpdateSavepointState::
+                released_at_statement_barrier;
+        observation->statement_barrier_present = true;
+        break;
+    }
+  }
+
+  if (!DmlUpdateDurableTypedUuid(
+          current.identity.reserved_statement_barrier_uuid,
+          &observation->reserved_statement_barrier_uuid)) {
+    return fail("reserved_statement_barrier_invalid");
+  }
+  observation->reserved_statement_barrier_generation =
+      current.identity.reserved_statement_barrier_generation;
+  return true;
+}
+
+bool DmlUpdateDurableDecodeRecoveryAuthority(
+    const DmlUpdateDurableStoredOperationV1& current,
+    std::span<const scratchbird::wire::TypedUpdateJournalRecord>
+        journal_records,
+    const scratchbird::wire::TypedUpdateMgaRecoveryObservation& observation,
+    std::string* detail) {
+  const auto fail = [&](const scratchbird::wire::TypedUpdateCarrierError& error,
+                        std::string prefix) {
+    if (detail != nullptr) {
+      *detail = std::move(prefix) + ":" + error.field + ":" + error.detail;
+    }
+    return false;
+  };
+  if (journal_records.empty()) {
+    if (detail != nullptr) *detail = "journal_chain_required";
+    return false;
+  }
+  scratchbird::wire::TypedUpdateDescriptorCarrier descriptor;
+  scratchbird::wire::TypedUpdateRowPolicyVector row_policies;
+  scratchbird::wire::TypedUpdateRecoveryTokenCarrier recovery_token;
+  scratchbird::wire::TypedUpdateSecurityPolicySourceVector source_policies;
+  scratchbird::wire::TypedUpdateSecuritySnapshotProof security_proof;
+  scratchbird::wire::TypedUpdateCarrierError error;
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateDescriptor(
+          current.snapshot.descriptor_dudc, &descriptor, &error)) {
+    return fail(error, "DUDC");
+  }
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateRowPolicyVector(
+          current.snapshot.row_policy_vector_dupv, &row_policies, &error)) {
+    return fail(error, "DUPV");
+  }
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateRecoveryToken(
+          current.snapshot.recovery_token_durc, &recovery_token, &error)) {
+    return fail(error, "DURC");
+  }
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateSecurityPolicySourceVector(
+          current.snapshot.source_policy_vector_dusv, &source_policies,
+          &error)) {
+    return fail(error, "DUSV");
+  }
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateSecuritySnapshotProof(
+          current.snapshot.security_snapshot_proof_dusp, &security_proof,
+          &error)) {
+    return fail(error, "DUSP");
+  }
+  if (!scratchbird::wire::ValidateTypedUpdateSecurityRecoveryAuthority(
+          descriptor, row_policies, recovery_token, source_policies,
+          security_proof, journal_records.back(), observation, &error)) {
+    return fail(error, "security_recovery_authority");
+  }
+  return true;
+}
+
+}  // namespace
+
+MgaDmlUpdateDurableOperationRecoveryResultV1
+RecoverMgaDmlUpdateDurableOperationChainV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationLookupV1& lookup) {
+  g_dml_update_durable_recovery_calls.fetch_add(1,
+                                                 std::memory_order_relaxed);
+  const std::string path = DmlUpdateDurablePathForLookup(context, lookup);
+  if (path.empty()) {
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
+        "authenticated_descriptor_lookup_invalid");
+  }
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) {
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "durable_recovery_lock_failed");
+  }
+  auto current = DmlUpdateDurableLoadOperation(path, true);
+  if (!current.ok || current.reservation_only || !current.snapshot_present ||
+      current.journal.empty()) {
+    const bool denied = current.missing || current.reservation_only;
+    return DmlUpdateDurableRecoveryFailure(
+        current.quarantined
+            ? MgaDmlUpdateDurableOperationOutcomeV1::quarantined
+            : denied ? MgaDmlUpdateDurableOperationOutcomeV1::access_denied
+                     : MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        current.detail.empty() ? "durable_chain_unavailable" : current.detail,
+        current.quarantined);
+  }
+  if (!DmlUpdateDurableIdentityMatchesContext(context, current.identity)) {
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
+        "durable_chain_cross_authority");
+  }
+  if (current.identity.descriptor_generation != lookup.descriptor_generation ||
+      current.structural_occurrence_id != lookup.structural_occurrence_id) {
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::stale,
+        "descriptor_generation_or_occurrence_stale");
+  }
+
+  std::vector<scratchbird::wire::TypedUpdateJournalRecord> journal_records;
+  std::string detail;
+  if (!DmlUpdateDurableDecodeTypedJournalChain(
+          context, current.identity, current.snapshot, current.journal,
+          &journal_records, &detail)) {
+    (void)DmlUpdateDurableWriteQuarantine(path);
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+        std::move(detail), true);
+  }
+
+  scratchbird::wire::TypedUpdateDescriptorCarrier descriptor;
+  scratchbird::wire::TypedUpdateSecuritySnapshotProof security_proof;
+  scratchbird::wire::TypedUpdateCarrierError carrier_error;
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateDescriptor(
+          current.snapshot.descriptor_dudc, &descriptor, &carrier_error) ||
+      !scratchbird::wire::DecodeAndValidateTypedUpdateSecuritySnapshotProof(
+          current.snapshot.security_snapshot_proof_dusp, &security_proof,
+          &carrier_error)) {
+    (void)DmlUpdateDurableWriteQuarantine(path);
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+        "recovery_snapshot_decode_failed:" + carrier_error.field + ":" +
+            carrier_error.detail,
+        true);
+  }
+
+  scratchbird::wire::TypedUpdateMgaRecoveryObservation observation;
+  if (!DmlUpdateDurableTypedUuid(current.identity.validated_durable_handle_uuid,
+                                  &observation.validated_mga_durable_handle_uuid) ||
+      !DmlUpdateDurableTypedUuid(current.identity.database_uuid,
+                                  &observation.database_uuid) ||
+      !DmlUpdateDurableTypedUuid(current.identity.descriptor_uuid,
+                                  &observation.descriptor_uuid) ||
+      !DmlUpdateDurableTypedUuid(current.identity.operation_uuid,
+                                  &observation.operation_uuid) ||
+      !DmlUpdateDurableTypedUuid(
+          current.identity.authenticated_statement_receipt_uuid,
+          &observation.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateDurableTypedUuid(current.identity.owning_transaction_uuid,
+                                  &observation.owning_transaction_uuid) ||
+      !DmlUpdateDurableTypedUuid(current.identity.recovery_token_uuid,
+                                  &observation.recovery_token_uuid)) {
+    (void)DmlUpdateDurableWriteQuarantine(path);
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+        "durable_identity_uuid_decode_failed", true);
+  }
+  observation.validated_mga_durable_handle_generation =
+      current.identity.validated_durable_handle_generation;
+  observation.descriptor_generation = current.identity.descriptor_generation;
+  observation.operation_generation = current.identity.operation_generation;
+  observation.owning_local_transaction_id =
+      current.identity.owning_local_transaction_id;
+  observation.recovery_generation = current.identity.recovery_generation;
+  observation.latest_journal_state = journal_records.back().lifecycle_state;
+  observation.durable_chain_head_sequence =
+      journal_records.back().journal_sequence;
+  observation.durable_chain_head_record_evidence_sha256 =
+      journal_records.back().record_evidence_sha256;
+  observation.catalog_snapshot_uuid = descriptor.catalog_snapshot_uuid;
+  observation.catalog_generation = descriptor.catalog_generation;
+  observation.security_snapshot_uuid = security_proof.security_snapshot_uuid;
+  observation.security_snapshot_generation =
+      security_proof.security_snapshot_generation;
+  observation.security_epoch = security_proof.security_epoch;
+  if (!DmlUpdateDurableTransactionState(context, current.identity,
+                                        &observation.transaction_state,
+                                        &detail) ||
+      !DmlUpdateDurableBuildSavepointObservation(
+          context, current, journal_records.back(), &observation, &detail)) {
+    (void)DmlUpdateDurableWriteQuarantine(path);
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+        std::move(detail), true);
+  }
+
+  scratchbird::wire::TypedUpdateMgaRecoveryObservation prior_observation;
+  bool prior_present = false;
+  if (!current.latest_dumo.empty()) {
+    if (!scratchbird::wire::DecodeAndValidateTypedUpdateMgaRecoveryObservation(
+            current.latest_dumo, &prior_observation, &carrier_error)) {
+      (void)DmlUpdateDurableWriteQuarantine(path);
+      return DmlUpdateDurableRecoveryFailure(
+          MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+          "stored_DUMO_invalid:" + carrier_error.field + ":" +
+              carrier_error.detail,
+          true);
+    }
+    observation.observation_uuid = prior_observation.observation_uuid;
+    observation.observation_generation =
+        prior_observation.observation_generation;
+    prior_present = true;
+  } else {
+    const std::string fresh = DmlUpdateDurableFreshIdentity(
+        current.identity, current.identity.reserved_statement_barrier_uuid);
+    if (!DmlUpdateDurableTypedUuid(fresh, &observation.observation_uuid)) {
+      return DmlUpdateDurableRecoveryFailure(
+          MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+          "observation_identity_issue_failed");
+    }
+    observation.observation_generation = 1;
+  }
+
+  std::vector<std::uint8_t> exact_dumo;
+  g_dml_update_durable_observation_encode_calls.fetch_add(
+      1, std::memory_order_relaxed);
+  if (!scratchbird::wire::EncodeTypedUpdateMgaRecoveryObservation(
+          observation, &exact_dumo, &carrier_error)) {
+    (void)DmlUpdateDurableWriteQuarantine(path);
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+        "DUMO_encode_failed:" + carrier_error.field + ":" +
+            carrier_error.detail,
+        true);
+  }
+  if (prior_present && exact_dumo != current.latest_dumo) {
+    if (observation.observation_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+      (void)DmlUpdateDurableWriteQuarantine(path);
+      return DmlUpdateDurableRecoveryFailure(
+          MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+          "observation_generation_exhausted", true);
+    }
+    ++observation.observation_generation;
+    g_dml_update_durable_observation_encode_calls.fetch_add(
+        1, std::memory_order_relaxed);
+    if (!scratchbird::wire::EncodeTypedUpdateMgaRecoveryObservation(
+            observation, &exact_dumo, &carrier_error)) {
+      (void)DmlUpdateDurableWriteQuarantine(path);
+      return DmlUpdateDurableRecoveryFailure(
+          MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+          "DUMO_successor_encode_failed:" + carrier_error.field + ":" +
+              carrier_error.detail,
+          true);
+    }
+  }
+  observation.exact_bytes = exact_dumo;
+  if (!DmlUpdateDurableDecodeRecoveryAuthority(
+          current, journal_records, observation, &detail)) {
+    (void)DmlUpdateDurableWriteQuarantine(path);
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+        std::move(detail), true);
+  }
+
+  if (exact_dumo != current.latest_dumo) {
+    if (DmlUpdateDurableFault(
+            MgaDmlUpdateDurableFaultCutpointV1::before_observation_write)) {
+      return DmlUpdateDurableRecoveryFailure(
+          MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+          "fault_before_observation_write");
+    }
+    DmlUpdateDurableFrameV1 frame;
+    frame.kind = DmlUpdateDurableFrameKindV1::recovery_observation;
+    frame.identity = current.identity;
+    frame.sequence = observation.durable_chain_head_sequence;
+    frame.state = static_cast<std::uint8_t>(observation.latest_journal_state);
+    frame.record_evidence_sha256 =
+        observation.observation_evidence_sha256;
+    frame.payload = exact_dumo;
+    if (!DmlUpdateDurableAppendFrame(path, frame)) {
+      return DmlUpdateDurableRecoveryFailure(
+          MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+          "recovery_observation_write_failed");
+    }
+    if (DmlUpdateDurableFault(
+            MgaDmlUpdateDurableFaultCutpointV1::
+                after_observation_write_before_ack)) {
+      return DmlUpdateDurableRecoveryFailure(
+          MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+          "recovery_observation_committed_ack_lost");
+    }
+    current.latest_dumo = exact_dumo;
+  }
+
+  auto impl =
+      std::make_unique<MgaDmlUpdateValidatedDurableAuthorityHandleV1::Impl>();
+  impl->identity = current.identity;
+  impl->snapshot = current.snapshot;
+  impl->journal = current.journal;
+  impl->staged_successor_present = current.staged_successor_present;
+  impl->staged_successor = current.staged_successor;
+  impl->staged_encoded_journal_frame =
+      current.staged_encoded_journal_frame;
+  std::error_code extent_error;
+  impl->authenticated_store_extent_bytes =
+      std::filesystem::file_size(path, extent_error);
+  if (extent_error || impl->authenticated_store_extent_bytes == 0) {
+    return DmlUpdateDurableRecoveryFailure(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "durable_store_extent_observation_failed");
+  }
+  impl->exact_dumo = exact_dumo;
+  MgaDmlUpdateDurableOperationRecoveryResultV1 result;
+  result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::committed;
+  result.diagnostic = OkDiagnostic();
+  result.identity = current.identity;
+  result.authority_snapshot = current.snapshot;
+  result.journal = current.journal;
+  result.staged_successor_present = current.staged_successor_present;
+  result.staged_successor = current.staged_successor;
+  result.recovery_observation_dumo = exact_dumo;
+  result.validated_handle.impl_ = std::move(impl);
+  return result;
+}
+
+MgaDmlUpdateDurableOperationMutationResultV1
+RollbackMgaDmlUpdateStatementFromValidatedDurableAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateValidatedDurableAuthorityHandleV1& validated_handle) {
+  if (!validated_handle.valid() ||
+      !DmlUpdateDurableIdentityMatchesContext(
+          context, validated_handle.impl_->identity)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
+        "validated_durable_handle_cross_authority");
+  }
+  scratchbird::wire::TypedUpdateMgaRecoveryObservation observation;
+  scratchbird::wire::TypedUpdateCarrierError error;
+  if (!scratchbird::wire::DecodeAndValidateTypedUpdateMgaRecoveryObservation(
+          validated_handle.impl_->exact_dumo, &observation, &error)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::quarantined,
+        "validated_durable_handle_DUMO_invalid:" + error.field + ":" +
+            error.detail);
+  }
+  if (observation.savepoint_state ==
+          scratchbird::wire::TypedUpdateSavepointState::absent ||
+      observation.savepoint_state ==
+          scratchbird::wire::TypedUpdateSavepointState::rolled_back_final) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::already_exact);
+  }
+  if (observation.savepoint_state !=
+          scratchbird::wire::TypedUpdateSavepointState::active ||
+      observation.statement_barrier_present) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::fork_or_terminal_conflict,
+        "postbarrier_savepoint_cannot_rollback");
+  }
+  const std::string savepoint_uuid = DmlUpdateDurableTypedUuidText(
+      observation.statement_savepoint_uuid);
+  const auto binding = DmlUpdateDurableStatementBinding(
+      validated_handle.impl_->identity);
+  auto authority = RecoverMgaDmlUpdateStatementSavepointAuthorityV1(
+      context, binding, savepoint_uuid,
+      observation.statement_savepoint_generation);
+  if (!authority.ok || authority.authority.lifecycle !=
+                           MgaDmlUpdateStatementSavepointLifecycleV1::active ||
+      authority.authority.publication_barrier_uuid !=
+          validated_handle.impl_->identity.reserved_statement_barrier_uuid ||
+      authority.authority.publication_barrier_generation !=
+          validated_handle.impl_->identity
+              .reserved_statement_barrier_generation) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::stale,
+        "validated_savepoint_authority_not_current");
+  }
+  authority = RollbackMgaDmlUpdateStatementSavepointAuthorityV1(
+      context, authority.authority);
+  if (!authority.ok || authority.authority.lifecycle !=
+                           MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back ||
+      authority.authority.publication_barrier_present) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "validated_savepoint_rollback_failed");
+  }
+  return DmlUpdateDurableMutation(
+      MgaDmlUpdateDurableOperationOutcomeV1::committed);
+}
+
+MgaDmlUpdateDurableOperationMutationResultV1
+CommitRecoveredMgaDmlUpdateDurableOperationStagedSuccessorV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateValidatedDurableAuthorityHandleV1& validated_handle) {
+  if (!validated_handle.valid() ||
+      !DmlUpdateDurableIdentityMatchesContext(
+          context, validated_handle.impl_->identity)) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
+        "recovered_staged_successor_cross_authority");
+  }
+  const auto& impl = *validated_handle.impl_;
+  if (!impl.staged_successor_present ||
+      impl.staged_successor.lifecycle_state !=
+          MgaDmlUpdateDurableJournalStateV1::published ||
+      impl.staged_encoded_journal_frame.empty() || impl.journal.empty() ||
+      impl.staged_successor.journal_sequence !=
+          impl.journal.back().journal_sequence + 1 ||
+      impl.staged_successor.prior_record_sha256 !=
+          impl.journal.back().record_evidence_sha256 ||
+      impl.authenticated_store_extent_bytes == 0) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::fork_or_terminal_conflict,
+        "recovered_staged_published_successor_unavailable");
+  }
+  const std::string path =
+      DmlUpdateDurableDescriptorPath(context, impl.identity);
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "recovered_staged_successor_lock_failed");
+  }
+  std::error_code extent_error;
+  const auto current_extent = std::filesystem::file_size(path, extent_error);
+  if (extent_error) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+        "recovered_staged_successor_extent_failed");
+  }
+  if (current_extent == impl.authenticated_store_extent_bytes +
+                            impl.staged_encoded_journal_frame.size()) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::already_exact);
+  }
+  if (current_extent != impl.authenticated_store_extent_bytes) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::stale,
+        "recovered_staged_successor_chain_changed");
+  }
+  const auto appended = DmlUpdateDurableAppendEncodedFrame(
+      path, impl.staged_encoded_journal_frame, true);
+  if (appended == DmlUpdateDurableRawAppendResultV1::ok) {
+    return DmlUpdateDurableMutation(
+        MgaDmlUpdateDurableOperationOutcomeV1::committed);
+  }
+  return DmlUpdateDurableMutation(
+      MgaDmlUpdateDurableOperationOutcomeV1::storage_failure,
+      appended == DmlUpdateDurableRawAppendResultV1::after_fsync_ack_lost
+          ? "recovered_staged_successor_committed_ack_lost"
+          : "recovered_staged_successor_write_failed");
+}
+
+MgaDmlUpdateDurableOperationInstrumentationV1
+ReadMgaDmlUpdateDurableOperationInstrumentationV1() {
+  MgaDmlUpdateDurableOperationInstrumentationV1 result;
+  result.prepare_calls =
+      g_dml_update_durable_prepare_calls.load(std::memory_order_acquire);
+  result.frame_encode_calls =
+      g_dml_update_durable_frame_encode_calls.load(std::memory_order_acquire);
+  result.checksum_calls =
+      g_dml_update_durable_checksum_calls.load(std::memory_order_acquire);
+  result.commit_calls =
+      g_dml_update_durable_commit_calls.load(std::memory_order_acquire);
+  result.commit_write_calls =
+      g_dml_update_durable_commit_write_calls.load(std::memory_order_acquire);
+  result.commit_fsync_calls =
+      g_dml_update_durable_commit_fsync_calls.load(std::memory_order_acquire);
+  result.recovery_calls =
+      g_dml_update_durable_recovery_calls.load(std::memory_order_acquire);
+  result.observation_encode_calls =
+      g_dml_update_durable_observation_encode_calls.load(
+          std::memory_order_acquire);
+  return result;
+}
+
+void ResetMgaDmlUpdateDurableOperationInstrumentationForTestingV1() {
+  g_dml_update_durable_prepare_calls.store(0, std::memory_order_release);
+  g_dml_update_durable_frame_encode_calls.store(0,
+                                                 std::memory_order_release);
+  g_dml_update_durable_checksum_calls.store(0, std::memory_order_release);
+  g_dml_update_durable_commit_calls.store(0, std::memory_order_release);
+  g_dml_update_durable_commit_write_calls.store(0,
+                                                 std::memory_order_release);
+  g_dml_update_durable_commit_fsync_calls.store(0,
+                                                 std::memory_order_release);
+  g_dml_update_durable_recovery_calls.store(0, std::memory_order_release);
+  g_dml_update_durable_observation_encode_calls.store(
+      0, std::memory_order_release);
+  g_dml_update_durable_fault_cutpoint.store(
+      MgaDmlUpdateDurableFaultCutpointV1::none,
+      std::memory_order_release);
+}
+
+void SetMgaDmlUpdateDurableFaultCutpointForTestingV1(
+    MgaDmlUpdateDurableFaultCutpointV1 cutpoint) {
+  g_dml_update_durable_fault_cutpoint.store(cutpoint,
+                                             std::memory_order_release);
+}
+
+MgaDmlUpdateDurableInspectionV1 InspectMgaDmlUpdateDurableOperationForTestingV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationLookupV1& lookup) {
+  MgaDmlUpdateDurableInspectionV1 result;
+  const std::string path = DmlUpdateDurablePathForLookup(context, lookup);
+  if (path.empty()) {
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::access_denied;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        "SECURITY.ACCESS_DENIED",
+        "sblr.dml_update_rows.durable_inspection_denied");
+    return result;
+  }
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) {
+    result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.durable_inspection_failed",
+        "lock_failed");
+    return result;
+  }
+  const auto current = DmlUpdateDurableLoadOperation(path, true);
+  result.quarantined = current.quarantined;
+  if (!current.ok || current.reservation_only || !current.snapshot_present ||
+      current.journal.empty() ||
+      !DmlUpdateDurableIdentityMatchesContext(context, current.identity) ||
+      current.identity.descriptor_generation != lookup.descriptor_generation ||
+      current.structural_occurrence_id != lookup.structural_occurrence_id) {
+    result.outcome = current.quarantined
+                         ? MgaDmlUpdateDurableOperationOutcomeV1::quarantined
+                         : current.missing
+                               ? MgaDmlUpdateDurableOperationOutcomeV1::access_denied
+                               : MgaDmlUpdateDurableOperationOutcomeV1::stale;
+    result.diagnostic = DmlUpdateDurableDiagnostic(
+        current.missing ? "SECURITY.ACCESS_DENIED"
+                        : current.quarantined ? "DML.UPDATE_FAILED"
+                                              : "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.durable_inspection_refused",
+        current.detail);
+    return result;
+  }
+  result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::committed;
+  result.diagnostic = OkDiagnostic();
+  result.authority_snapshot = current.snapshot;
+  result.journal = current.journal;
+  result.exact_dumo_bytes = current.latest_dumo;
+  return result;
+}
+
+namespace {
+
+bool DmlUpdateDurableAuthenticateTestingLookup(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationLookupV1& lookup,
+    std::string* path) {
+  if (path == nullptr) return false;
+  *path = DmlUpdateDurablePathForLookup(context, lookup);
+  if (path->empty()) return false;
+  const auto current = DmlUpdateDurableLoadOperation(*path, false);
+  return current.ok && !current.reservation_only &&
+         current.snapshot_present && !current.journal.empty() &&
+         DmlUpdateDurableIdentityMatchesContext(context, current.identity) &&
+         current.identity.descriptor_generation == lookup.descriptor_generation &&
+         current.structural_occurrence_id == lookup.structural_occurrence_id;
+}
+
+bool DmlUpdateDurableFsyncParent(const EngineRequestContext& context) {
+  return DmlUpdateDurableEnsureDirectory(
+      DmlUpdateDurableOperationStorePath(context));
+}
+
+}  // namespace
+
+bool CorruptMgaDmlUpdateDurableExtentByteForTestingV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationLookupV1& lookup,
+    std::uint64_t exact_file_offset, std::uint8_t xor_mask) {
+  if (xor_mask == 0) return false;
+  std::string path;
+  if (!DmlUpdateDurableAuthenticateTestingLookup(context, lookup, &path)) {
+    return false;
+  }
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) return false;
+#if defined(_WIN32)
+  HANDLE handle = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  LARGE_INTEGER position{};
+  position.QuadPart = static_cast<LONGLONG>(exact_file_offset);
+  bool ok = SetFilePointerEx(handle, position, nullptr, FILE_BEGIN) != 0;
+  std::uint8_t value = 0;
+  DWORD count = 0;
+  ok = ok && ReadFile(handle, &value, 1, &count, nullptr) != 0 && count == 1;
+  value ^= xor_mask;
+  ok = ok && SetFilePointerEx(handle, position, nullptr, FILE_BEGIN) != 0 &&
+       WriteFile(handle, &value, 1, &count, nullptr) != 0 && count == 1 &&
+       FlushFileBuffers(handle) != 0;
+  CloseHandle(handle);
+  return ok;
+#else
+  const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+  if (fd < 0) return false;
+  std::uint8_t value = 0;
+  const ssize_t read = ::pread(fd, &value, 1,
+                               static_cast<off_t>(exact_file_offset));
+  value ^= xor_mask;
+  const bool ok = read == 1 &&
+                  ::pwrite(fd, &value, 1,
+                           static_cast<off_t>(exact_file_offset)) == 1 &&
+                  ::fsync(fd) == 0;
+  ::close(fd);
+  return ok;
+#endif
+}
+
+bool TruncateMgaDmlUpdateDurableExtentForTestingV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationLookupV1& lookup,
+    std::uint64_t exact_file_bytes) {
+  std::string path;
+  if (!DmlUpdateDurableAuthenticateTestingLookup(context, lookup, &path)) {
+    return false;
+  }
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) return false;
+  std::error_code error;
+  const auto current = std::filesystem::file_size(path, error);
+  if (error || exact_file_bytes >= current) return false;
+  std::filesystem::resize_file(path, exact_file_bytes, error);
+  return !error && DmlUpdateDurableFsyncParent(context);
+}
+
+bool QuarantineMgaDmlUpdateDurableOperationForTestingV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationLookupV1& lookup) {
+  std::string path;
+  if (!DmlUpdateDurableAuthenticateTestingLookup(context, lookup, &path)) {
+    return false;
+  }
+  DmlUpdateDurableFileLock lock(path);
+  return lock.ok() && DmlUpdateDurableWriteQuarantine(path) &&
+         DmlUpdateDurableFsyncParent(context);
+}
+
+bool DeleteMgaDmlUpdateDurableOperationForTestingV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationLookupV1& lookup) {
+  std::string path;
+  if (!DmlUpdateDurableAuthenticateTestingLookup(context, lookup, &path)) {
+    return false;
+  }
+  DmlUpdateDurableFileLock lock(path);
+  if (!lock.ok()) return false;
+  std::error_code error;
+  const bool removed = std::filesystem::remove(path, error);
+  if (error || !removed) return false;
+  std::filesystem::remove(DmlUpdateDurableQuarantinePath(path), error);
+  return !error && DmlUpdateDurableFsyncParent(context);
+}
+
+MgaDmlUpdateStatementSavepointAuthorityResultV1
+CreateMgaDmlUpdateStatementSavepointAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateStatementSavepointBindingV1& binding) {
+  const std::string reserved_barrier =
+      DmlUpdateStatementFreshDistinctUuid(binding);
+  if (reserved_barrier.empty()) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_create_failed",
+        "engine_barrier_identity_issue_failed");
+  }
+  return CreateMgaDmlUpdateStatementSavepointAuthorityWithReservedBarrierV1(
+      context, binding, reserved_barrier, 1);
+}
+
+MgaDmlUpdateStatementSavepointAuthorityResultV1
+CreateMgaDmlUpdateStatementSavepointAuthorityWithReservedBarrierV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateStatementSavepointBindingV1& binding,
+    const std::string& reserved_publication_barrier_uuid,
+    std::uint64_t reserved_publication_barrier_generation) {
+  std::lock_guard<std::mutex> guard(
+      DmlUpdateStatementSavepointJournalMutex());
+  if (!DmlUpdateStatementBindingMatchesContext(context, binding) ||
+      !DmlUpdateStatementParseUuid(reserved_publication_barrier_uuid) ||
+      reserved_publication_barrier_generation != 1 ||
+      reserved_publication_barrier_uuid == binding.database_uuid ||
+      reserved_publication_barrier_uuid == binding.owning_transaction_uuid ||
+      reserved_publication_barrier_uuid ==
+          binding.authenticated_statement_receipt_uuid ||
+      reserved_publication_barrier_uuid == binding.operation_uuid ||
+      reserved_publication_barrier_uuid == binding.descriptor_uuid ||
+      reserved_publication_barrier_uuid == binding.recovery_token_uuid) {
+    return DmlUpdateStatementSavepointFailure(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.statement_savepoint_stale",
+        "create_binding_or_reserved_barrier_not_current");
+  }
+  DmlUpdateStatementSavepointJournalRecordV1 record;
+  record.authority.binding = binding;
+  record.authority.savepoint_uuid =
+      DmlUpdateStatementFreshDistinctUuid(
+          binding, reserved_publication_barrier_uuid);
+  record.authority.savepoint_generation = 1;
+  record.authority.publication_barrier_uuid =
+      reserved_publication_barrier_uuid;
+  record.authority.publication_barrier_generation =
+      reserved_publication_barrier_generation;
+  record.authority.publication_barrier_present = false;
+  record.authority.lifecycle =
+      MgaDmlUpdateStatementSavepointLifecycleV1::active;
+  record.private_marker = DmlUpdateStatementPrivateSavepointMarker(
+      record.authority.savepoint_uuid);
+  record.journal_sequence = 1;
+  record.cutoffs.row_event_sequence = NextRowEventSequence(context) - 1;
+  record.cutoffs.metadata_event_sequence =
+      NextMetadataEventSequence(context) - 1;
+  record.cutoffs.index_event_sequence = NextIndexEventSequence(context) - 1;
+  record.authority.durable_presence_sha256 =
+      DmlUpdateStatementSavepointRecordSha256(record);
+  if (record.authority.savepoint_uuid.empty() ||
+      record.authority.publication_barrier_uuid.empty() ||
+      record.private_marker.empty() ||
+      !DmlUpdateStatementShaNonzero(
+          record.authority.durable_presence_sha256)) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_create_failed",
+        "engine_savepoint_identity_issue_failed");
+  }
+  if (!DmlUpdateStatementAppendBinaryRecord(context, record)) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_create_failed",
+        "savepoint_create_durable_append_failed");
+  }
+  return DmlUpdateStatementLoadSavepointAuthority(
+      context, binding, record.authority.savepoint_uuid,
+      record.authority.savepoint_generation);
+}
+
+MgaDmlUpdateStatementSavepointAuthorityResultV1
+RecoverMgaDmlUpdateStatementSavepointAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateStatementSavepointBindingV1& binding,
+    const std::string& savepoint_uuid,
+    std::uint64_t savepoint_generation) {
+  std::lock_guard<std::mutex> guard(
+      DmlUpdateStatementSavepointJournalMutex());
+  return DmlUpdateStatementLoadSavepointAuthority(
+      context, binding, savepoint_uuid, savepoint_generation);
+}
+
+MgaDmlUpdateStatementSavepointAuthorityResultV1
+RevalidateMgaDmlUpdateStatementSavepointAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateStatementSavepointAuthorityV1& admitted) {
+  std::lock_guard<std::mutex> guard(
+      DmlUpdateStatementSavepointJournalMutex());
+  auto current = DmlUpdateStatementLoadSavepointAuthority(
+      context, admitted.binding, admitted.savepoint_uuid,
+      admitted.savepoint_generation);
+  if (!current.ok) return current;
+  if (!DmlUpdateStatementAuthorityExact(current.authority, admitted)) {
+    return DmlUpdateStatementSavepointFailure(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.statement_savepoint_stale",
+        "admitted_savepoint_snapshot_not_current");
+  }
+  return current;
+}
+
+MgaDmlUpdateStatementSavepointAuthorityResultV1
+RollbackMgaDmlUpdateStatementSavepointAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateStatementSavepointAuthorityV1& admitted) {
+  std::lock_guard<std::mutex> guard(
+      DmlUpdateStatementSavepointJournalMutex());
+  auto current = DmlUpdateStatementLoadSavepointAuthority(
+      context, admitted.binding, admitted.savepoint_uuid,
+      admitted.savepoint_generation);
+  if (!current.ok) return current;
+  if (!DmlUpdateStatementAuthorityExact(current.authority, admitted) ||
+      current.authority.lifecycle !=
+          MgaDmlUpdateStatementSavepointLifecycleV1::active) {
+    return DmlUpdateStatementSavepointFailure(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.statement_savepoint_stale",
+        "rollback_requires_current_active_savepoint");
+  }
+  const auto parsed = ParseSavepoints(context);
+  const auto tx = parsed.active_savepoints.find(
+      admitted.binding.owning_local_transaction_id);
+  const std::string marker =
+      DmlUpdateStatementPrivateSavepointMarker(admitted.savepoint_uuid);
+  if (tx == parsed.active_savepoints.end() ||
+      tx->second.find(marker) == tx->second.end()) {
+    return DmlUpdateStatementSavepointFailure(
+        "MGA.TRANSACTION.ROLLBACK_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_rollback_failed",
+        "active_savepoint_marker_missing");
+  }
+  DmlUpdateStatementSavepointJournalRecordV1 record;
+  record.authority = admitted;
+  record.authority.lifecycle =
+      MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back;
+  record.authority.publication_barrier_present = false;
+  record.private_marker = marker;
+  record.journal_sequence = 2;
+  record.cutoffs = tx->second.at(marker);
+  record.row_upper_event_sequence = NextRowEventSequence(context) - 1;
+  record.metadata_upper_event_sequence =
+      NextMetadataEventSequence(context) - 1;
+  record.index_upper_event_sequence = NextIndexEventSequence(context) - 1;
+  record.prior_record_sha256 = admitted.durable_presence_sha256;
+  record.authority.durable_presence_sha256 =
+      DmlUpdateStatementSavepointRecordSha256(record);
+  if (!DmlUpdateStatementShaNonzero(
+          record.authority.durable_presence_sha256) ||
+      !DmlUpdateStatementAppendBinaryRecord(context, record)) {
+    return DmlUpdateStatementSavepointFailure(
+        "MGA.TRANSACTION.ROLLBACK_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_rollback_failed",
+        "savepoint_rollback_durable_append_failed");
+  }
+  return DmlUpdateStatementLoadSavepointAuthority(
+      context, admitted.binding, admitted.savepoint_uuid,
+      admitted.savepoint_generation);
+}
+
+MgaDmlUpdateStatementSavepointAuthorityResultV1
+ReleaseMgaDmlUpdateStatementSavepointAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateStatementSavepointAuthorityV1& admitted) {
+  std::lock_guard<std::mutex> guard(
+      DmlUpdateStatementSavepointJournalMutex());
+  auto current = DmlUpdateStatementLoadSavepointAuthority(
+      context, admitted.binding, admitted.savepoint_uuid,
+      admitted.savepoint_generation);
+  if (!current.ok) return current;
+  if (!DmlUpdateStatementAuthorityExact(current.authority, admitted) ||
+      current.authority.lifecycle !=
+          MgaDmlUpdateStatementSavepointLifecycleV1::active) {
+    return DmlUpdateStatementSavepointFailure(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.statement_savepoint_stale",
+        "release_requires_current_active_savepoint");
+  }
+  const auto parsed = ParseSavepoints(context);
+  const auto tx = parsed.active_savepoints.find(
+      admitted.binding.owning_local_transaction_id);
+  const std::string marker =
+      DmlUpdateStatementPrivateSavepointMarker(admitted.savepoint_uuid);
+  if (tx == parsed.active_savepoints.end() ||
+      tx->second.find(marker) == tx->second.end()) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_release_failed",
+        "active_savepoint_marker_missing");
+  }
+  DmlUpdateStatementSavepointJournalRecordV1 record;
+  record.authority = admitted;
+  record.authority.lifecycle =
+      MgaDmlUpdateStatementSavepointLifecycleV1::released;
+  record.authority.publication_barrier_present = true;
+  record.private_marker = marker;
+  record.journal_sequence = 2;
+  record.cutoffs = tx->second.at(marker);
+  record.prior_record_sha256 = admitted.durable_presence_sha256;
+  record.authority.durable_presence_sha256 =
+      DmlUpdateStatementSavepointRecordSha256(record);
+  // The publication barrier is the durable release append below.  Build the
+  // complete success value before crossing it: after the append/fsync returns
+  // success this function may only move already prepared state to its caller.
+  // In particular, do not reload, decode, hash, or allocate from the durable
+  // journal after publication.
+  MgaDmlUpdateStatementSavepointAuthorityResultV1 success;
+  success.ok = true;
+  success.diagnostic = OkDiagnostic();
+  success.authority = record.authority;
+  if (record.authority.publication_barrier_uuid.empty() ||
+      record.authority.publication_barrier_generation != 1 ||
+      !DmlUpdateStatementShaNonzero(
+          record.authority.durable_presence_sha256) ||
+      !DmlUpdateStatementAppendBinaryRecord(context, record)) {
+    return DmlUpdateStatementSavepointFailure(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.statement_savepoint_release_failed",
+        "publication_barrier_durable_append_failed");
+  }
+  return success;
+}
+
 EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
   if (context.local_transaction_id == 0) {
     return MakeInvalidRequestDiagnostic("transaction.create_savepoint", "local_transaction_id_required");
@@ -13044,16 +22752,106 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                    "heap scan bound conversion overflowed");
   }
-  api::MgaVisibleHeapRelationReadRequest read_request;
-  read_request.borrowed_relation_uuid = &relation_uuid;
-  read_request.maximum_scanned_row_versions = maximum_scanned;
-  read_request.maximum_decoded_bytes = maximum_bytes;
-  read_request.maximum_output_rows = maximum_output;
-  read_request.maximum_memory_bytes = maximum_live_memory_bytes;
-  read_request.borrowed_cancellation_requested = &cancellation_requested;
   api::HeapReadRuntimeObservation runtime_observation;
-  const auto read = api::ReadVisibleMgaHeapRelationObserved(
-      context, read_request, &runtime_observation, prepared_read_authority);
+  api::MgaVisibleHeapRelationReadResult read;
+  std::optional<CanonicalExactCountStarCardinality>
+      exact_count_star_cardinality;
+  if (request.exact_global_count_star_consumer) {
+    const auto aggregate = std::ranges::find_if(
+        relational.nodes, [](const auto& node) {
+          return node.node_kind == api::RelationalDagNodeKind::kAggregate;
+        });
+    const auto physical_aggregate = std::ranges::find_if(
+        physical_dag.nodes, [](const auto& node) {
+          return node.node_kind == PhysicalNodeKind::kAggregate;
+        });
+    if (relational.nodes.size() != 2 ||
+        physical_dag.nodes.size() != 2 ||
+        aggregate == relational.nodes.end() ||
+        physical_aggregate == physical_dag.nodes.end() ||
+        relational.root_node_id != aggregate->node_id ||
+        aggregate->semantic_variant_id !=
+            "aggregate.global-count-star.v1" ||
+        aggregate->input_node_ids !=
+            std::vector<std::uint32_t>{relation_node->node_id} ||
+        physical_dag.root_physical_node_id !=
+            physical_aggregate->physical_node_id ||
+        physical_aggregate->implementation_id !=
+            "aggregate.count-star.v1" ||
+        physical_aggregate->input_physical_node_ids !=
+            std::vector<std::uint64_t>{physical->physical_node_id}) {
+      return invalid(
+          "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
+          "streaming COUNT(*) requires the exact two-node heap aggregate DAG");
+    }
+    api::MgaVisibleHeapRelationCountRequest count_request;
+    count_request.borrowed_relation_uuid = &relation_uuid;
+    count_request.maximum_decoded_bytes = maximum_bytes;
+    count_request.maximum_memory_bytes = maximum_live_memory_bytes;
+    count_request.borrowed_cancellation_requested = &cancellation_requested;
+    auto counted = api::CountVisibleMgaHeapRelationObserved(
+        context, count_request, &runtime_observation,
+        prepared_read_authority);
+    if (!counted.ok) {
+      return invalid(
+          counted.diagnostic.code.empty()
+              ? "QOW-DIAG-QRY-004-HEAP-READ-V1"
+              : counted.diagnostic.code,
+          counted.diagnostic.detail,
+          counted.scanned_row_version_count != 0 ||
+              counted.decoded_byte_count != 0,
+          counted.cancellation_observed);
+    }
+    if (counted.visible_row_count >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max()) ||
+        counted.visible_row_count >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+      return invalid("QOW-DIAG-QRY-007-AGGREGATE-OVERFLOW-V1",
+                     "COUNT(*) exceeds the canonical int64 result width",
+                     true);
+    }
+    read.ok = true;
+    read.diagnostic = std::move(counted.diagnostic);
+    read.descriptor = std::move(counted.descriptor);
+    read.current_relation_base_generation =
+        counted.current_relation_base_generation;
+    read.scanned_row_version_count = counted.scanned_row_version_count;
+    read.decoded_byte_count = counted.decoded_byte_count;
+    read.visibility_recheck_count = counted.visibility_recheck_count;
+    read.invisible_row_version_count = counted.invisible_row_version_count;
+    read.tombstone_row_count = counted.tombstone_row_count;
+    read.scoped_physical_segment_used =
+        counted.scoped_physical_segment_used;
+    read.current_live_memory_bytes = counted.current_live_memory_bytes;
+    read.peak_live_memory_bytes = counted.peak_live_memory_bytes;
+    read.memory_grant_bytes = counted.memory_grant_bytes;
+    read.memory_receipt_complete = counted.memory_receipt_complete;
+    exact_count_star_cardinality = CanonicalExactCountStarCardinality{
+        1,
+        counted.visible_row_count,
+        counted.scanned_row_version_count,
+        counted.decoded_byte_count,
+        counted.storage_bytes_read,
+        counted.visibility_recheck_count,
+        counted.invisible_row_version_count,
+        counted.tombstone_row_count,
+        true,
+        true,
+        true};
+  } else {
+    api::MgaVisibleHeapRelationReadRequest read_request;
+    read_request.borrowed_relation_uuid = &relation_uuid;
+    read_request.maximum_scanned_row_versions = maximum_scanned;
+    read_request.maximum_decoded_bytes = maximum_bytes;
+    read_request.maximum_output_rows = maximum_output;
+    read_request.maximum_memory_bytes = maximum_live_memory_bytes;
+    read_request.borrowed_cancellation_requested = &cancellation_requested;
+    read = api::ReadVisibleMgaHeapRelationObserved(
+        context, read_request, &runtime_observation,
+        prepared_read_authority);
+  }
   if (!read.ok) {
     return invalid(read.diagnostic.code.empty()
                        ? "QOW-DIAG-QRY-004-HEAP-READ-V1"
@@ -13445,7 +23243,11 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
   result.counters.invisible_row_version_count =
       read.invisible_row_version_count;
   result.counters.tombstone_row_count = read.tombstone_row_count;
-  result.counters.emitted_row_count = result.output_batch.rows.size();
+  result.counters.emitted_row_count =
+      exact_count_star_cardinality.has_value()
+          ? static_cast<std::size_t>(
+                exact_count_star_cardinality->visible_row_count)
+          : result.output_batch.rows.size();
   result.counters.output_column_count = output_width;
   result.counters.materialized_cell_count = materialized_cell_count;
   result.authority.engine_catalog_descriptor_loaded = true;
@@ -13463,6 +23265,8 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
   result.executed_physical_node_id = physical->physical_node_id;
   result.causal_counter_id = physical->causal_counter_id;
   result.mga_statement_context = mga_authority.statement_context;
+  result.exact_count_star_cardinality =
+      std::move(exact_count_star_cardinality);
   return result;
 }
 
@@ -13508,8 +23312,52 @@ struct HeapPhysicalExecutorState {
   std::shared_ptr<const CanonicalExecutionMgaAuthority> shared_mga_authority;
   const CanonicalExecutionMgaAuthority* mga_authority = nullptr;
   std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
+  bool exact_global_count_star_consumer = false;
   std::vector<HeapAcquisitionLeafBinding> acquisition_leaf_bindings;
 };
+
+bool ExactGlobalCountStarHeapConsumer(
+    const scratchbird::engine::internal_api::TypedRelationalDag& relational,
+    const TypedPhysicalNodeDag& physical,
+    const PhysicalNodeRecord& heap_node) {
+  if (relational.nodes.size() != 2 || physical.nodes.size() != 2 ||
+      heap_node.node_kind != PhysicalNodeKind::kScan ||
+      heap_node.implementation_id != "scan.heap.v1" ||
+      !heap_node.input_physical_node_ids.empty()) {
+    return false;
+  }
+  const auto scan = std::ranges::find_if(
+      relational.nodes, [&](const auto& node) {
+        return node.node_id == heap_node.relational_node_id;
+      });
+  const auto aggregate = std::ranges::find_if(
+      relational.nodes, [](const auto& node) {
+        return node.node_kind ==
+               scratchbird::engine::internal_api::RelationalDagNodeKind::
+                   kAggregate;
+      });
+  const auto physical_aggregate = std::ranges::find_if(
+      physical.nodes, [](const auto& node) {
+        return node.node_kind == PhysicalNodeKind::kAggregate;
+      });
+  return scan != relational.nodes.end() &&
+         aggregate != relational.nodes.end() &&
+         physical_aggregate != physical.nodes.end() &&
+         scan->node_kind ==
+             scratchbird::engine::internal_api::RelationalDagNodeKind::kScan &&
+         scan->semantic_variant_id == "relation.source.v1" &&
+         relational.root_node_id == aggregate->node_id &&
+         aggregate->semantic_variant_id ==
+             "aggregate.global-count-star.v1" &&
+         aggregate->input_node_ids ==
+             std::vector<std::uint32_t>{scan->node_id} &&
+         physical.root_physical_node_id ==
+             physical_aggregate->physical_node_id &&
+         physical_aggregate->implementation_id ==
+             "aggregate.count-star.v1" &&
+         physical_aggregate->input_physical_node_ids ==
+             std::vector<std::uint64_t>{heap_node.physical_node_id};
+}
 
 bool AccountHeapRegistrationString(const std::string& value,
                                    std::uint64_t* bytes) {
@@ -14207,6 +24055,11 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
     state->mga_authority = &*state->owned_mga_authority;
   }
   state->table_sample_profile = request.table_sample_profile;
+  state->exact_global_count_star_consumer =
+      heap_nodes.size() == 1 && !state->table_sample_profile.has_value() &&
+      ExactGlobalCountStarHeapConsumer(
+          *state->relational_dag, *state->physical_dag,
+          *heap_nodes.front());
   state->acquisition_leaf_bindings.reserve(heap_nodes.size());
   for (const auto* heap_node : heap_nodes) {
     HeapAcquisitionLeafBinding binding;
@@ -14374,6 +24227,8 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         acquisition_request.borrowed_cancellation_requested =
             state->cancellation_requested;
         acquisition_request.borrowed_mga_authority = state->mga_authority;
+        acquisition_request.exact_global_count_star_consumer =
+            state->exact_global_count_star_consumer;
         auto acquisition = ExecuteCanonicalHeapRelationAcquisitionPrepared(
             acquisition_request, acquisition_binding->read_authority.get());
         observation->data_access_observed = acquisition.data_access_observed;
@@ -14643,6 +24498,8 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
             acquisition.current_relation_descriptor_uuid;
         step.current_relation_descriptor_generation =
             acquisition.current_relation_descriptor_generation;
+        step.exact_count_star_cardinality =
+            acquisition.exact_count_star_cardinality;
         step.mga_statement_context = state->mga_authority->statement_context;
         const auto observed = [](const std::uint64_t value) {
           return CanonicalObservedUint64{

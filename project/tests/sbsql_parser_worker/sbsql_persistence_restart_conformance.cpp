@@ -15,6 +15,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 
+#include "canonical_sblr_admission_test_helper.hpp"
+
 #include "../database_lifecycle/credentialed_database_fixture.hpp"
 
 #include <cstdlib>
@@ -164,9 +166,11 @@ std::string ServerAdmissionEnvelope(std::string_view operation_id) {
   return out;
 }
 
-void RequireServerAdmitted(std::string_view operation_id) {
+void RequireServerAdmitted(std::string_view operation_id,
+                           std::string_view opcode) {
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{ServerAdmissionEnvelope(operation_id), false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          operation_id, opcode));
   if (!admission.admitted) {
     std::cerr << "server admission rejected " << operation_id << '\n';
     for (const auto& diagnostic : admission.diagnostics) {
@@ -192,7 +196,7 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
                                   api::EngineRequestContext context,
                                   api::EngineApiRequest request = {},
                                   bool requires_transaction = false) {
-  RequireServerAdmitted(operation_id);
+  RequireServerAdmitted(operation_id, opcode);
   auto envelope = Envelope(operation_id, opcode);
   envelope.requires_transaction_context = requires_transaction;
   request.context = context;

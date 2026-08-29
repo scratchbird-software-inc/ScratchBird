@@ -6,222 +6,233 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "sblr_dispatch_server.hpp"
-#include "session_registry.hpp"
+#include "database_lifecycle.hpp"
+#include "memory.hpp"
+#include "uuid.hpp"
+#include "wire/sbsql_test_wire.hpp"
 
-#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
-using scratchbird::server::HostedDatabaseSnapshot;
-using scratchbird::server::HostedDatabaseState;
-using scratchbird::server::HostedEngineState;
-using scratchbird::server::ServerSessionRecord;
-using scratchbird::server::ServerSessionRegistry;
-using scratchbird::server::SessionOperationResult;
-namespace sbps = scratchbird::server::sbps;
+namespace database = scratchbird::storage::database;
+namespace memory = scratchbird::core::memory;
+namespace sbsql = scratchbird::parser::sbsql;
+namespace uuid = scratchbird::core::uuid;
+using scratchbird::core::platform::UuidKind;
+
+constexpr std::string_view kFiveRowQuery =
+    "SELECT key_a, COUNT(*), SUM(amount) FROM "
+    "(VALUES (0, 10), (1, 11), (2, 12), (3, 13), (4, 14)) "
+    "AS input(key_a, amount) GROUP BY key_a;";
+
+[[noreturn]] void Fail(std::string_view message) {
+  std::cerr << message << '\n';
+  std::exit(EXIT_FAILURE);
+}
 
 void Require(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+  if (!condition) Fail(message);
+}
+
+void PrintMessages(const sbsql::MessageVectorSet& messages) {
+  for (const auto& diagnostic : messages.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
   }
 }
 
-bool HasDiagnostic(const SessionOperationResult& result, std::string_view code) {
-  for (const auto& diagnostic : result.diagnostics) {
+bool HasDiagnostic(const sbsql::MessageVectorSet& messages,
+                   std::string_view code) {
+  for (const auto& diagnostic : messages.diagnostics) {
     if (diagnostic.code == code) return true;
   }
   return false;
 }
 
-bool Contains(std::string_view haystack, std::string_view needle) {
-  return haystack.find(needle) != std::string_view::npos;
+struct FixtureDatabase {
+  std::filesystem::path directory;
+  std::filesystem::path path;
+
+  FixtureDatabase() = default;
+  FixtureDatabase(const FixtureDatabase&) = delete;
+  FixtureDatabase& operator=(const FixtureDatabase&) = delete;
+  FixtureDatabase(FixtureDatabase&& other) noexcept
+      : directory(std::move(other.directory)), path(std::move(other.path)) {
+    other.directory.clear();
+  }
+  FixtureDatabase& operator=(FixtureDatabase&&) = delete;
+
+  ~FixtureDatabase() {
+    std::error_code ignored;
+    if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
+  }
+};
+
+FixtureDatabase CreateFixtureDatabase() {
+  static std::atomic<std::uint64_t> identity_time{1784201000000ULL};
+  FixtureDatabase fixture;
+  const auto nonce = static_cast<std::uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  fixture.directory = std::filesystem::temp_directory_path() /
+                      ("sb_streaming_result_protocol_" +
+                       std::to_string(nonce));
+  std::filesystem::create_directories(fixture.directory);
+  fixture.path = fixture.directory / "streaming.sbdb";
+
+  const auto database_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::database, identity_time.fetch_add(2));
+  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::filespace, identity_time.fetch_add(2));
+  Require(database_uuid.ok() && filespace_uuid.ok(),
+          "streaming fixture UUID generation failed");
+
+  database::DatabaseCreateConfig create;
+  create.path = fixture.path.string();
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = identity_time.fetch_add(2);
+  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
+  create.allow_minimal_resource_bootstrap = false;
+  create.require_resource_seed_pack = true;
+  const auto created = database::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key << '\n';
+  }
+  Require(created.ok() &&
+              created.create_finality ==
+                  database::DatabaseCreateFinalityClass::committed,
+          "streaming fixture database was not durably published");
+  return fixture;
 }
 
-std::string ParserJsonEnvelope(std::string_view family, std::uint64_t stream_rows) {
-  std::string out = "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
-  out += "\"operation_family\":\"";
-  out += family;
-  out += "\",\"surface_key\":\"fspe010b.fixture\",";
-  out += "\"sblr_operation_key\":\"op.fspe010b.fixture\",";
-  out += "\"result_shape\":\"rs.fspe010b.stream.v1\",";
-  out += "\"diagnostic_shape\":\"diag.fspe010b.v1\",";
-  out += "\"resource_contract\":\"resource.fspe010b.v1\",";
-  out += "\"trace_key\":\"FSPE-010B\",";
-  out += "\"stream_row_count\":";
-  out += std::to_string(stream_rows);
-  out += ",\"source_payload_embedded\":false,";
-  out += "\"resolved_object_uuids\":[],\"descriptor_refs\":[],\"policy_refs\":[]}";
-  return out;
+void Authenticate(sbsql::SbsqlTestWireSession* parser,
+                  const std::filesystem::path& database_path) {
+  sbsql::AuthCredentialEnvelope credentials;
+  credentials.requested_database = database_path.string();
+  sbsql::MessageVectorSet messages;
+  const bool authenticated =
+      parser->AuthenticateCredentials(credentials, &messages);
+  if (!authenticated) PrintMessages(messages);
+  Require(authenticated && parser->session().authenticated,
+          "embedded canonical streaming authentication failed");
+  Require(parser->session().local_transaction_id != 0 &&
+              !parser->session().transaction_uuid.empty(),
+          "embedded canonical streaming attach did not publish an active transaction");
+  if (parser->session().admitted_parser_package_uuid.empty() ||
+      parser->session().catalog_epoch == 0 ||
+      parser->session().security_policy_epoch == 0 ||
+      parser->session().descriptor_epoch == 0) {
+    std::cerr << "streaming_session_scope="
+              << parser->session().admitted_parser_package_uuid << ','
+              << parser->session().catalog_epoch << ','
+              << parser->session().security_policy_epoch << ','
+              << parser->session().descriptor_epoch << '\n';
+  }
 }
 
-sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                         const std::string& encoded,
-                         bool cursor_requested) {
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
-      session_uuid, {}, encoded, cursor_requested);
-  return frame;
-}
-
-sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                       const std::array<std::uint8_t, 16>& cursor_uuid,
-                       std::uint64_t max_rows) {
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kFetch);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeFetchPayloadForTest(session_uuid, cursor_uuid, max_rows);
-  return frame;
-}
-
-sbps::Frame CloseFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                       const std::array<std::uint8_t, 16>& cursor_uuid) {
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kCloseCursor);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeCloseCursorPayloadForTest(session_uuid, cursor_uuid);
-  return frame;
-}
-
-sbps::Frame DisconnectFrame(const std::array<std::uint8_t, 16>& session_uuid) {
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  return frame;
-}
-
-void AddSession(ServerSessionRegistry* registry, std::array<std::uint8_t, 16>* session_uuid) {
-  ServerSessionRecord session;
-  session.session_uuid = sbps::MakeUuidV7Bytes();
-  session.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  session.principal_uuid = sbps::MakeUuidV7Bytes();
-  session.effective_user_uuid = session.principal_uuid;
-  session.database_path = "/tmp/sb_streaming_result_protocol_conformance.sbdb";
-  session.database_uuid = "019e05df-f010-7000-8000-000000000010";
-  *session_uuid = session.session_uuid;
-  registry->sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
-}
-
-ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
-  ServerSessionRegistry registry;
-  AddSession(&registry, session_uuid);
-  return registry;
-}
-
-HostedEngineState MakeEngineState() {
-  HostedEngineState state;
-  state.engine_context_active = true;
-  HostedDatabaseSnapshot database;
-  database.state = HostedDatabaseState::kOpen;
-  database.database_open = true;
-  database.database_path = "/tmp/sb_streaming_result_protocol_conformance.sbdb";
-  database.database_uuid = "019e05df-f010-7000-8000-000000000010";
-  state.databases.push_back(database);
-  return state;
-}
-
-std::array<std::uint8_t, 16> OpenCursor(ServerSessionRegistry* registry,
-                                        const HostedEngineState& engine_state,
-                                        const std::array<std::uint8_t, 16>& session_uuid,
-                                        std::uint64_t rows) {
-  const auto execute = scratchbird::server::HandleExecuteSblr(
-      registry,
-      engine_state,
-      ExecuteFrame(session_uuid, ParserJsonEnvelope("sblr.query.relational.v3", rows), true));
-  Require(execute.accepted, "streaming execute did not accept cursor request");
-  auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(execute.payload);
-  Require(cursor_uuid.has_value(), "streaming execute did not return cursor UUID");
-  return *cursor_uuid;
+sbsql::PipelineResult OpenCursor(sbsql::SbsqlTestWireSession* parser) {
+  auto opened = parser->RunPipeline(kFiveRowQuery, true, true);
+  if (!opened.accepted) PrintMessages(opened.messages);
+  Require(opened.accepted && opened.server_operation_id == "query.execute",
+          "canonical query.execute cursor request was rejected");
+  Require(!opened.server_cursor_uuid.empty() && opened.server_row_count == 5,
+          "canonical query.execute did not publish the five-row cursor");
+  return opened;
 }
 
 }  // namespace
 
 int main() {
-  std::array<std::uint8_t, 16> session_uuid{};
-  auto registry = MakeRegistry(&session_uuid);
-  const auto engine_state = MakeEngineState();
+  auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "sb_streaming_result_protocol_conformance";
+  const auto memory_configured =
+      memory::ConfigureDefaultMemoryManagerForFixture(
+          memory_policy, "sb_streaming_result_protocol_conformance");
+  Require(memory_configured.ok(),
+          "streaming fixture memory manager configuration failed");
 
-  const auto cursor_uuid = OpenCursor(&registry, engine_state, session_uuid, 5);
+  auto fixture = CreateFixtureDatabase();
 
-  auto fetch1 = scratchbird::server::HandleFetch(&registry, FetchFrame(session_uuid, cursor_uuid, 2));
-  Require(fetch1.accepted, "first fetch was rejected");
-  const auto fetch1_payload = scratchbird::server::DecodeFetchResultForTest(fetch1.payload);
-  Require(fetch1_payload.has_value(), "first fetch payload malformed");
-  Require(fetch1_payload->row_count == 2 && !fetch1_payload->end_of_cursor,
-          "first fetch did not return first partial chunk");
-  Require(Contains(fetch1_payload->row_packet, "\"row_index\":0") &&
-              Contains(fetch1_payload->row_packet, "\"row_index\":1") &&
-              Contains(fetch1_payload->row_packet, "\"total_rows\":5"),
-          "first fetch packet missing stream rows");
+  sbsql::ParserConfig config;
+  config.parser_uuid = "019f08a0-5100-7000-8000-000000000001";
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = fixture.path.string();
 
-  auto fetch2 = scratchbird::server::HandleFetch(&registry, FetchFrame(session_uuid, cursor_uuid, 2));
-  Require(fetch2.accepted, "second fetch was rejected");
-  const auto fetch2_payload = scratchbird::server::DecodeFetchResultForTest(fetch2.payload);
-  Require(fetch2_payload.has_value(), "second fetch payload malformed");
-  Require(fetch2_payload->row_count == 2 && !fetch2_payload->end_of_cursor,
-          "second fetch did not return middle partial chunk");
-  Require(Contains(fetch2_payload->row_packet, "\"row_index\":2") &&
-              Contains(fetch2_payload->row_packet, "\"row_index\":3"),
-          "second fetch packet missing expected row indexes");
+  sbsql::ParserMetrics metrics;
+  sbsql::SblrTemplateCache cache;
+  sbsql::SbsqlTestWireSession parser(config, &metrics, &cache);
+  Authenticate(&parser, fixture.path);
 
-  auto fetch3 = scratchbird::server::HandleFetch(&registry, FetchFrame(session_uuid, cursor_uuid, 2));
-  Require(fetch3.accepted, "third fetch was rejected");
-  const auto fetch3_payload = scratchbird::server::DecodeFetchResultForTest(fetch3.payload);
-  Require(fetch3_payload.has_value(), "third fetch payload malformed");
-  Require(fetch3_payload->row_count == 1 && fetch3_payload->end_of_cursor,
-          "third fetch did not return final chunk");
-  Require(Contains(fetch3_payload->row_packet, "\"row_index\":4") &&
-              Contains(fetch3_payload->row_packet, "\"end_of_stream\":true"),
-          "third fetch packet missing final stream marker");
+  const auto cursor = OpenCursor(&parser);
+  const auto first = parser.FetchCursorOnRoute(cursor.server_cursor_uuid, 2);
+  if (!first.accepted) PrintMessages(first.messages);
+  Require(first.accepted && first.row_count == 2 && !first.end_of_cursor &&
+              !first.row_packet.empty(),
+          "first canonical descriptor-bound fetch did not return two rows");
 
-  std::array<std::uint8_t, 16> other_session_uuid{};
-  AddSession(&registry, &other_session_uuid);
-  const auto owned_cursor = OpenCursor(&registry, engine_state, session_uuid, 2);
-  const auto cross_fetch = scratchbird::server::HandleFetch(
-      &registry, FetchFrame(other_session_uuid, owned_cursor, 1));
-  Require(!cross_fetch.accepted && HasDiagnostic(cross_fetch, "PARSER_SERVER_IPC.CURSOR_NOT_FOUND"),
-          "cross-session fetch did not fail closed");
-  const auto cross_close = scratchbird::server::HandleCloseCursor(
-      &registry, CloseFrame(other_session_uuid, owned_cursor));
-  Require(!cross_close.accepted && HasDiagnostic(cross_close, "PARSER_SERVER_IPC.CURSOR_NOT_FOUND"),
-          "cross-session close did not fail closed");
-  const auto owner_close = scratchbird::server::HandleCloseCursor(
-      &registry, CloseFrame(session_uuid, owned_cursor));
-  Require(owner_close.accepted, "owner close rejected after cross-session refusal");
+  const auto second = parser.FetchCursorOnRoute(cursor.server_cursor_uuid, 2);
+  if (!second.accepted) PrintMessages(second.messages);
+  Require(second.accepted && second.row_count == 2 && !second.end_of_cursor &&
+              !second.row_packet.empty(),
+          "second canonical descriptor-bound fetch did not return two rows");
 
-  const auto too_large_cursor = OpenCursor(&registry, engine_state, session_uuid, 6);
-  const auto too_large = scratchbird::server::HandleFetch(
-      &registry, FetchFrame(session_uuid, too_large_cursor, 1024));
-  Require(!too_large.accepted && HasDiagnostic(too_large, "SERVER.STREAM.CHUNK_TOO_LARGE"),
-          "oversized fetch chunk did not fail closed");
+  const auto third = parser.FetchCursorOnRoute(cursor.server_cursor_uuid, 2);
+  if (!third.accepted) PrintMessages(third.messages);
+  Require(third.accepted && third.row_count == 1 && third.end_of_cursor &&
+              !third.row_packet.empty(),
+          "final canonical descriptor-bound fetch did not return one row at EOS");
 
-  const auto close_cursor = OpenCursor(&registry, engine_state, session_uuid, 2);
-  const auto close = scratchbird::server::HandleCloseCursor(&registry, CloseFrame(session_uuid, close_cursor));
-  Require(close.accepted, "close cursor rejected");
-  const auto fetch_closed = scratchbird::server::HandleFetch(
-      &registry, FetchFrame(session_uuid, close_cursor, 1));
-  Require(!fetch_closed.accepted && HasDiagnostic(fetch_closed, "PARSER_SERVER_IPC.CURSOR_NOT_FOUND"),
-          "fetch after close did not fail closed");
+  const auto stale_after_eos =
+      parser.FetchCursorOnRoute(cursor.server_cursor_uuid, 1);
+  Require(!stale_after_eos.accepted &&
+              HasDiagnostic(stale_after_eos.messages,
+                            "SERVER.STREAM.DESCRIPTOR_STALE"),
+          "post-EOS descriptor replay did not fail closed as stale");
 
-  const auto disconnect_cursor = OpenCursor(&registry, engine_state, session_uuid, 2);
-  const auto disconnect = scratchbird::server::HandleDisconnectNotice(&registry, DisconnectFrame(session_uuid));
-  Require(disconnect.accepted, "disconnect notice did not detach session");
-  const auto fetch_after_disconnect = scratchbird::server::HandleFetch(
-      &registry, FetchFrame(session_uuid, disconnect_cursor, 1));
-  Require(!fetch_after_disconnect.accepted &&
-              HasDiagnostic(fetch_after_disconnect, "PARSER_SERVER_IPC.CURSOR_NOT_FOUND"),
-          "fetch after disconnect did not close active cursor");
+  const auto bounded = OpenCursor(&parser);
+  const auto clamped =
+      parser.FetchCursorOnRoute(bounded.server_cursor_uuid, 1024);
+  if (!clamped.accepted) PrintMessages(clamped.messages);
+  Require(clamped.accepted && clamped.row_count == 4 &&
+              !clamped.end_of_cursor,
+          "parser did not enforce the server-issued four-row cursor bound");
+  const auto bounded_final =
+      parser.FetchCursorOnRoute(bounded.server_cursor_uuid, 1024);
+  Require(bounded_final.accepted && bounded_final.row_count == 1 &&
+              bounded_final.end_of_cursor,
+          "descriptor-bounded cursor did not preserve its final row");
+
+  const auto owned = OpenCursor(&parser);
+  sbsql::ParserMetrics other_metrics;
+  sbsql::SblrTemplateCache other_cache;
+  sbsql::SbsqlTestWireSession other_parser(config, &other_metrics, &other_cache);
+  const auto cross_session =
+      other_parser.FetchCursorOnRoute(owned.server_cursor_uuid, 1);
+  Require(!cross_session.accepted &&
+              HasDiagnostic(cross_session.messages,
+                            "SERVER.STREAM.DESCRIPTOR_REQUIRED"),
+          "a parser session without the issued descriptor did not fail closed");
+  Require(parser.CloseCursorOnRoute(owned.server_cursor_uuid).accepted,
+          "descriptor-owning session could not close its cursor");
+  const auto fetch_closed =
+      parser.FetchCursorOnRoute(owned.server_cursor_uuid, 1);
+  Require(!fetch_closed.accepted &&
+              HasDiagnostic(fetch_closed.messages,
+                            "SERVER.STREAM.DESCRIPTOR_REQUIRED"),
+          "closed cursor retained parser-side descriptor authority");
 
   std::cout << "sb_streaming_result_protocol_conformance=passed\n";
   return EXIT_SUCCESS;

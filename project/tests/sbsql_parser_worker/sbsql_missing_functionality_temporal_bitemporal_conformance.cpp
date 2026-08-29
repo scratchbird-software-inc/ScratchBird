@@ -14,6 +14,8 @@
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
+#include "canonical_sblr_admission_test_helper.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -219,55 +221,60 @@ void CommitFixture(Fixture* fixture) {
                                                fixture->typed_local_transaction_id,
                                                1790500000100);
   Require(committed.ok(), "local transaction commit failed");
-  fixture->inventory = std::move(committed.inventory);
+  const auto reopen_transaction_uuid =
+      uuid::GenerateEngineIdentityV7(UuidKind::transaction, 1790500000101);
+  Require(reopen_transaction_uuid.ok(), "reopen transaction UUID generation failed");
+  auto reopened = txn::BeginLocalTransaction(std::move(committed.inventory),
+                                             reopen_transaction_uuid.value,
+                                             1790500000102);
+  Require(reopened.ok(), "reopen transaction begin failed");
+  fixture->inventory = std::move(reopened.inventory);
+  fixture->transaction_uuid =
+      uuid::UuidToString(reopen_transaction_uuid.value.value);
+  fixture->local_transaction_id = reopened.entry.identity.local_id.value;
+  fixture->typed_local_transaction_id = reopened.entry.identity.local_id;
   const auto persisted =
       db::PersistLocalTransactionInventoryToDatabase(fixture->path.string(),
                                                      fixture->inventory);
-  Require(persisted.ok(), "committed transaction inventory persist failed");
-}
-
-std::string AdmissionFrame(std::string operation_id,
-                           std::string family) {
-  return "envelope=SBLRExecutionEnvelope.v3\n"
-         "envelope_major=3\n"
-         "sblr_version=sblr_v3\n"
-         "operation_id=" + operation_id + "\n"
-         "sblr_operation_family=" + family + "\n"
-         "result_shape=rs.bitemporal.route.v1\n"
-         "diagnostic_shape=diag.versioned.history.v1\n"
-         "parser_resolved_names_to_uuids=true\n"
-         "contains_sql_text=false\n"
-         "engine_api_command_route=true\n"
-         "public_sbsql_exact_command=true\n";
+  Require(persisted.ok(), "reopen transaction inventory persist failed");
 }
 
 void ValidateAdmissionAndRegistry() {
   struct ExpectedRoute {
+    std::string retired_operation_id;
     std::string operation_id;
     std::string opcode;
     std::string family;
   };
   const ExpectedRoute routes[] = {
       {"versioned.bitemporal.show_periods",
-       "SBLR_SHOW_BITEMPORAL_PERIODS",
-       "sblr.versioned.history.read.v3"},
+       "engine.op.catalog_introspect",
+       "SBLR_CATALOG_INTROSPECT",
+       "sblr.catalog.introspect.v3"},
       {"versioned.bitemporal.show_history",
-       "SBLR_SHOW_BITEMPORAL_HISTORY",
+       "engine.op.bitemporal_for_versions_between",
+       "SBLR_BITEMPORAL_FOR_VERSIONS_BETWEEN",
        "sblr.versioned.history.read.v3"},
       {"dml.for_portion_of_period",
-       "SBLR_DML_FOR_PORTION_OF_PERIOD",
+       "engine.op.update",
+       "SBLR_UPDATE",
        "sblr.dml.update.v3"},
+      {"dml.for_portion_of_period",
+       "engine.op.delete",
+       "SBLR_DELETE",
+       "sblr.dml.delete.v3"},
   };
   for (const auto& route : routes) {
+    Require(sblr::LookupSblrOperation(route.retired_operation_id) == nullptr,
+            "retired temporal synthetic SBLR identity remained admitted");
     const auto* entry = sblr::LookupSblrOperation(route.operation_id);
     Require(entry != nullptr, "temporal opcode registry entry missing");
     Require(entry->opcode == route.opcode, "temporal opcode name mismatch");
     Require(entry->support == sblr::SblrOpcodeSupport::implemented,
             "temporal opcode not implemented");
-    const auto admission =
-        server::AdmitServerSblrEnvelope({AdmissionFrame(route.operation_id,
-                                                        route.family),
-                                         false});
+    const auto admission = server::AdmitServerSblrEnvelope(
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+            route.operation_id, route.opcode));
     if (!admission.admitted) {
       std::cerr << "route=" << route.operation_id << " expected_family="
                 << route.family << "\n";
@@ -448,6 +455,7 @@ void TestReadAndDml(Fixture* fixture) {
   denied_backdate.option_envelopes.push_back("period_uuid:" + std::string(kApplicationPeriodUuid));
   denied_backdate.option_envelopes.push_back("application_time_from:2025-01-01");
   denied_backdate.option_envelopes.push_back("application_time_to:2025-02-01");
+  denied_backdate.option_envelopes.push_back("dml_action:update");
   denied_backdate.option_envelopes.push_back("backdate:true");
   const auto denied_result =
       api::EngineApplyForPortionOfPeriod(denied_backdate);
@@ -463,12 +471,26 @@ void TestReadAndDml(Fixture* fixture) {
   Require(apply_result.ok, "FOR PORTION OF DML failed");
   Require(HasEvidence(apply_result,
                       "sblr_opcode",
-                      "SBLR_DML_FOR_PORTION_OF_PERIOD"),
+                      "SBLR_UPDATE"),
           "FOR PORTION OF opcode evidence missing");
   Require(HasEvidence(apply_result,
                       "audit_event",
                       "dml.for_portion_of_period.applied"),
           "FOR PORTION OF privileged audit evidence missing");
+
+  api::EngineApplyForPortionOfPeriodRequest delete_portion = apply;
+  delete_portion.target_object.uuid.canonical =
+      "019f0500-0000-7000-8000-000000000051";
+  delete_portion.option_envelopes.erase(
+      std::remove(delete_portion.option_envelopes.begin(),
+                  delete_portion.option_envelopes.end(),
+                  "dml_action:update"),
+      delete_portion.option_envelopes.end());
+  delete_portion.option_envelopes.push_back("dml_action:delete");
+  const auto delete_result = api::EngineApplyForPortionOfPeriod(delete_portion);
+  Require(delete_result.ok, "DELETE FOR PORTION OF DML failed");
+  Require(HasEvidence(delete_result, "sblr_opcode", "SBLR_DELETE"),
+          "DELETE FOR PORTION OF opcode evidence missing");
 
   api::EngineShowBitemporalHistoryRequest history;
   history.context = Context(*fixture, {"TEMPORAL_HISTORY_READ"});

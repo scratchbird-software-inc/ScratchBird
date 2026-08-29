@@ -216,7 +216,43 @@ enum class SblrValueKind : std::uint16_t {
   constraint_validation_descriptor = 109,
   observability_show_version_descriptor = 128,
   catalog_introspect_descriptor = 129,
+  lifecycle_create_database_descriptor = 205,
+  contextual_text_literal_profile_set = 206,
 };
+
+struct SblrLifecycleCreateDatabaseDescriptorV1 {
+  std::array<std::uint8_t, 16> operation_uuid{};
+  std::array<std::uint8_t, 16> statement_receipt_uuid{};
+  std::array<std::uint8_t, 16> database_uuid{};
+  std::array<std::uint8_t, 16> database_name_uuid{};
+  std::array<std::uint8_t, 16> owner_uuid{};
+  std::array<std::uint8_t, 16> filespace_uuid{};
+  std::array<std::uint8_t, 16> template_database_uuid{};
+  std::array<std::uint8_t, 16> catalog_snapshot_uuid{};
+  std::uint64_t catalog_generation = 0;
+  std::array<std::uint8_t, 16> security_context_uuid{};
+  std::array<std::uint8_t, 16> policy_snapshot_uuid{};
+  std::uint64_t policy_generation = 0;
+  std::array<std::uint8_t, 16> transaction_uuid{};
+  std::uint64_t transaction_generation = 0;
+  std::uint16_t option_count = 0;
+  bool if_not_exists = false;
+  std::array<std::uint8_t, 16> durability_profile_uuid{};
+  std::array<std::uint8_t, 16> resource_budget_uuid{};
+  std::uint64_t resource_budget_generation = 0;
+  std::uint64_t executor_availability_generation = 0;
+  std::array<std::uint8_t, 32> option_vector_sha256{};
+  std::array<std::uint8_t, 16> descriptor_evidence_uuid{};
+  std::vector<std::uint8_t> option_vector;
+};
+
+std::vector<std::uint8_t> EncodeSblrLifecycleCreateDatabaseDescriptorV1(
+    const SblrLifecycleCreateDatabaseDescriptorV1& descriptor);
+bool DecodeSblrLifecycleCreateDatabaseDescriptorV1(
+    const std::uint8_t* data,
+    std::size_t size,
+    SblrLifecycleCreateDatabaseDescriptorV1* descriptor,
+    std::string* detail);
 
 struct SblrOperand {
   std::string type;
@@ -302,9 +338,32 @@ struct SblrDecodeResult {
   std::vector<SblrEnvelopeDiagnostic> diagnostics;
 };
 
+enum class SblrOperandRecordDecodeProfile : std::uint8_t {
+  canonical_envelope_v1 = 0,
+  contextual_query_execute_v1_1 = 1,
+  contextual_query_execute_v1_1_pre_kind206 = 2,
+};
+
+struct SblrCanonicalOperandRecordsDecodeResult {
+  bool ok = false;
+  std::vector<SblrOperand> operands;
+  std::vector<std::uint8_t> canonical_bytes;
+  std::vector<SblrEnvelopeDiagnostic> diagnostics;
+};
+
 SblrOperationEnvelope MakeSblrEnvelope(std::string operation_id,
                                        std::string opcode,
                                        std::string trace_key = {});
+// Encodes only the complete canonical top-level SBOP operand records in
+// ordinal order, without the enclosing operand-count prefix. This is the sole
+// producer for the query.execute 1.1 pre-contextual operand-vector hash.
+std::vector<std::uint8_t> EncodeSblrCanonicalOperandRecords(
+    const std::vector<SblrOperand>& operands);
+SblrCanonicalOperandRecordsDecodeResult DecodeSblrCanonicalOperandRecords(
+    const std::uint8_t* bytes,
+    std::size_t size,
+    std::uint32_t expected_count,
+    SblrOperandRecordDecodeProfile profile);
 SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& envelope);
 SblrDecodeResult DecodeSblrEnvelope(std::string_view encoded);
 std::string EncodeSblrEnvelope(const SblrOperationEnvelope& envelope);

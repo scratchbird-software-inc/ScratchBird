@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import shutil
 import socket
@@ -22,13 +23,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from live_auth_fixture import local_password_evidence, write_local_password_auth_fixture
+from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
 
 
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 TARGET = "cdp_native_bulk_ingest_cli"
 EXPECTED_OPERATION = "dml.execute_native_bulk_ingest"
 EXPECTED_DISABLED = "DML.NATIVE_BULK_INGEST.DISABLED"
+ROUND_TRIP_ROW_COUNT = 1600
 
 
 class NativeBulkIngestGateError(RuntimeError):
@@ -112,10 +113,6 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> None:
         proc.wait(timeout=4)
 
 
-def auth_file(database: Path) -> None:
-    write_local_password_auth_fixture(database, "alice", VERIFIER)
-
-
 def run_sb_isql(route: Route, case: str, script_text: str, work: Path, timeout: int = 25) -> RunResult:
     case_dir = work / route.name / case
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -139,14 +136,41 @@ def run_sb_isql(route: Route, case: str, script_text: str, work: Path, timeout: 
     )
 
 
+def expected_native_rows() -> list[tuple[int, int, int, int | None]]:
+    rows: list[tuple[int, int, int, int | None]] = []
+    for row_id in range(1, ROUND_TRIP_ROW_COUNT + 1):
+        customer_id = 1000 + (row_id * 973) % 8000
+        discount_amount = 1000 + (row_id * 428) % 8000
+        if row_id == 2:
+            customer_id = 1973
+            discount_amount = 2428
+        nullable_value = None if row_id % 101 == 0 else 1000 + (row_id * 313) % 8000
+        rows.append((row_id, customer_id, discount_amount, nullable_value))
+    return rows
+
+
 def write_native_rows(work: Path) -> Path:
     path = work / "native.rows"
-    path.write_text("id=1\nid=2\n", encoding="utf-8")
+    path.write_text(
+        "".join(
+            "id={};customer_id={};discount_amount={};nullable_value={}\n".format(
+                row_id,
+                customer_id,
+                discount_amount,
+                "NULL" if nullable_value is None else nullable_value,
+            )
+            for row_id, customer_id, discount_amount, nullable_value in expected_native_rows()
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
 def create_target_script() -> str:
-    return f"CREATE TABLE {TARGET} (id int);\n"
+    return (
+        f"CREATE TABLE {TARGET} ("
+        "id int, customer_id int, discount_amount int, nullable_value int);\n"
+    )
 
 
 def native_script(rows: Path, disabled: bool = False) -> str:
@@ -154,13 +178,35 @@ def native_script(rows: Path, disabled: bool = False) -> str:
     return f"\\native_bulk_ingest {TARGET} FROM '{rows}'{suffix}\n"
 
 
+def round_trip_script() -> str:
+    return (
+        f"SELECT id, customer_id, discount_amount, nullable_value FROM {TARGET} "
+        "ORDER BY id ASC;\n"
+    )
+
+
 def run_embedded(args: argparse.Namespace, work: Path) -> Route:
     database = work / "embedded" / "e.sbdb"
-    database.parent.mkdir(parents=True, exist_ok=True)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=work / "embedded" / "bootstrap",
+        fixture_label="embedded",
+    )
     return Route(
         name="embedded",
         database=database,
-        args=[args.sb_isql, str(database), "--mode=embedded", "--sslmode=disable"],
+        args=[
+            args.sb_isql,
+            str(database),
+            "--mode=embedded",
+            "--sslmode=disable",
+            "-U",
+            "alice",
+            "-P",
+            PUBLIC_TEST_PASSWORD,
+        ],
     )
 
 
@@ -171,13 +217,18 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> tuple[Route, subpro
     runtime = root / "sr"
     endpoint = control / "s.sock"
     root.mkdir(parents=True, exist_ok=True)
-    auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="local-ipc",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(control),
             "--runtime-dir",
@@ -191,7 +242,6 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> tuple[Route, subpro
         stderr=(root / "server.err").open("wb"),
     )
     wait_for_path(endpoint)
-    evidence = local_password_evidence("alice", VERIFIER)
     return (
         Route(
             name="local-ipc",
@@ -206,7 +256,7 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> tuple[Route, subpro
                 "-U",
                 "alice",
                 "-P",
-                evidence,
+                PUBLIC_TEST_PASSWORD,
             ],
         ),
         server,
@@ -223,13 +273,18 @@ def start_inet(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.
     endpoint = server_control / "s.sock"
     port = find_free_port()
     root.mkdir(parents=True, exist_ok=True)
-    auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="inet",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -264,7 +319,6 @@ def start_inet(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.
         stderr=(root / "listener.err").open("wb"),
     )
     wait_for_tcp(port)
-    evidence = local_password_evidence("alice", VERIFIER)
     return (
         Route(
             name="inet",
@@ -278,7 +332,7 @@ def start_inet(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.
                 "-U",
                 "alice",
                 "-P",
-                evidence,
+                PUBLIC_TEST_PASSWORD,
             ],
         ),
         server,
@@ -326,6 +380,44 @@ def verify_disabled(results: list[RunResult]) -> None:
         )
 
 
+def verify_round_trip(results: list[RunResult]) -> None:
+    expected_lines = [
+        "{}|{}|{}|{}".format(
+            row_id,
+            customer_id,
+            discount_amount,
+            "" if nullable_value is None else nullable_value,
+        )
+        for row_id, customer_id, discount_amount, nullable_value in expected_native_rows()
+    ]
+    expected_text = "\n".join(expected_lines)
+    expected_hash = hashlib.sha256(expected_text.encode("utf-8")).hexdigest()
+    for result in results:
+        if result.returncode != 0 or result.stderr:
+            raise NativeBulkIngestGateError(
+                f"{result.route} native ingest round-trip query failed: "
+                f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        actual_hash = hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+        if actual_hash != expected_hash or result.stdout != expected_text:
+            actual_lines = result.stdout.splitlines()
+            mismatch = next(
+                (
+                    index
+                    for index, (expected, actual) in enumerate(
+                        zip(expected_lines, actual_lines, strict=False), start=1
+                    )
+                    if expected != actual
+                ),
+                min(len(expected_lines), len(actual_lines)) + 1,
+            )
+            raise NativeBulkIngestGateError(
+                f"{result.route} native ingest row hash/order mismatch at row {mismatch}: "
+                f"expected_sha256={expected_hash} actual_sha256={actual_hash} "
+                f"expected_rows={len(expected_lines)} actual_rows={len(actual_lines)}"
+            )
+
+
 def run_gate(args: argparse.Namespace, work: Path) -> None:
     rows = write_native_rows(work)
     routes: list[Route] = []
@@ -347,8 +439,17 @@ def run_gate(args: argparse.Namespace, work: Path) -> None:
                     f"stdout={result.stdout!r} stderr={result.stderr!r}"
                 )
 
-        accepted = [run_sb_isql(route, "native_ingest", native_script(rows), work) for route in routes]
+        accepted = [
+            run_sb_isql(route, "native_ingest", native_script(rows), work, timeout=120)
+            for route in routes
+        ]
         verify_accepted(accepted)
+
+        round_trip = [
+            run_sb_isql(route, "native_ingest_round_trip", round_trip_script(), work, timeout=120)
+            for route in routes
+        ]
+        verify_round_trip(round_trip)
 
         disabled = [
             run_sb_isql(route, "native_ingest_disabled", native_script(rows, disabled=True), work)
@@ -366,6 +467,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args(argv[1:])
 

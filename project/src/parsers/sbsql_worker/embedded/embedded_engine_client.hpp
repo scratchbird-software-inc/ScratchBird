@@ -39,6 +39,33 @@ class EmbeddedEngineClient {
                                                const ParserConfig& config);
   PublicNameResolutionResult RenderUuidPublic(const SessionContext& session,
                                               std::string_view object_uuid);
+  ipc::ServerStatementContextResult AcquireNativeStatementContext(
+      const SessionContext& session,
+      const ipc::ParserTransactionSelector& transaction);
+  ipc::ServerLiteralBindingResult NegotiateLiteralDescriptors(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbln);
+  ipc::ServerLiteralBindingResult IssueContextualTextLiteralProfiles(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbtlnr);
+  ipc::ServerLiteralBindingResult FinalizeLiteralBinding(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sblf);
+  ipc::ServerVariableBindingResult CoordinateBulkImportStream(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateDmlUpdateRowsBind(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateDmlPlanImportRowsBind(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ServerExecutionResult ExecuteCanonicalSblrWithDataPacket(
+      const SessionContext& session,
+      const ipc::ParserStatementContext& statement_context,
+      const ipc::ParserCanonicalSblrSubmission& submission,
+      const std::vector<std::uint8_t>& data_packet,
+      bool cursor_requested = false);
   ServerExecutionResult ExecuteSblr(const SessionContext& session,
                                     std::string_view encoded_sblr_envelope,
                                     bool cursor_requested = false);

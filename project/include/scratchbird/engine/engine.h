@@ -183,6 +183,46 @@ typedef struct sb_engine_row_batch_view_v1_t {
   uint64_t reserved1;
 } sb_engine_row_batch_view_v1_t;
 
+typedef struct sb_engine_binary_view_v1_t {
+  uint32_t struct_size;
+  uint32_t abi_version;
+  const uint8_t* bytes;
+  uint64_t size_bytes;
+} sb_engine_binary_view_v1_t;
+
+typedef struct sb_engine_result_descriptor_view_v1_t {
+  uint32_t struct_size;
+  uint32_t abi_version;
+  sb_engine_binary_view_v1_t result_descriptor_vector;
+  sb_engine_uuid_t row_descriptor_uuid;
+  uint64_t row_descriptor_generation;
+  uint8_t descriptor_evidence_sha256[32];
+} sb_engine_result_descriptor_view_v1_t;
+
+typedef struct sb_engine_row_batch_view_v2_t {
+  uint32_t struct_size;
+  uint32_t abi_version;
+  uint64_t row_count;
+  uint8_t end_of_stream;
+  uint8_t cursor_bound;
+  uint8_t reserved_bytes[6];
+  sb_engine_binary_view_v1_t row_data_packet;
+  sb_engine_uuid_t execution_uuid;
+  sb_engine_uuid_t result_set_uuid;
+  sb_engine_uuid_t snapshot_uuid;
+  sb_engine_uuid_t batch_uuid;
+  uint64_t batch_ordinal;
+  sb_engine_uuid_t cursor_uuid;
+  sb_engine_uuid_t cursor_stream_descriptor_uuid;
+  uint16_t cursor_stream_descriptor_version;
+  uint8_t reserved_cursor_stream_bytes[6];
+  uint64_t cursor_stream_descriptor_generation;
+  sb_engine_uuid_t row_descriptor_uuid;
+  uint64_t row_descriptor_generation;
+  uint8_t descriptor_evidence_sha256[32];
+  uint8_t batch_evidence_sha256[32];
+} sb_engine_row_batch_view_v2_t;
+
 typedef struct sb_engine_batch_request_v1_t {
   uint32_t struct_size;
   uint32_t abi_version;
@@ -280,6 +320,17 @@ SCRATCHBIRD_ENGINE_API sb_engine_status_t SCRATCHBIRD_ENGINE_CALL
 sb_engine_result_next_batch(sb_engine_result_t result,
                             const sb_engine_batch_request_v1_t* request,
                             sb_engine_row_batch_view_v1_t* out_batch);
+
+SCRATCHBIRD_ENGINE_API sb_engine_status_t SCRATCHBIRD_ENGINE_CALL
+sb_engine_result_descriptor_v1(
+    sb_engine_result_t result,
+    sb_engine_result_descriptor_view_v1_t* out_view);
+
+SCRATCHBIRD_ENGINE_API sb_engine_status_t SCRATCHBIRD_ENGINE_CALL
+sb_engine_result_next_typed_batch_v2(
+    sb_engine_result_t result,
+    const sb_engine_batch_request_v1_t* request,
+    sb_engine_row_batch_view_v2_t* out_view);
 
 SCRATCHBIRD_ENGINE_API sb_engine_status_t SCRATCHBIRD_ENGINE_CALL
 sb_engine_describe_capabilities(sb_engine_handle_t engine,

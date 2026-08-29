@@ -16,6 +16,10 @@ project(ScratchBird
 enable_testing()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PublicBranding.cmake")
 
+option(SB_BUILD_COMPATIBILITY_PARSERS
+  "Build non-SBsql compatibility parser workers, support packages, and tests"
+  OFF)
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser_family_isolation/CMakeLists.txt")
   add_subdirectory(tests/parser_family_isolation)
@@ -2944,9 +2948,16 @@ endif()
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/resources/
   DESTINATION share/scratchbird/resources
 )
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/config/templates/
-  DESTINATION etc/scratchbird
-)
+if(SB_BUILD_COMPATIBILITY_PARSERS)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/config/templates/
+    DESTINATION etc/scratchbird
+  )
+else()
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/config/templates/
+    DESTINATION etc/scratchbird
+    PATTERN "SB_*_Parser.conf" EXCLUDE
+  )
+endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/docs/public_api/CORE_BETA_PUBLIC_API_ABI_MANIFEST.json)
   install(FILES
@@ -3072,6 +3083,12 @@ option(SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS
 option(SB_BUILD_STANDALONE_COMPATIBILITY_PARSER_PACKAGES
   "Build every compatibility parser worker and same-family parser-support UDR for isolated packaging"
   OFF)
+if(SB_BUILD_STANDALONE_COMPATIBILITY_PARSER_PACKAGES AND
+   NOT SB_BUILD_COMPATIBILITY_PARSERS)
+  message(FATAL_ERROR
+    "SB_BUILD_STANDALONE_COMPATIBILITY_PARSER_PACKAGES requires "
+    "SB_BUILD_COMPATIBILITY_PARSERS=ON")
+endif()
 if(SB_BUILD_STANDALONE_COMPATIBILITY_PARSER_PACKAGES)
   foreach(sb_standalone_parser_option_stem IN ITEMS
       APACHE_IGNITE CASSANDRA CLICKHOUSE COCKROACHDB DOLT DUCKDB FIREBIRD
@@ -3097,6 +3114,8 @@ if(SB_BUILD_TESTS)
   set(SB_BUILD_UDR_BUILTIN_PACKAGES ON CACHE BOOL
     "Build the trusted builtin UDR package catalog"
     FORCE)
+endif()
+if(SB_BUILD_TESTS AND SB_BUILD_COMPATIBILITY_PARSERS)
   set(SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS ON CACHE BOOL
     "Build compatibility SQL parser and parser-support UDR proof gates"
     FORCE)
@@ -3418,6 +3437,11 @@ if(SB_BUILD_SBSQL_PARSER_WORKER_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/te
   add_subdirectory(tests/sbsql_parser_worker)
 endif()
 
+# Compatibility parser source remains available, but these targets are kept
+# outside the normal SBsql/SBLR stabilization build until this umbrella is
+# explicitly enabled.
+if(SB_BUILD_COMPATIBILITY_PARSERS)
+
 if(SB_BUILD_FIREBIRD_PARSER_WORKER OR SB_BUILD_FIREBIRD_PARSER_WORKER_TESTS OR SB_BUILD_SBU_FIREBIRD_PARSER_SUPPORT)
   if(NOT TARGET sbl_firebird_parser_pipeline)
     add_subdirectory(src/parsers/compatibility/firebird)
@@ -3697,6 +3721,8 @@ if(SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS
   add_subdirectory(tests/compatibility_sql_parser_first_tranche)
 endif()
 
+endif() # SB_BUILD_COMPATIBILITY_PARSERS
+
 if(SB_BUILD_DATABASE_LIFECYCLE_TESTS)
   if(NOT TARGET sb_udr_runtime)
     add_subdirectory(src/udr/runtime)
@@ -3710,23 +3736,25 @@ if(SB_BUILD_DATABASE_LIFECYCLE_TESTS)
   if(NOT TARGET sbu_sbsql_parser_support)
     add_subdirectory(src/udr/sbu_sbsql_parser_support)
   endif()
-  if(NOT TARGET sbl_firebird_parser_pipeline)
-    add_subdirectory(src/parsers/compatibility/firebird)
-  endif()
-  if(NOT TARGET sbu_firebird_parser_support)
-    add_subdirectory(src/udr/sbu_firebird_parser_support)
-  endif()
-  if(NOT TARGET sbl_mysql_parser_pipeline)
-    add_subdirectory(src/parsers/compatibility/mysql)
-  endif()
-  if(NOT TARGET sbu_mysql_parser_support)
-    add_subdirectory(src/udr/sbu_mysql_parser_support)
-  endif()
-  if(NOT TARGET sbl_postgresql_parser_pipeline)
-    add_subdirectory(src/parsers/compatibility/postgresql)
-  endif()
-  if(NOT TARGET sbu_postgresql_parser_support)
-    add_subdirectory(src/udr/sbu_postgresql_parser_support)
+  if(SB_BUILD_COMPATIBILITY_PARSERS)
+    if(NOT TARGET sbl_firebird_parser_pipeline)
+      add_subdirectory(src/parsers/compatibility/firebird)
+    endif()
+    if(NOT TARGET sbu_firebird_parser_support)
+      add_subdirectory(src/udr/sbu_firebird_parser_support)
+    endif()
+    if(NOT TARGET sbl_mysql_parser_pipeline)
+      add_subdirectory(src/parsers/compatibility/mysql)
+    endif()
+    if(NOT TARGET sbu_mysql_parser_support)
+      add_subdirectory(src/udr/sbu_mysql_parser_support)
+    endif()
+    if(NOT TARGET sbl_postgresql_parser_pipeline)
+      add_subdirectory(src/parsers/compatibility/postgresql)
+    endif()
+    if(NOT TARGET sbu_postgresql_parser_support)
+      add_subdirectory(src/udr/sbu_postgresql_parser_support)
+    endif()
   endif()
 endif()
 
@@ -3844,7 +3872,8 @@ endif()
 option(SB_BUILD_SBLR_SURFACE_GUARDRAIL_GATES
   "Build compatibility/SBLR surface public guardrail inventory CTest gates"
   OFF)
-if(SB_BUILD_TESTS OR SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
+if(SB_BUILD_TESTS OR SB_BUILD_PUBLIC_RELEASE_CORRECTNESS OR
+   SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   set(SB_BUILD_SBLR_SURFACE_GUARDRAIL_GATES ON CACHE BOOL
     "Build compatibility/SBLR surface public guardrail inventory CTest gates" FORCE)
 endif()

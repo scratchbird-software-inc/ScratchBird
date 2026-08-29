@@ -9,10 +9,12 @@
 #include "database_lifecycle.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "access_path_full.hpp"
 #include "query/plan_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -25,6 +27,8 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
+namespace opt = scratchbird::engine::optimizer;
+namespace plan = scratchbird::engine::planner;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
@@ -243,33 +247,135 @@ api::EnginePlanOperationResult Plan(Fixture& fixture,
   return api::EnginePlanOperation(request);
 }
 
+opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
+                                          const std::string& statistic_uuid,
+                                          platform::u64 visibility_epoch) {
+  opt::OptimizerStatsIdentity identity;
+  identity.object_uuid = object_uuid;
+  identity.statistic_uuid = statistic_uuid;
+  identity.stats_epoch = 7;
+  identity.catalog_epoch = 3;
+  identity.transaction_visibility_epoch = visibility_epoch;
+  identity.freshness = opt::OptimizerStatsFreshnessState::kFresh;
+  identity.source = opt::StatisticSource::kCatalogExact;
+  identity.confidence = opt::CostConfidence::kHigh;
+  return identity;
+}
+
+opt::TableCardinalityStats CanonicalTableStats(const Fixture& fixture) {
+  opt::TableCardinalityStats stats;
+  stats.identity = FreshIdentity(fixture.table_uuid,
+                                 fixture.table_uuid + ":table-statistics",
+                                 fixture.context.local_transaction_id);
+  stats.row_count = 128;
+  stats.visible_row_count = 128;
+  stats.page_count = 8;
+  stats.average_row_bytes = 96;
+  return stats;
+}
+
+opt::IndexStats CanonicalIndexStats(const Fixture& fixture) {
+  opt::IndexStats stats;
+  stats.identity = FreshIdentity(fixture.index_uuid,
+                                 fixture.index_uuid + ":index-statistics",
+                                 fixture.context.local_transaction_id);
+  stats.index_uuid = fixture.index_uuid;
+  stats.relation_uuid = fixture.table_uuid;
+  stats.index_family = "btree";
+  stats.key_column_uuids = {fixture.table_uuid + ":id"};
+  stats.covered_column_uuids = {fixture.table_uuid + ":id",
+                                fixture.table_uuid + ":note"};
+  stats.unique = true;
+  stats.covering = true;
+  stats.height = 2;
+  stats.leaf_pages = 4;
+  stats.distinct_keys = 128;
+  stats.clustering_factor = 0.95;
+  stats.fragmentation_ratio = 0.0;
+  stats.visibility_coverage = 1.0;
+  stats.predicate_coverage = 1.0;
+  stats.equality_lookup_supported = true;
+  stats.ordered_range_supported = true;
+  stats.route_benchmark_clean = true;
+  return stats;
+}
+
+opt::AccessPathPlanningRequest CanonicalRequest(const Fixture& fixture,
+                                                std::string predicate_kind) {
+  opt::AccessPathPlanningRequest request;
+  request.relation_uuid = fixture.table_uuid;
+  request.predicate_kind = std::move(predicate_kind);
+  request.descriptor_digest = "canonical=character";
+  request.visibility_proven = true;
+  request.grants_proven = true;
+  request.base_row_mga_recheck_planned = true;
+  request.base_row_security_recheck_planned = true;
+  request.index_visibility_native = true;
+  request.table_stats = CanonicalTableStats(fixture);
+  request.candidate_indexes = {CanonicalIndexStats(fixture)};
+  return request;
+}
+
+const opt::PlanCandidate* FindCandidate(
+    const std::vector<opt::PlanCandidate>& candidates,
+    std::string_view candidate_id) {
+  const auto candidate = std::find_if(
+      candidates.begin(), candidates.end(), [&](const auto& current) {
+        return current.candidate_id == candidate_id;
+      });
+  return candidate == candidates.end() ? nullptr : &*candidate;
+}
+
 }  // namespace
 
 int main() {
   auto fixture = MakeFixture();
 
-  const auto lookup = Plan(fixture, Predicate("column_equals", {"id-7"}));
-  RequireOk(lookup, "CDP-022 equality plan failed");
-  if (lookup.plan_kind != "scalar_btree_lookup") {
-    DumpResult(lookup);
-    Fail("CDP-022 equality predicate did not select scalar btree lookup");
-  }
-  Require(HasEvidence(lookup, "optimizer_access_path_index", fixture.index_uuid),
-          "CDP-022 equality plan did not bind generated index UUID");
-  Require(HasEvidence(lookup, "optimizer_selected_access", "scalar_btree_lookup"),
-          "CDP-022 equality optimizer evidence mismatch");
+  const auto legacy_lookup = Plan(fixture, Predicate("column_equals", {"id-7"}));
+  RequireOk(legacy_lookup, "CDP-022 legacy equality plan failed");
+  Require(legacy_lookup.plan_kind == "table_scan",
+          "CDP-022 legacy request invented catalog-backed index statistics");
+  Require(HasEvidence(legacy_lookup,
+                      "optimizer_access_path_fallback",
+                      "stale_or_missing_relation_statistics_scan"),
+          "CDP-022 legacy missing-statistics refusal evidence missing");
 
-  const auto range = Plan(fixture, Predicate("column_range", {"id-10", "id-20"}));
-  RequireOk(range, "CDP-022 range plan failed");
-  Require(range.plan_kind == "scalar_btree_range",
-          "CDP-022 range predicate did not select scalar btree range");
+  const auto equality_candidates = opt::GenerateFullAccessPathCandidates(
+      CanonicalRequest(fixture, "scalar_eq"));
+  const auto* lookup = FindCandidate(
+      equality_candidates, "CAND-OPT-INDEX:" + fixture.index_uuid);
+  Require(lookup != nullptr && lookup->cost.selectable,
+          "CDP-022 exact catalog statistics did not admit btree lookup");
+  Require(lookup->access_kind == plan::PhysicalAccessKind::kScalarBtreeLookup,
+          "CDP-022 exact catalog statistics selected the wrong lookup family");
+  Require(lookup->estimated_rows == 1,
+          "CDP-022 unique lookup cardinality estimate drifted");
 
-  const auto covering = Plan(fixture,
-                             Predicate("column_equals", {"id-8"}),
-                             {"project_fields:id,note"});
-  RequireOk(covering, "CDP-022 covering plan failed");
-  Require(covering.plan_kind == "covering_index_scan",
-          "CDP-022 covered projection did not select covering index scan");
+  const auto range_candidates = opt::GenerateFullAccessPathCandidates(
+      CanonicalRequest(fixture, "scalar_range"));
+  const auto* range = FindCandidate(
+      range_candidates, "CAND-OPT-INDEX:" + fixture.index_uuid);
+  Require(range != nullptr && range->cost.selectable,
+          "CDP-022 exact catalog statistics did not admit btree range");
+  Require(range->access_kind == plan::PhysicalAccessKind::kScalarBtreeRange,
+          "CDP-022 range predicate selected the wrong access family");
+
+  auto covering_request = CanonicalRequest(fixture, "scalar_eq");
+  covering_request.projected_column_uuids = {
+      fixture.table_uuid + ":id", fixture.table_uuid + ":note"};
+  covering_request.covering_payload.physical_payload_proof_present = true;
+  covering_request.covering_payload.freshness_proven = true;
+  covering_request.covering_payload.redaction_safe = true;
+  covering_request.covering_payload.result_contract_proven = true;
+  covering_request.covering_payload.index_only_admitted = true;
+  const auto covering_candidates =
+      opt::GenerateFullAccessPathCandidates(covering_request);
+  const auto* covering = FindCandidate(
+      covering_candidates, "CAND-OPT-COVERING:" + fixture.index_uuid);
+  Require(covering != nullptr && covering->cost.selectable,
+          "CDP-022 covered projection lacked an admitted covering candidate");
+  Require(covering->access_kind == plan::PhysicalAccessKind::kCoveringIndexScan,
+          "CDP-022 covered projection selected the wrong access family");
 
   const auto stale = Plan(fixture,
                           Predicate("column_equals", {"id-9"}),

@@ -141,6 +141,43 @@ bool TokenTextIs(const Token& token, std::string_view expected) {
   return ToUpperAscii(token.text) == expected;
 }
 
+bool CreateTableDeclaresNonStorableRowset(const CstDocument& cst) {
+  std::vector<const Token*> tokens;
+  for (const auto& token : cst.tokens) {
+    if (!IsTriviaToken(token)) tokens.push_back(&token);
+  }
+  if (tokens.empty() || !TokenTextIs(*tokens.front(), "CREATE")) return false;
+  std::size_t table_index = tokens.size();
+  for (std::size_t index = 1; index < tokens.size() && index <= 5; ++index) {
+    if (TokenTextIs(*tokens[index], "TABLE")) {
+      table_index = index;
+      break;
+    }
+  }
+  if (table_index == tokens.size()) return false;
+  std::size_t open_index = tokens.size();
+  for (std::size_t index = table_index + 1; index < tokens.size(); ++index) {
+    if (tokens[index]->text == "(") {
+      open_index = index;
+      break;
+    }
+    if (TokenTextIs(*tokens[index], "AS")) return false;
+  }
+  if (open_index == tokens.size()) return false;
+  int depth = 1;
+  for (std::size_t index = open_index + 1;
+       index < tokens.size() && depth > 0; ++index) {
+    if (tokens[index]->text == "(") {
+      ++depth;
+    } else if (tokens[index]->text == ")") {
+      --depth;
+    } else if (depth > 0 && TokenTextIs(*tokens[index], "ROWSET")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool IsSourceFreeCteRoute(const CstDocument& cst) {
   std::vector<const Token*> tokens;
   for (const auto& token : cst.tokens) {
@@ -434,6 +471,9 @@ std::string_view ExpectedAggregateSemanticVariant(
     const NativeAggregateGroupingForm grouping_form,
     const NativeAggregateProjectionForm projection_form) {
   if (grouping_form == NativeAggregateGroupingForm::kSimple) {
+    if (projection_form == NativeAggregateProjectionForm::kKeySumInt128) {
+      return "aggregate.grouped-int64-key-sum.v1";
+    }
     if (projection_form == NativeAggregateProjectionForm::kKeyCountSum) {
       return "aggregate.grouped-int64-key-count-sum.v1";
     }
@@ -467,6 +507,32 @@ std::string_view ExpectedAggregateSemanticVariant(
       return {};
   }
   return {};
+}
+
+BoundDescriptorAstRecord CopyBoundDescriptorAstRecord(
+    const NativeDescriptorBindingInput& descriptor) {
+  BoundDescriptorAstRecord record;
+  record.descriptor_id = descriptor.descriptor_id;
+  record.descriptor_uuid = descriptor.descriptor_uuid;
+  record.type_uuid = descriptor.type_uuid;
+  record.nullability = descriptor.nullability;
+  record.collation_uuid = descriptor.collation_uuid;
+  record.timezone_profile_id = descriptor.timezone_profile_id;
+  record.width_precision_scale = descriptor.width_precision_scale;
+  record.canonical_type_name = descriptor.canonical_type_name;
+  record.element_profile = descriptor.element_profile;
+  record.descriptor_generation = descriptor.descriptor_generation;
+  record.type_generation = descriptor.type_generation;
+  record.codec_id = descriptor.codec_id;
+  record.codec_version = descriptor.codec_version;
+  record.codec_generation = descriptor.codec_generation;
+  record.statement_receipt_uuid = descriptor.statement_receipt_uuid;
+  record.datatype_catalog_snapshot_uuid =
+      descriptor.datatype_catalog_snapshot_uuid;
+  record.datatype_catalog_generation = descriptor.datatype_catalog_generation;
+  record.datatype_registry_generation =
+      descriptor.datatype_registry_generation;
+  return record;
 }
 
 BoundNativeRelationalDocument RefusedBoundAst(
@@ -627,8 +693,90 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
   std::unordered_map<std::uint32_t, const NativeDescriptorBindingInput*>
       descriptor_by_id;
-  std::unordered_set<std::string> descriptor_uuids;
+  std::unordered_map<std::string, const NativeDescriptorBindingInput*>
+      descriptor_by_uuid;
+  // Descriptor IDs are occurrence-local DAG handles. A self join may bind the
+  // same engine-owned catalog descriptor through two alias-distinct source
+  // occurrences.  Complete receipt authority identifies the immutable
+  // datatype row; nullability/collation/timezone/shape remain local to each
+  // occurrence handle and never cause those handles to merge.
+  const auto carries_any_authoritative_field =
+      [](const NativeDescriptorBindingInput& descriptor) {
+        return descriptor.descriptor_generation != 0 ||
+               descriptor.type_generation != 0 || !descriptor.codec_id.empty() ||
+               descriptor.codec_version != 0 ||
+               descriptor.codec_generation != 0 ||
+               !descriptor.statement_receipt_uuid.empty() ||
+               !descriptor.datatype_catalog_snapshot_uuid.empty() ||
+               descriptor.datatype_catalog_generation != 0 ||
+               descriptor.datatype_registry_generation != 0;
+      };
+  const auto carries_complete_authority =
+      [](const NativeDescriptorBindingInput& descriptor) {
+        return descriptor.descriptor_generation != 0 &&
+               descriptor.type_generation != 0 && !descriptor.codec_id.empty() &&
+               descriptor.codec_id.find('|') == std::string::npos &&
+               descriptor.codec_version != 0 &&
+               descriptor.codec_generation != 0 &&
+               descriptor.nullability != BoundNullability::kUnknown &&
+               LooksLikeCanonicalUuid(descriptor.descriptor_uuid) &&
+               LooksLikeCanonicalUuid(descriptor.type_uuid) &&
+               LooksLikeCanonicalUuid(descriptor.statement_receipt_uuid) &&
+               LooksLikeCanonicalUuid(
+                   descriptor.datatype_catalog_snapshot_uuid) &&
+               descriptor.datatype_catalog_generation != 0 &&
+               descriptor.datatype_registry_generation != 0;
+      };
+  const auto same_non_authoritative_descriptor =
+      [](const NativeDescriptorBindingInput& left,
+         const NativeDescriptorBindingInput& right) {
+        return left.type_uuid == right.type_uuid &&
+               left.nullability == right.nullability &&
+               left.collation_uuid == right.collation_uuid &&
+               left.timezone_profile_id == right.timezone_profile_id &&
+               left.width_precision_scale.width ==
+                   right.width_precision_scale.width &&
+               left.width_precision_scale.precision ==
+                   right.width_precision_scale.precision &&
+               left.width_precision_scale.scale ==
+                   right.width_precision_scale.scale &&
+               left.canonical_type_name == right.canonical_type_name &&
+               left.element_profile == right.element_profile &&
+               left.descriptor_generation == right.descriptor_generation &&
+               left.type_generation == right.type_generation &&
+               left.codec_id == right.codec_id &&
+               left.codec_version == right.codec_version &&
+               left.codec_generation == right.codec_generation &&
+               left.statement_receipt_uuid == right.statement_receipt_uuid &&
+               left.datatype_catalog_snapshot_uuid ==
+                   right.datatype_catalog_snapshot_uuid &&
+               left.datatype_catalog_generation ==
+                   right.datatype_catalog_generation &&
+               left.datatype_registry_generation ==
+                   right.datatype_registry_generation;
+      };
+  const auto same_immutable_datatype_authority =
+      [](const NativeDescriptorBindingInput& left,
+         const NativeDescriptorBindingInput& right) {
+        return left.type_uuid == right.type_uuid &&
+               left.canonical_type_name == right.canonical_type_name &&
+               left.element_profile == right.element_profile &&
+               left.descriptor_generation == right.descriptor_generation &&
+               left.type_generation == right.type_generation &&
+               left.codec_id == right.codec_id &&
+               left.codec_version == right.codec_version &&
+               left.codec_generation == right.codec_generation &&
+               left.statement_receipt_uuid == right.statement_receipt_uuid &&
+               left.datatype_catalog_snapshot_uuid ==
+                   right.datatype_catalog_snapshot_uuid &&
+               left.datatype_catalog_generation ==
+                   right.datatype_catalog_generation &&
+               left.datatype_registry_generation ==
+                   right.datatype_registry_generation;
+      };
   for (const auto& descriptor : context.descriptors) {
+    const bool carries_any = carries_any_authoritative_field(descriptor);
+    const bool carries_complete = carries_complete_authority(descriptor);
     if (descriptor.descriptor_id == 0 ||
         !LooksLikeCanonicalUuid(descriptor.descriptor_uuid) ||
         !LooksLikeCanonicalUuid(descriptor.type_uuid) ||
@@ -637,23 +785,34 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         (descriptor.width_precision_scale.scale.has_value() &&
          (!descriptor.width_precision_scale.precision.has_value() ||
           *descriptor.width_precision_scale.scale >
-              *descriptor.width_precision_scale.precision))) {
+              *descriptor.width_precision_scale.precision)) ||
+        carries_any != carries_complete) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
                             "descriptor binding contains an invalid typed field");
       return RefusedBoundAst(std::move(bound));
     }
     const auto descriptor_id_inserted =
         descriptor_by_id.emplace(descriptor.descriptor_id, &descriptor).second;
-    const auto descriptor_uuid_inserted =
-        descriptor_uuids.emplace(descriptor.descriptor_uuid).second;
-    if (!descriptor_id_inserted || !descriptor_uuid_inserted) {
+    const auto [descriptor_uuid, descriptor_uuid_inserted] =
+        descriptor_by_uuid.emplace(descriptor.descriptor_uuid, &descriptor);
+    const bool repeated_uuid_authority_matches =
+        descriptor_uuid_inserted ||
+        (carries_complete_authority(*descriptor_uuid->second) ==
+             carries_complete &&
+         (carries_complete
+              ? same_immutable_datatype_authority(*descriptor_uuid->second,
+                                                   descriptor)
+              : same_non_authoritative_descriptor(*descriptor_uuid->second,
+                                                    descriptor)));
+    if (!descriptor_id_inserted ||
+        !repeated_uuid_authority_matches) {
       const auto prior_descriptor = std::ranges::find_if(
           context.descriptors, [&](const auto& candidate) {
             return &candidate != &descriptor &&
                    candidate.descriptor_uuid == descriptor.descriptor_uuid;
           });
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
-                            "descriptor IDs and UUID handles must be unique:" +
+                            "descriptor IDs must be unique and repeated UUID handles must carry identical immutable authority:" +
                                 std::to_string(descriptor.descriptor_id) + ":" +
                                 descriptor.descriptor_uuid + ":prior=" +
                                 (prior_descriptor == context.descriptors.end()
@@ -853,17 +1012,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     bound.descriptors.reserve(context.descriptors.size());
     for (const auto& descriptor : context.descriptors) {
-      BoundDescriptorAstRecord record;
-      record.descriptor_id = descriptor.descriptor_id;
-      record.descriptor_uuid = descriptor.descriptor_uuid;
-      record.type_uuid = descriptor.type_uuid;
-      record.nullability = descriptor.nullability;
-      record.collation_uuid = descriptor.collation_uuid;
-      record.timezone_profile_id = descriptor.timezone_profile_id;
-      record.width_precision_scale = descriptor.width_precision_scale;
-      record.canonical_type_name = descriptor.canonical_type_name;
-      record.element_profile = descriptor.element_profile;
-      bound.descriptors.push_back(std::move(record));
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -1066,17 +1215,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     bound.descriptors.reserve(context.descriptors.size());
     for (const auto& descriptor : context.descriptors) {
-      BoundDescriptorAstRecord record;
-      record.descriptor_id = descriptor.descriptor_id;
-      record.descriptor_uuid = descriptor.descriptor_uuid;
-      record.type_uuid = descriptor.type_uuid;
-      record.nullability = descriptor.nullability;
-      record.collation_uuid = descriptor.collation_uuid;
-      record.timezone_profile_id = descriptor.timezone_profile_id;
-      record.width_precision_scale = descriptor.width_precision_scale;
-      record.canonical_type_name = descriptor.canonical_type_name;
-      record.element_profile = descriptor.element_profile;
-      bound.descriptors.push_back(std::move(record));
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -2873,12 +3012,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       return RefusedBoundAst(std::move(bound));
     }
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -3153,12 +3287,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     for (const auto& descriptor : context.descriptors) {
       if (!carried_descriptor_ids.contains(descriptor.descriptor_id)) continue;
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -3558,12 +3687,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                            "search typed-DAG identity/order drifted");
     }
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -4114,12 +4238,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -4508,12 +4627,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                 "TIME_RANGE child identity was substituted");
     }
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -5154,12 +5268,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -5549,12 +5658,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -5876,12 +5980,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -7284,12 +7383,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     bound.descriptors.reserve(context.descriptors.size());
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -7451,9 +7545,6 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 static_cast<std::size_t>(project_composition) +
                 static_cast<std::size_t>(limit_composition) ||
         context.catalog_relations.size() != 2 ||
-        (ordinary_catalog_join &&
-         context.catalog_relations[0].object_uuid ==
-             context.catalog_relations[1].object_uuid) ||
         context.relations.size() != 1 ||
         context.relations.front().relation_id != catalog_join->relation_id ||
         (context.relations.front().semantic_variant_id != "join.cross.v1" &&
@@ -9008,12 +9099,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     bound.descriptors.reserve(context.descriptors.size());
     for (const auto& descriptor : context.descriptors) {
-      bound.descriptors.push_back(
-          {descriptor.descriptor_id, descriptor.descriptor_uuid,
-           descriptor.type_uuid, descriptor.nullability,
-           descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale, descriptor.canonical_type_name,
-           descriptor.element_profile});
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);
@@ -9091,6 +9177,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         aggregate_relation != ast.relations.end() &&
         aggregate_relation->input_relation_ids ==
             std::vector<std::uint32_t>{expected_aggregate_predecessor};
+    const bool grouped_sum_int128_composition =
+        aggregate_composition && !filter_composition &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kSimple &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeySumInt128;
     const bool limit_composition = limit_relation != ast.relations.end();
     const auto expected_root =
         limit_composition
@@ -9142,6 +9234,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 context.relations.front().relation_id !=
                     aggregate_relation->relation_id ||
                 (context.relations.front().semantic_variant_id !=
+                     "aggregate.grouped-int64-key-sum.v1" &&
+                 context.relations.front().semantic_variant_id !=
                      "aggregate.global-count-star.v1" &&
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-count-expression.v1" &&
@@ -9231,6 +9325,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                      "aggregate.global-approx-top-k-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
+        (grouped_sum_int128_composition && limit_composition) ||
         context.catalog_relations.size() != 1 ||
         (expanded_projection &&
          (context.expressions.empty() || context.outputs.empty()))) {
@@ -9311,8 +9406,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                wildcard->spelling == "*" && wildcard->operator_name.empty())
             : (aggregate_composition ? !source_identifiers.empty()
                                      : !projection_identifiers.empty());
-    if ((!filter_composition && !project_composition && !aggregate_composition &&
-         !limit_composition &&
+    if ((!filter_composition && !sort_composition && !project_composition &&
+         !aggregate_composition && !limit_composition &&
          relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
         !relation.input_relation_ids.empty() ||
@@ -9347,7 +9442,58 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     std::vector<const NativeExpressionAstNode*> global_aggregate_arguments;
     const NativeExpressionAstNode* global_aggregate_direct_literal = nullptr;
     if (aggregate_composition) {
-      if (aggregate_relation->relation_source_ids.size() != 0 ||
+      if (grouped_sum_int128_composition) {
+        const auto key = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     aggregate_relation->grouping_key_expression_ids.front();
+            });
+        const auto expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     aggregate_relation->aggregate_expression_ids.front();
+            });
+        const auto argument =
+            expression == ast.expressions.end() ||
+                    expression->child_expression_ids.size() != 1
+                ? ast.expressions.end()
+                : std::ranges::find_if(
+                      ast.expressions, [&](const auto& candidate) {
+                        return candidate.expression_id ==
+                               expression->child_expression_ids.front();
+                      });
+        if (!aggregate_relation->relation_source_ids.empty() ||
+            !aggregate_relation->values_row_ids.empty() ||
+            aggregate_relation->grouping_key_expression_ids.size() != 1 ||
+            aggregate_relation->aggregate_expression_ids.size() != 1 ||
+            aggregate_relation->output_expression_ids !=
+                std::vector<std::uint32_t>{
+                    aggregate_relation->grouping_key_expression_ids.front(),
+                    aggregate_relation->aggregate_expression_ids.front()} ||
+            !aggregate_relation->predicate_expression_ids.empty() ||
+            !aggregate_relation->limit_expression_ids.empty() ||
+            !aggregate_relation->ordering_terms.empty() ||
+            key == ast.expressions.end() ||
+            key->expression_kind != NativeExpressionAstKind::kIdentifier ||
+            argument == ast.expressions.end() ||
+            argument->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            key->expression_id == argument->expression_id ||
+            relation.output_expression_ids !=
+                std::vector<std::uint32_t>{key->expression_id,
+                                           argument->expression_id} ||
+            expression->expression_kind !=
+                NativeExpressionAstKind::kFunctionCall ||
+            ToUpperAscii(expression->operator_name) != "SUM" ||
+            expression->literal_kind.has_value()) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-RELATION",
+              "catalog grouped SUM AST is outside the exact int64-to-int128 profile");
+          return RefusedBoundAst(std::move(bound));
+        }
+        global_aggregate_expression = &*expression;
+        global_aggregate_arguments = {&*argument};
+      } else if (aggregate_relation->relation_source_ids.size() != 0 ||
           !aggregate_relation->values_row_ids.empty() ||
           aggregate_relation->aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
@@ -9364,7 +9510,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             &bound, "QOW-DIAG-BOUNDAST-RELATION",
             "catalog global aggregate AST is outside the bounded profile");
         return RefusedBoundAst(std::move(bound));
-      }
+      } else {
       const auto expression = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
             return candidate.expression_id ==
@@ -9485,6 +9631,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         global_aggregate_arguments.push_back(&*argument);
       }
       global_aggregate_expression = &*expression;
+      }
     }
     if (filter_composition) {
       if (!filter_relation->relation_source_ids.empty() ||
@@ -9829,6 +9976,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_count =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-count-");
+    const bool aggregate_grouped_sum_int128 =
+        grouped_sum_int128_composition &&
+        aggregate_semantic ==
+            "aggregate.grouped-int64-key-sum.v1";
     const bool aggregate_regr_count =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-regr-count-");
@@ -10007,7 +10158,85 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             return candidate.expression_id ==
                    expected_aggregate_descriptor_id;
           });
-      if (descriptor == descriptor_by_id.end() ||
+      const bool grouped_sum_input_identity_exact =
+          !aggregate_grouped_sum_int128 ||
+          (relation_binding.columns.size() == 2 &&
+           std::ranges::all_of(
+               relation_binding.columns, [&](const auto& column) {
+                 const auto input_descriptor =
+                     descriptor_by_id.find(column.descriptor_id);
+                 return input_descriptor != descriptor_by_id.end() &&
+                        input_descriptor->second->descriptor_uuid ==
+                            "019d0000-0000-7000-8000-00000000d711" &&
+                        input_descriptor->second->descriptor_generation == 1 &&
+                        input_descriptor->second->type_uuid ==
+                            "019d0000-0000-7000-8000-00000000d712" &&
+                        input_descriptor->second->type_generation == 1 &&
+                        input_descriptor->second->codec_id ==
+                            "datatype.int64.le.v1" &&
+                        input_descriptor->second->codec_version == 1 &&
+                        input_descriptor->second->codec_generation == 1 &&
+                        IsNonNullCanonicalUuid(
+                            input_descriptor->second->statement_receipt_uuid) &&
+                        input_descriptor->second
+                                ->datatype_catalog_snapshot_uuid ==
+                            "019d0000-0000-7000-8000-00000000d701" &&
+                        input_descriptor->second
+                                ->datatype_catalog_generation == 1 &&
+                        input_descriptor->second
+                                ->datatype_registry_generation == 1;
+               }));
+      const bool grouped_sum_result_identity_exact =
+          !aggregate_grouped_sum_int128 ||
+          (descriptor != descriptor_by_id.end() &&
+           descriptor->second->descriptor_uuid ==
+               "019d0000-0000-7000-8000-00000000d714" &&
+           descriptor->second->descriptor_generation == 1 &&
+           descriptor->second->type_uuid ==
+               "019d0000-0000-7000-8000-00000000d715" &&
+           descriptor->second->type_generation == 1 &&
+           descriptor->second->codec_id == "datatype.int128.le.v1" &&
+           descriptor->second->codec_version == 1 &&
+           descriptor->second->codec_generation == 1 &&
+           IsNonNullCanonicalUuid(
+               descriptor->second->statement_receipt_uuid) &&
+           descriptor->second->datatype_catalog_snapshot_uuid ==
+               "019d0000-0000-7000-8000-00000000d701" &&
+           descriptor->second->datatype_catalog_generation == 1 &&
+           descriptor->second->datatype_registry_generation == 1 &&
+           std::ranges::all_of(
+               relation_binding.columns, [&](const auto& column) {
+                 const auto input_descriptor =
+                     descriptor_by_id.find(column.descriptor_id);
+                 return input_descriptor != descriptor_by_id.end() &&
+                        input_descriptor->second->statement_receipt_uuid ==
+                            descriptor->second->statement_receipt_uuid &&
+                        input_descriptor->second
+                                ->datatype_catalog_snapshot_uuid ==
+                            descriptor->second
+                                ->datatype_catalog_snapshot_uuid &&
+                        input_descriptor->second
+                                ->datatype_catalog_generation ==
+                            descriptor->second
+                                ->datatype_catalog_generation &&
+                        input_descriptor->second
+                                ->datatype_registry_generation ==
+                            descriptor->second
+                                ->datatype_registry_generation;
+               }) &&
+           descriptor->second->canonical_type_name == "int128" &&
+           !descriptor->second->width_precision_scale.width.has_value() &&
+           !descriptor->second->width_precision_scale.precision.has_value() &&
+           !descriptor->second->width_precision_scale.scale.has_value());
+      if (!aggregate_grouped_sum_int128 && grouped_sum_int128_composition) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-RELATION",
+            "catalog grouped SUM semantic identity changed during binding");
+        return RefusedBoundAst(std::move(bound));
+      }
+      if (!grouped_sum_input_identity_exact ||
+          !grouped_sum_result_identity_exact ||
+          descriptor == descriptor_by_id.end() ||
           descriptor->second->nullability !=
               ((aggregate_count || aggregate_regr_count ||
                 aggregate_approx_count_distinct || aggregate_hypothetical)
@@ -10019,10 +10248,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           expression->descriptor_id != expected_aggregate_descriptor_id ||
           !expression->function_uuid.has_value() ||
           !IsNonNullCanonicalUuid(*expression->function_uuid) ||
+          (aggregate_grouped_sum_int128 &&
+           *expression->function_uuid !=
+               "019de5fc-2400-72e4-8549-82b2eef5a777") ||
           expression->bound_name_uuid.has_value()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-            "catalog global aggregate binding is incomplete");
+            aggregate_grouped_sum_int128
+                ? "catalog grouped SUM int64-to-int128 binding is incomplete"
+                : "catalog global aggregate binding is incomplete");
         return RefusedBoundAst(std::move(bound));
       }
       aggregate_descriptor = descriptor->second;
@@ -10053,6 +10287,26 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               return candidate.expression_id ==
                      global_aggregate_direct_literal->expression_id;
             });
+        const bool direct_descriptor_facets_exact = [&] {
+          if (direct_descriptor == descriptor_by_id.end()) return false;
+          const auto& value = *direct_descriptor->second;
+          if (value.width_precision_scale.width.has_value()) return false;
+          if (aggregate_string_agg || aggregate_listagg) {
+            return !value.width_precision_scale.precision.has_value() &&
+                   !value.width_precision_scale.scale.has_value();
+          }
+          if (!value.width_precision_scale.precision.has_value() &&
+              !value.width_precision_scale.scale.has_value()) {
+            return value.canonical_type_name == "int64";
+          }
+          return value.width_precision_scale.precision.has_value() &&
+                 value.width_precision_scale.scale.has_value() &&
+                 value.canonical_type_name == "decimal" &&
+                 *value.width_precision_scale.precision > 0 &&
+                 *value.width_precision_scale.precision <= 38 &&
+                 *value.width_precision_scale.scale <=
+                     *value.width_precision_scale.precision;
+        }();
         if ((!aggregate_string_agg && !aggregate_listagg &&
              !aggregate_percentile_cont && !aggregate_percentile_disc &&
              !aggregate_approx_percentile_cont &&
@@ -10063,9 +10317,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 BoundNullability::kNonNull ||
             direct_descriptor->second->collation_uuid.has_value() ||
             direct_descriptor->second->timezone_profile_id.has_value() ||
-            direct_descriptor->second->width_precision_scale.width.has_value() ||
-            direct_descriptor->second->width_precision_scale.precision.has_value() ||
-            direct_descriptor->second->width_precision_scale.scale.has_value() ||
+            !direct_descriptor_facets_exact ||
             direct_expression == context.expressions.end() ||
             direct_expression->descriptor_id !=
                 expected_direct_descriptor_id ||
@@ -10098,9 +10350,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                   (direct_descriptor != descriptor_by_id.end() &&
                            !direct_descriptor->second->collation_uuid.has_value() &&
                            !direct_descriptor->second->timezone_profile_id.has_value() &&
-                           !direct_descriptor->second->width_precision_scale.width.has_value() &&
-                           !direct_descriptor->second->width_precision_scale.precision.has_value() &&
-                           !direct_descriptor->second->width_precision_scale.scale.has_value()
+                           direct_descriptor_facets_exact
                        ? "1"
                        : "0") +
                   ":expression=" +
@@ -10147,30 +10397,38 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     const auto aggregate_direct_descriptor_count =
         global_aggregate_direct_literal != nullptr ? 1U : 0U;
-    const NativeDescriptorBindingInput* numeric_descriptor = nullptr;
+    std::vector<const NativeDescriptorBindingInput*> numeric_descriptors;
     if (limit_composition) {
-      const auto expected_numeric_descriptor_id =
+      const auto first_numeric_descriptor_id =
           static_cast<std::uint32_t>(
               relation_binding.columns.size() +
               (aggregate_composition
                    ? 2 + aggregate_direct_descriptor_count
                    : 1));
-      const auto descriptor =
-          descriptor_by_id.find(expected_numeric_descriptor_id);
-      if (descriptor == descriptor_by_id.end() ||
-          descriptor->second->nullability != BoundNullability::kNonNull ||
-          descriptor->second->collation_uuid.has_value() ||
-          descriptor->second->timezone_profile_id.has_value() ||
-          descriptor->second->width_precision_scale.width.has_value() ||
-          descriptor->second->width_precision_scale.precision.has_value() ||
-          descriptor->second->width_precision_scale.scale.has_value()) {
-        AddBoundAstDiagnostic(
-            &bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
-            "catalog composition requires one non-null numeric descriptor profile");
-        return RefusedBoundAst(std::move(bound));
+      numeric_descriptors.reserve(limit_relation->limit_expression_ids.size());
+      for (std::size_t ordinal = 0;
+           ordinal < limit_relation->limit_expression_ids.size(); ++ordinal) {
+        const auto expected_numeric_descriptor_id =
+            first_numeric_descriptor_id + static_cast<std::uint32_t>(ordinal);
+        const auto descriptor =
+            descriptor_by_id.find(expected_numeric_descriptor_id);
+        if (descriptor == descriptor_by_id.end() ||
+            descriptor->second->nullability != BoundNullability::kNonNull ||
+            descriptor->second->canonical_type_name != "int64" ||
+            descriptor->second->collation_uuid.has_value() ||
+            descriptor->second->timezone_profile_id.has_value() ||
+            descriptor->second->width_precision_scale.width.has_value() ||
+            descriptor->second->width_precision_scale.precision.has_value() ||
+            descriptor->second->width_precision_scale.scale.has_value()) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+              "catalog composition requires one exact non-null numeric "
+              "descriptor per LIMIT/OFFSET operand");
+          return RefusedBoundAst(std::move(bound));
+        }
+        numeric_descriptors.push_back(descriptor->second);
+        used_descriptor_ids.insert(expected_numeric_descriptor_id);
       }
-      numeric_descriptor = descriptor->second;
-      used_descriptor_ids.insert(expected_numeric_descriptor_id);
     }
     const NativeDescriptorBindingInput* boolean_descriptor = nullptr;
     const NativeExpressionBindingInput* negotiated_literal_binding = nullptr;
@@ -10181,7 +10439,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               relation_binding.columns.size() +
               (aggregate_composition ? 1 : 0) +
               aggregate_direct_descriptor_count +
-              (limit_composition ? 2 : 1));
+              (limit_composition
+                   ? limit_relation->limit_expression_ids.size() + 1
+                   : 1));
       const auto descriptor =
           descriptor_by_id.find(expected_boolean_descriptor_id);
       const auto column = std::ranges::find_if(
@@ -10262,7 +10522,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto column_count = relation_binding.columns.size();
       const auto visible_column_count =
           aggregate_composition
-              ? 1
+              ? (aggregate_grouped_sum_int128 ? 2 : 1)
               : (project_composition ? projection_identifiers.size()
                                      : column_count);
       const auto expected_output_count =
@@ -10270,7 +10530,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           (filter_composition ? column_count : 0) +
           (sort_composition ? column_count : 0) +
           (project_composition ? visible_column_count : 0) +
-          (aggregate_composition ? 1 : 0) +
+          (aggregate_composition
+               ? (aggregate_grouped_sum_int128 ? 2 : 1)
+               : 0) +
           (limit_composition ? visible_column_count : 0);
       if (context.expressions.size() !=
               column_count + (aggregate_composition ? 1 : 0) +
@@ -10340,7 +10602,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         bound_output.ordinal = output.ordinal;
         bound.outputs.push_back(std::move(bound_output));
         expanded_expression_ids.push_back(expression.expression_id);
-        if (!filter_composition && !project_composition &&
+        if (!filter_composition && !sort_composition && !project_composition &&
             !aggregate_composition && !limit_composition) {
           expanded_output_ids.push_back(output.output_id);
         }
@@ -10382,8 +10644,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         bound_expression.child_expression_ids =
             aggregate_argument_expression_ids;
         bound.expressions.push_back(std::move(bound_expression));
-        visible_expression_ids = {
-            aggregate_expression_binding->expression_id};
+        visible_expression_ids =
+            aggregate_grouped_sum_int128
+                ? std::vector<std::uint32_t>{
+                      aggregate_relation->grouping_key_expression_ids.front(),
+                      aggregate_expression_binding->expression_id}
+                : std::vector<std::uint32_t>{
+                      aggregate_expression_binding->expression_id};
       } else {
         visible_expression_ids = project_composition
                                      ? project_relation->output_expression_ids
@@ -10397,6 +10664,61 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             (downstream.relation_id == aggregate_relation->relation_id ||
              (limit_composition &&
               downstream.relation_id == limit_relation->relation_id))) {
+          if (aggregate_grouped_sum_int128) {
+            if (downstream.relation_id != aggregate_relation->relation_id ||
+                output_index + 1 >= context.outputs.size()) {
+              AddBoundAstDiagnostic(
+                  &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                  "catalog grouped SUM result projection is incomplete");
+              return RefusedBoundAst(std::move(bound));
+            }
+            const auto& key_output = context.outputs[output_index];
+            const auto& sum_output = context.outputs[output_index + 1];
+            const auto expected_key_output_id =
+                static_cast<std::uint32_t>(output_index + 1);
+            const auto expected_sum_output_id = expected_key_output_id + 1;
+            const auto key_expression_id =
+                aggregate_relation->grouping_key_expression_ids.front();
+            const auto key_column = std::ranges::find_if(
+                relation_binding.columns, [&](const auto& column) {
+                  return key_expression_id == column.ordinal + 1;
+                });
+            if (key_column == relation_binding.columns.end() ||
+                key_output.output_id != expected_key_output_id ||
+                key_output.relation_id != downstream.relation_id ||
+                key_output.expression_id != key_expression_id ||
+                key_output.output_name_utf8 !=
+                    key_column->canonical_name_key ||
+                key_output.descriptor_id != key_column->descriptor_id ||
+                !key_output.visible || key_output.ordinal != 0 ||
+                sum_output.output_id != expected_sum_output_id ||
+                sum_output.relation_id != downstream.relation_id ||
+                sum_output.expression_id !=
+                    aggregate_expression_binding->expression_id ||
+                sum_output.output_name_utf8 != aggregate_output_name ||
+                sum_output.descriptor_id !=
+                    aggregate_descriptor->descriptor_id ||
+                !sum_output.visible || sum_output.ordinal != 1) {
+              AddBoundAstDiagnostic(
+                  &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                  "catalog grouped SUM result projection changed shape");
+              return RefusedBoundAst(std::move(bound));
+            }
+            for (const auto* output : {&key_output, &sum_output}) {
+              BoundOutputAstRecord bound_output;
+              bound_output.output_id = output->output_id;
+              bound_output.relation_id = output->relation_id;
+              bound_output.expression_id = output->expression_id;
+              bound_output.output_name_utf8 = output->output_name_utf8;
+              bound_output.descriptor_id = output->descriptor_id;
+              bound_output.visible = output->visible;
+              bound_output.ordinal = output->ordinal;
+              bound.outputs.push_back(std::move(bound_output));
+              expanded_output_ids.push_back(output->output_id);
+            }
+            output_index += 2;
+            continue;
+          }
           if (output_index >= context.outputs.size()) {
             AddBoundAstDiagnostic(
                 &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
@@ -10559,15 +10881,30 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       bound_aggregate.relation_id = aggregate_relation->relation_id;
       bound_aggregate.relation_kind = NativeRelationAstKind::kAggregate;
       bound_aggregate.aggregate_grouping_form =
-          NativeAggregateGroupingForm::kNone;
+          aggregate_grouped_sum_int128
+              ? NativeAggregateGroupingForm::kSimple
+              : NativeAggregateGroupingForm::kNone;
       bound_aggregate.aggregate_projection_form =
-          NativeAggregateProjectionForm::kGlobalUnary;
+          aggregate_grouped_sum_int128
+              ? NativeAggregateProjectionForm::kKeySumInt128
+              : NativeAggregateProjectionForm::kGlobalUnary;
       bound_aggregate.input_relation_ids = {
           filter_composition ? filter_relation->relation_id
                              : relation.relation_id};
       bound_aggregate.output_expression_ids = visible_expression_ids;
-      bound_aggregate.aggregate_expression_ids = visible_expression_ids;
-      bound_aggregate.bound_expression_ids = visible_expression_ids;
+      bound_aggregate.grouping_key_expression_ids =
+          aggregate_grouped_sum_int128
+              ? aggregate_relation->grouping_key_expression_ids
+              : std::vector<std::uint32_t>{};
+      bound_aggregate.aggregate_expression_ids =
+          {aggregate_expression_binding->expression_id};
+      bound_aggregate.bound_expression_ids =
+          aggregate_grouped_sum_int128
+              ? std::vector<std::uint32_t>{
+                    aggregate_relation->grouping_key_expression_ids.front(),
+                    aggregate_expression_binding->expression_id}
+              : std::vector<std::uint32_t>{
+                    aggregate_expression_binding->expression_id};
       bound_aggregate.semantic_variant_id =
           context.relations.front().semantic_variant_id;
       bound.relations.push_back(std::move(bound_aggregate));
@@ -10622,8 +10959,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       std::vector<std::uint32_t> bound_limit_expression_ids;
       bound_limit_expression_ids.reserve(
           limit_relation->limit_expression_ids.size());
-      for (const auto ast_expression_id :
-           limit_relation->limit_expression_ids) {
+      for (std::size_t limit_ordinal = 0;
+           limit_ordinal < limit_relation->limit_expression_ids.size();
+           ++limit_ordinal) {
+        const auto ast_expression_id =
+            limit_relation->limit_expression_ids[limit_ordinal];
         const auto ast_expression = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id == ast_expression_id;
@@ -10641,7 +10981,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             negotiated_expression == context.expressions.end() ||
             negotiated_expression->expression_id != expected_expression_id ||
             negotiated_expression->descriptor_id !=
-                numeric_descriptor->descriptor_id ||
+                numeric_descriptors[limit_ordinal]->descriptor_id ||
             negotiated_expression->function_uuid.has_value() ||
             negotiated_expression->bound_name_uuid.has_value() ||
             negotiated_expression->structural_parameter_occurrence_id != 0 ||
@@ -10656,7 +10996,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         bound_expression.expression_kind = NativeExpressionAstKind::kLiteral;
         bound_expression.literal_kind = NativeLiteralAstKind::kNumeric;
         bound_expression.result_descriptor_id =
-            numeric_descriptor->descriptor_id;
+            numeric_descriptors[limit_ordinal]->descriptor_id;
         bound_expression.literal_or_parameter_ref = ast_expression->spelling;
         bound_expression.structural_literal_occurrence_id =
             ast_expression->structural_literal_occurrence_id;
@@ -10690,17 +11030,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     bound.descriptors.reserve(context.descriptors.size());
     for (const auto& descriptor : context.descriptors) {
-      BoundDescriptorAstRecord record;
-      record.descriptor_id = descriptor.descriptor_id;
-      record.descriptor_uuid = descriptor.descriptor_uuid;
-      record.type_uuid = descriptor.type_uuid;
-      record.nullability = descriptor.nullability;
-      record.collation_uuid = descriptor.collation_uuid;
-      record.timezone_profile_id = descriptor.timezone_profile_id;
-      record.width_precision_scale = descriptor.width_precision_scale;
-      record.canonical_type_name = descriptor.canonical_type_name;
-      record.element_profile = descriptor.element_profile;
-      bound.descriptors.push_back(std::move(record));
+      bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
     }
     std::ranges::sort(bound.descriptors,
                       [](const auto& left, const auto& right) {
@@ -12547,17 +12877,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   }
   bound.descriptors.reserve(context.descriptors.size());
   for (const auto& descriptor : context.descriptors) {
-    BoundDescriptorAstRecord record;
-    record.descriptor_id = descriptor.descriptor_id;
-    record.descriptor_uuid = descriptor.descriptor_uuid;
-    record.type_uuid = descriptor.type_uuid;
-    record.nullability = descriptor.nullability;
-    record.collation_uuid = descriptor.collation_uuid;
-    record.timezone_profile_id = descriptor.timezone_profile_id;
-    record.width_precision_scale = descriptor.width_precision_scale;
-    record.canonical_type_name = descriptor.canonical_type_name;
-    record.element_profile = descriptor.element_profile;
-    bound.descriptors.push_back(std::move(record));
+    bound.descriptors.push_back(CopyBoundDescriptorAstRecord(descriptor));
   }
   std::ranges::sort(bound.descriptors,
                     [](const auto& left, const auto& right) {
@@ -12613,6 +12933,13 @@ BoundStatement BindAst(const AstDocument& ast,
   bound.messages = ast.messages;
   PopulateAuthorityMetadata(&bound, ast);
   if (bound.messages.has_errors()) return bound;
+  if (CreateTableDeclaresNonStorableRowset(cst)) {
+    bound.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.TYPE.DESCRIPTOR_UNSUPPORTED", "ERROR",
+        "ROWSET is an execution result handle and cannot be used as a stored table column type",
+        "sbp_sbsql.binder"));
+    return bound;
+  }
   if (!session.authenticated && ast.family != StatementFamily::kUnknown) {
     bound.messages.diagnostics.push_back(MakeDiagnostic(
         "SBSQL.AUTH.REQUIRED", "ERROR", "statement binding requires an authenticated server session",

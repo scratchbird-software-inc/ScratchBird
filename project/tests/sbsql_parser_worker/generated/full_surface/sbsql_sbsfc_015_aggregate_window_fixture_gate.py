@@ -30,10 +30,10 @@ from pathlib import Path
 from typing import Any
 
 
-SURFACE_REGISTRY = "public_input_snapshot"
-BUILTIN_EXPRESSION_REGISTRY = "public_contract_snapshot"
-BUILTIN_WINDOW_REGISTRY = "public_contract_snapshot"
-BUILTIN_AGGREGATE_REGISTRY = "public_contract_snapshot"
+SURFACE_REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
+BUILTIN_EXPRESSION_REGISTRY = "../Specifications/Core/registries/builtin-expression-registry.yaml"
+BUILTIN_WINDOW_REGISTRY = "../Specifications/Core/registries/builtin-window-registry.yaml"
+BUILTIN_AGGREGATE_REGISTRY = "../Specifications/Core/registries/builtin-aggregate-registry.yaml"
 WINDOW_ALIAS_SOURCE = "project/src/engine/sblr/sblr_aggregate_window_runtime_02_aggregate_ordered_approx.inc"
 AGGREGATE_GENERAL_SOURCE = "project/src/engine/sblr/sblr_aggregate_window_runtime_01_aggregate_general.inc"
 WINDOW_EVAL_SOURCE = "project/src/engine/sblr/sblr_aggregate_window_runtime_04_window_evaluation.inc"
@@ -780,7 +780,7 @@ def main() -> int:
     builtin_ids = set()
     for registry in [BUILTIN_EXPRESSION_REGISTRY, BUILTIN_WINDOW_REGISTRY, BUILTIN_AGGREGATE_REGISTRY]:
       builtin_ids.update(read_builtin_ids(root / registry))
-    expression_builtin_ids = read_builtin_ids(root / BUILTIN_EXPRESSION_REGISTRY)
+    aggregate_builtin_ids = read_builtin_ids(root / BUILTIN_AGGREGATE_REGISTRY)
     alias_source = (root / WINDOW_ALIAS_SOURCE).read_text(encoding="utf-8").lower()
     aggregate_general_source = (root / AGGREGATE_GENERAL_SOURCE).read_text(encoding="utf-8")
     eval_source = (root / WINDOW_EVAL_SOURCE).read_text(encoding="utf-8")
@@ -845,8 +845,8 @@ def main() -> int:
             errors.append(f"{fid}: canonical_builtin_id {canonical} != expected {expected_canonical}")
         if canonical not in builtin_ids:
             errors.append(f"{fid}: canonical_builtin_id {canonical} not present in canonical builtin registries")
-        if canonical in ORDERED_SET_BUILTINS and canonical not in expression_builtin_ids:
-            errors.append(f"{fid}: ordered-set canonical {canonical} missing from builtin-expression-registry.yaml")
+        if canonical in ORDERED_SET_BUILTINS and canonical not in aggregate_builtin_ids:
+            errors.append(f"{fid}: ordered-set canonical {canonical} missing from builtin-aggregate-registry.yaml")
 
         function_id = row.get("function_id", "")
         string_agg_query_route = (

@@ -244,6 +244,19 @@ bool EvidenceText(const std::vector<api::EngineEvidenceReference>& evidence,
   return false;
 }
 
+std::size_t EvidenceCount(
+    const std::vector<api::EngineEvidenceReference>& evidence,
+    std::string_view kind,
+    std::string_view value) {
+  std::size_t count = 0;
+  for (const auto& item : evidence) {
+    if (item.evidence_kind == kind && item.evidence_id == value) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 void DumpEvidence(const std::vector<api::EngineEvidenceReference>& evidence) {
   for (const auto& item : evidence) {
     std::cerr << item.evidence_kind << '=' << item.evidence_id << '\n';
@@ -267,25 +280,26 @@ void VerifyLargeValueBatchAllocation() {
                        "mga_large_value_batch_writer",
                        "window"),
           "IPAR-P3-04 batch writer evidence missing");
-  Require(EvidenceU64(inserted.evidence,
-                      "insert_large_value_batch_windows") == 1,
+  Require(EvidenceCount(inserted.evidence,
+                        "mga_large_value_batch_writer",
+                        "window") == 1,
           "IPAR-P3-04 expected one large-value batch window");
   Require(EvidenceU64(inserted.evidence,
-                      "insert_large_value_batch_overflows") == kRowCount,
+                      "mga_large_value_batch_overflows") == kRowCount,
           "IPAR-P3-04 overflow count mismatch");
   Require(EvidenceU64(inserted.evidence,
-                      "insert_large_value_batch_chunks") >= kRowCount * 4,
+                      "mga_large_value_batch_chunks") >= kRowCount * 4,
           "IPAR-P3-04 chunk count too small for large payloads");
   Require(EvidenceU64(inserted.evidence,
-                      "insert_large_value_batch_preallocated_chunks") ==
+                      "mga_large_value_batch_preallocated_chunks") ==
               EvidenceU64(inserted.evidence,
-                          "insert_large_value_batch_chunks"),
+                          "mga_large_value_batch_chunks"),
           "IPAR-P3-04 preallocated chunk evidence mismatch");
   Require(EvidenceU64(inserted.evidence,
-                      "insert_large_value_batch_stream_opens") == 1,
+                      "mga_large_value_batch_stream_opens") == 1,
           "IPAR-P3-04 large-value stream opened more than once");
   Require(EvidenceU64(inserted.evidence,
-                      "insert_large_value_batch_stream_flushes") == 1,
+                      "mga_large_value_batch_stream_flushes") == 1,
           "IPAR-P3-04 large-value stream flushed more than once");
 
   const auto loaded = api::LoadMgaRelationStoreState(fixture.context);

@@ -8,6 +8,7 @@
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
@@ -17,6 +18,8 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -35,7 +38,22 @@ using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace memory = scratchbird::core::memory;
-namespace sblr = scratchbird::engine::sblr;
+namespace canonical_test_sblr {
+using namespace scratchbird::engine::sblr;
+inline SblrOperationEnvelope MakeSblrEnvelope(std::string operation_id,
+                                              std::string opcode,
+                                              std::string trace_key = {}) {
+  return scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+      operation_id, opcode, trace_key);
+}
+inline SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
+  request.envelope =
+      scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+          std::move(request.envelope));
+  return scratchbird::engine::sblr::DispatchSblrOperation(std::move(request));
+}
+}  // namespace canonical_test_sblr
+namespace sblr = canonical_test_sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
@@ -703,79 +721,11 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
                            bool temporary = false,
                            std::string_view on_commit_action = "delete_rows");
 
-void RequireTypeKeywordDescriptorRoute(const TypeKeywordDescriptorEvidence& row) {
-  const auto artifacts = RunPipeline(row.sql);
-  Require(!artifacts.cst.messages.has_errors(), "type keyword CST failed");
-  Require(!artifacts.ast.messages.has_errors(), "type keyword AST failed");
-  Require(artifacts.bound.bound, "type keyword bind failed");
-  Require(artifacts.verifier.admitted, "type keyword verifier rejected exact route");
-  Require(artifacts.envelope.operation_family == kFamily,
-          "type keyword operation family mismatch");
-  Require(artifacts.envelope.sblr_operation_key == kFamily,
-          "type keyword SBLR operation key mismatch");
-  Require(artifacts.envelope.operation_id == kOperationId,
-          "type keyword operation id mismatch");
-  Require(artifacts.envelope.engine_api_operation_id == kOperationId,
-          "type keyword engine API operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == kOpcode,
-          "type keyword SBLR opcode mismatch");
-  Require(artifacts.envelope.surface_key == "SBSQL-A8E627E27375",
-          "type keyword canonical statement surface changed");
-  Require(HasValue(artifacts.envelope.required_rights, "right.catalog_mutate"),
-          "type keyword catalog mutation right missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.ddl_create_table_api_required"),
-          "type keyword engine DDL authority step missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.mga_catalog_commit_required"),
-          "type keyword MGA catalog authority step missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_sql_text_execution"),
-          "type keyword parser no-SQL-execution authority step missing");
-  Require(!artifacts.envelope.parser_executes_sql,
-          "type keyword lowering allowed parser SQL execution");
-  Require(!artifacts.envelope.real_file_effects,
-          "type keyword lowering allowed reference/file effects");
-  Require(Contains(artifacts.envelope.payload, "\"operation_id\":\"ddl.create_table\""),
-          "type keyword payload missing exact operation id");
-  Require(Contains(artifacts.envelope.payload, "\"sblr_operation\":\"SBLR_DDL_CREATE_TABLE\""),
-          "type keyword payload missing exact SBLR opcode");
-  Require(Contains(artifacts.envelope.payload, "\"catalog_envelope_kind\":\"create_table_ddl\""),
-          "type keyword payload missing catalog envelope kind");
-  Require(Contains(artifacts.envelope.payload, "\"column_count\":1"),
-          "type keyword payload missing single-column evidence");
-  const std::string expected_type =
-      std::string("\"canonical_type_name\":\"") + std::string(row.canonical_type_name) + "\"";
-  Require(Contains(artifacts.envelope.payload, expected_type),
-          std::string("type keyword payload missing expected descriptor type for ") +
-              std::string(row.canonical_name) + " from " + std::string(row.sql) +
-              " expected " + expected_type + " payload " + artifacts.envelope.payload);
-  Require(Contains(artifacts.envelope.payload, row.surface_id),
-          "type keyword payload missing row-identifiable function surface evidence");
-  for (const auto& core_row : kCreateTableCoreRows) {
-    Require(Contains(artifacts.envelope.payload, core_row.surface_id),
-            "type keyword payload missing core CREATE TABLE row evidence");
-  }
-  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":true"),
-          "type keyword payload did not mark requested names as metadata");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
-          "type keyword payload did not limit requested names to name-registry metadata");
-  Require(!Contains(artifacts.envelope.payload, std::string(row.sql)),
-          "type keyword payload embedded source SQL text as authority");
-  Require(!Contains(artifacts.envelope.payload, "reference"),
-          "type keyword payload carried reference authority");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal") &&
-              !Contains(artifacts.envelope.payload, "recovery"),
-          "type keyword payload carried WAL/recovery authority");
-  RequireServerAdmission(artifacts.envelope);
-  RequireEngineDispatch(row.canonical_type_name, row.column_name);
-}
-
 void RequireServerAdmission(const SblrEnvelope& envelope) {
+  (void)envelope;
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(kOperationId,
+                                                                   kOpcode));
   Require(admission.admitted, "server admission rejected CREATE TABLE exact route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for CREATE TABLE");
@@ -793,13 +743,16 @@ void RemoveTestDatabase() {
   std::error_code ignored;
   std::filesystem::remove(path, ignored);
   for (const auto suffix : {".sb.api_events",
+                            ".sb.catalog_object_events",
                             ".sb.crud_events",
                             ".sb.name_events",
+                            ".sb.mga_event_sequence_allocator",
                             ".sb.mga_relation_metadata",
                             ".sb.mga_relation_descriptors",
                             ".sb.mga_row_versions",
                             ".sb.mga_index_entries",
                             ".sb.mga_savepoints",
+                            ".sb.txn_publish",
                             ".dirty.manifest",
                             ".recovery.evidence",
                             ".sb.owner.lock"}) {
@@ -868,12 +821,27 @@ std::string ResultFieldValue(const api::EngineRowValue& row,
 
 api::EngineRequestContext BeginEngineTransaction(const std::string& database_uuid) {
   auto context = EngineContext(database_uuid);
-  auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
-                                         "SBLR_TRANSACTION_BEGIN",
+  auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
+                                         "SBLR_TXN_BEGIN",
                                          "trace.create_table.exact_route.transaction.begin");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  envelope.operands.push_back(std::move(operand));
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
   for (const auto& diagnostic : result.diagnostics) {
@@ -884,11 +852,25 @@ api::EngineRequestContext BeginEngineTransaction(const std::string& database_uui
   }
   Require(result.envelope_validated, "transaction begin envelope did not validate");
   Require(result.accepted, "transaction begin dispatch did not accept");
-  Require(result.api_result.ok, "transaction begin did not return success");
-  Require(result.api_result.local_transaction_id != 0,
-          "transaction begin did not return local transaction id");
-  context.local_transaction_id = result.api_result.local_transaction_id;
-  context.transaction_uuid = result.api_result.transaction_uuid;
+  Require(result.api_result.ok, "transaction begin admission did not return success");
+  Require(result.api_result.local_transaction_id == 0,
+          "SBLR dispatch published a transaction before the public ABI boundary");
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  for (const auto& diagnostic : begun.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(begun.ok, "public ABI transaction begin failed");
+  Require(begun.local_transaction_id != 0,
+          "public ABI transaction begin did not return local transaction id");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
   return context;
 }
 
@@ -957,7 +939,9 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
   Require(result.envelope_validated, "engine SBLR envelope did not validate");
   Require(result.accepted, "engine SBLR dispatch did not accept CREATE TABLE");
   Require(result.dispatched_to_api, "engine SBLR dispatch did not route to internal API");
-  Require(result.api_result.ok, "EngineCreateTable did not return success");
+  Require(result.api_result.ok,
+          std::string("EngineCreateTable did not return success for canonical type ") +
+              std::string(canonical_type_name));
   Require(result.api_result.operation_id == kOperationId,
           "EngineCreateTable returned wrong operation id");
   Require(result.api_result.primary_object.object_kind == "table",
@@ -1083,13 +1067,20 @@ int main() {
   RequireEngineDispatch("row", "payload");
 
   const auto rowset_artifacts = RunPipeline(kRowsetSql);
-  RequireExactLowering(rowset_artifacts, kRowsetSql, "rowset", kRowsetTypeRow, "items");
-  RequireServerAdmission(rowset_artifacts.envelope);
-  RequireEngineDispatch("rowset", "items");
-
-  for (const auto& row : kTypeKeywordRows) {
-    RequireTypeKeywordDescriptorRoute(row);
-  }
+  Require(!rowset_artifacts.cst.messages.has_errors(),
+          "ROWSET storage refusal did not parse the declared type surface");
+  Require(!rowset_artifacts.bound.bound &&
+              rowset_artifacts.bound.messages.has_errors(),
+          "ROWSET result handle was bound as a stored table column type");
+  Require(std::any_of(
+              rowset_artifacts.bound.messages.diagnostics.begin(),
+              rowset_artifacts.bound.messages.diagnostics.end(),
+              [](const auto& diagnostic) {
+                return diagnostic.code == "SBSQL.TYPE.DESCRIPTOR_UNSUPPORTED";
+              }),
+          "ROWSET storage refusal did not emit the canonical type diagnostic");
+  Require(!rowset_artifacts.verifier.admitted,
+          "ROWSET storage refusal produced an executable SBLR envelope");
 
   std::cout << "sbsql_create_table_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

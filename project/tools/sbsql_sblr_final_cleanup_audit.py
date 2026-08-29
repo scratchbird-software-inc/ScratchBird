@@ -33,17 +33,21 @@ except ImportError as exc:  # pragma: no cover - environment gate
 
 
 AUTHORITY_FILES = (
-    "public_contract_snapshot",
-    "public_contract_snapshot",
+    "../Specifications/Core/MANIFEST.yaml",
+    "../Specifications/Core/AUTHORITY.md",
 )
-SBLR_OPERATION_MATRIX = "public_contract_snapshot"
-SBLR_OPCODE_REGISTRY = "public_contract_snapshot"
-SHOW_COMMAND_MATRIX = "public_contract_snapshot"
+SBLR_OPERATION_MATRIX = "../Specifications/Core/registries/sblr-operation-matrix.yaml"
+SBLR_OPCODE_REGISTRY = "../Specifications/Core/registries/sblr-opcodes.yaml"
+SHOW_COMMAND_MATRIX = "../Specifications/Core/registries/sbsql-show-command-surface-matrix.yaml"
 MANAGEMENT_CLUSTER_MATRIX = (
-    "public_contract_snapshot"
+    "../Specifications/Core/registries/sbsql-management-metrics-cluster-surface-matrix.yaml"
+)
+NORMALIZED_SURFACE_CONTRACTS = (
+    "../Specifications/Core/registries/"
+    "normalized-surface-implementation-contracts-20260822.yaml"
 )
 SURFACE_REGISTRY = (
-    "public_input_snapshot"
+    "public_input_snapshot/"
     "SBSQL_SURFACE_REGISTRY.csv"
 )
 PER_ROW_EVIDENCE = (
@@ -183,6 +187,7 @@ def require_authority_files(repo: Path) -> None:
         "registries/sbsql-native-surface-registry.yaml",
         "registries/sbsql-show-command-surface-matrix.yaml",
         "registries/sbsql-management-metrics-cluster-surface-matrix.yaml",
+        "registries/normalized-surface-implementation-contracts-20260822.yaml",
     }
     missing_entries = sorted(required_manifest_entries - authority_files)
     if missing_entries:
@@ -418,7 +423,58 @@ def build_api_route_rows(repo: Path, rows: list[AuditRow]) -> None:
     entries = api_matrix.get("entries", [])
     if not isinstance(entries, list):
         fail(f"{API_OPERATION_MATRIX} entries is not a list")
+    core_registry = read_yaml(repo, SBLR_OPCODE_REGISTRY)
+    core_entries = {
+        str(entry.get("name", "")): entry
+        for entry in core_registry.get("entries", [])
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    semantic_contracts = {
+        str(contract.get("opcode_name", "")): contract
+        for contract in core_registry.get("opcode_semantic_contract_closure_v1", {}).get(
+            "contracts", []
+        )
+        if isinstance(contract, dict) and contract.get("opcode_name")
+    }
+    aliases = core_registry.get("opcode_name_aliases", {}).get("aliases", {})
+    if not isinstance(aliases, dict):
+        fail(f"{SBLR_OPCODE_REGISTRY} opcode_name_aliases.aliases is not a mapping")
+    runtime_registry_source = read_text(repo, SBLR_OPCODE_SOURCE)
     lowering_source = read_text(repo, SBSQL_LOWERING_SOURCE)
+
+    operation_matrix = read_yaml(repo, SBLR_OPERATION_MATRIX)
+    operation_bindings: set[tuple[str, str]] = set()
+    operation_bindings_without_opcode_code: set[tuple[str, str]] = set()
+
+    def collect_operation_bindings(value: Any) -> None:
+        if isinstance(value, dict):
+            operation_id = value.get("operation_id")
+            sblr_operation = value.get("sblr_operation")
+            if operation_id and sblr_operation:
+                operation_bindings.add((str(operation_id), str(sblr_operation)))
+                operation_bindings.add(
+                    (
+                        str(operation_id),
+                        str(aliases.get(str(sblr_operation), str(sblr_operation))),
+                    )
+                )
+                if value.get("opcode_code") in (None, ""):
+                    operation_bindings_without_opcode_code.add(
+                        (str(operation_id), str(sblr_operation))
+                    )
+                    operation_bindings_without_opcode_code.add(
+                        (
+                            str(operation_id),
+                            str(aliases.get(str(sblr_operation), str(sblr_operation))),
+                        )
+                    )
+            for child in value.values():
+                collect_operation_bindings(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_operation_bindings(child)
+
+    collect_operation_bindings(operation_matrix)
 
     for entry in entries:
         if not isinstance(entry, dict):
@@ -429,22 +485,95 @@ def build_api_route_rows(repo: Path, rows: list[AuditRow]) -> None:
         scope_status = str(entry.get("scope_status", ""))
         if op_id in lowering_source:
             continue
+        declared_opcode = str(entry.get("sblr_operation", ""))
+        canonical_opcode = str(aliases.get(declared_opcode, declared_opcode))
+        core_entry = core_entries.get(canonical_opcode)
+        semantic_contract = semantic_contracts.get(canonical_opcode)
+        executor_binding = (
+            str(semantic_contract.get("executor_binding", ""))
+            if semantic_contract is not None
+            else ""
+        )
+        public_alias_binding = (
+            (op_id, declared_opcode) in operation_bindings
+            or (op_id, canonical_opcode) in operation_bindings
+        )
+        runtime_identity_present = (
+            canonical_opcode in runtime_registry_source
+            and op_id in runtime_registry_source
+        )
+        exact_executor_binding = executor_binding == op_id
+        exact_public_alias_binding = (
+            public_alias_binding
+            and f'CanonicalOperationAlias("{op_id}", "{canonical_opcode}"'
+            in runtime_registry_source
+        )
+        retired_non_core_internal_api = (
+            str(entry.get("opcode_status", "")) == "retired_non_core"
+            and str(entry.get("parser_route_status", ""))
+            == "internal_engine_api_only"
+            and entry.get("opcode_code") in (None, "")
+            and core_entry is None
+            and semantic_contract is None
+            and (op_id, canonical_opcode)
+            in operation_bindings_without_opcode_code
+        )
+        if retired_non_core_internal_api:
+            continue
+        declared_code = entry.get("opcode_code")
+        core_code_matches = (
+            core_entry is not None
+            and (
+                declared_code is None
+                or int(declared_code) == int(core_entry.get("code", -1))
+            )
+        )
+        if (
+            semantic_contract is not None
+            and core_code_matches
+            and runtime_identity_present
+            and (exact_executor_binding or exact_public_alias_binding)
+        ):
+            continue
         if scope_status == "noncluster_required":
+            detail = []
+            if core_entry is None or semantic_contract is None:
+                detail.append(
+                    f"canonical_opcode_missing={canonical_opcode or declared_opcode}"
+                )
+            if not core_code_matches:
+                detail.append(
+                    f"opcode_code_mismatch=api:{declared_code};core:"
+                    f"{core_entry.get('code', '') if core_entry else ''}"
+                )
+            if not runtime_identity_present:
+                detail.append("runtime_operation_opcode_pair_missing")
+            if not (exact_executor_binding or exact_public_alias_binding):
+                detail.append(
+                    f"executor_binding_mismatch=core:{executor_binding};api:{op_id}"
+                )
             make_row(
                 rows,
                 layer="SBsql-to-SBLR parser route",
                 required_item=op_id,
                 required_kind="engine_api_operation",
                 authority_source=API_OPERATION_MATRIX,
-                current_state="engine API operation is not reachable from SBsql lowering source",
-                evidence_checked=f"{SBSQL_LOWERING_SOURCE}: api_operation_id absent",
+                current_state="engine API operation lacks an exact Core/runtime route identity",
+                evidence_checked=(
+                    f"{SBLR_OPCODE_REGISTRY} + {SBLR_OPERATION_MATRIX} + "
+                    f"{SBLR_OPCODE_SOURCE}: " + ";".join(detail)
+                ),
                 gap_class="engine_api_not_reachable_from_sbsql_lowering",
                 cluster_scope="noncluster",
                 required_next_action=(
-                    "Add a SBsql parse/bind/lower route or reconcile that no SBsql "
-                    "surface is required."
+                    "Bind the API row to the exact canonical opcode/executor or an "
+                    "explicit Core public-operation alias; do not publish executor "
+                    "identities as parser aliases."
                 ),
-                notes=f"sblr_operation={entry.get('sblr_operation', '')}; scope_status={scope_status}",
+                notes=(
+                    f"sblr_operation={declared_opcode}; canonical_opcode={canonical_opcode}; "
+                    f"scope_status={scope_status}"
+                ),
             )
         elif scope_status.startswith("cluster"):
             make_row(
@@ -465,12 +594,69 @@ def build_api_route_rows(repo: Path, rows: list[AuditRow]) -> None:
             )
 
 
+def is_authoritative_bridge_exact_refusal(repo: Path, row: dict[str, str]) -> bool:
+    if (
+        row.get("surface_id") != "SBSQL-D50EC7C4422E"
+        or row.get("canonical_name") != "bridge_cluster_route_stub"
+        or row.get("cluster_scope") != "cluster_private"
+        or row.get("final_state") != "exact_refusal_passed"
+    ):
+        return False
+
+    contracts = read_text(repo, NORMALIZED_SURFACE_CONTRACTS)
+    marker = "- surface_id: SBSQL-D50EC7C4422E\n"
+    if contracts.count(marker) != 1:
+        return False
+    start = contracts.index(marker)
+    end = contracts.find("\n- surface_id: ", start + len(marker))
+    contract = contracts[start:] if end < 0 else contracts[start:end]
+    required_contract_tokens = (
+        "canonical_name: bridge_cluster_route_stub",
+        "family: bridge",
+        "cluster_scope: cluster_private",
+        'bridge_cluster_route_stub ::= "BRIDGE" "CLUSTER" "ROUTE" qualified_name ;',
+        "- UDR.BRIDGE.UNSUPPORTED",
+        "refusal_only: true",
+    )
+    evidence = "\n".join(
+        (
+            row.get("implementation_refs", ""),
+            row.get("ctest_label", ""),
+            row.get("diagnostic_proof", ""),
+            row.get("result_proof", ""),
+            row.get("notes", ""),
+        )
+    )
+    required_evidence_tokens = (
+        "operation_id=bridge.cluster_route",
+        "opcode=SBLR_BRIDGE_VALIDATE",
+        "canonical_sblr_admission_before_trusted_udr_dispatch",
+        "UDR.BRIDGE.UNSUPPORTED",
+        "accepted=false",
+        "private_cluster_execution=false",
+        "sbsql_bridge_command_route_conformance",
+        "sbsql_exact_refusal_passed",
+    )
+    forbidden_provider_success_tokens = (
+        "cluster_provider_route_passed",
+        "SBLR.CLUSTER.STUB_RESPONSE",
+        "UDR.BRIDGE.UNLICENSED",
+    )
+    return (
+        all(token in contract for token in required_contract_tokens)
+        and all(token in evidence for token in required_evidence_tokens)
+        and not any(token in evidence for token in forbidden_provider_success_tokens)
+    )
+
+
 def build_cluster_refusal_rows(repo: Path, rows: list[AuditRow]) -> None:
     evidence_rows = read_csv(repo, PER_ROW_EVIDENCE)
     for row in evidence_rows:
         if row.get("cluster_scope") != "cluster_private":
             continue
         if row.get("final_state") != "exact_refusal_passed":
+            continue
+        if is_authoritative_bridge_exact_refusal(repo, row):
             continue
         make_row(
             rows,
@@ -497,13 +683,17 @@ def cluster_evidence_state(repo: Path, rows: list[AuditRow]) -> ClusterEvidenceS
     no_cluster = read_text(repo, NO_CLUSTER_PROVIDER_SOURCE)
     no_cluster += "\n" + read_text(repo, "project/src/cluster_provider/cluster_provider.hpp")
     stub = read_text(repo, STUB_CLUSTER_PROVIDER_SOURCE)
+    stub += "\n" + read_text(repo, "project/src/cluster_provider/cluster_provider.hpp")
     conformance = read_text(repo, CLUSTER_PROVIDER_CONFORMANCE)
     conformance += "\n" + read_text(repo, "project/tests/sbsql_parser_worker/CMakeLists.txt")
     route_conformance = read_text(repo, CLUSTER_PROVIDER_ROUTE_CONFORMANCE)
     route_conformance += "\n" + read_text(repo, "project/tests/sbsql_parser_worker/CMakeLists.txt")
     evidence_rows = read_csv(repo, PER_ROW_EVIDENCE)
     cluster_surface_rows = [
-        row for row in evidence_rows if row.get("cluster_scope") == "cluster_private"
+        row
+        for row in evidence_rows
+        if row.get("cluster_scope") == "cluster_private"
+        and "sbsql_sblr_final_cleanup_b01" in row.get("ctest_label", "")
     ]
 
     noncluster_tokens = (
@@ -514,13 +704,14 @@ def cluster_evidence_state(repo: Path, rows: list[AuditRow]) -> ClusterEvidenceS
         "no_cluster",
     )
     stub_tokens = (
-        "scratchbird.cluster.dummy_provider",
+        "scratchbird.cluster.compile_link_stub_provider",
         "provider_name",
         "provider_type",
         "provider_version",
         "support_status",
         "supports_execution",
-        "SBLR.CLUSTER.STUB_RESPONSE",
+        "compile_link_only",
+        "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
         "cluster.provider.stub.v1",
     )
     conformance_tokens = (
@@ -535,9 +726,10 @@ def cluster_evidence_state(repo: Path, rows: list[AuditRow]) -> ClusterEvidenceS
         "SHOW CLUSTER STATE",
         "ENGINE CLUSTER INSPECT STATE",
         "RequireRegistryAndDispatch",
-        "RequireSurfaceProviderEvidence",
+        "RequireSurfacePublicRefusalEvidence",
         "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
-        "SBLR.CLUSTER.STUB_RESPONSE",
+        "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
+        "scratchbird.cluster.compile_link_stub_provider",
         "cluster.provider.stub.v1",
         "private_cluster_execution",
         "sbsql_sblr_final_cleanup_b015_cluster_provider_route_conformance",
@@ -548,7 +740,8 @@ def cluster_evidence_state(repo: Path, rows: list[AuditRow]) -> ClusterEvidenceS
         "cluster_provider_route_passed",
         "provider_boundary_route_evidence",
         "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
-        "SBLR.CLUSTER.STUB_RESPONSE",
+        "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
+        "scratchbird.cluster.compile_link_stub_provider",
         "cluster.provider.stub.v1",
         "private_cluster_execution=false",
     )

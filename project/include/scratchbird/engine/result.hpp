@@ -54,6 +54,23 @@ class Result {
     return view.data == nullptr ? std::string_view{} : std::string_view(view.data, static_cast<std::size_t>(view.size_bytes));
   }
 
+  sb_engine_status_t descriptor(
+      sb_engine_result_descriptor_view_v1_t& view) const noexcept {
+    view = {};
+    view.struct_size = sizeof(view);
+    view.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    return sb_engine_result_descriptor_v1(handle_, &view);
+  }
+
+  sb_engine_status_t next_typed_batch(
+      const sb_engine_batch_request_v1_t* request,
+      sb_engine_row_batch_view_v2_t& view) noexcept {
+    view = {};
+    view.struct_size = sizeof(view);
+    view.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    return sb_engine_result_next_typed_batch_v2(handle_, request, &view);
+  }
+
  private:
   sb_engine_result_t handle_ = nullptr;
 };

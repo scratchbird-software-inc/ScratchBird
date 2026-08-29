@@ -54,6 +54,102 @@ void Require(bool condition, std::string_view message) {
   if (!condition) Fail(message);
 }
 
+void VerifyExactPublicDatatypeIdentityProjection() {
+  ipc::PublicRelationDescriptor descriptor;
+  descriptor.datatype_catalog_snapshot_uuid =
+      "019d0000-0000-7000-8000-00000000d701";
+  descriptor.datatype_catalog_generation = 1;
+  descriptor.datatype_registry_generation = 1;
+
+  ipc::PublicRelationColumnDescriptor text;
+  text.type_descriptor_uuid =
+      "019d0000-0000-7000-8000-00000000d718";
+  text.datatype_identity_present = true;
+  text.datatype_descriptor_generation = 1;
+  text.datatype_type_uuid =
+      "019d0000-0000-7000-8000-00000000d719";
+  text.datatype_type_generation = 1;
+  text.datatype_codec_id = "datatype.text.utf8.v1";
+  text.datatype_codec_version = 1;
+  text.datatype_codec_generation = 1;
+  text.datatype_canonical_value_bytes = 0;
+  text.datatype_null_encoding = 1;
+  Require(ipc::ValidatePublicRelationDatatypeIdentityV3ForTest(descriptor,
+                                                               text),
+          "exact canonical TEXT public identity projection was refused");
+
+  const auto reject_text = [&](auto mutate, std::string_view message) {
+    auto candidate_descriptor = descriptor;
+    auto candidate_column = text;
+    mutate(candidate_descriptor, candidate_column);
+    Require(!ipc::ValidatePublicRelationDatatypeIdentityV3ForTest(
+                candidate_descriptor, candidate_column),
+            message);
+  };
+  reject_text(
+      [](auto&, auto& column) {
+        column.datatype_canonical_value_bytes = 1;
+      },
+      "TEXT public identity projection admitted a noncanonical width");
+  reject_text(
+      [](auto&, auto& column) { column.datatype_null_encoding = 2; },
+      "TEXT public identity projection admitted a wrong null code");
+  reject_text(
+      [](auto& identity, auto&) {
+        identity.datatype_catalog_snapshot_uuid =
+            "019d0000-0000-7000-8000-00000000d702";
+      },
+      "TEXT public identity projection admitted a stale snapshot");
+  reject_text(
+      [](auto& identity, auto&) {
+        identity.datatype_catalog_generation = 2;
+      },
+      "TEXT public identity projection admitted a stale catalog generation");
+  reject_text(
+      [](auto& identity, auto&) {
+        identity.datatype_registry_generation = 2;
+      },
+      "TEXT public identity projection admitted a stale registry generation");
+  reject_text(
+      [](auto&, auto& column) {
+        column.type_descriptor_uuid =
+            "019d0000-0000-7000-8000-00000000d719";
+      },
+      "TEXT public identity projection admitted a descriptor lookalike");
+  reject_text(
+      [](auto&, auto& column) {
+        column.datatype_type_uuid =
+            "019d0000-0000-7000-8000-00000000d718";
+      },
+      "TEXT public identity projection admitted a type lookalike");
+  reject_text(
+      [](auto&, auto& column) {
+        column.datatype_codec_id = "datatype.text.utf8.v2";
+      },
+      "TEXT public identity projection admitted a codec lookalike");
+  reject_text(
+      [](auto&, auto& column) { column.datatype_codec_generation = 2; },
+      "TEXT public identity projection admitted a stale codec tuple");
+  reject_text(
+      [](auto&, auto& column) { column.datatype_identity_present = false; },
+      "TEXT public identity projection admitted a stripped identity tuple");
+
+  auto fixed = text;
+  fixed.type_descriptor_uuid =
+      "019d0000-0000-7000-8000-00000000d716";
+  fixed.datatype_type_uuid =
+      "019d0000-0000-7000-8000-00000000d717";
+  fixed.datatype_codec_id = "datatype.int32.le.v1";
+  fixed.datatype_canonical_value_bytes = 4;
+  Require(ipc::ValidatePublicRelationDatatypeIdentityV3ForTest(descriptor,
+                                                               fixed),
+          "exact fixed-width public identity projection was refused");
+  fixed.datatype_canonical_value_bytes = 0;
+  Require(!ipc::ValidatePublicRelationDatatypeIdentityV3ForTest(descriptor,
+                                                                fixed),
+          "fixed-width zero was admitted as a variable-width marker");
+}
+
 template <typename TResult>
 void RequireEngineOk(const TResult& result, std::string_view message) {
   if (!result.ok) {
@@ -188,6 +284,10 @@ api::EngineRequestContext BeginEngineTransaction(
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
   begin.context.resource_epoch = fixture.resource_epoch;
+  begin.context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  begin.context.datatype_catalog_generation = 1;
+  begin.context.datatype_registry_generation = 1;
   begin.context.name_resolution_epoch = 1;
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
@@ -255,9 +355,9 @@ api::EngineColumnDefinition NeutralResourceTextColumn(
   api::EngineColumnDefinition column;
   column.names.push_back(NeutralName(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = "VARCHAR(20)";
+  column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor =
-      "type=VARCHAR(20);charset_uuid=" + std::string(charset_uuid);
+      "type=text;charset_uuid=" + std::string(charset_uuid);
   if (!collation_uuid.empty()) {
     column.descriptor.encoded_descriptor +=
         ";collation_uuid=" + std::string(collation_uuid);
@@ -532,6 +632,7 @@ std::vector<std::uint8_t> KnownAppliedCommitPayload() {
   PutString(&payload, "019f0000-0000-7000-8000-000000000091");
   PutString(&payload, "committed_by_engine_inventory");
   PutString(&payload, "SBWP.COMMIT.POST_INVENTORY_SECONDARY_FAILURE");
+  PutU8(&payload, 0);
   return payload;
 }
 
@@ -1557,7 +1658,7 @@ void VerifyNeutralPersistedRelationProjection() {
 
   const auto descriptor_path = std::filesystem::path(
       fixture.database_path.string() +
-      ".sb.mga_relation_descriptors");
+      ".sb.mga_relation_metadata");
   const std::string descriptor_bytes_before =
       ReadBinaryFile(descriptor_path);
   Require(!descriptor_bytes_before.empty(),
@@ -1625,7 +1726,7 @@ void VerifyNeutralPersistedRelationProjection() {
                   fixture.gbk_default_collation_uuid &&
               f1->charset_canonical_name == "GBK" &&
               f1->collation_canonical_name == "GBK" &&
-              f1->canonical_type_name == "VARCHAR(20)" &&
+              f1->canonical_type_name == "text" &&
               !f1->nullable && !f1->generated && !f1->identity_column &&
               f1->character_length == 20 &&
               f1->charset_min_bytes == 1 &&
@@ -2779,6 +2880,7 @@ int main() {
           "parser_server_neutral_transaction_routing_conformance");
   Require(memory_configured.ok(),
           "neutral transaction memory fixture configuration failed");
+  VerifyExactPublicDatatypeIdentityProjection();
   VerifyNeutralCodecAndPreEngineFinality();
   VerifySessionOwnedPreparedCloseAfterFinality();
   VerifyChannelScopedQuarantine();

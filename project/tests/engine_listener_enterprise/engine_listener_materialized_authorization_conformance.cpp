@@ -92,6 +92,7 @@ api::EngineMaterializedAuthorizationContext MaterializedContext(
   api::EngineMaterializedAuthorizationContext context;
   context.present = true;
   context.authority_uuid = ids.authority;
+  context.security_context_generation = 10;
   context.principal_uuid = ids.principal;
   context.security_epoch = 11;
   context.policy_epoch = 12;
@@ -183,6 +184,7 @@ api::DurableAuthorizationState RecursiveGroupState(const FixtureIds& ids,
                                                    std::size_t group_depth) {
   api::DurableAuthorizationState state;
   state.authority_uuid = ids.authority;
+  state.security_context_generation = 10;
   state.security_epoch = 11;
   state.policy_epoch = 12;
   state.catalog_generation_id = 13;

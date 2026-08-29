@@ -156,6 +156,58 @@ struct CanonicalRelationalExpressionRuntimeServices {
                      std::string* diagnostic_id,
                      std::string* refusal_detail)>
       comparison_evaluator;
+  // Receipt-owned query.execute-1.1 contextual equality. The evaluator
+  // borrows the active target row value and the consumed lease literal without
+  // copying or refreshing lease authority or resolving live resources. Normal
+  // executor work buffers used to publish SQL truth remain ordinary fallible
+  // post-admission execution work.
+  std::function<bool(
+      std::uint32_t comparison_expression_id,
+      std::uint32_t left_expression_id,
+      std::uint32_t right_expression_id,
+      const internal_api::EngineTypedValue& target_value,
+      internal_api::EngineSqlTruthValue* truth,
+      std::string* diagnostic_id,
+      std::string* refusal_detail)>
+      contextual_text_equality_evaluator;
+  // State-neutral type authority for one engine-prevalidated contextual TEXT
+  // equality.  The numeric graph handles and SBXN marker coordinates are the
+  // lookup key; callers may not infer TEXT from descriptor UUIDs or from the
+  // mere presence of the transport marker.
+  std::function<bool(
+      std::uint32_t comparison_expression_id,
+      std::uint32_t left_expression_id,
+      std::uint32_t right_expression_id,
+      std::uint32_t literal_expression_id,
+      std::uint64_t literal_occurrence,
+      std::uint64_t node_id,
+      std::uint32_t literal_descriptor_handle,
+      std::string* refusal_detail)>
+      contextual_text_equality_type_authority;
+  // A direct-route caller may validate an immutable persisted row descriptor
+  // before its one-way admission barrier, then install this exact-record
+  // matcher for post-barrier row evaluation. `nullopt` delegates to the live
+  // authority hook below; a value is the final no-lookup decision for that
+  // numeric descriptor handle.
+  std::function<std::optional<bool>(
+      std::uint32_t bound_descriptor_id,
+      const internal_api::RelationalTypeDescriptor& bound,
+      const internal_api::EngineDescriptor& persisted,
+      internal_api::RelationalNullability effective_nullability)>
+      prevalidated_persisted_row_descriptor_authority;
+  // A persisted canonical TEXT value carries registry and database-resource
+  // authority that is deliberately not duplicated in RelationalTypeDescriptor.
+  // Only the live QOW source which authenticated that persisted descriptor may
+  // install this callback.  The scalar runtime invokes it for the exact full
+  // TEXT carrier and otherwise refuses unknown authority fields; compact
+  // object-free scalar descriptors keep using the ordinary matcher above.
+  std::function<bool(
+      std::uint32_t bound_descriptor_id,
+      const internal_api::RelationalTypeDescriptor& bound,
+      const internal_api::EngineDescriptor& persisted,
+      internal_api::RelationalNullability effective_nullability,
+      std::string* refusal_detail)>
+      persisted_row_descriptor_authority;
 };
 
 // Character and timezone-profile descriptors must be compared by the bound
@@ -183,6 +235,12 @@ class CanonicalRelationalExpressionRuntime {
   explicit CanonicalRelationalExpressionRuntime(
       const internal_api::TypedRelationalDag& dag,
       CanonicalRelationalExpressionRuntimeServices services = {});
+
+  // Non-allocating logical-byte receipt for the live runtime containers after
+  // type inference. Erased callback targets are owned and accounted by the
+  // installing route; this reports the runtime object, hash storage, and
+  // retained inferred-type payloads only.
+  std::optional<std::uint64_t> RetainedLogicalMemoryBytesV1() const noexcept;
 
   bool InferType(std::uint32_t expression_id,
                  std::optional<std::string_view> expected_type,

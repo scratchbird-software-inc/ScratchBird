@@ -10,6 +10,7 @@
 #include "database_format.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
+#include "memory.hpp"
 #include "runtime_platform.hpp"
 #include "startup_state.hpp"
 #include "uuid.hpp"
@@ -601,6 +602,12 @@ void TestFormatAndRequiredFlagRefusals(Cleanup* cleanup) {
 }  // namespace
 
 int main() {
+  const auto memory_fixture =
+      scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+          scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+          "open_recovery_conformance");
+  Require(memory_fixture.ok() && memory_fixture.fixture_mode,
+          "lifecycle memory fixture configuration failed");
   Cleanup cleanup;
   TestSeedMismatchRefusesBeforeDirtyOrTx2(&cleanup);
   TestCleanDirtyAndDirtyManifestRecovery(&cleanup);

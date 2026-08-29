@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -34,6 +35,18 @@ std::vector<std::string> Split(const std::string& value, char delimiter) {
 
 bool UuidPresent(const EngineUuid& uuid) {
   return !uuid.canonical.empty();
+}
+
+bool CanonicalNonzeroUuid(const EngineUuid& uuid) {
+  const auto parsed = scratchbird::core::uuid::ParseUuid(uuid.canonical);
+  return parsed.ok() && !parsed.value.is_nil() &&
+         scratchbird::core::uuid::UuidToString(parsed.value) ==
+             uuid.canonical;
+}
+
+bool NonzeroSha256(const std::array<std::uint8_t, 32>& value) {
+  return std::any_of(value.begin(), value.end(),
+                     [](std::uint8_t byte) { return byte != 0; });
 }
 
 bool UuidEquals(const EngineUuid& lhs, const EngineUuid& rhs) {
@@ -214,11 +227,12 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
         "principal_uuid_required"));
     return result;
   }
-  if (state.security_epoch == 0 || state.policy_epoch == 0 ||
+  if (state.security_context_generation == 0 || state.security_epoch == 0 ||
+      state.policy_epoch == 0 ||
       state.catalog_generation_id == 0) {
     result.diagnostics.push_back(MakeSecurityDiagnostic(
         "SECURITY.AUTHORIZATION.STATE_EPOCH_REQUIRED",
-        "security_policy_catalog_epochs_required"));
+        "security_context_policy_catalog_generations_required"));
     return result;
   }
   if ((request.observed_security_epoch != 0 &&
@@ -252,6 +266,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
   EngineMaterializedAuthorizationContext context;
   context.present = true;
   context.authority_uuid = state.authority_uuid;
+  context.security_context_generation = state.security_context_generation;
   context.principal_uuid = request.principal_uuid;
   context.security_epoch = state.security_epoch;
   context.policy_epoch = state.policy_epoch;
@@ -395,16 +410,47 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
           "policy_epoch_mismatch:" + policy.policy_uuid.canonical));
       return result;
     }
-    context.policies.push_back({policy.policy_uuid,
-                                policy.subject_uuid,
-                                policy.subject_kind,
-                                policy.target_uuid,
-                                policy.right,
-                                policy.policy_kind,
-                                policy.deny,
-                                policy.requires_runtime_recheck,
-                                policy.policy_epoch,
-                                policy.canonical_policy_envelope});
+    if (policy.policy_kind == "row_policy" &&
+        (policy.source_policy_generation == 0 ||
+         (policy.update_policy_phase != 1 &&
+          policy.update_policy_phase != 2) ||
+         !CanonicalNonzeroUuid(policy.effective_policy_uuid) ||
+         policy.effective_policy_generation == 0 ||
+         !CanonicalNonzeroUuid(policy.effective_expression_uuid) ||
+         policy.effective_expression_generation == 0 ||
+         !NonzeroSha256(policy.effective_expression_evidence_sha256))) {
+      result.diagnostics.push_back(MakeSecurityDiagnostic(
+          "SECURITY.CONTEXT.EXPIRED",
+          "row_policy_native_authority_missing:" +
+              policy.policy_uuid.canonical));
+      return result;
+    }
+    EngineMaterializedAuthorizationPolicy materialized;
+    materialized.policy_uuid = policy.policy_uuid;
+    materialized.subject_uuid = policy.subject_uuid;
+    materialized.subject_kind = policy.subject_kind;
+    materialized.target_uuid = policy.target_uuid;
+    materialized.right = policy.right;
+    materialized.policy_kind = policy.policy_kind;
+    materialized.deny = policy.deny;
+    materialized.requires_runtime_recheck =
+        policy.requires_runtime_recheck;
+    materialized.source_policy_generation =
+        policy.source_policy_generation;
+    materialized.policy_epoch = policy.policy_epoch;
+    materialized.canonical_policy_envelope =
+        policy.canonical_policy_envelope;
+    materialized.update_policy_phase = policy.update_policy_phase;
+    materialized.effective_policy_uuid = policy.effective_policy_uuid;
+    materialized.effective_policy_generation =
+        policy.effective_policy_generation;
+    materialized.effective_expression_uuid =
+        policy.effective_expression_uuid;
+    materialized.effective_expression_generation =
+        policy.effective_expression_generation;
+    materialized.effective_expression_evidence_sha256 =
+        policy.effective_expression_evidence_sha256;
+    context.policies.push_back(std::move(materialized));
   }
 
   context.evidence_tags.push_back("durable_authorization_context");

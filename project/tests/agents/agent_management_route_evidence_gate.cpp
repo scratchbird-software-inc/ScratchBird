@@ -115,12 +115,14 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
   context.node_uuid.canonical = "019f0920-0000-7000-8000-000000000005";
   context.local_transaction_id = 92092;
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.catalog_generation_id = 92;
   context.security_epoch = 93;
   context.resource_epoch = 94;
   for (const auto right : rights) {
     context.trace_tags.push_back("right:" + std::string(right));
   }
+  context.trace_tags.push_back("security.fixture_trace_authority");
   return context;
 }
 

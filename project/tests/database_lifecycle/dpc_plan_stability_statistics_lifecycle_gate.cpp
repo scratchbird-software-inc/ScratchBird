@@ -15,6 +15,7 @@
 #include "observability/explain_api.hpp"
 #include "observability/performance_optimization_surface.hpp"
 #include "observability/show_api.hpp"
+#include "access_path_full.hpp"
 #include "optimizer_explain.hpp"
 #include "optimizer_request.hpp"
 #include "query/plan_api.hpp"
@@ -591,6 +592,83 @@ api::EnginePlanOperationResult PlanCrud(CrudFixture& fixture,
   return api::EnginePlanOperation(request);
 }
 
+opt::OptimizerStatsIdentity DpcFreshIdentity(
+    const std::string& object_uuid,
+    const std::string& statistic_uuid,
+    api::EngineApiU64 transaction_visibility_epoch) {
+  opt::OptimizerStatsIdentity identity;
+  identity.object_uuid = object_uuid;
+  identity.statistic_uuid = statistic_uuid;
+  identity.stats_epoch = 11;
+  identity.catalog_epoch = 7;
+  identity.transaction_visibility_epoch = transaction_visibility_epoch;
+  identity.freshness = opt::OptimizerStatsFreshnessState::kFresh;
+  identity.source = opt::StatisticSource::kCatalogExact;
+  identity.confidence = opt::CostConfidence::kHigh;
+  return identity;
+}
+
+opt::AccessPathPlanningRequest DpcCanonicalAccessRequest(
+    const CrudFixture& fixture,
+    opt::OptimizerStatsFreshnessState freshness =
+        opt::OptimizerStatsFreshnessState::kFresh) {
+  opt::TableCardinalityStats table;
+  table.identity = DpcFreshIdentity(fixture.table_uuid,
+                                    fixture.table_uuid + ":table-statistics",
+                                    fixture.context.local_transaction_id);
+  table.row_count = 128;
+  table.visible_row_count = 128;
+  table.page_count = 8;
+  table.average_row_bytes = 96;
+
+  opt::IndexStats index;
+  index.identity = DpcFreshIdentity(fixture.index_uuid,
+                                    fixture.index_uuid + ":index-statistics",
+                                    fixture.context.local_transaction_id);
+  index.identity.freshness = freshness;
+  index.index_uuid = fixture.index_uuid;
+  index.relation_uuid = fixture.table_uuid;
+  index.index_family = "btree";
+  index.key_column_uuids = {fixture.table_uuid + ":id"};
+  index.covered_column_uuids = {fixture.table_uuid + ":id",
+                                fixture.table_uuid + ":note"};
+  index.unique = true;
+  index.covering = true;
+  index.height = 2;
+  index.leaf_pages = 4;
+  index.distinct_keys = 128;
+  index.clustering_factor = 0.95;
+  index.fragmentation_ratio = 0.0;
+  index.visibility_coverage = 1.0;
+  index.predicate_coverage = 1.0;
+  index.equality_lookup_supported = true;
+  index.ordered_range_supported = true;
+  index.route_benchmark_clean = true;
+
+  opt::AccessPathPlanningRequest request;
+  request.relation_uuid = fixture.table_uuid;
+  request.predicate_kind = "scalar_eq";
+  request.descriptor_digest = "canonical=character";
+  request.visibility_proven = true;
+  request.grants_proven = true;
+  request.base_row_mga_recheck_planned = true;
+  request.base_row_security_recheck_planned = true;
+  request.index_visibility_native = true;
+  request.table_stats = std::move(table);
+  request.candidate_indexes = {std::move(index)};
+  return request;
+}
+
+const opt::PlanCandidate* DpcFindCandidate(
+    const std::vector<opt::PlanCandidate>& candidates,
+    std::string_view candidate_id) {
+  const auto candidate = std::find_if(
+      candidates.begin(), candidates.end(), [&](const auto& current) {
+        return current.candidate_id == candidate_id;
+      });
+  return candidate == candidates.end() ? nullptr : &*candidate;
+}
+
 void RequireOptimizerSelectionEvidence(const api::EnginePlanOperationResult& result) {
   Require(HasEvidence(result, "optimizer_profile"),
           "DPC-010 optimizer_profile evidence missing");
@@ -607,17 +685,40 @@ void RequireOptimizerSelectionEvidence(const api::EnginePlanOperationResult& res
 }
 
 void TestStatisticsFallbackAndSelectionEvidence(CrudFixture& fixture) {
-  const auto lookup = PlanCrud(fixture, Predicate("column_equals", {"id-7"}));
-  RequireOk(lookup, "DPC-010 equality lookup plan failed");
-  Require(lookup.plan_kind == "scalar_btree_lookup",
-          "DPC-010 equality predicate did not select scalar btree lookup");
-  Require(HasEvidence(lookup, "optimizer_access_path_index", fixture.index_uuid),
-          "DPC-010 lookup did not bind generated index UUID");
-  Require(HasEvidence(lookup,
-                      "optimizer_selected_access",
-                      "scalar_btree_lookup"),
-          "DPC-010 selected access evidence mismatch");
-  RequireOptimizerSelectionEvidence(lookup);
+  const auto legacy_lookup =
+      PlanCrud(fixture, Predicate("column_equals", {"id-7"}));
+  RequireOk(legacy_lookup, "DPC-010 legacy equality lookup plan failed");
+  Require(legacy_lookup.plan_kind == "table_scan",
+          "DPC-010 legacy request invented catalog-backed index statistics");
+  Require(HasEvidence(legacy_lookup,
+                      "optimizer_access_path_fallback",
+                      "stale_or_missing_relation_statistics_scan"),
+          "DPC-010 legacy missing-statistics refusal evidence missing");
+  RequireOptimizerSelectionEvidence(legacy_lookup);
+
+  const auto fresh_candidates = opt::GenerateFullAccessPathCandidates(
+      DpcCanonicalAccessRequest(fixture));
+  const auto* lookup = DpcFindCandidate(
+      fresh_candidates, "CAND-OPT-INDEX:" + fixture.index_uuid);
+  Require(lookup != nullptr && lookup->cost.selectable,
+          "DPC-010 exact catalog statistics did not admit btree lookup");
+  Require(lookup->access_kind == plan::PhysicalAccessKind::kScalarBtreeLookup,
+          "DPC-010 exact catalog statistics selected the wrong lookup family");
+  Require(lookup->estimated_rows == 1,
+          "DPC-010 unique lookup cardinality estimate drifted");
+
+  const auto stale_candidates = opt::GenerateFullAccessPathCandidates(
+      DpcCanonicalAccessRequest(fixture,
+                                opt::OptimizerStatsFreshnessState::kStale));
+  const auto* stale_index = DpcFindCandidate(
+      stale_candidates, "CAND-OPT-INDEX-REFUSED:" + fixture.index_uuid);
+  Require(stale_index != nullptr && !stale_index->cost.selectable,
+          "DPC-010 stale canonical index statistics were selectable");
+  Require(std::find(stale_index->refusal_reasons.begin(),
+                    stale_index->refusal_reasons.end(),
+                    "index_rebuild_or_stale") !=
+              stale_index->refusal_reasons.end(),
+          "DPC-010 stale canonical index refusal reason missing");
 
   const auto stale = PlanCrud(fixture,
                               Predicate("column_equals", {"id-9"}),

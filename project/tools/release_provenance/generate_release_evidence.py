@@ -41,7 +41,7 @@ def sha256_file(path: pathlib.Path) -> str:
 def run_git(repo_root: pathlib.Path, args: list[str]) -> tuple[bool, str]:
     try:
         result = subprocess.run(
-            ["git", *args],
+            ["git", "-c", f"safe.directory={repo_root}", *args],
             cwd=str(repo_root),
             text=True,
             stdout=subprocess.PIPE,

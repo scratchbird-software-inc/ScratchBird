@@ -1425,10 +1425,33 @@ set_tests_properties(optimizer_runtime_hot_path_orh_125_gate PROPERTIES
   LABELS "optimizer_runtime_hot_path_orh_125_gate;ORH-125;ORH-GATE-125;optimizer_runtime_hot_path;performance;cross_route_equivalence;benchmark_clean;no_execution_plan_runtime;mga_transaction_regression"
 )
 
-if(TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql AND TARGET sb_isql)
+if(TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql AND TARGET sb_isql AND
+   TARGET sb_engine_internal_api AND TARGET sb_storage_database AND TARGET sb_core_memory AND
+   TARGET sb_core_uuid)
+  add_executable(
+    optimizer_runtime_hot_path_orh_125_database_seed
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_driver_test_database_seed.cpp
+  )
+  target_compile_features(
+    optimizer_runtime_hot_path_orh_125_database_seed
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(
+    optimizer_runtime_hot_path_orh_125_database_seed
+    PRIVATE
+      sb_engine_internal_api
+      sb_storage_database
+      sb_core_memory
+      sb_core_uuid
+  )
   add_custom_target(
     optimizer_runtime_hot_path_orh_125_live_route_gate_deps
-    DEPENDS sb_server sb_listener sbp_sbsql sb_isql
+    DEPENDS
+      sb_server
+      sb_listener
+      sbp_sbsql
+      sb_isql
+      optimizer_runtime_hot_path_orh_125_database_seed
   )
   add_test(
     NAME optimizer_runtime_hot_path_orh_125_live_route_gate
@@ -1438,6 +1461,8 @@ if(TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql AND TARGET sb_is
             --listener $<TARGET_FILE:sb_listener>
             --parser-worker $<TARGET_FILE:sbp_sbsql>
             --sb-isql $<TARGET_FILE:sb_isql>
+            --database-seed $<TARGET_FILE:optimizer_runtime_hot_path_orh_125_database_seed>
+            --resource-seed-pack-root "${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
             --work-dir "${CMAKE_CURRENT_BINARY_DIR}/optimizer_runtime_hot_path_orh_125_live_route_gate"
             --build-mode "$<CONFIG>"
   )
@@ -2121,7 +2146,8 @@ set_tests_properties(optimizer_deficiency_odf_026_gate PROPERTIES
   LABELS "optimizer_deficiency_odf_026_gate;ODF-026;optimizer_deficiency;performance;benchmark_clean;mga_transaction_regression"
 )
 
-if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_engine_sblr AND TARGET sb_core_uuid)
+if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_engine_sblr AND TARGET sb_core_uuid
+   AND TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   add_executable(
     optimizer_deficiency_odf_110_gate
     optimizer_deficiency_odf_110_gate.cpp
@@ -2137,6 +2163,8 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_engine_sblr AND TARGET sb_core
     PRIVATE
       sbl_sbsql_parser_pipeline
       sb_engine_sblr
+      sb_engine_internal_api
+      sb_storage_database
       sb_core_uuid
   )
   add_test(

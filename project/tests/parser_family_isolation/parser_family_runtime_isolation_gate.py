@@ -463,6 +463,22 @@ def grant_uuid(principal_uuid: str, right: str) -> str:
     return f"019f0a11-ce00-7000-8000-{digest[:12]}"
 
 
+def authorization_context_successor(authority_event: str, generation: int) -> str:
+    fields = authority_event.split("\t")
+    if len(fields) < 3 or fields[0] != "SBSECPL1" or generation <= 0:
+        raise GateError("security authority successor input is invalid")
+    evidence = hashlib.sha256((authority_event + "\n").encode("utf-8")).hexdigest()
+    return "\t".join(
+        [
+            "SBSECPL1",
+            "AUTH_CONTEXT_SUCCESSOR",
+            fields[2],
+            str(generation),
+            f"security-context-successor:v1:sha256:{evidence}",
+        ]
+    )
+
+
 def write_auth_file(database: pathlib.Path) -> pathlib.Path:
     auth = pathlib.Path(str(database) + ".sb.local_password_auth")
     auth.write_text(f"alice\tlocal_password\t{VERIFIER}\n", encoding="utf-8")
@@ -501,8 +517,14 @@ def write_auth_file(database: pathlib.Path) -> pathlib.Path:
                 ]
             )
         )
+    authority_events = [event, *grants]
+    committed_events: list[str] = []
+    for generation, authority_event in enumerate(authority_events, start=1):
+        committed_events.extend(
+            [authority_event, authorization_context_successor(authority_event, generation)]
+        )
     pathlib.Path(str(database) + ".sb.security_principal_events").write_text(
-        event + "\n" + "\n".join(grants) + "\n", encoding="utf-8"
+        "\n".join(committed_events) + "\n", encoding="utf-8"
     )
     return auth
 

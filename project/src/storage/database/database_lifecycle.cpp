@@ -13,6 +13,7 @@
 #include "cluster_catalog_schema_versioning.hpp"
 #include "agent_engine_lifecycle.hpp"
 #include "catalog_page.hpp"
+#include "database_local_private_relation_locator.hpp"
 #include "database_dirty_manifest.hpp"
 #include "datatype_descriptor.hpp"
 #include "memory.hpp"
@@ -42,6 +43,13 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include <openssl/sha.h>
 
@@ -356,13 +364,14 @@ bool ResourceSeedPackMismatch(const ResourceSeedCatalogImage& image,
 
 DatabaseLifecycleResult ValidateCorePageHeaders(FileDevice* device,
                                                 u32 page_size,
-                                                const DiskDevicePolicy& policy) {
+                                                const DiskDevicePolicy& policy,
+                                                PageType private_security_page_type) {
   const std::array<std::pair<PageType, u64>, 5> expected = {{
       {PageType::system_state, kSystemStatePageNumber},
       {PageType::catalog, kCatalogPageNumber},
       {PageType::allocation_map, kAllocationMapPageNumber},
       {PageType::transaction_inventory, kTransactionInventoryPageNumber},
-      {PageType::bootstrap_reserved, kBootstrapReservedPageNumber},
+      {private_security_page_type, kBootstrapReservedPageNumber},
   }};
 
   for (const auto& entry : expected) {
@@ -2837,6 +2846,8 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
                        {"create_time_only", "1"},
                        {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
                        {"policy_generation", std::to_string(policy_generation)},
+                       {"security_context_authority_version", "1"},
+                       {"security_context_generation", "1"},
                        {"active", "1"}}),
       security_parent_uuid,
       parsed_sysarch.value);
@@ -2877,6 +2888,8 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
                        {"security_generation", "1"},
                        {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
                        {"policy_generation", std::to_string(policy_generation)},
+                       {"security_context_authority_version", "1"},
+                       {"security_context_generation", "1"},
                        {"identity_authority", "uuid"},
                        {"create_time_only", "1"},
                        {"bootstrap_principal", "1"}}),
@@ -2911,6 +2924,8 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
                        {"security_generation", "1"},
                        {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
                        {"policy_generation", std::to_string(policy_generation)},
+                       {"security_context_authority_version", "1"},
+                       {"security_context_generation", "1"},
                        {"identity_authority", "uuid"},
                        {"create_time_only", "1"}}),
       security_parent_uuid,
@@ -4871,7 +4886,7 @@ DatabaseLifecycleResult BuildCorePageCacheEntries(FileDevice* device,
       {PageType::catalog, kCatalogPageNumber},
       {PageType::allocation_map, kAllocationMapPageNumber},
       {PageType::transaction_inventory, kTransactionInventoryPageNumber},
-      {PageType::bootstrap_reserved, kBootstrapReservedPageNumber},
+      {PageType::security_root, kBootstrapReservedPageNumber},
   }};
 
   entries->clear();
@@ -5247,6 +5262,467 @@ StartupRecoveryClassification ClassifyStartupStateForOpen(const StartupStateReco
     return StartupRecoveryClassification::fence_writes_until_safe;
   }
   return StartupRecoveryClassification::checkpoint_rebuild_required;
+}
+
+enum class BootstrapSecurityContextAuthorityClass : std::uint8_t {
+  current,
+  legacy_missing,
+  invalid,
+};
+
+BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
+    const std::vector<CatalogPageRow>& rows,
+    u64* generation,
+    u32* authority_row_count = nullptr) {
+  if (generation == nullptr) {
+    return BootstrapSecurityContextAuthorityClass::invalid;
+  }
+  *generation = 0;
+  u32 relevant = 0;
+  u32 current = 0;
+  u32 legacy = 0;
+  for (const auto& row : rows) {
+    if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+    const auto decoded = DecodeCatalogTypedRecord(row);
+    if (!decoded.ok() || decoded.record.header.deleted) continue;
+    const auto fields = ParseKeyValuePayload(decoded.record.payload);
+    const bool relevant_role =
+        decoded.record.header.kind == CatalogRecordKind::role_account &&
+        fields.contains("role_uuid") &&
+        fields.at("role_uuid") == kCanonicalSysarchRoleObjectUuid;
+    const bool relevant_principal =
+        decoded.record.header.kind == CatalogRecordKind::user_account &&
+        fields.contains("bootstrap_principal") &&
+        fields.at("bootstrap_principal") == "1";
+    const bool relevant_membership =
+        decoded.record.header.kind == CatalogRecordKind::grant_record &&
+        fields.contains("grant_class") &&
+        fields.at("grant_class") == "role_membership" &&
+        fields.contains("role_uuid") &&
+        fields.at("role_uuid") == kCanonicalSysarchRoleObjectUuid;
+    if (!relevant_role && !relevant_principal && !relevant_membership) {
+      continue;
+    }
+    ++relevant;
+    const auto version = ParseU64Field(
+        fields, "security_context_authority_version");
+    const auto row_generation = ParseU64Field(
+        fields, "security_context_generation");
+    const bool has_version =
+        fields.contains("security_context_authority_version");
+    const bool has_generation = fields.contains("security_context_generation");
+    if (!has_version && !has_generation) {
+      ++legacy;
+      continue;
+    }
+    if (!has_version || !has_generation || version != 1 ||
+        row_generation == 0 || (*generation != 0 &&
+                                *generation != row_generation)) {
+      return BootstrapSecurityContextAuthorityClass::invalid;
+    }
+    *generation = row_generation;
+    ++current;
+  }
+  if (authority_row_count != nullptr) *authority_row_count = relevant;
+  if (relevant == 0 || (current != 0 && legacy != 0)) {
+    return BootstrapSecurityContextAuthorityClass::invalid;
+  }
+  if (legacy == relevant) {
+    *generation = 0;
+    return BootstrapSecurityContextAuthorityClass::legacy_missing;
+  }
+  return current == relevant && *generation != 0
+             ? BootstrapSecurityContextAuthorityClass::current
+             : BootstrapSecurityContextAuthorityClass::invalid;
+}
+
+bool AddBootstrapSecurityContextAuthorityToRows(
+    std::vector<CatalogPageRow>* rows) {
+  if (rows == nullptr) return false;
+  u32 updated = 0;
+  for (auto& row : *rows) {
+    if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+    const auto decoded = DecodeCatalogTypedRecord(row);
+    if (!decoded.ok() || decoded.record.header.deleted) continue;
+    const auto fields = ParseKeyValuePayload(decoded.record.payload);
+    const bool relevant_role =
+        decoded.record.header.kind == CatalogRecordKind::role_account &&
+        fields.contains("role_uuid") &&
+        fields.at("role_uuid") == kCanonicalSysarchRoleObjectUuid;
+    const bool relevant_principal =
+        decoded.record.header.kind == CatalogRecordKind::user_account &&
+        fields.contains("bootstrap_principal") &&
+        fields.at("bootstrap_principal") == "1";
+    const bool relevant_membership =
+        decoded.record.header.kind == CatalogRecordKind::grant_record &&
+        fields.contains("grant_class") &&
+        fields.at("grant_class") == "role_membership" &&
+        fields.contains("role_uuid") &&
+        fields.at("role_uuid") == kCanonicalSysarchRoleObjectUuid;
+    if (!relevant_role && !relevant_principal && !relevant_membership) {
+      continue;
+    }
+    if (fields.contains("security_context_authority_version") ||
+        fields.contains("security_context_generation")) {
+      return false;
+    }
+    auto record = decoded.record;
+    if (!record.payload.empty() && record.payload.back() != '\n') {
+      record.payload.push_back('\n');
+    }
+    record.payload.append("security_context_authority_version=1\n");
+    record.payload.append("security_context_generation=1\n");
+    const auto encoded = EncodeCatalogTypedRecord(record, row.ordinal);
+    if (!encoded.ok()) return false;
+    row = encoded.row;
+    ++updated;
+  }
+  return updated != 0;
+}
+
+bool SyncParentDirectory(const std::string& path) {
+#if defined(_WIN32)
+  auto parent = std::filesystem::path(path).parent_path();
+  if (parent.empty()) parent = ".";
+  HANDLE handle = ::CreateFileA(
+      parent.string().c_str(),
+      GENERIC_READ | GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr,
+      OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS,
+      nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  const bool ok = ::FlushFileBuffers(handle) != 0;
+  ::CloseHandle(handle);
+  return ok;
+#else
+  const auto parent = std::filesystem::path(path).parent_path();
+  const std::string directory = parent.empty() ? "." : parent.string();
+  const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return false;
+  const bool ok = ::fsync(fd) == 0;
+  ::close(fd);
+  return ok;
+#endif
+}
+
+DatabaseLifecycleResult MigrateBootstrapSecurityContextAuthority(
+    const DatabaseOpenConfig& config,
+    FileDevice* source_device) {
+  auto fail = [&](std::string detail) {
+    return LifecycleError(
+        "SB-DB-BOOTSTRAP-SECURITY-CONTEXT-MIGRATION-FAILED",
+        "storage.database_lifecycle.bootstrap_security_context_migration_failed",
+        config.path, std::move(detail));
+  };
+  if (source_device == nullptr || !source_device->is_open() ||
+      source_device->read_only() || source_device->path() != config.path) {
+    return fail("source_owner_lock_not_held");
+  }
+  const std::string temporary =
+      config.path + ".sb.security_context_generation_v1.migration_tmp";
+  std::error_code error;
+  if (std::filesystem::exists(temporary, error)) {
+    if (error || !std::filesystem::remove(temporary, error) || error) {
+      return fail("abandoned_temporary_cleanup_failed");
+    }
+  } else if (error) {
+    return fail("abandoned_temporary_inspection_failed");
+  }
+  if (!std::filesystem::copy_file(config.path, temporary, error) || error) {
+    return fail("sealed_copy_failed");
+  }
+  // Retain source_device solely as the recognized exclusive owner across the
+  // temporary-image rewrite and atomic publication; the live source is never
+  // mutated through this handle.
+  struct TemporaryImageGuard {
+    std::string path;
+    bool published = false;
+    ~TemporaryImageGuard() {
+      if (published || path.empty()) return;
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+    }
+  } temporary_guard{temporary, false};
+  if (config.security_context_migration_fault_injection_point ==
+      "after_copy_before_rewrite") {
+    return fail("injected_after_copy_before_rewrite");
+  }
+
+  FileDevice migrated;
+  const auto opened = migrated.Open(temporary, FileOpenMode::open_existing);
+  if (!opened.ok()) {
+    return PropagateDiagnostic(opened.status, opened.diagnostic);
+  }
+  SerializedDatabaseHeader serialized{};
+  const auto header_read = migrated.ReadAt(
+      0, serialized.data(), serialized.size());
+  if (!header_read.ok()) {
+    return PropagateDiagnostic(header_read.status, header_read.diagnostic);
+  }
+  const auto parsed = ParseDatabaseHeader(serialized);
+  if (!parsed.ok()) {
+    return PropagateDiagnostic(parsed.status, parsed.diagnostic);
+  }
+  const auto startup = ReadStartupStatePageBody(
+      &migrated, parsed.header.page_size);
+  if (!startup.ok()) {
+    return PropagateDiagnostic(startup.status, startup.diagnostic);
+  }
+  std::vector<CatalogPageRow> rows;
+  const auto rows_read = ReadCatalogPageRows(
+      &migrated, parsed.header.page_size, &rows);
+  if (!rows_read.ok()) return rows_read;
+  u64 generation = 0;
+  if (InspectBootstrapSecurityContextAuthority(rows, &generation) !=
+          BootstrapSecurityContextAuthorityClass::legacy_missing ||
+      !AddBootstrapSecurityContextAuthorityToRows(&rows)) {
+    return fail("legacy_authority_not_exactly_migratable");
+  }
+  PageManagerContext page_context;
+  page_context.page_size = parsed.header.page_size;
+  page_context.database_uuid.kind = UuidKind::database;
+  page_context.database_uuid.value = parsed.header.database_uuid;
+  page_context.filespace_uuid = startup.state.first_filespace_uuid;
+  page_context.cluster_authority_active = false;
+  const auto written = WriteCatalogPageBodies(
+      &migrated, page_context, rows, CurrentUnixEpochMillis());
+  if (!written.ok()) return written;
+  const auto synced = migrated.Sync();
+  if (!synced.ok()) {
+    return PropagateDiagnostic(synced.status, synced.diagnostic);
+  }
+  const auto closed = migrated.Close();
+  if (!closed.ok()) {
+    return PropagateDiagnostic(closed.status, closed.diagnostic);
+  }
+  if (config.security_context_migration_fault_injection_point ==
+      "after_rewrite_sync_before_publish") {
+    return fail("injected_after_rewrite_sync_before_publish");
+  }
+
+#if defined(_WIN32)
+  const bool published =
+      ReplaceFileA(config.path.c_str(), temporary.c_str(), nullptr,
+                   REPLACEFILE_WRITE_THROUGH, nullptr, nullptr) != 0;
+  if (!published) return fail("sealed_replace_failed");
+#else
+  if (::rename(temporary.c_str(), config.path.c_str()) != 0) {
+    return fail("sealed_rename_failed");
+  }
+#endif
+  temporary_guard.published = true;
+  const bool parent_synced = SyncParentDirectory(config.path);
+  const auto source_closed = source_device->Close();
+  if (!parent_synced) {
+    return fail("sealed_parent_sync_failed");
+  }
+  if (!source_closed.ok()) {
+    return PropagateDiagnostic(source_closed.status,
+                               source_closed.diagnostic);
+  }
+  if (config.security_context_migration_fault_injection_point ==
+      "after_publish_before_ack") {
+    return fail("injected_after_publish_before_ack");
+  }
+  DatabaseLifecycleResult result;
+  result.status = DatabaseLifecycleOkStatus();
+  return result;
+}
+
+DatabaseLifecycleResult MigrateDatabaseLocalPrivateSecurityLocator(
+    const DatabaseOpenConfig& config,
+    FileDevice* source_device,
+    const TypedUuid& database_uuid,
+    u32 page_size,
+    u64 bootstrap_security_context_generation) {
+  auto fail = [&](std::string detail) {
+    return LifecycleError(
+        kDatabaseLocalPrivateSecurityLocatorUpgradeRequired,
+        "storage.database_lifecycle.private_security_locator_migration_failed",
+        config.path,
+        std::move(detail));
+  };
+  if (source_device == nullptr || !source_device->is_open() ||
+      source_device->read_only() || source_device->path() != config.path ||
+      database_uuid.kind != UuidKind::database ||
+      database_uuid.value.is_nil() || page_size == 0 ||
+      bootstrap_security_context_generation == 0) {
+    return fail("migration_authority_invalid");
+  }
+
+  const std::string temporary =
+      config.path + ".sb.private_security_locator_v1.migration_tmp";
+  std::error_code error;
+  if (std::filesystem::exists(temporary, error)) {
+    if (error || !std::filesystem::remove(temporary, error) || error) {
+      return fail("abandoned_temporary_cleanup_failed");
+    }
+  } else if (error) {
+    return fail("abandoned_temporary_inspection_failed");
+  }
+  if (!std::filesystem::copy_file(config.path, temporary, error) || error) {
+    return fail("exclusive_temporary_copy_failed");
+  }
+  // Keep source_device open for the entire migration so its recognized
+  // cross-process owner lock excludes concurrent opens. FileDevice data
+  // handles use delete sharing on Windows, and POSIX permits rename of an
+  // open inode, so publication can complete before that lock is released.
+  struct TemporaryImageGuard {
+    std::string path;
+    bool published = false;
+    ~TemporaryImageGuard() {
+      if (published || path.empty()) return;
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+    }
+  } temporary_guard{temporary, false};
+
+  if (config.private_relation_locator_migration_fault_injection_point ==
+      "after_copy_before_temp_scan") {
+    return fail("injected_after_copy_before_temp_scan");
+  }
+
+  FileDevice temporary_device;
+  const auto opened =
+      temporary_device.Open(temporary, FileOpenMode::open_existing);
+  if (!opened.ok()) {
+    return PropagateDiagnostic(opened.status, opened.diagnostic);
+  }
+  SerializedDatabaseHeader serialized{};
+  const auto header_read = temporary_device.ReadAt(
+      0, serialized.data(), serialized.size());
+  if (!header_read.ok()) {
+    return PropagateDiagnostic(header_read.status, header_read.diagnostic);
+  }
+  const auto parsed = ParseDatabaseHeader(serialized);
+  if (!parsed.ok()) {
+    return PropagateDiagnostic(parsed.status, parsed.diagnostic);
+  }
+  if (!(parsed.header.database_uuid == database_uuid.value) ||
+      parsed.header.page_size != page_size) {
+    return fail("temporary_image_identity_mismatch");
+  }
+
+  DatabaseLocalPrivateSecurityLocatorMigrationRequestV1 migration_request;
+  migration_request.temporary_image = &temporary_device;
+  migration_request.database_uuid = database_uuid;
+  migration_request.page_size = page_size;
+  migration_request.bootstrap_security_context_generation =
+      bootstrap_security_context_generation;
+  migration_request.migration_unix_epoch_millis = CurrentUnixEpochMillis();
+  const auto migrated =
+      MigrateLegacyDatabaseLocalPrivateSecurityLocatorInTemporaryImageV1(
+          migration_request);
+  if (!migrated.ok()) {
+    return PropagateDiagnostic(migrated.status, migrated.diagnostic);
+  }
+  const bool migrated_prior_digest_zero = std::all_of(
+      migrated.locator.prior_locator_sha256.begin(),
+      migrated.locator.prior_locator_sha256.end(),
+      [](auto value) { return value == 0; });
+  if (migrated.marker.migration_scan_count != 1 ||
+      migrated.locator.lineage !=
+          DatabaseLocalPrivateSecurityLocatorLineageV1::
+              sealed_legacy_migration ||
+      migrated.locator.locator_generation != 1 ||
+      !migrated.locator.creator_transaction_uuid.is_nil() ||
+      migrated.locator.creator_local_transaction_id != 0 ||
+      !migrated_prior_digest_zero) {
+    return fail("temporary_migrated_base_authority_invalid");
+  }
+
+  DatabaseHeader migrated_header = parsed.header;
+  std::copy(
+      migrated.marker_bytes.begin(), migrated.marker_bytes.end(),
+      migrated_header.database_local_private_relation_locator_marker.begin());
+  const auto encoded_header = SerializeDatabaseHeader(migrated_header);
+  if (!encoded_header.ok()) {
+    return PropagateDiagnostic(encoded_header.status,
+                               encoded_header.diagnostic);
+  }
+  const auto header_written = temporary_device.WriteAt(
+      0, encoded_header.serialized.data(), encoded_header.serialized.size());
+  if (!header_written.ok()) {
+    return PropagateDiagnostic(header_written.status,
+                               header_written.diagnostic);
+  }
+  const auto synced = temporary_device.Sync();
+  if (!synced.ok()) {
+    return PropagateDiagnostic(synced.status, synced.diagnostic);
+  }
+
+  SerializedDatabaseHeader readback{};
+  const auto readback_read = temporary_device.ReadAt(
+      0, readback.data(), readback.size());
+  if (!readback_read.ok()) {
+    return PropagateDiagnostic(readback_read.status,
+                               readback_read.diagnostic);
+  }
+  const auto parsed_readback = ParseDatabaseHeader(readback);
+  if (!parsed_readback.ok()) {
+    return PropagateDiagnostic(parsed_readback.status,
+                               parsed_readback.diagnostic);
+  }
+  if (parsed_readback.header
+          .database_local_private_relation_locator_marker !=
+      migrated.marker_bytes) {
+    return fail("temporary_marker_readback_mismatch");
+  }
+  DatabaseLocalPrivateSecurityLocatorInspectRequestV1 inspect_request;
+  inspect_request.device = &temporary_device;
+  inspect_request.marker_bytes = migrated.marker_bytes;
+  inspect_request.expected_database_uuid = database_uuid;
+  inspect_request.page_size = page_size;
+  inspect_request.admit_exact_legacy_absence = false;
+  const auto inspected =
+      InspectDatabaseLocalPrivateSecurityLocatorV1(inspect_request);
+  if (!inspected.ok() ||
+      inspected.classification !=
+          DatabaseLocalPrivateSecurityLocatorClassV1::sealed_current) {
+    if (!inspected.ok()) {
+      return PropagateDiagnostic(inspected.status, inspected.diagnostic);
+    }
+    return fail("temporary_locator_readback_not_current");
+  }
+  const auto closed = temporary_device.Close();
+  if (!closed.ok()) {
+    return PropagateDiagnostic(closed.status, closed.diagnostic);
+  }
+  if (config.private_relation_locator_migration_fault_injection_point ==
+      "after_temp_sync_before_replace") {
+    return fail("injected_after_temp_sync_before_replace");
+  }
+
+#if defined(_WIN32)
+  const bool published =
+      ReplaceFileA(config.path.c_str(), temporary.c_str(), nullptr,
+                   REPLACEFILE_WRITE_THROUGH, nullptr, nullptr) != 0;
+  if (!published) return fail("sealed_replace_failed");
+#else
+  if (::rename(temporary.c_str(), config.path.c_str()) != 0) {
+    return fail("sealed_rename_failed");
+  }
+#endif
+  temporary_guard.published = true;
+  const bool parent_synced = SyncParentDirectory(config.path);
+  const auto source_closed = source_device->Close();
+  if (!parent_synced) {
+    return fail("sealed_parent_sync_failed");
+  }
+  if (!source_closed.ok()) {
+    return PropagateDiagnostic(source_closed.status,
+                               source_closed.diagnostic);
+  }
+  if (config.private_relation_locator_migration_fault_injection_point ==
+      "after_replace_directory_sync_before_reopen") {
+    return fail("injected_after_replace_directory_sync_before_reopen");
+  }
+
+  DatabaseLifecycleResult result;
+  result.status = DatabaseLifecycleOkStatus();
+  return result;
 }
 
 DatabaseLifecycleResult ValidateCreateConfig(const DatabaseCreateConfig& config) {
@@ -5998,11 +6474,11 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     return PropagateDiagnostic(bootstrap_memory.status, bootstrap_memory.diagnostic);
   }
 
-  const auto header_result = MakeDatabaseHeader(config.database_uuid.value,
-                                                config.page_size,
-                                                config.creation_unix_epoch_millis,
-                                                config.feature_flags,
-                                                config.compatibility_flags);
+  auto header_result = MakeDatabaseHeader(config.database_uuid.value,
+                                          config.page_size,
+                                          config.creation_unix_epoch_millis,
+                                          config.feature_flags,
+                                          config.compatibility_flags);
   if (!header_result.ok()) {
     return PropagateDiagnostic(header_result.status, header_result.diagnostic);
   }
@@ -6095,7 +6571,7 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
       {PageType::catalog, kCatalogPageNumber},
       {PageType::allocation_map, kAllocationMapPageNumber},
       {PageType::transaction_inventory, kTransactionInventoryPageNumber},
-      {PageType::bootstrap_reserved, kBootstrapReservedPageNumber},
+      {PageType::security_root, kBootstrapReservedPageNumber},
   }};
 
   for (const auto& entry : initial_pages) {
@@ -6107,6 +6583,46 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     if (!page_result.ok()) {
       return MarkStoragePartial(page_result, config.path, "create.page_headers");
     }
+  }
+
+  DatabaseLocalPrivateSecurityLocatorInitializeRequestV1 locator_request;
+  locator_request.device = &device;
+  locator_request.database_uuid = config.database_uuid;
+  locator_request.page_size = config.page_size;
+  locator_request.bootstrap_security_context_generation = 1;
+  locator_request.creation_unix_epoch_millis =
+      config.creation_unix_epoch_millis;
+  const auto locator_initialized =
+      InitializeFreshDatabaseLocalPrivateSecurityLocatorV1(locator_request);
+  if (!locator_initialized.ok()) {
+    return MarkStoragePartial(
+        PropagateDiagnostic(locator_initialized.status,
+                            locator_initialized.diagnostic),
+        config.path,
+        "create.private_security_locator");
+  }
+  static_assert(
+      scratchbird::storage::disk::kDatabaseHeaderOpaqueMarkerBytes ==
+      kDatabaseLocalPrivateSecurityMarkerBytesV1);
+  std::copy(locator_initialized.marker_bytes.begin(),
+            locator_initialized.marker_bytes.end(),
+            header_result.header
+                .database_local_private_relation_locator_marker.begin());
+  const auto sealed_header = SerializeDatabaseHeader(header_result.header);
+  if (!sealed_header.ok()) {
+    return MarkStoragePartial(
+        PropagateDiagnostic(sealed_header.status, sealed_header.diagnostic),
+        config.path,
+        "create.private_security_marker_encode");
+  }
+  const auto write_sealed_header = device.WriteAt(
+      0, sealed_header.serialized.data(), sealed_header.serialized.size());
+  if (!write_sealed_header.ok()) {
+    return PropagateStorageFailure(write_sealed_header.status,
+                                   write_sealed_header.diagnostic,
+                                   config.path,
+                                   "create.private_security_marker",
+                                   true);
   }
 
   StartupStateRecord initial_startup_state =
@@ -6515,15 +7031,30 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
   if (!health.ok()) {
     return propagate(health.status, health.diagnostic);
   }
-  const auto core_pages = ValidateCorePageHeaders(&device,
-                                                  parsed_header.header.page_size,
-                                                  read_policy);
-  if (!core_pages.ok()) {
-    return propagate(core_pages.status, core_pages.diagnostic);
-  }
   TypedUuid database_uuid;
   database_uuid.kind = UuidKind::database;
   database_uuid.value = parsed_header.header.database_uuid;
+  DatabaseLocalPrivateSecurityLocatorInspectRequestV1 locator_request;
+  locator_request.device = &device;
+  locator_request.marker_bytes = parsed_header.header
+                                     .database_local_private_relation_locator_marker;
+  locator_request.expected_database_uuid = database_uuid;
+  locator_request.page_size = parsed_header.header.page_size;
+  locator_request.admit_exact_legacy_absence = false;
+  const auto locator_inspection =
+      InspectDatabaseLocalPrivateSecurityLocatorV1(locator_request);
+  if (!locator_inspection.ok()) {
+    return propagate(locator_inspection.status,
+                     locator_inspection.diagnostic);
+  }
+  const auto core_pages = ValidateCorePageHeaders(
+      &device,
+      parsed_header.header.page_size,
+      read_policy,
+      PageType::security_root);
+  if (!core_pages.ok()) {
+    return propagate(core_pages.status, core_pages.diagnostic);
+  }
   const auto startup = ReadStartupStatePageBody(&device,
                                                 parsed_header.header.page_size);
   if (!startup.ok()) {
@@ -6647,6 +7178,8 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
           !exact_field(fields, "create_time_only", "1") ||
           !exact_field(fields, "creator_tx", "1") ||
           !exact_field(fields, "active", "1") ||
+          !exact_field(fields, "security_context_authority_version", "1") ||
+          ParseU64Field(fields, "security_context_generation") == 0 ||
           ParseU32Field(fields, "policy_generation") == 0) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-PROVENANCE-INVALID",
@@ -6660,6 +7193,8 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
       state.sysarch_role_uuid = parsed_role.value;
       state.creator_tx = ParseU64Field(fields, "creator_tx");
       state.policy_generation = ParseU32Field(fields, "policy_generation");
+      state.security_context_generation =
+          ParseU64Field(fields, "security_context_generation");
       continue;
     }
 
@@ -6710,6 +7245,8 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
           !exact_field(fields, "active", "1") ||
           !exact_field(fields, "security_generation", "1") ||
           !exact_field(fields, "creator_tx", "1") ||
+          !exact_field(fields, "security_context_authority_version", "1") ||
+          ParseU64Field(fields, "security_context_generation") == 0 ||
           !exact_field(fields, "identity_authority", "uuid") ||
           !exact_field(fields, "create_time_only", "1") ||
           ParseU32Field(fields, "policy_generation") == 0) {
@@ -6729,7 +7266,9 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
       state.credential_fingerprint = fingerprint;
       if (state.creator_tx != ParseU64Field(fields, "creator_tx") ||
           state.policy_generation != ParseU32Field(fields,
-                                                   "policy_generation")) {
+                                                   "policy_generation") ||
+          state.security_context_generation !=
+              ParseU64Field(fields, "security_context_generation")) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
             "storage.database_lifecycle.bootstrap_security_generation_mismatch",
@@ -6765,6 +7304,8 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
           !exact_field(fields, "active", "1") ||
           !exact_field(fields, "security_generation", "1") ||
           !exact_field(fields, "creator_tx", "1") ||
+          !exact_field(fields, "security_context_authority_version", "1") ||
+          ParseU64Field(fields, "security_context_generation") == 0 ||
           !exact_field(fields, "identity_authority", "uuid") ||
           !exact_field(fields, "create_time_only", "1") ||
           ParseU32Field(fields, "policy_generation") == 0) {
@@ -6787,7 +7328,9 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
       state.membership_uuid = parsed_membership.value;
       membership_principal_uuid = parsed_member.value;
       if (state.policy_generation != ParseU32Field(fields,
-                                                   "policy_generation")) {
+                                                   "policy_generation") ||
+          state.security_context_generation !=
+              ParseU64Field(fields, "security_context_generation")) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
             "storage.database_lifecycle.bootstrap_security_generation_mismatch",
@@ -6831,6 +7374,29 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   if (config.path.empty()) {
     return LifecycleError("SB-DB-LIFECYCLE-OPEN-PATH-REQUIRED",
                           "storage.database_lifecycle.open_path_required");
+  }
+  static const std::set<std::string> kSecurityContextMigrationFaultPoints = {
+      "", "after_copy_before_rewrite",
+      "after_rewrite_sync_before_publish", "after_publish_before_ack"};
+  if (!kSecurityContextMigrationFaultPoints.contains(
+          config.security_context_migration_fault_injection_point)) {
+    return LifecycleError(
+        "SB-DB-BOOTSTRAP-SECURITY-CONTEXT-MIGRATION-FAULT-POINT-INVALID",
+        "storage.database_lifecycle.bootstrap_security_context_migration_fault_point_invalid",
+        config.path,
+        config.security_context_migration_fault_injection_point);
+  }
+  static const std::set<std::string> kPrivateRelationLocatorFaultPoints = {
+      "", "after_copy_before_temp_scan",
+      "after_temp_sync_before_replace",
+      "after_replace_directory_sync_before_reopen"};
+  if (!kPrivateRelationLocatorFaultPoints.contains(
+          config.private_relation_locator_migration_fault_injection_point)) {
+    return LifecycleError(
+        "SB-DB-PRIVATE-RELATION-LOCATOR-MIGRATION-FAULT-POINT-INVALID",
+        "storage.database_lifecycle.private_relation_locator_migration_fault_point_invalid",
+        config.path,
+        config.private_relation_locator_migration_fault_injection_point);
   }
 
   FileDevice device;
@@ -6927,14 +7493,41 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
                                    "open.health",
                                    false);
   }
-  const auto core_pages = ValidateCorePageHeaders(&device, parsed.header.page_size, open_policy);
-  if (!core_pages.ok()) {
-    return core_pages;
-  }
 
   TypedUuid database_uuid;
   database_uuid.kind = UuidKind::database;
   database_uuid.value = parsed.header.database_uuid;
+  DatabaseLocalPrivateSecurityLocatorInspectRequestV1 locator_request;
+  locator_request.device = &device;
+  locator_request.marker_bytes =
+      parsed.header.database_local_private_relation_locator_marker;
+  locator_request.expected_database_uuid = database_uuid;
+  locator_request.page_size = parsed.header.page_size;
+  locator_request.admit_exact_legacy_absence = true;
+  const auto locator_inspection =
+      InspectDatabaseLocalPrivateSecurityLocatorV1(locator_request);
+  if (!locator_inspection.ok()) {
+    return PropagateDiagnostic(locator_inspection.status,
+                               locator_inspection.diagnostic);
+  }
+  const bool legacy_private_security_locator =
+      locator_inspection.classification ==
+      DatabaseLocalPrivateSecurityLocatorClassV1::exact_legacy_absence;
+  if (legacy_private_security_locator && config.read_only) {
+    return LifecycleError(
+        "FORMAT.UPGRADE_REQUIRED",
+        "storage.database_lifecycle.private_security_locator_upgrade_required",
+        config.path);
+  }
+  const auto core_pages = ValidateCorePageHeaders(
+      &device,
+      parsed.header.page_size,
+      open_policy,
+      legacy_private_security_locator ? PageType::bootstrap_reserved
+                                      : PageType::security_root);
+  if (!core_pages.ok()) {
+    return core_pages;
+  }
 
   auto startup_state = ReadStartupStatePageBody(&device, parsed.header.page_size);
   if (!startup_state.ok()) {
@@ -6982,6 +7575,49 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
     policy_seed_catalog = BuildPolicyImageFromCatalogRows(catalog_rows);
   } else {
     return read_catalog_rows;
+  }
+  u64 security_context_generation = 0;
+  const auto security_context_authority =
+      InspectBootstrapSecurityContextAuthority(
+          catalog_rows, &security_context_generation);
+  if (security_context_authority ==
+      BootstrapSecurityContextAuthorityClass::invalid) {
+    return LifecycleError(
+        "SB-DB-BOOTSTRAP-SECURITY-CONTEXT-AUTHORITY-INVALID",
+        "storage.database_lifecycle.bootstrap_security_context_authority_invalid",
+        config.path);
+  }
+  if (security_context_authority ==
+      BootstrapSecurityContextAuthorityClass::legacy_missing) {
+    if (config.read_only) {
+      return LifecycleError(
+          "FORMAT.UPGRADE_REQUIRED",
+          "storage.database_lifecycle.bootstrap_security_context_migration_required",
+          config.path);
+    }
+    const auto migrated =
+        MigrateBootstrapSecurityContextAuthority(config, &device);
+    if (!migrated.ok()) return migrated;
+    DatabaseOpenConfig reopened = config;
+    reopened.security_context_migration_fault_injection_point.clear();
+    return OpenDatabaseFile(reopened);
+  }
+  if (security_context_generation == 0) {
+    return LifecycleError(
+        "SB-DB-BOOTSTRAP-SECURITY-CONTEXT-AUTHORITY-INVALID",
+        "storage.database_lifecycle.bootstrap_security_context_authority_invalid",
+        config.path, "generation_zero");
+  }
+  if (legacy_private_security_locator) {
+    const auto migrated_locator =
+        MigrateDatabaseLocalPrivateSecurityLocator(
+            config,
+            &device,
+            database_uuid,
+            parsed.header.page_size,
+            security_context_generation);
+    if (!migrated_locator.ok()) return migrated_locator;
+    return OpenDatabaseFile(config);
   }
   const auto filespace_manifest = ValidateFilespaceCatalogManifest(catalog_rows,
                                                                   database_uuid,

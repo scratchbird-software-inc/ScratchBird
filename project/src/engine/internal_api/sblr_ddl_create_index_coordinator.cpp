@@ -1,8 +1,65 @@
 #include "sblr_ddl_create_index_coordinator.hpp"
 #include "api_diagnostics.hpp"
+#include "uuid.hpp"
 #include <algorithm>
-#include <map>
-#include <mutex>
-namespace scratchbird::engine::internal_api { namespace { std::mutex m; std::map<std::string,scratchbird::engine::sblr::SblrDdlCreateIndexDescriptorV1> live,used; std::string key(const scratchbird::engine::sblr::DdlCreateIndexSha&h){return{reinterpret_cast<const char*>(h.data()),h.size()};} bool tag(const EngineRequestContext&c,const char*t){return c.security_context_present&&std::find(c.trace_tags.begin(),c.trace_tags.end(),t)!=c.trace_tags.end();} EngineApiDiagnostic d(std::string c,std::string k){return MakeEngineApiDiagnostic(std::move(c),std::move(k),{});} }
-SblrDdlCreateIndexCoordinationResult CompileSblrDdlCreateIndexDescriptor(const EngineRequestContext&c,const std::string&r,std::uint64_t occurrence,std::uint32_t index_occurrence,std::uint64_t availability){std::lock_guard l(m);SblrDdlCreateIndexCoordinationResult o;if(!tag(c,"private_ddl_create_index_binder")||!c.statement_metadata_snapshot_engine_owned||r!=c.statement_uuid.canonical||!occurrence||!index_occurrence||!availability){o.diagnostic=d("SBLR.OPERAND_INVALID","sblr.ddl_create_index.coordination_invalid");return o;}o.descriptor.body[0]=1;o.descriptor.body[1]=uint8_t(occurrence);o.descriptor.body[2]=uint8_t(index_occurrence);o.descriptor.availability=availability;auto b=scratchbird::engine::sblr::EncodeSblrDdlCreateIndexDescriptorV1(o.descriptor,false);if(!scratchbird::engine::sblr::DecodeSblrDdlCreateIndexDescriptorV1(b.data(),b.size(),&o.descriptor,nullptr,false)){o.diagnostic=d("SBLR.OPERAND_INVALID","sblr.ddl_create_index.descriptor_invalid");return o;}live[key(o.descriptor.evidence)]=o.descriptor;o.ok=true;o.diagnostic=d("OK","ok");return o;}
-SblrDdlCreateIndexCoordinationResult ConsumeSblrDdlCreateIndexDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlCreateIndexDescriptorV1&v){std::lock_guard l(m);SblrDdlCreateIndexCoordinationResult o;auto k=key(v.evidence);auto it=live.find(k);if(!tag(c,"private_ddl_create_index")){o.diagnostic=d("SECURITY.ACCESS_DENIED","sblr.ddl_create_index.hidden");return o;}if(it==live.end()){o.diagnostic=used.count(k)?d("MGA.TRANSACTION.STALE","sblr.ddl_create_index.stale"):d("SECURITY.ACCESS_DENIED","sblr.ddl_create_index.hidden");return o;}if(c.query_cancellation_requested&&c.query_cancellation_requested()){o.diagnostic=d("PROCESS.CANCELLED","sblr.ddl_create_index.cancelled");return o;}used[k]=v;live.erase(it);o.ok=true;o.descriptor=v;o.diagnostic=d("OK","ok");return o;}}
+namespace scratchbird::engine::internal_api {
+namespace {
+bool tag(const EngineRequestContext& c, const char* t) {
+  return c.security_context_present &&
+         std::find(c.trace_tags.begin(), c.trace_tags.end(), t) !=
+             c.trace_tags.end();
+}
+
+EngineApiDiagnostic d(std::string c, std::string k) {
+  return MakeEngineApiDiagnostic(std::move(c), std::move(k), {});
+}
+
+EngineApiDiagnostic MissingExecutorEvidence() {
+  return d("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+           "sblr.opcode.executor_evidence_missing");
+}
+
+bool canonical_uuid(const std::string& value) {
+  const auto parsed = scratchbird::core::uuid::ParseUuid(value);
+  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
+         scratchbird::core::uuid::UuidToString(parsed.value) == value;
+}
+}  // namespace
+
+SblrDdlCreateIndexCoordinationResult CompileSblrDdlCreateIndexDescriptor(
+    const EngineRequestContext& c, const std::string& r,
+    std::uint64_t occurrence, std::uint32_t index_occurrence,
+    std::uint64_t availability) {
+  SblrDdlCreateIndexCoordinationResult o;
+  if (!tag(c, "private_ddl_create_index_binder") ||
+      !c.statement_metadata_snapshot_engine_owned ||
+      !canonical_uuid(r) || r != c.statement_uuid.canonical || !occurrence ||
+      !index_occurrence || !availability) {
+    o.diagnostic = d("SBLR.OPERAND_INVALID",
+                     "sblr.ddl_create_index.coordination_invalid");
+    return o;
+  }
+  o.diagnostic = MissingExecutorEvidence();
+  return o;
+}
+
+SblrDdlCreateIndexCoordinationResult ConsumeSblrDdlCreateIndexDescriptor(
+    const EngineRequestContext& c,
+    const scratchbird::engine::sblr::SblrDdlCreateIndexDescriptorV1&
+        descriptor) {
+  SblrDdlCreateIndexCoordinationResult o;
+  if (scratchbird::engine::sblr::EncodeSblrDdlCreateIndexDescriptorV1(
+          descriptor, true).empty()) {
+    o.diagnostic = d("SBLR.OPERAND_INVALID",
+                     "sblr.ddl_create_index.coordination_invalid");
+    return o;
+  }
+  if (!tag(c, "private_ddl_create_index")) {
+    o.diagnostic =
+        d("SECURITY.ACCESS_DENIED", "sblr.ddl_create_index.hidden");
+    return o;
+  }
+  o.diagnostic = MissingExecutorEvidence();
+  return o;
+}
+}  // namespace scratchbird::engine::internal_api

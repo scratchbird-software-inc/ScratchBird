@@ -144,7 +144,7 @@ int main() {
   const auto short_key =
       scratchbird::listener::LoadDbbtKeyMaterial(keyring_config, &key_material);
   if (!Expect(!short_key.ok, "short DBBT keyring material must fail closed") ||
-      !Expect(HasDiagnostic(short_key, "LISTENER.DBBT.KEYRING_KEY_INVALID"),
+      !Expect(HasDiagnostic(short_key, "LISTENER.DBBT_KEY_MATERIAL_INVALID"),
               "short DBBT keyring material diagnostic mismatch")) {
     SetDbbtEnvironment("");
     return EXIT_FAILURE;

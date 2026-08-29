@@ -4661,6 +4661,8 @@ std::size_t DirectRequestRowCount(const DirectPhysicalBulkAppendRequest& request
 struct DirectAppendIndexEntryCacheRecord {
   std::uint64_t row_version_count = 0;
   std::uint64_t metadata_event_sequence = 0;
+  std::uint64_t observer_local_transaction_id = 0;
+  std::uint64_t savepoint_authority_generation = 0;
   std::vector<CrudIndexEntryRecord> entries;
   std::map<std::string, std::set<std::string>> keys_by_index;
   std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
@@ -4709,7 +4711,18 @@ std::string DirectBulkAppendContextCacheKey(const EngineRequestContext& context,
          context.current_role_uuid.canonical + "\n" +
          std::to_string(context.catalog_generation_id) + "\n" +
          std::to_string(context.security_epoch) + "\n" +
+         std::to_string(CurrentMgaSavepointAuthorityGeneration(context)) +
+         "\n" +
          table_uuid;
+}
+
+bool DirectAppendIndexCacheAuthorityMatches(
+    const DirectAppendIndexEntryCacheRecord& record,
+    const EngineRequestContext& context) {
+  return record.observer_local_transaction_id ==
+             context.local_transaction_id &&
+         record.savepoint_authority_generation ==
+             CurrentMgaSavepointAuthorityGeneration(context);
 }
 
 std::map<std::string, std::set<std::string>> DirectBuildIndexKeyCache(
@@ -4749,7 +4762,8 @@ bool DirectLookupAppendIndexEntryCache(const EngineRequestContext& context,
       DirectAppendIndexEntryCacheKey(context, table_uuid));
   if (found == DirectAppendIndexEntryCache().end() ||
       found->second.row_version_count != row_version_count ||
-      found->second.metadata_event_sequence != metadata_event_sequence) {
+      found->second.metadata_event_sequence != metadata_event_sequence ||
+      !DirectAppendIndexCacheAuthorityMatches(found->second, context)) {
     return false;
   }
   if (entries != nullptr) {
@@ -4776,6 +4790,7 @@ bool DirectAppendIndexEntryCacheAvailable(const EngineRequestContext& context,
   return found != DirectAppendIndexEntryCache().end() &&
          found->second.row_version_count == row_version_count &&
          found->second.metadata_event_sequence == metadata_event_sequence &&
+         DirectAppendIndexCacheAuthorityMatches(found->second, context) &&
          (!require_entry_lookup || found->second.entry_lookup_materialized);
 }
 
@@ -4798,7 +4813,8 @@ void DirectBuildAppendIndexConflictCaches(
       DirectAppendIndexEntryCacheKey(context, table_uuid));
   if (found == DirectAppendIndexEntryCache().end() ||
       found->second.row_version_count != row_version_count ||
-      found->second.metadata_event_sequence != metadata_event_sequence) {
+      found->second.metadata_event_sequence != metadata_event_sequence ||
+      !DirectAppendIndexCacheAuthorityMatches(found->second, context)) {
     return;
   }
   const auto& record = found->second;
@@ -4921,7 +4937,18 @@ void DirectStoreAppendIndexEntryCache(
     const EngineRequestContext& context,
     const std::string& table_uuid,
     std::uint64_t row_version_count,
+    const CrudState& state,
     const std::vector<CrudIndexEntryRecord>& entries) {
+  std::vector<CrudIndexEntryRecord> visible_entries;
+  visible_entries.reserve(entries.size());
+  for (const auto& entry : entries) {
+    if (CrudCreatorVisible(state,
+                           entry.creator_tx,
+                           entry.event_sequence,
+                           context.local_transaction_id)) {
+      visible_entries.push_back(entry);
+    }
+  }
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
   auto& record =
       DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
@@ -4929,9 +4956,12 @@ void DirectStoreAppendIndexEntryCache(
   record.row_version_count = row_version_count;
   record.metadata_event_sequence =
       CurrentMgaRelationMetadataEventSequence(context);
-  record.entries.clear();
-  record.keys_by_index = DirectBuildIndexKeyCache(entries);
-  record.entry_by_index_key = DirectBuildIndexEntryKeyCache(entries);
+  record.observer_local_transaction_id = context.local_transaction_id;
+  record.savepoint_authority_generation =
+      CurrentMgaSavepointAuthorityGeneration(context);
+  record.entries = std::move(visible_entries);
+  record.keys_by_index = DirectBuildIndexKeyCache(record.entries);
+  record.entry_by_index_key = DirectBuildIndexEntryKeyCache(record.entries);
   record.entry_lookup_materialized = true;
 }
 
@@ -5003,6 +5033,7 @@ void DirectAppendIndexEntryToCacheRecord(
     CrudIndexEntryRecord entry,
     bool materialize_entry_lookup = true) {
   if (record == nullptr) { return; }
+  record->entries.push_back(entry);
   record->keys_by_index[entry.index_uuid].insert(entry.key_value);
   if (materialize_entry_lookup) {
     record->entry_by_index_key[entry.index_uuid][entry.key_value] =
@@ -5020,13 +5051,25 @@ void DirectAppendIndexEntriesToCache(
   auto& record =
       DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
                                                                   table_uuid)];
-  if (record.row_version_count != previous_row_version_count) {
+  const auto metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
+  const auto savepoint_authority_generation =
+      CurrentMgaSavepointAuthorityGeneration(context);
+  if (record.row_version_count != previous_row_version_count ||
+      record.metadata_event_sequence != metadata_event_sequence ||
+      record.observer_local_transaction_id != context.local_transaction_id ||
+      record.savepoint_authority_generation !=
+          savepoint_authority_generation) {
     DirectClearAppendIndexEntryCacheRecord(&record);
   }
   for (const auto& entry : appended_entries) {
     DirectAppendIndexEntryToCacheRecord(&record, entry);
   }
   record.row_version_count = previous_row_version_count + appended_row_count;
+  record.metadata_event_sequence = metadata_event_sequence;
+  record.observer_local_transaction_id = context.local_transaction_id;
+  record.savepoint_authority_generation =
+      savepoint_authority_generation;
 }
 
 void DirectAppendIndexBatchesToCache(
@@ -5041,7 +5084,15 @@ void DirectAppendIndexBatchesToCache(
   auto& record =
       DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
                                                                   table_uuid)];
-  if (record.row_version_count != previous_row_version_count) {
+  const auto metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
+  const auto savepoint_authority_generation =
+      CurrentMgaSavepointAuthorityGeneration(context);
+  if (record.row_version_count != previous_row_version_count ||
+      record.metadata_event_sequence != metadata_event_sequence ||
+      record.observer_local_transaction_id != context.local_transaction_id ||
+      record.savepoint_authority_generation !=
+          savepoint_authority_generation) {
     DirectClearAppendIndexEntryCacheRecord(&record);
   }
   record.entry_lookup_materialized = materialize_entry_lookup;
@@ -5093,6 +5144,10 @@ void DirectAppendIndexBatchesToCache(
     }
   }
   record.row_version_count = previous_row_version_count + appended_row_count;
+  record.metadata_event_sequence = metadata_event_sequence;
+  record.observer_local_transaction_id = context.local_transaction_id;
+  record.savepoint_authority_generation =
+      savepoint_authority_generation;
 }
 
 std::uint64_t EstimateDirectPhysicalValueBytes(
@@ -8778,6 +8833,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         request.context,
         request.target_table.uuid.canonical,
         index_only_eligibility.row_version_count,
+        *state,
         state->index_entries);
     append_index_cache_hit = true;
   }
@@ -8795,7 +8851,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                      "target_table_not_visible"),
         "target_table_not_visible");
   }
-  if (index_entries_authoritative && DirectTableDeclaresForeignKey(*table)) {
+  if (index_entries_authoritative &&
+      (table->temporary || DirectTableDeclaresForeignKey(*table))) {
     auto reloaded = LoadMgaRelationStoreStateForInsertTarget(
         request.context,
         request.target_table.uuid.canonical);
@@ -9198,7 +9255,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   bool native_bulk_typed_logical_batch_bypass =
       request.lane_operation == "native_bulk" &&
       can_use_shared_row_stage_fast_path &&
-      (suppress_payload_rows || native_row_packet_input) &&
+      suppress_payload_rows &&
       rowset_default_markers_absent &&
       compact_typed_null_state_authoritative &&
       !force_large_values_for_insert &&

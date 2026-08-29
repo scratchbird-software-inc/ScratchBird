@@ -631,11 +631,27 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
   return selected.visible_count;
 }
 
-sblr::SblrOperand Operand(std::string type, std::string name, std::string value) {
+void AppendLittleEndianU64(std::vector<std::uint8_t>* output,
+                           std::uint64_t value) {
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    output->push_back(
+        static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
+  }
+}
+
+sblr::SblrOperand Operand(std::string type,
+                          std::string name,
+                          std::string value,
+                          std::uint32_t ordinal) {
   sblr::SblrOperand operand;
   operand.type = std::move(type);
   operand.name = std::move(name);
-  operand.value = std::move(value);
+  operand.ordinal = ordinal;
+  operand.value_kind = sblr::SblrValueKind::literal_typed;
+  operand.value_body.assign(16, 0);
+  operand.value_body.front() = 0x73;
+  AppendLittleEndianU64(&operand.value_body, value.size());
+  operand.value_body.insert(operand.value_body.end(), value.begin(), value.end());
   return operand;
 }
 
@@ -643,6 +659,11 @@ sblr::SblrOperationEnvelope NativeEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope("dml.execute_native_bulk_ingest",
                                          "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST",
                                          "ODF-112-NATIVE-BULK-INGEST");
+  const auto* operation =
+      sblr::LookupSblrOperation("dml.execute_native_bulk_ingest");
+  Require(operation != nullptr,
+          "ODF-112 native bulk SBLR registry entry missing");
+  envelope.opcode_code = operation->code;
   envelope.parser_package_uuid = NewUuidText(platform::UuidKind::object, 112000);
   envelope.registry_snapshot_uuid = NewUuidText(platform::UuidKind::object, 112001);
   envelope.parser_resolved_names_to_uuids = true;
@@ -651,8 +672,10 @@ sblr::SblrOperationEnvelope NativeEnvelope() {
   envelope.requires_cluster_authority = false;
   envelope.result_shape = "engine_api_result";
   envelope.diagnostic_shape = "engine_api_diagnostic_vector";
-  envelope.operands.push_back(Operand("text", "target_object_kind", "table"));
-  envelope.operands.push_back(Operand("text", "native_bulk_ingest_enabled", "true"));
+  envelope.operands.push_back(
+      Operand("text", "target_object_kind", "table", 1));
+  envelope.operands.push_back(
+      Operand("text", "native_bulk_ingest_enabled", "true", 2));
   return envelope;
 }
 

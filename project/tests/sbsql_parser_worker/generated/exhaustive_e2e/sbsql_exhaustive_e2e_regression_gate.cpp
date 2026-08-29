@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_admission.hpp"
+#include "../../canonical_sblr_admission_test_helper.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 #include "sbu_sbsql_parser_support.hpp"
@@ -738,11 +739,14 @@ void CheckDynamicStoredProcedureRoute(Harness* harness) {
                  "server admitted concatenated raw SQL without UDR/SBLR conversion");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{generated.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "dml.select_rows", "SBLR_DML_SELECT_ROWS"));
   harness->Check(admission.admitted,
                  "server admission rejected UDR-generated SBLR payload");
   harness->Check(admission.operation_family == "sblr.query.relational.v3",
                  "server admission operation family mismatch for dynamic SBLR");
+  harness->Check(admission.operation_id == "dml.select_rows",
+                 "server admission operation id mismatch for dynamic SBLR");
 
   std::array<std::uint8_t, 16> session_uuid{};
   const auto dynamic_route = CreateDynamicRouteContext(harness);

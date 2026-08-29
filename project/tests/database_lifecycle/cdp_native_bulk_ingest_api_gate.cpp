@@ -18,12 +18,15 @@
 #include "sblr_dispatch_server.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_stream.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "sblr_to_sbsql.hpp"
+#include "scratchbird/engine/sblr_envelope.hpp"
 #include "session_registry.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -544,7 +547,7 @@ api::EngineRowValue TypedScalarRow(int index) {
   row.fields.push_back({"flag_value", ScalarValue("boolean", index % 2 == 0 ? "true" : "false")});
   row.fields.push_back({"tiny_i", ScalarValue("int8", index % 2 == 0 ? "12" : "-12")});
   row.fields.push_back({"short_i", ScalarValue("int16", index % 2 == 0 ? "1024" : "-1024")});
-  row.fields.push_back({"int_i", ScalarValue("int32", index % 2 == 0 ? "65536" : "-65536")});
+  row.fields.push_back({"int_i", ScalarValue("int32", index % 2 == 0 ? "2428" : "1973")});
   row.fields.push_back({"huge_i", ScalarValue("int128", index % 2 == 0 ? "170141183460469231731687303715884105727" : "-170141183460469231731687303715884105728")});
   row.fields.push_back({"tiny_u", ScalarValue("uint8", "250")});
   row.fields.push_back({"short_u", ScalarValue("uint16", "65000")});
@@ -831,6 +834,11 @@ sblr::SblrOperationEnvelope NativeEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope("dml.execute_native_bulk_ingest",
                                          "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST",
                                          "CDP-040-NATIVE-BULK-INGEST");
+  const auto* identity =
+      sblr::LookupSblrOperation("dml.execute_native_bulk_ingest");
+  Require(identity != nullptr && identity->code != 0,
+          "CDP-040 native ingest canonical opcode identity missing");
+  envelope.opcode_code = identity->code;
   envelope.parser_package_uuid = NewUuidText(platform::UuidKind::object, 2000);
   envelope.registry_snapshot_uuid = NewUuidText(platform::UuidKind::object, 2001);
   envelope.parser_resolved_names_to_uuids = true;
@@ -843,26 +851,7 @@ sblr::SblrOperationEnvelope NativeEnvelope() {
 }
 
 sblr::SblrOperationEnvelope NativeRoundTripEnvelope() {
-  auto envelope = NativeEnvelope();
-  envelope.source_artifact_map.policy_status = "non_authoritative_render_metadata";
-  envelope.source_artifact_map.source_identity = "cdp040-native-ingest-render-map";
-  envelope.source_artifact_map.source_hash = "sha256:cdp040-native-ingest";
-  envelope.source_artifact_map.render_metadata_only = true;
-  envelope.source_artifact_map.contains_sql_text = false;
-  envelope.source_artifact_map.raw_sql_text_authoritative = false;
-
-  sblr::SblrOperationRenderHint hint;
-  hint.hint_kind = "operation";
-  hint.stable_key = "cdp040.native_bulk_ingest";
-  hint.value = "NATIVE BULK INGEST";
-  hint.authoritative = false;
-  hint.contains_sql_text = false;
-  envelope.source_artifact_map.operation_render_hints.push_back(std::move(hint));
-
-  envelope.operands.push_back(Operand("text", "target_object_uuid", "runtime-generated"));
-  envelope.operands.push_back(Operand("text", "target_object_kind", "table"));
-  envelope.operands.push_back(Operand("text", "native_bulk_ingest_enabled", "true"));
-  return envelope;
+  return NativeEnvelope();
 }
 
 api::EngineApiRequest SblrApiRequest(const Fixture& fixture,
@@ -875,41 +864,352 @@ api::EngineApiRequest SblrApiRequest(const Fixture& fixture,
   return request;
 }
 
-void AppendLine(std::string* out, std::string_view value) {
-  out->append(value);
-  out->push_back('\n');
+void AppendU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
+  out->push_back(static_cast<std::uint8_t>(value));
+  out->push_back(static_cast<std::uint8_t>(value >> 8u));
 }
 
-std::string NativeServerEnvelope(const Fixture& fixture,
-                                 const std::vector<api::EngineRowValue>& rows,
-                                 bool enabled = true) {
-  std::string out;
-  AppendLine(&out, "operation_id=dml.execute_native_bulk_ingest");
-  AppendLine(&out, "opcode=SBLR_DML_EXECUTE_NATIVE_BULK_INGEST");
-  AppendLine(&out, "sblr_operation_family=sblr.dml.operation.v3");
-  AppendLine(&out, "result_shape=engine.api.result.v1");
-  AppendLine(&out, "diagnostic_shape=engine.diagnostic.v1");
-  AppendLine(&out, "trace_key=CDP-040-native-server-public-abi");
-  AppendLine(&out, "contains_sql_text=false");
-  AppendLine(&out, "parser_resolved_names_to_uuids=true");
-  AppendLine(&out, "requires_security_context=true");
-  AppendLine(&out, "requires_transaction_context=true");
-  AppendLine(&out, "requires_cluster_authority=false");
-  AppendLine(&out, "target_object_uuid=" + fixture.table_uuid);
-  AppendLine(&out, "target_object_kind=table");
-  AppendLine(&out, "estimated_row_count=" + std::to_string(rows.size()));
-  AppendLine(&out, std::string("native_bulk_ingest_enabled=") +
-                       (enabled ? "true" : "false"));
-  AppendLine(&out, "reject_mode=fail_fast");
-  AppendLine(&out, "checkpoint_mode=disabled");
+void AppendU32(std::vector<std::uint8_t>* out, std::uint32_t value) {
+  for (unsigned byte = 0; byte < 4; ++byte) {
+    out->push_back(static_cast<std::uint8_t>(value >> (byte * 8u)));
+  }
+}
+
+void AppendU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    out->push_back(static_cast<std::uint8_t>(value >> (byte * 8u)));
+  }
+}
+
+void StoreU16(std::array<std::uint8_t, 132>* out,
+              std::size_t offset,
+              std::uint16_t value) {
+  (*out)[offset] = static_cast<std::uint8_t>(value);
+  (*out)[offset + 1] = static_cast<std::uint8_t>(value >> 8u);
+}
+
+void StoreU32(std::array<std::uint8_t, 132>* out,
+              std::size_t offset,
+              std::uint32_t value) {
+  for (unsigned byte = 0; byte < 4; ++byte) {
+    (*out)[offset + byte] =
+        static_cast<std::uint8_t>(value >> (byte * 8u));
+  }
+}
+
+void StoreU64(std::array<std::uint8_t, 132>* out,
+              std::size_t offset,
+              std::uint64_t value) {
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    (*out)[offset + byte] =
+        static_cast<std::uint8_t>(value >> (byte * 8u));
+  }
+}
+
+std::array<std::uint8_t, 16> UuidBytes(std::string_view value,
+                                       std::string_view message) {
+  const auto parsed = uuid::ParseUuid(std::string(value));
+  Require(parsed.ok(), message);
+  return parsed.value.bytes;
+}
+
+void AppendUuid(std::vector<std::uint8_t>* out,
+                const std::array<std::uint8_t, 16>& value) {
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+void AppendBytes(std::vector<std::uint8_t>* out,
+                 const std::vector<std::uint8_t>& value) {
+  AppendU64(out, value.size());
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+std::vector<std::uint8_t> CanonicalU16(std::uint16_t value) {
+  std::vector<std::uint8_t> out;
+  AppendU16(&out, value);
+  return out;
+}
+
+std::vector<std::uint8_t> CanonicalU32(std::uint32_t value) {
+  std::vector<std::uint8_t> out;
+  AppendU32(&out, value);
+  return out;
+}
+
+std::vector<std::uint8_t> CanonicalU64(std::uint64_t value) {
+  std::vector<std::uint8_t> out;
+  AppendU64(&out, value);
+  return out;
+}
+
+std::vector<std::uint8_t> CanonicalStruct(std::uint32_t tag,
+                                          std::uint8_t value) {
+  std::vector<std::uint8_t> out;
+  AppendU32(&out, tag);
+  AppendU16(&out, 1);
+  AppendU16(&out, 0);
+  AppendU64(&out, 1);
+  out.push_back(value);
+  return out;
+}
+
+std::vector<std::uint8_t> CanonicalOptionalUuid(
+    const std::array<std::uint8_t, 16>& value) {
+  std::vector<std::uint8_t> out{1};
+  AppendUuid(&out, value);
+  return out;
+}
+
+std::vector<std::uint8_t> NativeRowPacket(
+    const std::vector<api::EngineRowValue>& rows) {
+  Require(!rows.empty(), "CDP-040 native packet rowset was empty");
+  const auto& columns = rows.front().fields;
+  Require(!columns.empty(), "CDP-040 native packet columns were empty");
   for (const auto& row : rows) {
-    for (const auto& field : row.fields) {
-      AppendLine(&out,
-                 "operand=row_field:character\t" + row.requested_row_uuid.canonical +
-                     "|" + field.first + "\t" + field.second.encoded_value);
+    Require(row.fields.size() == columns.size(),
+            "CDP-040 native packet row shape drifted");
+    for (std::size_t column = 0; column < columns.size(); ++column) {
+      Require(row.fields[column].first == columns[column].first &&
+                  !row.fields[column].second.is_null &&
+                  row.fields[column].second.binary_value.empty(),
+              "CDP-040 native packet requires the exact non-null text cohort");
+    }
+  }
+
+  std::vector<std::uint8_t> out{'S', 'B', 'N', 'R'};
+  AppendU16(&out, 2);
+  AppendU16(&out, 0);
+  AppendU64(&out, rows.size());
+  AppendU32(&out, static_cast<std::uint32_t>(columns.size()));
+  for (std::size_t column = 0; column < columns.size(); ++column) {
+    out.push_back(1);  // scratchbird.native_rows.v2 text
+  }
+  for (const auto& [name, ignored] : columns) {
+    (void)ignored;
+    AppendU32(&out, static_cast<std::uint32_t>(name.size()));
+    out.insert(out.end(), name.begin(), name.end());
+  }
+  const std::size_t null_bitmap_bytes = (columns.size() + 7u) / 8u;
+  for (const auto& row : rows) {
+    out.insert(out.end(), null_bitmap_bytes, 0);
+    for (const auto& [ignored, value] : row.fields) {
+      (void)ignored;
+      AppendU32(&out, static_cast<std::uint32_t>(value.encoded_value.size()));
+      out.insert(out.end(), value.encoded_value.begin(),
+                 value.encoded_value.end());
     }
   }
   return out;
+}
+
+sblr::SblrOperationEnvelope CanonicalPackageFrame(
+    bool begin,
+    const server::ServerSessionRecord& session,
+    std::string_view registry_snapshot_uuid,
+    const std::array<std::uint8_t, 16>& package_uuid) {
+  const std::string operation_id =
+      begin ? "engine.op.package_begin" : "engine.op.package_end";
+  const auto* identity = sblr::LookupSblrOperation(operation_id);
+  Require(identity != nullptr && identity->code != 0,
+          "CDP-040 package framing identity was unavailable");
+  auto frame = sblr::MakeSblrEnvelope(
+      operation_id, identity->opcode,
+      begin ? "CDP-040-package-begin" : "CDP-040-package-end");
+  frame.opcode_code = identity->code;
+  frame.result_shape =
+      identity->result_contract.empty() ? "void" : identity->result_contract;
+  frame.diagnostic_shape = "diagnostic_vector";
+  frame.requires_security_context = identity->requires_security_context;
+  frame.requires_transaction_context = identity->requires_transaction_context;
+  frame.requires_cluster_authority = identity->requires_cluster_authority;
+  frame.parser_package_uuid =
+      server::UuidBytesToText(session.admitted_parser_package_uuid);
+  frame.parser_package_version_major =
+      session.admitted_parser_package_version_major;
+  frame.parser_package_version_minor =
+      session.admitted_parser_package_version_minor;
+  frame.parser_package_version_patch =
+      session.admitted_parser_package_version_patch;
+  frame.registry_snapshot_uuid = std::string(registry_snapshot_uuid);
+  frame.parser_resolved_names_to_uuids = true;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = begin ? "package.header" : "package.footer";
+  operand.name = "package_descriptor";
+  operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+  operand.value_body.assign(package_uuid.begin(), package_uuid.end());
+  frame.operands.push_back(std::move(operand));
+  return frame;
+}
+
+struct CanonicalSubmissionParts {
+  std::vector<std::uint8_t> container;
+  std::vector<std::uint8_t> ingress;
+};
+
+CanonicalSubmissionParts CanonicalNativeBulkContainer(
+    const Fixture& fixture,
+    const server::ServerSessionRecord& session,
+    const server::ServerStatementContextRecord& statement,
+    const std::vector<api::EngineRowValue>& rows,
+    bool enabled) {
+  const auto* identity =
+      sblr::LookupSblrOperation("dml.execute_native_bulk_ingest");
+  Require(identity != nullptr && identity->code != 0 &&
+              identity->opcode == "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST",
+          "CDP-040 native bulk canonical identity was unavailable");
+  const auto package_uuid =
+      UuidBytes(statement.view.bound_ast_uuid,
+                "CDP-040 bound AST package UUID was malformed");
+  const auto text_profile = std::find_if(
+      statement.view.descriptor_profiles.begin(),
+      statement.view.descriptor_profiles.end(), [](const auto& profile) {
+        return profile.profile_kind == scratchbird::server_engine_bridge::
+                                           StatementDescriptorProfileKind::kTextNonNull &&
+               profile.slot == 0 && !profile.nullable;
+      });
+  Require(text_profile != statement.view.descriptor_profiles.end(),
+          "CDP-040 statement receipt lacked the text operand profile");
+  const auto text_type_uuid =
+      UuidBytes(text_profile->type_uuid,
+                "CDP-040 text operand type UUID was malformed");
+
+  auto operation = sblr::MakeSblrEnvelope(
+      identity->operation_id, identity->opcode,
+      "CDP-040-native-server-public-abi");
+  operation.opcode_code = identity->code;
+  operation.result_shape = identity->result_contract.empty()
+                               ? "engine.api.result.v1"
+                               : identity->result_contract;
+  operation.diagnostic_shape = "diagnostic_vector";
+  operation.requires_security_context = identity->requires_security_context;
+  operation.requires_transaction_context = identity->requires_transaction_context;
+  operation.requires_cluster_authority = identity->requires_cluster_authority;
+  operation.parser_package_uuid =
+      server::UuidBytesToText(session.admitted_parser_package_uuid);
+  operation.parser_package_version_major =
+      session.admitted_parser_package_version_major;
+  operation.parser_package_version_minor =
+      session.admitted_parser_package_version_minor;
+  operation.parser_package_version_patch =
+      session.admitted_parser_package_version_patch;
+  operation.registry_snapshot_uuid = statement.view.catalog_epoch_uuid;
+  operation.parser_resolved_names_to_uuids = true;
+  const auto append_text = [&](std::string name, std::string value) {
+    sblr::SblrOperand operand;
+    operand.ordinal = static_cast<std::uint32_t>(operation.operands.size() + 1);
+    operand.type = "text";
+    operand.name = std::move(name);
+    operand.value_kind = sblr::SblrValueKind::literal_typed;
+    operand.value_body.assign(text_type_uuid.begin(), text_type_uuid.end());
+    AppendU64(&operand.value_body, value.size());
+    operand.value_body.insert(operand.value_body.end(), value.begin(), value.end());
+    operation.operands.push_back(std::move(operand));
+  };
+  append_text("target_object_uuid", fixture.table_uuid);
+  append_text("target_object_kind", "table");
+  append_text("native_bulk_ingest", "true");
+  append_text("native_bulk_ingest_enabled", enabled ? "true" : "false");
+  append_text("physical_mga_cow", "false");
+  append_text("insert_trace.rows", "false");
+  append_text("insert_values_row_count", std::to_string(rows.size()));
+  append_text("insert_values_column_count",
+              std::to_string(rows.front().fields.size()));
+  append_text("insert_values_column_list_present", "false");
+  append_text("native_row_packet_required", "true");
+  append_text("native_row_packet_format", "scratchbird.native_rows.v2");
+  append_text("insert_values_parser_executes_sql", "false");
+  for (std::size_t column = 0; column < rows.front().fields.size(); ++column) {
+    append_text("insert_values_descriptor_column_" + std::to_string(column),
+                rows.front().fields[column].first);
+  }
+  append_text("sblr.canonical_rowset_shared_shape", "true");
+  append_text("sblr.rowset_default_markers_absent", "true");
+
+  sblr::SblrOpcodeStream stream;
+  stream.package_descriptor_uuid = statement.view.bound_ast_uuid;
+  stream.registry_snapshot_uuid = statement.view.catalog_epoch_uuid;
+  stream.operations.push_back(CanonicalPackageFrame(
+      true, session, statement.view.catalog_epoch_uuid, package_uuid));
+  stream.operations.push_back(std::move(operation));
+  stream.operations.push_back(CanonicalPackageFrame(
+      false, session, statement.view.catalog_epoch_uuid, package_uuid));
+  auto stream_bytes = sblr::EncodeSblrOpcodeStream(stream);
+  Require(!stream_bytes.empty(),
+          "CDP-040 canonical native bulk opcode stream encoding failed");
+
+  const auto database_uuid =
+      UuidBytes(fixture.database_uuid, "CDP-040 database UUID was malformed");
+  const auto dialect_uuid = session.admitted_dialect_profile_uuid;
+  const auto parser_uuid = session.admitted_parser_package_uuid;
+  const auto registry_uuid =
+      UuidBytes(statement.view.catalog_epoch_uuid,
+                "CDP-040 catalog epoch UUID was malformed");
+  const auto statement_uuid =
+      UuidBytes(statement.view.statement_uuid,
+                "CDP-040 statement UUID was malformed");
+  scratchbird::engine::SblrCanonicalContainer container;
+  std::copy(database_uuid.begin(), database_uuid.end(),
+            container.canonical_anchor.begin());
+  std::copy(dialect_uuid.begin(), dialect_uuid.end(),
+            container.canonical_anchor.begin() + 16);
+  std::copy(parser_uuid.begin(), parser_uuid.end(),
+            container.canonical_anchor.begin() + 32);
+  StoreU32(&container.canonical_anchor, 48, 1);
+  StoreU64(&container.canonical_anchor, 52, 1);
+  StoreU64(&container.canonical_anchor, 60, 1);
+  StoreU64(&container.canonical_anchor, 68, 1);
+  std::copy(registry_uuid.begin(), registry_uuid.end(),
+            container.canonical_anchor.begin() + 76);
+  StoreU64(&container.canonical_anchor, 92, 1);
+  StoreU16(&container.canonical_anchor, 100, 1);
+  std::copy(statement_uuid.begin(), statement_uuid.end(),
+            container.canonical_anchor.begin() + 116);
+  container.operation_payload = stream_bytes;
+  auto container_bytes = scratchbird::engine::EncodeSblrContainer(container);
+  Require(!container_bytes.empty(),
+          "CDP-040 canonical native bulk container encoding failed");
+
+  scratchbird::engine::SblrExecutionEnvelopeV1 ingress;
+  auto& fields = ingress.fields;
+  fields[0].assign(statement_uuid.begin(), statement_uuid.end());
+  fields[1] = CanonicalU16(1);
+  fields[2] = CanonicalU16(0);
+  fields[3] = CanonicalU32(0x00010001);
+  fields[4] = CanonicalU16(1);
+  fields[5] = {1};
+  AppendU64(&fields[5], stream_bytes.size());
+  fields[5].insert(fields[5].end(), stream_bytes.begin(), stream_bytes.end());
+  fields[6] = {0};
+  fields[7] = {1};
+  AppendU32(&fields[7], scratchbird::engine::SblrCrc32c(
+                                stream_bytes.data(), stream_bytes.size()));
+  fields[8] = CanonicalU64(stream_bytes.size());
+  fields[9] = CanonicalU16(1);
+  fields[10] = CanonicalOptionalUuid(dialect_uuid);
+  fields[11] = CanonicalOptionalUuid(session.effective_user_uuid);
+  fields[12] = CanonicalStruct(0x1001, 1);
+  fields[13] = CanonicalStruct(0x1002, 2);
+  fields[14] = {0};
+  fields[15] = CanonicalU64(1);
+  fields[16] = CanonicalU32(0);
+  fields[17] = CanonicalU32(0);
+  fields[18] = CanonicalU32(0);
+  fields[19] = {0};
+  fields[20] = CanonicalU32(0);
+  fields[21] = CanonicalStruct(0x1005, 5);
+  fields[22] = {0};
+  fields[23] = {0};
+  fields[24] = {0};
+  fields[25] = CanonicalU16(0);
+  fields[26] = {0};
+  fields[27] = {0};
+  auto ingress_bytes =
+      scratchbird::engine::EncodeSblrExecutionEnvelopeV1(ingress);
+  Require(!ingress_bytes.empty(),
+          "CDP-040 canonical native bulk execution envelope encoding failed");
+
+  return {std::move(container_bytes), std::move(ingress_bytes)};
 }
 
 server::HostedEngineState MakeEngineState(const Fixture& fixture) {
@@ -929,32 +1229,141 @@ server::ServerSessionRegistry MakeServerRegistry(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::array<std::uint8_t, 16>* session_uuid) {
+  server::ServerTransactionState transaction;
+  transaction.local_transaction_id = context.local_transaction_id;
+  transaction.transaction_uuid = context.transaction_uuid.canonical;
+  transaction.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+  transaction.transaction_timestamp = context.transaction_timestamp;
+  transaction.isolation_level = context.transaction_isolation_level;
+
   server::ServerSessionRecord session;
-  session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.session_uuid =
+      UuidBytes(context.session_uuid.canonical,
+                "CDP-040 server session UUID was malformed");
+  session.connection_uuid = session.session_uuid;
+  session.server_channel_uuid = sbps::MakeUuidV7Bytes();
+  session.channel_state = server::ServerChannelState::kReady;
+  session.session_binding_present = true;
+  session.transaction_routing_v2_negotiated = true;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  session.principal_uuid = sbps::MakeUuidV7Bytes();
+  session.principal_uuid =
+      UuidBytes(context.principal_uuid.canonical,
+                "CDP-040 server principal UUID was malformed");
   session.effective_user_uuid = session.principal_uuid;
+  session.admitted_parser_package_uuid = sbps::MakeUuidV7Bytes();
+  session.admitted_dialect_profile_uuid = sbps::MakeUuidV7Bytes();
+  session.admitted_parser_package_version_major = 1;
   session.database_path = fixture.database_path.string();
   session.database_uuid = fixture.database_uuid;
+  session.catalog_generation = context.catalog_generation_id;
+  session.security_epoch = context.security_epoch;
+  session.policy_generation = 1;
+  session.resource_epoch = context.resource_epoch;
+  session.name_resolution_epoch = context.name_resolution_epoch;
   session.local_transaction_id = context.local_transaction_id;
+  session.default_local_transaction_id = context.local_transaction_id;
   session.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   session.transaction_uuid = context.transaction_uuid.canonical;
   session.transaction_timestamp = context.transaction_timestamp;
+  session.default_transaction_isolation_level =
+      context.transaction_isolation_level;
+  session.transactions_by_local_id.emplace(context.local_transaction_id,
+                                            std::move(transaction));
   *session_uuid = session.session_uuid;
 
   server::ServerSessionRegistry registry;
-  registry.sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
+  registry.channel_state = server::ServerChannelState::kReady;
+  registry.physical_channel_by_connection_uuid[
+      server::UuidBytesToText(session.connection_uuid)] =
+      session.server_channel_uuid;
+  registry.sessions_by_uuid.emplace(
+      server::UuidBytesToText(session.session_uuid), std::move(session));
   return registry;
 }
 
-sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                         const std::string& encoded) {
+sbps::Frame AcquireStatementFrame(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const api::EngineRequestContext& context) {
   sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kAcquireStatementContextRequest);
+  frame.header.payload_schema_id =
+      sbps::kSchemaAcquireStatementContextRequestV7;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
-  frame.payload = server::EncodeExecuteSblrPayloadForTest(session_uuid, {}, encoded, false);
+  AppendU16(&frame.payload, 7);
+  AppendUuid(&frame.payload, session_uuid);
+  AppendU64(&frame.payload, context.local_transaction_id);
+  AppendUuid(&frame.payload,
+             UuidBytes(context.transaction_uuid.canonical,
+                       "CDP-040 transaction UUID was malformed"));
+  return frame;
+}
+
+sbps::Frame CanonicalNativeServerFrame(
+    server::ServerSessionRegistry* registry,
+    const server::HostedEngineState& engine_state,
+    const Fixture& fixture,
+    const api::EngineRequestContext& context,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::vector<api::EngineRowValue>& rows,
+    bool enabled = true) {
+  const auto acquired = server::HandleAcquireStatementContext(
+      registry, engine_state, AcquireStatementFrame(session_uuid, context));
+  if (!acquired.accepted) {
+    for (const auto& diagnostic : acquired.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+      for (const auto& field : diagnostic.fields) {
+        std::cerr << field.key << '=' << field.value << '\n';
+      }
+    }
+  }
+  Require(acquired.accepted &&
+              acquired.response_schema_id ==
+                  sbps::kSchemaAcquireStatementContextResultV7 &&
+              acquired.payload.size() >= 115 &&
+              acquired.payload[0] == 7 && acquired.payload[1] == 0 &&
+              acquired.payload[2] == 1,
+          "CDP-040 server statement context acquisition failed");
+  std::array<std::uint8_t, 16> statement_uuid{};
+  std::copy_n(acquired.payload.begin() + 3, statement_uuid.size(),
+              statement_uuid.begin());
+  const auto statement_text = server::UuidBytesToText(statement_uuid);
+  const auto statement =
+      registry->statement_contexts_by_statement_uuid.find(statement_text);
+  Require(statement != registry->statement_contexts_by_statement_uuid.end() &&
+              statement->second.receipt && !statement->second.released,
+          "CDP-040 private statement receipt was not retained by the server");
+  const auto session = registry->sessions_by_uuid.find(
+      server::UuidBytesToText(session_uuid));
+  Require(session != registry->sessions_by_uuid.end(),
+          "CDP-040 server session disappeared after statement acquisition");
+  const auto submission = CanonicalNativeBulkContainer(
+      fixture, session->second, statement->second, rows, enabled);
+  const auto packet = NativeRowPacket(rows);
+
+  sbps::Frame frame;
+  frame.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = sbps::kSchemaExecuteCanonicalSblrV1;
+  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
+  frame.header.session_uuid = session_uuid;
+  AppendUuid(&frame.payload, session_uuid);
+  AppendUuid(&frame.payload, std::array<std::uint8_t, 16>{});
+  frame.payload.push_back(0);
+  frame.payload.push_back(1);  // selected transaction route
+  AppendU64(&frame.payload, context.local_transaction_id);
+  AppendUuid(&frame.payload,
+             UuidBytes(context.transaction_uuid.canonical,
+                       "CDP-040 transaction UUID was malformed"));
+  AppendUuid(&frame.payload, statement_uuid);
+  AppendBytes(&frame.payload, submission.container);
+  AppendBytes(&frame.payload, submission.ingress);
+  AppendBytes(&frame.payload, packet);
   return frame;
 }
 
@@ -1420,6 +1829,21 @@ void TestTypedScalarRowPageStorage() {
           "CDP-040 character cells did not remain typed character");
   Require(SelectCount(fixture, context) == 2,
           "CDP-040 typed scalar rows were not visible in writer transaction");
+  const auto loaded = api::LoadMgaRelationStoreState(context);
+  Require(loaded.ok,
+          "CDP-040 typed scalar scoped-row state reload failed");
+  bool saw_int32_1973 = false;
+  bool saw_int32_2428 = false;
+  for (const auto& row : loaded.state.row_versions) {
+    if (row.table_uuid != fixture.table_uuid || row.deleted) continue;
+    for (const auto& [name, value] : row.values) {
+      if (name != "int_i") continue;
+      saw_int32_1973 = saw_int32_1973 || value == "1973";
+      saw_int32_2428 = saw_int32_2428 || value == "2428";
+    }
+  }
+  Require(saw_int32_1973 && saw_int32_2428,
+          "CDP-040 scoped typed-row persistence reinterpreted lexical int32 bytes");
   Commit(context);
 
   const auto page = ReadPhysicalPage(fixture, 1024);
@@ -1709,6 +2133,73 @@ void TestDisabledAndInvalidRefusals() {
   Rollback(context);
 }
 
+void TestLogicalStatementRollbackOnFaultAndCancellation() {
+  {
+    auto fixture = MakeFixture("logical_batch_row_append_fault", 2250);
+    auto context = Begin(fixture, "cdp040-logical-batch-row-append-fault");
+    auto request = NativeRequest(fixture, context, Rows("fault", 4));
+    request.option_envelopes.push_back(
+        "ipar.fault_injection.point=row_append");
+    request.option_envelopes.push_back("result_payload_policy:summary_only");
+    const auto failed = api::EngineExecuteNativeBulkIngest(request);
+    Require(!failed.ok,
+            "CDP-040 injected native-bulk row append fault was accepted");
+    Require(HasEvidence(failed.evidence,
+                        "native_bulk_logical_batch",
+                        "rolled_back"),
+            "CDP-040 injected native-bulk fault did not roll back its logical batch");
+    Require(HasEvidence(failed.evidence,
+                        "native_bulk_logical_batch_atomicity",
+                        "no_partial_visibility"),
+            "CDP-040 injected native-bulk fault lost no-partial-visibility evidence");
+    Require(SelectCount(fixture, context) == 0,
+            "CDP-040 injected native-bulk fault left partially visible rows");
+    auto recovery_context = context;
+    recovery_context.request_id += "-recovery";
+    auto recovery_request =
+        NativeRequest(fixture, recovery_context, Rows("recovered", 4));
+    recovery_request.option_envelopes.push_back(
+        "result_payload_policy:summary_only");
+    const auto recovered = api::EngineExecuteNativeBulkIngest(recovery_request);
+    RequireOk(recovered,
+              "CDP-040 native-bulk recovery after statement rollback failed");
+    Require(HasEvidence(recovered.evidence,
+                        "native_bulk_logical_batch",
+                        "published") &&
+                SelectCount(fixture, context) == 4,
+            "CDP-040 recovered native-bulk statement did not publish exactly once");
+    Rollback(context);
+  }
+
+  {
+    auto fixture = MakeFixture("logical_batch_publication_cancel", 2350);
+    auto context = Begin(fixture, "cdp040-logical-batch-publication-cancel");
+    int cancellation_probes = 0;
+    context.query_cancellation_requested = [&cancellation_probes]() {
+      return ++cancellation_probes >= 3;
+    };
+    auto request = NativeRequest(fixture, context, Rows("cancel", 4));
+    request.option_envelopes.push_back("result_payload_policy:summary_only");
+    const auto cancelled = api::EngineExecuteNativeBulkIngest(request);
+    RequireDiagnostic(cancelled,
+                      "PROCESS.CANCELLED",
+                      "cancellation was observed before logical batch publication",
+                      "CDP-040 native-bulk publication cancellation drifted");
+    Require(HasEvidence(cancelled.evidence,
+                        "native_bulk_logical_batch",
+                        "rolled_back"),
+            "CDP-040 cancelled native-bulk statement did not roll back");
+    Require(HasEvidence(cancelled.evidence,
+                        "native_bulk_logical_batch_atomicity",
+                        "no_partial_visibility"),
+            "CDP-040 cancelled native-bulk statement lost atomicity evidence");
+    context.query_cancellation_requested = {};
+    Require(SelectCount(fixture, context) == 0,
+            "CDP-040 cancelled native-bulk statement left partially visible rows");
+    Rollback(context);
+  }
+}
+
 void TestServerPublicAbiRoute() {
   auto fixture = MakeFixture("server_public_abi", 2500);
   auto context = Begin(fixture, "cdp040-server-public-abi");
@@ -1716,10 +2207,13 @@ void TestServerPublicAbiRoute() {
   auto registry = MakeServerRegistry(fixture, context, &session_uuid);
   const auto engine_state = MakeEngineState(fixture);
 
+  const auto execute_frame = CanonicalNativeServerFrame(
+      &registry, engine_state, fixture, context, session_uuid,
+      Rows("server", 2));
   const auto execute = server::HandleExecuteSblr(
       &registry,
       engine_state,
-      ExecuteFrame(session_uuid, NativeServerEnvelope(fixture, Rows("server", 2))));
+      execute_frame);
   Require(execute.accepted, "CDP-040 server public ABI native ingest was rejected");
   const auto payload = DecodeExecuteResultPayload(execute.payload);
   Require(payload.outcome == "accepted", "CDP-040 server native ingest outcome drifted");
@@ -1727,17 +2221,34 @@ void TestServerPublicAbiRoute() {
           "CDP-040 server native ingest operation id drifted");
   Require(Contains(payload.row_packet, "operation_id=dml.execute_native_bulk_ingest"),
           "CDP-040 server native ingest did not return native operation packet");
-  Require(Contains(payload.row_packet, "native_bulk_ingest") &&
-              Contains(payload.row_packet, "engine_internal_api"),
-          "CDP-040 server native ingest evidence missing from public ABI route");
+  Require(Contains(payload.row_packet,
+                   "accepted_rows=2;inserted_rows=2;rejected_rows=0") &&
+              Contains(payload.row_packet,
+                       "direct_physical_bulk_row_count:2") &&
+              Contains(payload.row_packet,
+                       "result_payload_policy:summary_only"),
+          "CDP-040 bounded native ingest summary evidence drifted");
+  Require(!Contains(payload.row_packet, "server-payload-1") &&
+              !Contains(payload.row_packet, "server-payload-2"),
+          "CDP-040 summary-only native ingest leaked per-row payloads");
   Require(SelectCount(fixture, context) == 2,
           "CDP-040 server public ABI native ingest rows not visible in transaction");
+
+  const auto replay =
+      server::HandleExecuteSblr(&registry, engine_state, execute_frame);
+  Require(!replay.accepted && !replay.diagnostics.empty() &&
+              replay.diagnostics.front().code ==
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RECEIPT_MISMATCH",
+          "CDP-040 consumed native-bulk statement receipt replay was admitted");
+  Require(SelectCount(fixture, context) == 2,
+          "CDP-040 native-bulk receipt replay duplicated visible rows");
 
   const auto disabled = server::HandleExecuteSblr(
       &registry,
       engine_state,
-      ExecuteFrame(session_uuid,
-                   NativeServerEnvelope(fixture, Rows("server-disabled", 1), false)));
+      CanonicalNativeServerFrame(&registry, engine_state, fixture, context,
+                                 session_uuid, Rows("server-disabled", 1),
+                                 false));
   Require(!disabled.accepted, "CDP-040 server disabled native ingest was accepted");
   Require(!disabled.diagnostics.empty(), "CDP-040 server disabled native ingest lacked diagnostics");
   Require(disabled.diagnostics.front().code == "DML.NATIVE_BULK_INGEST.DISABLED",
@@ -1867,8 +2378,23 @@ void TestSblrRegistryEntry() {
               refused.diagnostic_id == "SB_DIAG_SBLR_TRANSACTION_CONTEXT_REQUIRED",
           "CDP-040 native ingest transaction-context refusal drifted");
 
-  const auto encoded = sblr::EncodeSblrEnvelope(NativeRoundTripEnvelope());
+  const auto round_trip_envelope = NativeRoundTripEnvelope();
+  const auto round_trip_validation =
+      sblr::ValidateSblrEnvelope(round_trip_envelope);
+  if (!round_trip_validation.ok) {
+    for (const auto& diagnostic : round_trip_validation.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    }
+  }
+  Require(round_trip_validation.ok,
+          "CDP-040 native ingest SBLR envelope failed canonical validation");
+  const auto encoded = sblr::EncodeSblrEnvelope(round_trip_envelope);
   const auto decoded = sblr::DecodeSblrEnvelope(encoded);
+  if (!decoded.ok) {
+    for (const auto& diagnostic : decoded.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    }
+  }
   Require(decoded.ok, "CDP-040 native ingest encoded SBLR envelope failed decode");
   Require(decoded.envelope.operation_id == "dml.execute_native_bulk_ingest" &&
               decoded.envelope.opcode == "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST",
@@ -1880,7 +2406,7 @@ void TestSblrRegistryEntry() {
   Require(!rendered.ok && !rendered.diagnostics.empty(),
           "CDP-040 native ingest SBLR-to-SBsql conversion should refuse without SQL text");
   Require(rendered.diagnostics.front().code ==
-              "SB_SBLR_TO_SBSQL_NO_SOURCE_PRESERVING_RENDER_CONTRACT",
+              "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED",
           "CDP-040 native ingest SBLR-to-SBsql refusal diagnostic drifted");
 }
 
@@ -1902,6 +2428,7 @@ int main() {
   TestOpaqueRenderOnlyDescriptorPayloadRefusals();
   TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow();
   TestDisabledAndInvalidRefusals();
+  TestLogicalStatementRollbackOnFaultAndCancellation();
   TestServerPublicAbiRoute();
   TestRollbackInvisibilityAndCommittedReopenVisibility();
   TestReopenRecoveryEvidence();

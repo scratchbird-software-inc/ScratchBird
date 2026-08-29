@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -21,6 +22,27 @@ namespace scratchbird::engine::internal_api {
 
 using EngineApiU64 = std::uint64_t;
 using EngineApiI64 = std::int64_t;
+
+// Engine-owned statement resource-policy bounds for decoded MGA relation
+// bytes.  This authority is independent of optimizer memory, I/O quotas,
+// result rows, LIMIT/OFFSET, and transport/carrier byte ceilings.
+inline constexpr EngineApiU64
+    kMinimumMgaRelationDecodedBytesPerPass = 64ull * 1024ull;
+inline constexpr EngineApiU64
+    kDefaultMgaRelationDecodedBytesPerPass = 64ull * 1024ull * 1024ull;
+inline constexpr EngineApiU64
+    kMaximumMgaRelationDecodedBytesPerPass = 1ull << 40;
+
+// Engine-owned statement resource-policy bounds for each exact typed-result
+// transport packet.  The same independent, noncumulative ceiling applies to
+// each ResultDescriptorVectorV1 and each RowDataPacketV1.  It is not an
+// optimizer, sort, scan, row, LIMIT/OFFSET, client-size, or global budget.
+inline constexpr EngineApiU64
+    kMinimumTypedResultTransportBytesPerPacket = 1;
+inline constexpr EngineApiU64
+    kDefaultTypedResultTransportBytesPerPacket = 64ull * 1024ull;
+inline constexpr EngineApiU64
+    kMaximumTypedResultTransportBytesPerPacket = 16ull * 1024ull * 1024ull;
 
 struct EngineUuid {
   std::string canonical;
@@ -280,13 +302,29 @@ struct EngineMaterializedAuthorizationPolicy {
   std::string policy_kind;
   bool deny = false;
   bool requires_runtime_recheck = false;
+  // Per-catalog-row generation.  `policy_epoch` below remains the global
+  // materialized policy epoch and must not be overloaded as row identity.
+  EngineApiU64 source_policy_generation = 0;
   EngineApiU64 policy_epoch = 0;
   std::string canonical_policy_envelope;
+  // Engine-issued native UPDATE policy projection authority.  These fields
+  // are persisted/materialized by the policy catalog transaction and are
+  // never derived from canonical_policy_envelope or display text.
+  std::uint8_t update_policy_phase = 0;  // 1 USING, 2 WITH_CHECK.
+  EngineUuid effective_policy_uuid;
+  EngineApiU64 effective_policy_generation = 0;
+  EngineUuid effective_expression_uuid;
+  EngineApiU64 effective_expression_generation = 0;
+  std::array<std::uint8_t, 32> effective_expression_evidence_sha256{};
 };
 
 struct EngineMaterializedAuthorizationContext {
   bool present = false;
   EngineUuid authority_uuid;
+  // Durable generation of this engine-issued authorization-context identity.
+  // It is distinct from security_epoch and advances only when the authority
+  // publishes a successor context.
+  EngineApiU64 security_context_generation = 0;
   EngineUuid principal_uuid;
   EngineApiU64 security_epoch = 0;
   EngineApiU64 policy_epoch = 0;
@@ -315,6 +353,14 @@ struct EngineRequestContext {
   EngineUuid transaction_uuid;
   EngineUuid statement_uuid;
   EngineUuid statement_snapshot_uuid;
+  // Generation of the immutable MGA statement snapshot issued with this
+  // receipt.  A parser or SBLR operand may copy it only through the private
+  // receipt bridge; it is never inferred from transaction counters.
+  EngineApiU64 statement_snapshot_generation = 0;
+  EngineUuid statement_receipt_uuid;
+  EngineUuid datatype_catalog_snapshot_uuid;
+  EngineApiU64 datatype_catalog_generation = 0;
+  EngineApiU64 datatype_registry_generation = 0;
   EngineUuid catalog_epoch_uuid;
   EngineApiU64 local_transaction_id = 0;
   std::string transaction_isolation_level = "read_committed";
@@ -372,6 +418,23 @@ struct EngineRequestContext {
   EngineApiU64 catalog_generation_id = 0;
   EngineApiU64 security_epoch = 0;
   EngineApiU64 resource_epoch = 0;
+  // Engine-issued statement resource-admission identity.  It is not an
+  // optimizer/QOW snapshot and callers must leave it empty before receipt
+  // acquisition.
+  EngineUuid resource_admission_uuid;
+  // Exact active-transaction policy authority pinned by the engine-issued
+  // statement receipt.  These fields are not parser-selectable policy input.
+  EngineUuid transaction_policy_snapshot_uuid;
+  EngineApiU64 transaction_policy_snapshot_generation = 0;
+  // Issued only while acquiring an engine-owned statement receipt.  A parser,
+  // public caller, or SBLR operand may copy this immutable value from that
+  // receipt but may never select, default, or override it.  The limit applies
+  // independently to each source occurrence and each physical decode pass.
+  EngineApiU64 maximum_mga_relation_decoded_bytes_per_pass = 0;
+  // Issued with the statement receipt and immutable for its resource epoch.
+  // This is an independent, noncumulative ceiling for each exact typed-result
+  // descriptor vector and row-data packet; callers must supply zero.
+  EngineApiU64 maximum_typed_result_transport_bytes_per_packet = 0;
   // Engine-issued optimizer admission snapshots and budgets. Parsers and SBLR
   // operands cannot populate these fields. A zero/absent field causes the
   // canonical query route to refuse before planning or data access.

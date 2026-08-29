@@ -302,25 +302,50 @@ def validate_suite_corpus(repo: Path, payload: dict[str, Any], errors: list[str]
 
 def validate_route_result(payload: dict[str, Any], tables: dict[str, list[dict[str, str]]], errors: list[str]) -> None:
     rows = payload.get("route_result_evidence", [])
-    require(isinstance(rows, list) and len(rows) == 2, "route_result_evidence must have two classifications", errors)
+    expected_classifications = {
+        "executable_route_result": ("e2e_passed", "closed_executable", False),
+        "exact_refusal_route_result": ("exact_refusal_passed", "closed_exact_refusal", False),
+        "explicit_lower_level_only": ("cluster_provider_route_passed", "closed_lower_level_only", True),
+    }
+    require(isinstance(rows, list) and len(rows) == len(expected_classifications),
+            "route_result_evidence must have three exact classifications", errors)
     if not isinstance(rows, list):
         return
-    admitted = len(tables["SBSQL_SURFACE_RELEASE_DECLARATION.csv"])
+    release_rows = tables["SBSQL_SURFACE_RELEASE_DECLARATION.csv"]
+    admitted = len(release_rows)
+    release_status_counts: dict[str, int] = {}
+    for release_row in release_rows:
+        final_status = release_row["final_status"]
+        release_status_counts[final_status] = release_status_counts.get(final_status, 0) + 1
+    by_classification = {
+        row.get("classification"): row
+        for row in rows
+        if isinstance(row, dict)
+    }
+    require(set(by_classification) == set(expected_classifications),
+            f"route/result classifications mismatch: {sorted(by_classification)}", errors)
     total = 0
     lower_level_count = 0
-    for row in rows:
-        require(row_hash_ok(row), f"{row.get('classification')} row hash mismatch", errors)
-        require(isinstance(row.get("result_evidence_sha256"), str) and HASH_RE.fullmatch(row["result_evidence_sha256"]),
-                f"{row.get('classification')} missing result evidence hash", errors)
+    for classification, (final_status, classification_status, lower_level_only) in expected_classifications.items():
+        row = by_classification.get(classification)
+        if row is None:
+            continue
+        require(row_hash_ok(row), f"{classification} row hash mismatch", errors)
+        require(row.get("final_status") == final_status,
+                f"{classification} final_status mismatch", errors)
+        require(row.get("classification_status") == classification_status,
+                f"{classification} classification_status mismatch", errors)
+        require(row.get("lower_level_only") is lower_level_only,
+                f"{classification} lower_level_only mismatch", errors)
+        expected_count = release_status_counts.get(final_status, 0)
+        require(row.get("surface_count") == expected_count,
+                f"{classification} surface_count mismatch", errors)
+        expected_evidence_hash = sha256_text(f"{final_status}:{expected_count}")
+        require(row.get("result_evidence_sha256") == expected_evidence_hash,
+                f"{classification} result evidence hash mismatch", errors)
         total += int(row.get("surface_count", 0))
         if row.get("lower_level_only") is True:
             lower_level_count += int(row.get("surface_count", 0))
-            require(row.get("classification_status") == "closed_lower_level_only",
-                    "lower-level-only classification must be explicit and closed", errors)
-        else:
-            require(row.get("classification_status") == "closed_executable",
-                    "executable route result classification must be closed", errors)
-    release_rows = tables["SBSQL_SURFACE_RELEASE_DECLARATION.csv"]
     expected_lower = sum(1 for row in release_rows if row["final_status"] == "cluster_provider_route_passed")
     require(total == admitted, "route/result classifications do not cover all admitted surfaces", errors)
     require(lower_level_count == expected_lower, "lower-level-only count does not match release declaration", errors)

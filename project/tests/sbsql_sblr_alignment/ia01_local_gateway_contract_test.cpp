@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "server/sblr_local_gateway.hpp"
+#include "engine/sblr/sblr_ddl_create_index_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
+#include "engine/sblr/sblr_plan_import_rows_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -57,6 +59,82 @@ std::vector<std::uint8_t> CanonicalPackage() {
   stream.registry_snapshot_uuid = kRegistryUuid;
   stream.operations = {Frame(true), std::move(root), Frame(false)};
   return sblr::EncodeSblrOpcodeStream(stream);
+}
+
+std::vector<std::uint8_t> CanonicalCreateIndexPackage(bool malformed) {
+  sblr::SblrDdlCreateIndexDescriptorV1 descriptor;
+  descriptor.body[0] = 1;
+  descriptor.availability = 1;
+  auto descriptor_bytes =
+      sblr::EncodeSblrDdlCreateIndexDescriptorV1(descriptor, true);
+  auto root = sblr::MakeSblrEnvelope(
+      "engine.op.ddl_create_index", "SBLR_DDL_CREATE_INDEX",
+      "gateway.create_index.root");
+  root.opcode_code = 1540;
+  root.result_shape = "ddl_result";
+  root.diagnostic_shape = "diagnostic_vector";
+  root.parser_package_uuid = kParserUuid;
+  root.registry_snapshot_uuid = kRegistryUuid;
+  root.requires_security_context = true;
+  root.requires_transaction_context = true;
+  root.requires_cluster_authority = false;
+  root.contains_sql_text = false;
+  root.parser_resolved_names_to_uuids = true;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "create_index_descriptor";
+  operand.name = "index";
+  operand.value_kind = sblr::SblrValueKind::create_index_descriptor;
+  operand.value_body = std::move(descriptor_bytes);
+  root.operands.push_back(std::move(operand));
+
+  sblr::SblrOpcodeStream stream;
+  stream.package_descriptor_uuid = kPackageUuid;
+  stream.registry_snapshot_uuid = kRegistryUuid;
+  stream.operations = {Frame(true), std::move(root), Frame(false)};
+  auto encoded = sblr::EncodeSblrOpcodeStream(stream);
+  if (malformed && !encoded.empty()) encoded.back() ^= 1;
+  return encoded;
+}
+
+std::vector<std::uint8_t> CanonicalPlanImportRowsPackage(bool malformed) {
+  sblr::PlanImportRowsDescriptorRefV1 descriptor;
+  descriptor.descriptor_uuid = kPackageBytes;
+  descriptor.descriptor_generation = 1;
+  std::vector<std::uint8_t> descriptor_bytes;
+  sblr::PlanImportRowsCodecDiagnosticV1 diagnostic;
+  if (!sblr::EncodePlanImportRowsDescriptorRefV1(
+          descriptor, &descriptor_bytes, &diagnostic)) {
+    return {};
+  }
+  auto root = sblr::MakeSblrEnvelope(
+      "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS",
+      "gateway.plan_import_rows.root");
+  root.opcode_code = sblr::kPlanImportRowsOpcodeCodeV1;
+  root.result_shape = "import_plan_result";
+  root.diagnostic_shape = "diagnostic_vector";
+  root.parser_package_uuid = kParserUuid;
+  root.registry_snapshot_uuid = kRegistryUuid;
+  root.requires_security_context = true;
+  root.requires_transaction_context = true;
+  root.requires_cluster_authority = false;
+  root.contains_sql_text = false;
+  root.parser_resolved_names_to_uuids = true;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "import_rows_plan_descriptor";
+  operand.name = "request";
+  operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+  operand.value_body = std::move(descriptor_bytes);
+  root.operands.push_back(std::move(operand));
+
+  sblr::SblrOpcodeStream stream;
+  stream.package_descriptor_uuid = kPackageUuid;
+  stream.registry_snapshot_uuid = kRegistryUuid;
+  stream.operations = {Frame(true), std::move(root), Frame(false)};
+  auto encoded = sblr::EncodeSblrOpcodeStream(stream);
+  if (malformed && !encoded.empty()) encoded.back() ^= 1;
+  return encoded;
 }
 }  // namespace
 
@@ -128,6 +206,84 @@ int main() {
   if (changed.ok ||
       changed.diagnostic_id != "SBLR.INGRESS_REVALIDATION_FAILED") {
     std::cerr << "noncanonical changed SBOS received gateway admission\n";
+    ++failures;
+  }
+
+  auto create_index = request;
+  create_index.canonical_sbos = CanonicalCreateIndexPackage(false);
+  if (create_index.canonical_sbos.empty()) return 3;
+  create_index.root_opcode_code = 1540;
+  create_index.root_opcode = "SBLR_DDL_CREATE_INDEX";
+  create_index.root_operation_id = "engine.op.ddl_create_index";
+  const auto create_index_local =
+      server::AdmitLocalNoClusterSblrGateway(create_index);
+  if (!create_index_local.ok ||
+      create_index_local.disposition !=
+          server::LocalSblrGatewayDisposition::kPassThrough) {
+    std::cerr << "valid canonical CREATE INDEX did not reach local pass-through\n";
+    ++failures;
+  }
+
+  auto create_index_clustered = create_index;
+  create_index_clustered.cluster_transaction_active = true;
+  const auto create_index_cluster_refusal =
+      server::AdmitLocalNoClusterSblrGateway(create_index_clustered);
+  if (create_index_cluster_refusal.ok ||
+      create_index_cluster_refusal.diagnostic_id !=
+          "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
+    std::cerr << "valid clustered CREATE INDEX did not fail closed\n";
+    ++failures;
+  }
+
+  auto malformed_create_index = create_index_clustered;
+  malformed_create_index.canonical_sbos =
+      CanonicalCreateIndexPackage(true);
+  if (malformed_create_index.canonical_sbos.empty()) return 4;
+  const auto malformed_create_index_refusal =
+      server::AdmitLocalNoClusterSblrGateway(malformed_create_index);
+  if (malformed_create_index_refusal.ok ||
+      malformed_create_index_refusal.diagnostic_id !=
+          "SBLR.OPERAND_INVALID") {
+    std::cerr << "malformed CREATE INDEX did not precede cluster refusal\n";
+    ++failures;
+  }
+
+  auto plan_import_rows = request;
+  plan_import_rows.canonical_sbos = CanonicalPlanImportRowsPackage(false);
+  if (plan_import_rows.canonical_sbos.empty()) return 5;
+  plan_import_rows.root_opcode_code = sblr::kPlanImportRowsOpcodeCodeV1;
+  plan_import_rows.root_opcode = "SBLR_DML_PLAN_IMPORT_ROWS";
+  plan_import_rows.root_operation_id = "dml.plan_import_rows";
+  const auto plan_import_rows_local =
+      server::AdmitLocalNoClusterSblrGateway(plan_import_rows);
+  if (!plan_import_rows_local.ok ||
+      plan_import_rows_local.disposition !=
+          server::LocalSblrGatewayDisposition::kPassThrough) {
+    std::cerr << "valid canonical import plan did not reach local pass-through\n";
+    ++failures;
+  }
+
+  auto plan_import_rows_clustered = plan_import_rows;
+  plan_import_rows_clustered.cluster_transaction_active = true;
+  const auto plan_import_rows_cluster_refusal =
+      server::AdmitLocalNoClusterSblrGateway(plan_import_rows_clustered);
+  if (plan_import_rows_cluster_refusal.ok ||
+      plan_import_rows_cluster_refusal.diagnostic_id !=
+          "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
+    std::cerr << "clustered import plan did not fail closed\n";
+    ++failures;
+  }
+
+  auto malformed_plan_import_rows = plan_import_rows_clustered;
+  malformed_plan_import_rows.canonical_sbos =
+      CanonicalPlanImportRowsPackage(true);
+  if (malformed_plan_import_rows.canonical_sbos.empty()) return 6;
+  const auto malformed_plan_import_rows_refusal =
+      server::AdmitLocalNoClusterSblrGateway(malformed_plan_import_rows);
+  if (malformed_plan_import_rows_refusal.ok ||
+      malformed_plan_import_rows_refusal.diagnostic_id !=
+          "SBLR.OPERAND_INVALID") {
+    std::cerr << "malformed import plan did not precede cluster refusal\n";
     ++failures;
   }
   return failures == 0 ? 0 : 1;

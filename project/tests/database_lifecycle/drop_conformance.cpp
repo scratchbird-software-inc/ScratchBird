@@ -288,10 +288,16 @@ std::array<std::uint8_t, 16> AddSession(ServerSessionRegistry* registry,
   session.session_uuid = sbps::MakeUuidV7Bytes();
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_claim = std::string(principal);
+  session.embedded_in_process = true;
   session.database_path = fixture.path.string();
   session.database_uuid = fixture.database_uuid;
   session.effective_user_uuid = sbps::MakeUuidV7Bytes();
   session.local_transaction_id = local_transaction_id;
+  if (principal == "admin") {
+    session.engine_authorization_trace_tags = {
+        "security.fixture_trace_authority",
+        "right:OBS_MANAGEMENT_CONTROL"};
+  }
   registry->sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
   registry->auth_contexts_by_uuid[scratchbird::server::UuidBytesToText(session.auth_context_uuid)] = session;
   return session.session_uuid;

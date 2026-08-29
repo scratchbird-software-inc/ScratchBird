@@ -303,6 +303,182 @@ bool ValidateDescriptorHandleRefusal() {
   return passed;
 }
 
+bool ValidateDescriptorUuidOccurrenceAuthority() {
+  auto repeated_v1 = SharedDag();
+  repeated_v1.descriptors[1].descriptor_uuid =
+      repeated_v1.descriptors[0].descriptor_uuid;
+  repeated_v1.descriptors[1].type_uuid = repeated_v1.descriptors[0].type_uuid;
+  repeated_v1.descriptors[1].nullability =
+      repeated_v1.descriptors[0].nullability;
+  repeated_v1.descriptors[1].collation_uuid =
+      repeated_v1.descriptors[0].collation_uuid;
+  repeated_v1.descriptors[1].timezone_profile_id =
+      repeated_v1.descriptors[0].timezone_profile_id;
+  repeated_v1.descriptors[1].width = repeated_v1.descriptors[0].width;
+  repeated_v1.descriptors[1].precision = repeated_v1.descriptors[0].precision;
+  repeated_v1.descriptors[1].scale = repeated_v1.descriptors[0].scale;
+  const auto repeated_v1_result =
+      api::ValidateTypedRelationalDag(repeated_v1);
+
+  auto conflicting_v1 = repeated_v1;
+  conflicting_v1.descriptors[1].nullability =
+      api::RelationalNullability::kNullable;
+  const auto conflicting_v1_result =
+      api::ValidateTypedRelationalDag(conflicting_v1);
+
+  const auto make_authoritative = [] {
+    auto dag = SharedDag();
+    auto& first = dag.descriptors[0];
+    auto& second = dag.descriptors[1];
+    first.descriptor_uuid = "019d0000-0000-7000-8000-00000000d718";
+    first.type_uuid = "019d0000-0000-7000-8000-00000000d719";
+    first.nullability = api::RelationalNullability::kNullable;
+    first.width = 256;
+    first.datatype_identity_authoritative = true;
+    first.descriptor_generation = 1;
+    first.type_generation = 1;
+    first.codec_id = "datatype.text.utf8.v1";
+    first.codec_version = 1;
+    first.codec_generation = 1;
+    first.statement_receipt_uuid =
+        "019f0000-0000-7000-8000-0000000002a1";
+    first.datatype_catalog_snapshot_uuid =
+        "019d0000-0000-7000-8000-00000000d701";
+    first.datatype_catalog_generation = 1;
+    first.datatype_registry_generation = 1;
+
+    second.descriptor_uuid = first.descriptor_uuid;
+    second.type_uuid = first.type_uuid;
+    second.nullability = api::RelationalNullability::kNonNull;
+    second.width = 128;
+    second.datatype_identity_authoritative = true;
+    second.descriptor_generation = first.descriptor_generation;
+    second.type_generation = first.type_generation;
+    second.codec_id = first.codec_id;
+    second.codec_version = first.codec_version;
+    second.codec_generation = first.codec_generation;
+    second.statement_receipt_uuid = first.statement_receipt_uuid;
+    second.datatype_catalog_snapshot_uuid =
+        first.datatype_catalog_snapshot_uuid;
+    second.datatype_catalog_generation = first.datatype_catalog_generation;
+    second.datatype_registry_generation = first.datatype_registry_generation;
+    return dag;
+  };
+
+  const auto repeated_v2 = make_authoritative();
+  const auto repeated_v2_result =
+      api::ValidateTypedRelationalDag(repeated_v2);
+
+  auto mixed_distinct_uuid = make_authoritative();
+  auto& mixed_distinct = mixed_distinct_uuid.descriptors[1];
+  mixed_distinct.descriptor_uuid =
+      "019f0000-0000-7200-8000-0000000002a3";
+  mixed_distinct.type_uuid =
+      "019f0000-0000-7300-8000-0000000002a4";
+  mixed_distinct.datatype_identity_authoritative = false;
+  mixed_distinct.descriptor_generation = 0;
+  mixed_distinct.type_generation = 0;
+  mixed_distinct.codec_id.clear();
+  mixed_distinct.codec_version = 0;
+  mixed_distinct.codec_generation = 0;
+  mixed_distinct.statement_receipt_uuid.clear();
+  mixed_distinct.datatype_catalog_snapshot_uuid.clear();
+  mixed_distinct.datatype_catalog_generation = 0;
+  mixed_distinct.datatype_registry_generation = 0;
+  const auto mixed_distinct_result =
+      api::ValidateTypedRelationalDag(mixed_distinct_uuid);
+
+  bool passed = true;
+  passed &= Require(
+      repeated_v1_result.accepted && repeated_v1_result.issues.empty(),
+      "alias-distinct v1 descriptor occurrence with identical UUID authority was refused");
+  passed &= Require(
+      !conflicting_v1_result.accepted &&
+          HasIssue(conflicting_v1_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "descriptor_record"),
+      "repeated v1 descriptor UUID with conflicting slot authority was accepted");
+  passed &= Require(
+      repeated_v2_result.accepted && repeated_v2_result.issues.empty(),
+      "complete v2 descriptor occurrences with distinct slot facets were refused");
+  passed &= Require(
+      mixed_distinct_result.accepted && mixed_distinct_result.issues.empty(),
+      "mixed v2/v1 descriptors with distinct UUID handles were refused");
+
+  constexpr std::size_t kImmutableFieldCount = 10;
+  for (std::size_t field = 0; field < kImmutableFieldCount; ++field) {
+    auto conflicting_v2 = make_authoritative();
+    auto& second = conflicting_v2.descriptors[1];
+    switch (field) {
+      case 0:
+        second.type_uuid =
+            "019f0000-0000-7300-8000-0000000002b0";
+        break;
+      case 1: second.descriptor_generation = 2; break;
+      case 2: second.type_generation = 2; break;
+      case 3: second.codec_id = "datatype.text.other.v1"; break;
+      case 4: second.codec_version = 2; break;
+      case 5: second.codec_generation = 2; break;
+      case 6:
+        second.statement_receipt_uuid =
+            "019f0000-0000-7000-8000-0000000002b6";
+        break;
+      case 7:
+        second.datatype_catalog_snapshot_uuid =
+            "019f0000-0000-7000-8000-0000000002b7";
+        break;
+      case 8: second.datatype_catalog_generation = 2; break;
+      case 9: second.datatype_registry_generation = 2; break;
+      default: break;
+    }
+    const auto result = api::ValidateTypedRelationalDag(conflicting_v2);
+    passed &= Require(
+        !result.accepted &&
+            HasIssue(result, "DATATYPE.DESCRIPTOR.INVALID",
+                     "descriptor_record"),
+        "complete v2 repeated UUID admitted an immutable authority mutation");
+  }
+
+  auto mixed_same_uuid = make_authoritative();
+  auto& mixed_same = mixed_same_uuid.descriptors[1];
+  mixed_same.datatype_identity_authoritative = false;
+  mixed_same.descriptor_generation = 0;
+  mixed_same.type_generation = 0;
+  mixed_same.codec_id.clear();
+  mixed_same.codec_version = 0;
+  mixed_same.codec_generation = 0;
+  mixed_same.statement_receipt_uuid.clear();
+  mixed_same.datatype_catalog_snapshot_uuid.clear();
+  mixed_same.datatype_catalog_generation = 0;
+  mixed_same.datatype_registry_generation = 0;
+  const auto mixed_same_result =
+      api::ValidateTypedRelationalDag(mixed_same_uuid);
+  passed &= Require(
+      !mixed_same_result.accepted &&
+          HasIssue(mixed_same_result, "DATATYPE.DESCRIPTOR.INVALID",
+                   "descriptor_record"),
+      "same descriptor UUID mixed complete v2 and v1 authority");
+
+  auto partial = make_authoritative();
+  partial.descriptors[1].codec_generation = 0;
+  const auto partial_result = api::ValidateTypedRelationalDag(partial);
+  passed &= Require(
+      !partial_result.accepted &&
+          HasIssue(partial_result, "DATATYPE.DESCRIPTOR.INVALID",
+                   "descriptor_record"),
+      "partial v2 datatype authority was accepted");
+
+  auto hidden_partial = SharedDag();
+  hidden_partial.descriptors[0].descriptor_generation = 1;
+  const auto hidden_partial_result =
+      api::ValidateTypedRelationalDag(hidden_partial);
+  passed &= Require(
+      !hidden_partial_result.accepted &&
+          HasIssue(hidden_partial_result, "DATATYPE.DESCRIPTOR.INVALID",
+                   "descriptor_record"),
+      "non-authoritative descriptor carried a hidden partial v2 tuple");
+  return passed;
+}
+
 bool ValidateDuplicateAndDanglingRefusal() {
   auto duplicate = SharedDag();
   duplicate.nodes[1].node_id = 1;
@@ -622,6 +798,7 @@ int main() {
   passed &= ValidateRootRefusal();
   passed &= ValidateVersionAndKindRefusal();
   passed &= ValidateDescriptorHandleRefusal();
+  passed &= ValidateDescriptorUuidOccurrenceAuthority();
   passed &= ValidateDuplicateAndDanglingRefusal();
   passed &= ValidateCycleRefusal();
   passed &= ValidateSharingRefusal();

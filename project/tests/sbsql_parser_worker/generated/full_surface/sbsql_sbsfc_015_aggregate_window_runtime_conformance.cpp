@@ -6,22 +6,37 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_catalog_manifest.hpp"
+#include "descriptor_value_runtime.hpp"
 #include "sblr_aggregate_window_runtime.hpp"
+#include "uuid.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <iostream>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+namespace exec = scratchbird::engine::executor;
+namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
+namespace uuid = scratchbird::core::uuid;
+
 namespace {
 
 using scratchbird::engine::sblr::FinalizeSblrAggregateState;
 using scratchbird::engine::sblr::InitializeSblrAggregateState;
-using scratchbird::engine::sblr::EvaluateLegacySblrWindowFunction;
 using scratchbird::engine::sblr::MergeSblrAggregateState;
+using scratchbird::engine::sblr::ResolveSblrCanonicalAggregateFunctionUuid;
 using scratchbird::engine::sblr::SblrAggregateFinalizeRequest;
 using scratchbird::engine::sblr::SblrAggregateOptions;
 using scratchbird::engine::sblr::SblrAggregateUpdateRequest;
@@ -31,8 +46,6 @@ using scratchbird::engine::sblr::SblrListAggOverflowMode;
 using scratchbird::engine::sblr::SblrStatusCode;
 using scratchbird::engine::sblr::SblrValue;
 using scratchbird::engine::sblr::SblrValuePayloadKind;
-using scratchbird::engine::sblr::LegacySblrWindowFunctionRequest;
-using scratchbird::engine::sblr::SblrWindowRow;
 using scratchbird::engine::sblr::UpdateSblrAggregateState;
 
 SblrValue NullValue(std::string descriptor = {}) {
@@ -94,7 +107,7 @@ scratchbird::engine::sblr::SblrResult RunAggregate(std::string_view function_id,
   context.transaction_uuid = "SBSFC-015-runtime-tx";
   context.transaction_context_present = true;
 
-  auto init = InitializeSblrAggregateState(function_id, "SBSFC-015-runtime-function", std::move(result_descriptor), context, &state);
+  auto init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), std::move(result_descriptor), context, &state);
   if (!init.ok()) return init;
 
   for (const auto& value : values) {
@@ -122,7 +135,7 @@ scratchbird::engine::sblr::SblrResult RunAggregateRows(std::string_view function
   context.transaction_uuid = "SBSFC-015-runtime-tx";
   context.transaction_context_present = true;
 
-  auto init = InitializeSblrAggregateState(function_id, "SBSFC-015-runtime-function", std::move(result_descriptor), context, &state);
+  auto init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), std::move(result_descriptor), context, &state);
   if (!init.ok()) return init;
 
   for (const auto& row : rows) {
@@ -149,9 +162,9 @@ scratchbird::engine::sblr::SblrResult RunMergedAggregateRows(std::string_view fu
   context.transaction_uuid = "SBSFC-015-runtime-tx";
   context.transaction_context_present = true;
 
-  auto left_init = InitializeSblrAggregateState(function_id, "SBSFC-015-runtime-function", result_descriptor, context, &left_state);
+  auto left_init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), result_descriptor, context, &left_state);
   if (!left_init.ok()) return left_init;
-  auto right_init = InitializeSblrAggregateState(function_id, "SBSFC-015-runtime-function", std::move(result_descriptor), context, &right_state);
+  auto right_init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), std::move(result_descriptor), context, &right_state);
   if (!right_init.ok()) return right_init;
 
   for (const auto& row : left_rows) {
@@ -190,9 +203,9 @@ scratchbird::engine::sblr::SblrResult RunMergedAggregate(std::string_view functi
   context.transaction_uuid = "SBSFC-015-runtime-tx";
   context.transaction_context_present = true;
 
-  auto left_init = InitializeSblrAggregateState(function_id, "SBSFC-015-runtime-function", result_descriptor, context, &left_state);
+  auto left_init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), result_descriptor, context, &left_state);
   if (!left_init.ok()) return left_init;
-  auto right_init = InitializeSblrAggregateState(function_id, "SBSFC-015-runtime-function", std::move(result_descriptor), context, &right_state);
+  auto right_init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), std::move(result_descriptor), context, &right_state);
   if (!right_init.ok()) return right_init;
 
   auto apply_value = [&](SblrAggregateWindowState* state, const SblrValue& value) {
@@ -222,44 +235,712 @@ scratchbird::engine::sblr::SblrResult RunMergedAggregate(std::string_view functi
   return FinalizeSblrAggregateState(left_state, finalize);
 }
 
-scratchbird::engine::sblr::SblrResult RunWindow(std::string function_id,
-                                                const std::vector<SblrValue>& values,
-                                                std::size_t current_row_index,
-                                                std::size_t frame_start_index,
-                                                std::size_t frame_end_exclusive,
-                                                std::int64_t offset = 1,
-                                                std::uint64_t ntile_bucket_count = 1,
-                                                std::uint64_t nth = 1,
-                                                const SblrValue* default_value = nullptr,
-                                                const std::vector<std::uint64_t>& peer_groups = {}) {
-  LegacySblrWindowFunctionRequest request;
-  request.context.database_uuid = "SBSFC-015-runtime-db";
-  request.context.transaction_uuid = "SBSFC-015-runtime-tx";
-  request.context.transaction_context_present = true;
-  request.function_id = std::move(function_id);
-  request.function_uuid = "SBSFC-015-runtime-window-function";
-  request.current_row_index = current_row_index;
-  request.frame_start_index = frame_start_index;
-  request.frame_end_exclusive = frame_end_exclusive;
-  request.offset = offset;
-  request.ntile_bucket_count = ntile_bucket_count;
-  request.nth = nth;
-  if (default_value != nullptr) {
-    request.default_value = *default_value;
-    request.default_value_present = true;
+std::string CoreTypeUuid(const std::string_view stable_name) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) std::abort();
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (found == manifest.manifest.descriptor_rows.end()) std::abort();
+  return uuid::UuidToString(found->descriptor_uuid.value);
+}
+
+std::string CoreAggregateTypeUuid(const std::string_view stable_name) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) std::abort();
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (found == manifest.manifest.descriptor_rows.end() ||
+      !found->descriptor_uuid.valid()) {
+    std::abort();
   }
-  for (std::size_t index = 0; index < values.size(); ++index) {
-    SblrWindowRow row;
-    row.values.push_back(values[index]);
-    if (index < peer_groups.size()) row.peer_group = peer_groups[index];
-    request.rows.push_back(std::move(row));
+  const auto descriptor_uuid = uuid::UuidToString(found->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      found->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+}
+
+std::string FixtureUuid(const unsigned value) {
+  char buffer[37]{};
+  std::snprintf(buffer, sizeof(buffer),
+                "019f1500-0000-7600-8000-%012u", value);
+  return buffer;
+}
+
+api::EngineDescriptor CanonicalDescriptor(const unsigned identity,
+                                          const std::string_view type_name,
+                                          const bool nullable) {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical = FixtureUuid(identity);
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = std::string(type_name);
+  descriptor.encoded_descriptor =
+      "type_uuid=" + CoreTypeUuid(type_name) +
+      ";nullability=" + (nullable ? "nullable" : "non_null");
+  return descriptor;
+}
+
+api::EngineTypedValue CanonicalValue(const api::EngineDescriptor& descriptor,
+                                     const std::string& encoded) {
+  api::EngineTypedValue value;
+  value.descriptor = descriptor;
+  value.encoded_value = encoded;
+  value.is_null = false;
+  value.state = api::EngineValueState::value;
+  return value;
+}
+
+exec::CanonicalExecutionMgaAuthority BindCanonicalPhysicalDag(
+    exec::TypedPhysicalNodeDag* dag) {
+  constexpr std::uint64_t kLocal = (std::uint64_t{1} << 32) + 15015;
+  constexpr std::uint64_t kHighwater = (std::uint64_t{1} << 32) + 15014;
+  dag->abi_version = 2;
+  dag->local_transaction_id = kLocal;
+  dag->statement_snapshot_id = kHighwater;
+  dag->mga_statement_context = {
+      FixtureUuid(15101), FixtureUuid(15102), FixtureUuid(15103),
+      FixtureUuid(15104), kLocal, kHighwater, kLocal, kLocal, kLocal, kLocal,
+      {kLocal}, {}, "statement_stable", kLocal + 1, true, true, true};
+  dag->bound_sblr_tree_uuid = FixtureUuid(15110);
+  dag->catalog_epoch_uuid = FixtureUuid(15111);
+  dag->security_context_uuid = FixtureUuid(15112);
+  dag->capability_snapshot_uuid = FixtureUuid(15113);
+  dag->resource_snapshot_uuid = FixtureUuid(15114);
+  dag->statistics_snapshot_uuid = FixtureUuid(15115);
+  dag->route_snapshot_uuid = FixtureUuid(15116);
+  dag->catalog_generation = 15121;
+  dag->security_epoch = 15122;
+  dag->policy_epoch = 15123;
+  dag->resource_epoch = 15124;
+  dag->statistics_generation = 15125;
+  dag->route_epoch = 15126;
+  dag->route_generation = 15127;
+  dag->memory_budget_bytes = 128U * 1024U * 1024U;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  dag->admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest,
+       dag->bound_sblr_tree_uuid},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch, dag->catalog_epoch_uuid},
+      {exec::PhysicalAdmissionStage::kSecurity, dag->security_context_uuid},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       dag->mga_statement_context.statement_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       dag->capability_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kResource, dag->resource_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       dag->statistics_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute,
+       dag->route_snapshot_uuid},
+  };
+  for (std::size_t index = 0; index < dag->nodes.size(); ++index) {
+    auto& node = dag->nodes[index];
+    node.selected_alternative_uuid =
+        FixtureUuid(15200 + static_cast<unsigned>(index) * 3);
+    node.executor_capability_uuid =
+        FixtureUuid(15201 + static_cast<unsigned>(index) * 3);
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        FixtureUuid(15202 + static_cast<unsigned>(index) * 3);
+    node.memory_bytes_required = 32U * 1024U * 1024U;
+    node.engine_capability_validated = true;
+    node.mga_statement_context = dag->mga_statement_context;
   }
-  return EvaluateLegacySblrWindowFunction(request);
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = dag->mga_statement_context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  const auto current = dag->mga_statement_context;
+  authority.resolve_current = [current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  return authority;
+}
+
+struct CanonicalWindowFixture {
+  exec::TypedPhysicalNodeDag dag;
+  exec::DescriptorBatch batch;
+  exec::CanonicalDescriptorOrderTerm order_term;
+  exec::ExecutorColumnDescriptor result_column;
+  exec::CanonicalExecutionMgaAuthority authority;
+  std::string ordering_property_uuid;
+  std::string window_property_uuid;
+  std::string order_term_binding_evidence_uuid;
+  std::string deterministic_order_evidence_uuid;
+  std::string window_frame_descriptor_uuid;
+  std::string frame_property_binding_evidence_uuid;
+};
+
+CanonicalWindowFixture MakeCanonicalWindowFixture(
+    const std::vector<std::int64_t>& ordered_values,
+    const std::string_view implementation_id,
+    const std::string_view result_type,
+    const bool result_nullable,
+    const bool capability_is_order_term_receipt = true) {
+  constexpr std::uint32_t kInputDescriptorId = 15301;
+  constexpr std::uint32_t kResultDescriptorId = 15302;
+  constexpr std::uint64_t kValuesNodeId = 15311;
+  constexpr std::uint64_t kSortNodeId = 15312;
+  constexpr std::uint64_t kWindowNodeId = 15313;
+  const auto input_descriptor = CanonicalDescriptor(15321, "int64", false);
+  const auto result_descriptor =
+      CanonicalDescriptor(15322, result_type, result_nullable);
+
+  CanonicalWindowFixture fixture;
+  fixture.dag.selected_plan_uuid = FixtureUuid(15330);
+  fixture.dag.root_physical_node_id = kWindowNodeId;
+  fixture.dag.nodes = {
+      {.physical_node_id = kValuesNodeId,
+       .relational_node_id = 15311,
+       .node_kind = exec::PhysicalNodeKind::kValues,
+       .implementation_id = "values.typed.v1",
+       .output_descriptor_ids = {kInputDescriptorId},
+       .causal_counter_id = 153101},
+      {.physical_node_id = kSortNodeId,
+       .relational_node_id = 15312,
+       .node_kind = exec::PhysicalNodeKind::kSort,
+       .implementation_id = "sort.typed.order-proof.v1",
+       .input_physical_node_ids = {kValuesNodeId},
+       .output_descriptor_ids = {kInputDescriptorId},
+       .causal_counter_id = 153102},
+      {.physical_node_id = kWindowNodeId,
+       .relational_node_id = 15313,
+       .node_kind = exec::PhysicalNodeKind::kWindow,
+       .implementation_id = std::string(implementation_id),
+       .input_physical_node_ids = {kSortNodeId},
+       .output_descriptor_ids = {kInputDescriptorId, kResultDescriptorId},
+       .causal_counter_id = 153103},
+  };
+  fixture.authority = BindCanonicalPhysicalDag(&fixture.dag);
+  fixture.ordering_property_uuid = FixtureUuid(15331);
+  fixture.window_property_uuid = FixtureUuid(15332);
+  fixture.deterministic_order_evidence_uuid = FixtureUuid(15333);
+  fixture.window_frame_descriptor_uuid = FixtureUuid(15334);
+  fixture.frame_property_binding_evidence_uuid = FixtureUuid(15335);
+  fixture.dag.nodes[1].delivered_property_uuids = {
+      fixture.ordering_property_uuid};
+  fixture.dag.nodes[2].required_property_uuids = {
+      fixture.ordering_property_uuid};
+  fixture.dag.nodes[2].delivered_property_uuids = {
+      fixture.ordering_property_uuid, fixture.window_property_uuid};
+  fixture.order_term = {
+      .column = 0,
+      .expression_descriptor_id = kInputDescriptorId,
+      .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+      .null_placement = exec::CanonicalDescriptorNullPlacement::last,
+  };
+  std::uint64_t planned_workspace = 0;
+  std::uint64_t actual_workspace = 0;
+  if (!exec::PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+          fixture.order_term, fixture.ordering_property_uuid,
+          &planned_workspace)) {
+    std::abort();
+  }
+  fixture.order_term_binding_evidence_uuid =
+      exec::ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+          fixture.order_term, fixture.ordering_property_uuid,
+          planned_workspace, &actual_workspace);
+  if (fixture.order_term_binding_evidence_uuid.empty() ||
+      actual_workspace != planned_workspace) {
+    std::abort();
+  }
+  if (capability_is_order_term_receipt) {
+    fixture.dag.nodes[2].executor_capability_uuid =
+        fixture.order_term_binding_evidence_uuid;
+  }
+  fixture.batch.columns = {
+      {"order_value", input_descriptor, false, kInputDescriptorId}};
+  fixture.batch.rows.reserve(ordered_values.size());
+  for (const auto value : ordered_values) {
+    fixture.batch.rows.push_back(
+        {{CanonicalValue(input_descriptor, std::to_string(value))}});
+  }
+  fixture.result_column = {"window_result", result_descriptor,
+                           result_nullable, kResultDescriptorId};
+  return fixture;
+}
+
+scratchbird::engine::sblr::SblrResult CanonicalFailure(
+    const std::string_view diagnostic_id,
+    const std::string_view detail) {
+  scratchbird::engine::sblr::SblrResult result;
+  result.status = SblrStatusCode::execution_failed;
+  scratchbird::engine::sblr::SblrRuntimeDiagnostic diagnostic;
+  diagnostic.diagnostic_id = std::string(diagnostic_id);
+  diagnostic.message_key = "engine.window.canonical_descriptor_refusal";
+  diagnostic.detail = std::string(detail);
+  result.diagnostics.push_back(std::move(diagnostic));
+  return result;
+}
+
+scratchbird::engine::sblr::SblrResult CanonicalScalar(SblrValue value) {
+  scratchbird::engine::sblr::SblrResult result;
+  result.operation_id = "engine.op.query_window_canonical_descriptor";
+  result.scalar_values.push_back(std::move(value));
+  return result;
+}
+
+scratchbird::engine::sblr::SblrResult CanonicalDiagnosticFailure(
+    const exec::DescriptorRuntimeDiagnostic& diagnostic) {
+  return CanonicalFailure(diagnostic.diagnostic_code, diagnostic.detail);
+}
+
+scratchbird::engine::sblr::SblrResult CanonicalNumericScalar(
+    const api::EngineTypedValue& value) {
+  if (value.state == api::EngineValueState::sql_null || value.is_null) {
+    return CanonicalScalar(NullValue(value.descriptor.canonical_type_name));
+  }
+  try {
+    if (value.descriptor.canonical_type_name == "int64") {
+      return CanonicalScalar(Int64Value(std::stoll(value.encoded_value)));
+    }
+    if (value.descriptor.canonical_type_name == "real64") {
+      return CanonicalScalar(Real64Value(std::stod(value.encoded_value)));
+    }
+  } catch (const std::exception&) {
+    return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                            "canonical window output is not decodable");
+  }
+  return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                          "canonical window output type is unsupported");
+}
+
+scratchbird::engine::sblr::SblrResult CanonicalWindowOutputAt(
+    const exec::DescriptorBatch& output,
+    const std::size_t row_index) {
+  if (row_index >= output.rows.size() || output.columns.empty() ||
+      output.rows[row_index].values.size() != output.columns.size()) {
+    return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                            "canonical window output row is missing");
+  }
+  return CanonicalNumericScalar(output.rows[row_index].values.back());
+}
+
+scratchbird::engine::sblr::SblrResult RunCanonicalHypotheticalAggregate(
+    const exec::CanonicalAggregateFunction function,
+    const std::vector<SblrValue>& values,
+    const SblrValue& hypothetical) {
+  constexpr std::uint32_t kInputDescriptorId = 15401;
+  constexpr std::uint32_t kResultDescriptorId = 15402;
+  constexpr std::uint64_t kValuesNodeId = 15411;
+  constexpr std::uint64_t kAggregateNodeId = 15412;
+  const auto input_descriptor = CanonicalDescriptor(15421, "int64", false);
+  const bool integer_result =
+      function == exec::CanonicalAggregateFunction::rank ||
+      function == exec::CanonicalAggregateFunction::dense_rank;
+  const auto result_descriptor = CanonicalDescriptor(
+      15422, integer_result ? "int64" : "real64", false);
+  auto canonical_result_descriptor = result_descriptor;
+  canonical_result_descriptor.encoded_descriptor =
+      "type_uuid=" +
+      CoreAggregateTypeUuid(integer_result ? "int64" : "real64") +
+      ";nullability=non_null";
+
+  exec::CanonicalAggregateRuntimeRequest request;
+  request.physical_dag.selected_plan_uuid = FixtureUuid(15430);
+  request.physical_dag.root_physical_node_id = kAggregateNodeId;
+  request.physical_dag.nodes = {
+      {.physical_node_id = kValuesNodeId,
+       .relational_node_id = 15411,
+       .node_kind = exec::PhysicalNodeKind::kValues,
+       .implementation_id = "values.typed.v1",
+       .output_descriptor_ids = {kInputDescriptorId},
+       .causal_counter_id = 154101},
+      {.physical_node_id = kAggregateNodeId,
+       .relational_node_id = 15412,
+       .node_kind = exec::PhysicalNodeKind::kAggregate,
+       .implementation_id = "aggregate.registry-core.v1",
+       .input_physical_node_ids = {kValuesNodeId},
+       .output_descriptor_ids = {kResultDescriptorId},
+       .causal_counter_id = 154102},
+  };
+  request.mga_authority = BindCanonicalPhysicalDag(&request.physical_dag);
+  request.selected_physical_node_id = kAggregateNodeId;
+  request.input_batch.columns = {
+      {"ordered_value", input_descriptor, false, kInputDescriptorId}};
+  for (const auto& value : values) {
+    if (value.is_null || !value.has_int64_value) {
+      return CanonicalFailure(
+          "QOW-DIAG-QRY-011-REGISTRY-VALUE-TYPE-V1",
+          "hypothetical-set input must be exact int64");
+    }
+    request.input_batch.rows.push_back(
+        {{CanonicalValue(input_descriptor, std::to_string(value.int64_value))}});
+  }
+  const auto* entry = exec::LookupCanonicalAggregateByFunctionV1(function);
+  if (entry == nullptr || !entry->executable) {
+    return CanonicalFailure("QOW-DIAG-QRY-011-REGISTRY-IDENTITY-V1",
+                            "hypothetical-set registry entry is unavailable");
+  }
+  request.descriptor = {entry->abi_version, entry->function,
+                        entry->builtin_id, entry->function_uuid, false};
+  request.value_columns = {0};
+  request.value_expression_descriptor_ids = {kInputDescriptorId};
+  request.aggregate_order_terms = {{
+      .column = 0,
+      .expression_descriptor_id = kInputDescriptorId,
+      .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+      .null_placement = exec::CanonicalDescriptorNullPlacement::last,
+  }};
+  if (hypothetical.is_null || !hypothetical.has_int64_value) {
+    return CanonicalFailure("QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1",
+                            "hypothetical-set direct argument must be int64");
+  }
+  request.direct_arguments = {CanonicalValue(
+      input_descriptor, std::to_string(hypothetical.int64_value))};
+  request.result_column = {"hypothetical_result", canonical_result_descriptor, false,
+                           kResultDescriptorId};
+  const auto result = exec::ExecuteCanonicalAggregateRuntime(request);
+  if (!result.diagnostic.ok) return CanonicalDiagnosticFailure(result.diagnostic);
+  if (result.output_batch.rows.size() != 1 ||
+      result.output_batch.rows.front().values.size() != 1) {
+    return CanonicalFailure("QOW-DIAG-QRY-011-REGISTRY-OUTPUT-V1",
+                            "hypothetical-set aggregate output is missing");
+  }
+  return CanonicalNumericScalar(result.output_batch.rows.front().values.front());
+}
+
+scratchbird::engine::sblr::SblrResult RunCanonicalPeerRanking(
+    const std::string_view builtin_id,
+    const std::vector<SblrValue>& values,
+    const std::size_t current_row_index) {
+  std::string_view implementation_id;
+  std::string_view function_uuid;
+  std::string_view result_type;
+  if (builtin_id == "sb.window.rank") {
+    implementation_id = "window.rank.v1";
+    function_uuid = "019de5fc-2400-7b94-870d-0dd789ca70ab";
+    result_type = "int64";
+  } else if (builtin_id == "sb.window.dense_rank") {
+    implementation_id = "window.dense-rank.v1";
+    function_uuid = "019de5fc-2400-741d-bef0-f079fd3ba494";
+    result_type = "int64";
+  } else if (builtin_id == "sb.window.percent_rank") {
+    implementation_id = "window.percent-rank.v1";
+    function_uuid = "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+    result_type = "real64";
+  } else {
+    implementation_id = "window.cume-dist.v1";
+    function_uuid = "019de5fc-2400-721c-be64-2568b64a02b9";
+    result_type = "real64";
+  }
+  std::vector<std::int64_t> ordered;
+  ordered.reserve(values.size());
+  for (const auto& value : values) {
+    if (value.is_null || !value.has_int64_value) {
+      return CanonicalFailure("SBLR.PLAN_TREE.INVALID_HANDLE",
+                              "peer-ranking input must be exact int64");
+    }
+    ordered.push_back(value.int64_value);
+  }
+  auto fixture = MakeCanonicalWindowFixture(
+      ordered, implementation_id, result_type, false);
+  exec::CanonicalDescriptorPeerRankingRequest request;
+  request.physical_dag = std::move(fixture.dag);
+  request.selected_physical_node_id = request.physical_dag.root_physical_node_id;
+  request.ordered_input_batch = std::move(fixture.batch);
+  request.order_term = fixture.order_term;
+  request.ranking_column = fixture.result_column;
+  request.function_abi_version = 1;
+  request.builtin_id = std::string(builtin_id);
+  request.function_uuid = std::string(function_uuid);
+  request.order_term_binding_evidence_uuid =
+      fixture.order_term_binding_evidence_uuid;
+  request.deterministic_order_evidence_uuid =
+      fixture.deterministic_order_evidence_uuid;
+  request.maximum_peer_comparisons =
+      std::max<std::size_t>(1, ordered.size());
+  request.mga_authority = std::move(fixture.authority);
+  const auto result = exec::ExecuteCanonicalDescriptorPeerRanking(request);
+  if (!result.diagnostic.ok) return CanonicalDiagnosticFailure(result.diagnostic);
+  return CanonicalWindowOutputAt(result.output_batch, current_row_index);
+}
+
+scratchbird::engine::sblr::SblrResult RunCanonicalRowNumber(
+    const std::size_t row_count,
+    const std::size_t current_row_index) {
+  std::vector<std::int64_t> ordered(row_count);
+  for (std::size_t index = 0; index < row_count; ++index) {
+    ordered[index] = static_cast<std::int64_t>(index);
+  }
+  auto fixture = MakeCanonicalWindowFixture(
+      ordered, "window.row-number.v1", "int64", false);
+  exec::CanonicalDescriptorRowNumberRequest request;
+  request.physical_dag = std::move(fixture.dag);
+  request.selected_physical_node_id = request.physical_dag.root_physical_node_id;
+  request.ordered_input_batch = std::move(fixture.batch);
+  request.row_number_column = fixture.result_column;
+  request.deterministic_order_evidence_uuid =
+      fixture.deterministic_order_evidence_uuid;
+  request.mga_authority = std::move(fixture.authority);
+  const auto result = exec::ExecuteCanonicalDescriptorRowNumber(request);
+  if (!result.diagnostic.ok) return CanonicalDiagnosticFailure(result.diagnostic);
+  return CanonicalWindowOutputAt(result.output_batch, current_row_index);
+}
+
+scratchbird::engine::sblr::SblrResult RunCanonicalNtile(
+    const std::size_t row_count,
+    const std::size_t current_row_index,
+    const std::uint64_t bucket_count) {
+  std::vector<std::int64_t> ordered(row_count);
+  for (std::size_t index = 0; index < row_count; ++index) {
+    ordered[index] = static_cast<std::int64_t>(index);
+  }
+  auto fixture = MakeCanonicalWindowFixture(
+      ordered, "window.ntile.v1", "int64", false);
+  exec::CanonicalDescriptorNtileRequest request;
+  request.physical_dag = std::move(fixture.dag);
+  request.selected_physical_node_id = request.physical_dag.root_physical_node_id;
+  request.ordered_input_batch = std::move(fixture.batch);
+  request.order_term = fixture.order_term;
+  request.ntile_column = fixture.result_column;
+  const auto bucket_descriptor = CanonicalDescriptor(15323, "int64", false);
+  request.bucket_count_operand = CanonicalValue(
+      bucket_descriptor, std::to_string(bucket_count));
+  request.function_abi_version = 1;
+  request.builtin_id = "sb.window.ntile";
+  request.function_uuid = "019de5fc-2400-7047-9474-232ca488c094";
+  request.order_term_binding_evidence_uuid =
+      fixture.order_term_binding_evidence_uuid;
+  request.deterministic_order_evidence_uuid =
+      fixture.deterministic_order_evidence_uuid;
+  request.mga_authority = std::move(fixture.authority);
+  const auto result = exec::ExecuteCanonicalDescriptorNtile(request);
+  if (!result.diagnostic.ok) return CanonicalDiagnosticFailure(result.diagnostic);
+  return CanonicalWindowOutputAt(result.output_batch, current_row_index);
+}
+
+scratchbird::engine::sblr::SblrResult RunCanonicalNavigation(
+    const std::string_view builtin_id,
+    const std::vector<SblrValue>& values,
+    const std::size_t current_row_index,
+    const std::size_t frame_start_index,
+    const std::size_t frame_end_exclusive,
+    const std::int64_t offset,
+    const std::uint64_t nth,
+    const SblrValue* default_value) {
+  if (current_row_index >= values.size()) {
+    return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                            "current window row is outside the input");
+  }
+  const bool lag = builtin_id == "sb.window.lag";
+  const bool lead = builtin_id == "sb.window.lead";
+  const bool first = builtin_id == "sb.window.first_value";
+  const bool last = builtin_id == "sb.window.last_value";
+  const bool nth_value = builtin_id == "sb.window.nth_value";
+  if ((lag || lead) && offset < 0) {
+    return CanonicalFailure("QOW-DIAG-WINDOW-OFFSET",
+                            "navigation offset must be nonnegative");
+  }
+  if (nth_value && nth == 0) {
+    return CanonicalFailure("QOW-DIAG-WINDOW-NTH",
+                            "NTH_VALUE position must be positive");
+  }
+
+  std::vector<std::size_t> source_indices;
+  std::size_t selected_row = 0;
+  if (lag || lead) {
+    const bool target_present =
+        offset <= static_cast<std::int64_t>(values.size()) &&
+        (lag ? static_cast<std::uint64_t>(offset) <= current_row_index
+             : static_cast<std::uint64_t>(offset) <
+                   values.size() - current_row_index);
+    if (target_present) {
+      const auto target = lag
+                              ? current_row_index -
+                                    static_cast<std::size_t>(offset)
+                              : current_row_index +
+                                    static_cast<std::size_t>(offset);
+      if (offset == 0) {
+        source_indices = {current_row_index};
+        selected_row = 0;
+      } else if (lag) {
+        source_indices = {target, current_row_index};
+        selected_row = 1;
+      } else {
+        source_indices = {current_row_index, target};
+        selected_row = 0;
+      }
+    } else {
+      source_indices = {current_row_index};
+      selected_row = 0;
+    }
+  } else {
+    const auto frame_begin = std::min(frame_start_index, values.size());
+    const auto requested_end =
+        frame_end_exclusive == 0 ? values.size() : frame_end_exclusive;
+    const auto frame_end = std::min(requested_end, values.size());
+    if (frame_begin >= frame_end) {
+      return CanonicalScalar(NullValue(values[current_row_index].descriptor_id));
+    }
+    for (std::size_t index = frame_begin; index < frame_end; ++index) {
+      source_indices.push_back(index);
+    }
+    selected_row = source_indices.size() - 1;
+  }
+
+  std::vector<std::int64_t> proxy_values;
+  proxy_values.reserve(source_indices.size());
+  for (const auto index : source_indices) {
+    proxy_values.push_back(static_cast<std::int64_t>(index));
+  }
+  std::string_view implementation_id;
+  std::string_view function_uuid;
+  if (lag) {
+    implementation_id = "window.lag.v1";
+    function_uuid = "019de5fc-2400-782c-8436-9ac310301738";
+  } else if (lead) {
+    implementation_id = "window.lead.v1";
+    function_uuid = "019de5fc-2400-7a06-bc3c-6747cf5be66f";
+  } else if (first) {
+    implementation_id = "window.first-value.v1";
+    function_uuid = "019de5fc-2400-7264-90fb-d25bd0f806f2";
+  } else if (last) {
+    implementation_id = "window.last-value.v1";
+    function_uuid = "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
+  } else {
+    implementation_id = "window.nth-value.v1";
+    function_uuid = "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+  }
+  auto fixture = MakeCanonicalWindowFixture(
+      proxy_values, implementation_id, "int64", true, false);
+  exec::CanonicalDescriptorNavigationWindowRequest request;
+  request.physical_dag = std::move(fixture.dag);
+  request.selected_physical_node_id = request.physical_dag.root_physical_node_id;
+  request.ordered_input_batch = std::move(fixture.batch);
+  request.order_term = fixture.order_term;
+  request.value_column = 0;
+  request.result_column = fixture.result_column;
+  if (nth_value) {
+    const auto nth_descriptor = CanonicalDescriptor(15324, "int64", false);
+    request.nth_value_position_operand =
+        CanonicalValue(nth_descriptor, std::to_string(nth));
+    request.nth_value_from_first_explicit = true;
+    request.nth_value_respect_nulls_explicit = true;
+  }
+  request.function_abi_version = 1;
+  request.builtin_id = std::string(builtin_id);
+  request.function_uuid = std::string(function_uuid);
+  request.window_frame_descriptor_uuid =
+      fixture.window_frame_descriptor_uuid;
+  request.order_term_binding_evidence_uuid =
+      fixture.order_term_binding_evidence_uuid;
+  request.deterministic_order_evidence_uuid =
+      fixture.deterministic_order_evidence_uuid;
+  request.frame_property_binding_evidence_uuid =
+      fixture.frame_property_binding_evidence_uuid;
+  request.executor_capability_uuid =
+      request.physical_dag.nodes.back().executor_capability_uuid;
+  const auto pair_bound = std::max<std::size_t>(
+      1, proxy_values.size() * proxy_values.size());
+  request.maximum_pair_comparisons = pair_bound;
+  request.maximum_effective_row_references = pair_bound;
+  request.mga_authority = std::move(fixture.authority);
+  const auto result =
+      exec::ExecuteCanonicalDescriptorNavigationWindow(request);
+  if (!result.diagnostic.ok) return CanonicalDiagnosticFailure(result.diagnostic);
+  if (selected_row >= result.output_batch.rows.size() ||
+      result.output_batch.rows[selected_row].values.empty()) {
+    return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                            "canonical navigation output row is missing");
+  }
+  const auto& output = result.output_batch.rows[selected_row].values.back();
+  if (output.state == api::EngineValueState::sql_null || output.is_null) {
+    return default_value == nullptr
+               ? CanonicalScalar(NullValue(values[current_row_index].descriptor_id))
+               : CanonicalScalar(*default_value);
+  }
+  std::size_t source_index = 0;
+  try {
+    source_index = static_cast<std::size_t>(std::stoull(output.encoded_value));
+  } catch (const std::exception&) {
+    return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                            "canonical navigation proxy is not decodable");
+  }
+  if (source_index >= values.size()) {
+    return CanonicalFailure("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                            "canonical navigation proxy escaped the input");
+  }
+  return CanonicalScalar(values[source_index]);
+}
+
+scratchbird::engine::sblr::SblrResult RunWindow(
+    std::string function_id,
+    const std::vector<SblrValue>& values,
+    const std::size_t current_row_index,
+    const std::size_t frame_start_index,
+    const std::size_t frame_end_exclusive,
+    const std::int64_t offset = 1,
+    const std::uint64_t ntile_bucket_count = 1,
+    const std::uint64_t nth = 1,
+    const SblrValue* default_value = nullptr,
+    const std::vector<std::uint64_t>& peer_groups = {}) {
+  (void)peer_groups;
+  std::ranges::transform(function_id, function_id.begin(),
+                         [](const unsigned char value) {
+                           return static_cast<char>(std::tolower(value));
+                         });
+  const bool hypothetical =
+      default_value != nullptr &&
+      (function_id.starts_with("sb.aggregate.") ||
+       function_id.find("withingroup") != std::string::npos);
+  if (hypothetical) {
+    const auto function =
+        function_id.find("dense_rank") != std::string::npos
+            ? exec::CanonicalAggregateFunction::dense_rank
+            : (function_id.find("percent_rank") != std::string::npos
+                   ? exec::CanonicalAggregateFunction::percent_rank
+                   : (function_id.find("cume_dist") != std::string::npos
+                          ? exec::CanonicalAggregateFunction::cume_dist
+                          : exec::CanonicalAggregateFunction::rank));
+    return RunCanonicalHypotheticalAggregate(function, values,
+                                             *default_value);
+  }
+  if (function_id == "sb.window.rank" ||
+      function_id == "sb.window.dense_rank" ||
+      function_id == "sb.window.percent_rank" ||
+      function_id == "sb.window.cume_dist") {
+    return RunCanonicalPeerRanking(function_id, values, current_row_index);
+  }
+  if (function_id == "row_number" ||
+      function_id == "sb.window.row_number") {
+    return RunCanonicalRowNumber(values.size(), current_row_index);
+  }
+  if (function_id == "ntile" || function_id == "sb.window.ntile") {
+    return RunCanonicalNtile(values.size(), current_row_index,
+                             ntile_bucket_count);
+  }
+  if (function_id == "lag") function_id = "sb.window.lag";
+  if (function_id == "lead") function_id = "sb.window.lead";
+  if (function_id == "first_value") function_id = "sb.window.first_value";
+  if (function_id == "last_value") function_id = "sb.window.last_value";
+  if (function_id == "nth_value") function_id = "sb.window.nth_value";
+  if (function_id == "sb.window.lag" ||
+      function_id == "sb.window.lead" ||
+      function_id == "sb.window.first_value" ||
+      function_id == "sb.window.last_value" ||
+      function_id == "sb.window.nth_value") {
+    return RunCanonicalNavigation(
+        function_id, values, current_row_index, frame_start_index,
+        frame_end_exclusive, offset, nth, default_value);
+  }
+  return CanonicalFailure("QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+                          "window function registry identity is unknown");
 }
 
 bool ExpectOkScalar(const scratchbird::engine::sblr::SblrResult& result, std::string_view case_id) {
   if (!result.ok() || result.scalar_values.size() != 1) {
-    std::cerr << case_id << ": expected one successful scalar result\n";
+    std::cerr << case_id << ": expected one successful scalar result";
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << " [" << diagnostic.diagnostic_id << ": "
+                << diagnostic.detail << "]";
+    }
+    std::cerr << "\n";
     return false;
   }
   return true;
@@ -1136,7 +1817,7 @@ int main() {
 
   ok = ExpectFailure("window_ntile_zero_bucket",
                      RunWindow("ntile", window_values, 0, 0, window_values.size(), 1, 0),
-                     "SB_DIAG_WINDOW_NTILE_BUCKET_INVALID") && ok;
+                     "SBLR.PLAN_TREE.INVALID_HANDLE") && ok;
 
   ok = ExpectText("SBSQL-2D40C15A4E0A-last-value",
                   RunWindow("last_value", window_values, 2, 1, 4),
@@ -1212,7 +1893,7 @@ int main() {
 
   ok = ExpectFailure("window_nth_value_invalid",
                      RunWindow("sb.window.nth_value", window_values, 2, 0, window_values.size(), 1, 1, 0),
-                     "SB_DIAG_WINDOW_NTH_VALUE_INVALID") && ok;
+                     "QOW-DIAG-WINDOW-NTH") && ok;
 
   ok = ExpectFailure("percentile_fraction_invalid",
                      RunAggregate("percentile_cont", "real64",

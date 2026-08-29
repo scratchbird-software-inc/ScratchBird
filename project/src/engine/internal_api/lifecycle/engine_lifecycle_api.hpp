@@ -15,12 +15,9 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_LIFECYCLE_API
-// Database creation establishes the first durable security principal.  That
-// bootstrap transaction is intentionally not a public SBLR/API capability:
-// it is owned by the explicit local embedded bootstrap tool, which verifies
-// OS authority before it calls the storage lifecycle.
-inline constexpr std::string_view kEngineCreateLifecycleBootstrapRequiredDiagnostic =
-    "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED";
+// Database creation is an engine-owned lifecycle mutation. The caller supplies
+// authenticated management context and policy options; the engine assigns the
+// database/filespace identities and owns storage/catalog bootstrap finality.
 
 struct EngineOpenLifecycleRequest : EngineApiRequest {};
 struct EngineOpenLifecycleResult : EngineApiResult {};

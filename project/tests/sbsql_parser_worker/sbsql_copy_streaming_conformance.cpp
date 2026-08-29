@@ -43,6 +43,15 @@ constexpr const char* kIndexUuid = "019f2110-0000-7000-8000-000000000103";
 constexpr const char* kSeedRowUuid = "019f2110-0000-7000-8000-000000000201";
 constexpr const char* kImportGoodRowUuid = "019f2110-0000-7000-8000-000000000202";
 constexpr const char* kImportRejectRowUuid = "019f2110-0000-7000-8000-000000000203";
+constexpr std::uint32_t kSchemaExecuteSblrV1 = 4003;
+
+struct RouteBinding {
+  std::array<std::uint8_t, 16> connection_uuid{};
+  std::array<std::uint8_t, 16> session_uuid{};
+};
+
+api::EngineRequestContext BaseContext(
+    const std::filesystem::path& database_path);
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -159,18 +168,6 @@ std::string EngineBackedCopyStreamEnvelope() {
   return out;
 }
 
-scratchbird::server::HostedEngineState MakeEngineState() {
-  scratchbird::server::HostedEngineState state;
-  state.engine_context_active = true;
-  scratchbird::server::HostedDatabaseSnapshot database;
-  database.state = scratchbird::server::HostedDatabaseState::kOpen;
-  database.database_open = true;
-  database.database_path = "/tmp/sb_copy_streaming_conformance.sbdb";
-  database.database_uuid = "019e05df-f010-7000-8000-000000000015";
-  state.databases.push_back(database);
-  return state;
-}
-
 scratchbird::server::HostedEngineState MakeEngineStateForDatabase(const std::filesystem::path& database_path) {
   scratchbird::server::HostedEngineState state;
   state.engine_context_active = true;
@@ -184,59 +181,79 @@ scratchbird::server::HostedEngineState MakeEngineStateForDatabase(const std::fil
   return state;
 }
 
-scratchbird::server::ServerSessionRegistry MakeRegistry(
-    std::array<std::uint8_t, 16>* session_uuid) {
-  scratchbird::server::ServerSessionRecord session;
-  session.session_uuid = sbps::MakeUuidV7Bytes();
-  session.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  session.principal_uuid = sbps::MakeUuidV7Bytes();
-  session.effective_user_uuid = session.principal_uuid;
-  session.database_path = "/tmp/sb_copy_streaming_conformance.sbdb";
-  session.database_uuid = "019e05df-f010-7000-8000-000000000015";
-  *session_uuid = session.session_uuid;
-  scratchbird::server::ServerSessionRegistry registry;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
-  return registry;
-}
-
 scratchbird::server::ServerSessionRegistry MakeRegistryForDatabase(
     const std::filesystem::path& database_path,
-    std::uint64_t local_transaction_id,
-    std::array<std::uint8_t, 16>* session_uuid) {
+    RouteBinding* route,
+    api::EngineRequestContext* transaction_context) {
+  Require(route != nullptr && transaction_context != nullptr,
+          "COPY stream route and transaction context are required");
   scratchbird::server::ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = sbps::MakeUuidV7Bytes();
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = database_path.string();
   session.database_uuid = kDatabaseUuid;
-  session.local_transaction_id = local_transaction_id;
-  session.snapshot_visible_through_local_transaction_id = local_transaction_id;
-  *session_uuid = session.session_uuid;
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = BaseContext(database_path);
+  begin.context.principal_uuid.canonical =
+      scratchbird::server::UuidBytesToText(session.principal_uuid);
+  begin.context.session_uuid.canonical =
+      scratchbird::server::UuidBytesToText(session.session_uuid);
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok &&
+              scratchbird::server::IsCompleteEngineTransactionIdentity(
+                  begun.local_transaction_id,
+                  begun.transaction_uuid.canonical),
+          "COPY stream engine transaction identity is incomplete");
+
+  session.local_transaction_id = begun.local_transaction_id;
+  session.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  session.transaction_uuid = begun.transaction_uuid.canonical;
+  session.default_transaction_isolation_level = begun.isolation_level;
+  route->connection_uuid = session.connection_uuid;
+  route->session_uuid = session.session_uuid;
+
+  *transaction_context = begin.context;
+  transaction_context->local_transaction_id = begun.local_transaction_id;
+  transaction_context->snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  transaction_context->transaction_uuid = begun.transaction_uuid;
+  transaction_context->transaction_isolation_level = begun.isolation_level;
+
   scratchbird::server::ServerSessionRegistry registry;
   registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+  registry.channel_state = scratchbird::server::ServerChannelState::kReady;
   return registry;
 }
 
-sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
+sbps::Frame ExecuteFrame(const RouteBinding& route,
                          const std::string& encoded) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = kSchemaExecuteSblrV1;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
+  frame.header.connection_uuid = route.connection_uuid;
+  frame.header.session_uuid = route.session_uuid;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
-      session_uuid, {}, encoded, true);
+      route.session_uuid, {}, encoded, true);
   return frame;
 }
 
-sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
+sbps::Frame FetchFrame(const RouteBinding& route,
                        const std::array<std::uint8_t, 16>& cursor_uuid,
                        std::uint64_t max_rows) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kFetch);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeFetchPayloadForTest(session_uuid, cursor_uuid, max_rows);
+  frame.header.connection_uuid = route.connection_uuid;
+  frame.header.session_uuid = route.session_uuid;
+  frame.payload = scratchbird::server::EncodeFetchPayloadForTest(
+      route.session_uuid, cursor_uuid, max_rows);
   return frame;
 }
 
@@ -297,6 +314,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   return context;
 }
@@ -374,17 +395,23 @@ std::filesystem::path CreateEngineBackedFixture() {
 int main() {
   ConfigureMemoryFixture();
 
-  std::array<std::uint8_t, 16> session_uuid{};
-  auto registry = MakeRegistry(&session_uuid);
-  const auto engine_state = MakeEngineState();
+  const auto engine_database_path = CreateEngineBackedFixture();
+  RouteBinding route;
+  api::EngineRequestContext import_context;
+  auto registry = MakeRegistryForDatabase(
+      engine_database_path, &route, &import_context);
+  const auto engine_state = MakeEngineStateForDatabase(engine_database_path);
 
   const auto execute = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, CopyStreamEnvelope("copy_import", 10, 2)));
+      &registry,
+      engine_state,
+      ExecuteFrame(route, CopyStreamEnvelope("copy_import", 10, 2)));
   Require(execute.accepted, "COPY stream execute was rejected");
   const auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(execute.payload);
   Require(cursor_uuid.has_value(), "COPY stream execute did not return a cursor UUID");
 
-  const auto fetch1 = scratchbird::server::HandleFetch(&registry, FetchFrame(session_uuid, *cursor_uuid, 2));
+  const auto fetch1 = scratchbird::server::HandleFetch(
+      &registry, FetchFrame(route, *cursor_uuid, 2));
   const auto payload1 = scratchbird::server::DecodeFetchResultForTest(fetch1.payload);
   Require(fetch1.accepted && payload1.has_value() && payload1->row_count == 2 && !payload1->end_of_cursor,
           "COPY first fetch did not return progress plus first reject");
@@ -394,7 +421,8 @@ int main() {
               Contains(payload1->row_packet, "\"source_row_number\":1"),
           "COPY first fetch missing progress or first reject record");
 
-  const auto fetch2 = scratchbird::server::HandleFetch(&registry, FetchFrame(session_uuid, *cursor_uuid, 2));
+  const auto fetch2 = scratchbird::server::HandleFetch(
+      &registry, FetchFrame(route, *cursor_uuid, 2));
   const auto payload2 = scratchbird::server::DecodeFetchResultForTest(fetch2.payload);
   Require(fetch2.accepted && payload2.has_value() && payload2->row_count == 2 && !payload2->end_of_cursor,
           "COPY second fetch did not return second reject plus summary");
@@ -404,7 +432,8 @@ int main() {
               Contains(payload2->row_packet, "\"rejected_rows\":2"),
           "COPY second fetch missing reject record or bulk summary");
 
-  const auto fetch3 = scratchbird::server::HandleFetch(&registry, FetchFrame(session_uuid, *cursor_uuid, 1));
+  const auto fetch3 = scratchbird::server::HandleFetch(
+      &registry, FetchFrame(route, *cursor_uuid, 1));
   const auto payload3 = scratchbird::server::DecodeFetchResultForTest(fetch3.payload);
   Require(fetch3.accepted && payload3.has_value() && payload3->row_count == 1 && payload3->end_of_cursor,
           "COPY final fetch did not return final status");
@@ -413,20 +442,17 @@ int main() {
               Contains(payload3->detail, "\"end_of_cursor\":true"),
           "COPY final fetch missing final status or cursor metadata");
 
-  const auto engine_database_path = CreateEngineBackedFixture();
-  auto import_context = BeginTransaction(engine_database_path);
-  std::array<std::uint8_t, 16> engine_session_uuid{};
-  auto engine_registry = MakeRegistryForDatabase(
-      engine_database_path, import_context.local_transaction_id, &engine_session_uuid);
-  const auto engine_backed_state = MakeEngineStateForDatabase(engine_database_path);
   const auto engine_execute = scratchbird::server::HandleExecuteSblr(
-      &engine_registry, engine_backed_state, ExecuteFrame(engine_session_uuid, EngineBackedCopyStreamEnvelope()));
+      &registry,
+      engine_state,
+      ExecuteFrame(route, EngineBackedCopyStreamEnvelope()));
   Require(engine_execute.accepted, "engine-backed COPY stream execute was rejected");
   const auto engine_cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(engine_execute.payload);
   Require(engine_cursor_uuid.has_value(), "engine-backed COPY stream did not return a cursor");
 
   const auto engine_fetch1 =
-      scratchbird::server::HandleFetch(&engine_registry, FetchFrame(engine_session_uuid, *engine_cursor_uuid, 2));
+      scratchbird::server::HandleFetch(
+          &registry, FetchFrame(route, *engine_cursor_uuid, 2));
   const auto engine_payload1 = scratchbird::server::DecodeFetchResultForTest(engine_fetch1.payload);
   Require(engine_fetch1.accepted && engine_payload1.has_value() &&
               engine_payload1->row_count == 2 && !engine_payload1->end_of_cursor,
@@ -448,7 +474,8 @@ int main() {
           "engine-backed COPY first fetch did not use engine reject diagnostics");
 
   const auto engine_fetch2 =
-      scratchbird::server::HandleFetch(&engine_registry, FetchFrame(engine_session_uuid, *engine_cursor_uuid, 2));
+      scratchbird::server::HandleFetch(
+          &registry, FetchFrame(route, *engine_cursor_uuid, 2));
   const auto engine_payload2 = scratchbird::server::DecodeFetchResultForTest(engine_fetch2.payload);
   Require(engine_fetch2.accepted && engine_payload2.has_value() &&
               engine_payload2->row_count == 2 && engine_payload2->end_of_cursor,

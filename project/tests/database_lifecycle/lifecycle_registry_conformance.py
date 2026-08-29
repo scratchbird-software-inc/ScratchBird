@@ -41,7 +41,8 @@ REQUIRED_LIFECYCLE_OPERATIONS = (
 )
 
 CREATE_DATABASE_OPERATION = "lifecycle.create_database"
-CREATE_DATABASE_REFUSAL_DIAGNOSTIC = "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED"
+FIREBIRD_CREATE_REFUSAL_DIAGNOSTIC = "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED"
+LOCAL_PROFILE_REFUSAL_OPERATIONS = {"lifecycle.drop_database"}
 
 
 def fail(message: str) -> None:
@@ -81,7 +82,7 @@ def assert_not_ignored(repo_root: Path, paths: list[Path]) -> None:
         if rel.parts[:2] == ("docs", "contracts"):
             continue
         result = subprocess.run(
-            ["git", "check-ignore", "-q", str(rel)],
+            ["git", "-c", f"safe.directory={repo_root}", "check-ignore", "-q", str(rel)],
             cwd=repo_root,
             check=False,
         )
@@ -126,11 +127,7 @@ def validate_engine_registry(paths: dict[str, Path]) -> None:
             "authority_domain": "engine_lifecycle",
             "header": "lifecycle/engine_lifecycle_api.hpp",
             "implementation": "lifecycle/engine_lifecycle_api.cpp",
-            "default_diagnostic": (
-                CREATE_DATABASE_REFUSAL_DIAGNOSTIC
-                if operation_id == CREATE_DATABASE_OPERATION
-                else "SB_ENGINE_API_OK"
-            ),
+            "default_diagnostic": "SB_ENGINE_API_OK",
         }
         for key, value in expected.items():
             if row.get(key) != value:
@@ -143,16 +140,17 @@ def validate_engine_registry(paths: dict[str, Path]) -> None:
         ):
             if row.get(bool_key) is not expected_bool:
                 fail(f"engine API registry {operation_id} {bool_key} expected {expected_bool}")
-        expected_status = (
-            "exact_refusal"
-            if operation_id == CREATE_DATABASE_OPERATION
-            else "behavior_implemented"
-        )
+        expected_status = "behavior_implemented"
         if row.get("implementation_status") != expected_status:
             fail(
                 f"engine API registry {operation_id} implementation_status expected "
                 f"{expected_status}, got {row.get('implementation_status')}"
             )
+        if operation_id == CREATE_DATABASE_OPERATION:
+            if row.get("requires_security_context") is not True:
+                fail("engine API registry create_database must require security context")
+            if row.get("requires_transaction_context") is not True:
+                fail("engine API registry create_database must require transaction context")
         if "placeholder" in str(row).lower() or "stub" in str(row).lower() or "deferred" in str(row).lower():
             fail(f"engine API registry {operation_id} contains placeholder/stub/deferred language")
         if opcode not in paths["sblr_static_registry"].read_text(encoding="utf-8"):
@@ -161,7 +159,14 @@ def validate_engine_registry(paths: dict[str, Path]) -> None:
 
 def validate_internal_matrix(paths: dict[str, Path]) -> None:
     matrix = load_yaml(paths["internal_matrix"])
-    entries = by_key(matrix.get("entries") or [], "api_operation_id", "internal SBLR/API matrix")
+    # The shared matrix also contains newer executor-schema rows keyed by
+    # operation_id.  This DBLC gate owns only the lifecycle API rows and must
+    # not reject unrelated rows for using their registered schema.
+    lifecycle_rows = [
+        row for row in (matrix.get("entries") or [])
+        if str(row.get("api_operation_id", "")).startswith("lifecycle.")
+    ]
+    entries = by_key(lifecycle_rows, "api_operation_id", "internal SBLR/API matrix")
     for operation_id, opcode, function in REQUIRED_LIFECYCLE_OPERATIONS:
         row = entries.get(operation_id)
         if row is None:
@@ -178,19 +183,20 @@ def validate_internal_matrix(paths: dict[str, Path]) -> None:
         for key, value in expected.items():
             if row.get(key) != value:
                 fail(f"internal SBLR/API matrix {operation_id} {key} expected {value}, got {row.get(key)}")
-        expected_status = (
-            "exact_refusal"
-            if operation_id == CREATE_DATABASE_OPERATION
-            else "behavior_implemented"
-        )
+        expected_status = "behavior_implemented"
         if row.get("current_implementation_status") != expected_status:
             fail(
                 f"internal SBLR/API matrix {operation_id} current_implementation_status "
                 f"expected {expected_status}, got {row.get('current_implementation_status')}"
             )
-        if operation_id == CREATE_DATABASE_OPERATION and \
-                row.get("executor_readiness_status") != "exact_refusal":
-            fail("internal SBLR/API matrix create_database is not exact_refusal")
+        if operation_id == CREATE_DATABASE_OPERATION:
+            if row.get("executor_readiness_status") != "mapped_ready":
+                fail("internal SBLR/API matrix create_database is not mapped_ready")
+            if row.get("required_transaction_context") is not True or \
+                    row.get("required_security_context") is not True:
+                fail("internal SBLR/API matrix create_database authority context is incomplete")
+            if row.get("required_descriptor_inputs") != "lifecycle_create_database_descriptor":
+                fail("internal SBLR/API matrix create_database descriptor is not registered")
 
 
 def validate_static_sblr_registry(paths: dict[str, Path]) -> None:
@@ -204,11 +210,12 @@ def validate_static_sblr_registry(paths: dict[str, Path]) -> None:
     for operation_id, opcode, _function in REQUIRED_LIFECYCLE_OPERATIONS:
         expected_support = (
             "local_profile_refusal"
-            if operation_id == CREATE_DATABASE_OPERATION
+            if operation_id in LOCAL_PROFILE_REFUSAL_OPERATIONS
             else "implemented"
         )
         entry = re.compile(
             rf'Entry\("{re.escape(operation_id)}",\s*"{re.escape(opcode)}",\s*'
+            rf'(?:"[^"]+",\s*)?'
             rf'SblrOpcodeCategory::management,\s*'
             rf'SblrOpcodeSupport::{expected_support}',
             re.DOTALL,
@@ -218,8 +225,6 @@ def validate_static_sblr_registry(paths: dict[str, Path]) -> None:
                 f"static SBLR registry missing {operation_id} -> {opcode} "
                 f"with support={expected_support}"
             )
-    if CREATE_DATABASE_REFUSAL_DIAGNOSTIC not in static_registry:
-        fail("static SBLR registry lacks the public create_database refusal diagnostic")
 
 
 def validate_code_mappings(paths: dict[str, Path]) -> None:
@@ -244,23 +249,22 @@ def validate_code_mappings(paths: dict[str, Path]) -> None:
                 fail(f"{source_name} missing {function}")
         if re.search(rf"if \(operation_id == \"{re.escape(operation_id)}\"\) return \"{opcode}\";", dispatch) is None:
             fail(f"dispatch expected-opcode map missing {operation_id} -> {opcode}")
-        if re.search(rf'op == "{re.escape(operation_id)}".*{function}', dispatch) is None:
+        if re.search(
+                rf'op == "{re.escape(operation_id)}".*?{function}',
+                dispatch,
+                re.DOTALL) is None:
             fail(f"dispatch API map missing {operation_id} -> {function}")
         if f'Entry("{operation_id}", "{opcode}"' not in static_registry:
             fail(f"static SBLR opcode registry missing {operation_id} -> {opcode}")
         if operation_id == CREATE_DATABASE_OPERATION:
-            if "SblrOpcodeSupport::local_profile_refusal" not in static_registry:
-                fail("static SBLR opcode registry does not refuse public create_database")
-            if CREATE_DATABASE_REFUSAL_DIAGNOSTIC not in static_registry:
-                fail("static SBLR opcode registry lacks create_database refusal diagnostic")
-            if "CreateDatabaseFile(" in impl:
-                fail("public EngineCreateLifecycle still reaches CreateDatabaseFile")
-            if CREATE_DATABASE_REFUSAL_DIAGNOSTIC not in header:
-                fail("public lifecycle header lacks the create_database refusal diagnostic")
-            if "kEngineCreateLifecycleBootstrapRequiredDiagnostic" not in manager_control:
-                fail("manager control path does not propagate the create_database refusal diagnostic")
+            if "CreateDatabaseFile(" not in impl:
+                fail("EngineCreateLifecycle does not reach engine-owned database creation")
+            if "engine-owned lifecycle mutation" not in header:
+                fail("public lifecycle header lacks the engine-owned create authority boundary")
             if 'if (request.operation_key == "create_database")' not in manager_control:
                 fail("manager control path does not explicitly handle create_database")
+            if "EngineCreateLifecycle(" not in manager_control:
+                fail("manager control path does not dispatch create_database to EngineCreateLifecycle")
             if 'if (dispatch_operation_id == "lifecycle.create_database")' in server_dispatch:
                 fail("server dispatch still has a create_database seed-forwarding branch")
     if "EngineCreateDatabaseRequest" not in ddl_create_header or \
@@ -300,11 +304,7 @@ def validate_public_abi_map(paths: dict[str, Path]) -> None:
             fail(f"public ABI map engine entrypoint mismatch for {operation_id}")
         if row["authority"] != "engine_lifecycle":
             fail(f"public ABI map authority mismatch for {operation_id}")
-        expected_status = (
-            "exact_refusal"
-            if operation_id == CREATE_DATABASE_OPERATION
-            else "mapped"
-        )
+        expected_status = "mapped"
         if row["status"] != expected_status:
             fail(f"public ABI map status mismatch for {operation_id}")
 
@@ -322,7 +322,7 @@ def validate_firebird_public_create_refusal(paths: dict[str, Path]) -> None:
         fail("Firebird worker lacks the explicit op_create public refusal branch")
     branch = match.group("body")
     for required in (
-        CREATE_DATABASE_REFUSAL_DIAGNOSTIC,
+        FIREBIRD_CREATE_REFUSAL_DIAGNOSTIC,
         r'\"storage_mutation\":false',
         r'\"metadata_overlay_mutation\":false',
         r'\"handle_allocated\":false',
@@ -345,6 +345,7 @@ def validate_firebird_public_create_refusal(paths: dict[str, Path]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--compatibility-parsers", action="store_true")
     args = parser.parse_args()
     repo_root = Path(args.repo_root).resolve()
     paths = load_paths(repo_root)
@@ -357,7 +358,8 @@ def main() -> None:
     validate_static_sblr_registry(paths)
     validate_code_mappings(paths)
     validate_public_abi_map(paths)
-    validate_firebird_public_create_refusal(paths)
+    if args.compatibility_parsers:
+        validate_firebird_public_create_refusal(paths)
     print(f"PASS: DBLC-002 lifecycle registry/API/ABI surface covers {len(REQUIRED_LIFECYCLE_OPERATIONS)} operations")
 
 

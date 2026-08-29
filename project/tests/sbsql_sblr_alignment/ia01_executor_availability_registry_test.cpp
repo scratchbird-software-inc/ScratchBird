@@ -35,6 +35,10 @@ struct Fixture {
     std::filesystem::remove(
         database_path + ".sb.sblr_executor_availability_registry.v1.parameter",
         ignored);
+    std::filesystem::remove(
+        database_path +
+            ".sb.sblr_executor_availability_registry.v1.dml_plan_import_rows",
+        ignored);
   }
 };
 
@@ -113,6 +117,138 @@ int main() {
               parameter_observed.snapshot_uuid ==
                   parameter_revoked.snapshot.snapshot_uuid,
           "parameter executor revocation was not independent");
+
+  // SEARCH_KEY: SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1
+  api::SblrExecutorAvailabilityRowIdentity plan_import_identity;
+  plan_import_identity.executor_id = api::kSblrDmlPlanImportRowsExecutorId;
+  plan_import_identity.opcode_code = api::kSblrDmlPlanImportRowsOpcodeCode;
+  plan_import_identity.opcode_version =
+      api::kSblrDmlPlanImportRowsOpcodeVersion;
+  plan_import_identity.operand_descriptor_id =
+      api::kSblrDmlPlanImportRowsOperandDescriptorId;
+  plan_import_identity.result_descriptor_id =
+      api::kSblrDmlPlanImportRowsResultDescriptorId;
+  plan_import_identity.result_descriptor_version =
+      api::kSblrDmlPlanImportRowsResultDescriptorVersion;
+  Require(api::IsAdmittedExecutorAvailabilityIdentity(plan_import_identity),
+          "plan-import exact executor identity was not admitted");
+
+  Fixture read_only_fixture = MakeFixture(3);
+  const auto read_only_context = Context(read_only_fixture, false);
+  const std::string read_only_path =
+      read_only_fixture.database_path +
+      ".sb.sblr_executor_availability_registry.v1.dml_plan_import_rows";
+  const auto absent_current =
+      api::LoadCurrentSblrExecutorAvailabilitySnapshot(
+          read_only_context, plan_import_identity);
+  Require(!absent_current.ok &&
+              absent_current.diagnostic.code ==
+                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" &&
+              !std::filesystem::exists(read_only_path),
+          "read-only current lookup bootstrapped an absent availability row");
+  const auto explicit_bootstrap = api::LoadSblrExecutorAvailabilitySnapshot(
+      read_only_context, plan_import_identity);
+  Require(explicit_bootstrap.ok && std::filesystem::exists(read_only_path),
+          "explicit availability bootstrap did not publish its row");
+  std::ifstream read_only_before_stream(read_only_path, std::ios::binary);
+  const std::string read_only_before(
+      (std::istreambuf_iterator<char>(read_only_before_stream)),
+      std::istreambuf_iterator<char>());
+  const auto exact_current =
+      api::LoadCurrentSblrExecutorAvailabilitySnapshot(
+          read_only_context, plan_import_identity);
+  std::ifstream read_only_after_stream(read_only_path, std::ios::binary);
+  const std::string read_only_after(
+      (std::istreambuf_iterator<char>(read_only_after_stream)),
+      std::istreambuf_iterator<char>());
+  Require(exact_current.ok &&
+              exact_current.snapshot.snapshot_uuid ==
+                  explicit_bootstrap.snapshot.snapshot_uuid &&
+              exact_current.snapshot.generation ==
+                  explicit_bootstrap.snapshot.generation &&
+              read_only_before == read_only_after,
+          "read-only current lookup did not preserve the exact durable row");
+
+  const auto plan_import_bootstrap =
+      api::LoadSblrExecutorAvailabilitySnapshot(context, plan_import_identity);
+  Require(plan_import_bootstrap.ok &&
+              plan_import_bootstrap.snapshot.installed &&
+              plan_import_bootstrap.snapshot.generation == 1 &&
+              plan_import_bootstrap.snapshot.row_identity_sha256 ==
+                  api::ComputeSblrExecutorAvailabilityRowIdentitySha256(
+                      plan_import_identity),
+          "plan-import exact live availability generation missing");
+  const auto plan_import_current = api::RevalidateSblrExecutorAvailability(
+      context, plan_import_identity, plan_import_bootstrap.snapshot, nullptr);
+  Require(plan_import_current.code == "OK",
+          "plan-import installed availability evidence was not current");
+
+  auto wrong_plan_import_identity = plan_import_identity;
+  wrong_plan_import_identity.opcode_code = 792;
+  auto wrong_plan_import_executor = plan_import_identity;
+  wrong_plan_import_executor.executor_id = "dml.execute_import_rows";
+  auto wrong_plan_import_version = plan_import_identity;
+  wrong_plan_import_version.opcode_version = "0.0";
+  auto wrong_plan_import_operand = plan_import_identity;
+  wrong_plan_import_operand.operand_descriptor_id =
+      "import_rows_execution_descriptor";
+  auto wrong_plan_import_result = plan_import_identity;
+  wrong_plan_import_result.result_descriptor_id = "import_execution_result";
+  auto wrong_plan_import_result_version = plan_import_identity;
+  wrong_plan_import_result_version.result_descriptor_version = 0;
+  const auto exact_identity_refused = [](const auto& identity) {
+    return !api::IsAdmittedExecutorAvailabilityIdentity(identity) &&
+           api::ComputeSblrExecutorAvailabilityRowIdentitySha256(identity)
+               .empty();
+  };
+  Require(exact_identity_refused(wrong_plan_import_identity) &&
+              exact_identity_refused(wrong_plan_import_executor) &&
+              exact_identity_refused(wrong_plan_import_version) &&
+              exact_identity_refused(wrong_plan_import_operand) &&
+              exact_identity_refused(wrong_plan_import_result) &&
+              exact_identity_refused(wrong_plan_import_result_version),
+          "non-exact plan-import availability identity was admitted");
+  const auto wrong_plan_import = api::LoadSblrExecutorAvailabilitySnapshot(
+      context, wrong_plan_import_identity);
+  Require(!wrong_plan_import.ok &&
+              wrong_plan_import.diagnostic.code == "SBLR.OPERAND_INVALID",
+          "wrong plan-import availability identity did not fail closed");
+
+  auto plan_import_revoke_request =
+      SetRequest(fixture, plan_import_bootstrap.snapshot,
+                 api::SblrExecutorAvailabilityState::revoked,
+                 "test.plan_import.revoke");
+  plan_import_revoke_request.exact_row_identity = plan_import_identity;
+  const auto plan_import_revoked = api::SetSblrExecutorAvailability(
+      context, plan_import_revoke_request);
+  Require(plan_import_revoked.ok &&
+              plan_import_revoked.snapshot.generation == 2,
+          "plan-import executor revocation publication failed");
+  api::SblrExecutorAvailabilitySnapshot plan_import_observed;
+  const auto plan_import_revoked_diagnostic =
+      api::RevalidateSblrExecutorAvailability(
+          context, plan_import_identity, plan_import_bootstrap.snapshot,
+          &plan_import_observed);
+  Require(plan_import_revoked_diagnostic.code ==
+              "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" &&
+              plan_import_observed.generation == 2,
+          "plan-import revocation was not observed at the live generation");
+  auto plan_import_reinstall_request =
+      SetRequest(fixture, plan_import_revoked.snapshot,
+                 api::SblrExecutorAvailabilityState::installed,
+                 "test.plan_import.reinstall");
+  plan_import_reinstall_request.exact_row_identity = plan_import_identity;
+  const auto plan_import_reinstalled = api::SetSblrExecutorAvailability(
+      context, plan_import_reinstall_request);
+  Require(plan_import_reinstalled.ok &&
+              plan_import_reinstalled.snapshot.generation == 3,
+          "plan-import executor reinstall publication failed");
+  const auto plan_import_stale = api::RevalidateSblrExecutorAvailability(
+      context, plan_import_identity, plan_import_bootstrap.snapshot, nullptr);
+  Require(plan_import_stale.code ==
+              "SBLR.OPCODE.EXECUTOR_EVIDENCE_STALE",
+          "plan-import stale accepted generation did not fail closed");
+
   const auto bootstrap = api::LoadSblrExecutorAvailabilitySnapshot(context);
   Require(bootstrap.ok && bootstrap.snapshot.generation == 1 &&
               bootstrap.snapshot.installed &&

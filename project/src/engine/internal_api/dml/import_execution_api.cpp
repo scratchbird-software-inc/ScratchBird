@@ -15,6 +15,7 @@
 #include "dml/import_execution_api.hpp"
 
 #include <algorithm>
+#include <initializer_list>
 #include <limits>
 #include <span>
 #include <string>
@@ -52,6 +53,16 @@ struct ImportExecutionControlDecision {
   std::vector<EngineEvidenceReference> evidence;
 };
 
+struct ImportExecutionDescriptorProjection {
+  bool ok = false;
+  std::string normalized_source_kind;
+  std::string normalized_format_family;
+  std::string normalized_insert_mode;
+  std::vector<EngineApiDiagnostic> diagnostics;
+  std::vector<EngineUnsupportedFeature> unsupported_features;
+  std::vector<EngineEvidenceReference> evidence;
+};
+
 std::string LowerAscii(std::string value) {
   for (char& ch : value) {
     if (ch >= 'A' && ch <= 'Z') {
@@ -59,6 +70,159 @@ std::string LowerAscii(std::string value) {
     }
   }
   return value;
+}
+
+bool OneOf(const std::string& value,
+           std::initializer_list<const char*> allowed) {
+  for (const char* candidate : allowed) {
+    if (value == candidate) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SupportedExecutionSourceKind(const std::string& value) {
+  return OneOf(value,
+               {"native_sbsql_import", "csv_stream", "delimited_text",
+                "fixed_width_text", "jsonl_stream", "document_stream",
+                "binary_typed_rows", "reference_dump_replay",
+                "reference_bulk_api", "live_ingest_stream",
+                "bulk_import_job", "xml_stream", "line_protocol_stream"});
+}
+
+bool SupportedExecutionFormatFamily(const std::string& value) {
+  return OneOf(value,
+               {"csv", "delimited_text", "fixed_width", "jsonl",
+                "document", "binary_typed_rows", "reference_dump",
+                "reference_bulk", "live_ingest", "xml", "line_protocol",
+                "bulk_job"});
+}
+
+bool ExecutionSourceFormatPairAllowed(const std::string& source_kind,
+                                      const std::string& format_family) {
+  if (source_kind == "native_sbsql_import") {
+    return OneOf(format_family,
+                 {"csv", "delimited_text", "fixed_width", "jsonl",
+                  "document", "binary_typed_rows", "xml", "line_protocol",
+                  "bulk_job"});
+  }
+  if (source_kind == "csv_stream") {
+    return format_family == "csv";
+  }
+  if (source_kind == "delimited_text") {
+    return OneOf(format_family, {"csv", "delimited_text"});
+  }
+  if (source_kind == "fixed_width_text") {
+    return format_family == "fixed_width";
+  }
+  if (source_kind == "jsonl_stream") {
+    return format_family == "jsonl";
+  }
+  if (source_kind == "document_stream") {
+    return OneOf(format_family, {"document", "jsonl"});
+  }
+  if (source_kind == "binary_typed_rows") {
+    return format_family == "binary_typed_rows";
+  }
+  if (source_kind == "reference_dump_replay") {
+    return format_family == "reference_dump";
+  }
+  if (source_kind == "reference_bulk_api") {
+    return format_family == "reference_bulk";
+  }
+  if (source_kind == "live_ingest_stream") {
+    return OneOf(format_family, {"live_ingest", "line_protocol"});
+  }
+  if (source_kind == "bulk_import_job") {
+    return OneOf(format_family,
+                 {"bulk_job", "csv", "jsonl", "binary_typed_rows"});
+  }
+  if (source_kind == "xml_stream") {
+    return format_family == "xml";
+  }
+  return source_kind == "line_protocol_stream" &&
+         format_family == "line_protocol";
+}
+
+std::string ExecutionInsertModeForSource(const std::string& source_kind) {
+  if (source_kind == "reference_bulk_api") {
+    return "reference_bulk";
+  }
+  if (source_kind == "binary_typed_rows" ||
+      source_kind == "bulk_import_job") {
+    return "native_bulk";
+  }
+  return "copy_import";
+}
+
+ImportExecutionDescriptorProjection ImportExecutionDescriptorFailure(
+    std::string detail) {
+  ImportExecutionDescriptorProjection result;
+  result.diagnostics.push_back(
+      MakeInvalidRequestDiagnostic("dml.execute_import_rows", std::move(detail)));
+  return result;
+}
+
+ImportExecutionDescriptorProjection ResolveImportExecutionDescriptor(
+    const EngineExecuteImportRowsRequest& request) {
+  if (!SupportedExecutionSourceKind(request.source.source_kind)) {
+    return ImportExecutionDescriptorFailure(
+        request.source.source_kind.empty()
+            ? "execution_descriptor_source_kind_required"
+            : "execution_descriptor_source_kind_unsupported:" +
+                  request.source.source_kind);
+  }
+  if (!SupportedExecutionFormatFamily(request.format.format_family)) {
+    return ImportExecutionDescriptorFailure(
+        request.format.format_family.empty()
+            ? "execution_descriptor_format_family_required"
+            : "execution_descriptor_format_family_unsupported:" +
+                  request.format.format_family);
+  }
+  if (!ExecutionSourceFormatPairAllowed(request.source.source_kind,
+                                        request.format.format_family)) {
+    return ImportExecutionDescriptorFailure(
+        "execution_descriptor_source_format_mismatch:" +
+        request.source.source_kind + "->" + request.format.format_family);
+  }
+  if (request.import_policy.reference_relaxed_semantics_requested &&
+      !request.import_policy.strict_bulk_load_requested) {
+    return ImportExecutionDescriptorFailure(
+        "execution_descriptor_reference_relaxed_semantics_requires_policy");
+  }
+  if (request.import_policy.reject_limit_percent < 0.0 ||
+      request.import_policy.reject_limit_percent > 100.0) {
+    return ImportExecutionDescriptorFailure(
+        "execution_descriptor_reject_limit_percent_invalid");
+  }
+  for (const auto& mapping : request.column_mappings) {
+    if (mapping.target_column.empty()) {
+      return ImportExecutionDescriptorFailure(
+          "execution_descriptor_target_column_required");
+    }
+  }
+
+  ImportExecutionDescriptorProjection result;
+  result.ok = true;
+  result.normalized_source_kind = request.source.source_kind;
+  result.normalized_format_family = request.format.format_family;
+  result.normalized_insert_mode =
+      ExecutionInsertModeForSource(request.source.source_kind);
+  result.evidence.push_back(
+      {"import_execution_descriptor_authority", "engine_bound_api_request"});
+  result.evidence.push_back(
+      {"import_execution_descriptor_revalidated", "true"});
+  result.evidence.push_back({"import_plan_consumed", "false"});
+  result.evidence.push_back(
+      {"import_source_kind", result.normalized_source_kind});
+  result.evidence.push_back(
+      {"import_format_family", result.normalized_format_family});
+  result.evidence.push_back({"insert_mode", result.normalized_insert_mode});
+  if (request.import_policy.strict_bulk_load_requested) {
+    result.evidence.push_back({"strict_bulk_load_requested", "true"});
+  }
+  return result;
 }
 
 bool IsTruthyOptionValue(const std::string& value) {
@@ -308,14 +472,16 @@ EngineExecuteImportRowsResult ImportExecutionFailure(const std::string& detail) 
   return result;
 }
 
-EngineExecuteImportRowsResult ImportExecutionFailureFromPlan(const EnginePlanImportRowsResult& plan) {
+EngineExecuteImportRowsResult ImportExecutionFailureFromDescriptor(
+    const ImportExecutionDescriptorProjection& descriptor) {
   EngineExecuteImportRowsResult result;
   result.ok = false;
   result.operation_id = "dml.execute_import_rows";
-  result.diagnostics = plan.diagnostics;
-  result.unsupported_features = plan.unsupported_features;
-  result.evidence = plan.evidence;
-  result.evidence.push_back({"import_execution_refused_by", "dml.plan_import_rows"});
+  result.diagnostics = descriptor.diagnostics;
+  result.unsupported_features = descriptor.unsupported_features;
+  result.evidence = descriptor.evidence;
+  result.evidence.push_back(
+      {"import_execution_refused_by", "execution_descriptor_revalidation"});
   return result;
 }
 
@@ -425,20 +591,6 @@ EngineExecuteImportRowsResult ImportExecutionFailureRejectLimitExceeded(
   return result;
 }
 
-EnginePlanImportRowsRequest MakePlanRequest(const EngineExecuteImportRowsRequest& request) {
-  EnginePlanImportRowsRequest plan;
-  plan.context = request.context;
-  plan.operation_id = "dml.plan_import_rows";
-  plan.target_table = request.target_table;
-  plan.source = request.source;
-  plan.format = request.format;
-  plan.column_mappings = request.column_mappings;
-  plan.import_policy = request.import_policy;
-  plan.option_envelopes = request.option_envelopes;
-  plan.diagnostic_options = request.diagnostic_options;
-  return plan;
-}
-
 EngineNormalizeImportRejectModelRequest MakeRejectModelRequest(const EngineExecuteImportRowsRequest& request) {
   EngineNormalizeImportRejectModelRequest reject;
   reject.context = request.context;
@@ -475,7 +627,7 @@ std::span<const EngineRowValue> BorrowRows(const std::vector<EngineRowValue>& ro
 }
 
 EngineInsertRowsRequest MakeInsertRequestForRows(const EngineExecuteImportRowsRequest& request,
-                                                 const EnginePlanImportRowsResult& plan,
+                                                 const ImportExecutionDescriptorProjection& descriptor,
                                                  std::span<const EngineRowValue> rows) {
   EngineInsertRowsRequest insert;
   insert.context = request.context;
@@ -484,7 +636,7 @@ EngineInsertRowsRequest MakeInsertRequestForRows(const EngineExecuteImportRowsRe
   insert.borrowed_input_rows = rows;
   insert.require_generated_row_uuid = request.require_generated_row_uuid;
   insert.estimated_row_count = static_cast<EngineApiU64>(insert.borrowed_input_rows.size());
-  insert.insert_mode = plan.normalized_insert_mode;
+  insert.insert_mode = descriptor.normalized_insert_mode;
   insert.duplicate_mode = request.duplicate_mode;
   insert.strict_bulk_load_requested = request.import_policy.strict_bulk_load_requested;
   insert.reference_unique_checks_relaxed = false;
@@ -573,10 +725,11 @@ void AppendRows(EngineResultShape* destination, const EngineResultShape& source)
 }
 
 void AppendImportNormalizationEvidence(std::vector<EngineEvidenceReference>* evidence,
-                                       const EnginePlanImportRowsResult& plan,
+                                       const ImportExecutionDescriptorProjection& descriptor,
                                        const EngineNormalizeImportRejectModelResult& reject_model,
                                        const EngineNormalizeImportCheckpointResult& checkpoint_model) {
-  evidence->insert(evidence->end(), plan.evidence.begin(), plan.evidence.end());
+  evidence->insert(evidence->end(), descriptor.evidence.begin(),
+                   descriptor.evidence.end());
   evidence->insert(evidence->end(), reject_model.evidence.begin(), reject_model.evidence.end());
   evidence->insert(evidence->end(), checkpoint_model.evidence.begin(), checkpoint_model.evidence.end());
 }
@@ -662,7 +815,6 @@ void AddImportRowWindowEvidence(EngineApiU64 window_count,
 
 void AddImportExecutionCompletionEvidence(std::vector<EngineEvidenceReference>* evidence) {
   evidence->push_back({"import_execution_entrypoint", "dml.execute_import_rows"});
-  evidence->push_back({"import_plan_consumed", "true"});
   evidence->push_back({"import_planning_only", "false"});
   evidence->push_back({"import_execution_row_persistence_claimed", "true"});
   evidence->push_back({"import_execution_row_execution_completed", "true"});
@@ -725,12 +877,13 @@ dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalRequestForRows(
 
 EngineExecuteImportRowsResult ExecuteImportRowsDirectPhysical(
     const EngineExecuteImportRowsRequest& request,
-    const EnginePlanImportRowsResult& plan,
+    const ImportExecutionDescriptorProjection& descriptor,
     const EngineNormalizeImportRejectModelResult& reject_model,
     const EngineNormalizeImportCheckpointResult& checkpoint_model,
     const CopyAppendBatchPolicy& copy_append_policy) {
   std::vector<EngineEvidenceReference> evidence;
-  AppendImportNormalizationEvidence(&evidence, plan, reject_model, checkpoint_model);
+  AppendImportNormalizationEvidence(&evidence, descriptor, reject_model,
+                                    checkpoint_model);
 
   std::vector<EngineUuid> row_uuids;
   EngineResultShape result_shape;
@@ -784,9 +937,9 @@ EngineExecuteImportRowsResult ExecuteImportRowsDirectPhysical(
       failure.inserted_rows = inserted_rows;
       failure.row_uuids = row_uuids;
       failure.result_shape = result_shape;
-      failure.normalized_source_kind = plan.normalized_source_kind;
-      failure.normalized_format_family = plan.normalized_format_family;
-      failure.normalized_insert_mode = plan.normalized_insert_mode;
+      failure.normalized_source_kind = descriptor.normalized_source_kind;
+      failure.normalized_format_family = descriptor.normalized_format_family;
+      failure.normalized_insert_mode = descriptor.normalized_insert_mode;
       failure.normalized_reject_mode = reject_model.normalized_reject_mode;
       failure.normalized_checkpoint_mode = checkpoint_model.normalized_checkpoint_mode;
       failure.delegated_to_insert_rows = false;
@@ -816,9 +969,9 @@ EngineExecuteImportRowsResult ExecuteImportRowsDirectPhysical(
   result.rejected_rows = 0;
   result.row_uuids = std::move(row_uuids);
   result.result_shape = std::move(result_shape);
-  result.normalized_source_kind = plan.normalized_source_kind;
-  result.normalized_format_family = plan.normalized_format_family;
-  result.normalized_insert_mode = plan.normalized_insert_mode;
+  result.normalized_source_kind = descriptor.normalized_source_kind;
+  result.normalized_format_family = descriptor.normalized_format_family;
+  result.normalized_insert_mode = descriptor.normalized_insert_mode;
   result.normalized_reject_mode = reject_model.normalized_reject_mode;
   result.normalized_checkpoint_mode = checkpoint_model.normalized_checkpoint_mode;
   result.delegated_to_insert_rows = false;
@@ -867,14 +1020,15 @@ struct RejectBisectionResult {
 
 RejectBisectionResult ExecuteRejectWindowByBisection(
     const EngineExecuteImportRowsRequest& request,
-    const EnginePlanImportRowsResult& plan,
+    const ImportExecutionDescriptorProjection& descriptor,
     std::size_t row_index,
     std::size_t row_count,
     RejectBisectionState* state) {
   ++(*state->row_window_count);
   ++(*state->batch_attempt_count);
   const EngineInsertRowsResult inserted = EngineInsertRows(MakeInsertRequestForRows(
-      request, plan, BorrowRows(request.canonical_rows, row_index, row_count)));
+      request, descriptor,
+      BorrowRows(request.canonical_rows, row_index, row_count)));
   if (inserted.ok) {
     *state->accepted_rows += static_cast<EngineApiU64>(row_count);
     state->row_uuids->insert(state->row_uuids->end(),
@@ -907,12 +1061,12 @@ RejectBisectionResult ExecuteRejectWindowByBisection(
     const std::size_t left_count = row_count / 2;
     const std::size_t right_count = row_count - left_count;
     auto left = ExecuteRejectWindowByBisection(
-        request, plan, row_index, left_count, state);
+        request, descriptor, row_index, left_count, state);
     if (!left.ok) {
       return left;
     }
     return ExecuteRejectWindowByBisection(
-        request, plan, row_index + left_count, right_count, state);
+        request, descriptor, row_index + left_count, right_count, state);
   }
 
   ++(*state->terminal_singleton_count);
@@ -1019,9 +1173,10 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
   const CopyAppendBatchPolicy copy_append_policy =
       ResolveCopyAppendBatchPolicy(request);
 
-  const EnginePlanImportRowsResult plan = EnginePlanImportRows(MakePlanRequest(request));
-  if (!plan.ok) {
-    return ImportExecutionFailureFromPlan(plan);
+  const ImportExecutionDescriptorProjection execution_descriptor =
+      ResolveImportExecutionDescriptor(request);
+  if (!execution_descriptor.ok) {
+    return ImportExecutionFailureFromDescriptor(execution_descriptor);
   }
 
   const EngineNormalizeImportRejectModelResult reject_model =
@@ -1038,7 +1193,8 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
 
   if (reject_model.normalized_reject_mode != "fail_fast") {
     std::vector<EngineEvidenceReference> evidence;
-    AppendImportNormalizationEvidence(&evidence, plan, reject_model, checkpoint_model);
+    AppendImportNormalizationEvidence(&evidence, execution_descriptor,
+                                      reject_model, checkpoint_model);
     EngineResultShape result_shape;
     std::vector<EngineUuid> row_uuids;
     EngineApiU64 accepted_rows = 0;
@@ -1080,7 +1236,8 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
       bisection_state.include_payload_reference_columns = include_payload_reference_columns;
 
       auto bisection = ExecuteRejectWindowByBisection(
-          request, plan, row_index, row_count, &bisection_state);
+          request, execution_descriptor, row_index, row_count,
+          &bisection_state);
       if (!bisection.ok) {
         return bisection.failure;
       }
@@ -1107,9 +1264,10 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
     result.rejected_rows = rejected_rows;
     result.row_uuids = std::move(row_uuids);
     result.result_shape = std::move(result_shape);
-    result.normalized_source_kind = plan.normalized_source_kind;
-    result.normalized_format_family = plan.normalized_format_family;
-    result.normalized_insert_mode = plan.normalized_insert_mode;
+    result.normalized_source_kind = execution_descriptor.normalized_source_kind;
+    result.normalized_format_family =
+        execution_descriptor.normalized_format_family;
+    result.normalized_insert_mode = execution_descriptor.normalized_insert_mode;
     result.normalized_reject_mode = reject_model.normalized_reject_mode;
     result.normalized_checkpoint_mode = checkpoint_model.normalized_checkpoint_mode;
     result.delegated_to_insert_rows = true;
@@ -1143,7 +1301,7 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
   }
 
   auto result = ExecuteImportRowsDirectPhysical(request,
-                                                plan,
+                                                execution_descriptor,
                                                 reject_model,
                                                 checkpoint_model,
                                                 copy_append_policy);

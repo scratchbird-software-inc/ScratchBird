@@ -358,6 +358,17 @@ void SblrDispatchRouteReachesBackpressureDebtApi() {
       "nosql.backpressure_debt_plan",
       "SBLR_NOSQL_BACKPRESSURE_DEBT_PLAN",
       "ODF-079");
+  request.envelope.opcode_code = opcode->code;
+  request.envelope.parser_package_uuid =
+      "019df079-0000-7000-8000-000000000101";
+  request.envelope.registry_snapshot_uuid =
+      "019df079-0000-7000-8000-000000000102";
+  request.envelope.requires_security_context =
+      opcode->requires_security_context;
+  request.envelope.requires_transaction_context =
+      opcode->requires_transaction_context;
+  request.envelope.requires_cluster_authority =
+      opcode->requires_cluster_authority;
 
   const auto result = sblr::DispatchSblrOperation(request);
   Require(result.accepted && result.envelope_validated &&

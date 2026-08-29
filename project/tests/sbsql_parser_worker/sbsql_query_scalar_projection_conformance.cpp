@@ -8,6 +8,7 @@
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
@@ -16,8 +17,10 @@
 #include "sblr_engine_envelope.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <iostream>
@@ -29,7 +32,22 @@ namespace {
 
 using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
-namespace sblr = scratchbird::engine::sblr;
+namespace canonical_test_sblr {
+using namespace scratchbird::engine::sblr;
+inline SblrOperationEnvelope MakeSblrEnvelope(std::string operation_id,
+                                              std::string opcode,
+                                              std::string trace_key = {}) {
+  return scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+      operation_id, opcode, trace_key);
+}
+inline SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
+  request.envelope =
+      scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+          std::move(request.envelope));
+  return scratchbird::engine::sblr::DispatchSblrOperation(std::move(request));
+}
+}  // namespace canonical_test_sblr
+namespace sblr = canonical_test_sblr;
 
 constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000003101";
 
@@ -1064,12 +1082,347 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
+NativeRelationalBindingContext TableSelectBindingContext() {
+  NativeRelationalBindingContext context;
+  context.bound_ast_uuid = "019f0000-0000-7000-8000-000000003181";
+  context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000003182";
+  context.security_context_uuid = "019f0000-0000-7110-8000-000000003183";
+  context.statement_uuid = "019f0000-0000-7120-8000-000000003184";
+  context.owning_transaction_uuid = "019f0000-0000-7130-8000-000000003185";
+  context.statement_snapshot_uuid = "019f0000-0000-7140-8000-000000003186";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7150-8000-000000003187";
+  context.local_transaction_id = 42;
+  context.snapshot_visible_through_local_transaction_id = 42;
+  auto& authority = context.engine_statement_authority;
+  authority.statement_uuid = context.statement_uuid;
+  authority.transaction_uuid = context.owning_transaction_uuid;
+  authority.statement_snapshot_uuid = context.statement_snapshot_uuid;
+  authority.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid;
+  authority.catalog_epoch_uuid = context.catalog_epoch_uuid;
+  authority.local_transaction_id = context.local_transaction_id;
+  authority.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+
+  NativeDescriptorBindingInput text;
+  text.descriptor_id = 1;
+  text.descriptor_uuid = "019f0000-0000-7200-8000-000000003188";
+  text.type_uuid = "019f0000-0000-7300-8000-000000003189";
+  text.nullability = BoundNullability::kNullable;
+  text.width_precision_scale.width = 128;
+  text.collation_uuid = "019f0000-0000-7400-8000-00000000318a";
+  context.descriptors.push_back(std::move(text));
+
+  NativeCatalogRelationBindingInput relation;
+  relation.source_id = 1;
+  relation.resolution_state = NativeCatalogRelationResolutionState::kBound;
+  relation.object_uuid = std::string(kTargetUuid);
+  relation.resolved_object_type = "relation";
+  relation.resolved_schema_uuid = "019f0000-0000-7500-8000-00000000318b";
+  relation.parent_object_uuid = "019f0000-0000-7500-8000-00000000318c";
+  relation.catalog_generation_id = 7;
+  relation.security_epoch = 11;
+  relation.resource_epoch = 13;
+  relation.columns = {
+      {0, "019f0000-0000-7600-8000-00000000318d", 1, "value"},
+  };
+  context.catalog_relations.push_back(std::move(relation));
+  return context;
+}
+
 PipelineArtifacts RunPipeline(std::string_view sql, std::vector<std::string> resolved = {}) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
   artifacts.ast = BuildAst(artifacts.cst);
-  artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session, resolved);
+  auto native_context = TableSelectBindingContext();
+  artifacts.bound = BindAst(
+      artifacts.ast, artifacts.cst, ParserConfigForTest(), session, resolved,
+      artifacts.ast.native_relational.recognized() && !resolved.empty()
+          ? &native_context
+          : nullptr);
+  artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
+  artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
+  return artifacts;
+}
+
+NativeRelationalBindingContext GroupedSumBindingContext(
+    const AstDocument& ast) {
+  auto context = TableSelectBindingContext();
+  context.descriptors.clear();
+  context.expressions.clear();
+  context.outputs.clear();
+  context.relations.clear();
+  context.catalog_relations.clear();
+
+  const auto source_relation = std::ranges::find_if(
+      ast.native_relational.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
+      });
+  const auto aggregate_relation = std::ranges::find_if(
+      ast.native_relational.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kAggregate;
+      });
+  Require(source_relation != ast.native_relational.relations.end() &&
+              aggregate_relation != ast.native_relational.relations.end() &&
+              ast.native_relational.catalog_relation_sources.size() == 1,
+          "grouped SUM AST did not expose one source and one aggregate");
+  Require(source_relation->output_expression_ids.size() == 2 &&
+              aggregate_relation->grouping_key_expression_ids.size() == 1 &&
+              aggregate_relation->aggregate_expression_ids.size() == 1 &&
+              source_relation->output_expression_ids[0] == 1 &&
+              source_relation->output_expression_ids[1] == 2 &&
+              aggregate_relation->aggregate_expression_ids.front() == 3,
+          "grouped SUM AST expression handle profile changed");
+
+  constexpr std::string_view kBigintDescriptorUuid =
+      "019d0000-0000-7000-8000-00000000d711";
+  constexpr std::string_view kBigintTypeUuid =
+      "019d0000-0000-7000-8000-00000000d712";
+  constexpr std::string_view kInt128DescriptorUuid =
+      "019d0000-0000-7000-8000-00000000d714";
+  constexpr std::string_view kInt128TypeUuid =
+      "019d0000-0000-7000-8000-00000000d715";
+  constexpr std::string_view kSumFunctionUuid =
+      "019de5fc-2400-72e4-8549-82b2eef5a777";
+  constexpr std::string_view kStatementReceiptUuid =
+      "019f0000-0000-7160-8000-000000003190";
+  constexpr std::string_view kDatatypeCatalogSnapshotUuid =
+      "019d0000-0000-7000-8000-00000000d701";
+  constexpr std::string_view kKeyColumnUuid =
+      "019f0000-0000-7600-8000-00000000318d";
+  constexpr std::string_view kValueColumnUuid =
+      "019f0000-0000-7600-8000-00000000318e";
+
+  NativeDescriptorBindingInput key_descriptor;
+  key_descriptor.descriptor_id = 1;
+  key_descriptor.descriptor_uuid = kBigintDescriptorUuid;
+  key_descriptor.type_uuid = kBigintTypeUuid;
+  key_descriptor.nullability = BoundNullability::kNonNull;
+  key_descriptor.canonical_type_name = "int64";
+  key_descriptor.descriptor_generation = 1;
+  key_descriptor.type_generation = 1;
+  key_descriptor.codec_id = "datatype.int64.le.v1";
+  key_descriptor.codec_version = 1;
+  key_descriptor.codec_generation = 1;
+  key_descriptor.statement_receipt_uuid = kStatementReceiptUuid;
+  key_descriptor.datatype_catalog_snapshot_uuid =
+      kDatatypeCatalogSnapshotUuid;
+  key_descriptor.datatype_catalog_generation = 1;
+  key_descriptor.datatype_registry_generation = 1;
+  context.descriptors.push_back(key_descriptor);
+
+  NativeDescriptorBindingInput value_descriptor = key_descriptor;
+  value_descriptor.descriptor_id = 2;
+  context.descriptors.push_back(value_descriptor);
+
+  NativeDescriptorBindingInput result_descriptor;
+  result_descriptor.descriptor_id = 3;
+  result_descriptor.descriptor_uuid = kInt128DescriptorUuid;
+  result_descriptor.type_uuid = kInt128TypeUuid;
+  result_descriptor.nullability = BoundNullability::kNullable;
+  result_descriptor.canonical_type_name = "int128";
+  result_descriptor.descriptor_generation = 1;
+  result_descriptor.type_generation = 1;
+  result_descriptor.codec_id = "datatype.int128.le.v1";
+  result_descriptor.codec_version = 1;
+  result_descriptor.codec_generation = 1;
+  result_descriptor.statement_receipt_uuid = kStatementReceiptUuid;
+  result_descriptor.datatype_catalog_snapshot_uuid =
+      kDatatypeCatalogSnapshotUuid;
+  result_descriptor.datatype_catalog_generation = 1;
+  result_descriptor.datatype_registry_generation = 1;
+  context.descriptors.push_back(result_descriptor);
+
+  context.expressions.push_back(
+      {1, 1, std::nullopt, std::string(kKeyColumnUuid)});
+  context.expressions.push_back(
+      {2, 2, std::nullopt, std::string(kValueColumnUuid)});
+  context.expressions.push_back(
+      {3, 3, std::string(kSumFunctionUuid), std::nullopt});
+
+  context.outputs.push_back(
+      {1, 1, "customer_id", 1, true, 0, source_relation->relation_id});
+  context.outputs.push_back(
+      {2, 2, "total_amount", 2, true, 1, source_relation->relation_id});
+  context.outputs.push_back(
+      {3, 1, "customer_id", 1, true, 0, aggregate_relation->relation_id});
+  context.outputs.push_back(
+      {4, 3, "total_amount", 3, true, 1, aggregate_relation->relation_id});
+  context.relations.push_back(
+      {aggregate_relation->relation_id,
+       "aggregate.grouped-int64-key-sum.v1"});
+
+  NativeCatalogRelationBindingInput relation;
+  relation.source_id =
+      ast.native_relational.catalog_relation_sources.front().source_id;
+  relation.resolution_state = NativeCatalogRelationResolutionState::kBound;
+  relation.object_uuid = std::string(kTargetUuid);
+  relation.resolved_object_type = "relation";
+  relation.resolved_schema_uuid =
+      "019f0000-0000-7500-8000-00000000318b";
+  relation.parent_object_uuid =
+      "019f0000-0000-7500-8000-00000000318c";
+  relation.catalog_generation_id = 7;
+  relation.security_epoch = 11;
+  relation.resource_epoch = 13;
+  relation.columns = {
+      {0, std::string(kKeyColumnUuid), 1, "customer_id"},
+      {1, std::string(kValueColumnUuid), 2, "total_amount"},
+  };
+  context.catalog_relations.push_back(std::move(relation));
+  return context;
+}
+
+constexpr std::string_view kAuthoritativeTextDescriptorUuid =
+    "019d0000-0000-7000-8000-00000000d718";
+constexpr std::string_view kAuthoritativeTextTypeUuid =
+    "019d0000-0000-7000-8000-00000000d719";
+constexpr std::string_view kAuthoritativeTextCodecId =
+    "datatype.text.utf8.v1";
+constexpr std::string_view kAuthoritativeTextStatementReceiptUuid =
+    "019f0000-0000-7160-8000-000000003192";
+constexpr std::string_view kAuthoritativeTextCatalogSnapshotUuid =
+    "019d0000-0000-7000-8000-00000000d701";
+constexpr std::string_view kOrdinaryJoinDescriptorUuid =
+    "019f0000-0000-7200-8000-000000003193";
+constexpr std::string_view kOrdinaryJoinTypeUuid =
+    "019f0000-0000-7300-8000-000000003194";
+
+NativeRelationalBindingContext AuthoritativeTextJoinBindingContext(
+    const AstDocument& ast) {
+  auto context = TableSelectBindingContext();
+  context.descriptors.clear();
+  context.expressions.clear();
+  context.outputs.clear();
+  context.relations.clear();
+  context.catalog_relations.clear();
+
+  Require(ast.native_relational.catalog_relation_sources.size() == 2,
+          "authoritative TEXT JOIN AST did not expose two catalog sources");
+  std::vector<const NativeRelationAstNode*> source_relations;
+  for (const auto& source : ast.native_relational.catalog_relation_sources) {
+    const auto relation = std::ranges::find_if(
+        ast.native_relational.relations, [&](const auto& candidate) {
+          return candidate.relation_kind ==
+                     NativeRelationAstKind::kCatalogSource &&
+                 candidate.relation_source_ids ==
+                     std::vector<std::uint32_t>{source.source_id};
+        });
+    Require(relation != ast.native_relational.relations.end(),
+            "authoritative TEXT JOIN source relation is absent");
+    source_relations.push_back(&*relation);
+  }
+  const auto join = std::ranges::find_if(
+      ast.native_relational.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kJoin;
+      });
+  Require(join != ast.native_relational.relations.end() &&
+              join->join_kind == NativeJoinAstKind::kCross,
+          "authoritative TEXT JOIN AST did not expose an exact CROSS JOIN");
+
+  NativeDescriptorBindingInput text;
+  text.descriptor_id = 1;
+  text.descriptor_uuid = kAuthoritativeTextDescriptorUuid;
+  text.type_uuid = kAuthoritativeTextTypeUuid;
+  text.nullability = BoundNullability::kNullable;
+  text.width_precision_scale.width = 0;
+  text.canonical_type_name = "text";
+  text.descriptor_generation = 1;
+  text.type_generation = 1;
+  text.codec_id = kAuthoritativeTextCodecId;
+  text.codec_version = 1;
+  text.codec_generation = 1;
+  text.statement_receipt_uuid = kAuthoritativeTextStatementReceiptUuid;
+  text.datatype_catalog_snapshot_uuid =
+      kAuthoritativeTextCatalogSnapshotUuid;
+  text.datatype_catalog_generation = 1;
+  text.datatype_registry_generation = 1;
+  context.descriptors.push_back(std::move(text));
+
+  NativeDescriptorBindingInput ordinary;
+  ordinary.descriptor_id = 2;
+  ordinary.descriptor_uuid = kOrdinaryJoinDescriptorUuid;
+  ordinary.type_uuid = kOrdinaryJoinTypeUuid;
+  ordinary.nullability = BoundNullability::kNonNull;
+  ordinary.canonical_type_name = "int32";
+  context.descriptors.push_back(std::move(ordinary));
+
+  constexpr std::array<std::string_view, 2> kObjectUuids = {
+      "019f0000-0000-7000-8000-000000003195",
+      "019f0000-0000-7000-8000-000000003196"};
+  constexpr std::array<std::string_view, 2> kSchemaUuids = {
+      "019f0000-0000-7500-8000-000000003197",
+      "019f0000-0000-7500-8000-000000003198"};
+  constexpr std::array<std::string_view, 2> kColumnUuids = {
+      "019f0000-0000-7600-8000-000000003199",
+      "019f0000-0000-7600-8000-00000000319a"};
+  constexpr std::array<std::string_view, 2> kColumnNames = {
+      "text_value", "integer_value"};
+  for (std::size_t ordinal = 0; ordinal < source_relations.size(); ++ordinal) {
+    const auto expression_id = static_cast<std::uint32_t>(ordinal + 1);
+    NativeCatalogRelationBindingInput relation;
+    relation.source_id =
+        ast.native_relational.catalog_relation_sources[ordinal].source_id;
+    relation.resolution_state = NativeCatalogRelationResolutionState::kBound;
+    relation.object_uuid = kObjectUuids[ordinal];
+    relation.resolved_object_type = "table";
+    relation.resolved_schema_uuid = kSchemaUuids[ordinal];
+    relation.catalog_generation_id = 7;
+    relation.security_epoch = 11;
+    relation.resource_epoch = 13;
+    relation.columns = {{0, std::string(kColumnUuids[ordinal]), expression_id,
+                         std::string(kColumnNames[ordinal])}};
+    context.catalog_relations.push_back(std::move(relation));
+    context.expressions.push_back(
+        {expression_id, expression_id, std::nullopt,
+         std::string(kColumnUuids[ordinal])});
+    context.outputs.push_back(
+        {expression_id, expression_id, std::string(kColumnNames[ordinal]),
+         expression_id, true, 0, source_relations[ordinal]->relation_id});
+  }
+
+  context.relations.push_back({join->relation_id, "join.cross.v1"});
+  for (std::size_t ordinal = 0; ordinal < source_relations.size(); ++ordinal) {
+    const auto expression_id = static_cast<std::uint32_t>(ordinal + 1);
+    context.outputs.push_back(
+        {static_cast<std::uint32_t>(source_relations.size() + ordinal + 1),
+         expression_id, std::string(kColumnNames[ordinal]), expression_id,
+         true, static_cast<std::uint32_t>(ordinal), join->relation_id});
+  }
+  return context;
+}
+
+PipelineArtifacts RunAuthoritativeTextJoinPipeline() {
+  constexpr std::string_view kSql =
+      "SELECT * FROM app.left_table AS l CROSS JOIN app.right_table AS r";
+  PipelineArtifacts artifacts;
+  const auto session = ParserSession();
+  artifacts.cst = BuildCst(kSql);
+  artifacts.ast = BuildAst(artifacts.cst);
+  auto native_context = AuthoritativeTextJoinBindingContext(artifacts.ast);
+  artifacts.bound = BindAst(artifacts.ast, artifacts.cst,
+                            ParserConfigForTest(), session, {},
+                            &native_context);
+  artifacts.envelope =
+      LowerToSblr(artifacts.bound, artifacts.cst, session);
+  artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
+  return artifacts;
+}
+
+PipelineArtifacts RunGroupedSumPipeline() {
+  constexpr std::string_view kSql =
+      "SELECT customer_id, SUM(total_amount) FROM benchmark_orders "
+      "GROUP BY customer_id";
+  PipelineArtifacts artifacts;
+  const auto session = ParserSession();
+  artifacts.cst = BuildCst(kSql);
+  artifacts.ast = BuildAst(artifacts.cst);
+  auto native_context = GroupedSumBindingContext(artifacts.ast);
+  artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(),
+                            session, {std::string(kTargetUuid)},
+                            &native_context);
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -1452,6 +1805,7 @@ void AppendFunctionProjectionOperand(sblr::SblrOperationEnvelope& envelope,
   std::size_t arg_index = 0;
   for (const auto& arg : args) {
     const std::string arg_prefix = prefix + "_arg_" + std::to_string(arg_index);
+    envelope.operands.push_back({"text", arg_prefix + "_expr_kind", "literal"});
     envelope.operands.push_back({"text", arg_prefix + "_type", arg.type});
     envelope.operands.push_back({"text", arg_prefix + "_value", arg.value});
     envelope.operands.push_back({"text", arg_prefix + "_is_null", arg.is_null ? "true" : "false"});
@@ -1552,6 +1906,7 @@ sblr::SblrOperationEnvelope FunctionProjectionEngineEnvelope(std::string arg_typ
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   envelope.operands.push_back({"text", "projection_0_function_id", "sb.scalar.cot"});
   envelope.operands.push_back({"text", "projection_0_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", std::move(arg_type)});
   envelope.operands.push_back({"text", "projection_0_arg_0_value", std::move(arg_value)});
   envelope.operands.push_back({"text", "projection_0_arg_0_is_null", "false"});
@@ -2688,6 +3043,7 @@ sblr::SblrOperationEnvelope TextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   envelope.operands.push_back({"text", "projection_0_function_id", "sb.scalar.lower"});
   envelope.operands.push_back({"text", "projection_0_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", "text"});
   envelope.operands.push_back({"text", "projection_0_arg_0_value", "ALPHA"});
   envelope.operands.push_back({"text", "projection_0_arg_0_is_null", "false"});
@@ -2700,6 +3056,7 @@ sblr::SblrOperationEnvelope TextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_1_is_null", "false"});
   envelope.operands.push_back({"text", "projection_1_function_id", "sb.scalar.upper"});
   envelope.operands.push_back({"text", "projection_1_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_1_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_1_arg_0_type", "text"});
   envelope.operands.push_back({"text", "projection_1_arg_0_value", "beta"});
   envelope.operands.push_back({"text", "projection_1_arg_0_is_null", "false"});
@@ -2712,6 +3069,7 @@ sblr::SblrOperationEnvelope TextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_2_is_null", "false"});
   envelope.operands.push_back({"text", "projection_2_function_id", "sb.scalar.length"});
   envelope.operands.push_back({"text", "projection_2_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_2_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_2_arg_0_type", "text"});
   envelope.operands.push_back({"text", "projection_2_arg_0_value", "surface"});
   envelope.operands.push_back({"text", "projection_2_arg_0_is_null", "false"});
@@ -2737,6 +3095,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   envelope.operands.push_back({"text", "projection_0_function_id", "sb.scalar.octet_length"});
   envelope.operands.push_back({"text", "projection_0_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", "text"});
   envelope.operands.push_back({"text", "projection_0_arg_0_value", "hello"});
   envelope.operands.push_back({"text", "projection_0_arg_0_is_null", "false"});
@@ -2749,6 +3108,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_1_is_null", "false"});
   envelope.operands.push_back({"text", "projection_1_function_id", "sb.scalar.bit_length"});
   envelope.operands.push_back({"text", "projection_1_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_1_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_1_arg_0_type", "text"});
   envelope.operands.push_back({"text", "projection_1_arg_0_value", "hello"});
   envelope.operands.push_back({"text", "projection_1_arg_0_is_null", "false"});
@@ -2761,6 +3121,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_2_is_null", "false"});
   envelope.operands.push_back({"text", "projection_2_function_id", "sb.scalar.reverse"});
   envelope.operands.push_back({"text", "projection_2_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_2_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_2_arg_0_type", "text"});
   envelope.operands.push_back({"text", "projection_2_arg_0_value", "abc"});
   envelope.operands.push_back({"text", "projection_2_arg_0_is_null", "false"});
@@ -2773,6 +3134,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_3_is_null", "false"});
   envelope.operands.push_back({"text", "projection_3_function_id", "sb.scalar.ascii"});
   envelope.operands.push_back({"text", "projection_3_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_3_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_3_arg_0_type", "text"});
   envelope.operands.push_back({"text", "projection_3_arg_0_value", "Z"});
   envelope.operands.push_back({"text", "projection_3_arg_0_is_null", "false"});
@@ -2785,6 +3147,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_4_is_null", "false"});
   envelope.operands.push_back({"text", "projection_4_function_id", "sb.scalar.chr"});
   envelope.operands.push_back({"text", "projection_4_function_arg_count", "1"});
+  envelope.operands.push_back({"text", "projection_4_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_4_arg_0_type", "bigint"});
   envelope.operands.push_back({"text", "projection_4_arg_0_value", "90"});
   envelope.operands.push_back({"text", "projection_4_arg_0_is_null", "false"});
@@ -3996,7 +4359,7 @@ void RequireScalarLowering() {
           "timestamp_literal callable negative route embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4009,7 +4372,7 @@ void RequireScalarLowering() {
           "server admission operation family mismatch");
 
   const auto boolean_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{boolean_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(boolean_artifacts.envelope));
   for (const auto& diagnostic : boolean_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4020,7 +4383,7 @@ void RequireScalarLowering() {
           "SELECT TRUE server admission operation id mismatch");
 
   const auto decimal_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{decimal_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(decimal_artifacts.envelope));
   for (const auto& diagnostic : decimal_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4031,7 +4394,7 @@ void RequireScalarLowering() {
           "SELECT decimal server admission operation id mismatch");
 
   const auto float_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{float_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(float_artifacts.envelope));
   for (const auto& diagnostic : float_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4042,7 +4405,7 @@ void RequireScalarLowering() {
           "SELECT float server admission operation id mismatch");
 
   const auto binary_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{binary_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(binary_artifacts.envelope));
   for (const auto& diagnostic : binary_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4053,7 +4416,7 @@ void RequireScalarLowering() {
           "SELECT binary server admission operation id mismatch");
 
   const auto uuid_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{uuid_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(uuid_artifacts.envelope));
   for (const auto& diagnostic : uuid_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4064,7 +4427,7 @@ void RequireScalarLowering() {
           "SELECT UUID server admission operation id mismatch");
 
   const auto date_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{date_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(date_artifacts.envelope));
   for (const auto& diagnostic : date_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4075,7 +4438,7 @@ void RequireScalarLowering() {
           "SELECT DATE server admission operation id mismatch");
 
   const auto time_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{time_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(time_artifacts.envelope));
   for (const auto& diagnostic : time_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4086,7 +4449,7 @@ void RequireScalarLowering() {
           "SELECT TIME server admission operation id mismatch");
 
   const auto timestamp_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{timestamp_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(timestamp_artifacts.envelope));
   for (const auto& diagnostic : timestamp_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4138,7 +4501,7 @@ void RequireFunctionProjectionLowering() {
           "invalid-input function scalar projection text argument value missing");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4196,7 +4559,7 @@ void RequireNumericFunctionProjectionLowering() {
           "numeric function projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4261,7 +4624,7 @@ void RequireAdditionalNumericFunctionProjectionLowering() {
           "additional numeric function projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4310,7 +4673,7 @@ void RequireQualifiedCanonicalNumericFunctionProjectionLowering() {
           "qualified canonical numeric function projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4369,7 +4732,7 @@ void RequireExtendedNumericFunctionProjectionLowering() {
           "extended numeric function projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4442,7 +4805,7 @@ void RequireTextJsonFuzzyFunctionProjectionLowering() {
           "text/json/fuzzy function projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4494,7 +4857,7 @@ void RequireVectorFunctionProjectionLowering() {
           "vector function projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4556,7 +4919,7 @@ void RequireBinaryCryptoFunctionProjectionLowering() {
           "binary/crypto function projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4616,7 +4979,7 @@ void RequireTemporalSessionProviderProjectionLowering() {
           "temporal/session provider payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4663,7 +5026,7 @@ void RequireTemporalConstructorProjectionLowering() {
           "temporal constructor payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4716,7 +5079,7 @@ void RequireTemporalFieldArithmeticProjectionLowering() {
           "temporal field/arithmetic payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4795,7 +5158,7 @@ void RequireTemporalDateTimeBatchProjectionLowering() {
           "temporal date/time batch payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4917,7 +5280,7 @@ void RequireProceduralContextProjectionLowering() {
           "procedural/context payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -4985,7 +5348,7 @@ void RequireSbsfc016ReferenceSystemVariableProjectionLowering() {
           "SBSFC-016 reference system variable payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5091,7 +5454,7 @@ void RequireSbsfc016ReferenceContextProjectionLowering() {
           "SBSFC-016 reference context payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5190,7 +5553,7 @@ void RequireSbsfc016PolicyRefusalProjectionLowering() {
           "SBSFC-016 policy-refusal payload leaked filesystem argument text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5235,7 +5598,7 @@ void RequireSbsfc027PolicyRefusalProjectionLowering() {
             std::string(expected.surface_id) + " SBSFC-027 payload embedded source SQL text");
 
     const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
     for (const auto& diagnostic : admission.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
     }
@@ -5318,7 +5681,7 @@ void RequireSbsfc028UuidCompatHelperProjectionLowering() {
           "SBSFC-028 payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5372,7 +5735,7 @@ void RequireSbsfc031TxidSurfaceProjectionLowering() {
           "SBSFC-031 txid surface payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5454,7 +5817,7 @@ void RequireSbsfc032ScalarUtilityConversionProjectionLowering() {
           "SBSFC-032 scalar utility/conversion payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5555,7 +5918,7 @@ void RequireSbsfc033CatalogDescriptorDiagnosticProjectionLowering() {
           "SBSFC-033 catalog/descriptor/diagnostic payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5627,7 +5990,7 @@ void RequireSbsfc034TextTrigramBitStringProjectionLowering() {
           "SBSFC-034 text/trigram/bit-string payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5707,7 +6070,7 @@ void RequireSbsfc035RangeScalarHelperProjectionLowering() {
           "SBSFC-035 range scalar helper payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5862,7 +6225,7 @@ void RequireSbsfc036SpatialGeometryScalarHelperProjectionLowering() {
           "SBSFC-036 spatial geometry scalar helper payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -5959,7 +6322,7 @@ void RequireSbsfc037XmlMultimodelScalarHelperProjectionLowering() {
           "SBSFC-037 XML/multimodel scalar helper payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6126,7 +6489,7 @@ void RequireSbsfc038SpatialTailScalarHelperProjectionLowering() {
           "SBSFC-038 spatial tail scalar helper payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6218,7 +6581,7 @@ void RequireSbsfc039XmlDocumentQueryScalarHelperProjectionLowering() {
           "SBSFC-039 XML document/query scalar helper payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6263,7 +6626,7 @@ void RequireSbsfc028AntiWalPolicyRefusalProjectionLowering() {
             std::string(expected.surface_id) + " SBSFC-028 Anti-WAL payload embedded source SQL text");
 
     const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
     for (const auto& diagnostic : admission.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
     }
@@ -6324,7 +6687,7 @@ void RequireSbsfc016ReferenceAliasFunctionProjectionLowering() {
           "SBSFC-016 reference alias payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6420,7 +6783,7 @@ void RequireSbsfc016FixedPolicyLimitProjectionLowering() {
           "SBSFC-016 fixed policy limit payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6475,7 +6838,7 @@ void RequireSbsfc016LanguagePolicyProjectionLowering() {
           "SBSFC-016 language policy payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6550,7 +6913,7 @@ void RequireSbsfc016MetadataProjectionLowering() {
           "SBSFC-016 metadata payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6593,7 +6956,7 @@ void RequireSbsfc016ProceduralDiagnosticProjectionLowering() {
             "SBSFC-016 procedural diagnostic payload embedded source SQL text");
 
     const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
     for (const auto& diagnostic : admission.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
     }
@@ -6637,7 +7000,7 @@ void RequireCurrentSettingLiteralRefusalLowering() {
           "current_setting literal refusal payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6685,7 +7048,7 @@ void RequireTextFunctionProjectionLowering() {
           "text function scalar projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6765,7 +7128,7 @@ void RequireTextFunctionProjectionLowering() {
           "trim/encoding function projection payload embedded source SQL text");
 
   const auto trim_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{trim_encoding.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(trim_encoding.envelope));
   for (const auto& diagnostic : trim_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6840,7 +7203,7 @@ void RequireTextFunctionProjectionLowering() {
           "SBSFC-026R-J function projection payload embedded source SQL text");
 
   const auto sbsfc026rj_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{sbsfc026rj.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(sbsfc026rj.envelope));
   for (const auto& diagnostic : sbsfc026rj_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -6974,7 +7337,7 @@ void RequireTextFunctionProjectionLowering() {
           "text/conditional function projection payload embedded source SQL text");
 
   const auto text_conditional_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{text_conditional.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(text_conditional.envelope));
   for (const auto& diagnostic : text_conditional_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7012,7 +7375,7 @@ void RequireTextFunctionProjectionLowering() {
         }
 
         const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-            scratchbird::server::ServerSblrAdmissionRequest{aliases.envelope.payload, false});
+            scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(aliases.envelope));
         for (const auto& diagnostic : admission.diagnostics) {
           std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
         }
@@ -7239,7 +7602,7 @@ void RequireTextFunctionProjectionLowering() {
           "SQL keyword text function projection payload embedded source SQL text");
 
   const auto keyword_text_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{keyword_text.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(keyword_text.envelope));
   for (const auto& diagnostic : keyword_text_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7340,7 +7703,7 @@ void RequireMultiArgumentFunctionProjectionLowering() {
           "multi-argument function projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7386,7 +7749,7 @@ void RequireConcatExpressionProjectionLowering() {
           "concat_expr payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7422,7 +7785,7 @@ void RequireQualifiedRegexAliasProjectionLowering() {
           "qualified sb.func.regexp_like payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7460,7 +7823,7 @@ void RequireQualifiedTemporalAliasProjectionLowering() {
           "qualified sb.temporal alias payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7498,7 +7861,7 @@ void RequireBareTemporalDateAliasProjectionLowering() {
           "bare date_part/date_trunc payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7546,7 +7909,7 @@ void RequireExtractSpecialAndCanonicalJsonProjectionLowering() {
           "sb.special.extract payload retained alias as execution authority");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7594,7 +7957,7 @@ void RequireQualifiedTemporalProviderAliasProjectionLowering() {
           "qualified sb.temporal provider payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7634,7 +7997,7 @@ void RequireSpecialCurrentTimestampKeywordProjectionLowering() {
           "sb.special.current_timestamp_keyword payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7674,7 +8037,7 @@ void RequireCurrentValueFormProjectionLowering() {
           "current_value_form/current_timestamp payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7684,17 +8047,366 @@ void RequireCurrentValueFormProjectionLowering() {
           "server admission did not require public ABI for current_value_form/current_timestamp route");
 }
 
-void RequireTableSelectStillUsesDml() {
+void RequireGroupedSumInt128Lowering() {
+  const auto artifacts = RunGroupedSumPipeline();
+  if (!artifacts.bound.bound) {
+    for (const auto& diagnostic : artifacts.bound.messages.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    }
+  }
+  for (const auto& diagnostic : artifacts.envelope.messages.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  Require(artifacts.ast.native_relational.recognized(),
+          "catalog grouped SUM was not recognized as a native relational query");
+  Require(artifacts.ast.native_relational.grouping_sets.empty(),
+          "ordinary GROUP BY emitted a noncanonical grouping-set payload");
+  const auto ast_aggregate = std::ranges::find_if(
+      artifacts.ast.native_relational.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kAggregate;
+      });
+  Require(ast_aggregate != artifacts.ast.native_relational.relations.end() &&
+              ast_aggregate->aggregate_grouping_form ==
+                  NativeAggregateGroupingForm::kSimple &&
+              ast_aggregate->aggregate_projection_form ==
+                  NativeAggregateProjectionForm::kKeySumInt128 &&
+              ast_aggregate->grouping_key_expression_ids.size() == 1 &&
+              ast_aggregate->aggregate_expression_ids.size() == 1 &&
+              ast_aggregate->output_expression_ids.size() == 2,
+          "catalog grouped SUM AST shape changed");
+  Require(artifacts.bound.bound &&
+              artifacts.bound.native_relational_recognized &&
+              artifacts.bound.native_relational.bound,
+          "catalog grouped SUM did not bind");
+  Require(artifacts.bound.native_relational.grouping_sets.empty(),
+          "bound ordinary GROUP BY emitted a grouping-set payload");
+  const auto bound_aggregate = std::ranges::find_if(
+      artifacts.bound.native_relational.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kAggregate;
+      });
+  Require(bound_aggregate != artifacts.bound.native_relational.relations.end() &&
+              bound_aggregate->semantic_variant_id ==
+                  "aggregate.grouped-int64-key-sum.v1" &&
+              bound_aggregate->aggregate_grouping_form ==
+                  NativeAggregateGroupingForm::kSimple &&
+              bound_aggregate->aggregate_projection_form ==
+                  NativeAggregateProjectionForm::kKeySumInt128 &&
+              bound_aggregate->output_expression_ids.size() == 2 &&
+              bound_aggregate->bound_expression_ids.size() == 2,
+          "catalog grouped SUM BoundAST identity changed");
+  const auto int128_descriptor = std::ranges::find_if(
+      artifacts.bound.native_relational.descriptors, [](const auto& descriptor) {
+        return descriptor.descriptor_id == 3;
+      });
+  Require(int128_descriptor !=
+                  artifacts.bound.native_relational.descriptors.end() &&
+              int128_descriptor->descriptor_uuid ==
+                  "019d0000-0000-7000-8000-00000000d714" &&
+              int128_descriptor->type_uuid ==
+                  "019d0000-0000-7000-8000-00000000d715" &&
+              int128_descriptor->canonical_type_name == "int128" &&
+              int128_descriptor->nullability == BoundNullability::kNullable,
+          "catalog grouped SUM result descriptor is not exact nullable INT128");
+  const auto visible_root_outputs = std::ranges::count_if(
+      artifacts.bound.native_relational.outputs, [&](const auto& output) {
+        return output.relation_id == bound_aggregate->relation_id &&
+               output.visible;
+      });
+  Require(visible_root_outputs == 2,
+          "catalog grouped SUM did not expose exactly two visible outputs");
+  Require(artifacts.envelope.operation_id == "query.execute" &&
+              artifacts.envelope.sblr_opcode == "SBLR_QUERY_EXECUTE",
+          "catalog grouped SUM did not lower through canonical query.execute");
+  Require(artifacts.verifier.admitted,
+          "catalog grouped SUM canonical SBLR verifier rejected the route");
+  Require(std::ranges::count_if(
+              artifacts.envelope.operands, [](const auto& operand) {
+                return operand.type == "relational_grouping_set_v1";
+              }) == 0,
+          "catalog grouped SUM lowered an explicit grouping-set record");
+  Require(std::ranges::any_of(
+              artifacts.envelope.operands, [](const auto& operand) {
+                return operand.type == "relational_descriptor_v2" &&
+                       operand.name == "3" &&
+                       operand.value.starts_with(
+                           "019d0000-0000-7000-8000-00000000d714|"
+                           "1|019d0000-0000-7000-8000-00000000d715|1|"
+                           "datatype.int128.le.v1|1|1|1|");
+              }),
+          "catalog grouped SUM SBLR omitted its exact INT128 descriptor");
+  Require(std::ranges::any_of(
+              artifacts.envelope.operands, [](const auto& operand) {
+                return operand.type == "relational_node_binding_v1" &&
+                       operand.value.starts_with(
+                           "6167677265676174652e67726f757065642d696e7436342d6b65792d"
+                           "73756d2e7631|");
+              }),
+          "catalog grouped SUM SBLR omitted its canonical semantic identity");
+
+  constexpr std::string_view kSql =
+      "SELECT customer_id, SUM(total_amount) FROM benchmark_orders "
+      "GROUP BY customer_id";
+  const auto cst = BuildCst(kSql);
+  const auto ast = BuildAst(cst);
+  auto malformed_context = GroupedSumBindingContext(ast);
+  malformed_context.descriptors.back().type_uuid =
+      "019d0000-0000-7000-8000-00000000d712";
+  const auto malformed =
+      BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
+              {std::string(kTargetUuid)}, &malformed_context);
+  Require(!malformed.bound &&
+              std::ranges::any_of(
+                  malformed.messages.diagnostics, [](const auto& diagnostic) {
+                    return diagnostic.code == "QOW-DIAG-BOUNDAST-EXPRESSION";
+                  }),
+          "catalog grouped SUM accepted a noncanonical result type UUID");
+
+  auto stale_generation_context = GroupedSumBindingContext(ast);
+  stale_generation_context.descriptors.front().descriptor_generation = 2;
+  const auto stale_generation =
+      BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
+              {std::string(kTargetUuid)}, &stale_generation_context);
+  Require(!stale_generation.bound,
+          "catalog grouped SUM accepted a stale source descriptor generation");
+
+  auto cross_receipt_context = GroupedSumBindingContext(ast);
+  cross_receipt_context.descriptors.back().statement_receipt_uuid =
+      "019f0000-0000-7160-8000-000000003191";
+  const auto cross_receipt =
+      BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
+              {std::string(kTargetUuid)}, &cross_receipt_context);
+  Require(!cross_receipt.bound,
+          "catalog grouped SUM accepted cross-receipt result identity");
+}
+
+void RequireAuthoritativeTextJoinDescriptorTransport() {
+  const auto artifacts = RunAuthoritativeTextJoinPipeline();
+  if (!artifacts.bound.bound) {
+    for (const auto& diagnostic : artifacts.bound.messages.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    }
+  }
+  for (const auto& diagnostic : artifacts.envelope.messages.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  Require(artifacts.ast.native_relational.accepted(),
+          "authoritative TEXT CROSS JOIN did not produce an accepted AST");
+  Require(artifacts.bound.bound &&
+              artifacts.bound.native_relational_recognized &&
+              artifacts.bound.native_relational.bound,
+          "authoritative TEXT CROSS JOIN did not bind");
+  Require(artifacts.bound.native_relational.descriptors.size() == 2,
+          "authoritative TEXT CROSS JOIN descriptor inventory changed");
+  const auto text_descriptor = std::ranges::find_if(
+      artifacts.bound.native_relational.descriptors,
+      [](const auto& descriptor) { return descriptor.descriptor_id == 1; });
+  const auto ordinary_descriptor = std::ranges::find_if(
+      artifacts.bound.native_relational.descriptors,
+      [](const auto& descriptor) { return descriptor.descriptor_id == 2; });
+  Require(text_descriptor !=
+                  artifacts.bound.native_relational.descriptors.end() &&
+              text_descriptor->descriptor_uuid ==
+                  kAuthoritativeTextDescriptorUuid &&
+              text_descriptor->descriptor_generation == 1 &&
+              text_descriptor->type_uuid == kAuthoritativeTextTypeUuid &&
+              text_descriptor->type_generation == 1 &&
+              text_descriptor->codec_id == kAuthoritativeTextCodecId &&
+              text_descriptor->codec_version == 1 &&
+              text_descriptor->codec_generation == 1 &&
+              text_descriptor->statement_receipt_uuid ==
+                  kAuthoritativeTextStatementReceiptUuid &&
+              text_descriptor->datatype_catalog_snapshot_uuid ==
+                  kAuthoritativeTextCatalogSnapshotUuid &&
+              text_descriptor->datatype_catalog_generation == 1 &&
+              text_descriptor->datatype_registry_generation == 1,
+          "two-source JOIN binder dropped authoritative TEXT receipt fields");
+  Require(ordinary_descriptor !=
+                  artifacts.bound.native_relational.descriptors.end() &&
+              ordinary_descriptor->descriptor_generation == 0 &&
+              ordinary_descriptor->type_generation == 0 &&
+              ordinary_descriptor->codec_id.empty() &&
+              ordinary_descriptor->codec_version == 0 &&
+              ordinary_descriptor->codec_generation == 0 &&
+              ordinary_descriptor->statement_receipt_uuid.empty() &&
+              ordinary_descriptor->datatype_catalog_snapshot_uuid.empty() &&
+              ordinary_descriptor->datatype_catalog_generation == 0 &&
+              ordinary_descriptor->datatype_registry_generation == 0,
+          "ordinary JOIN descriptor unexpectedly acquired receipt authority");
+  Require(artifacts.envelope.operation_id == "query.execute" &&
+              artifacts.envelope.sblr_opcode == "SBLR_QUERY_EXECUTE" &&
+              artifacts.verifier.admitted,
+          "authoritative TEXT CROSS JOIN did not lower through canonical query.execute");
+
+  std::vector<const SblrOperand*> descriptor_operands;
+  for (const auto& operand : artifacts.envelope.operands) {
+    if (operand.type == "relational_descriptor_v1" ||
+        operand.type == "relational_descriptor_v2") {
+      descriptor_operands.push_back(&operand);
+    }
+  }
+  Require(descriptor_operands.size() == 2 &&
+              descriptor_operands[0]->name == "1" &&
+              descriptor_operands[0]->type == "relational_descriptor_v2" &&
+              descriptor_operands[0]->value ==
+                  std::string(kAuthoritativeTextDescriptorUuid) + "|1|" +
+                      std::string(kAuthoritativeTextTypeUuid) + "|1|" +
+                      std::string(kAuthoritativeTextCodecId) +
+                      "|1|1|1|-|-|0|-|-|" +
+                      std::string(kAuthoritativeTextStatementReceiptUuid) +
+                      "|" +
+                      std::string(kAuthoritativeTextCatalogSnapshotUuid) +
+                      "|1|1" &&
+              descriptor_operands[1]->name == "2" &&
+              descriptor_operands[1]->type == "relational_descriptor_v1",
+          "mixed JOIN descriptors did not preserve order and select v2 per authoritative occurrence");
+
+  auto two_authoritative = artifacts.envelope;
+  const auto second_authoritative = std::ranges::find_if(
+      two_authoritative.operands, [](const auto& operand) {
+        return operand.type == "relational_descriptor_v1" &&
+               operand.name == "2";
+      });
+  Require(second_authoritative != two_authoritative.operands.end(),
+          "ordinary JOIN descriptor operand is absent");
+  second_authoritative->type = "relational_descriptor_v2";
+  second_authoritative->value =
+      std::string(kOrdinaryJoinDescriptorUuid) + "|1|" +
+      std::string(kOrdinaryJoinTypeUuid) +
+      "|1|datatype.test.int32.le.v1|1|1|0|-|-|-|-|-|" +
+      std::string(kAuthoritativeTextStatementReceiptUuid) + "|" +
+      std::string(kAuthoritativeTextCatalogSnapshotUuid) + "|1|1";
+  Require(VerifySblrEnvelope(two_authoritative).admitted,
+          "ordinary JOIN verifier rejected two consistently anchored v2 descriptors");
+
+  const auto require_crossed_authority_refusal =
+      [&](const std::size_t field_index, const std::string_view replacement,
+          const std::string_view detail) {
+        auto forged = two_authoritative;
+        const auto operand = std::ranges::find_if(
+            forged.operands, [](const auto& candidate) {
+              return candidate.type == "relational_descriptor_v2" &&
+                     candidate.name == "2";
+            });
+        Require(operand != forged.operands.end(),
+                "forged JOIN descriptor operand is absent");
+        std::vector<std::string> fields;
+        std::size_t start = 0;
+        while (start <= operand->value.size()) {
+          const auto separator = operand->value.find('|', start);
+          fields.push_back(operand->value.substr(
+              start, separator == std::string::npos
+                         ? std::string::npos
+                         : separator - start));
+          if (separator == std::string::npos) break;
+          start = separator + 1;
+        }
+        Require(fields.size() == 17 && field_index < fields.size(),
+                "authoritative JOIN descriptor fixture field count changed");
+        fields[field_index] = replacement;
+        operand->value.clear();
+        for (std::size_t index = 0; index < fields.size(); ++index) {
+          if (index != 0) operand->value.push_back('|');
+          operand->value.append(fields[index]);
+        }
+        const auto verification = VerifySblrEnvelope(forged);
+        Require(!verification.admitted &&
+                    HasDiagnosticCode(verification.messages,
+                                      "DATATYPE.DESCRIPTOR.INVALID"),
+                std::string(detail));
+      };
+  require_crossed_authority_refusal(
+      13, "019f0000-0000-7160-8000-00000000319b",
+      "generic JOIN verifier accepted crossed statement receipt authority");
+  require_crossed_authority_refusal(
+      14, "019f0000-0000-7170-8000-00000000319c",
+      "generic JOIN verifier accepted crossed datatype snapshot authority");
+  require_crossed_authority_refusal(
+      15, "2",
+      "generic JOIN verifier accepted crossed datatype catalog generation");
+  require_crossed_authority_refusal(
+      16, "2",
+      "generic JOIN verifier accepted crossed datatype registry generation");
+
+  const auto require_lowering_refusal =
+      [&](BoundStatement mutated, const std::string_view detail) {
+        const auto envelope =
+            LowerToSblr(mutated, artifacts.cst, ParserSession());
+        Require(envelope.messages.has_errors() &&
+                    HasDiagnosticCode(envelope.messages,
+                                      "DATATYPE.DESCRIPTOR.INVALID"),
+                std::string(detail));
+        Require(std::ranges::none_of(
+                    envelope.operands, [](const auto& operand) {
+                      return operand.type == "relational_descriptor_v1" ||
+                             operand.type == "relational_descriptor_v2";
+                    }),
+                std::string(detail) + " published a descriptor operand");
+      };
+
+  auto missing_receipt = artifacts.bound;
+  missing_receipt.native_relational.descriptors.front()
+      .statement_receipt_uuid.clear();
+  require_lowering_refusal(
+      std::move(missing_receipt),
+      "authoritative TEXT JOIN accepted a missing receipt UUID");
+
+  auto partial_tuple = artifacts.bound;
+  partial_tuple.native_relational.descriptors.front().codec_generation = 0;
+  require_lowering_refusal(
+      std::move(partial_tuple),
+      "authoritative TEXT JOIN accepted a partial receipt tuple");
+
+  auto stale_tuple = artifacts.bound;
+  auto& stale = stale_tuple.native_relational.descriptors.back();
+  stale.descriptor_generation = 1;
+  stale.type_generation = 1;
+  stale.codec_id = "datatype.test.int32.le.v1";
+  stale.codec_version = 1;
+  stale.codec_generation = 1;
+  stale.statement_receipt_uuid = kAuthoritativeTextStatementReceiptUuid;
+  stale.datatype_catalog_snapshot_uuid =
+      kAuthoritativeTextCatalogSnapshotUuid;
+  stale.datatype_catalog_generation = 2;
+  stale.datatype_registry_generation = 1;
+  require_lowering_refusal(
+      std::move(stale_tuple),
+      "authoritative TEXT JOIN accepted crossed catalog-generation authority");
+
+  auto repeated_uuid = artifacts.bound;
+  repeated_uuid.native_relational.descriptors.back() =
+      repeated_uuid.native_relational.descriptors.front();
+  repeated_uuid.native_relational.descriptors.back().descriptor_id = 2;
+  repeated_uuid.native_relational.descriptors.back().descriptor_generation = 2;
+  require_lowering_refusal(
+      std::move(repeated_uuid),
+      "authoritative TEXT JOIN accepted conflicting repeated UUID authority");
+}
+
+void RequireTableSelectDoesNotUseScalarProjection() {
   const auto artifacts = RunPipeline("SELECT * FROM customer", {std::string(kTargetUuid)});
+  if (!artifacts.bound.bound) {
+    for (const auto& diagnostic : artifacts.bound.messages.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    }
+  }
   Require(artifacts.bound.bound, "table SELECT did not bind after UUID resolution");
-  Require(artifacts.verifier.admitted, "table SELECT SBLR verifier rejected route");
-  Require(artifacts.envelope.operation_id == "dml.select_rows",
-          "table SELECT no longer routes to DML select rows");
-  Require(artifacts.envelope.sblr_opcode == "SBLR_DML_SELECT_ROWS",
-          "table SELECT DML opcode mismatch");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
-          "table SELECT target UUID missing");
+  Require(artifacts.bound.native_relational_recognized &&
+              artifacts.bound.native_relational.bound,
+          "table SELECT did not retain its typed relational binding");
+  Require(!artifacts.verifier.admitted,
+          "source-only wildcard SELECT bypassed typed projection expansion");
+  Require(artifacts.envelope.operation_id == "query.execute" &&
+              artifacts.envelope.sblr_opcode == "SBLR_QUERY_EXECUTE",
+          "table SELECT did not retain canonical relational route identity");
+  Require(artifacts.envelope.operation_id != "query.evaluate_projection",
+          "table SELECT was captured by the source-free scalar projection route");
+  Require(std::any_of(
+              artifacts.envelope.messages.diagnostics.begin(),
+              artifacts.envelope.messages.diagnostics.end(),
+              [](const auto& diagnostic) {
+                return diagnostic.code == "SBLR.PLAN_TREE.INVALID_HANDLE";
+              }),
+          "source-only wildcard SELECT did not fail closed before execution");
 }
 
 void RequireOperatorProjectionLowering() {
@@ -7763,7 +8475,7 @@ void RequireOperatorProjectionLowering() {
           "invalid LIKE operator route missing");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7805,7 +8517,7 @@ void RequireIlikeProjectionLowering() {
           "invalid ILIKE operator route missing");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -7904,7 +8616,7 @@ void RequireExtendedOperatorProjectionLowering() {
           "extended operator scalar projection payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -10243,10 +10955,12 @@ int main() {
   RequireQualifiedTemporalProviderAliasProjectionLowering();
   RequireSpecialCurrentTimestampKeywordProjectionLowering();
   RequireCurrentValueFormProjectionLowering();
+  RequireGroupedSumInt128Lowering();
+  RequireAuthoritativeTextJoinDescriptorTransport();
   RequireOperatorProjectionLowering();
   RequireIlikeProjectionLowering();
   RequireExtendedOperatorProjectionLowering();
-  RequireTableSelectStillUsesDml();
+  RequireTableSelectDoesNotUseScalarProjection();
   RequireEngineDispatch();
   RequireEngineFunctionDispatch();
   RequireEngineNumericFunctionDispatch();

@@ -326,6 +326,28 @@ void RequireUniqueViolation(const api::EngineInsertRowsResult& result,
 
 void RequireSynchronousUniqueInsertEvidence(
     const api::EngineInsertRowsResult& result) {
+  if (HasEvidence(result.evidence,
+                  "insert_direct_physical_bulk_route",
+                  "selected")) {
+    Require(HasEvidence(result.evidence,
+                        "bulk_constraint_proof_result",
+                        "accepted") &&
+                HasEvidence(result.evidence,
+                            "bulk_constraint_proof_unique_selected",
+                            "true") &&
+                HasEvidence(result.evidence,
+                            "unique_index_bulk_proof_probes",
+                            "1"),
+            "IPAR unique-probe direct route lost its accepted unique proof");
+    Require(HasEvidence(result.evidence,
+                        "insert_hot_append_index_entries",
+                        "1"),
+            "IPAR unique-probe direct route did not append its unique index");
+    Require(HasEvidenceKind(result.evidence, "constraint_proof_store") &&
+                HasEvidenceKind(result.evidence, "constraint_proof_hit"),
+            "IPAR unique-probe direct route lost its proof-store receipt");
+    return;
+  }
   Require(HasEvidence(result.evidence,
                       "insert_unique_preflight_path",
                       "index_backed"),
@@ -356,6 +378,22 @@ void RequireSynchronousUniqueInsertEvidence(
 
 void RequirePhysicalProbeEvidence(const api::EngineInsertRowsResult& result,
                                   std::string_view source_kind) {
+  if (HasEvidence(result.evidence,
+                  "insert_direct_physical_bulk_route",
+                  "selected")) {
+    Require(HasEvidence(result.evidence,
+                        source_kind,
+                        "persisted_unique_index"),
+            "IPAR unique-probe direct route lost persisted-index source");
+    Require(HasEvidence(result.evidence,
+                        "bulk_unique_proof_persisted_source",
+                        "visible_rows_and_index_entries") &&
+                HasEvidence(result.evidence,
+                            "bulk_constraint_proof_conflict_reason",
+                            "bulk_unique_proof_persisted_conflict"),
+            "IPAR unique-probe direct route lost persisted-index proof");
+    return;
+  }
   Require(HasEvidence(result.evidence,
                       source_kind,
                       "persisted_unique_index_physical_probe"),
@@ -382,6 +420,21 @@ void RequireStatementOverlayEvidence(const api::EngineInsertRowsResult& result,
                                      std::string_view source_kind) {
   Require(HasEvidence(result.evidence, source_kind, "statement_delta_overlay"),
           "IPAR unique-probe same-statement duplicate did not use overlay");
+  if (HasEvidence(result.evidence,
+                  "insert_direct_physical_bulk_route",
+                  "selected")) {
+    Require(HasEvidence(result.evidence,
+                        "bulk_constraint_proof_conflict_reason",
+                        "bulk_unique_proof_duplicate_in_batch") &&
+                HasEvidence(result.evidence,
+                            "bulk_unique_proof_duplicate_run_count",
+                            "1") &&
+                HasEvidence(result.evidence,
+                            "bulk_constraint_proof_refused",
+                            "true"),
+            "IPAR unique-probe direct route lost duplicate-run proof");
+    return;
+  }
   Require(HasEvidence(result.evidence,
                       "physical_unique_index_probe_path",
                       "statement_delta_overlay"),

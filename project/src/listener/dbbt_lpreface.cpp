@@ -31,7 +31,7 @@ DbbtGateResult LoadDbbtKeyMaterial(const ListenerConfig& config, DbbtKeyMaterial
     out->bytes = proto::FromHex(key);
     if (out->bytes.size() < 32) {
       diagnostics.push_back(MakeDiagnostic(
-          "LISTENER.DBBT.KEYRING_KEY_INVALID",
+          "LISTENER.DBBT_KEY_MATERIAL_INVALID",
           "ERROR",
           "keyring DBBT material must decode to at least 32 bytes",
           "sb_listener.dbbt"));

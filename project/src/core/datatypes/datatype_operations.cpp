@@ -2383,7 +2383,25 @@ CanonicalTypeId CanonicalTypeIdFromStableName(const std::string& stable_name) {
     return CanonicalTypeId::real64;
   }
   if (lower == "float") { return CanonicalTypeId::real32; }
+  if (lower == "numeric") { return CanonicalTypeId::decimal; }
   if (lower == "set") { return CanonicalTypeId::set_value; }
+  // CDSSV-VECTOR: normalized builtin descriptor profile names retain their
+  // exact public spelling while binding to an existing canonical vector type
+  // identity.  They are not new storage type codes or donor aliases.
+  if (lower == "bit_vector") { return CanonicalTypeId::binary_vector; }
+  if (lower == "int8_vector" || lower == "float16_vector") {
+    return CanonicalTypeId::quantized_vector;
+  }
+  // Zoned temporal public descriptors use the canonical temporal base type
+  // plus a required wire-profile identity; they are not unknown aliases.
+  if (lower == "time_tz" || lower == "timetz" ||
+      lower == "time with time zone") {
+    return CanonicalTypeId::time;
+  }
+  if (lower == "timestamp_tz" || lower == "timestamptz" ||
+      lower == "timestamp with time zone") {
+    return CanonicalTypeId::timestamp;
+  }
   for (const auto& descriptor : BuiltinDatatypeDescriptors()) {
     if (LowerAscii(descriptor.stable_name) == lower || LowerAscii(CanonicalTypeName(descriptor.type_id)) == lower) {
       return descriptor.type_id;

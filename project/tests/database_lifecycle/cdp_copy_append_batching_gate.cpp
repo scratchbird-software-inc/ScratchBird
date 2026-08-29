@@ -15,10 +15,16 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_executor_availability_registry.hpp"
+#include "storage/database/local_transaction_store.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -31,9 +37,16 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace dl_test = scratchbird::tests::database_lifecycle;
+namespace mga = scratchbird::transaction::mga;
 namespace platform = scratchbird::core::platform;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
+
+constexpr std::string_view kPlanOperationId = "dml.plan_import_rows";
+constexpr std::string_view kPlanBinderTag =
+    "private_dml_plan_import_rows_binder";
+constexpr std::string_view kPlanConsumerTag =
+    "private_dml_plan_import_rows_consumer";
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -78,6 +91,7 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   std::string database_uuid;
+  std::string filespace_uuid;
   std::string table_uuid;
   std::string index_uuid;
   platform::u64 salt = 0;
@@ -182,6 +196,7 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid.canonical = fixture.database_uuid;
+  context.default_root_uuid.canonical = fixture.filespace_uuid;
   context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
   context.session_uuid.canonical = NewUuidText(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
@@ -272,14 +287,21 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   Require(created.ok(), "CDP-011 database create failed");
 
   fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.filespace_uuid = uuid::UuidToString(create.filespace_uuid.value);
   fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
   fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "cdp011-metadata");
-  const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
+  const auto table_record = Table(fixture, metadata);
+  const auto table = api::AppendMgaTableMetadata(metadata, table_record);
   Require(!table.error, "CDP-011 table metadata append failed");
   const auto index = api::AppendMgaIndexMetadata(metadata, UniqueIdIndex(fixture, metadata));
   Require(!index.error, "CDP-011 unique index metadata append failed");
+  api::MgaRelationStorageDescriptor relation_descriptor;
+  Require(!api::EnsureMgaRelationStorageDescriptor(
+               metadata, table_record, {}, &relation_descriptor)
+               .error,
+          "CDP-011 relation descriptor persistence failed");
   Commit(metadata);
   return fixture;
 }
@@ -310,21 +332,127 @@ api::EngineExecuteImportRowsRequest ImportRequest(
   return request;
 }
 
-api::EnginePlanImportRowsRequest PlanRequest(
+api::EngineRequestContext AttachPlanStatementReceipt(
     const Fixture& fixture,
-    const api::EngineRequestContext& context) {
+    api::EngineRequestContext context) {
+  const platform::u64 identity_salt =
+      fixture.salt + context.local_transaction_id * 32;
+  context.statement_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, identity_salt + 1);
+  context.statement_snapshot_uuid.canonical.clear();
+  api::EnginePublishStatementSnapshotRequest publish;
+  publish.context = context;
+  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
+  RequireOk(snapshot, "CDP-011 plan statement snapshot publication failed");
+  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
+  context.statement_snapshot_generation =
+      snapshot.snapshot_vector
+          .publication_inventory_next_local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  context.statement_receipt_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, identity_salt + 2);
+  context.statement_metadata_snapshot_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, identity_salt + 3);
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.statement_metadata_snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
+  context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
+  context.transaction_policy_snapshot_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, identity_salt + 4);
+  context.transaction_policy_snapshot_generation = 1;
+  context.resource_admission_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, identity_salt + 5);
+
+  auto& authorization = context.authorization_context;
+  authorization.present = true;
+  authorization.authority_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, identity_salt + 6);
+  authorization.security_context_generation = 1;
+  authorization.principal_uuid = context.principal_uuid;
+  authorization.security_epoch = context.security_epoch;
+  authorization.policy_epoch = 1;
+  authorization.catalog_generation_id = context.catalog_generation_id;
+  api::EngineAuthorizationSubject subject;
+  subject.subject_uuid = context.principal_uuid;
+  subject.subject_kind = "principal";
+  authorization.effective_subjects.push_back(subject);
+  api::EngineMaterializedAuthorizationGrant grant;
+  grant.grant_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, identity_salt + 7);
+  grant.subject_uuid = context.principal_uuid;
+  grant.subject_kind = "principal";
+  grant.target_uuid.canonical = fixture.table_uuid;
+  grant.right = "INSERT";
+  grant.security_epoch = context.security_epoch;
+  authorization.grants.push_back(std::move(grant));
+  return context;
+}
+
+api::SblrExecutorAvailabilityRowIdentity PlanAvailabilityIdentity() {
+  api::SblrExecutorAvailabilityRowIdentity identity;
+  identity.executor_id = api::kSblrDmlPlanImportRowsExecutorId;
+  identity.opcode_code = api::kSblrDmlPlanImportRowsOpcodeCode;
+  identity.opcode_version = api::kSblrDmlPlanImportRowsOpcodeVersion;
+  identity.operand_descriptor_id =
+      api::kSblrDmlPlanImportRowsOperandDescriptorId;
+  identity.result_descriptor_id =
+      api::kSblrDmlPlanImportRowsResultDescriptorId;
+  identity.result_descriptor_version =
+      api::kSblrDmlPlanImportRowsResultDescriptorVersion;
+  return identity;
+}
+
+void RequirePlanAvailability(const api::EngineRequestContext& context,
+                             bool bootstrap) {
+  if (bootstrap) {
+    const auto installed = api::LoadSblrExecutorAvailabilitySnapshot(
+        context, PlanAvailabilityIdentity());
+    Require(installed.ok && installed.snapshot.installed &&
+                installed.snapshot.generation != 0,
+            "CDP-011 plan executor availability bootstrap failed");
+  }
+  const auto current = api::LoadCurrentSblrExecutorAvailabilitySnapshot(
+      context, PlanAvailabilityIdentity());
+  Require(current.ok && current.snapshot.installed &&
+              current.snapshot.generation != 0,
+          "CDP-011 current plan executor availability missing");
+}
+
+api::EngineRequestContext WithPlanTraceTag(api::EngineRequestContext context,
+                                           std::string_view tag) {
+  context.trace_tags.clear();
+  context.trace_tags.emplace_back(tag);
+  return context;
+}
+
+api::EngineCreateImportRowsPlanDescriptorRequestV1 PlanFactoryRequest(
+    const Fixture& fixture,
+    const api::EngineRequestContext& binder_context,
+    api::EngineApiU64 structural_occurrence_id = 1) {
+  api::EngineCreateImportRowsPlanDescriptorRequestV1 request;
+  request.context = binder_context;
+  request.structural_occurrence_id = structural_occurrence_id;
+  request.target_table_uuid.canonical = fixture.table_uuid;
+  request.source_kind = sblr::PlanImportRowsSourceKindV1::csv_stream;
+  request.format_family = sblr::PlanImportRowsFormatFamilyV1::csv;
+  request.reject_mode = sblr::PlanImportRowsRejectModeV1::fail_fast;
+  request.reject_payload_policy =
+      sblr::PlanImportRowsRejectPayloadPolicyV1::diagnostic_only;
+  request.resume_policy = sblr::PlanImportRowsResumePolicyV1::fail_closed;
+  return request;
+}
+
+api::EnginePlanImportRowsRequest PlanRequest(
+    const api::EngineRequestContext& consumer_context,
+    const sblr::PlanImportRowsDescriptorRefV1& descriptor_ref) {
   api::EnginePlanImportRowsRequest request;
-  request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
-  request.target_table.object_kind = "table";
-  request.source.source_kind = "csv_stream";
-  request.source.source_position = "row:0";
-  request.format.format_family = "csv";
-  request.column_mappings.push_back({"id", "id", {}, true});
-  request.column_mappings.push_back({"note", "note", {}, false});
-  request.import_policy.reject_mode = "fail_fast";
-  request.import_policy.reject_payload_policy = "diagnostic_only";
-  request.import_policy.resume_policy = "fail_closed";
+  request.context = consumer_context;
+  request.operation_id = std::string(kPlanOperationId);
+  request.descriptor_ref = descriptor_ref;
   return request;
 }
 
@@ -350,11 +478,146 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
   return selected.visible_count;
 }
 
-sblr::SblrOperand Operand(std::string type, std::string name, std::string value) {
+template <std::size_t N>
+bool NonzeroBytes(const std::array<std::uint8_t, N>& value) {
+  return std::any_of(value.begin(), value.end(),
+                     [](std::uint8_t byte) { return byte != 0; });
+}
+
+std::string PlanUuidText(const sblr::PlanImportRowsUuidV1& value) {
+  platform::Uuid uuid_value;
+  uuid_value.bytes = value;
+  return uuid::UuidToString(uuid_value);
+}
+
+void RequirePlanSuccess(
+    const api::EnginePlanImportRowsResult& result,
+    const sblr::PlanImportRowsDescriptorRefV1& descriptor_ref) {
+  RequireOk(result, "CDP-011 exact bound import plan failed");
+  Require(result.surface_accepted && result.planning_only &&
+              result.execution_requires_execute_import_rows &&
+              !result.row_execution_completed &&
+              !result.row_persistence_claimed,
+          "CDP-011 bound plan validation-only result contract drifted");
+  Require(result.normalized_insert_mode_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsInsertModeV1::copy_import) &&
+              result.normalized_source_kind_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsSourceKindV1::csv_stream) &&
+              result.normalized_format_family_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsFormatFamilyV1::csv) &&
+              result.mapped_column_count == 0 &&
+              result.validated_request_descriptor_uuid.canonical ==
+                  PlanUuidText(descriptor_ref.descriptor_uuid) &&
+              result.validated_request_descriptor_generation ==
+                  descriptor_ref.descriptor_generation &&
+              NonzeroBytes(result.validated_request_projection_sha256),
+          "CDP-011 bound plan normalized descriptor result drifted");
+  Require(result.accepted_executor_evidence.exact_bytes.size() ==
+                  sblr::kPlanImportRowsExecutorEvidenceBytesV1 &&
+              result.accepted_executor_evidence.completed_validation_bits ==
+                  sblr::kPlanImportRowsAcceptedValidationBitsV1,
+          "CDP-011 bound plan accepted IPEV missing");
+}
+
+void RequirePlanRefusal(const api::EnginePlanImportRowsResult& result,
+                        std::string_view diagnostic_code,
+                        std::string_view message) {
+  if (result.ok || result.diagnostics.size() != 1 ||
+      result.diagnostics.front().code != diagnostic_code) {
+    if (!result.diagnostics.empty()) {
+      std::cerr << "expected=" << diagnostic_code << ";actual="
+                << result.diagnostics.front().code << ':'
+                << result.diagnostics.front().detail << '\n';
+    }
+    Fail(message);
+  }
+  Require(!result.surface_accepted && !result.planning_only &&
+              !result.execution_requires_execute_import_rows &&
+              !result.row_execution_completed &&
+              !result.row_persistence_claimed &&
+              result.mapped_column_count == 0 &&
+              result.validated_request_descriptor_uuid.canonical.empty() &&
+              result.validated_request_descriptor_generation == 0 &&
+              result.accepted_executor_evidence.exact_bytes.empty() &&
+              result.evidence.empty(),
+          "CDP-011 plan refusal published success extensions or evidence");
+}
+
+void RequireInventoryEqual(
+    const mga::LocalTransactionInventory& before,
+    const mga::LocalTransactionInventory& after) {
+  Require(before.next_local_transaction_id == after.next_local_transaction_id &&
+              before.entries.size() == after.entries.size(),
+          "CDP-011 planning changed transaction inventory shape");
+  for (std::size_t index = 0; index < before.entries.size(); ++index) {
+    const auto& left = before.entries[index];
+    const auto& right = after.entries[index];
+    Require(left.identity.local_id.value == right.identity.local_id.value &&
+                left.identity.transaction_uuid.kind ==
+                    right.identity.transaction_uuid.kind &&
+                left.identity.transaction_uuid.value ==
+                    right.identity.transaction_uuid.value &&
+                left.identity.scope == right.identity.scope &&
+                left.state == right.state &&
+                left.begin_unix_epoch_millis ==
+                    right.begin_unix_epoch_millis &&
+                left.final_unix_epoch_millis ==
+                    right.final_unix_epoch_millis &&
+                left.begin_visible_through_local_transaction_id ==
+                    right.begin_visible_through_local_transaction_id &&
+                left.evidence_record_required ==
+                    right.evidence_record_required &&
+                left.evidence_record_written ==
+                    right.evidence_record_written &&
+                left.rollback_only == right.rollback_only,
+            "CDP-011 planning changed a transaction inventory row");
+  }
+}
+
+void RequireRelationStateEqual(const api::MgaRelationStoreState& before,
+                               const api::MgaRelationStoreState& after) {
+  const auto& left = before.crud_metadata;
+  const auto& right = after.crud_metadata;
+  Require(before.row_versions.size() == after.row_versions.size() &&
+              before.index_entries.size() == after.index_entries.size() &&
+              before.max_row_event_sequence == after.max_row_event_sequence &&
+              before.max_index_event_sequence ==
+                  after.max_index_event_sequence &&
+              left.transactions == right.transactions &&
+              left.tables.size() == right.tables.size() &&
+              left.indexes.size() == right.indexes.size() &&
+              left.large_values.size() == right.large_values.size() &&
+              left.sealed_relation_descriptor_snapshots.size() ==
+                  right.sealed_relation_descriptor_snapshots.size() &&
+              left.max_transaction_id == right.max_transaction_id &&
+              left.max_sequence == right.max_sequence &&
+              left.max_index_sequence == right.max_index_sequence &&
+              left.max_event_sequence == right.max_event_sequence &&
+              left.savepoints == right.savepoints,
+          "CDP-011 planning changed relation/page/index/catalog state");
+}
+
+sblr::SblrOperand Operand(std::string type,
+                          std::string name,
+                          std::string value,
+                          std::uint32_t ordinal,
+                          const platform::Uuid& descriptor_uuid) {
   sblr::SblrOperand operand;
   operand.type = std::move(type);
   operand.name = std::move(name);
-  operand.value = std::move(value);
+  operand.ordinal = ordinal;
+  operand.value_kind = sblr::SblrValueKind::literal_typed;
+  operand.value_body.assign(descriptor_uuid.bytes.begin(),
+                            descriptor_uuid.bytes.end());
+  const auto value_size = static_cast<std::uint64_t>(value.size());
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    operand.value_body.push_back(
+        static_cast<std::uint8_t>((value_size >> (byte * 8)) & 0xffu));
+  }
+  operand.value_body.insert(operand.value_body.end(), value.begin(), value.end());
   return operand;
 }
 
@@ -362,6 +625,7 @@ sblr::SblrOperationEnvelope ExecuteImportEnvelope(const Fixture& fixture) {
   auto envelope = sblr::MakeSblrEnvelope("dml.execute_import_rows",
                                          "SBLR_DML_EXECUTE_IMPORT_ROWS",
                                          "CDP-011-SBLR-EXECUTE-IMPORT");
+  envelope.opcode_code = 0x0316u;
   envelope.parser_package_uuid = NewUuidText(platform::UuidKind::object, 7000);
   envelope.registry_snapshot_uuid = NewUuidText(platform::UuidKind::object, 7001);
   envelope.parser_resolved_names_to_uuids = true;
@@ -370,13 +634,21 @@ sblr::SblrOperationEnvelope ExecuteImportEnvelope(const Fixture& fixture) {
   envelope.requires_cluster_authority = false;
   envelope.result_shape = "engine_api_result";
   envelope.diagnostic_shape = "engine_api_diagnostic_vector";
-  envelope.operands.push_back(Operand("text", "target_object_uuid", fixture.table_uuid));
-  envelope.operands.push_back(Operand("text", "target_object_kind", "table"));
-  envelope.operands.push_back(Operand("text", "source_kind", "csv_stream"));
-  envelope.operands.push_back(Operand("text", "format_family", "csv"));
-  envelope.operands.push_back(Operand("text", "reject_mode", "fail_fast"));
-  envelope.operands.push_back(Operand("text", "checkpoint_mode", "disabled"));
-  envelope.operands.push_back(Operand("text", "estimated_row_count", "2"));
+  const auto text_descriptor_uuid =
+      NewUuid(platform::UuidKind::object, fixture.salt + 7002).value;
+  const auto append_text = [&](std::string name, std::string value) {
+    envelope.operands.push_back(
+        Operand("text", std::move(name), std::move(value),
+                static_cast<std::uint32_t>(envelope.operands.size() + 1),
+                text_descriptor_uuid));
+  };
+  append_text("target_object_uuid", fixture.table_uuid);
+  append_text("target_object_kind", "table");
+  append_text("source_kind", "csv_stream");
+  append_text("format_family", "csv");
+  append_text("reject_mode", "fail_fast");
+  append_text("checkpoint_mode", "disabled");
+  append_text("estimated_row_count", "2");
   return envelope;
 }
 
@@ -447,33 +719,193 @@ void TestEnabledAndDisabledBatchingProduceSameRows() {
 
 void TestPlanContractIsCompleteAndExecutionBound() {
   auto fixture = MakeFixture("plan_contract", 2500);
-  auto context = Begin(fixture, "cdp011-plan-contract");
-  const auto plan = api::EnginePlanImportRows(PlanRequest(fixture, context));
-  RequireOk(plan, "CDP-011 import plan failed");
-  Require(plan.surface_accepted, "CDP-011 import plan did not accept surface");
-  Require(plan.planning_only, "CDP-011 import plan did not declare planning-only contract");
-  Require(plan.execution_requires_execute_import_rows,
-          "CDP-011 import plan did not bind execution entrypoint");
-  Require(!plan.row_execution_completed,
-          "CDP-011 import plan claimed row execution completion");
-  Require(HasEvidence(plan.evidence, "import_plan_contract", "complete_planning_only"),
-          "CDP-011 import plan contract evidence missing");
-  Require(HasEvidence(plan.evidence, "import_execution_entrypoint", "dml.execute_import_rows"),
-          "CDP-011 import plan entrypoint evidence missing");
-  Require(HasEvidence(plan.evidence, "import_plan_requires_canonical_rows", "true"),
-          "CDP-011 import plan canonical row evidence missing");
-  Require(HasEvidence(plan.evidence, "import_plan_row_persistence_claimed", "false"),
-          "CDP-011 import plan incorrectly claimed persistence");
+  auto context = AttachPlanStatementReceipt(
+      fixture, Begin(fixture, "cdp011-plan-contract"));
+  RequirePlanAvailability(context, true);
+  const auto binder_context = WithPlanTraceTag(context, kPlanBinderTag);
+  const auto consumer_context = WithPlanTraceTag(context, kPlanConsumerTag);
 
-  auto invalid = PlanRequest(fixture, context);
-  invalid.localized_names.push_back({"en", "primary", "", "unsafe_name", true});
-  const auto refused = api::EnginePlanImportRows(invalid);
-  Require(!refused.ok, "CDP-011 import plan accepted localized names");
-  Require(!refused.surface_accepted,
-          "CDP-011 refused import plan still marked surface accepted");
-  Require(!refused.execution_requires_execute_import_rows,
-          "CDP-011 refused import plan still advertised execution binding");
+  const auto bound = api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(
+      PlanFactoryRequest(fixture, binder_context));
+  if (!bound.ok) {
+    std::cerr << bound.diagnostic.code << ':' << bound.diagnostic.detail << '\n';
+  }
+  Require(bound.ok, "CDP-011 exact import descriptor bind failed");
+
+  auto unsupported_demand = PlanFactoryRequest(fixture, binder_context, 2);
+  unsupported_demand.format_family = sblr::PlanImportRowsFormatFamilyV1::jsonl;
+  const auto unsupported_bound =
+      api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(
+          unsupported_demand);
+  Require(unsupported_bound.ok,
+          "CDP-011 recognized unsupported descriptor did not bind");
+
+  const auto relation_before =
+      api::LoadMgaRelationStoreState(consumer_context);
+  Require(relation_before.ok,
+          "CDP-011 plan relation-state baseline load failed");
+  const auto inventory_before =
+      db::LoadLocalTransactionInventoryFromDatabase(
+          fixture.database_path.string());
+  Require(inventory_before.ok(),
+          "CDP-011 plan transaction-inventory baseline load failed");
+  const auto descriptor_before = api::LoadMgaRelationStorageDescriptor(
+      consumer_context, fixture.table_uuid);
+  Require(descriptor_before.ok,
+          "CDP-011 plan relation descriptor baseline load failed");
+  Require(SelectCount(fixture, consumer_context) == 0,
+          "CDP-011 plan target was not empty before validation");
+
+  const auto request = PlanRequest(consumer_context, bound.descriptor_ref);
+  RequirePlanSuccess(api::EnginePlanImportRows(request), bound.descriptor_ref);
+  RequirePlanSuccess(api::EnginePlanImportRows(request), bound.descriptor_ref);
+
+  auto missing_uuid = request;
+  missing_uuid.descriptor_ref = {};
+  RequirePlanRefusal(api::EnginePlanImportRows(missing_uuid),
+                     "SBLR.OPERAND_INVALID",
+                     "CDP-011 missing plan UUID was not refused");
+
+  auto localized_name = request;
+  localized_name.localized_names.emplace_back();
+  RequirePlanRefusal(api::EnginePlanImportRows(localized_name),
+                     "SBLR.OPERAND_INVALID",
+                     "CDP-011 localized plan authority was not refused");
+
+  auto malformed_mapping = request;
+  api::EngineImportColumnMapping legacy_mapping;
+  legacy_mapping.target_column = "id";
+  malformed_mapping.column_mappings.push_back(std::move(legacy_mapping));
+  RequirePlanRefusal(api::EnginePlanImportRows(malformed_mapping),
+                     "SBLR.OPERAND_INVALID",
+                     "CDP-011 malformed mapping authority was not refused");
+
+  auto denied = request;
+  denied.context.authorization_context.grants.clear();
+  RequirePlanRefusal(api::EnginePlanImportRows(denied),
+                     "SECURITY.ACCESS_DENIED",
+                     "CDP-011 denied INSERT plan was not refused");
+
+  auto missing_transaction = request;
+  missing_transaction.context.local_transaction_id = 0;
+  missing_transaction.context.transaction_uuid.canonical.clear();
+  RequirePlanRefusal(api::EnginePlanImportRows(missing_transaction),
+                     "MGA.TRANSACTION_INVALID",
+                     "CDP-011 missing plan transaction was not refused");
+
+  auto stale_transaction = request;
+  stale_transaction.context.transaction_uuid.canonical = NewUuidText(
+      platform::UuidKind::transaction, fixture.salt + 900);
+  RequirePlanRefusal(api::EnginePlanImportRows(stale_transaction),
+                     "MGA.TRANSACTION_INVALID",
+                     "CDP-011 stale plan transaction was not refused");
+
+  auto stale_snapshot = request;
+  ++stale_snapshot.context.statement_snapshot_generation;
+  RequirePlanRefusal(api::EnginePlanImportRows(stale_snapshot),
+                     "MGA.AUTHORITY_MISMATCH",
+                     "CDP-011 stale plan snapshot was not refused");
+
+  auto stale_receipt = request;
+  stale_receipt.context.statement_receipt_uuid.canonical = NewUuidText(
+      platform::UuidKind::object, fixture.salt + 901);
+  RequirePlanRefusal(api::EnginePlanImportRows(stale_receipt),
+                     "MGA.AUTHORITY_MISMATCH",
+                     "CDP-011 stale plan receipt was not refused");
+
+  RequirePlanRefusal(
+      api::EnginePlanImportRows(
+          PlanRequest(consumer_context, unsupported_bound.descriptor_ref)),
+      "SBLR.OPERATION_UNSUPPORTED",
+      "CDP-011 unsupported source/format plan was not refused");
+
+  auto invalid_target = PlanFactoryRequest(fixture, binder_context, 3);
+  invalid_target.target_table_uuid.canonical.clear();
+  const auto invalid_target_result =
+      api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(
+          invalid_target);
+  Require(!invalid_target_result.ok &&
+              invalid_target_result.diagnostic.code ==
+                  "SBLR.OPERAND_INVALID",
+          "CDP-011 missing target UUID binder demand was not refused");
+
+  auto invalid_policy = PlanFactoryRequest(fixture, binder_context, 4);
+  invalid_policy.reject_mode =
+      static_cast<sblr::PlanImportRowsRejectModeV1>(0);
+  const auto invalid_policy_result =
+      api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(
+          invalid_policy);
+  Require(!invalid_policy_result.ok &&
+              invalid_policy_result.diagnostic.code ==
+                  "SBLR.OPERAND_INVALID",
+          "CDP-011 invalid plan policy was not refused");
+
+  const auto relation_after =
+      api::LoadMgaRelationStoreState(consumer_context);
+  Require(relation_after.ok,
+          "CDP-011 plan relation-state postcondition load failed");
+  RequireRelationStateEqual(relation_before.state, relation_after.state);
+  const auto inventory_after =
+      db::LoadLocalTransactionInventoryFromDatabase(
+          fixture.database_path.string());
+  Require(inventory_after.ok(),
+          "CDP-011 plan transaction-inventory postcondition load failed");
+  RequireInventoryEqual(inventory_before.inventory, inventory_after.inventory);
+  const auto descriptor_after = api::LoadMgaRelationStorageDescriptor(
+      consumer_context, fixture.table_uuid);
+  Require(descriptor_after.ok &&
+              api::SerializeMgaRelationStorageDescriptor(
+                  descriptor_before.descriptor) ==
+                  api::SerializeMgaRelationStorageDescriptor(
+                      descriptor_after.descriptor),
+          "CDP-011 planning changed the catalog relation descriptor");
+  Require(SelectCount(fixture, consumer_context) == 0,
+          "CDP-011 plan success or refusal inserted target rows");
+
+  const auto released =
+      api::ReleaseEngineBoundImportRowsPlanDescriptorsV1(binder_context);
+  Require(released.ok && released.released_row_count == 2,
+          "CDP-011 plan descriptor release count drifted");
   Rollback(context);
+
+  auto rollback_reader = Begin(fixture, "cdp011-plan-rollback-reader");
+  Require(SelectCount(fixture, rollback_reader) == 0,
+          "CDP-011 planning followed by rollback mutated rows");
+  Rollback(rollback_reader);
+
+  auto commit_context = AttachPlanStatementReceipt(
+      fixture, Begin(fixture, "cdp011-plan-commit-without-execute"));
+  RequirePlanAvailability(commit_context, false);
+  const auto commit_binder =
+      WithPlanTraceTag(commit_context, kPlanBinderTag);
+  const auto commit_consumer =
+      WithPlanTraceTag(commit_context, kPlanConsumerTag);
+  const auto commit_bound =
+      api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(
+          PlanFactoryRequest(fixture, commit_binder));
+  Require(commit_bound.ok,
+          "CDP-011 commit-without-execute descriptor bind failed");
+  RequirePlanSuccess(
+      api::EnginePlanImportRows(
+          PlanRequest(commit_consumer, commit_bound.descriptor_ref)),
+      commit_bound.descriptor_ref);
+  Require(SelectCount(fixture, commit_consumer) == 0,
+          "CDP-011 plan inserted rows before commit-without-execute");
+  const auto commit_release =
+      api::ReleaseEngineBoundImportRowsPlanDescriptorsV1(commit_binder);
+  Require(commit_release.ok && commit_release.released_row_count == 1,
+          "CDP-011 commit plan descriptor release failed");
+  Commit(commit_context);
+
+  db::DatabaseOpenConfig open;
+  open.path = fixture.database_path.string();
+  const auto opened = db::OpenDatabaseFile(open);
+  Require(opened.ok(),
+          "CDP-011 commit-without-execute database did not reopen");
+  auto commit_reader = Begin(fixture, "cdp011-plan-commit-reader");
+  Require(SelectCount(fixture, commit_reader) == 0,
+          "CDP-011 planning followed by commit mutated rows");
+  Rollback(commit_reader);
 }
 
 void TestRollbackInvisibilityAndCommittedReopenVisibility() {
@@ -533,8 +965,12 @@ void TestSblrExecuteImportRowsDispatchesToExecutor() {
   }
   Require(result.api_result.operation_id == "dml.execute_import_rows",
           "CDP-011 SBLR import dispatched to wrong operation");
-  Require(HasEvidence(result.api_result.evidence, "import_plan_consumed", "true"),
-          "CDP-011 SBLR import did not consume plan");
+  Require(HasEvidence(result.api_result.evidence, "import_plan_consumed", "false"),
+          "CDP-011 SBLR execute import falsely consumed a planning result");
+  Require(HasEvidence(result.api_result.evidence,
+                      "import_execution_descriptor_revalidated",
+                      "true"),
+          "CDP-011 SBLR execute import did not revalidate its descriptor");
   Require(HasEvidence(result.api_result.evidence,
                       "import_execution_row_execution_completed",
                       "true"),

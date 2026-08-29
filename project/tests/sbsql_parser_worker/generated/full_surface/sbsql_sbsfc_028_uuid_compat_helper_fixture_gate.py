@@ -23,7 +23,7 @@ from pathlib import Path
 GENERATED_REGISTRY = "project/src/parsers/sbsql_worker/registry/generated/sbsql_generated_registry.cpp"
 SEED_REGISTRY = "project/src/engine/functions/registry/function_seed_registry.cpp"
 LOWERING = "project/src/parsers/sbsql_worker/lowering/lowering.cpp"
-BUILTIN_REGISTRY = "public_contract_snapshot"
+BUILTIN_REGISTRY = "../Specifications/Core/registries/builtin-expression-registry.yaml"
 FIXTURES = "project/tests/sbsql_parser_worker/generated/full_surface/SBSFC_028_UUID_COMPAT_HELPER_FIXTURES.csv"
 AUTHORITY_REF = "SBSFC-028-uuid-compat-helper-scalar"
 

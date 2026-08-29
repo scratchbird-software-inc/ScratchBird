@@ -39,13 +39,31 @@ void Require(bool condition, std::string_view message) {
   if (!condition) { Fail(message); }
 }
 
+std::string TransactionUuidText(std::uint64_t local_id) {
+  if (local_id == 77) {
+    return "019df072-0000-7000-8000-00000000004d";
+  }
+  Require(local_id == 90, "ODF-072 unexpected transaction identity");
+  return "019df072-0000-7000-8000-00000000005a";
+}
+
+platform::TypedUuid TransactionUuid(std::uint64_t local_id) {
+  const auto parsed = uuid::ParseUuid(TransactionUuidText(local_id));
+  Require(parsed.ok(), "ODF-072 transaction UUID parse failed");
+  const auto typed =
+      uuid::MakeTypedUuid(platform::UuidKind::transaction, parsed.value);
+  Require(typed.ok(), "ODF-072 transaction UUID typing failed");
+  return typed.value;
+}
+
 api::EngineRequestContext Context(const std::string& database_path,
                                   api::EngineApiU64 tx) {
   api::EngineRequestContext context;
   context.database_path = database_path;
   context.local_transaction_id = tx;
+  context.snapshot_visible_through_local_transaction_id = tx;
   context.database_uuid.canonical = "019df072-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019df072-0000-7000-8000-000000000077";
+  context.transaction_uuid.canonical = TransactionUuidText(tx);
   context.security_context_present = true;
   return context;
 }
@@ -61,7 +79,7 @@ mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
                                               mga::TransactionState state) {
   auto identity = mga::MakeTransactionIdentity(
       mga::MakeLocalTransactionId(local_id),
-      NewUuid(platform::UuidKind::transaction, local_id),
+      TransactionUuid(local_id),
       mga::TransactionScope::local_node);
   Require(identity.ok(), "ODF-072 could not create transaction identity");
 

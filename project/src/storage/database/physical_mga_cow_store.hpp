@@ -50,6 +50,9 @@ struct PhysicalMgaCowMutationRequest {
   u64 begin_unix_epoch_millis = 0;
   u32 stable_slot_id = 0;
   std::vector<scratchbird::storage::page::RowDataCell> cells;
+  // Exact reverse-chain link installed only when this request creates a new
+  // row-data page. Zero identifies the tail of the chain.
+  u64 predecessor_page_number = 0;
 };
 
 struct PhysicalMgaCowMutationBatchRequest {
@@ -91,6 +94,9 @@ struct PhysicalMgaCowMutationResult {
   scratchbird::storage::page::RowDataRecord row_version;
   DiagnosticRecord diagnostic;
   std::vector<std::string> evidence;
+  // Exact outer-page identity generated and written for this mutation.
+  TypedUuid page_uuid;
+  u64 page_generation = 0;
 
   bool ok() const {
     return status.ok();

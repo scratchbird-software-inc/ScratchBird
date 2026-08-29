@@ -304,7 +304,7 @@ EXPECTED_LANE_HASHES = {
     "WL12": "b2101e7f657bb1659085ad05078d3a18aa094fad84cb2064bf2c3bca2445081b",
 }
 
-EXPECTED_MANIFEST_HASH = "a361778612009988cf8a6bdbfeb1fd59164e5838a755f53620fe8d8d3f44d750"
+EXPECTED_MANIFEST_HASH = "66c797b08d8718a784a7e56d09b7a3fcf09e3eeaf276b7bbc76fe365038848a1"
 
 
 def with_expected_hashes(manifest: dict[str, Any]) -> dict[str, Any]:

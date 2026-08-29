@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/plan_api.hpp"
+#include "join_planner_full.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -20,6 +21,8 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace opt = scratchbird::engine::optimizer;
+namespace plan = scratchbird::engine::planner;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
@@ -157,21 +160,63 @@ std::vector<std::string> ResultSignature(const api::EnginePlanOperationResult& r
 }  // namespace
 
 int main() {
-  const auto planned_hash = api::EnginePlanOperation(JoinRequest());
-  RequireOk(planned_hash, "CDP-023 planned hash join failed");
-  Require(planned_hash.output_row_count == 8, "CDP-023 planned hash output count mismatch");
-  Require(HasEvidence(planned_hash, "optimizer_selected_access", "join_hash"),
-          "CDP-023 optimizer did not select hash join from cardinality stats");
-  Require(HasEvidence(planned_hash, "query_join_algorithm", "hash"),
-          "CDP-023 selected hash join was not routed to execution");
-  Require(HasEvidencePrefix(planned_hash, "optimizer_candidate", "CAND-OPT-010:join_nested_loop"),
-          "CDP-023 nested-loop candidate cost evidence missing");
-  Require(HasEvidencePrefix(planned_hash, "optimizer_candidate", "CAND-OPT-011:join_hash"),
-          "CDP-023 hash candidate cost evidence missing");
-  Require(HasEvidence(planned_hash, "optimizer_join_left_cardinality", "8"),
-          "CDP-023 left cardinality evidence missing");
-  Require(HasEvidence(planned_hash, "optimizer_join_right_cardinality", "256"),
-          "CDP-023 right cardinality evidence missing");
+  const auto left_uuid = NewUuidText(platform::UuidKind::object, 30);
+  const auto right_uuid = NewUuidText(platform::UuidKind::object, 31);
+  std::vector<opt::JoinRelationNode> relations = {
+      {.relation_uuid = left_uuid,
+       .estimated_rows = 8,
+       .memory_profile_bytes = 8 * 64},
+      {.relation_uuid = right_uuid,
+       .estimated_rows = 256,
+       .memory_profile_bytes = 256 * 64}};
+  opt::JoinPredicateEdge equality;
+  equality.left_relation_uuid = left_uuid;
+  equality.right_relation_uuid = right_uuid;
+  equality.predicate_kind = "join.equi";
+  equality.semantic_kind = opt::JoinSemanticKind::kInner;
+  equality.predicate_count = 1;
+  equality.equality = true;
+  equality.selectivity = 1.0 / 256.0;
+  const auto canonical_plan = opt::EnumerateDeterministicJoinOrder(
+      opt::BuildJoinGraph(relations, {equality}, false, false),
+      8 * 1024 * 1024);
+  Require(canonical_plan.ok,
+          "CDP-023 canonical catalog-backed join planning failed");
+  Require(canonical_plan.method == plan::PhysicalAccessKind::kJoinHash,
+          "CDP-023 canonical cardinality costing did not select hash join");
+  Require(canonical_plan.estimated_rows == 8,
+          "CDP-023 canonical join cardinality estimate drifted");
+  Require(canonical_plan.ordered_relation_uuids.size() == 2 &&
+              canonical_plan.ordered_relation_uuids.front() == left_uuid,
+          "CDP-023 canonical join ordering did not build from the smaller side");
+  const auto nested_cost = opt::CostNestedLoopJoin(8, 256, equality.selectivity);
+  const auto hash_cost =
+      opt::CostHashJoin(8, 256, 8 * 1024 * 1024, equality.selectivity);
+  Require(hash_cost.selectable && hash_cost.total_cost < nested_cost.total_cost,
+          "CDP-023 canonical hash cost was not independently preferred");
+
+  const auto legacy_baseline = api::EnginePlanOperation(JoinRequest());
+  RequireOk(legacy_baseline, "CDP-023 legacy baseline join failed");
+  Require(legacy_baseline.output_row_count == 8,
+          "CDP-023 legacy baseline output count mismatch");
+  Require(HasEvidence(legacy_baseline,
+                      "optimizer_selected_access",
+                      "join_nested_loop"),
+          "CDP-023 legacy request invented catalog-backed join statistics");
+  Require(HasEvidence(legacy_baseline,
+                      "query_join_algorithm",
+                      "nested_loop"),
+          "CDP-023 legacy fail-safe join was not routed to execution");
+
+  const auto explicit_hash =
+      api::EnginePlanOperation(JoinRequest({}, "hash"));
+  RequireOk(explicit_hash, "CDP-023 canonical-selected hash execution failed");
+  Require(explicit_hash.output_row_count == 8,
+          "CDP-023 hash execution output count mismatch");
+  Require(HasEvidence(explicit_hash, "query_join_algorithm", "hash"),
+          "CDP-023 explicit hash join was not routed to typed execution");
+  Require(ResultSignature(explicit_hash) == ResultSignature(legacy_baseline),
+          "CDP-023 hash execution changed the baseline join result");
 
   const auto stale_fallback = api::EnginePlanOperation(JoinRequest({"statistics_stale:true"}));
   RequireOk(stale_fallback, "CDP-023 stale-stat fallback join failed");
@@ -183,7 +228,7 @@ int main() {
                             "optimizer_candidate_rejected",
                             "CAND-OPT-011:executor_hash_join_unavailable"),
           "CDP-023 stale-stat hash rejection evidence missing");
-  Require(ResultSignature(planned_hash) == ResultSignature(stale_fallback),
+  Require(ResultSignature(explicit_hash) == ResultSignature(stale_fallback),
           "CDP-023 stale-stat fallback changed join result");
 
   const auto disabled_costing = api::EnginePlanOperation(JoinRequest({"optimizer_join_costing:disabled"}));
@@ -192,21 +237,23 @@ int main() {
           "CDP-023 disabled join costing evidence missing");
   Require(HasEvidence(disabled_costing, "query_join_algorithm", "nested_loop"),
           "CDP-023 disabled join costing did not use baseline nested loop");
-  Require(ResultSignature(planned_hash) == ResultSignature(disabled_costing),
+  Require(ResultSignature(explicit_hash) == ResultSignature(disabled_costing),
           "CDP-023 disabled join costing changed join result");
 
   const auto explicit_merge = api::EnginePlanOperation(JoinRequest({}, "merge"));
   RequireOk(explicit_merge, "CDP-023 explicit merge join failed");
   Require(HasEvidence(explicit_merge, "query_join_algorithm", "merge"),
           "CDP-023 explicit merge join was not routed to typed execution");
-  Require(ResultSignature(planned_hash) == ResultSignature(explicit_merge),
+  Require(ResultSignature(explicit_hash) == ResultSignature(explicit_merge),
           "CDP-023 explicit merge join changed join result");
 
   const auto invalid_algorithm =
       api::EnginePlanOperation(JoinRequest({}, "not_a_join_algorithm"));
   Require(!invalid_algorithm.ok && !invalid_algorithm.diagnostics.empty() &&
+              invalid_algorithm.diagnostics.front().code ==
+                  "SB_ENGINE_API_INVALID_REQUEST" &&
               invalid_algorithm.diagnostics.front().detail ==
-                  "query_plan_join_algorithm_unsupported",
+                  "query.plan_operation:query_plan_join_algorithm_unsupported",
           "CDP-023 invalid join algorithm selected a substitute strategy");
 
   return EXIT_SUCCESS;

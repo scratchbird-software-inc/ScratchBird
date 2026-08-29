@@ -479,10 +479,10 @@ MICRO_BENCHMARKS = {
             "firebird": "INSERT INTO perf_test (id, name, value) VALUES (GEN_ID(gen_perf_test, 1), 'test', 123.45)",
             "mysql": "INSERT INTO perf_test (name, value) VALUES ('test', 123.45)",
             "postgresql": "INSERT INTO perf_test (name, value) VALUES ('test', 123.45)",
-            "scratchbird": "COPY users.public.sbsfc021_stream_table FROM STDIN",
-        },
-        "copy_data": {
-            "scratchbird": "id={unique_id};payload=benchmark\n",
+            "scratchbird": (
+                "INSERT INTO users.public.sbsfc021_stream_table (id, payload) "
+                "VALUES ('{unique_id}', 'benchmark')"
+            ),
         },
         "iterations": 1000,
     },
@@ -492,7 +492,7 @@ MICRO_BENCHMARKS = {
             "firebird": "SELECT * FROM perf_test WHERE id = 1",
             "mysql": "SELECT * FROM perf_test WHERE id = 1",
             "postgresql": "SELECT * FROM perf_test WHERE id = 1",
-            "scratchbird": "SELECT * FROM users.public.sbsfc021_stream_table WHERE id = '6'",
+            "scratchbird": "SELECT * FROM users.public.sbsfc021_stream_table WHERE id = 6",
         },
         "iterations": 1000,
     },

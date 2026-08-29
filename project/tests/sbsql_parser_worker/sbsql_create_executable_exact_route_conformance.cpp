@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -300,7 +301,7 @@ void RequireExactLowering(const Case& route, const PipelineArtifacts& artifacts)
 
 void RequireServerAdmission(const Case& route, const SblrEnvelope& envelope) {
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
   Require(admission.admitted, "server admission rejected CREATE executable exact route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for CREATE executable");
@@ -483,7 +484,7 @@ void RequireRoutineInvocationRoute() {
           "routine invocation payload embedded source SQL text or reference authority");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected routine invocation route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for routine invocation");

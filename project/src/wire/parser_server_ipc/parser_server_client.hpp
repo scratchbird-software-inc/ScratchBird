@@ -249,6 +249,27 @@ bool DecodeAcquireStatementContextResultPayloadV9ForTest(
 bool DecodeAcquireStatementContextResultPayloadV10ForTest(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context);
+// Production-neutral codecs shared by socket SBPS and the authenticated
+// in-process embedded route.  Both routes use the same exact V11 statement
+// receipt and canonical execute request/result bytes.
+std::vector<std::uint8_t> EncodeNativeStatementContextRequestPayloadV11(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction);
+bool DecodeNativeStatementContextResultPayloadV11(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context);
+std::vector<std::uint8_t> EncodeCanonicalExecuteRequestPayload(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested,
+    std::uint32_t* request_schema_id);
+bool DecodeCanonicalExecuteResultPayload(
+    const std::vector<std::uint8_t>& payload,
+    const std::array<std::uint8_t, 16>& request_uuid,
+    ServerExecutionResult* result,
+    MessageVectorSet* messages);
 std::vector<std::uint8_t>
 EncodeAcquireStatementContextRequestPayloadV1ForTest(
     const ParserSessionContext& session,
@@ -305,6 +326,15 @@ struct PublicRelationColumnDescriptor {
   std::uint32_t charset_min_bytes{0};
   std::uint32_t charset_max_bytes{0};
   bool charset_variable_width{false};
+  bool datatype_identity_present{false};
+  std::uint64_t datatype_descriptor_generation{0};
+  std::string datatype_type_uuid;
+  std::uint64_t datatype_type_generation{0};
+  std::string datatype_codec_id;
+  std::uint16_t datatype_codec_version{0};
+  std::uint64_t datatype_codec_generation{0};
+  std::uint32_t datatype_canonical_value_bytes{0};
+  std::uint8_t datatype_null_encoding{0};
 };
 
 struct PublicRelationDescriptor {
@@ -317,6 +347,9 @@ struct PublicRelationDescriptor {
   // resource UUID was revalidated.  This is not represented as a claim that
   // the MGA relation-storage descriptor persisted this scalar epoch.
   std::uint64_t validated_resource_epoch{0};
+  std::string datatype_catalog_snapshot_uuid;
+  std::uint64_t datatype_catalog_generation{0};
+  std::uint64_t datatype_registry_generation{0};
   std::vector<PublicRelationColumnDescriptor> columns;
 };
 
@@ -355,6 +388,22 @@ struct PublicNameResolutionResult {
   MessageVectorSet messages;
 };
 
+// Production V3 relation-projection codecs shared by the socket-backed and
+// embedded authenticated parser routes.  Both routes must emit and consume
+// byte-identical transaction-bound requests/results.
+std::vector<std::uint8_t> EncodeResolveNameRequestPayloadV3(
+    const ParserSessionContext& session,
+    std::string_view presented_name,
+    bool quoted,
+    std::string_view object_class,
+    const ParserClientConfig& config,
+    const ParserTransactionSelector& transaction,
+    std::uint8_t projection_flags);
+bool DecodeResolveNameResultPayloadV3(
+    const std::vector<std::uint8_t>& payload,
+    bool require_relation_descriptor,
+    PublicNameResolutionResult* result);
+
 // Deterministic neutral protocol-conformance hooks.  They exercise the same
 // production request/result codecs without exposing any parser-family policy.
 std::vector<std::uint8_t> EncodeResolveNameRequestPayloadV2ForTest(
@@ -376,6 +425,9 @@ bool DecodeResolveNameResultPayloadV3ForTest(
     const std::vector<std::uint8_t>& payload,
     bool require_relation_descriptor,
     PublicNameResolutionResult* result);
+bool ValidatePublicRelationDatatypeIdentityV3ForTest(
+    const PublicRelationDescriptor& descriptor,
+    const PublicRelationColumnDescriptor& column);
 
 class SbpsClient {
  public:
@@ -453,6 +505,9 @@ class SbpsClient {
   ServerLiteralBindingResult NegotiateLiteralDescriptors(
       const ParserSessionContext& session,
       const std::vector<std::uint8_t>& canonical_sbln) const;
+  ServerLiteralBindingResult IssueContextualTextLiteralProfiles(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbtlnr) const;
   ServerLiteralBindingResult FinalizeLiteralBinding(
       const ParserSessionContext& session,
       const std::vector<std::uint8_t>& canonical_sblf) const;
@@ -505,6 +560,12 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateAccessCursorClose(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateInsert(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateUpdate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDmlUpdateRowsBind(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDmlPlanImportRowsBind(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDelete(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateMerge(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateTableTruncate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;

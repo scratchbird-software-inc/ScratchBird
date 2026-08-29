@@ -21,6 +21,8 @@
 #include "session_registry.hpp"
 #include "transaction_lock.hpp"
 
+#include "canonical_sblr_admission_test_helper.hpp"
+
 #include "../database_lifecycle/credentialed_database_fixture.hpp"
 
 #include <array>
@@ -234,9 +236,11 @@ std::string ServerAdmissionEnvelope(std::string_view operation_id) {
   return out;
 }
 
-void RequireServerAdmitted(std::string_view operation_id) {
+void RequireServerAdmitted(std::string_view operation_id,
+                           std::string_view opcode) {
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{ServerAdmissionEnvelope(operation_id), false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          operation_id, opcode));
   if (!admission.admitted) {
     std::cerr << "server admission rejected " << operation_id << '\n';
     for (const auto& diagnostic : admission.diagnostics) {
@@ -253,11 +257,16 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
                                   api::EngineApiRequest request = {},
                                   bool requires_transaction = false,
                                   bool require_api_ok = true) {
-  RequireServerAdmitted(operation_id);
-  auto envelope = Envelope(operation_id, opcode);
+  const auto* exact = sblr::LookupSblrOpcode(opcode);
+  Require(exact != nullptr && exact->code != 0,
+          "dispatch test opcode lacks a canonical identity");
+  const std::string canonical_operation_id = exact->operation_id;
+  RequireServerAdmitted(canonical_operation_id, opcode);
+  auto envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      Envelope(canonical_operation_id, opcode));
   envelope.requires_transaction_context = requires_transaction;
   request.context = context;
-  request.operation_id = operation_id;
+  request.operation_id = canonical_operation_id;
   sblr::SblrDispatchRequest dispatch;
   dispatch.context = std::move(context);
   dispatch.envelope = std::move(envelope);
@@ -265,7 +274,9 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
   auto result = sblr::DispatchSblrOperation(dispatch);
   if (!result.accepted || !result.envelope_validated || !result.dispatched_to_api ||
       (require_api_ok && !result.api_result.ok)) {
-    std::cerr << "dispatch failed for " << operation_id << " path=" << database_path << '\n'
+    std::cerr << "dispatch failed for " << canonical_operation_id
+              << " (fixture alias " << operation_id << ") path="
+              << database_path << '\n'
               << sblr::SerializeSblrDispatchResultToJson(result);
   }
   return result;
@@ -331,7 +342,7 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& database
   const std::string session_id = session_suffix;
   auto begin = Dispatch(database_path,
                         "transaction.begin",
-                        "SBLR_TRANSACTION_BEGIN",
+                        "SBLR_TXN_BEGIN",
                         BaseContext(database_path, session_id));
   Require(begin.api_result.local_transaction_id != 0, "transaction begin did not return local transaction id");
   auto context = BaseContext(database_path, session_id);
@@ -346,7 +357,7 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& database
 void Commit(const std::filesystem::path& database_path, const api::EngineRequestContext& context) {
   auto commit = Dispatch(database_path,
                          "transaction.commit",
-                         "SBLR_TRANSACTION_COMMIT",
+                         "SBLR_TXN_COMMIT",
                          context,
                          {},
                          true);
@@ -357,7 +368,7 @@ void Commit(const std::filesystem::path& database_path, const api::EngineRequest
 void Rollback(const std::filesystem::path& database_path, const api::EngineRequestContext& context) {
   auto rollback = Dispatch(database_path,
                            "transaction.rollback",
-                           "SBLR_TRANSACTION_ROLLBACK",
+                           "SBLR_TXN_ROLLBACK",
                            context,
                            {},
                            true);
@@ -982,7 +993,7 @@ void VerifyCdp032AlwaysActiveServerFinality(const std::filesystem::path& databas
   auto commit_route = MakeServerRoute(database_path, commit_context);
   const auto commit_result = ExecuteServerRoute(
       &commit_route,
-      TransactionEnvelope("transaction.commit", "SBLR_TRANSACTION_COMMIT"));
+      TransactionEnvelope("transaction.commit", "SBLR_TXN_COMMIT"));
   const auto& committed_session = commit_route.registry.sessions_by_uuid[
       scratchbird::server::UuidBytesToText(commit_route.session_uuid)];
   Require(Contains(commit_result.row_packet, "evidence=transaction_state:committed"),
@@ -998,7 +1009,7 @@ void VerifyCdp032AlwaysActiveServerFinality(const std::filesystem::path& databas
   auto rollback_route = MakeServerRoute(database_path, rollback_context);
   const auto rollback_result = ExecuteServerRoute(
       &rollback_route,
-      TransactionEnvelope("transaction.rollback", "SBLR_TRANSACTION_ROLLBACK"));
+      TransactionEnvelope("transaction.rollback", "SBLR_TXN_ROLLBACK"));
   const auto& rolled_session = rollback_route.registry.sessions_by_uuid[
       scratchbird::server::UuidBytesToText(rollback_route.session_uuid)];
   Require(Contains(rollback_result.row_packet, "evidence=transaction_state:rolled_back"),
@@ -1067,7 +1078,7 @@ void VerifyCdp032PressureRestartPolicy(const std::filesystem::path& database_pat
   const auto pressure_result = ExecuteServerRoute(
       &pressure_route,
       TransactionEnvelope("transaction.rollback",
-                          "SBLR_TRANSACTION_ROLLBACK",
+                          "SBLR_TXN_ROLLBACK",
                           true));
   const auto& pressure_session = pressure_route.registry.sessions_by_uuid[
       scratchbird::server::UuidBytesToText(pressure_route.session_uuid)];
@@ -1177,7 +1188,7 @@ void VerifyNeutralV2MultiTransactionRouting(
   selected_query += "\ntarget_object_kind=table\nlimit=1\n";
 
   auto begin_envelope = TransactionEnvelope("transaction.begin",
-                                            "SBLR_TRANSACTION_BEGIN");
+                                            "SBLR_TXN_BEGIN");
   const auto begin_t1 = scratchbird::server::HandleExecuteSblr(
       &route.registry,
       route.engine_state,
@@ -1421,7 +1432,7 @@ void VerifyNeutralV2MultiTransactionRouting(
       route.engine_state,
       ExecuteFrameV2(route.session_uuid,
                      TransactionEnvelope("transaction.commit",
-                                         "SBLR_TRANSACTION_COMMIT"),
+                                         "SBLR_TXN_COMMIT"),
                      1,
                      &bad_selector));
   Require(!bad_commit.accepted && bad_commit.transaction_state.has_value() &&
@@ -1435,7 +1446,7 @@ void VerifyNeutralV2MultiTransactionRouting(
       route.engine_state,
       ExecuteFrameV2(route.session_uuid,
                      TransactionEnvelope("transaction.commit",
-                                         "SBLR_TRANSACTION_COMMIT"),
+                                         "SBLR_TXN_COMMIT"),
                      1,
                      &t1));
   Require(committed_t1.accepted && committed_t1.transaction_state.has_value() &&
@@ -1474,7 +1485,7 @@ void VerifyNeutralV2MultiTransactionRouting(
           "neutral V2 begin did not retain the admitted transaction policy");
 
   auto retaining_commit = TransactionEnvelope("transaction.commit",
-                                               "SBLR_TRANSACTION_COMMIT");
+                                               "SBLR_TXN_COMMIT");
   retaining_commit += "retaining=true\n";
   const auto retained = scratchbird::server::HandleExecuteSblr(
       &route.registry,
@@ -1718,7 +1729,7 @@ void VerifyNeutralPreEngineTypedRefusals() {
           ExecuteFrameV2(
               session_uuid,
               TransactionEnvelope("transaction.commit",
-                                  "SBLR_TRANSACTION_COMMIT"),
+                                  "SBLR_TXN_COMMIT"),
               1,
               &selector),
           "SERVER.MAINTENANCE.SBLR_ADMISSION_FENCED",

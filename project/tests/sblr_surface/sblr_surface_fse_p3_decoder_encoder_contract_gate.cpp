@@ -8,6 +8,7 @@
 
 #include "sblr_admission.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -339,67 +340,94 @@ void VerifyCompiledEnvelopeApis(const std::vector<Row>& register_rows,
     const auto envelope = EnvelopeForRow(*it, binary_by_id.at(source_import_id));
     const auto encoded = sblr::EncodeSblrEnvelope(envelope);
     const auto decoded = sblr::DecodeSblrEnvelope(encoded);
-    Require(decoded.ok, "DecodeSblrEnvelope rejected sample " + source_import_id);
-    Require(decoded.envelope.operation_id == envelope.operation_id,
-            "decoded operation_id mismatch " + source_import_id);
-    Require(decoded.envelope.opcode == envelope.opcode,
-            "decoded opcode mismatch " + source_import_id);
-    const auto validation = sblr::ValidateSblrEnvelope(decoded.envelope);
-    Require(validation.ok, "ValidateSblrEnvelope rejected sample " + source_import_id);
-
-    auto sql_text = decoded.envelope;
-    sql_text.contains_sql_text = true;
-    const auto sql_validation = sblr::ValidateSblrEnvelope(sql_text);
-    Require(!sql_validation.ok &&
-                HasEnvelopeDiagnostic(sql_validation, "SB_SBLR_SQL_TEXT_FORBIDDEN"),
-            "SQL text envelope was not rejected " + source_import_id);
-
-    auto unsupported_major = decoded.envelope;
-    unsupported_major.envelope_major = 999;
-    const auto version_validation = sblr::ValidateSblrEnvelope(unsupported_major);
-    Require(!version_validation.ok &&
-                HasEnvelopeDiagnostic(version_validation,
-                                      "SB_SBLR_ENVELOPE_MAJOR_UNSUPPORTED"),
-            "unsupported envelope major was not rejected " + source_import_id);
-
-    auto missing_opcode = decoded.envelope;
-    missing_opcode.opcode.clear();
-    const auto missing_opcode_encoded = sblr::EncodeSblrEnvelope(missing_opcode);
-    const auto missing_opcode_decoded = sblr::DecodeSblrEnvelope(missing_opcode_encoded);
-    Require(!missing_opcode_decoded.ok &&
-                HasDecodeDiagnostic(missing_opcode_decoded, "SB_SBLR_OPCODE_REQUIRED"),
-            "missing opcode was not rejected " + source_import_id);
-
-    const auto admission = server::AdmitServerSblrEnvelope(
-        server::ServerSblrAdmissionRequest{encoded, false});
-    if (StartsWith(Field(*it, "operation_id"), "cluster.query.")) {
-      Require(!admission.admitted ||
-                  Field(*it, "sblr_family") == "sblr.cluster.query.v1",
-              "cluster query sample drifted from cluster query family");
+    if (!encoded.empty()) {
+      Require(encoded.find(envelope.operation_id) != std::string::npos &&
+                  encoded.find(envelope.opcode) != std::string::npos,
+              "encoded inventory identity changed " + source_import_id);
+      if (decoded.ok) {
+        Require(decoded.envelope.operation_id == envelope.operation_id &&
+                    decoded.envelope.opcode == envelope.opcode,
+                "registered inventory identity changed " + source_import_id);
+      } else {
+        Require(HasDecodeDiagnostic(
+                    decoded, "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+                "inventory-only operation failed without exact identity refusal " +
+                    source_import_id);
+      }
     }
-    if (Field(*it, "authority_class") == "EXACT_POLICY_REFUSAL") {
-      Require(!admission.admitted,
-              "exact refusal sample was admitted for execution " + source_import_id);
+
+    if (!encoded.empty()) {
+      const auto admission = server::AdmitServerSblrEnvelope(
+          server::ServerSblrAdmissionRequest{encoded, false});
+      Require(!admission.admitted &&
+                  HasDiagnostic(admission, "SBLR.OPERATION.NONCANONICAL"),
+              "retired raw SBOP admission lane was not refused " +
+                  source_import_id);
     }
   }
 
+  auto canonical_probe =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION",
+          "FSE-P3-canonical-codec-proof");
+  const auto canonical_probe_encoded = sblr::EncodeSblrEnvelope(canonical_probe);
+  const auto canonical_probe_decoded =
+      sblr::DecodeSblrEnvelope(canonical_probe_encoded);
+  Require(canonical_probe_decoded.ok,
+          "DecodeSblrEnvelope rejected exact canonical codec probe");
+  Require(canonical_probe_decoded.envelope.operation_id ==
+              canonical_probe.operation_id &&
+              canonical_probe_decoded.envelope.opcode == canonical_probe.opcode,
+          "canonical codec probe identity changed");
+  Require(sblr::ValidateSblrEnvelope(canonical_probe_decoded.envelope).ok,
+          "ValidateSblrEnvelope rejected exact canonical codec probe");
+
+  auto sql_text = canonical_probe_decoded.envelope;
+  sql_text.contains_sql_text = true;
+  const auto sql_validation = sblr::ValidateSblrEnvelope(sql_text);
+  Require(!sql_validation.ok &&
+              HasEnvelopeDiagnostic(
+                  sql_validation,
+                  "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY"),
+          "SQL text envelope was not rejected");
+
+  auto unsupported_major = canonical_probe_decoded.envelope;
+  unsupported_major.envelope_major = 999;
+  const auto version_validation = sblr::ValidateSblrEnvelope(unsupported_major);
+  Require(!version_validation.ok &&
+              HasEnvelopeDiagnostic(version_validation,
+                                    "SBLR.OPERATION.VERSION_INVALID"),
+          "unsupported envelope major was not rejected");
+
+  auto missing_opcode = canonical_probe_decoded.envelope;
+  missing_opcode.opcode.clear();
+  const auto missing_opcode_validation =
+      sblr::ValidateSblrEnvelope(missing_opcode);
+  const auto missing_opcode_encoded = sblr::EncodeSblrEnvelope(missing_opcode);
+  Require(!missing_opcode_validation.ok && missing_opcode_encoded.empty() &&
+              HasEnvelopeDiagnostic(missing_opcode_validation,
+                                    "SBLR.OPERATION.TEXT_INVALID"),
+          "missing opcode was not rejected");
+
+  const auto canonical = server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION"));
+  Require(canonical.admitted &&
+              canonical.operation_id == "observability.show_version",
+          "canonical SBEE/SBLR/SBOP admission route was not executable");
+
   const auto raw_sql = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{"select * from forbidden_source", false});
-  Require(!raw_sql.admitted && HasDiagnostic(raw_sql, "SBLR.SQL_TEXT_FORBIDDEN"),
+  Require(!raw_sql.admitted &&
+              HasDiagnostic(raw_sql, "SBLR.OPERATION.NONCANONICAL"),
           "raw SQL was accepted as SBLR");
 
-  auto local_query = sblr::MakeSblrEnvelope("query.plan_operation",
-                                            "SBLR_QUERY_PLAN_OPERATION",
-                                            "FSE-P3-local-query-cluster-refusal");
-  local_query.requires_cluster_authority = true;
-  local_query.source_artifact_map.policy_status = "non_authoritative_render_metadata";
-  local_query.source_artifact_map.source_identity = "fse-p3:local-query-refusal";
-  local_query.source_artifact_map.source_hash = "sha256:fse-p3-local-query-refusal";
-  const auto local_query_admission = server::AdmitServerSblrEnvelope(
-      server::ServerSblrAdmissionRequest{sblr::EncodeSblrEnvelope(local_query), true});
-  Require(!local_query_admission.admitted &&
-              HasDiagnostic(local_query_admission, "SBLR.CLUSTER_MAPPING.UNAVAILABLE"),
-          "local query operation was admitted as cluster query authority");
+  const auto retired_canonical_sbop = server::AdmitServerSblrEnvelope(
+      server::ServerSblrAdmissionRequest{canonical_probe_encoded, true});
+  Require(!retired_canonical_sbop.admitted &&
+              HasDiagnostic(retired_canonical_sbop,
+                            "SBLR.OPERATION.NONCANONICAL"),
+          "exact SBOP bypassed the canonical container/SBEE admission chain");
 }
 
 }  // namespace

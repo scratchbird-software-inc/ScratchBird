@@ -223,6 +223,21 @@ def component_command(args: argparse.Namespace, component: Component, component_
                 str(component_work),
             ]
         )
+        if component.key in {
+            "route_split_benchmark",
+            "security_api_abi",
+            "config_defaults_rollback",
+            "profiler_evidence",
+            "soak_leak_stability",
+        }:
+            command.extend(
+                [
+                    "--database-seed",
+                    args.database_seed,
+                    "--resource-seed-pack-root",
+                    args.resource_seed_pack_root,
+                ]
+            )
         command.extend(component.extra_args)
     return command
 
@@ -395,6 +410,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir")
     args = parser.parse_args(argv[1:])
     args.repo_root = str(Path(args.repo_root).resolve())

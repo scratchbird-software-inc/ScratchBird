@@ -532,10 +532,18 @@ executor::TypedPhysicalNodeDag Rcp080ContinuationDagV1(
     node.retained_cost.cost_vector_uuid = node.cost_vector_uuid;
     node.retained_cost.calibration_profile_uuid =
         Uuid(10'240 + node.physical_node_id);
+    node.retained_cost.scalarization_policy_id =
+        "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1";
     node.retained_cost.cpu_units = 1;
     node.retained_cost.memory_bytes_required = node.memory_bytes_required;
+    node.retained_cost.memory_allocation_units = node.memory_bytes_required;
+    node.retained_cost.memory_grant_opportunity_units =
+        node.memory_bytes_required;
+    node.retained_cost.complete_dimension_vector = true;
     node.retained_cost.scalar_score =
-        node.retained_cost.cpu_units + node.retained_cost.memory_bytes_required;
+        node.retained_cost.cpu_units +
+        node.retained_cost.memory_allocation_units +
+        node.retained_cost.memory_grant_opportunity_units;
     retained_selected_scalar_score += node.retained_cost.scalar_score;
     dag.selected_plan_signature +=
         std::to_string(node.relational_node_id) + "=" +

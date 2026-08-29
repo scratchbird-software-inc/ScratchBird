@@ -10,7 +10,9 @@
 
 #include "api_types.hpp"
 
+#include <array>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -139,7 +141,43 @@ struct EngineSecurityRowPolicyRecord {
   std::string definer_principal_uuid;
   std::string lifecycle_state = "active";
   std::uint64_t policy_generation = 0;
+  // Durable native catalog authority required by DUSV/DUSR recovery.  Legacy
+  // rows with any zero/empty field remain valid for their historical security
+  // surface but are not admissible as typed UPDATE policy authority.
+  std::string policy_version_uuid;
+  std::uint64_t effective_transaction_number = 0;
+  std::uint64_t target_object_generation = 0;
+  std::uint8_t update_policy_phase = 0;  // 1 USING, 2 WITH CHECK.
+  std::string effective_policy_uuid;
+  std::uint64_t effective_policy_generation = 0;
+  std::string effective_expression_uuid;
+  std::uint64_t effective_expression_generation = 0;
+  std::array<std::uint8_t, 32> effective_expression_evidence_sha256{};
+  std::string source_expression_uuid;
+  std::uint64_t source_expression_generation = 0;
+  std::array<std::uint8_t, 32> source_expression_evidence_sha256{};
+  std::string source_catalog_snapshot_uuid;
+  std::uint64_t source_catalog_generation = 0;
+  std::uint64_t source_security_generation = 0;
   bool deleted = false;
+};
+
+struct EngineSecurityRowPolicyNativeAuthorityV1 {
+  bool present = false;
+  std::string policy_version_uuid;
+  std::uint64_t target_relation_generation = 0;
+  std::uint8_t phase = 0;
+  std::string effective_policy_uuid;
+  std::uint64_t effective_policy_generation = 0;
+  std::string effective_expression_uuid;
+  std::uint64_t effective_expression_generation = 0;
+  std::array<std::uint8_t, 32> effective_expression_evidence_sha256{};
+  std::string source_expression_uuid;
+  std::uint64_t source_expression_generation = 0;
+  std::array<std::uint8_t, 32> source_expression_evidence_sha256{};
+  std::string catalog_snapshot_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::uint64_t security_generation = 0;
 };
 
 struct EngineSecurityDefinerRightsCacheRecord {
@@ -174,6 +212,10 @@ struct EngineSecurityPrincipalLifecycleState {
   std::vector<EngineSecurityRowPolicyRecord> row_policies;
   std::vector<EngineSecurityDefinerRightsCacheRecord> definer_rights_cache;
   std::vector<EngineSecurityAuditRecord> audit_records;
+  // Independently issued durable generation of the materialized
+  // authorization-context authority.  It is never inferred from a policy or
+  // security epoch.
+  std::uint64_t security_context_generation = 0;
   std::uint64_t security_generation = 0;
   std::uint64_t policy_generation = 0;
   std::uint64_t cache_invalidation_epoch = 0;
@@ -184,6 +226,80 @@ struct EngineLoadSecurityPrincipalLifecycleStateResult {
   EngineApiDiagnostic diagnostic;
   EngineSecurityPrincipalLifecycleState state;
 };
+
+// Receipt-scoped immutable view of the durable row-policy catalog.  The
+// snapshot identity is issued by the security lifecycle authority after it
+// has loaded MGA-visible durable policy events and cross-checked the admitted
+// rows against the authenticated materialized authorization context.  Callers
+// may not supply or derive snapshot identity from a security-context UUID.
+struct EngineSecurityPolicyCatalogRowIdentityV1 {
+  std::string policy_uuid;
+  std::uint64_t policy_generation = 0;
+  std::string policy_version_uuid;
+  std::uint64_t effective_transaction_number = 0;
+  std::string target_relation_uuid;
+  std::uint64_t target_relation_generation = 0;
+  std::uint8_t phase = 0;
+  std::string effective_policy_uuid;
+  std::uint64_t effective_policy_generation = 0;
+  std::string effective_expression_uuid;
+  std::uint64_t effective_expression_generation = 0;
+  std::array<std::uint8_t, 32> effective_expression_evidence_sha256{};
+  std::string source_expression_uuid;
+  std::uint64_t source_expression_generation = 0;
+  std::array<std::uint8_t, 32> source_expression_evidence_sha256{};
+  std::string catalog_snapshot_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::uint64_t security_generation = 0;
+
+  bool operator==(const EngineSecurityPolicyCatalogRowIdentityV1&) const =
+      default;
+};
+
+struct EngineSecurityPolicySnapshotAuthorityV1 {
+  std::string snapshot_uuid;
+  std::uint64_t snapshot_generation = 0;
+  std::string authenticated_statement_receipt_uuid;
+  std::string security_context_uuid;
+  std::uint64_t security_context_generation = 0;
+  std::uint64_t security_generation = 0;
+  std::uint64_t policy_generation = 0;
+  std::string target_relation_uuid;
+  std::vector<EngineSecurityPolicyCatalogRowIdentityV1> admitted_policy_rows;
+
+  bool operator==(const EngineSecurityPolicySnapshotAuthorityV1&) const =
+      default;
+};
+
+struct EngineSecurityPolicySnapshotAuthorityResultV1 {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  EngineSecurityPolicySnapshotAuthorityV1 snapshot;
+};
+
+class MgaDmlUpdateValidatedDurableAuthorityHandleV1;
+
+struct EngineSecurityPolicySnapshotRecoveryResultV1 {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  EngineSecurityPolicySnapshotAuthorityV1 snapshot;
+};
+
+EngineSecurityPolicySnapshotAuthorityResultV1
+IssueEngineSecurityPolicySnapshotAuthorityV1(
+    const EngineRequestContext& context,
+    const std::string& target_relation_uuid);
+EngineApiDiagnostic RevalidateEngineSecurityPolicySnapshotAuthorityV1(
+    const EngineRequestContext& context,
+    const EngineSecurityPolicySnapshotAuthorityV1& admitted);
+// Engine-private recovery accepts only the move-only MGA-validated handle.
+// Raw DUSP/DUSV bytes or parser/public projections cannot register authority.
+EngineSecurityPolicySnapshotRecoveryResultV1
+RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateValidatedDurableAuthorityHandleV1& validated_handle,
+    std::span<const std::uint8_t> exact_dumo_bytes);
+void ResetEngineSecurityPolicySnapshotAuthorityForTestV1();
 
 struct EngineOwnedSysarchRoleIdentityResult {
   bool ok = false;
@@ -353,6 +469,7 @@ struct EngineSecurityAttachPolicyRequest : EngineApiRequest {
   std::string policy_effect = "attach";
   std::string predicate_envelope;
   std::string definer_principal_uuid;
+  EngineSecurityRowPolicyNativeAuthorityV1 native_authority;
 };
 struct EngineSecurityAttachPolicyResult : EngineApiResult {
   bool policy_attached = false;
@@ -371,6 +488,7 @@ struct EngineSecurityCreatePolicyRequest : EngineApiRequest {
   std::string policy_effect = "row_filter";
   std::string predicate_envelope;
   std::string definer_principal_uuid;
+  EngineSecurityRowPolicyNativeAuthorityV1 native_authority;
 };
 struct EngineSecurityCreatePolicyResult : EngineApiResult {
   bool policy_created = false;
@@ -388,6 +506,7 @@ struct EngineSecurityAlterPolicyRequest : EngineApiRequest {
   std::string predicate_envelope;
   std::string definer_principal_uuid;
   std::string lifecycle_state;
+  EngineSecurityRowPolicyNativeAuthorityV1 native_authority;
 };
 struct EngineSecurityAlterPolicyResult : EngineApiResult {
   bool policy_altered = false;
@@ -501,6 +620,7 @@ struct EngineSecurityPutRowPolicyRequest : EngineApiRequest {
   std::string policy_effect = "deny_all";
   std::string predicate_envelope;
   std::string definer_principal_uuid;
+  EngineSecurityRowPolicyNativeAuthorityV1 native_authority;
 };
 struct EngineSecurityPutRowPolicyResult : EngineApiResult {
   bool policy_persisted = false;

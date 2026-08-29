@@ -10,6 +10,10 @@
 #include <string>
 #include <vector>
 
+namespace scratchbird::engine::executor {
+struct PhysicalCostVectorReceipt;
+}
+
 namespace scratchbird::engine::optimizer {
 
 struct ModelFamilyCostVectorV1 {
@@ -75,6 +79,10 @@ struct ModelFamilyCostVectorV1 {
 
   bool operator==(const ModelFamilyCostVectorV1&) const = default;
 };
+
+void RetainModelFamilyCostVectorV1(
+    const ModelFamilyCostVectorV1& source,
+    scratchbird::engine::executor::PhysicalCostVectorReceipt* retained);
 
 enum class ModelFamilyAlternativeRouteClassV1 : std::uint8_t {
   kNative,

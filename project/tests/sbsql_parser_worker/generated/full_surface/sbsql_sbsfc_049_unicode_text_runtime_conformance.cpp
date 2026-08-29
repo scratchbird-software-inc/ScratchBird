@@ -10,6 +10,7 @@
 #include "query/projection_api.hpp"
 #include "registry/function_seed_registry.hpp"
 #include "sblr/sblr_dispatch.hpp"
+#include "canonical_projection_test_envelope.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -175,7 +176,8 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(
     envelope.operands.push_back({"text", prefix + "value", arguments[index].encoded_value});
     envelope.operands.push_back({"text", prefix + "is_null", arguments[index].is_null ? "true" : "false"});
   }
-  return envelope;
+  return scratchbird::tests::sbsql::CanonicalizeProjectionEnvelopeForTest(
+      std::move(envelope));
 }
 
 api::EngineRequestContext ProjectionContext() {
@@ -197,6 +199,14 @@ bool ExpectProjectionText(std::string_view case_id,
       !result.api_result.ok || result.api_result.result_shape.rows.size() != 1 ||
       result.api_result.result_shape.rows.front().fields.size() != 1) {
     std::cerr << case_id << ": expected one projected scalar field\n";
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << "  envelope diagnostic " << diagnostic.code << ": "
+                << diagnostic.message << '\n';
+    }
+    for (const auto& diagnostic : result.api_result.diagnostics) {
+      std::cerr << "  API diagnostic " << diagnostic.code << ": "
+                << diagnostic.detail << '\n';
+    }
     return false;
   }
   const auto& value = result.api_result.result_shape.rows.front().fields.front().second;

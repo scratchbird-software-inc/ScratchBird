@@ -18,19 +18,31 @@
 #include "dml/page_allocation_runtime_bridge.hpp"
 #include "dml/serializable_mutation_guard.hpp"
 #include "dml/update_batch.hpp"
+#include "dml/update_datatype_operator_authority_provider.hpp"
+#include "dml/update_durable_operation_authority_provider.hpp"
+#include "dml/update_immutable_authority_provider.hpp"
+#include "dml/update_policy_catalog_authority_provider.hpp"
+#include "dml/update_statement_mga_authority_provider.hpp"
 #include "dml/write_result_policy.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "domain_support/domain_store.hpp"
+#include "hash_digest.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "observability/dml_summary_counters.hpp"
 #include "physical_plan.hpp"
 #include "relational_planner.hpp"
 #include "row_version.hpp"
+#include "sblr_executor_availability_registry.hpp"
 #include "transaction_inventory.hpp"
+#include "typed_update_carrier_codec.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cctype>
@@ -39,6 +51,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -57,6 +70,7 @@ namespace plan = scratchbird::engine::planner;
 namespace mga = scratchbird::transaction::mga;
 namespace storage_db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
+namespace update_wire = scratchbird::wire;
 
 using UpdateDeleteSteadyClock = std::chrono::steady_clock;
 
@@ -2931,7 +2945,3519 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> DeleteDeltaEntries(
   return entries;
 }
 
+enum class DmlUpdateDescriptorLifecycleV1 : std::uint8_t {
+  kLive = 1,
+  kExecuting = 2,
+  kPrepared = 3,
+  kCompleted = 4,
+  kFailed = 5,
+};
+
+struct DmlUpdateBoundColumnV1 {
+  std::string column_uuid;
+  std::uint64_t column_generation = 0;
+  std::uint32_t ordinal = 0;
+  std::string canonical_name_key;
+  std::string datatype_descriptor_uuid;
+  std::uint64_t datatype_descriptor_generation = 0;
+  std::string type_uuid;
+  std::uint64_t type_generation = 0;
+  std::string codec_id;
+  std::uint16_t codec_version = 0;
+  std::uint64_t codec_generation = 0;
+};
+
+struct DmlUpdateRowsDescriptorRecordV1 {
+  EngineDmlUpdateRowsDescriptorRefV1 descriptor_ref;
+  std::string operation_uuid;
+  std::uint64_t operation_generation = 1;
+  std::string statement_receipt_uuid;
+  std::uint64_t structural_occurrence_id = 0;
+  std::string database_uuid;
+  std::string session_uuid;
+  std::string transaction_uuid;
+  std::uint64_t local_transaction_id = 0;
+  std::string statement_snapshot_uuid;
+  std::string metadata_snapshot_uuid;
+  std::string datatype_catalog_snapshot_uuid;
+  std::uint64_t datatype_catalog_generation = 0;
+  std::uint64_t datatype_registry_generation = 0;
+  std::uint64_t security_epoch = 0;
+  std::string security_context_uuid;
+  std::uint64_t security_context_generation = 0;
+  std::string security_snapshot_uuid;
+  std::uint64_t security_generation = 0;
+  std::uint64_t catalog_generation_id = 0;
+  SblrExecutorAvailabilitySnapshot executor_availability_snapshot;
+  std::string relation_uuid;
+  std::uint64_t relation_generation = 0;
+  std::string relation_occurrence_uuid;
+  std::uint64_t relation_occurrence_generation = 0;
+  std::string relation_descriptor_uuid;
+  std::uint64_t relation_descriptor_generation = 0;
+  std::string publication_barrier_uuid;
+  std::uint64_t publication_barrier_generation = 1;
+  std::string statement_savepoint_name;
+  std::string statement_savepoint_uuid;
+  std::uint64_t statement_savepoint_generation = 0;
+  std::vector<DmlUpdateBoundColumnV1> assignment_columns;
+  std::optional<DmlUpdateBoundColumnV1> predicate_column;
+  EngineUpdateRowsRequest prepared_request;
+  DmlUpdateDescriptorLifecycleV1 lifecycle =
+      DmlUpdateDescriptorLifecycleV1::kLive;
+  // Set only after the statement publication barrier has crossed without an
+  // acknowledged terminal DUJR successor.  A subsequent same-process replay
+  // must bypass the volatile descriptor state and recover the exact MGA-owned
+  // chain/staged successor, just as a process restart would.
+  bool durable_recovery_required = false;
+  EngineUpdateRowsResult completed_result;
+  std::vector<std::uint8_t> canonical_result_bytes;
+  update_wire::TypedUpdateCarrierSet canonical_carriers;
+  update_wire::TypedUpdateSecurityPolicySourceVector
+      canonical_source_policies;
+  update_wire::TypedUpdateSecuritySnapshotProof
+      canonical_security_snapshot;
+  update_wire::TypedUpdateDatatypeAuthorityVector
+      canonical_datatype_authority;
+  update_wire::TypedUpdateBuiltinOperatorAuthorityVector
+      canonical_operator_authority;
+  EngineDmlUpdateDatatypeOperatorBindingResultV1
+      datatype_operator_binding;
+  EngineDmlUpdateDatatypeOperatorAuthorityCaptureResultV1
+      datatype_operator_authority;
+  EngineDmlUpdatePolicyCatalogCaptureResultV1
+      policy_catalog_authority;
+  EngineDmlUpdateImmutableAuthoritySnapshotV1 immutable_authority_snapshot;
+  // Exact MGA-issued identity reserved before DURC/DUDC encoding.  The
+  // durable-registry handle and statement-barrier identity are never issued
+  // or inferred by the UPDATE consumer.
+  MgaDmlUpdateDurableOperationIdentityV1 durable_operation_identity;
+  MgaDmlUpdateStatementSavepointAuthorityV1 statement_mga_authority;
+  std::uint64_t journal_sequence = 0;
+  update_wire::TypedUpdateJournalState latest_journal_state =
+      update_wire::TypedUpdateJournalState::bound;
+  update_wire::TypedUpdateHash latest_journal_evidence_sha256{};
+};
+
+std::mutex g_dml_update_descriptor_mutex;
+std::unordered_map<std::string, DmlUpdateRowsDescriptorRecordV1>
+    g_dml_update_descriptors;
+std::atomic<std::uint64_t> g_dml_update_descriptor_ordinal{1};
+std::atomic<EngineDmlUpdateRowsTestFaultPointV1>
+    g_dml_update_test_fault_point{EngineDmlUpdateRowsTestFaultPointV1::none};
+
+bool DmlUpdateTypedUuid(std::string_view text,
+                        update_wire::TypedUpdateUuid* value) {
+  if (value == nullptr) return false;
+  const auto parsed = uuid::ParseUuid(std::string(text));
+  if (!parsed.ok() || parsed.value.is_nil()) return false;
+  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
+            value->begin());
+  return true;
+}
+
+std::string DmlUpdateUuidText(const update_wire::TypedUpdateUuid& value) {
+  scratchbird::core::platform::Uuid parsed;
+  std::copy(value.begin(), value.end(), parsed.bytes.begin());
+  return parsed.is_nil() ? std::string{} : uuid::UuidToString(parsed);
+}
+
+bool DmlUpdateIssueIdentity(std::string* value) {
+  if (value == nullptr) return false;
+  const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  const auto ordinal = g_dml_update_descriptor_ordinal.fetch_add(
+      1, std::memory_order_relaxed);
+  const auto identity = uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::object, now + ordinal);
+  if (!identity.ok()) return false;
+  *value = uuid::UuidToString(identity.value.value);
+  return !value->empty();
+}
+
+bool DmlUpdateIssueTypedIdentity(update_wire::TypedUpdateUuid* value) {
+  std::string text;
+  return DmlUpdateIssueIdentity(&text) && DmlUpdateTypedUuid(text, value);
+}
+
+EngineApiDiagnostic DmlUpdateDescriptorDiagnostic(std::string code,
+                                                  std::string key,
+                                                  std::string detail = {}) {
+  return MakeEngineApiDiagnostic(std::move(code), std::move(key),
+                                 std::move(detail), true);
+}
+
+bool DmlUpdateHasTraceTag(const EngineRequestContext& context,
+                          std::string_view tag) {
+  return std::find(context.trace_tags.begin(), context.trace_tags.end(), tag) !=
+         context.trace_tags.end();
+}
+
+bool DmlUpdateCancellationRequested(const EngineRequestContext& context) {
+  return context.query_cancellation_requested &&
+         context.query_cancellation_requested();
+}
+
+bool DmlUpdateTakeTestFault(
+    EngineDmlUpdateRowsTestFaultPointV1 fault_point) {
+  auto expected = fault_point;
+  return g_dml_update_test_fault_point.compare_exchange_strong(
+      expected, EngineDmlUpdateRowsTestFaultPointV1::none,
+      std::memory_order_acq_rel, std::memory_order_acquire);
+}
+
+std::string DmlUpdateLowerAscii(std::string_view value) {
+  std::string lowered(value);
+  std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](char ch) {
+    return static_cast<char>(
+        std::tolower(static_cast<unsigned char>(ch)));
+  });
+  return lowered;
+}
+
+std::optional<std::string> DmlUpdateDescriptorField(
+    std::string_view descriptor, std::string_view key) {
+  std::optional<std::string> value;
+  std::size_t begin = 0;
+  while (begin <= descriptor.size()) {
+    const auto end = descriptor.find(';', begin);
+    const auto field = descriptor.substr(
+        begin, end == std::string_view::npos ? descriptor.size() - begin
+                                             : end - begin);
+    if (field.size() > key.size() && field[key.size()] == '=' &&
+        field.substr(0, key.size()) == key) {
+      if (value.has_value()) return std::nullopt;
+      value = std::string(field.substr(key.size() + 1));
+    }
+    if (end == std::string_view::npos) break;
+    begin = end + 1;
+  }
+  return value;
+}
+
+bool DmlUpdateContextMatches(const EngineRequestContext& context,
+                             const DmlUpdateRowsDescriptorRecordV1& record) {
+  return context.security_context_present &&
+         context.statement_metadata_snapshot_engine_owned &&
+         context.statement_receipt_uuid.canonical ==
+             record.statement_receipt_uuid &&
+         context.database_uuid.canonical == record.database_uuid &&
+         context.transaction_uuid.canonical == record.transaction_uuid &&
+         context.local_transaction_id == record.local_transaction_id &&
+         context.statement_snapshot_uuid.canonical ==
+             record.statement_snapshot_uuid &&
+         context.statement_metadata_snapshot_uuid.canonical ==
+             record.metadata_snapshot_uuid &&
+         context.datatype_catalog_snapshot_uuid.canonical ==
+             record.datatype_catalog_snapshot_uuid &&
+         context.datatype_catalog_generation ==
+             record.datatype_catalog_generation &&
+         context.datatype_registry_generation ==
+             record.datatype_registry_generation &&
+         context.security_epoch == record.security_epoch &&
+         context.authorization_context.present &&
+         context.authorization_context.authority_uuid.canonical ==
+             record.security_context_uuid &&
+         context.authorization_context.security_context_generation ==
+             record.security_context_generation &&
+         context.catalog_generation_id == record.catalog_generation_id;
+}
+
+SblrExecutorAvailabilityRowIdentity DmlUpdateRowsExecutorIdentity() {
+  SblrExecutorAvailabilityRowIdentity identity;
+  identity.executor_id = kSblrDmlUpdateRowsExecutorId;
+  identity.opcode_code = kSblrDmlUpdateRowsOpcodeCode;
+  identity.opcode_version = kSblrDmlUpdateRowsOpcodeVersion;
+  identity.operand_descriptor_id = kSblrDmlUpdateRowsOperandDescriptorId;
+  identity.result_descriptor_id = kSblrDmlUpdateRowsResultDescriptorId;
+  identity.result_descriptor_version =
+      kSblrDmlUpdateRowsResultDescriptorVersion;
+  return identity;
+}
+
+bool DmlUpdateRevalidateExecutorAvailability(
+    const EngineRequestContext& context,
+    const DmlUpdateRowsDescriptorRecordV1& record,
+    EngineApiDiagnostic* diagnostic) {
+  if (diagnostic == nullptr ||
+      record.executor_availability_snapshot.generation == 0 ||
+      record.executor_availability_snapshot.snapshot_uuid.empty()) {
+    return false;
+  }
+  SblrExecutorAvailabilitySnapshot current;
+  *diagnostic = RevalidateSblrExecutorAvailability(
+      context, DmlUpdateRowsExecutorIdentity(),
+      record.executor_availability_snapshot, &current);
+  return !diagnostic->error &&
+         current.generation ==
+             record.executor_availability_snapshot.generation;
+}
+
+const MgaRelationColumnStorageDescriptor* DmlUpdateFindColumn(
+    const MgaRelationStorageDescriptor& relation, std::string_view spelling) {
+  const std::string folded = DmlUpdateLowerAscii(spelling);
+  const MgaRelationColumnStorageDescriptor* match = nullptr;
+  for (const auto& column : relation.columns) {
+    if (column.canonical_name_key != spelling &&
+        DmlUpdateLowerAscii(column.canonical_name_key) != folded) {
+      continue;
+    }
+    if (match != nullptr) return nullptr;
+    match = &column;
+  }
+  return match;
+}
+
+bool DmlUpdateResolveColumnIdentity(
+    const EngineRequestContext& context,
+    const MgaRelationColumnStorageDescriptor& column,
+    DmlUpdateBoundColumnV1* identity,
+    EngineApiDiagnostic* diagnostic) {
+  if (identity == nullptr || diagnostic == nullptr ||
+      column.column_uuid.canonical.empty() ||
+      column.column_generation == 0 ||
+      column.value_descriptor.descriptor_uuid.canonical.empty()) {
+    if (diagnostic != nullptr) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DATATYPE.DESCRIPTOR_INVALID",
+          "sblr.dml_update_rows.column_identity_absent");
+    }
+    return false;
+  }
+  const auto lookup = scratchbird::core::datatypes::
+      LookupDatatypeTypeCodecIdentityV1(
+          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_generation,
+          context.datatype_registry_generation,
+          column.value_descriptor.descriptor_uuid.canonical, 1);
+  const auto encoded_type_uuid = DmlUpdateDescriptorField(
+      column.value_descriptor.encoded_descriptor, "type_uuid");
+  const auto encoded_descriptor_uuid = DmlUpdateDescriptorField(
+      column.value_descriptor.encoded_descriptor,
+      "datatype_descriptor_uuid");
+  if (!lookup.ok || !encoded_type_uuid.has_value() ||
+      *encoded_type_uuid != lookup.row.type_uuid ||
+      !encoded_descriptor_uuid.has_value() ||
+      *encoded_descriptor_uuid != lookup.row.descriptor_uuid) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "DATATYPE.DESCRIPTOR_INVALID",
+        "sblr.dml_update_rows.column_identity_stale",
+        column.canonical_name_key);
+    return false;
+  }
+  identity->column_uuid = column.column_uuid.canonical;
+  identity->column_generation = column.column_generation;
+  identity->ordinal = column.ordinal;
+  identity->canonical_name_key = column.canonical_name_key;
+  identity->datatype_descriptor_uuid = lookup.row.descriptor_uuid;
+  identity->datatype_descriptor_generation =
+      lookup.row.descriptor_generation;
+  identity->type_uuid = lookup.row.type_uuid;
+  identity->type_generation = lookup.row.type_generation;
+  identity->codec_id = lookup.row.codec_id;
+  identity->codec_version = lookup.row.codec_version;
+  identity->codec_generation = lookup.row.codec_generation;
+  return true;
+}
+
+bool DmlUpdateEncodeSignedInteger(
+    std::string_view literal,
+    const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1& row,
+    std::vector<std::uint8_t>* bytes) {
+  if (bytes == nullptr ||
+      (row.codec_id != "datatype.int32.le.v1" &&
+       row.codec_id != "datatype.int64.le.v1")) {
+    return false;
+  }
+  std::int64_t value = 0;
+  const auto parsed = std::from_chars(literal.data(),
+                                      literal.data() + literal.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != literal.data() + literal.size()) {
+    return false;
+  }
+  if (row.codec_id == "datatype.int32.le.v1" &&
+      (value < std::numeric_limits<std::int32_t>::min() ||
+       value > std::numeric_limits<std::int32_t>::max())) {
+    return false;
+  }
+  bytes->assign(row.canonical_value_bytes, 0);
+  const std::uint64_t bits = static_cast<std::uint64_t>(value);
+  for (std::size_t index = 0; index < bytes->size(); ++index) {
+    (*bytes)[index] = static_cast<std::uint8_t>(bits >> (index * 8U));
+  }
+  return bytes->size() == row.canonical_value_bytes;
+}
+
+bool DmlUpdateBindLiteral(
+    const EngineRequestContext& context,
+    const MgaRelationColumnStorageDescriptor& column,
+    std::string_view literal,
+    EngineTypedValue* value,
+    DmlUpdateBoundColumnV1* identity,
+    EngineApiDiagnostic* diagnostic) {
+  if (value == nullptr || identity == nullptr || diagnostic == nullptr ||
+      !DmlUpdateResolveColumnIdentity(context, column, identity, diagnostic)) {
+    return false;
+  }
+  const auto lookup = scratchbird::core::datatypes::
+      LookupDatatypeTypeCodecIdentityV1(
+          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_generation,
+          context.datatype_registry_generation,
+          identity->datatype_descriptor_uuid,
+          identity->datatype_descriptor_generation);
+  std::vector<std::uint8_t> canonical_binary;
+  if (!lookup.ok ||
+      !DmlUpdateEncodeSignedInteger(literal, lookup.row, &canonical_binary)) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "DATATYPE.DESCRIPTOR_INVALID",
+        "sblr.dml_update_rows.literal_codec_refused",
+        column.canonical_name_key);
+    return false;
+  }
+  value->descriptor = column.value_descriptor;
+  value->encoded_value.assign(literal);
+  value->binary_value = std::move(canonical_binary);
+  value->setState(EngineValueState::value);
+  return true;
+}
+
+bool DmlUpdateRevalidateColumn(
+    const EngineRequestContext& context,
+    const MgaRelationColumnStorageDescriptor& current,
+    const DmlUpdateBoundColumnV1& bound) {
+  DmlUpdateBoundColumnV1 resolved;
+  EngineApiDiagnostic diagnostic;
+  return DmlUpdateResolveColumnIdentity(context, current, &resolved,
+                                        &diagnostic) &&
+         resolved.column_uuid == bound.column_uuid &&
+         resolved.column_generation == bound.column_generation &&
+         resolved.ordinal == bound.ordinal &&
+         resolved.canonical_name_key == bound.canonical_name_key &&
+         resolved.datatype_descriptor_uuid ==
+             bound.datatype_descriptor_uuid &&
+         resolved.datatype_descriptor_generation ==
+             bound.datatype_descriptor_generation &&
+         resolved.type_uuid == bound.type_uuid &&
+         resolved.type_generation == bound.type_generation &&
+         resolved.codec_id == bound.codec_id &&
+         resolved.codec_version == bound.codec_version &&
+         resolved.codec_generation == bound.codec_generation;
+}
+
+EngineApiDiagnostic DmlUpdateCarrierDiagnostic(
+    const update_wire::TypedUpdateCarrierError& error,
+    std::string_view fallback_key) {
+  return DmlUpdateDescriptorDiagnostic(
+      error.diagnostic_code.empty() ? "SBLR.OPERAND_INVALID"
+                                    : error.diagnostic_code,
+      std::string(fallback_key),
+      error.field.empty() ? error.detail
+                          : error.field + ":" + error.detail);
+}
+
+bool DmlUpdateBuildAssignmentCarrier(
+    DmlUpdateRowsDescriptorRecordV1* record,
+    EngineApiDiagnostic* diagnostic) {
+  if (record == nullptr || diagnostic == nullptr ||
+      record->assignment_columns.empty() ||
+      record->assignment_columns.size() !=
+          record->prepared_request.assignments.size()) {
+    return false;
+  }
+  auto& carrier = record->canonical_carriers.assignments;
+  if (!DmlUpdateIssueTypedIdentity(&carrier.identity.vector_uuid) ||
+      !DmlUpdateTypedUuid(record->descriptor_ref.descriptor_uuid,
+                          &carrier.identity.owner_descriptor_uuid)) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.assignment_identity_unavailable");
+    return false;
+  }
+  carrier.identity.vector_generation = 1;
+  carrier.identity.owner_descriptor_generation =
+      record->descriptor_ref.descriptor_generation;
+  carrier.records.reserve(record->assignment_columns.size());
+  for (std::size_t index = 0; index < record->assignment_columns.size();
+       ++index) {
+    const auto& column = record->assignment_columns[index];
+    const auto& value = record->prepared_request.assignments[index].second;
+    update_wire::TypedUpdateAssignmentRecord item;
+    item.assignment_ordinal = static_cast<std::uint32_t>(index + 1U);
+    if (!DmlUpdateIssueTypedIdentity(&item.assignment_occurrence_uuid) ||
+        !DmlUpdateIssueTypedIdentity(&item.target_column_occurrence_uuid) ||
+        !DmlUpdateTypedUuid(column.column_uuid, &item.target_column_uuid) ||
+        !DmlUpdateTypedUuid(column.datatype_descriptor_uuid,
+                            &item.value_descriptor_uuid) ||
+        !DmlUpdateTypedUuid(column.type_uuid, &item.value_type_uuid)) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "SBLR.OPERAND_INVALID",
+          "sblr.dml_update_rows.assignment_occurrence_unavailable");
+      return false;
+    }
+    item.assignment_occurrence_generation = 1;
+    item.target_column_occurrence_generation = 1;
+    item.target_column_generation = column.column_generation;
+    item.value_descriptor_generation =
+        column.datatype_descriptor_generation;
+    item.value_type_generation = column.type_generation;
+    item.codec_id = column.codec_id;
+    item.codec_version = column.codec_version;
+    item.codec_generation = column.codec_generation;
+    item.value_state = value.isSqlNull()
+                           ? update_wire::TypedUpdateValueState::null_value
+                           : update_wire::TypedUpdateValueState::value;
+    if (!value.isSqlNull()) {
+      item.canonical_value.assign(value.binary_value.begin(),
+                                  value.binary_value.end());
+    }
+    carrier.records.push_back(std::move(item));
+  }
+  update_wire::TypedUpdateCarrierError error;
+  std::vector<std::uint8_t> encoded;
+  if (!update_wire::EncodeTypedUpdateAssignmentVector(
+          carrier, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateAssignmentVector(
+          encoded, &carrier, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.assignment_vector_invalid");
+    return false;
+  }
+  return true;
+}
+
+bool DmlUpdateBuildPredicateCarrier(
+    DmlUpdateRowsDescriptorRecordV1* record,
+    EngineApiDiagnostic* diagnostic) {
+  if (record == nullptr || diagnostic == nullptr ||
+      record->relation_occurrence_generation == 0 ||
+      !record->datatype_operator_binding.ok ||
+      record->datatype_operator_binding.datatype_snapshot_uuid !=
+          record->datatype_catalog_snapshot_uuid ||
+      record->datatype_operator_binding.datatype_catalog_generation !=
+          record->datatype_catalog_generation ||
+      record->datatype_operator_binding.datatype_registry_generation !=
+          record->datatype_registry_generation ||
+      record->datatype_operator_binding.boolean_descriptor_generation == 0 ||
+      record->datatype_operator_binding.boolean_type_generation == 0 ||
+      record->datatype_operator_binding.boolean_codec_id.empty() ||
+      record->datatype_operator_binding.boolean_codec_version == 0 ||
+      record->datatype_operator_binding.boolean_codec_generation == 0 ||
+      record->datatype_operator_binding.builtin_operator_snapshot_uuid.empty() ||
+      record->datatype_operator_binding.builtin_operator_registry_generation ==
+          0) {
+    return false;
+  }
+  const auto& binding = record->datatype_operator_binding;
+  const auto bind_boolean_result = [&binding](
+                                       update_wire::TypedUpdatePredicateRecord*
+                                           node) {
+    if (node == nullptr ||
+        !DmlUpdateTypedUuid(binding.boolean_descriptor_uuid,
+                            &node->output_descriptor_uuid) ||
+        !DmlUpdateTypedUuid(binding.boolean_type_uuid,
+                            &node->output_type_uuid)) {
+      return false;
+    }
+    node->output_descriptor_generation =
+        binding.boolean_descriptor_generation;
+    node->output_type_generation = binding.boolean_type_generation;
+    node->output_codec_id = binding.boolean_codec_id;
+    node->output_codec_version = binding.boolean_codec_version;
+    node->output_codec_generation = binding.boolean_codec_generation;
+    return true;
+  };
+  auto& carrier = record->canonical_carriers.predicate;
+  if (!DmlUpdateIssueTypedIdentity(&carrier.identity.vector_uuid) ||
+      !DmlUpdateTypedUuid(record->descriptor_ref.descriptor_uuid,
+                          &carrier.identity.owner_descriptor_uuid)) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.predicate_identity_unavailable");
+    return false;
+  }
+  carrier.identity.vector_generation = 1;
+  carrier.identity.owner_descriptor_generation =
+      record->descriptor_ref.descriptor_generation;
+  const auto initialize_node = [&](
+                                   update_wire::TypedUpdatePredicateRecord* node,
+                                   std::uint64_t node_id) {
+    node->node_id = node_id;
+    node->node_occurrence_generation = 1;
+    return DmlUpdateIssueTypedIdentity(&node->node_occurrence_uuid);
+  };
+  if (!record->predicate_column.has_value()) {
+    update_wire::TypedUpdatePredicateRecord node;
+    if (!initialize_node(&node, 1) || !bind_boolean_result(&node)) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DATATYPE.DESCRIPTOR_INVALID",
+          "sblr.dml_update_rows.predicate_boolean_authority_unavailable");
+      return false;
+    }
+    node.node_kind =
+        update_wire::TypedUpdatePredicateNodeKind::canonical_boolean_constant;
+    node.value_state = update_wire::TypedUpdateValueState::value;
+    node.canonical_value = {1};
+    carrier.records.push_back(std::move(node));
+  } else {
+    if (record->prepared_request.update_predicate.bound_values.size() != 1) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "SBLR.OPERAND_INVALID",
+          "sblr.dml_update_rows.predicate_value_shape_invalid");
+      return false;
+    }
+    const auto& column = *record->predicate_column;
+    const auto& literal =
+        record->prepared_request.update_predicate.bound_values.front();
+    update_wire::TypedUpdatePredicateRecord column_node;
+    update_wire::TypedUpdatePredicateRecord literal_node;
+    update_wire::TypedUpdatePredicateRecord compare_node;
+    if (!initialize_node(&column_node, 1) ||
+        !initialize_node(&literal_node, 2) ||
+        !initialize_node(&compare_node, 3) ||
+        !DmlUpdateTypedUuid(column.datatype_descriptor_uuid,
+                            &column_node.output_descriptor_uuid) ||
+        !DmlUpdateTypedUuid(column.type_uuid, &column_node.output_type_uuid) ||
+        !DmlUpdateTypedUuid(record->relation_occurrence_uuid,
+                            &column_node.referenced_relation_occurrence_uuid) ||
+        !DmlUpdateIssueTypedIdentity(
+            &column_node.referenced_column_occurrence_uuid) ||
+        !DmlUpdateTypedUuid(column.column_uuid,
+                            &column_node.referenced_column_uuid)) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "SBLR.OPERAND_INVALID",
+          "sblr.dml_update_rows.predicate_occurrence_unavailable");
+      return false;
+    }
+    column_node.node_kind =
+        update_wire::TypedUpdatePredicateNodeKind::column_reference;
+    column_node.value_state = update_wire::TypedUpdateValueState::absent;
+    column_node.output_descriptor_generation =
+        column.datatype_descriptor_generation;
+    column_node.output_type_generation = column.type_generation;
+    column_node.output_codec_id = column.codec_id;
+    column_node.output_codec_version = column.codec_version;
+    column_node.output_codec_generation = column.codec_generation;
+    column_node.referenced_relation_occurrence_generation =
+        record->relation_occurrence_generation;
+    column_node.referenced_column_occurrence_generation = 1;
+    column_node.referenced_column_generation = column.column_generation;
+
+    literal_node.node_kind =
+        update_wire::TypedUpdatePredicateNodeKind::typed_literal;
+    literal_node.value_state = update_wire::TypedUpdateValueState::value;
+    literal_node.output_descriptor_uuid =
+        column_node.output_descriptor_uuid;
+    literal_node.output_descriptor_generation =
+        column_node.output_descriptor_generation;
+    literal_node.output_type_uuid = column_node.output_type_uuid;
+    literal_node.output_type_generation = column_node.output_type_generation;
+    literal_node.output_codec_id = column_node.output_codec_id;
+    literal_node.output_codec_version = column_node.output_codec_version;
+    literal_node.output_codec_generation = column_node.output_codec_generation;
+    literal_node.canonical_value.assign(literal.binary_value.begin(),
+                                        literal.binary_value.end());
+
+    if (!bind_boolean_result(&compare_node) ||
+        binding.equality_operator_generation == 0 ||
+        !DmlUpdateTypedUuid(binding.equality_operator_uuid,
+                            &compare_node.operator_uuid)) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DATATYPE.DESCRIPTOR_INVALID",
+          "sblr.dml_update_rows.predicate_operator_authority_unavailable");
+      return false;
+    }
+    compare_node.node_kind = update_wire::TypedUpdatePredicateNodeKind::comparison;
+    compare_node.value_state = update_wire::TypedUpdateValueState::absent;
+    compare_node.left_child_node_id = 1;
+    compare_node.right_child_node_id = 2;
+    compare_node.operator_generation = binding.equality_operator_generation;
+    carrier.records.push_back(std::move(column_node));
+    carrier.records.push_back(std::move(literal_node));
+    carrier.records.push_back(std::move(compare_node));
+  }
+  update_wire::TypedUpdateCarrierError error;
+  std::vector<std::uint8_t> encoded;
+  if (!update_wire::EncodeTypedUpdatePredicateVector(
+          carrier, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdatePredicateVector(
+          encoded, &carrier, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.predicate_vector_invalid");
+    return false;
+  }
+  return true;
+}
+
+bool DmlUpdateAbandonDurableReservationV1(
+    const EngineRequestContext& context,
+    const DmlUpdateRowsDescriptorRecordV1& record) {
+  if (record.durable_operation_identity.validated_durable_handle_uuid.empty()) {
+    return true;
+  }
+  EngineDmlUpdateDurableAuthorityAbandonRequestV1 request;
+  request.context = context;
+  request.identity = record.durable_operation_identity;
+  return AbandonDmlUpdateDurableOperationAuthorityReservationV1(request).ok();
+}
+
+bool DmlUpdateBuildExecutionAuthorityCarriers(
+    const EngineRequestContext& context,
+    DmlUpdateRowsDescriptorRecordV1* record,
+    EngineApiDiagnostic* diagnostic) {
+  if (record == nullptr || diagnostic == nullptr) return false;
+  auto& target_order = record->canonical_carriers.target_order;
+  auto& resource = record->canonical_carriers.resource_budget;
+  auto& recovery = record->canonical_carriers.recovery_token;
+  if (!DmlUpdateIssueTypedIdentity(&target_order.target_order_uuid) ||
+      !DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
+                          &target_order.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateTypedUuid(record->relation_occurrence_uuid,
+                          &target_order.target_relation_occurrence_uuid) ||
+      !DmlUpdateTypedUuid(context.statement_snapshot_uuid.canonical,
+                          &target_order.statement_snapshot_uuid) ||
+      !DmlUpdateIssueTypedIdentity(&resource.resource_budget_uuid) ||
+      !DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
+                          &resource.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateTypedUuid(context.transaction_uuid.canonical,
+                          &resource.owning_transaction_uuid) ||
+      !DmlUpdateIssueTypedIdentity(&resource.cancellation_token_uuid) ||
+      !DmlUpdateIssueTypedIdentity(&resource.grant_receipt_uuid) ||
+      !DmlUpdateIssueTypedIdentity(&recovery.recovery_token_uuid) ||
+      !DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
+                          &recovery.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateTypedUuid(context.transaction_uuid.canonical,
+                          &recovery.owning_transaction_uuid) ||
+      !DmlUpdateTypedUuid(record->operation_uuid,
+                          &recovery.operation_uuid) ||
+      !DmlUpdateTypedUuid(record->descriptor_ref.descriptor_uuid,
+                          &recovery.descriptor_uuid) ||
+      !DmlUpdateIssueTypedIdentity(
+          &recovery.statement_savepoint_profile_uuid)) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "RESOURCE.BUDGET_EXCEEDED",
+        "sblr.dml_update_rows.execution_authority_unavailable");
+    return false;
+  }
+  target_order.target_order_generation = 1;
+  target_order.target_relation_occurrence_generation =
+      record->relation_occurrence_generation;
+  target_order.maximum_candidate_rows =
+      update_wire::kTypedUpdateMaximumCandidateRows;
+  resource.resource_budget_generation = 1;
+  resource.cancellation_generation = 1;
+  resource.grant_receipt_generation = 1;
+  resource.maximum_assignments =
+      update_wire::kTypedUpdateMaximumAssignments;
+  resource.maximum_predicate_nodes =
+      update_wire::kTypedUpdateMaximumPredicateNodes;
+  resource.maximum_candidate_rows =
+      update_wire::kTypedUpdateMaximumCandidateRows;
+  resource.maximum_trigger_depth =
+      update_wire::kTypedUpdateMaximumTriggerDepth;
+  resource.maximum_effects = update_wire::kTypedUpdateMaximumEffects;
+  resource.maximum_total_canonical_value_bytes =
+      update_wire::kTypedUpdateMaximumCanonicalValueBytes;
+  recovery.recovery_generation = 1;
+  recovery.descriptor_generation =
+      record->descriptor_ref.descriptor_generation;
+  recovery.statement_savepoint_profile_generation = 1;
+
+  update_wire::TypedUpdateCarrierError error;
+  std::vector<std::uint8_t> encoded;
+  if (!update_wire::EncodeTypedUpdateTargetOrder(
+          target_order, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateTargetOrder(
+          encoded, &target_order, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.target_order_invalid");
+    return false;
+  }
+  encoded.clear();
+  if (!update_wire::EncodeTypedUpdateResourceBudget(
+          resource, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateResourceBudget(
+          encoded, &resource, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.resource_budget_invalid");
+    return false;
+  }
+  encoded.clear();
+  EngineDmlUpdateDurableAuthorityReservationRequestV1 reserve_request;
+  reserve_request.context = context;
+  reserve_request.reservation.operation_uuid = record->operation_uuid;
+  reserve_request.reservation.operation_generation =
+      record->operation_generation;
+  reserve_request.reservation.descriptor_uuid =
+      record->descriptor_ref.descriptor_uuid;
+  reserve_request.reservation.descriptor_generation =
+      record->descriptor_ref.descriptor_generation;
+  reserve_request.reservation.recovery_token_uuid =
+      DmlUpdateUuidText(recovery.recovery_token_uuid);
+  reserve_request.reservation.recovery_generation =
+      recovery.recovery_generation;
+  auto reserved =
+      ReserveDmlUpdateDurableOperationAuthorityV1(reserve_request);
+  if (!reserved.ok() ||
+      reserved.identity.database_uuid != record->database_uuid ||
+      reserved.identity.owning_transaction_uuid != record->transaction_uuid ||
+      reserved.identity.owning_local_transaction_id !=
+          record->local_transaction_id ||
+      reserved.identity.authenticated_statement_receipt_uuid !=
+          record->statement_receipt_uuid ||
+      reserved.identity.operation_uuid != record->operation_uuid ||
+      reserved.identity.operation_generation != record->operation_generation ||
+      reserved.identity.descriptor_uuid !=
+          record->descriptor_ref.descriptor_uuid ||
+      reserved.identity.descriptor_generation !=
+          record->descriptor_ref.descriptor_generation ||
+      reserved.identity.recovery_token_uuid !=
+          reserve_request.reservation.recovery_token_uuid ||
+      reserved.identity.recovery_generation != recovery.recovery_generation ||
+      reserved.identity.validated_durable_handle_generation == 0 ||
+      reserved.identity.reserved_statement_barrier_generation == 0 ||
+      !DmlUpdateTypedUuid(
+          reserved.identity.validated_durable_handle_uuid,
+          &recovery.durable_registry_uuid)) {
+    *diagnostic = reserved.diagnostic.code.empty()
+                      ? DmlUpdateDescriptorDiagnostic(
+                            "DML.UPDATE_FAILED",
+                            "sblr.dml_update_rows.durable_reservation_invalid")
+                      : reserved.diagnostic;
+    if (reserved.ok()) {
+      EngineDmlUpdateDurableAuthorityAbandonRequestV1 abandon;
+      abandon.context = context;
+      abandon.identity = reserved.identity;
+      (void)AbandonDmlUpdateDurableOperationAuthorityReservationV1(abandon);
+    }
+    return false;
+  }
+  record->durable_operation_identity = std::move(reserved.identity);
+  recovery.durable_registry_generation =
+      record->durable_operation_identity.validated_durable_handle_generation;
+  record->publication_barrier_uuid =
+      record->durable_operation_identity.reserved_statement_barrier_uuid;
+  record->publication_barrier_generation =
+      record->durable_operation_identity.reserved_statement_barrier_generation;
+  if (record->publication_barrier_uuid.empty() ||
+      record->publication_barrier_generation == 0) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.durable_reservation_barrier_invalid");
+    (void)DmlUpdateAbandonDurableReservationV1(context, *record);
+    return false;
+  }
+  if (!update_wire::EncodeTypedUpdateRecoveryToken(
+          recovery, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateRecoveryToken(
+          encoded, &recovery, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.recovery_token_invalid");
+    (void)DmlUpdateAbandonDurableReservationV1(context, *record);
+    return false;
+  }
+  return true;
+}
+
+bool DmlUpdateBuildFrozenAuthorityCarriers(
+    const EngineDmlUpdateImmutableAuthoritySnapshotV1& snapshot,
+    DmlUpdateRowsDescriptorRecordV1* record,
+    EngineApiDiagnostic* diagnostic) {
+  if (record == nullptr || diagnostic == nullptr) return false;
+  update_wire::TypedUpdateUuid owner_uuid{};
+  if (!DmlUpdateTypedUuid(record->descriptor_ref.descriptor_uuid,
+                          &owner_uuid)) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.frozen_owner_invalid");
+    return false;
+  }
+  auto initialize_identity = [&](std::string_view set_uuid,
+                                 std::uint64_t set_generation,
+                                 update_wire::TypedUpdateVectorIdentity* out) {
+    return out != nullptr && set_generation != 0 &&
+           DmlUpdateTypedUuid(set_uuid, &out->vector_uuid) &&
+           ((out->vector_generation = set_generation), true) &&
+           ((out->owner_descriptor_uuid = owner_uuid), true) &&
+           ((out->owner_descriptor_generation =
+                 record->descriptor_ref.descriptor_generation),
+            true);
+  };
+  auto& policies = record->canonical_carriers.row_policies;
+  auto& constraints = record->canonical_carriers.constraints;
+  auto& triggers = record->canonical_carriers.triggers;
+  if (!initialize_identity(snapshot.row_policy_set.set_uuid,
+                           snapshot.row_policy_set.set_generation,
+                           &policies.identity) ||
+      !initialize_identity(snapshot.constraint_set.set_uuid,
+                           snapshot.constraint_set.set_generation,
+                           &constraints.identity) ||
+      !initialize_identity(snapshot.trigger_set.set_uuid,
+                           snapshot.trigger_set.set_generation,
+                           &triggers.identity)) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.frozen_set_identity_invalid");
+    return false;
+  }
+  policies.records.reserve(snapshot.row_policy_set.records.size());
+  for (const auto& source : snapshot.row_policy_set.records) {
+    update_wire::TypedUpdateRowPolicyRecord item;
+    item.policy_ordinal = source.policy_ordinal;
+    item.phase = static_cast<std::uint8_t>(source.phase);
+    if (!DmlUpdateTypedUuid(source.effective_policy_uuid,
+                            &item.effective_policy_uuid) ||
+        !DmlUpdateTypedUuid(source.expression_uuid, &item.expression_uuid) ||
+        !DmlUpdateTypedUuid(source.security_snapshot_uuid,
+                            &item.security_snapshot_uuid)) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "SECURITY.ACCESS_DENIED",
+          "sblr.dml_update_rows.row_policy_identity_invalid");
+      return false;
+    }
+    item.effective_policy_generation =
+        source.effective_policy_generation;
+    item.expression_generation = source.expression_generation;
+    item.expression_evidence_sha256 = source.expression_evidence_sha256;
+    item.security_generation = source.security_generation;
+    item.source_policy_catalog_vector_sha256 =
+        source.source_policy_catalog_vector_sha256;
+    policies.records.push_back(std::move(item));
+  }
+  constraints.records.reserve(snapshot.constraint_set.records.size());
+  for (const auto& source : snapshot.constraint_set.records) {
+    update_wire::TypedUpdateConstraintRecord item;
+    item.constraint_ordinal = source.constraint_ordinal;
+    item.constraint_class = static_cast<std::uint8_t>(source.constraint_class);
+    item.timing = static_cast<std::uint8_t>(source.timing);
+    item.reservation_mode = static_cast<std::uint8_t>(source.reservation_mode);
+    if (!DmlUpdateTypedUuid(source.constraint_uuid, &item.constraint_uuid) ||
+        !DmlUpdateTypedUuid(source.reservation_profile_uuid,
+                            &item.reservation_profile_uuid) ||
+        (source.expression_generation != 0 &&
+         !DmlUpdateTypedUuid(source.expression_uuid,
+                             &item.expression_uuid))) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.constraint_identity_invalid");
+      return false;
+    }
+    item.constraint_generation = source.constraint_generation;
+    item.expression_generation = source.expression_generation;
+    item.reservation_profile_generation =
+        source.reservation_profile_generation;
+    item.dependency_set_sha256 = source.dependency_set_sha256;
+    constraints.records.push_back(std::move(item));
+  }
+  triggers.records.reserve(snapshot.trigger_set.records.size());
+  for (const auto& source : snapshot.trigger_set.records) {
+    update_wire::TypedUpdateTriggerRecord item;
+    item.trigger_ordinal = source.trigger_ordinal;
+    item.timing = static_cast<std::uint8_t>(source.timing);
+    item.security_mode = static_cast<std::uint8_t>(source.security_mode);
+    if (!DmlUpdateTypedUuid(source.trigger_uuid, &item.trigger_uuid) ||
+        !DmlUpdateTypedUuid(source.body_sblr_uuid, &item.body_sblr_uuid) ||
+        !DmlUpdateTypedUuid(source.execution_security_context_uuid,
+                            &item.execution_security_context_uuid) ||
+        !DmlUpdateTypedUuid(source.recursion_profile_uuid,
+                            &item.recursion_profile_uuid)) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "SBLR.OPERATION_UNSUPPORTED",
+          "sblr.dml_update_rows.trigger_identity_invalid");
+      return false;
+    }
+    item.trigger_generation = source.trigger_generation;
+    item.body_sblr_generation = source.body_sblr_generation;
+    item.execution_security_generation =
+        source.execution_security_generation;
+    item.recursion_profile_generation = source.recursion_profile_generation;
+    item.maximum_depth = source.maximum_depth;
+    item.dependency_set_sha256 = source.dependency_set_sha256;
+    triggers.records.push_back(std::move(item));
+  }
+  update_wire::TypedUpdateCarrierError error;
+  std::vector<std::uint8_t> encoded;
+  if (!update_wire::EncodeTypedUpdateRowPolicyVector(
+          policies, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateRowPolicyVector(
+          encoded, &policies, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.row_policy_vector_invalid");
+    return false;
+  }
+  encoded.clear();
+  if (!update_wire::EncodeTypedUpdateConstraintVector(
+          constraints, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateConstraintVector(
+          encoded, &constraints, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.constraint_vector_invalid");
+    return false;
+  }
+  encoded.clear();
+  if (!update_wire::EncodeTypedUpdateTriggerVector(
+          triggers, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateTriggerVector(
+          encoded, &triggers, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.trigger_vector_invalid");
+    return false;
+  }
+  const auto policy_records_match = [&] {
+    if (policies.records.size() != snapshot.row_policy_set.records.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < policies.records.size(); ++index) {
+      if (policies.records[index].record_evidence_sha256 !=
+          snapshot.row_policy_set.records[index].record_evidence_sha256) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto constraint_records_match = [&] {
+    if (constraints.records.size() != snapshot.constraint_set.records.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < constraints.records.size(); ++index) {
+      if (constraints.records[index].record_evidence_sha256 !=
+          snapshot.constraint_set.records[index].record_evidence_sha256) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto trigger_records_match = [&] {
+    if (triggers.records.size() != snapshot.trigger_set.records.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < triggers.records.size(); ++index) {
+      if (triggers.records[index].record_evidence_sha256 !=
+          snapshot.trigger_set.records[index].record_evidence_sha256) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (policies.identity.vector_sha256 !=
+          snapshot.row_policy_set.vector_sha256 ||
+      constraints.identity.vector_sha256 !=
+          snapshot.constraint_set.vector_sha256 ||
+      triggers.identity.vector_sha256 != snapshot.trigger_set.vector_sha256 ||
+      !policy_records_match() || !constraint_records_match() ||
+      !trigger_records_match()) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.frozen_provider_codec_evidence_mismatch");
+    return false;
+  }
+  return true;
+}
+
+bool DmlUpdateBuildDescriptorCarrier(
+    DmlUpdateRowsDescriptorRecordV1* record,
+    EngineApiDiagnostic* diagnostic) {
+  if (record == nullptr || diagnostic == nullptr) return false;
+  auto& value = record->canonical_carriers.descriptor;
+  const auto& assignment = record->canonical_carriers.assignments;
+  const auto& predicate = record->canonical_carriers.predicate;
+  const auto& policies = record->canonical_carriers.row_policies;
+  const auto& constraints = record->canonical_carriers.constraints;
+  const auto& triggers = record->canonical_carriers.triggers;
+  const auto& target_order = record->canonical_carriers.target_order;
+  const auto& resource = record->canonical_carriers.resource_budget;
+  const auto& recovery = record->canonical_carriers.recovery_token;
+  if (!DmlUpdateTypedUuid(record->descriptor_ref.descriptor_uuid,
+                          &value.descriptor_uuid) ||
+      !DmlUpdateTypedUuid(record->statement_receipt_uuid,
+                          &value.authenticated_statement_receipt_uuid) ||
+      !DmlUpdateTypedUuid(record->operation_uuid, &value.operation_uuid) ||
+      !DmlUpdateTypedUuid(record->transaction_uuid,
+                          &value.owning_transaction_uuid) ||
+      !DmlUpdateTypedUuid(record->statement_snapshot_uuid,
+                          &value.statement_snapshot_uuid) ||
+      !DmlUpdateTypedUuid(record->metadata_snapshot_uuid,
+                          &value.catalog_snapshot_uuid) ||
+      !DmlUpdateTypedUuid(record->security_context_uuid,
+                          &value.security_context_uuid) ||
+      !DmlUpdateTypedUuid(record->security_snapshot_uuid,
+                          &value.security_snapshot_uuid) ||
+      !DmlUpdateTypedUuid(record->relation_uuid,
+                          &value.target_relation_uuid) ||
+      !DmlUpdateTypedUuid(record->relation_occurrence_uuid,
+                          &value.target_relation_occurrence_uuid) ||
+      !record->datatype_operator_binding.ok ||
+      !DmlUpdateTypedUuid(
+          record->datatype_operator_binding.builtin_operator_snapshot_uuid,
+          &value.builtin_operator_snapshot_uuid) ||
+      record->datatype_operator_binding.builtin_operator_registry_generation ==
+          0) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.descriptor_authority_identity_invalid");
+    return false;
+  }
+  value.descriptor_generation = record->descriptor_ref.descriptor_generation;
+  value.structural_occurrence_id = record->structural_occurrence_id;
+  value.operation_generation = record->operation_generation;
+  value.owning_local_transaction_id = record->local_transaction_id;
+  value.catalog_generation = record->catalog_generation_id;
+  value.datatype_registry_generation =
+      record->datatype_registry_generation;
+  value.security_generation = record->security_generation;
+  value.target_relation_generation = record->relation_generation;
+  value.target_relation_occurrence_generation =
+      record->relation_occurrence_generation;
+  value.assignment_vector_uuid = assignment.identity.vector_uuid;
+  value.assignment_vector_generation = assignment.identity.vector_generation;
+  value.assignment_count = static_cast<std::uint32_t>(
+      assignment.records.size());
+  value.assignment_vector_sha256 = assignment.identity.vector_sha256;
+  value.predicate_expression_uuid = predicate.identity.vector_uuid;
+  value.predicate_expression_generation =
+      predicate.identity.vector_generation;
+  value.predicate_root_node_id = predicate.records.size();
+  value.predicate_node_count = static_cast<std::uint32_t>(
+      predicate.records.size());
+  value.predicate_vector_sha256 = predicate.identity.vector_sha256;
+  value.row_policy_set_uuid = policies.identity.vector_uuid;
+  value.row_policy_set_generation = policies.identity.vector_generation;
+  value.row_policy_count = static_cast<std::uint32_t>(
+      policies.records.size());
+  value.row_policy_set_sha256 = policies.identity.vector_sha256;
+  value.constraint_set_uuid = constraints.identity.vector_uuid;
+  value.constraint_set_generation = constraints.identity.vector_generation;
+  value.constraint_count = static_cast<std::uint32_t>(
+      constraints.records.size());
+  value.ordered_constraint_set_sha256 = constraints.identity.vector_sha256;
+  value.trigger_set_uuid = triggers.identity.vector_uuid;
+  value.trigger_set_generation = triggers.identity.vector_generation;
+  value.trigger_count = static_cast<std::uint32_t>(triggers.records.size());
+  value.ordered_trigger_set_sha256 = triggers.identity.vector_sha256;
+  value.deterministic_target_order_uuid = target_order.target_order_uuid;
+  value.deterministic_target_order_generation =
+      target_order.target_order_generation;
+  value.resource_budget_uuid = resource.resource_budget_uuid;
+  value.resource_budget_generation = resource.resource_budget_generation;
+  value.recovery_token_uuid = recovery.recovery_token_uuid;
+  value.recovery_generation = recovery.recovery_generation;
+  value.executor_availability_generation =
+      record->executor_availability_snapshot.generation;
+  value.builtin_operator_registry_generation =
+      record->datatype_operator_binding.builtin_operator_registry_generation;
+
+  update_wire::TypedUpdateCarrierError error;
+  std::vector<std::uint8_t> encoded;
+  if (!update_wire::EncodeTypedUpdateDescriptor(value, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateDescriptor(
+          encoded, &value, &error) ||
+      !update_wire::ValidateTypedUpdateCarrierSet(
+          record->canonical_carriers, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.descriptor_carrier_invalid");
+    return false;
+  }
+  return true;
+}
+
+bool DmlUpdateCaptureCanonicalProviderAuthorities(
+    const EngineRequestContext& context,
+    DmlUpdateRowsDescriptorRecordV1* record,
+    EngineApiDiagnostic* diagnostic) {
+  if (record == nullptr || diagnostic == nullptr ||
+      !record->policy_catalog_authority.ok ||
+      record->canonical_carriers.descriptor.exact_bytes.empty() ||
+      record->canonical_carriers.assignments.exact_bytes.empty() ||
+      record->canonical_carriers.predicate.exact_bytes.empty() ||
+      record->canonical_carriers.row_policies.exact_bytes.empty() ||
+      record->policy_catalog_authority
+          .exact_source_policy_vector_dusv.empty()) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.provider_authority_input_invalid");
+    return false;
+  }
+
+  EngineDmlUpdateDatatypeOperatorAuthorityCaptureRequestV1 datatype_request;
+  datatype_request.context = context;
+  datatype_request.authenticated_statement_receipt_uuid =
+      record->statement_receipt_uuid;
+  datatype_request.exact_descriptor_dudc =
+      record->canonical_carriers.descriptor.exact_bytes;
+  datatype_request.exact_assignment_vector_duav =
+      record->canonical_carriers.assignments.exact_bytes;
+  datatype_request.exact_predicate_vector_duev =
+      record->canonical_carriers.predicate.exact_bytes;
+  auto datatype_authority =
+      CaptureDmlUpdateDatatypeOperatorAuthorityV1(datatype_request);
+  if (!datatype_authority.ok ||
+      datatype_authority.exact_datatype_authority_dudv.empty() ||
+      datatype_authority.exact_builtin_operator_authority_duov.empty() ||
+      datatype_authority.datatypes.exact_bytes !=
+          datatype_authority.exact_datatype_authority_dudv ||
+      datatype_authority.operators.exact_bytes !=
+          datatype_authority.exact_builtin_operator_authority_duov) {
+    *diagnostic = datatype_authority.diagnostic.code.empty()
+                      ? DmlUpdateDescriptorDiagnostic(
+                            "DATATYPE.DESCRIPTOR_INVALID",
+                            "sblr.dml_update_rows.datatype_operator_capture_failed")
+                      : datatype_authority.diagnostic;
+    return false;
+  }
+
+  EngineDmlUpdateSecuritySnapshotProofRequestV1 security_request;
+  security_request.context = context;
+  security_request.captured = record->policy_catalog_authority;
+  security_request.exact_descriptor_dudc =
+      record->canonical_carriers.descriptor.exact_bytes;
+  security_request.exact_row_policy_vector_dupv =
+      record->canonical_carriers.row_policies.exact_bytes;
+  auto security_proof =
+      BuildDmlUpdateSecuritySnapshotProofV1(security_request);
+  if (!security_proof.ok ||
+      security_proof.exact_security_snapshot_proof_dusp.empty() ||
+      security_proof.proof.exact_bytes !=
+          security_proof.exact_security_snapshot_proof_dusp ||
+      record->policy_catalog_authority.source_policy_vector.exact_bytes !=
+          record->policy_catalog_authority
+              .exact_source_policy_vector_dusv) {
+    *diagnostic = security_proof.diagnostic.code.empty()
+                      ? DmlUpdateDescriptorDiagnostic(
+                            "DML.UPDATE_FAILED",
+                            "sblr.dml_update_rows.security_snapshot_capture_failed")
+                      : security_proof.diagnostic;
+    return false;
+  }
+
+  record->canonical_source_policies =
+      record->policy_catalog_authority.source_policy_vector;
+  record->canonical_security_snapshot = std::move(security_proof.proof);
+  record->canonical_datatype_authority = datatype_authority.datatypes;
+  record->canonical_operator_authority = datatype_authority.operators;
+  record->datatype_operator_authority = std::move(datatype_authority);
+  return true;
+}
+
+EngineDmlUpdateImmutableAuthorityFreezeRequestV1
+DmlUpdateCurrentImmutableAuthorityRequest(
+    const EngineRequestContext& context,
+    const DmlUpdateRowsDescriptorRecordV1& record) {
+  EngineDmlUpdateImmutableAuthorityFreezeRequestV1 request;
+  request.context = context;
+  request.authenticated_statement_receipt_uuid = record.statement_receipt_uuid;
+  request.structural_occurrence_id = record.structural_occurrence_id;
+  request.relation_occurrence.relation_uuid = record.relation_uuid;
+  request.relation_occurrence.relation_generation = record.relation_generation;
+  request.relation_occurrence.relation_occurrence_uuid =
+      record.relation_occurrence_uuid;
+  request.relation_occurrence.relation_occurrence_generation =
+      record.relation_occurrence_generation;
+  request.catalog_snapshot_uuid = record.metadata_snapshot_uuid;
+  request.catalog_generation = record.catalog_generation_id;
+  if (record.policy_catalog_authority.ok) {
+    request.security_policy_snapshot_authority =
+        record.policy_catalog_authority.security_policy_snapshot;
+    request.row_policies =
+        record.policy_catalog_authority.immutable_policy_sources;
+  }
+  return request;
+}
+
+EngineDmlUpdateStatementMgaAuthorityOpenRequestV1
+DmlUpdateCurrentStatementMgaAuthorityRequest(
+    const EngineRequestContext& context,
+    const DmlUpdateRowsDescriptorRecordV1& record) {
+  EngineDmlUpdateStatementMgaAuthorityOpenRequestV1 request;
+  request.context = context;
+  request.authenticated_statement_receipt_uuid =
+      record.statement_receipt_uuid;
+  request.operation_uuid = record.operation_uuid;
+  request.descriptor_uuid = record.descriptor_ref.descriptor_uuid;
+  request.descriptor_generation =
+      record.descriptor_ref.descriptor_generation;
+  request.recovery_token_uuid = DmlUpdateUuidText(
+      record.canonical_carriers.recovery_token.recovery_token_uuid);
+  request.recovery_generation =
+      record.canonical_carriers.recovery_token.recovery_generation;
+  request.reserved_publication_barrier_uuid =
+      record.durable_operation_identity.reserved_statement_barrier_uuid;
+  request.reserved_publication_barrier_generation =
+      record.durable_operation_identity.reserved_statement_barrier_generation;
+  return request;
+}
+
+bool DmlUpdateApplyStatementMgaAuthority(
+    const MgaDmlUpdateStatementSavepointAuthorityV1& authority,
+    DmlUpdateRowsDescriptorRecordV1* record) {
+  if (record == nullptr || authority.savepoint_uuid.empty() ||
+      authority.savepoint_generation != 1 ||
+      authority.publication_barrier_uuid.empty() ||
+      authority.publication_barrier_generation != 1 ||
+      authority.publication_barrier_uuid !=
+          record->durable_operation_identity.reserved_statement_barrier_uuid ||
+      authority.publication_barrier_generation !=
+          record->durable_operation_identity
+              .reserved_statement_barrier_generation) {
+    return false;
+  }
+  record->statement_mga_authority = authority;
+  record->statement_savepoint_uuid = authority.savepoint_uuid;
+  record->statement_savepoint_generation = authority.savepoint_generation;
+  record->publication_barrier_uuid = authority.publication_barrier_uuid;
+  record->publication_barrier_generation =
+      authority.publication_barrier_generation;
+  return true;
+}
+
+bool DmlUpdateApplyReleasedStatementMgaAuthorityNoAllocV1(
+    const MgaDmlUpdateStatementSavepointAuthorityV1& authority,
+    DmlUpdateRowsDescriptorRecordV1* record) noexcept {
+  if (record == nullptr ||
+      authority.lifecycle !=
+          MgaDmlUpdateStatementSavepointLifecycleV1::released ||
+      !authority.publication_barrier_present ||
+      authority.savepoint_generation != 1 ||
+      authority.publication_barrier_generation != 1 ||
+      record->statement_savepoint_uuid != authority.savepoint_uuid ||
+      record->statement_savepoint_generation !=
+          authority.savepoint_generation ||
+      record->publication_barrier_uuid !=
+          authority.publication_barrier_uuid ||
+      record->publication_barrier_generation !=
+          authority.publication_barrier_generation ||
+      record->statement_mga_authority.binding != authority.binding ||
+      record->statement_mga_authority.savepoint_uuid !=
+          authority.savepoint_uuid ||
+      record->statement_mga_authority.publication_barrier_uuid !=
+          authority.publication_barrier_uuid) {
+    return false;
+  }
+  // Every string and generation was frozen while the savepoint was active.
+  // Only fixed-size lifecycle/presence evidence changes after release.
+  record->statement_mga_authority.lifecycle = authority.lifecycle;
+  record->statement_mga_authority.publication_barrier_present = true;
+  record->statement_mga_authority.durable_presence_sha256 =
+      authority.durable_presence_sha256;
+  return true;
+}
+
+bool DmlUpdateRevalidateCanonicalAuthority(
+    const EngineRequestContext& context,
+    const DmlUpdateRowsDescriptorRecordV1& record,
+    EngineApiDiagnostic* diagnostic) {
+  if (diagnostic == nullptr) return false;
+  update_wire::TypedUpdateCarrierError carrier_error;
+  if (!update_wire::ValidateTypedUpdateCarrierSet(
+          record.canonical_carriers, &carrier_error) ||
+      !update_wire::ValidateTypedUpdateDatatypeOperatorAuthority(
+          record.canonical_carriers.descriptor,
+          record.canonical_carriers.assignments,
+          record.canonical_carriers.predicate,
+          record.canonical_datatype_authority,
+          record.canonical_operator_authority, &carrier_error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        carrier_error, "sblr.dml_update_rows.carrier_set_stale");
+    return false;
+  }
+  const auto& descriptor = record.canonical_carriers.descriptor;
+  update_wire::TypedUpdateUuid receipt_uuid{};
+  update_wire::TypedUpdateUuid transaction_uuid{};
+  update_wire::TypedUpdateUuid statement_snapshot_uuid{};
+  update_wire::TypedUpdateUuid catalog_snapshot_uuid{};
+  update_wire::TypedUpdateUuid relation_uuid{};
+  update_wire::TypedUpdateUuid security_context_uuid{};
+  update_wire::TypedUpdateUuid security_snapshot_uuid{};
+  if (!DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
+                          &receipt_uuid) ||
+      !DmlUpdateTypedUuid(context.transaction_uuid.canonical,
+                          &transaction_uuid) ||
+      !DmlUpdateTypedUuid(context.statement_snapshot_uuid.canonical,
+                          &statement_snapshot_uuid) ||
+      !DmlUpdateTypedUuid(context.statement_metadata_snapshot_uuid.canonical,
+                          &catalog_snapshot_uuid) ||
+      !DmlUpdateTypedUuid(record.relation_uuid, &relation_uuid) ||
+      !DmlUpdateTypedUuid(record.security_context_uuid,
+                          &security_context_uuid) ||
+      !DmlUpdateTypedUuid(record.security_snapshot_uuid,
+                          &security_snapshot_uuid) ||
+      descriptor.authenticated_statement_receipt_uuid != receipt_uuid ||
+      descriptor.owning_transaction_uuid != transaction_uuid ||
+      descriptor.owning_local_transaction_id != context.local_transaction_id ||
+      descriptor.statement_snapshot_uuid != statement_snapshot_uuid ||
+      descriptor.catalog_snapshot_uuid != catalog_snapshot_uuid ||
+      descriptor.catalog_generation != context.catalog_generation_id ||
+      descriptor.datatype_registry_generation !=
+          context.datatype_registry_generation ||
+      !context.authorization_context.present ||
+      context.authorization_context.authority_uuid.canonical !=
+          record.security_context_uuid ||
+      context.authorization_context.security_context_generation !=
+          record.security_context_generation ||
+      descriptor.security_context_uuid != security_context_uuid ||
+      descriptor.security_snapshot_uuid != security_snapshot_uuid ||
+      descriptor.security_generation != record.security_generation ||
+      descriptor.target_relation_uuid != relation_uuid ||
+      descriptor.target_relation_generation != record.relation_generation ||
+      !record.datatype_operator_binding.ok ||
+      DmlUpdateUuidText(descriptor.builtin_operator_snapshot_uuid) !=
+          record.datatype_operator_binding.builtin_operator_snapshot_uuid ||
+      descriptor.builtin_operator_registry_generation !=
+          record.datatype_operator_binding
+              .builtin_operator_registry_generation) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.descriptor_live_authority_stale");
+    return false;
+  }
+
+  const auto datatype_revalidation =
+      RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
+          context, record.datatype_operator_authority);
+  if (datatype_revalidation.error) {
+    *diagnostic = datatype_revalidation;
+    return false;
+  }
+
+  EngineDmlUpdateImmutableAuthorityRevalidateRequestV1 immutable_request;
+  immutable_request.current =
+      DmlUpdateCurrentImmutableAuthorityRequest(context, record);
+  immutable_request.admitted = record.immutable_authority_snapshot;
+  const auto immutable =
+      RevalidateDmlUpdateImmutableAuthorityV1(immutable_request);
+  if (!immutable.ok) {
+    *diagnostic = immutable.diagnostic;
+    return false;
+  }
+  return true;
+}
+
+std::optional<update_wire::TypedUpdateJournalState>
+DmlUpdateJournalStateForRecord(
+    const DmlUpdateRowsDescriptorRecordV1& record) {
+  switch (record.lifecycle) {
+    case DmlUpdateDescriptorLifecycleV1::kLive:
+      return update_wire::TypedUpdateJournalState::bound;
+    case DmlUpdateDescriptorLifecycleV1::kExecuting:
+      return update_wire::TypedUpdateJournalState::intent;
+    case DmlUpdateDescriptorLifecycleV1::kPrepared:
+      return update_wire::TypedUpdateJournalState::prepared;
+    case DmlUpdateDescriptorLifecycleV1::kCompleted:
+      return update_wire::TypedUpdateJournalState::published;
+    case DmlUpdateDescriptorLifecycleV1::kFailed:
+      return update_wire::TypedUpdateJournalState::aborted;
+  }
+  return std::nullopt;
+}
+
+bool DmlUpdateBuildJournalRecordV1(
+    const EngineRequestContext& context,
+    const DmlUpdateRowsDescriptorRecordV1& record,
+    std::vector<std::uint8_t>* encoded,
+    update_wire::TypedUpdateJournalState* next_state,
+    update_wire::TypedUpdateHash* next_evidence) {
+  if (encoded == nullptr || next_state == nullptr || next_evidence == nullptr) {
+    return false;
+  }
+  const auto state = DmlUpdateJournalStateForRecord(record);
+  if (!state.has_value()) return false;
+  update_wire::TypedUpdateJournalRecord journal;
+  journal.lifecycle_state = *state;
+  journal.journal_sequence = record.journal_sequence + 1U;
+  journal.descriptor = record.canonical_carriers.descriptor;
+  journal.authenticated_statement_receipt_uuid =
+      journal.descriptor.authenticated_statement_receipt_uuid;
+  journal.owning_transaction_uuid =
+      journal.descriptor.owning_transaction_uuid;
+  journal.owning_local_transaction_id =
+      journal.descriptor.owning_local_transaction_id;
+  journal.operation_uuid = journal.descriptor.operation_uuid;
+  journal.recovery_token_uuid = journal.descriptor.recovery_token_uuid;
+  journal.recovery_generation = journal.descriptor.recovery_generation;
+  if (!DmlUpdateTypedUuid(context.database_uuid.canonical,
+                          &journal.database_uuid)) {
+    return false;
+  }
+  if (!record.statement_savepoint_uuid.empty() &&
+      (!DmlUpdateTypedUuid(record.statement_savepoint_uuid,
+                           &journal.statement_savepoint_uuid) ||
+       record.statement_savepoint_generation == 0)) {
+    return false;
+  }
+  journal.statement_savepoint_generation =
+      record.statement_savepoint_generation;
+  journal.prior_record_sha256 = record.latest_journal_evidence_sha256;
+  if (*state == update_wire::TypedUpdateJournalState::prepared ||
+      *state == update_wire::TypedUpdateJournalState::published) {
+    update_wire::TypedUpdateResultCarrier result;
+    update_wire::TypedUpdateCarrierError error;
+    if (!update_wire::DecodeAndValidateTypedUpdateResult(
+            record.canonical_result_bytes, &result, &error)) {
+      return false;
+    }
+    journal.prior_result = std::move(result);
+  }
+
+  update_wire::TypedUpdateJournalChainContext chain;
+  chain.first_record = record.journal_sequence == 0;
+  chain.prior_sequence = record.journal_sequence;
+  chain.prior_state = record.latest_journal_state;
+  chain.prior_record_evidence_sha256 =
+      record.latest_journal_evidence_sha256;
+  if (!record.statement_savepoint_uuid.empty() &&
+      !DmlUpdateTypedUuid(record.statement_savepoint_uuid,
+                          &chain.prior_savepoint_uuid)) {
+    return false;
+  }
+  chain.prior_savepoint_generation = record.statement_savepoint_generation;
+  if (!chain.first_record) {
+    std::vector<std::uint8_t> descriptor_bytes;
+    update_wire::TypedUpdateCarrierError error;
+    if (!update_wire::EncodeTypedUpdateDescriptor(
+            record.canonical_carriers.descriptor, &descriptor_bytes, &error) ||
+        descriptor_bytes.size() !=
+            update_wire::kTypedUpdateDescriptorBytes) {
+      return false;
+    }
+    chain.require_same_descriptor = true;
+    std::copy(descriptor_bytes.begin(), descriptor_bytes.end(),
+              chain.expected_descriptor_bytes.begin());
+    if (chain.prior_state ==
+            update_wire::TypedUpdateJournalState::prepared &&
+        *state == update_wire::TypedUpdateJournalState::published) {
+      if (record.canonical_result_bytes.size() !=
+          update_wire::kTypedUpdateResultBytes) {
+        return false;
+      }
+      std::array<std::uint8_t, update_wire::kTypedUpdateResultBytes>
+          expected_result{};
+      std::copy(record.canonical_result_bytes.begin(),
+                record.canonical_result_bytes.end(),
+                expected_result.begin());
+      chain.expected_prepared_result_bytes = expected_result;
+    }
+  }
+  update_wire::TypedUpdateCarrierError error;
+  if (!update_wire::EncodeTypedUpdateJournalRecord(
+          journal, chain, encoded, &error) ||
+      !update_wire::ExtractTypedUpdateJournalRecordEvidence(
+          *encoded, next_evidence, &error)) {
+    return false;
+  }
+  *next_state = *state;
+  return true;
+}
+
+struct DmlUpdatePreparedJournalAppendV1 {
+  std::vector<std::uint8_t> exact_dujr_bytes;
+  std::uint64_t expected_prior_sequence = 0;
+  update_wire::TypedUpdateJournalState expected_prior_state =
+      update_wire::TypedUpdateJournalState::bound;
+  update_wire::TypedUpdateHash expected_prior_evidence_sha256{};
+  update_wire::TypedUpdateJournalState next_state =
+      update_wire::TypedUpdateJournalState::bound;
+  update_wire::TypedUpdateHash next_evidence_sha256{};
+};
+
+// Provider-owned prebuilt successor.  Preparing this value may allocate,
+// encode and hash while rollback remains legal.  Commit consumes only the
+// already-built MGA frame after the statement publication barrier.
+struct DmlUpdatePreparedDurableSuccessorV1 {
+  std::uint64_t expected_prior_sequence = 0;
+  update_wire::TypedUpdateJournalState expected_prior_state =
+      update_wire::TypedUpdateJournalState::bound;
+  update_wire::TypedUpdateHash expected_prior_evidence_sha256{};
+  update_wire::TypedUpdateJournalState next_state =
+      update_wire::TypedUpdateJournalState::bound;
+  update_wire::TypedUpdateHash next_evidence_sha256{};
+  MgaDmlUpdateDurablePreparedSuccessorV1 provider_prepared;
+};
+
+std::optional<MgaDmlUpdateDurableJournalStateV1>
+DmlUpdateDurableJournalStateV1(update_wire::TypedUpdateJournalState state) {
+  switch (state) {
+    case update_wire::TypedUpdateJournalState::bound:
+      return MgaDmlUpdateDurableJournalStateV1::bound;
+    case update_wire::TypedUpdateJournalState::intent:
+      return MgaDmlUpdateDurableJournalStateV1::intent;
+    case update_wire::TypedUpdateJournalState::prepared:
+      return MgaDmlUpdateDurableJournalStateV1::prepared;
+    case update_wire::TypedUpdateJournalState::published:
+      return MgaDmlUpdateDurableJournalStateV1::published;
+    case update_wire::TypedUpdateJournalState::aborted:
+      return MgaDmlUpdateDurableJournalStateV1::aborted;
+  }
+  return std::nullopt;
+}
+
+std::optional<update_wire::TypedUpdateJournalState>
+DmlUpdateWireJournalStateV1(MgaDmlUpdateDurableJournalStateV1 state) {
+  switch (state) {
+    case MgaDmlUpdateDurableJournalStateV1::bound:
+      return update_wire::TypedUpdateJournalState::bound;
+    case MgaDmlUpdateDurableJournalStateV1::intent:
+      return update_wire::TypedUpdateJournalState::intent;
+    case MgaDmlUpdateDurableJournalStateV1::prepared:
+      return update_wire::TypedUpdateJournalState::prepared;
+    case MgaDmlUpdateDurableJournalStateV1::published:
+      return update_wire::TypedUpdateJournalState::published;
+    case MgaDmlUpdateDurableJournalStateV1::aborted:
+      return update_wire::TypedUpdateJournalState::aborted;
+  }
+  return std::nullopt;
+}
+
+struct DmlUpdateDecodedDurableRecoveryV1 {
+  update_wire::TypedUpdateCarrierSet carriers;
+  update_wire::TypedUpdateSecurityPolicySourceVector source_policies;
+  update_wire::TypedUpdateSecuritySnapshotProof security_snapshot;
+  update_wire::TypedUpdateDatatypeAuthorityVector datatype_authority;
+  update_wire::TypedUpdateBuiltinOperatorAuthorityVector operator_authority;
+  update_wire::TypedUpdateMgaRecoveryObservation recovery_observation;
+  std::vector<update_wire::TypedUpdateJournalRecord> journal;
+  std::optional<update_wire::TypedUpdateJournalRecord> staged_successor;
+  update_wire::TypedUpdateRecoveryDecision decision =
+      update_wire::TypedUpdateRecoveryDecision::quarantine_update_failed;
+};
+
+bool DmlUpdateDecodeDurableRecoveryV1(
+    const EngineRequestContext& context,
+    const EngineDmlUpdateRowsDescriptorRefV1& descriptor_ref,
+    std::uint64_t structural_occurrence_id,
+    const MgaDmlUpdateDurableOperationRecoveryResultV1& recovered,
+    DmlUpdateDecodedDurableRecoveryV1* decoded,
+    EngineApiDiagnostic* diagnostic) {
+  if (decoded == nullptr || diagnostic == nullptr || !recovered.ok() ||
+      recovered.journal.empty() || structural_occurrence_id == 0 ||
+      descriptor_ref.descriptor_generation == 0) {
+    return false;
+  }
+  const auto fail = [&](const update_wire::TypedUpdateCarrierError& error,
+                        std::string_view key) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(error, key);
+    return false;
+  };
+  update_wire::TypedUpdateCarrierError error;
+  auto& snapshot = recovered.authority_snapshot;
+  if (!update_wire::DecodeAndValidateTypedUpdateDescriptor(
+          snapshot.descriptor_dudc, &decoded->carriers.descriptor, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateAssignmentVector(
+          snapshot.assignment_vector_duav, &decoded->carriers.assignments,
+          &error) ||
+      !update_wire::DecodeAndValidateTypedUpdatePredicateVector(
+          snapshot.predicate_vector_duev, &decoded->carriers.predicate,
+          &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateRowPolicyVector(
+          snapshot.row_policy_vector_dupv, &decoded->carriers.row_policies,
+          &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateConstraintVector(
+          snapshot.constraint_vector_ducv, &decoded->carriers.constraints,
+          &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateTriggerVector(
+          snapshot.trigger_vector_dutv, &decoded->carriers.triggers,
+          &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateTargetOrder(
+          snapshot.target_order_duor, &decoded->carriers.target_order,
+          &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateResourceBudget(
+          snapshot.resource_budget_dubr,
+          &decoded->carriers.resource_budget, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateRecoveryToken(
+          snapshot.recovery_token_durc,
+          &decoded->carriers.recovery_token, &error) ||
+      !update_wire::ValidateTypedUpdateCarrierSet(decoded->carriers,
+                                                  &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateSecurityPolicySourceVector(
+          snapshot.source_policy_vector_dusv, &decoded->source_policies,
+          &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateSecuritySnapshotProof(
+          snapshot.security_snapshot_proof_dusp,
+          &decoded->security_snapshot, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
+          snapshot.datatype_authority_vector_dudv,
+          &decoded->datatype_authority, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateBuiltinOperatorAuthorityVector(
+          snapshot.builtin_operator_authority_vector_duov,
+          &decoded->operator_authority, &error) ||
+      !update_wire::ValidateTypedUpdateDatatypeOperatorAuthority(
+          decoded->carriers.descriptor,
+          decoded->carriers.assignments,
+          decoded->carriers.predicate,
+          decoded->datatype_authority,
+          decoded->operator_authority, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateMgaRecoveryObservation(
+          recovered.recovery_observation_dumo,
+          &decoded->recovery_observation, &error)) {
+    return fail(error, "sblr.dml_update_rows.recovery_carrier_invalid");
+  }
+
+  update_wire::TypedUpdateUuid expected_descriptor_uuid{};
+  if (!DmlUpdateTypedUuid(descriptor_ref.descriptor_uuid,
+                          &expected_descriptor_uuid) ||
+      recovered.identity.database_uuid != context.database_uuid.canonical ||
+      recovered.identity.authenticated_statement_receipt_uuid !=
+          context.statement_receipt_uuid.canonical ||
+      recovered.identity.owning_transaction_uuid !=
+          context.transaction_uuid.canonical ||
+      recovered.identity.owning_local_transaction_id !=
+          context.local_transaction_id ||
+      recovered.identity.descriptor_uuid != descriptor_ref.descriptor_uuid ||
+      recovered.identity.descriptor_generation !=
+          descriptor_ref.descriptor_generation ||
+      decoded->carriers.descriptor.descriptor_uuid !=
+          expected_descriptor_uuid ||
+      decoded->carriers.descriptor.descriptor_generation !=
+          descriptor_ref.descriptor_generation ||
+      decoded->carriers.descriptor.structural_occurrence_id !=
+          structural_occurrence_id) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.recovery_identity_stale");
+    return false;
+  }
+
+  decoded->journal.clear();
+  decoded->journal.reserve(recovered.journal.size());
+  for (std::size_t index = 0; index < recovered.journal.size(); ++index) {
+    const auto& extent = recovered.journal[index];
+    const auto extent_state =
+        DmlUpdateWireJournalStateV1(extent.lifecycle_state);
+    if (!extent_state.has_value()) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_journal_state_invalid");
+      return false;
+    }
+    update_wire::TypedUpdateJournalChainContext chain;
+    chain.first_record = index == 0;
+    if (index != 0) {
+      const auto& prior = decoded->journal.back();
+      chain.prior_sequence = prior.journal_sequence;
+      chain.prior_state = prior.lifecycle_state;
+      chain.prior_record_evidence_sha256 = prior.record_evidence_sha256;
+      chain.require_same_descriptor = true;
+      if (prior.embedded_descriptor_bytes.size() !=
+          chain.expected_descriptor_bytes.size()) {
+        *diagnostic = DmlUpdateDescriptorDiagnostic(
+            "DML.UPDATE_FAILED",
+            "sblr.dml_update_rows.recovery_descriptor_extent_invalid");
+        return false;
+      }
+      std::copy(prior.embedded_descriptor_bytes.begin(),
+                prior.embedded_descriptor_bytes.end(),
+                chain.expected_descriptor_bytes.begin());
+      if (prior.lifecycle_state ==
+              update_wire::TypedUpdateJournalState::prepared &&
+          prior.embedded_result_bytes.has_value()) {
+        if (prior.embedded_result_bytes->size() !=
+            update_wire::kTypedUpdateResultBytes) {
+          *diagnostic = DmlUpdateDescriptorDiagnostic(
+              "DML.UPDATE_FAILED",
+              "sblr.dml_update_rows.recovery_result_extent_invalid");
+          return false;
+        }
+        std::array<std::uint8_t, update_wire::kTypedUpdateResultBytes>
+            expected_result{};
+        std::copy(prior.embedded_result_bytes->begin(),
+                  prior.embedded_result_bytes->end(),
+                  expected_result.begin());
+        chain.expected_prepared_result_bytes = expected_result;
+      }
+      if (prior.lifecycle_state == update_wire::TypedUpdateJournalState::intent ||
+          prior.lifecycle_state ==
+              update_wire::TypedUpdateJournalState::prepared) {
+        chain.prior_savepoint_uuid = prior.statement_savepoint_uuid;
+        chain.prior_savepoint_generation =
+            prior.statement_savepoint_generation;
+      } else if (
+          prior.lifecycle_state == update_wire::TypedUpdateJournalState::bound &&
+          *extent_state == update_wire::TypedUpdateJournalState::aborted &&
+          decoded->recovery_observation.savepoint_state ==
+              update_wire::TypedUpdateSavepointState::rolled_back_final) {
+        chain.prior_savepoint_uuid =
+            decoded->recovery_observation.statement_savepoint_uuid;
+        chain.prior_savepoint_generation =
+            decoded->recovery_observation.statement_savepoint_generation;
+      }
+    }
+    update_wire::TypedUpdateJournalRecord journal;
+    if (!update_wire::DecodeAndValidateTypedUpdateJournalRecord(
+            extent.exact_dujr_bytes, chain, &journal, &error)) {
+      return fail(error, "sblr.dml_update_rows.recovery_journal_invalid");
+    }
+    if (journal.journal_sequence != extent.journal_sequence ||
+        journal.lifecycle_state != *extent_state ||
+        journal.prior_record_sha256 != extent.prior_record_sha256 ||
+        journal.record_evidence_sha256 != extent.record_evidence_sha256 ||
+        journal.embedded_descriptor_bytes != snapshot.descriptor_dudc) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_journal_extent_mismatch");
+      return false;
+    }
+    decoded->journal.push_back(std::move(journal));
+  }
+  decoded->staged_successor.reset();
+  if (recovered.staged_successor_present) {
+    const auto& head = decoded->journal.back();
+    const auto& extent = recovered.staged_successor;
+    if (head.lifecycle_state !=
+            update_wire::TypedUpdateJournalState::prepared ||
+        !head.embedded_result_bytes.has_value() ||
+        head.embedded_result_bytes->size() !=
+            update_wire::kTypedUpdateResultBytes ||
+        extent.lifecycle_state !=
+            MgaDmlUpdateDurableJournalStateV1::published ||
+        extent.journal_sequence != head.journal_sequence + 1U ||
+        extent.prior_record_sha256 != head.record_evidence_sha256) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_staged_successor_invalid");
+      return false;
+    }
+    update_wire::TypedUpdateJournalChainContext chain;
+    chain.first_record = false;
+    chain.prior_sequence = head.journal_sequence;
+    chain.prior_state = head.lifecycle_state;
+    chain.prior_record_evidence_sha256 = head.record_evidence_sha256;
+    chain.prior_savepoint_uuid = head.statement_savepoint_uuid;
+    chain.prior_savepoint_generation = head.statement_savepoint_generation;
+    chain.require_same_descriptor = true;
+    if (head.embedded_descriptor_bytes.size() !=
+        chain.expected_descriptor_bytes.size()) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_staged_descriptor_invalid");
+      return false;
+    }
+    std::copy(head.embedded_descriptor_bytes.begin(),
+              head.embedded_descriptor_bytes.end(),
+              chain.expected_descriptor_bytes.begin());
+    std::array<std::uint8_t, update_wire::kTypedUpdateResultBytes>
+        expected_result{};
+    std::copy(head.embedded_result_bytes->begin(),
+              head.embedded_result_bytes->end(), expected_result.begin());
+    chain.expected_prepared_result_bytes = expected_result;
+    update_wire::TypedUpdateJournalRecord staged;
+    if (!update_wire::DecodeAndValidateTypedUpdateJournalRecord(
+            extent.exact_dujr_bytes, chain, &staged, &error)) {
+      return fail(error,
+                  "sblr.dml_update_rows.recovery_staged_successor_invalid");
+    }
+    if (staged.lifecycle_state !=
+            update_wire::TypedUpdateJournalState::published ||
+        staged.journal_sequence != extent.journal_sequence ||
+        staged.prior_record_sha256 != extent.prior_record_sha256 ||
+        staged.record_evidence_sha256 != extent.record_evidence_sha256 ||
+        staged.embedded_descriptor_bytes != snapshot.descriptor_dudc ||
+        !staged.embedded_result_bytes.has_value() ||
+        staged.embedded_result_bytes != head.embedded_result_bytes) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_staged_extent_mismatch");
+      return false;
+    }
+    decoded->staged_successor = std::move(staged);
+  }
+  if (!update_wire::ValidateTypedUpdateSecurityRecoveryAuthority(
+          decoded->carriers.descriptor, decoded->carriers.row_policies,
+          decoded->carriers.recovery_token, decoded->source_policies,
+          decoded->security_snapshot, decoded->journal.back(),
+          decoded->recovery_observation, &error)) {
+    return fail(error, "sblr.dml_update_rows.recovery_authority_invalid");
+  }
+  const auto datatype_revalidation =
+      RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+          context, decoded->carriers.descriptor,
+          decoded->carriers.assignments, decoded->carriers.predicate,
+          decoded->datatype_authority, decoded->operator_authority);
+  if (datatype_revalidation.error) {
+    *diagnostic = datatype_revalidation;
+    return false;
+  }
+  const auto security_recovery =
+      RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
+          context, recovered.validated_handle,
+          recovered.recovery_observation_dumo);
+  if (!security_recovery.ok) {
+    *diagnostic = security_recovery.diagnostic.code.empty()
+                      ? DmlUpdateDescriptorDiagnostic(
+                            "DML.UPDATE_FAILED",
+                            "sblr.dml_update_rows.recovery_security_authority_invalid")
+                      : security_recovery.diagnostic;
+    return false;
+  }
+  if (!update_wire::DecideTypedUpdateRecovery(
+          decoded->recovery_observation, &decoded->decision, &error)) {
+    return fail(error, "sblr.dml_update_rows.recovery_decision_invalid");
+  }
+  *diagnostic = MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  return true;
+}
+
+bool DmlUpdateAppendRecoveredTerminalV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationRecoveryResultV1& recovered,
+    const DmlUpdateDecodedDurableRecoveryV1& decoded,
+    update_wire::TypedUpdateJournalState terminal_state,
+    EngineApiDiagnostic* diagnostic) {
+  if (diagnostic == nullptr || decoded.journal.empty() ||
+      (terminal_state != update_wire::TypedUpdateJournalState::aborted &&
+       terminal_state != update_wire::TypedUpdateJournalState::published)) {
+    return false;
+  }
+  const auto& head = decoded.journal.back();
+  update_wire::TypedUpdateJournalRecord terminal;
+  terminal.lifecycle_state = terminal_state;
+  terminal.journal_sequence = head.journal_sequence + 1U;
+  terminal.database_uuid = head.database_uuid;
+  terminal.authenticated_statement_receipt_uuid =
+      head.authenticated_statement_receipt_uuid;
+  terminal.owning_transaction_uuid = head.owning_transaction_uuid;
+  terminal.owning_local_transaction_id = head.owning_local_transaction_id;
+  terminal.operation_uuid = head.operation_uuid;
+  terminal.recovery_token_uuid = head.recovery_token_uuid;
+  terminal.recovery_generation = head.recovery_generation;
+  terminal.prior_record_sha256 = head.record_evidence_sha256;
+  terminal.descriptor = decoded.carriers.descriptor;
+  if (terminal_state == update_wire::TypedUpdateJournalState::published) {
+    if (head.lifecycle_state != update_wire::TypedUpdateJournalState::prepared ||
+        !head.prior_result.has_value() ||
+        !head.embedded_result_bytes.has_value() ||
+        head.embedded_result_bytes->size() !=
+            update_wire::kTypedUpdateResultBytes) {
+      *diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_published_result_missing");
+      return false;
+    }
+    terminal.statement_savepoint_uuid = head.statement_savepoint_uuid;
+    terminal.statement_savepoint_generation =
+        head.statement_savepoint_generation;
+    terminal.prior_result = head.prior_result;
+  } else if (decoded.recovery_observation.savepoint_state ==
+             update_wire::TypedUpdateSavepointState::rolled_back_final) {
+    terminal.statement_savepoint_uuid =
+        decoded.recovery_observation.statement_savepoint_uuid;
+    terminal.statement_savepoint_generation =
+        decoded.recovery_observation.statement_savepoint_generation;
+  }
+
+  update_wire::TypedUpdateJournalChainContext chain;
+  chain.first_record = false;
+  chain.prior_sequence = head.journal_sequence;
+  chain.prior_state = head.lifecycle_state;
+  chain.prior_record_evidence_sha256 = head.record_evidence_sha256;
+  chain.prior_savepoint_uuid = terminal.statement_savepoint_uuid;
+  chain.prior_savepoint_generation = terminal.statement_savepoint_generation;
+  chain.require_same_descriptor = true;
+  if (head.embedded_descriptor_bytes.size() !=
+      chain.expected_descriptor_bytes.size()) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.recovery_descriptor_extent_invalid");
+    return false;
+  }
+  std::copy(head.embedded_descriptor_bytes.begin(),
+            head.embedded_descriptor_bytes.end(),
+            chain.expected_descriptor_bytes.begin());
+  if (terminal_state == update_wire::TypedUpdateJournalState::published) {
+    std::array<std::uint8_t, update_wire::kTypedUpdateResultBytes>
+        expected_result{};
+    std::copy(head.embedded_result_bytes->begin(),
+              head.embedded_result_bytes->end(), expected_result.begin());
+    chain.expected_prepared_result_bytes = expected_result;
+  }
+
+  update_wire::TypedUpdateCarrierError error;
+  std::vector<std::uint8_t> exact_dujr;
+  update_wire::TypedUpdateHash evidence{};
+  if (!update_wire::EncodeTypedUpdateJournalRecord(
+          terminal, chain, &exact_dujr, &error) ||
+      !update_wire::ExtractTypedUpdateJournalRecordEvidence(
+          exact_dujr, &evidence, &error)) {
+    *diagnostic = DmlUpdateCarrierDiagnostic(
+        error, "sblr.dml_update_rows.recovery_terminal_invalid");
+    return false;
+  }
+  const auto prior_state =
+      DmlUpdateDurableJournalStateV1(head.lifecycle_state);
+  const auto next_state = DmlUpdateDurableJournalStateV1(terminal_state);
+  if (!prior_state.has_value() || !next_state.has_value()) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.recovery_terminal_state_invalid");
+    return false;
+  }
+  EngineDmlUpdateDurableAppendSuccessorRequestV1 request;
+  request.context = context;
+  request.append.identity = recovered.identity;
+  request.append.expected_prior_sequence = head.journal_sequence;
+  request.append.expected_prior_state = *prior_state;
+  request.append.expected_prior_record_evidence_sha256 =
+      head.record_evidence_sha256;
+  request.append.successor.journal_sequence = terminal.journal_sequence;
+  request.append.successor.lifecycle_state = *next_state;
+  request.append.successor.prior_record_sha256 =
+      head.record_evidence_sha256;
+  request.append.successor.record_evidence_sha256 = evidence;
+  request.append.successor.exact_dujr_bytes = std::move(exact_dujr);
+  const auto appended =
+      AppendDmlUpdateDurableOperationSuccessorV1(request);
+  if (!appended.ok()) {
+    *diagnostic = appended.diagnostic.code.empty()
+                      ? DmlUpdateDescriptorDiagnostic(
+                            "DML.UPDATE_FAILED",
+                            "sblr.dml_update_rows.recovery_terminal_append_failed")
+                      : appended.diagnostic;
+    return false;
+  }
+  *diagnostic = MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  return true;
+}
+
+MgaDmlUpdateDurableOperationIdentityV1 DmlUpdateDurableIdentityV1(
+    const DmlUpdateRowsDescriptorRecordV1& record) {
+  return record.durable_operation_identity;
+}
+
+MgaDmlUpdateDurableAuthoritySnapshotV1 DmlUpdateDurableAuthoritySnapshotV1(
+    const DmlUpdateRowsDescriptorRecordV1& record) {
+  const auto& carriers = record.canonical_carriers;
+  MgaDmlUpdateDurableAuthoritySnapshotV1 snapshot;
+  snapshot.assignment_vector_duav = carriers.assignments.exact_bytes;
+  snapshot.predicate_vector_duev = carriers.predicate.exact_bytes;
+  snapshot.row_policy_vector_dupv = carriers.row_policies.exact_bytes;
+  snapshot.constraint_vector_ducv = carriers.constraints.exact_bytes;
+  snapshot.trigger_vector_dutv = carriers.triggers.exact_bytes;
+  snapshot.target_order_duor = carriers.target_order.exact_bytes;
+  snapshot.resource_budget_dubr = carriers.resource_budget.exact_bytes;
+  snapshot.recovery_token_durc = carriers.recovery_token.exact_bytes;
+  snapshot.source_policy_vector_dusv =
+      record.canonical_source_policies.exact_bytes;
+  snapshot.security_snapshot_proof_dusp =
+      record.canonical_security_snapshot.exact_bytes;
+  snapshot.descriptor_dudc = carriers.descriptor.exact_bytes;
+  snapshot.datatype_authority_vector_dudv =
+      record.canonical_datatype_authority.exact_bytes;
+  snapshot.builtin_operator_authority_vector_duov =
+      record.canonical_operator_authority.exact_bytes;
+  return snapshot;
+}
+
+std::optional<MgaDmlUpdateDurableJournalExtentV1>
+DmlUpdateDurableJournalExtentV1(
+    const DmlUpdatePreparedJournalAppendV1& prepared) {
+  const auto state = DmlUpdateDurableJournalStateV1(prepared.next_state);
+  if (!state.has_value() || prepared.exact_dujr_bytes.empty()) {
+    return std::nullopt;
+  }
+  MgaDmlUpdateDurableJournalExtentV1 extent;
+  extent.journal_sequence = prepared.expected_prior_sequence + 1U;
+  extent.lifecycle_state = *state;
+  extent.prior_record_sha256 = prepared.expected_prior_evidence_sha256;
+  extent.record_evidence_sha256 = prepared.next_evidence_sha256;
+  extent.exact_dujr_bytes = prepared.exact_dujr_bytes;
+  return extent;
+}
+
+bool DmlUpdatePrepareJournalRecordV1(
+    const EngineRequestContext& context,
+    const DmlUpdateRowsDescriptorRecordV1& record,
+    DmlUpdatePreparedJournalAppendV1* prepared) {
+  try {
+    if (prepared == nullptr || context.database_path.empty() ||
+        context.database_uuid.canonical != record.database_uuid) {
+      return false;
+    }
+    std::vector<std::uint8_t> journal;
+    update_wire::TypedUpdateJournalState next_state;
+    update_wire::TypedUpdateHash next_evidence{};
+    if (!DmlUpdateBuildJournalRecordV1(
+            context, record, &journal, &next_state, &next_evidence)) {
+      return false;
+    }
+    prepared->exact_dujr_bytes = std::move(journal);
+    prepared->expected_prior_sequence = record.journal_sequence;
+    prepared->expected_prior_state = record.latest_journal_state;
+    prepared->expected_prior_evidence_sha256 =
+        record.latest_journal_evidence_sha256;
+    prepared->next_state = next_state;
+    prepared->next_evidence_sha256 = next_evidence;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool DmlUpdateCommitPreparedJournalRecordV1(
+    const EngineRequestContext& context,
+    DmlUpdateRowsDescriptorRecordV1* record,
+    const DmlUpdatePreparedJournalAppendV1& prepared) {
+  if (record == nullptr || prepared.exact_dujr_bytes.empty() ||
+      record->journal_sequence != prepared.expected_prior_sequence ||
+      record->latest_journal_state != prepared.expected_prior_state ||
+      record->latest_journal_evidence_sha256 !=
+          prepared.expected_prior_evidence_sha256) {
+    return false;
+  }
+  const auto extent = DmlUpdateDurableJournalExtentV1(prepared);
+  if (!extent.has_value()) return false;
+  MgaDmlUpdateDurableOperationMutationResultV1 mutation;
+  if (prepared.expected_prior_sequence == 0) {
+    EngineDmlUpdateDurablePublishBoundRequestV1 request;
+    request.context = context;
+    request.publication.identity = DmlUpdateDurableIdentityV1(*record);
+    request.publication.authority_snapshot =
+        DmlUpdateDurableAuthoritySnapshotV1(*record);
+    request.publication.bound_journal = *extent;
+    mutation = PublishDmlUpdateDurableOperationBoundV1(request);
+  } else {
+    const auto prior_state =
+        DmlUpdateDurableJournalStateV1(prepared.expected_prior_state);
+    if (!prior_state.has_value()) return false;
+    EngineDmlUpdateDurableAppendSuccessorRequestV1 request;
+    request.context = context;
+    request.append.identity = DmlUpdateDurableIdentityV1(*record);
+    request.append.expected_prior_sequence =
+        prepared.expected_prior_sequence;
+    request.append.expected_prior_state = *prior_state;
+    request.append.expected_prior_record_evidence_sha256 =
+        prepared.expected_prior_evidence_sha256;
+    request.append.successor = *extent;
+    mutation = AppendDmlUpdateDurableOperationSuccessorV1(request);
+  }
+  if (!mutation.ok()) return false;
+  record->journal_sequence += 1U;
+  record->latest_journal_state = prepared.next_state;
+  record->latest_journal_evidence_sha256 =
+      prepared.next_evidence_sha256;
+  return true;
+}
+
+bool DmlUpdatePrepareDurableSuccessorV1(
+    const EngineRequestContext& context,
+    const DmlUpdateRowsDescriptorRecordV1& record,
+    const DmlUpdatePreparedJournalAppendV1& prepared,
+    DmlUpdatePreparedDurableSuccessorV1* durable_prepared) {
+  if (durable_prepared == nullptr || prepared.expected_prior_sequence == 0 ||
+      prepared.exact_dujr_bytes.empty() ||
+      record.journal_sequence != prepared.expected_prior_sequence ||
+      record.latest_journal_state != prepared.expected_prior_state ||
+      record.latest_journal_evidence_sha256 !=
+          prepared.expected_prior_evidence_sha256) {
+    return false;
+  }
+  const auto prior_state =
+      DmlUpdateDurableJournalStateV1(prepared.expected_prior_state);
+  const auto extent = DmlUpdateDurableJournalExtentV1(prepared);
+  if (!prior_state.has_value() || !extent.has_value()) return false;
+
+  EngineDmlUpdateDurableAppendSuccessorRequestV1 request;
+  request.context = context;
+  request.append.identity = DmlUpdateDurableIdentityV1(record);
+  request.append.expected_prior_sequence = prepared.expected_prior_sequence;
+  request.append.expected_prior_state = *prior_state;
+  request.append.expected_prior_record_evidence_sha256 =
+      prepared.expected_prior_evidence_sha256;
+  request.append.successor = *extent;
+  auto provider_prepared =
+      PrepareDmlUpdateDurableOperationSuccessorV1(request);
+  if (!provider_prepared.ok()) return false;
+
+  durable_prepared->expected_prior_sequence =
+      prepared.expected_prior_sequence;
+  durable_prepared->expected_prior_state = prepared.expected_prior_state;
+  durable_prepared->expected_prior_evidence_sha256 =
+      prepared.expected_prior_evidence_sha256;
+  durable_prepared->next_state = prepared.next_state;
+  durable_prepared->next_evidence_sha256 = prepared.next_evidence_sha256;
+  durable_prepared->provider_prepared =
+      std::move(provider_prepared.prepared);
+  return durable_prepared->provider_prepared.valid();
+}
+
+bool DmlUpdateCommitDurableSuccessorNoBuildV1(
+    DmlUpdateRowsDescriptorRecordV1* record,
+    DmlUpdatePreparedDurableSuccessorV1&& prepared) {
+  if (record == nullptr || !prepared.provider_prepared.valid() ||
+      record->journal_sequence != prepared.expected_prior_sequence ||
+      record->latest_journal_state != prepared.expected_prior_state ||
+      record->latest_journal_evidence_sha256 !=
+          prepared.expected_prior_evidence_sha256) {
+    return false;
+  }
+  const auto mutation = CommitPreparedDmlUpdateDurableOperationSuccessorV1(
+      std::move(prepared.provider_prepared));
+  if (!mutation.ok()) return false;
+  record->journal_sequence += 1U;
+  record->latest_journal_state = prepared.next_state;
+  record->latest_journal_evidence_sha256 = prepared.next_evidence_sha256;
+  return true;
+}
+
+void DmlUpdateCopyCommittedJournalPositionV1(
+    const DmlUpdateRowsDescriptorRecordV1& committed,
+    DmlUpdateRowsDescriptorRecordV1* replacement) {
+  if (replacement == nullptr) return;
+  replacement->journal_sequence = committed.journal_sequence;
+  replacement->latest_journal_state = committed.latest_journal_state;
+  replacement->latest_journal_evidence_sha256 =
+      committed.latest_journal_evidence_sha256;
+}
+
+bool DmlUpdatePublishJournalRecordV1(
+    const EngineRequestContext& context,
+    DmlUpdateRowsDescriptorRecordV1& record) {
+  DmlUpdatePreparedJournalAppendV1 prepared;
+  return DmlUpdatePrepareJournalRecordV1(context, record, &prepared) &&
+         DmlUpdateCommitPreparedJournalRecordV1(context, &record, prepared);
+}
+
+std::vector<std::uint8_t> EncodeDmlUpdateRowsResultV1(
+    const DmlUpdateRowsDescriptorRecordV1& record,
+    const EngineUpdateRowsResult& result) {
+  if (!result.ok || result.updated_count > result.matched_count ||
+      record.descriptor_ref.descriptor_generation == 0 ||
+      record.operation_generation == 0 || record.local_transaction_id == 0 ||
+      record.relation_generation == 0 ||
+      record.publication_barrier_generation == 0) {
+    return {};
+  }
+  update_wire::TypedUpdateResultCarrier carrier;
+  if (!DmlUpdateTypedUuid(record.descriptor_ref.descriptor_uuid,
+                          &carrier.update_descriptor_uuid) ||
+      !DmlUpdateTypedUuid(record.operation_uuid, &carrier.operation_uuid) ||
+      !DmlUpdateTypedUuid(record.transaction_uuid,
+                          &carrier.owning_transaction_uuid) ||
+      !DmlUpdateTypedUuid(record.relation_uuid, &carrier.relation_uuid) ||
+      !DmlUpdateTypedUuid(record.publication_barrier_uuid,
+                          &carrier.publication_barrier_uuid)) {
+    return {};
+  }
+  carrier.update_descriptor_generation =
+      record.descriptor_ref.descriptor_generation;
+  carrier.owning_local_transaction_id = record.local_transaction_id;
+  carrier.relation_generation = record.relation_generation;
+  carrier.matched_count = result.matched_count;
+  carrier.updated_count = result.updated_count;
+  carrier.publication_barrier_generation =
+      record.publication_barrier_generation;
+
+  std::vector<update_wire::TypedUpdateResultEvidenceReference> evidence;
+  evidence.reserve(result.evidence.size());
+  for (const auto& source : result.evidence) {
+    evidence.push_back({source.evidence_kind, source.evidence_id});
+  }
+  update_wire::TypedUpdateCarrierError error;
+  if (!update_wire::ComputeTypedUpdateResultInnerEvidence(
+          carrier, evidence, &carrier.effect_set_sha256,
+          &carrier.executor_evidence_sha256, &error)) {
+    return {};
+  }
+  std::vector<std::uint8_t> encoded;
+  update_wire::TypedUpdateResultCarrier decoded;
+  if (!update_wire::EncodeTypedUpdateResult(carrier, &encoded, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateResult(
+          encoded, &decoded, &error) || decoded.exact_bytes != encoded) {
+    return {};
+  }
+  return encoded;
+}
+
 }  // namespace
+
+void SetDmlUpdateRowsTestFaultPointV1(
+    EngineDmlUpdateRowsTestFaultPointV1 fault_point) {
+  g_dml_update_test_fault_point.store(fault_point,
+                                      std::memory_order_release);
+}
+
+void ResetDmlUpdateRowsDescriptorRegistryForTestV1() {
+  std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+  g_dml_update_descriptors.clear();
+  g_dml_update_test_fault_point.store(
+      EngineDmlUpdateRowsTestFaultPointV1::none,
+      std::memory_order_release);
+}
+
+EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
+    const EngineRequestContext& context,
+    const EngineDmlUpdateRowsBindingDemandV1& demand) {
+  EngineDmlUpdateRowsBindResultV1 result;
+  const auto refuse = [&](std::string code, std::string key,
+                          std::string detail = {}) {
+    result.diagnostic = DmlUpdateDescriptorDiagnostic(
+        std::move(code), std::move(key), std::move(detail));
+    return result;
+  };
+  if (!context.security_context_present ||
+      !context.statement_metadata_snapshot_engine_owned ||
+      !context.authorization_context.present ||
+      context.authorization_context.authority_uuid.canonical.empty() ||
+      context.authorization_context.security_context_generation == 0 ||
+      !DmlUpdateHasTraceTag(context, "private_dml_update_rows_binder")) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "sblr.dml_update_rows.binding_authority_required");
+  }
+  if (context.read_only_mode || context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty() ||
+      context.statement_receipt_uuid.canonical.empty() ||
+      context.statement_receipt_uuid.canonical !=
+          demand.authenticated_statement_receipt_uuid ||
+      context.datatype_catalog_snapshot_uuid.canonical.empty() ||
+      context.datatype_catalog_generation == 0 ||
+      context.datatype_registry_generation == 0 ||
+      demand.structural_occurrence_id == 0 ||
+      demand.target_relation_uuid_hint.empty() || demand.assignments.empty() ||
+      demand.assignments.size() > 1024) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "sblr.dml_update_rows.binding_context_stale");
+  }
+  if (DmlUpdateCancellationRequested(context)) {
+    return refuse("PROCESS.CANCELLED",
+                  "sblr.dml_update_rows.binding_cancelled");
+  }
+  const auto loaded = LoadMgaRelationStorageDescriptor(
+      context, demand.target_relation_uuid_hint);
+  if (!loaded.ok) {
+    result.diagnostic = loaded.diagnostic;
+    return result;
+  }
+  const auto availability = LoadSblrExecutorAvailabilitySnapshot(
+      context, DmlUpdateRowsExecutorIdentity());
+  if (!availability.ok) {
+    result.diagnostic = availability.diagnostic;
+    return result;
+  }
+  SblrExecutorAvailabilitySnapshot current_availability;
+  const auto availability_diagnostic = RevalidateSblrExecutorAvailability(
+      context, DmlUpdateRowsExecutorIdentity(), availability.snapshot,
+      &current_availability);
+  if (availability_diagnostic.error ||
+      current_availability.generation == 0) {
+    result.diagnostic = availability_diagnostic;
+    return result;
+  }
+
+  DmlUpdateRowsDescriptorRecordV1 record;
+  record.statement_receipt_uuid = context.statement_receipt_uuid.canonical;
+  record.structural_occurrence_id = demand.structural_occurrence_id;
+  record.database_uuid = context.database_uuid.canonical;
+  record.session_uuid = context.session_uuid.canonical;
+  record.transaction_uuid = context.transaction_uuid.canonical;
+  record.local_transaction_id = context.local_transaction_id;
+  record.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  record.metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  record.datatype_catalog_snapshot_uuid =
+      context.datatype_catalog_snapshot_uuid.canonical;
+  record.datatype_catalog_generation = context.datatype_catalog_generation;
+  record.datatype_registry_generation = context.datatype_registry_generation;
+  record.security_epoch = context.security_epoch;
+  record.catalog_generation_id = context.catalog_generation_id;
+  record.executor_availability_snapshot = current_availability;
+  record.relation_uuid = loaded.descriptor.relation_uuid.canonical;
+  record.relation_generation = loaded.descriptor.relation_generation;
+  record.relation_descriptor_uuid =
+      loaded.descriptor.descriptor_uuid.canonical;
+  record.relation_descriptor_generation =
+      loaded.descriptor.descriptor_generation;
+  record.prepared_request.context = context;
+  record.prepared_request.operation_id = "dml.update_rows";
+  record.prepared_request.target_table.uuid.canonical = record.relation_uuid;
+  record.prepared_request.target_table.object_kind = "table";
+  record.prepared_request.option_envelopes.push_back(
+      "result_payload_policy:summary_only");
+
+  std::unordered_set<std::string> assigned_column_uuids;
+  std::uint32_t expected_ordinal = 1;
+  for (const auto& assignment : demand.assignments) {
+    if (assignment.ordinal != expected_ordinal++ ||
+        assignment.target_column_spelling.empty() ||
+        assignment.literal_spelling.empty()) {
+      return refuse("SBLR.OPERAND_INVALID",
+                    "sblr.dml_update_rows.assignment_invalid");
+    }
+    const auto* column = DmlUpdateFindColumn(
+        loaded.descriptor, assignment.target_column_spelling);
+    if (column == nullptr || column->generated ||
+        !assigned_column_uuids.insert(column->column_uuid.canonical).second) {
+      return refuse("DML.ASSIGNMENT_SHAPE_INVALID",
+                    "sblr.dml_update_rows.assignment_column_refused",
+                    assignment.target_column_spelling);
+    }
+    EngineTypedValue value;
+    DmlUpdateBoundColumnV1 identity;
+    EngineApiDiagnostic diagnostic;
+    if (!DmlUpdateBindLiteral(context, *column,
+                              assignment.literal_spelling, &value,
+                              &identity, &diagnostic)) {
+      result.diagnostic = std::move(diagnostic);
+      return result;
+    }
+    record.prepared_request.assignments.push_back(
+        {column->canonical_name_key, std::move(value)});
+    record.assignment_columns.push_back(std::move(identity));
+  }
+
+  if (demand.predicate_kind.empty()) {
+    record.prepared_request.update_predicate.predicate_kind = "engine_bound_true";
+  } else {
+    if (demand.predicate_kind != "column_equals" ||
+        demand.predicate_column_spelling.empty() ||
+        demand.predicate_literal_spelling.empty()) {
+      return refuse("SBLR.OPERAND_INVALID",
+                    "sblr.dml_update_rows.predicate_invalid");
+    }
+    const auto* column = DmlUpdateFindColumn(
+        loaded.descriptor, demand.predicate_column_spelling);
+    if (column == nullptr) {
+      return refuse("SBLR.OPERAND_INVALID",
+                    "sblr.dml_update_rows.predicate_column_refused",
+                    demand.predicate_column_spelling);
+    }
+    EngineTypedValue value;
+    DmlUpdateBoundColumnV1 identity;
+    EngineApiDiagnostic diagnostic;
+    if (!DmlUpdateBindLiteral(context, *column,
+                              demand.predicate_literal_spelling, &value,
+                              &identity, &diagnostic)) {
+      result.diagnostic = std::move(diagnostic);
+      return result;
+    }
+    record.prepared_request.update_predicate.predicate_kind = "column_equals";
+    record.prepared_request.update_predicate.canonical_predicate_envelope =
+        column->canonical_name_key;
+    record.prepared_request.update_predicate.bound_values.push_back(
+        std::move(value));
+    record.predicate_column = std::move(identity);
+  }
+
+  if (!DmlUpdateIssueIdentity(&record.descriptor_ref.descriptor_uuid) ||
+      !DmlUpdateIssueIdentity(&record.operation_uuid) ||
+      !DmlUpdateIssueIdentity(&record.relation_occurrence_uuid)) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  "sblr.dml_update_rows.descriptor_identity_unavailable");
+  }
+  record.descriptor_ref.descriptor_generation = 1;
+  record.operation_generation = 1;
+  record.relation_occurrence_generation = 1;
+
+  EngineDmlUpdatePolicyCatalogCaptureRequestV1 policy_capture_request;
+  policy_capture_request.context = context;
+  policy_capture_request.authenticated_statement_receipt_uuid =
+      record.statement_receipt_uuid;
+  policy_capture_request.structural_occurrence_id =
+      record.structural_occurrence_id;
+  policy_capture_request.relation_occurrence.relation_uuid =
+      record.relation_uuid;
+  policy_capture_request.relation_occurrence.relation_generation =
+      record.relation_generation;
+  policy_capture_request.relation_occurrence.relation_occurrence_uuid =
+      record.relation_occurrence_uuid;
+  policy_capture_request.relation_occurrence
+      .relation_occurrence_generation = record.relation_occurrence_generation;
+  policy_capture_request.catalog_snapshot_uuid =
+      record.metadata_snapshot_uuid;
+  policy_capture_request.catalog_generation = record.catalog_generation_id;
+  policy_capture_request.descriptor_uuid =
+      record.descriptor_ref.descriptor_uuid;
+  policy_capture_request.descriptor_generation =
+      record.descriptor_ref.descriptor_generation;
+  auto policy_authority =
+      CaptureDmlUpdatePolicyCatalogAuthorityV1(policy_capture_request);
+  if (!policy_authority.ok) {
+    result.diagnostic = policy_authority.diagnostic;
+    return result;
+  }
+  record.policy_catalog_authority = std::move(policy_authority);
+
+  EngineDmlUpdateDatatypeOperatorBindingRequestV1 datatype_binding_request;
+  datatype_binding_request.context = context;
+  datatype_binding_request.equality_required =
+      record.predicate_column.has_value();
+  if (record.predicate_column.has_value()) {
+    const auto& predicate_identity = *record.predicate_column;
+    datatype_binding_request.left_descriptor_uuid =
+        predicate_identity.datatype_descriptor_uuid;
+    datatype_binding_request.left_descriptor_generation =
+        predicate_identity.datatype_descriptor_generation;
+    datatype_binding_request.left_type_uuid = predicate_identity.type_uuid;
+    datatype_binding_request.left_type_generation =
+        predicate_identity.type_generation;
+    datatype_binding_request.right_descriptor_uuid =
+        predicate_identity.datatype_descriptor_uuid;
+    datatype_binding_request.right_descriptor_generation =
+        predicate_identity.datatype_descriptor_generation;
+    datatype_binding_request.right_type_uuid = predicate_identity.type_uuid;
+    datatype_binding_request.right_type_generation =
+        predicate_identity.type_generation;
+  }
+  record.datatype_operator_binding =
+      ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(
+          datatype_binding_request);
+  if (!record.datatype_operator_binding.ok) {
+    result.diagnostic = record.datatype_operator_binding.diagnostic;
+    return result;
+  }
+
+  const auto freeze_request =
+      DmlUpdateCurrentImmutableAuthorityRequest(context, record);
+  const auto frozen = FreezeDmlUpdateImmutableAuthorityV1(freeze_request);
+  if (!frozen.ok) {
+    result.diagnostic = frozen.diagnostic;
+    return result;
+  }
+  record.immutable_authority_snapshot = frozen.snapshot;
+  record.security_context_uuid =
+      frozen.snapshot.security_policy_snapshot.security_context_uuid;
+  record.security_context_generation =
+      frozen.snapshot.security_policy_snapshot.security_context_generation;
+  record.security_snapshot_uuid =
+      frozen.snapshot.security_policy_snapshot.snapshot_uuid;
+  record.security_generation =
+      frozen.snapshot.security_policy_snapshot.security_generation;
+
+  EngineApiDiagnostic carrier_diagnostic;
+  if (!DmlUpdateBuildAssignmentCarrier(&record, &carrier_diagnostic) ||
+      !DmlUpdateBuildPredicateCarrier(&record, &carrier_diagnostic) ||
+      !DmlUpdateBuildFrozenAuthorityCarriers(
+          frozen.snapshot, &record, &carrier_diagnostic)) {
+    result.diagnostic = carrier_diagnostic.code.empty()
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "SBLR.OPERAND_INVALID",
+                                  "sblr.dml_update_rows.carrier_build_failed")
+                            : carrier_diagnostic;
+    return result;
+  }
+  if (!DmlUpdateBuildExecutionAuthorityCarriers(
+          context, &record, &carrier_diagnostic)) {
+    result.diagnostic = carrier_diagnostic.code.empty()
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "SBLR.OPERAND_INVALID",
+                                  "sblr.dml_update_rows.carrier_build_failed")
+                            : carrier_diagnostic;
+    return result;
+  }
+  if (!DmlUpdateBuildDescriptorCarrier(&record, &carrier_diagnostic)) {
+    const bool abandoned =
+        DmlUpdateAbandonDurableReservationV1(context, record);
+    result.diagnostic = !abandoned
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "DML.UPDATE_FAILED",
+                                  "sblr.dml_update_rows.reservation_abandon_failed")
+                            : carrier_diagnostic.code.empty()
+                                  ? DmlUpdateDescriptorDiagnostic(
+                                        "SBLR.OPERAND_INVALID",
+                                        "sblr.dml_update_rows.carrier_build_failed")
+                                  : carrier_diagnostic;
+    return result;
+  }
+  if (!DmlUpdateCaptureCanonicalProviderAuthorities(
+          context, &record, &carrier_diagnostic)) {
+    const bool abandoned =
+        DmlUpdateAbandonDurableReservationV1(context, record);
+    result.diagnostic = !abandoned
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "DML.UPDATE_FAILED",
+                                  "sblr.dml_update_rows.reservation_abandon_failed")
+                            : carrier_diagnostic.code.empty()
+                                  ? DmlUpdateDescriptorDiagnostic(
+                                        "SBLR.OPERAND_INVALID",
+                                        "sblr.dml_update_rows.provider_authority_capture_failed")
+                                  : carrier_diagnostic;
+    return result;
+  }
+  // Allocate the caller result and private map node before bound durability.
+  // The mutex keeps the uncommitted node invisible to descriptor consumers;
+  // once PublishBound commits, no fallible host allocation is needed to expose
+  // the already-durable reference.
+  try {
+    result.descriptor_ref = record.descriptor_ref;
+    result.diagnostic = MakeEngineApiDiagnostic(
+        "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+    std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+    if (g_dml_update_descriptors.contains(
+            record.descriptor_ref.descriptor_uuid)) {
+      (void)DmlUpdateAbandonDurableReservationV1(context, record);
+      return refuse("SBLR.OPERAND_INVALID",
+                    "sblr.dml_update_rows.descriptor_identity_collision");
+    }
+    auto [stored, inserted] = g_dml_update_descriptors.emplace(
+        record.descriptor_ref.descriptor_uuid, std::move(record));
+    if (!inserted) {
+      return refuse("SBLR.OPERAND_INVALID",
+                    "sblr.dml_update_rows.descriptor_identity_collision");
+    }
+    bool published = false;
+    try {
+      published = DmlUpdatePublishJournalRecordV1(context, stored->second);
+    } catch (...) {
+      (void)DmlUpdateAbandonDurableReservationV1(context, stored->second);
+      g_dml_update_descriptors.erase(stored);
+      throw;
+    }
+    if (!published) {
+      const bool abandoned =
+          DmlUpdateAbandonDurableReservationV1(context, stored->second);
+      g_dml_update_descriptors.erase(stored);
+      return refuse(
+          "DML.UPDATE_FAILED",
+          abandoned ? "sblr.dml_update_rows.registry_publish_failed"
+                    : "sblr.dml_update_rows.reservation_abandon_failed");
+    }
+  } catch (const std::bad_alloc&) {
+    (void)DmlUpdateAbandonDurableReservationV1(context, record);
+    return refuse("RESOURCE.BUDGET_EXCEEDED",
+                  "sblr.dml_update_rows.binding_publication_allocation_failed");
+  } catch (...) {
+    (void)DmlUpdateAbandonDurableReservationV1(context, record);
+    return refuse("DML.UPDATE_FAILED",
+                  "sblr.dml_update_rows.binding_publication_failed");
+  }
+  result.ok = true;
+  return result;
+}
+
+bool DmlUpdateBuildImmutableReplayV1(
+    const update_wire::TypedUpdateJournalRecord& journal,
+    EngineDmlUpdateRowsConsumeResultV1* result) {
+  if (result == nullptr ||
+      journal.lifecycle_state !=
+          update_wire::TypedUpdateJournalState::published ||
+      !journal.prior_result.has_value() ||
+      !journal.embedded_result_bytes.has_value() ||
+      journal.embedded_result_bytes->size() !=
+          update_wire::kTypedUpdateResultBytes) {
+    return false;
+  }
+  result->prior_result = {};
+  result->prior_result.ok = true;
+  result->prior_result.operation_id = "dml.update_rows";
+  result->prior_result.matched_count = journal.prior_result->matched_count;
+  result->prior_result.updated_count = journal.prior_result->updated_count;
+  // Host evidence is deliberately not reconstructed.  The exact DURS inner
+  // hashes remain the durable executor/effect evidence and are returned as
+  // canonical bytes to the public result path.
+  result->canonical_result_bytes = *journal.embedded_result_bytes;
+  result->immutable_replay = true;
+  result->ok = true;
+  result->diagnostic = MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  return true;
+}
+
+bool DmlUpdateRevalidateRecoveredSecurityV1(
+    const EngineRequestContext& context,
+    const MgaDmlUpdateDurableOperationRecoveryResultV1& recovered,
+    const DmlUpdateDecodedDurableRecoveryV1& decoded,
+    EngineApiDiagnostic* diagnostic) {
+  if (diagnostic == nullptr || !recovered.validated_handle.valid() ||
+      recovered.recovery_observation_dumo.empty()) {
+    return false;
+  }
+  const auto security =
+      RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
+          context, recovered.validated_handle,
+          recovered.recovery_observation_dumo);
+  if (!security.ok) {
+    *diagnostic = security.diagnostic.code.empty()
+                      ? DmlUpdateDescriptorDiagnostic(
+                            "DML.UPDATE_FAILED",
+                            "sblr.dml_update_rows.recovery_security_invalid")
+                      : security.diagnostic;
+    return false;
+  }
+  if (security.snapshot.snapshot_uuid !=
+          DmlUpdateUuidText(decoded.security_snapshot.security_snapshot_uuid) ||
+      security.snapshot.snapshot_generation !=
+          decoded.security_snapshot.security_snapshot_generation ||
+      security.snapshot.security_context_uuid !=
+          DmlUpdateUuidText(decoded.security_snapshot.security_context_uuid) ||
+      security.snapshot.security_context_generation !=
+          decoded.security_snapshot.security_context_generation ||
+      security.snapshot.security_generation !=
+          decoded.security_snapshot.security_epoch ||
+      security.snapshot.policy_generation !=
+          decoded.security_snapshot.policy_generation ||
+      security.snapshot.authenticated_statement_receipt_uuid !=
+          context.statement_receipt_uuid.canonical ||
+      security.snapshot.target_relation_uuid !=
+          DmlUpdateUuidText(decoded.security_snapshot.target_relation_uuid)) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.recovery_security_binding_mismatch");
+    return false;
+  }
+  return true;
+}
+
+EngineDmlUpdateRowsConsumeResultV1 DmlUpdateConsumeRecoveredDurableV1(
+    const EngineRequestContext& consumer_context,
+    const EngineDmlUpdateRowsDescriptorRefV1& descriptor_ref,
+    std::uint64_t structural_occurrence_id) {
+  auto context = consumer_context;
+  context.trace_tags.erase(
+      std::remove(context.trace_tags.begin(), context.trace_tags.end(),
+                  "private_dml_update_rows_consumer"),
+      context.trace_tags.end());
+  context.trace_tags.erase(
+      std::remove(context.trace_tags.begin(), context.trace_tags.end(),
+                  "private_dml_update_rows_binder"),
+      context.trace_tags.end());
+  if (!DmlUpdateHasTraceTag(context,
+                            "private_dml_update_rows_recovery")) {
+    context.trace_tags.push_back("private_dml_update_rows_recovery");
+  }
+  EngineDmlUpdateRowsConsumeResultV1 result;
+  if (descriptor_ref.descriptor_uuid.empty() ||
+      descriptor_ref.descriptor_generation == 0 ||
+      structural_occurrence_id == 0) {
+    result.diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.dml_update_rows.recovery_lookup_invalid");
+    return result;
+  }
+  EngineDmlUpdateDurableRecoverChainRequestV1 request;
+  request.context = context;
+  request.lookup.descriptor_uuid = descriptor_ref.descriptor_uuid;
+  request.lookup.descriptor_generation =
+      descriptor_ref.descriptor_generation;
+  request.lookup.structural_occurrence_id = structural_occurrence_id;
+  auto recovered = RecoverDmlUpdateDurableOperationChainV1(request);
+  if (!recovered.ok()) {
+    result.diagnostic = recovered.diagnostic.code.empty()
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "SECURITY.ACCESS_DENIED",
+                                  "sblr.dml_update_rows.descriptor_hidden")
+                            : recovered.diagnostic;
+    return result;
+  }
+  DmlUpdateDecodedDurableRecoveryV1 decoded;
+  EngineApiDiagnostic diagnostic;
+  if (!DmlUpdateDecodeDurableRecoveryV1(
+          context, descriptor_ref, structural_occurrence_id, recovered,
+          &decoded, &diagnostic) ||
+      !DmlUpdateRevalidateRecoveredSecurityV1(
+          context, recovered, decoded, &diagnostic)) {
+    result.diagnostic = diagnostic.code.empty()
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "DML.UPDATE_FAILED",
+                                  "sblr.dml_update_rows.recovery_invalid")
+                            : std::move(diagnostic);
+    return result;
+  }
+
+  if (decoded.decision ==
+      update_wire::TypedUpdateRecoveryDecision::append_aborted_no_result) {
+    if (decoded.recovery_observation.savepoint_state ==
+        update_wire::TypedUpdateSavepointState::active) {
+      const auto rolled_back =
+          RollbackDmlUpdateStatementFromValidatedDurableAuthorityV1(
+              context, recovered.validated_handle);
+      if (!rolled_back.ok()) {
+        result.diagnostic = rolled_back.diagnostic.code.empty()
+                                ? DmlUpdateDescriptorDiagnostic(
+                                      "MGA.TRANSACTION.ROLLBACK_FAILED",
+                                      "sblr.dml_update_rows.recovery_rollback_failed")
+                                : rolled_back.diagnostic;
+        return result;
+      }
+      auto refreshed = RecoverDmlUpdateDurableOperationChainV1(request);
+      DmlUpdateDecodedDurableRecoveryV1 refreshed_decoded;
+      if (!refreshed.ok() ||
+          !DmlUpdateDecodeDurableRecoveryV1(
+              context, descriptor_ref, structural_occurrence_id, refreshed,
+              &refreshed_decoded, &diagnostic) ||
+          !DmlUpdateRevalidateRecoveredSecurityV1(
+              context, refreshed, refreshed_decoded, &diagnostic) ||
+          refreshed_decoded.decision !=
+              update_wire::TypedUpdateRecoveryDecision::
+                  append_aborted_no_result ||
+          refreshed_decoded.recovery_observation.savepoint_state !=
+              update_wire::TypedUpdateSavepointState::rolled_back_final) {
+        result.diagnostic = diagnostic.code.empty()
+                                ? DmlUpdateDescriptorDiagnostic(
+                                      "DML.UPDATE_FAILED",
+                                      "sblr.dml_update_rows.recovery_rollback_observation_invalid")
+                                : std::move(diagnostic);
+        return result;
+      }
+      recovered = std::move(refreshed);
+      decoded = std::move(refreshed_decoded);
+    }
+    if (!DmlUpdateAppendRecoveredTerminalV1(
+            context, recovered, decoded,
+            update_wire::TypedUpdateJournalState::aborted, &diagnostic)) {
+      result.diagnostic = diagnostic.code.empty()
+                              ? DmlUpdateDescriptorDiagnostic(
+                                    "DML.UPDATE_FAILED",
+                                    "sblr.dml_update_rows.recovery_abort_publish_failed")
+                              : std::move(diagnostic);
+      return result;
+    }
+    result.diagnostic = DmlUpdateDescriptorDiagnostic(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.recovered_prepublication_abort");
+    return result;
+  }
+
+  if (decoded.decision ==
+      update_wire::TypedUpdateRecoveryDecision::
+          append_published_and_replay_result) {
+    if (!recovered.staged_successor_present ||
+        !decoded.staged_successor.has_value()) {
+      result.diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_staged_successor_missing");
+      return result;
+    }
+    const auto committed =
+        CommitRecoveredDmlUpdateDurableOperationStagedSuccessorV1(
+            context, recovered.validated_handle);
+    if (!committed.ok()) {
+      result.diagnostic = committed.diagnostic.code.empty()
+                              ? DmlUpdateDescriptorDiagnostic(
+                                    "DML.UPDATE_FAILED",
+                                    "sblr.dml_update_rows.recovery_published_append_failed",
+                                    "known_applied_recovery_required")
+                              : committed.diagnostic;
+      return result;
+    }
+    if (!DmlUpdateBuildImmutableReplayV1(
+            *decoded.staged_successor, &result)) {
+      result = {};
+      result.diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_result_invalid");
+    }
+    return result;
+  }
+
+  if (decoded.decision ==
+      update_wire::TypedUpdateRecoveryDecision::replay_published_result) {
+    if (!DmlUpdateBuildImmutableReplayV1(decoded.journal.back(), &result)) {
+      result.diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovery_result_invalid");
+    }
+    return result;
+  }
+
+  result.diagnostic = DmlUpdateDescriptorDiagnostic(
+      decoded.decision ==
+              update_wire::TypedUpdateRecoveryDecision::stale_replay
+          ? "MGA.TRANSACTION.STALE"
+          : "DML.UPDATE_FAILED",
+      decoded.decision ==
+              update_wire::TypedUpdateRecoveryDecision::stale_replay
+          ? "sblr.dml_update_rows.recovery_stale"
+          : "sblr.dml_update_rows.recovery_quarantined");
+  return result;
+}
+
+EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
+    const EngineRequestContext& context,
+    const EngineDmlUpdateRowsDescriptorRefV1& descriptor_ref,
+    std::uint64_t structural_occurrence_id) {
+  EngineDmlUpdateRowsConsumeResultV1 result;
+  std::unique_lock<std::mutex> guard(g_dml_update_descriptor_mutex);
+  auto found = g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+  if (found == g_dml_update_descriptors.end()) {
+    guard.unlock();
+    return DmlUpdateConsumeRecoveredDurableV1(
+        context, descriptor_ref, structural_occurrence_id);
+  }
+  if (found->second.statement_receipt_uuid !=
+          context.statement_receipt_uuid.canonical ||
+      found->second.database_uuid != context.database_uuid.canonical) {
+    result.diagnostic = DmlUpdateDescriptorDiagnostic(
+        "SECURITY.ACCESS_DENIED",
+        "sblr.dml_update_rows.descriptor_cross_authority_refused");
+    return result;
+  }
+  if (descriptor_ref.descriptor_generation != 1 ||
+      found->second.descriptor_ref.descriptor_generation !=
+          descriptor_ref.descriptor_generation ||
+      structural_occurrence_id == 0 ||
+      found->second.structural_occurrence_id != structural_occurrence_id ||
+      !DmlUpdateContextMatches(context, found->second)) {
+    result.diagnostic = DmlUpdateDescriptorDiagnostic(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.descriptor_stale");
+    return result;
+  }
+  auto& record = found->second;
+  if (record.durable_recovery_required) {
+    guard.unlock();
+    return DmlUpdateConsumeRecoveredDurableV1(
+        context, descriptor_ref, structural_occurrence_id);
+  }
+  if (record.lifecycle == DmlUpdateDescriptorLifecycleV1::kCompleted) {
+    result.ok = true;
+    result.immutable_replay = true;
+    result.prior_result = record.completed_result;
+    result.canonical_result_bytes = record.canonical_result_bytes;
+    result.diagnostic = MakeEngineApiDiagnostic(
+        "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+    return result;
+  }
+  if (record.lifecycle != DmlUpdateDescriptorLifecycleV1::kLive) {
+    result.diagnostic = DmlUpdateDescriptorDiagnostic(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.descriptor_not_live");
+    return result;
+  }
+  EngineApiDiagnostic carrier_diagnostic;
+  if (!DmlUpdateRevalidateCanonicalAuthority(
+          context, record, &carrier_diagnostic)) {
+    result.diagnostic = carrier_diagnostic;
+    return result;
+  }
+  EngineApiDiagnostic availability_diagnostic;
+  if (!DmlUpdateRevalidateExecutorAvailability(
+          context, record, &availability_diagnostic)) {
+    result.diagnostic = availability_diagnostic.code.empty()
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                                  "sblr.dml_update_rows.executor_evidence_missing")
+                            : availability_diagnostic;
+    return result;
+  }
+  const auto loaded =
+      LoadMgaRelationStorageDescriptor(context, record.relation_uuid);
+  if (!loaded.ok ||
+      loaded.descriptor.relation_generation != record.relation_generation ||
+      loaded.descriptor.descriptor_uuid.canonical !=
+          record.relation_descriptor_uuid ||
+      loaded.descriptor.descriptor_generation !=
+          record.relation_descriptor_generation) {
+    result.diagnostic = loaded.ok
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "MGA.TRANSACTION.STALE",
+                                  "sblr.dml_update_rows.relation_generation_stale")
+                            : loaded.diagnostic;
+    return result;
+  }
+  const auto current_column = [&](const DmlUpdateBoundColumnV1& identity)
+      -> const MgaRelationColumnStorageDescriptor* {
+    const auto match = std::find_if(
+        loaded.descriptor.columns.begin(), loaded.descriptor.columns.end(),
+        [&](const auto& column) {
+          return column.column_uuid.canonical == identity.column_uuid;
+        });
+    return match == loaded.descriptor.columns.end() ? nullptr : &*match;
+  };
+  for (const auto& identity : record.assignment_columns) {
+    const auto* column = current_column(identity);
+    if (column == nullptr ||
+        !DmlUpdateRevalidateColumn(context, *column, identity)) {
+      result.diagnostic = DmlUpdateDescriptorDiagnostic(
+          "MGA.TRANSACTION.STALE",
+          "sblr.dml_update_rows.assignment_identity_stale");
+      return result;
+    }
+  }
+  if (record.predicate_column.has_value()) {
+    const auto* column = current_column(*record.predicate_column);
+    if (column == nullptr ||
+        !DmlUpdateRevalidateColumn(context, *column,
+                                   *record.predicate_column)) {
+      result.diagnostic = DmlUpdateDescriptorDiagnostic(
+          "MGA.TRANSACTION.STALE",
+          "sblr.dml_update_rows.predicate_identity_stale");
+      return result;
+    }
+  }
+  if (DmlUpdateCancellationRequested(context)) {
+    auto aborted_record = record;
+    aborted_record.lifecycle = DmlUpdateDescriptorLifecycleV1::kFailed;
+    aborted_record.completed_result = {};
+    aborted_record.canonical_result_bytes.clear();
+    DmlUpdatePreparedJournalAppendV1 aborted_append;
+    if (!DmlUpdatePrepareJournalRecordV1(
+            context, aborted_record, &aborted_append) ||
+        !DmlUpdateCommitPreparedJournalRecordV1(
+            context, &record, aborted_append)) {
+      result.diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.cancelled_registry_publish_failed");
+      return result;
+    }
+    DmlUpdateCopyCommittedJournalPositionV1(record, &aborted_record);
+    record = std::move(aborted_record);
+    result.diagnostic = DmlUpdateDescriptorDiagnostic(
+        "PROCESS.CANCELLED",
+        "sblr.dml_update_rows.cancelled_after_revalidation");
+    return result;
+  }
+  record.lifecycle = DmlUpdateDescriptorLifecycleV1::kExecuting;
+  result.ok = true;
+  result.request = record.prepared_request;
+  result.request.context = context;
+  result.diagnostic = MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  return result;
+}
+
+EngineDmlUpdateRowsCompletionResultV1 CompleteDmlUpdateRowsDescriptorV1(
+    const EngineRequestContext& context,
+    const EngineDmlUpdateRowsDescriptorRefV1& descriptor_ref,
+    const EngineUpdateRowsResult& result) {
+  EngineDmlUpdateRowsCompletionResultV1 completion;
+  std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+  const auto found =
+      g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+  if (found == g_dml_update_descriptors.end() ||
+      found->second.descriptor_ref.descriptor_generation !=
+          descriptor_ref.descriptor_generation ||
+      !DmlUpdateContextMatches(context, found->second) ||
+      found->second.lifecycle != DmlUpdateDescriptorLifecycleV1::kExecuting) {
+    completion.diagnostic = DmlUpdateDescriptorDiagnostic(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.completion_stale");
+    return completion;
+  }
+  auto& record = found->second;
+  std::vector<std::uint8_t> canonical_result_bytes;
+  if (result.ok) {
+    canonical_result_bytes = EncodeDmlUpdateRowsResultV1(record, result);
+    if (canonical_result_bytes.size() != 256) {
+      completion.diagnostic = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.result_encoding_failed");
+      return completion;
+    }
+  }
+  record.completed_result = result;
+  record.canonical_result_bytes = canonical_result_bytes;
+  record.lifecycle = result.ok ? DmlUpdateDescriptorLifecycleV1::kPrepared
+                               : DmlUpdateDescriptorLifecycleV1::kFailed;
+  completion.ok = true;
+  completion.canonical_result_bytes = std::move(canonical_result_bytes);
+  completion.diagnostic = MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  return completion;
+}
+
+EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
+    const EngineRequestContext& context,
+    const EngineDmlUpdateRowsDescriptorRefV1& descriptor_ref,
+    std::uint64_t structural_occurrence_id) {
+  EngineDmlUpdateRowsExecuteResultV1 execution;
+  const auto failure_result = [&](EngineApiDiagnostic diagnostic) {
+    EngineDmlUpdateRowsExecuteResultV1 failure;
+    failure.diagnostic = diagnostic;
+    failure.update_result = MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        context, "dml.update_rows", std::move(diagnostic));
+    return failure;
+  };
+  const auto apply_statement_authority =
+      [&](const MgaDmlUpdateStatementSavepointAuthorityV1& authority) {
+        std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+        const auto found =
+            g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+        return found != g_dml_update_descriptors.end() &&
+               found->second.descriptor_ref.descriptor_generation ==
+                   descriptor_ref.descriptor_generation &&
+               DmlUpdateContextMatches(context, found->second) &&
+               DmlUpdateApplyStatementMgaAuthority(authority, &found->second);
+      };
+  const auto mark_failed = [&]() -> bool {
+    std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+    const auto found =
+        g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+    if (found == g_dml_update_descriptors.end() ||
+        found->second.descriptor_ref.descriptor_generation !=
+            descriptor_ref.descriptor_generation ||
+        !DmlUpdateContextMatches(context, found->second)) {
+      return false;
+    }
+    auto& record = found->second;
+    if (record.lifecycle == DmlUpdateDescriptorLifecycleV1::kExecuting ||
+        record.lifecycle == DmlUpdateDescriptorLifecycleV1::kPrepared) {
+      auto aborted_record = record;
+      aborted_record.lifecycle = DmlUpdateDescriptorLifecycleV1::kFailed;
+      aborted_record.completed_result = {};
+      aborted_record.canonical_result_bytes.clear();
+      DmlUpdatePreparedJournalAppendV1 aborted_append;
+      if (!DmlUpdatePrepareJournalRecordV1(
+              context, aborted_record, &aborted_append) ||
+          !DmlUpdateCommitPreparedJournalRecordV1(
+              context, &record, aborted_append)) {
+        return false;
+      }
+      DmlUpdateCopyCommittedJournalPositionV1(record, &aborted_record);
+      record = std::move(aborted_record);
+    }
+    return record.lifecycle == DmlUpdateDescriptorLifecycleV1::kFailed;
+  };
+
+  const auto consumed = ConsumeDmlUpdateRowsDescriptorV1(
+      context, descriptor_ref, structural_occurrence_id);
+  if (!consumed.ok) return failure_result(consumed.diagnostic);
+  if (consumed.immutable_replay) {
+    execution.ok = true;
+    execution.immutable_replay = true;
+    execution.update_result = consumed.prior_result;
+    execution.canonical_result_bytes = consumed.canonical_result_bytes;
+    execution.diagnostic = MakeEngineApiDiagnostic(
+        "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+    return execution;
+  }
+
+  if (DmlUpdateCancellationRequested(context)) {
+    if (!mark_failed()) {
+      return failure_result(DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.cancelled_abort_publish_failed"));
+    }
+    return failure_result(DmlUpdateDescriptorDiagnostic(
+        "PROCESS.CANCELLED",
+        "sblr.dml_update_rows.cancelled_before_statement_savepoint"));
+  }
+  EngineDmlUpdateStatementMgaAuthorityOpenRequestV1 statement_mga_request;
+  bool statement_mga_state_current = false;
+  {
+    std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+    const auto found =
+        g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+    if (found != g_dml_update_descriptors.end() &&
+        found->second.descriptor_ref.descriptor_generation ==
+            descriptor_ref.descriptor_generation &&
+        found->second.lifecycle == DmlUpdateDescriptorLifecycleV1::kExecuting) {
+      statement_mga_request =
+          DmlUpdateCurrentStatementMgaAuthorityRequest(context, found->second);
+      statement_mga_state_current = true;
+    }
+  }
+  if (!statement_mga_state_current) {
+    if (!mark_failed()) {
+      return failure_result(DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.stale_abort_publish_failed"));
+    }
+    return failure_result(DmlUpdateDescriptorDiagnostic(
+        "MGA.TRANSACTION.STALE",
+        "sblr.dml_update_rows.statement_savepoint_state_stale"));
+  }
+  const auto opened_statement_mga =
+      OpenDmlUpdateStatementMgaAuthorityV1(statement_mga_request);
+  if (!opened_statement_mga.ok) {
+    if (!mark_failed()) {
+      return failure_result(DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.open_failure_abort_publish_failed"));
+    }
+    return failure_result(opened_statement_mga.diagnostic);
+  }
+  bool intent_published = false;
+  {
+    std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+    const auto found =
+        g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+    if (found != g_dml_update_descriptors.end() &&
+        found->second.descriptor_ref.descriptor_generation ==
+            descriptor_ref.descriptor_generation &&
+        found->second.lifecycle == DmlUpdateDescriptorLifecycleV1::kExecuting) {
+      intent_published = DmlUpdateApplyStatementMgaAuthority(
+                             opened_statement_mga.authority, &found->second) &&
+                         DmlUpdatePublishJournalRecordV1(context,
+                                                         found->second);
+    }
+  }
+  if (!intent_published) {
+    EngineDmlUpdateStatementMgaAuthorityTransitionRequestV1 rollback_request;
+    rollback_request.current = statement_mga_request;
+    rollback_request.admitted = opened_statement_mga.authority;
+    const auto rolled_back =
+        RollbackDmlUpdateStatementMgaAuthorityV1(rollback_request);
+    const bool rollback_applied =
+        rolled_back.ok && apply_statement_authority(rolled_back.authority);
+    const bool abort_published = rollback_applied && mark_failed();
+    return failure_result(DmlUpdateDescriptorDiagnostic(
+        !rolled_back.ok ? "MGA.TRANSACTION.ROLLBACK_FAILED"
+                        : "DML.UPDATE_FAILED",
+        !rolled_back.ok
+            ? "sblr.dml_update_rows.statement_savepoint_rollback_failed"
+            : !abort_published
+                  ? "sblr.dml_update_rows.intent_failure_abort_publish_failed"
+            : "sblr.dml_update_rows.mutation_intent_publish_failed",
+        rolled_back.diagnostic.detail));
+  }
+  if (DmlUpdateTakeTestFault(
+          EngineDmlUpdateRowsTestFaultPointV1::after_durable_intent)) {
+    return failure_result(DmlUpdateDescriptorDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.test_fault_after_durable_intent"));
+  }
+
+  // The provider token remains empty until the terminal published successor
+  // is durably staged below.  Declaring it before the rollback closure makes
+  // every later rollback-capable branch cancel that staged successor and
+  // release its descriptor CAS lock before attempting an aborted append.
+  DmlUpdatePreparedDurableSuccessorV1 durable_published_append;
+  const auto rollback_failure = [&](EngineUpdateRowsResult update_result,
+                                    EngineApiDiagnostic diagnostic) {
+    if (durable_published_append.provider_prepared.valid()) {
+      const auto cancelled =
+          CancelPreparedDmlUpdateDurableOperationSuccessorV1(
+              std::move(durable_published_append.provider_prepared));
+      if (!cancelled.ok()) {
+        const auto cancel_failure =
+            cancelled.diagnostic.code.empty()
+                ? DmlUpdateDescriptorDiagnostic(
+                      "DML.UPDATE_FAILED",
+                      "sblr.dml_update_rows.published_stage_cancel_failed",
+                      "recovery_required")
+                : cancelled.diagnostic;
+        update_result.ok = false;
+        if (update_result.operation_id.empty()) {
+          update_result.operation_id = "dml.update_rows";
+        }
+        update_result.diagnostics.push_back(cancel_failure);
+        update_result.evidence.push_back(
+            {"dml_update_rows_recovery", "required"});
+        EngineDmlUpdateRowsExecuteResultV1 failure;
+        failure.update_result = std::move(update_result);
+        failure.diagnostic = cancel_failure;
+        return failure;
+      }
+    }
+    EngineDmlUpdateStatementMgaAuthorityTransitionRequestV1 rollback_request;
+    rollback_request.current = statement_mga_request;
+    rollback_request.admitted = opened_statement_mga.authority;
+    const auto rolled_back =
+        RollbackDmlUpdateStatementMgaAuthorityV1(rollback_request);
+    const bool rollback_applied =
+        rolled_back.ok && apply_statement_authority(rolled_back.authority);
+    const bool abort_published = rollback_applied && mark_failed();
+    update_result.ok = false;
+    if (update_result.operation_id.empty()) {
+      update_result.operation_id = "dml.update_rows";
+    }
+    if (update_result.diagnostics.empty()) {
+      update_result.diagnostics.push_back(diagnostic);
+    }
+    update_result.evidence.push_back(
+        {"dml_update_rows_statement_atomicity", "rolled_back"});
+    update_result.evidence.push_back(
+        {"dml_update_rows_statement_savepoint",
+         opened_statement_mga.authority.savepoint_uuid});
+    if (!rolled_back.ok) {
+      update_result.diagnostics.push_back(MakeEngineApiDiagnostic(
+          "MGA.TRANSACTION.ROLLBACK_FAILED",
+          "sblr.dml_update_rows.statement_savepoint_rollback_failed",
+          rolled_back.diagnostic.detail.empty()
+              ? rolled_back.diagnostic.message_key
+              : rolled_back.diagnostic.detail,
+          true));
+      update_result.evidence.push_back(
+          {"dml_update_rows_recovery", "required"});
+    } else {
+      update_result.evidence.push_back(
+          {"dml_update_rows_statement_effects", "none_visible"});
+    }
+    if (!abort_published) {
+      const auto append_failure = DmlUpdateDescriptorDiagnostic(
+          "DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.abort_publish_failed",
+          "recovery_required");
+      update_result.diagnostics.push_back(append_failure);
+      diagnostic = append_failure;
+    }
+    EngineDmlUpdateRowsExecuteResultV1 failure;
+    failure.update_result = std::move(update_result);
+    failure.diagnostic = std::move(diagnostic);
+    return failure;
+  };
+
+  if (DmlUpdateCancellationRequested(context)) {
+    return rollback_failure(
+        {}, DmlUpdateDescriptorDiagnostic(
+                "PROCESS.CANCELLED",
+                "sblr.dml_update_rows.cancelled_before_mutation"));
+  }
+
+  EngineUpdateRowsResult update_result;
+  try {
+    update_result = EngineUpdateRows(consumed.request);
+  } catch (const std::bad_alloc&) {
+    return rollback_failure(
+        {}, DmlUpdateDescriptorDiagnostic(
+                "RESOURCE.BUDGET_EXCEEDED",
+                "sblr.dml_update_rows.execution_allocation_failed"));
+  } catch (const std::exception&) {
+    return rollback_failure(
+        {}, DmlUpdateDescriptorDiagnostic(
+                "DML.UPDATE_FAILED",
+                "sblr.dml_update_rows.execution_exception"));
+  } catch (...) {
+    return rollback_failure(
+        {}, DmlUpdateDescriptorDiagnostic(
+                "DML.UPDATE_FAILED",
+                "sblr.dml_update_rows.execution_unknown_exception"));
+  }
+  if (!update_result.ok) {
+    const auto diagnostic = update_result.diagnostics.empty()
+                                ? DmlUpdateDescriptorDiagnostic(
+                                      "DML.UPDATE_FAILED",
+                                      "sblr.dml_update_rows.execution_failed")
+                                : update_result.diagnostics.front();
+    return rollback_failure(std::move(update_result), diagnostic);
+  }
+
+  auto prepared = CompleteDmlUpdateRowsDescriptorV1(
+      context, descriptor_ref, update_result);
+  if (!prepared.ok || prepared.canonical_result_bytes.size() != 256) {
+    const auto diagnostic = prepared.diagnostic.code.empty()
+                                ? DmlUpdateDescriptorDiagnostic(
+                                      "DML.UPDATE_FAILED",
+                                      "sblr.dml_update_rows.result_encoding_failed")
+                                : prepared.diagnostic;
+    return rollback_failure(std::move(update_result), diagnostic);
+  }
+  bool prepared_outcome_published = false;
+  {
+    std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+    const auto found =
+        g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+    if (found != g_dml_update_descriptors.end() &&
+        found->second.descriptor_ref.descriptor_generation ==
+            descriptor_ref.descriptor_generation &&
+        found->second.lifecycle == DmlUpdateDescriptorLifecycleV1::kPrepared &&
+        found->second.statement_savepoint_uuid ==
+            opened_statement_mga.authority.savepoint_uuid &&
+        found->second.statement_savepoint_generation ==
+            opened_statement_mga.authority.savepoint_generation) {
+      prepared_outcome_published =
+          DmlUpdatePublishJournalRecordV1(context, found->second);
+    }
+  }
+  if (!prepared_outcome_published) {
+    return rollback_failure(
+        std::move(update_result),
+        DmlUpdateDescriptorDiagnostic(
+            "DML.UPDATE_FAILED",
+            "sblr.dml_update_rows.prepared_outcome_publish_failed"));
+  }
+  if (DmlUpdateTakeTestFault(
+          EngineDmlUpdateRowsTestFaultPointV1::after_prepared_outcome)) {
+    return failure_result(DmlUpdateDescriptorDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.test_fault_after_prepared_outcome"));
+  }
+  if (DmlUpdateCancellationRequested(context)) {
+    return rollback_failure(
+        std::move(update_result),
+        DmlUpdateDescriptorDiagnostic(
+            "PROCESS.CANCELLED",
+            "sblr.dml_update_rows.cancelled_before_publication"));
+  }
+
+  // The terminal DUJR bytes are completed while rollback is still possible.
+  // After the MGA publication barrier, the execution path may only compare-
+  // and-append these exact bytes; it must not allocate, encode, or hash a new
+  // result or journal record.
+  DmlUpdatePreparedJournalAppendV1 prepared_published_append;
+  bool published_append_prepared = false;
+  std::string recovery_token_uuid;
+  std::uint64_t recovery_generation = 0;
+  try {
+    std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+    const auto found =
+        g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+    if (found != g_dml_update_descriptors.end() &&
+        found->second.descriptor_ref.descriptor_generation ==
+            descriptor_ref.descriptor_generation &&
+        DmlUpdateContextMatches(context, found->second) &&
+        found->second.lifecycle == DmlUpdateDescriptorLifecycleV1::kPrepared) {
+      auto published_record = found->second;
+      published_record.lifecycle = DmlUpdateDescriptorLifecycleV1::kCompleted;
+      published_append_prepared =
+          DmlUpdatePrepareJournalRecordV1(
+              context, published_record, &prepared_published_append) &&
+          DmlUpdatePrepareDurableSuccessorV1(
+              context, found->second, prepared_published_append,
+              &durable_published_append);
+      recovery_token_uuid = DmlUpdateUuidText(
+          found->second.canonical_carriers.recovery_token.recovery_token_uuid);
+      recovery_generation = found->second.canonical_carriers.recovery_token
+                                .recovery_generation;
+    }
+  } catch (const std::bad_alloc&) {
+    published_append_prepared = false;
+  }
+  if (!published_append_prepared || recovery_token_uuid.empty() ||
+      recovery_generation == 0) {
+    return rollback_failure(
+        std::move(update_result),
+        DmlUpdateDescriptorDiagnostic(
+            "DML.UPDATE_FAILED",
+            "sblr.dml_update_rows.published_record_prebuild_failed"));
+  }
+
+  // Build the complete caller-visible success object while the savepoint is
+  // still active. No allocation, hashing, encoding, or result copy is allowed
+  // after the durable publication barrier has been crossed.
+  try {
+    execution.ok = true;
+    execution.update_result = update_result;
+    execution.canonical_result_bytes =
+        std::move(prepared.canonical_result_bytes);
+    execution.diagnostic = MakeEngineApiDiagnostic(
+        "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  } catch (const std::bad_alloc&) {
+    return rollback_failure(
+        std::move(update_result),
+        DmlUpdateDescriptorDiagnostic(
+            "RESOURCE.BUDGET_EXCEEDED",
+            "sblr.dml_update_rows.result_publication_allocation_failed"));
+  }
+
+  // This immutable failure is also completed before the statement barrier.
+  // If the row effects become known-applied but the terminal DUJR CAS cannot
+  // be acknowledged, returning it requires only moves of already-owned
+  // storage and exposes the exact recovery identity without formatting or
+  // hashing after finality.
+  EngineDmlUpdateRowsExecuteResultV1 known_applied_failure;
+  try {
+    auto known_applied_diagnostic = DmlUpdateDescriptorDiagnostic(
+        "DML.UPDATE_FAILED",
+        "sblr.dml_update_rows.known_applied_terminal_append_required",
+        "known_applied_recovery_required");
+    known_applied_diagnostic.fields.push_back(
+        {"recovery_token_uuid", recovery_token_uuid});
+    known_applied_diagnostic.fields.push_back(
+        {"recovery_generation", std::to_string(recovery_generation)});
+    known_applied_failure = failure_result(std::move(known_applied_diagnostic));
+  } catch (const std::bad_alloc&) {
+    return rollback_failure(
+        std::move(update_result),
+        DmlUpdateDescriptorDiagnostic(
+            "RESOURCE.BUDGET_EXCEEDED",
+            "sblr.dml_update_rows.recovery_outcome_allocation_failed"));
+  }
+
+  bool publication_state_stale = false;
+  bool publication_fault_injected = false;
+  bool publication_append_failed = false;
+  bool publication_barrier_crossed = false;
+  bool publication_authority_invalid = false;
+  EngineApiDiagnostic release_failure;
+  {
+    std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+    const auto found =
+        g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+    if (found == g_dml_update_descriptors.end() ||
+        found->second.descriptor_ref.descriptor_generation !=
+            descriptor_ref.descriptor_generation ||
+        !DmlUpdateContextMatches(context, found->second) ||
+        found->second.lifecycle != DmlUpdateDescriptorLifecycleV1::kPrepared) {
+      publication_state_stale = true;
+    }
+  }
+  EngineDmlUpdateStatementMgaAuthorityResultV1 released_statement_mga;
+  if (!publication_state_stale) {
+    EngineDmlUpdateStatementMgaAuthorityTransitionRequestV1 release_request;
+    release_request.current = statement_mga_request;
+    release_request.admitted = opened_statement_mga.authority;
+    released_statement_mga =
+        ReleaseDmlUpdateStatementMgaAuthorityV1(release_request);
+    publication_barrier_crossed =
+        released_statement_mga.ok &&
+        released_statement_mga.authority.lifecycle ==
+            MgaDmlUpdateStatementSavepointLifecycleV1::released &&
+        released_statement_mga.authority.publication_barrier_present;
+    if (!publication_barrier_crossed) {
+      release_failure = released_statement_mga.diagnostic.code.empty()
+                            ? DmlUpdateDescriptorDiagnostic(
+                                  "DML.UPDATE_FAILED",
+                                  "sblr.dml_update_rows.publication_barrier_invalid")
+                            : released_statement_mga.diagnostic;
+    } else if (
+        released_statement_mga.authority.publication_barrier_uuid !=
+            opened_statement_mga.authority.publication_barrier_uuid ||
+        released_statement_mga.authority.publication_barrier_generation !=
+            opened_statement_mga.authority.publication_barrier_generation) {
+      // The provider reports that a barrier crossed, but its identity no
+      // longer equals the prebuilt DURS. Rollback is no longer legal and no
+      // new diagnostic/result object may be allocated in this branch.
+      publication_authority_invalid = true;
+    } else {
+      std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+      const auto found =
+          g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+      if (found == g_dml_update_descriptors.end() ||
+          found->second.descriptor_ref.descriptor_generation !=
+              descriptor_ref.descriptor_generation ||
+          !DmlUpdateContextMatches(context, found->second) ||
+          found->second.lifecycle !=
+              DmlUpdateDescriptorLifecycleV1::kPrepared ||
+          !DmlUpdateApplyReleasedStatementMgaAuthorityNoAllocV1(
+              released_statement_mga.authority, &found->second)) {
+        publication_state_stale = true;
+      } else if (DmlUpdateTakeTestFault(
+                     EngineDmlUpdateRowsTestFaultPointV1::
+                         after_publication_barrier)) {
+        // The provider has durably published the exact reserved barrier.  A
+        // replay must recover the immutable prepared DURS and complete it.
+        publication_fault_injected = true;
+      } else {
+        if (!DmlUpdateCommitDurableSuccessorNoBuildV1(
+                &found->second, std::move(durable_published_append))) {
+          publication_append_failed = true;
+        } else {
+          found->second.lifecycle = DmlUpdateDescriptorLifecycleV1::kCompleted;
+        }
+      }
+    }
+  }
+  if (execution.ok && !publication_state_stale &&
+      !publication_fault_injected && !publication_append_failed &&
+      !publication_authority_invalid && release_failure.code.empty()) {
+    return execution;
+  }
+  if (publication_barrier_crossed &&
+      (publication_fault_injected || publication_append_failed ||
+       publication_state_stale || publication_authority_invalid)) {
+    {
+      std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
+      const auto found =
+          g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+      if (found != g_dml_update_descriptors.end() &&
+          found->second.descriptor_ref.descriptor_generation ==
+              descriptor_ref.descriptor_generation &&
+          DmlUpdateContextMatches(context, found->second) &&
+          found->second.lifecycle ==
+              DmlUpdateDescriptorLifecycleV1::kPrepared) {
+        found->second.durable_recovery_required = true;
+      }
+    }
+    return std::move(known_applied_failure);
+  }
+  if (publication_state_stale) {
+    execution = {};
+    return rollback_failure(
+        std::move(update_result),
+        DmlUpdateDescriptorDiagnostic(
+            "MGA.TRANSACTION.STALE",
+            "sblr.dml_update_rows.publication_state_stale"));
+  }
+  if (!release_failure.code.empty()) {
+    execution = {};
+    update_result.diagnostics.push_back(release_failure);
+  }
+  return rollback_failure(
+      std::move(update_result),
+      DmlUpdateDescriptorDiagnostic(
+          "MGA.TRANSACTION.INVALID",
+          "sblr.dml_update_rows.statement_savepoint_release_failed"));
+}
 
 // SEARCH_KEY: SB_PID004_OPTIMIZED_UPDATE_DELETE_EXECUTOR_BEHAVIOR
 
@@ -2941,6 +6467,21 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_uuid_required"));
+  }
+  const auto cancellation_failure = [&](std::string message_key) {
+    return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        request.context,
+        "dml.update_rows",
+        MakeEngineApiDiagnostic("PROCESS.CANCELLED",
+                                std::move(message_key), {}, true));
+  };
+  const bool descriptor_atomic_execution =
+      DmlUpdateHasTraceTag(request.context,
+                           "private_dml_update_rows_binder");
+  if (descriptor_atomic_execution &&
+      DmlUpdateCancellationRequested(request.context)) {
+    return cancellation_failure(
+        "sblr.dml_update_rows.cancelled_before_target_enumeration");
   }
   const auto mutation_window_validation = ValidateMutationRowWindow(
       "dml.update_rows", request.limit, request.offset, false);
@@ -2994,6 +6535,11 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
             effective_request.target_table.uuid.canonical);
   mark_update_phase("load_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", loaded.diagnostic); }
+  if (descriptor_atomic_execution &&
+      DmlUpdateCancellationRequested(request.context)) {
+    return cancellation_failure(
+        "sblr.dml_update_rows.cancelled_after_target_enumeration");
+  }
   CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
   auto table = FindVisibleCrudTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   mark_update_phase("build_state_and_find_table");
@@ -3268,11 +6814,17 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   std::vector<StagedUpdateRow> staged_update_rows;
   staged_update_rows.reserve(row_refs.size());
+  EngineApiU64 no_effect_count = 0;
   auto prepared_update_predicate =
       PrepareUpdatePredicate(effective_request.update_predicate);
   EngineApiU64 mutation_window_qualified_rows_seen = 0;
   EngineApiU64 mutation_window_skipped_rows = 0;
   for (const auto* row_ptr : row_refs) {
+    if (descriptor_atomic_execution &&
+        DmlUpdateCancellationRequested(request.context)) {
+      return cancellation_failure(
+          "sblr.dml_update_rows.cancelled_before_candidate_batch");
+    }
     if (row_ptr == nullptr) { continue; }
     const auto& row = *row_ptr;
     if (!CrudRowMatchesPreparedUpdatePredicate(
@@ -3354,6 +6906,16 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       if (parent_key_update.error) {
         return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", parent_key_update);
       }
+    }
+
+    // The exact ordinary descriptor profile does not manufacture a new MGA
+    // row version when the fully validated final image is byte-for-byte the
+    // visible prior image. Active executable triggers intentionally remain on
+    // the effectful path because their ordered execution can itself produce
+    // a statement-visible effect even when the scalar assignments are equal.
+    if (!executable_trigger_descriptors_present && values == row.values) {
+      ++no_effect_count;
+      continue;
     }
 
     const auto encoded_bytes = EncodedValueBytes(values);
@@ -3489,9 +7051,18 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     result.evidence.push_back({"mutation_row_window_applied_rows",
                                std::to_string(staged_update_rows.size())});
   }
+  if (no_effect_count != 0) {
+    result.evidence.push_back(
+        {"dml_update_rows_no_effect_count", std::to_string(no_effect_count)});
+  }
   mark_update_phase("stage_update_rows");
 
   if (!staged_update_rows.empty()) {
+    if (descriptor_atomic_execution &&
+        DmlUpdateCancellationRequested(request.context)) {
+      return cancellation_failure(
+          "sblr.dml_update_rows.cancelled_before_durable_mutation");
+    }
     const auto row_allocation = ReserveDmlPageAllocationRuntime(
         request.context,
         request.option_envelopes,
@@ -3736,6 +7307,11 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   result.evidence.push_back({"domain_validation", "write_path_checked"});
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   result.evidence.push_back({"dml_returning", "affected_rows"});
+  if (descriptor_atomic_execution &&
+      DmlUpdateCancellationRequested(request.context)) {
+    return cancellation_failure(
+        "sblr.dml_update_rows.cancelled_before_trigger_or_constraint_work");
+  }
   if (executable_trigger_descriptors_present) {
     std::vector<dml_trigger_runtime::DmlTriggerUpdateRowImage> trigger_update_rows;
     trigger_update_rows.reserve(staged_update_rows.size());

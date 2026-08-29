@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -112,12 +113,27 @@ struct DurableAuthorizationPolicyRecord {
   bool deny = false;
   bool requires_runtime_recheck = false;
   bool active = true;
+  // Exact generation of the durable source policy row.  policy_epoch below
+  // remains the global catalog policy epoch.
+  std::uint64_t source_policy_generation = 0;
   std::uint64_t policy_epoch = 0;
   std::string canonical_policy_envelope;
+  // Exact engine-issued native UPDATE row-policy authority.  These fields
+  // are copied from the durable policy catalog row and are never inferred
+  // from canonical_policy_envelope or display names.
+  std::uint8_t update_policy_phase = 0;  // 1 USING, 2 WITH_CHECK.
+  EngineUuid effective_policy_uuid;
+  std::uint64_t effective_policy_generation = 0;
+  EngineUuid effective_expression_uuid;
+  std::uint64_t effective_expression_generation = 0;
+  std::array<std::uint8_t, 32> effective_expression_evidence_sha256{};
 };
 
 struct DurableAuthorizationState {
   EngineUuid authority_uuid;
+  // Durable engine-issued generation of authority_uuid.  It is deliberately
+  // independent from the security and policy epochs.
+  std::uint64_t security_context_generation = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t policy_epoch = 0;
   std::uint64_t catalog_generation_id = 0;

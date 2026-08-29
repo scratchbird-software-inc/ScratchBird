@@ -8,6 +8,8 @@
 
 #include "agents/agent_action_hooks_api.hpp"
 #include "sblr_dispatch.hpp"
+#include "sblr_opcode_registry.hpp"
+#include "storage/storage_management_api.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
@@ -104,6 +106,22 @@ api::EngineRequestContext Context(const Fixture& fixture, std::string request_id
   context.trace_tags.push_back("right:OBS_AGENT_CONTROL");
   context.trace_tags.push_back("right:FILESPACE_LIFECYCLE_CONTROL");
   return context;
+}
+
+void SeedFilespaceCatalogDescriptor(const Fixture& fixture) {
+  api::EngineFilespaceLifecycleRequest request;
+  request.context = Context(fixture, "seed-filespace-catalog-descriptor");
+  request.operation_id = "filespace.create";
+  request.target_object.uuid.canonical = fixture.filespace_uuid;
+  request.target_object.object_kind = "filespace";
+  request.option_envelopes.push_back("filespace.path:" +
+                                     (fixture.dir / "fixture.filespace").string());
+  request.option_envelopes.push_back("filespace.page_size_bytes:16384");
+  request.option_envelopes.push_back("filespace.total_pages:64");
+  request.option_envelopes.push_back("filespace.free_pages:32");
+  request.option_envelopes.push_back("filespace.preallocated_pages:4");
+  const auto result = api::EngineFilespaceLifecycleOperation(request);
+  Require(result.ok, "PFAR-013 filespace catalog descriptor seed failed");
 }
 
 api::EngineObjectReference FilespaceTarget(const Fixture& fixture) {
@@ -275,6 +293,13 @@ sblr::SblrDispatchResult DispatchWithContext(api::EngineRequestContext context,
                                              bool requires_security = true,
                                              bool requires_transaction = true) {
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "pfar-013");
+  const auto* registry = sblr::LookupSblrOperation(envelope.operation_id);
+  Require(registry != nullptr, "SBLR agent route canonical registry row missing");
+  Require(registry->opcode == envelope.opcode,
+          "SBLR agent route canonical opcode mismatch");
+  envelope.opcode_code = registry->code;
+  envelope.parser_package_uuid = MakeUuidText(platform::UuidKind::object, 97);
+  envelope.registry_snapshot_uuid = MakeUuidText(platform::UuidKind::object, 98);
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_transaction_context = requires_transaction;
   envelope.requires_security_context = requires_security;
@@ -468,6 +493,7 @@ void TestSblrFilespaceGrowthAcceptsRequestedPages() {
 
 void TestSblrFilespacePreallocateStorageMutation() {
   const auto fixture = MakeFixture("sblr_preallocate", 4600);
+  SeedFilespaceCatalogDescriptor(fixture);
   const auto result = Dispatch(fixture,
                                "filespace.preallocate",
                                "SBLR_FILESPACE_PREALLOCATE",
@@ -492,6 +518,7 @@ void TestSblrFilespacePreallocateStorageMutation() {
 
 void TestSblrFilespacePreallocateNegativeCasesDoNotMutate() {
   const auto fixture = MakeFixture("sblr_preallocate_negative", 4700);
+  SeedFilespaceCatalogDescriptor(fixture);
 
   auto missing_security_context = Context(fixture, "preallocate-missing-security");
   missing_security_context.security_context_present = false;

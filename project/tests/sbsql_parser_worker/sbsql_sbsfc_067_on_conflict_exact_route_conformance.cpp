@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -238,7 +239,7 @@ void RequireExactLowering(std::string_view sql,
           "SBSFC-067 payload carried WAL/recovery authority");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }

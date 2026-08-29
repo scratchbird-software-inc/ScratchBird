@@ -10,6 +10,8 @@
 #include "query/projection_api.hpp"
 #include "registry/function_seed_registry.hpp"
 #include "sblr/sblr_dispatch.hpp"
+#include "transaction/savepoint_api.hpp"
+#include "canonical_projection_test_envelope.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -179,18 +181,8 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(std::string function_id,
     envelope.operands.push_back({"text", prefix + "value", arguments[index].encoded_value});
     envelope.operands.push_back({"text", prefix + "is_null", arguments[index].is_null ? "true" : "false"});
   }
-  return envelope;
-}
-
-sblr::SblrOperationEnvelope SavepointEnvelope(std::string operation_id,
-                                              std::string opcode,
-                                              std::string savepoint_name) {
-  auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id),
-                                         std::move(opcode),
-                                         "SBSFC031-savepoint-marker");
-  envelope.requires_transaction_context = true;
-  envelope.operands.push_back({"text", "savepoint_name", std::move(savepoint_name)});
-  return envelope;
+  return scratchbird::tests::sbsql::CanonicalizeProjectionEnvelopeForTest(
+      std::move(envelope));
 }
 
 const api::EngineTypedValue* ProjectionField(const sblr::SblrDispatchResult& result,
@@ -268,22 +260,35 @@ bool ExpectProjectionBoolean(std::string_view case_id,
   return true;
 }
 
-bool ExpectSavepointDispatchOk(std::string_view case_id,
-                               const sblr::SblrDispatchResult& result) {
-  if (!result.envelope_validated || !result.accepted || !result.dispatched_to_api ||
-      !result.api_result.ok) {
-    std::cerr << case_id << ": savepoint dispatch failed\n";
+bool ExpectSavepointApiOk(std::string_view case_id,
+                          const api::EngineApiResult& result) {
+  if (!result.ok) {
+    std::cerr << case_id << ": savepoint API setup failed\n";
     for (const auto& diagnostic : result.diagnostics) {
-      std::cerr << "  envelope diagnostic " << diagnostic.code << ": "
-                << diagnostic.message << "\n";
-    }
-    for (const auto& diagnostic : result.api_result.diagnostics) {
-      std::cerr << "  api diagnostic " << diagnostic.code << ": "
+      std::cerr << "  API diagnostic " << diagnostic.code << ": "
                 << diagnostic.detail << "\n";
     }
     return false;
   }
   return true;
+}
+
+api::EngineCreateSavepointResult CreateSavepoint(
+    const api::EngineRequestContext& context,
+    std::string name) {
+  api::EngineCreateSavepointRequest request;
+  request.context = context;
+  request.option_envelopes.push_back("savepoint_name:" + std::move(name));
+  return api::EngineCreateSavepoint(request);
+}
+
+api::EngineReleaseSavepointResult ReleaseSavepoint(
+    const api::EngineRequestContext& context,
+    std::string name) {
+  api::EngineReleaseSavepointRequest request;
+  request.context = context;
+  request.option_envelopes.push_back("savepoint_name:" + std::move(name));
+  return api::EngineReleaseSavepoint(request);
 }
 
 }  // namespace
@@ -372,13 +377,9 @@ int main() {
                                         ProjectionEnvelope("sb.session.savepoint_active", {}),
                                         api::EngineApiRequest{}}),
            false) && ok;
-  ok = ExpectSavepointDispatchOk(
+  ok = ExpectSavepointApiOk(
            "SBSFC031-savepoint-create-live",
-           sblr::DispatchSblrOperation({context,
-                                        SavepointEnvelope("transaction.create_savepoint",
-                                                          "SBLR_TRANSACTION_CREATE_SAVEPOINT",
-                                                          "sp_live"),
-                                        api::EngineApiRequest{}})) && ok;
+           CreateSavepoint(context, "sp_live")) && ok;
   ok = ExpectProjectionBoolean(
            "SBSFC031-savepoint-active-any-true",
            sblr::DispatchSblrOperation({context,
@@ -401,13 +402,9 @@ int main() {
                                                                "name", "character", "sp_missing", false}}),
                                         api::EngineApiRequest{}}),
            false) && ok;
-  ok = ExpectSavepointDispatchOk(
+  ok = ExpectSavepointApiOk(
            "SBSFC031-savepoint-release-live",
-           sblr::DispatchSblrOperation({context,
-                                        SavepointEnvelope("transaction.release_savepoint",
-                                                          "SBLR_TRANSACTION_RELEASE_SAVEPOINT",
-                                                          "sp_live"),
-                                        api::EngineApiRequest{}})) && ok;
+           ReleaseSavepoint(context, "sp_live")) && ok;
   ok = ExpectProjectionBoolean(
            "SBSFC031-savepoint-active-name-false-after-release",
            sblr::DispatchSblrOperation({context,

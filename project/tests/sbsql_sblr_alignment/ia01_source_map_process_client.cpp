@@ -512,7 +512,7 @@ int main(int argc, char** argv) {
                     : operation == "ddl-drop-synonym"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropSynonymForWire():begun; }()
                     : operation == "ddl-drop-foreign-table"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropForeignTableForWire():begun; }()
+                          ? session.RunDdlDropForeignTableForWire()
                     : operation == "ddl-drop-package"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropPackageForWire():begun; }()
                     : operation == "ddl-alter-package"
@@ -524,15 +524,19 @@ int main(int argc, char** argv) {
                     : operation == "ddl-drop-materialized-view"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropMaterializedViewForWire():begun; }()
                     : operation == "ddl-create-type"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTypeForWire():begun; }()
+                          ? session.RunPipeline(
+                                "CREATE TYPE replay_type AS (value TEXT);",
+                                true)
                     : operation == "ddl-create-table-as-query-with-data"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTableAsQueryWithDataForWire():begun; }()
                     : operation == "ddl-create-table-as-query-with-no-data"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTableAsQueryWithNoDataForWire():begun; }()
                     : operation == "ddl-alter-type"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterTypeForWire():begun; }()
+                          ? session.RunPipeline(
+                                "ALTER TYPE replay_type ADD ATTRIBUTE extra TEXT;",
+                                true)
                     : operation == "ddl-drop-type"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropTypeForWire():begun; }()
+                          ? session.RunPipeline("DROP TYPE replay_type;", true)
                     : operation == "ddl-drop-table"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropTableForWire():begun; }()
                     : operation == "ddl-create-trigger"
@@ -580,7 +584,7 @@ int main(int argc, char** argv) {
                     : operation == "ddl-drop-rewrite-rule"
                           ? session.RunDdlDropRewriteRuleForWire()
                     : operation == "ddl-validate-constraint"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlValidateConstraintForWire():begun; }()
+                          ? session.RunDdlValidateConstraintForWire()
                     : operation == "security-create-privilege-template"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityCreatePrivilegeTemplateForWire():begun; }()
                     : operation == "security-create-user"
@@ -622,7 +626,8 @@ int main(int argc, char** argv) {
                     : operation == "context-get"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunContextGetForWire():begun; }()
                     : operation == "stmt-prepare"
-        ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtPrepareCanonicalForWire():begun; }()
+                          ? session.RunPipeline(
+                                "PREPARE prep_one AS SELECT 7 AS value;", true)
                     : operation == "stmt-execute"
         ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtExecuteForWire():begun; }()
                     : operation == "stmt-execute-direct"
@@ -652,31 +657,31 @@ int main(int argc, char** argv) {
                     : operation == "security-drop-role"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityDropRoleForWire():begun; }()
                     : operation == "security-alter-privilege-template"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityAlterPrivilegeTemplateForWire():begun; }()
+                          ? session.RunSecurityAlterPrivilegeTemplateForWire()
                     : operation == "security-drop-privilege-template"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityDropPrivilegeTemplateForWire():begun; }()
+                          ? session.RunSecurityDropPrivilegeTemplateForWire()
                     : operation == "database-create-template-clone"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDatabaseCreateTemplateCloneForWire():begun; }()
+                          ? session.RunDatabaseCreateTemplateCloneForWire()
                     : operation == "ddl-create-aggregate"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateAggregateForWire():begun; }()
+                          ? session.RunDdlCreateAggregateForWire()
                     : operation == "ddl-create-macro"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateMacroForWire():begun; }()
+                          ? session.RunDdlCreateMacroForWire()
                     : operation == "ddl-create-dictionary"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDictionaryForWire():begun; }()
+                          ? session.RunDdlCreateDictionaryForWire()
                     : operation == "ddl-drop-dictionary"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropDictionaryForWire():begun; }()
+                          ? session.RunDdlDropDictionaryForWire()
                     : operation == "ddl-alter-dictionary"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterDictionaryForWire():begun; }()
+                          ? session.RunDdlAlterDictionaryForWire()
                     : operation == "ddl-create-continuous-view"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateContinuousViewForWire():begun; }()
+                          ? session.RunDdlCreateContinuousViewForWire()
                     : operation == "ddl-alter-continuous-view"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterContinuousViewForWire():begun; }()
+                          ? session.RunDdlAlterContinuousViewForWire()
                     : operation == "ddl-drop-continuous-view"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropContinuousViewForWire():begun; }()
+                          ? session.RunDdlDropContinuousViewForWire()
                     : operation == "dml-async-insert-submit"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDmlAsyncInsertSubmitForWire():begun; }()
+                          ? session.RunDmlAsyncInsertSubmitForWire()
                     : operation == "dml-async-insert-status"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDmlAsyncInsertStatusForWire():begun; }()
+                          ? session.RunDmlAsyncInsertStatusForWire()
                     : operation == "dml-counter-add"
                           ? session.RunDmlCounterAddForWire()
                           : operation == "dml-conditional-mutate"
@@ -692,27 +697,27 @@ int main(int argc, char** argv) {
                     : operation == "ddl-drop-timeseries-value-cache"
                           ? session.RunDdlDropTimeseriesValueCacheForWire()
                     : operation == "dml-async-insert-cancel"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDmlAsyncInsertCancelForWire():begun; }()
+                          ? session.RunDmlAsyncInsertCancelForWire()
                     : operation == "ddl-drop-macro"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropMacroForWire():begun; }()
+                          ? session.RunDdlDropMacroForWire()
                     : operation == "admin-register-external-relation-resolver"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunAdminRegisterExternalRelationResolverForWire():begun; }()
+                          ? session.RunAdminRegisterExternalRelationResolverForWire()
                     : operation == "admin-unregister-external-relation-resolver"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunAdminUnregisterExternalRelationResolverForWire():begun; }()
+                          ? session.RunAdminUnregisterExternalRelationResolverForWire()
                     : operation == "ddl-alter-aggregate"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterAggregateForWire():begun; }()
+                          ? session.RunDdlAlterAggregateForWire()
                     : operation == "ddl-drop-aggregate"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropAggregateForWire():begun; }()
+                          ? session.RunDdlDropAggregateForWire()
                     : operation == "ddl-purge-system-history"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlPurgeSystemHistoryForWire():begun; }()
+                          ? session.RunDdlPurgeSystemHistoryForWire()
                     : operation == "ddl-set-index-optimizer-eligibility"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlSetIndexOptimizerEligibilityForWire():begun; }()
+                          ? session.RunDdlSetIndexOptimizerEligibilityForWire()
                     : operation == "ddl-set-table-type-enforcement"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlSetTableTypeEnforcementForWire():begun; }()
+                          ? session.RunDdlSetTableTypeEnforcementForWire()
                     : operation == "database-serialize-logical-snapshot"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDatabaseSerializeLogicalSnapshotForWire():begun; }()
+                          ? session.RunDatabaseSerializeLogicalSnapshotForWire()
                     : operation == "database-deserialize-logical-snapshot"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDatabaseDeserializeLogicalSnapshotForWire():begun; }()
+                          ? session.RunDatabaseDeserializeLogicalSnapshotForWire()
                     : operation == "ddl-drop-function"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropFunctionForWire():begun; }()
                     : operation == "ddl-alter-view"
@@ -724,12 +729,221 @@ int main(int argc, char** argv) {
                     : operation == "ddl-create-table"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTableForWire():begun; }()
                     : operation == "ddl-create-index"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateIndexForWire():begun; }()
+                          ? session.RunPipeline(
+                                "CREATE INDEX replay_target_id_idx ON "
+                                "replay_target (id);",
+                                true)
                     : operation == "ddl-drop-index"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropIndexForWire():begun; }()
                     : operation == "txn-begin"
                           ? session.RunPipeline("BEGIN TRANSACTION", true)
                           : session.RunSourceMapForWire();
+  if (operation == "ddl-create-index") {
+    const bool exact_refusal =
+        !result.accepted && result.messages.diagnostics.size() == 1 &&
+        result.messages.diagnostics.front().code == "SBSQL.IMPL.NOT_AVAILABLE";
+    const bool no_canonical_result =
+        result.sblr_payload.empty() && result.server_operation_id.empty() &&
+        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_affected_rows == 0 &&
+        !result.server_affected_rows_present &&
+        result.server_result_payload.empty();
+    if (!exact_refusal || !no_canonical_result) {
+      std::cerr << "CSC-TEST-002601 DDL_CREATE_INDEX fail_closed_contract_failed\n";
+      return 4;
+    }
+    std::cout << "CSC-TEST-002601 DDL_CREATE_INDEX deterministic_refusal=SBSQL.IMPL.NOT_AVAILABLE no_canonical_execution=true\n";
+    return 0;
+  }
+  if (operation == "ddl-create-type" || operation == "ddl-alter-type" ||
+      operation == "ddl-drop-type") {
+    const bool exact_refusal =
+        !result.accepted && result.messages.diagnostics.size() == 1 &&
+        result.messages.diagnostics.front().code == "SBSQL.IMPL.NOT_AVAILABLE";
+    const bool no_canonical_result =
+        result.sblr_payload.empty() && result.server_operation_id.empty() &&
+        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_affected_rows == 0 &&
+        !result.server_affected_rows_present &&
+        result.server_result_payload.empty();
+    const char* test_id = operation == "ddl-create-type"
+                              ? "CSC-TEST-002673"
+                              : operation == "ddl-alter-type"
+                                    ? "CSC-TEST-002675"
+                                    : "CSC-TEST-002677";
+    const char* operation_label = operation == "ddl-create-type"
+                                      ? "DDL_CREATE_TYPE"
+                                      : operation == "ddl-alter-type"
+                                            ? "DDL_ALTER_TYPE"
+                                            : "DDL_DROP_TYPE";
+    if (!exact_refusal || !no_canonical_result) {
+      std::cerr << test_id << ' ' << operation_label
+                << " fail_closed_contract_failed\n";
+      return 4;
+    }
+    std::cout << test_id << ' ' << operation_label
+              << " deterministic_refusal=SBSQL.IMPL.NOT_AVAILABLE"
+                 " no_canonical_execution=true\n";
+    return 0;
+  }
+  if (operation == "stmt-prepare") {
+    const bool exact_refusal =
+        !result.accepted && result.messages.diagnostics.size() == 1 &&
+        result.messages.diagnostics.front().code == "SBSQL.IMPL.NOT_AVAILABLE";
+    const bool no_canonical_result =
+        result.sblr_payload.empty() && result.server_operation_id.empty() &&
+        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_affected_rows == 0 &&
+        !result.server_affected_rows_present &&
+        result.server_result_payload.empty();
+    if (!exact_refusal || !no_canonical_result) {
+      std::cerr << "CSC-TEST-003573 STMT_PREPARE "
+                   "fail_closed_contract_failed\n";
+      return 4;
+    }
+    std::cout << "CSC-TEST-003573 STMT_PREPARE "
+                 "deterministic_refusal=SBSQL.IMPL.NOT_AVAILABLE "
+                 "no_statement_context=true no_canonical_execution=true "
+                 "no_result_publication=true\n";
+    return 0;
+  }
+  const char* static_refusal_test_id =
+      operation == "ddl-create-or-replace-srs" ? "CSC-TEST-002673" :
+      operation == "ddl-drop-srs" ? "CSC-TEST-002677" :
+      operation == "ddl-create-rewrite-rule" ? "CSC-TEST-002681" :
+      operation == "ddl-alter-rewrite-rule" ? "CSC-TEST-002685" :
+      operation == "ddl-drop-rewrite-rule" ? "CSC-TEST-002689" :
+      operation == "ddl-validate-constraint" ? "CSC-TEST-002693" :
+      operation == "security-alter-privilege-template" ? "CSC-TEST-002701" :
+      operation == "security-drop-privilege-template" ? "CSC-TEST-002705" :
+      operation == "database-create-template-clone" ? "CSC-TEST-002709" :
+      operation == "ddl-create-aggregate" ? "CSC-TEST-002713" :
+      operation == "ddl-alter-aggregate" ? "CSC-TEST-002717" :
+      operation == "ddl-drop-aggregate" ? "CSC-TEST-002721" :
+      operation == "ddl-purge-system-history" ? "CSC-TEST-002725" :
+      operation == "ddl-set-index-optimizer-eligibility" ?
+          "CSC-TEST-002729" :
+      operation == "ddl-set-table-type-enforcement" ? "CSC-TEST-002733" :
+      operation == "database-serialize-logical-snapshot" ?
+          "CSC-TEST-002737" :
+      operation == "database-deserialize-logical-snapshot" ?
+          "CSC-TEST-002741" :
+      operation == "ddl-create-macro" ? "CSC-TEST-002745" :
+      operation == "ddl-drop-macro" ? "CSC-TEST-002749" :
+      operation == "admin-register-external-relation-resolver" ?
+          "CSC-TEST-002753" :
+      operation == "admin-unregister-external-relation-resolver" ?
+          "CSC-TEST-002757" :
+      operation == "ddl-create-dictionary" ? "CSC-TEST-002761" :
+      operation == "ddl-drop-dictionary" ? "CSC-TEST-002769" :
+      operation == "ddl-alter-dictionary" ? "CSC-TEST-002765" :
+      operation == "ddl-create-continuous-view" ? "CSC-TEST-002773" :
+      operation == "ddl-alter-continuous-view" ? "CSC-TEST-002777" :
+      operation == "ddl-drop-continuous-view" ? "CSC-TEST-002781" :
+      operation == "dml-async-insert-submit" ? "CSC-TEST-002785" :
+      operation == "dml-async-insert-status" ? "CSC-TEST-002789" :
+      operation == "dml-async-insert-cancel" ? "CSC-TEST-002793" :
+      operation == "dml-conditional-mutate" ? "CSC-TEST-002797" :
+      operation == "dml-timeseries-schema-write" ? "CSC-TEST-002805" :
+      operation == "ddl-timeseries-series-cardinality-policy" ?
+          "CSC-TEST-002809" :
+      operation == "ddl-create-timeseries-value-cache" ?
+          "CSC-TEST-002813" :
+      operation == "ddl-alter-timeseries-value-cache" ?
+          "CSC-TEST-002817" :
+      operation == "ddl-create-synonym" ? "CSC-TEST-002941" :
+      operation == "ddl-create-foreign-table" ? "CSC-TEST-002949" :
+      operation == "ddl-create-fdw" ? "CSC-TEST-002957" :
+      operation == "ddl-drop-fdw" ? "CSC-TEST-002961" :
+      operation == "ddl-drop-foreign-table" ? "CSC-TEST-002953" : nullptr;
+  const char* static_refusal_operation_label =
+      operation == "ddl-create-or-replace-srs" ? "DDL_CREATE_OR_REPLACE_SRS" :
+      operation == "ddl-drop-srs" ? "DDL_DROP_SRS" :
+      operation == "ddl-create-rewrite-rule" ? "DDL_CREATE_REWRITE_RULE" :
+      operation == "ddl-alter-rewrite-rule" ? "DDL_ALTER_REWRITE_RULE" :
+      operation == "ddl-drop-rewrite-rule" ? "DDL_DROP_REWRITE_RULE" :
+      operation == "ddl-validate-constraint" ? "DDL_VALIDATE_CONSTRAINT" :
+      operation == "security-alter-privilege-template" ?
+          "SECURITY_ALTER_PRIVILEGE_TEMPLATE" :
+      operation == "security-drop-privilege-template" ?
+          "SECURITY_DROP_PRIVILEGE_TEMPLATE" :
+      operation == "database-create-template-clone" ?
+          "DATABASE_CREATE_TEMPLATE_CLONE" :
+      operation == "ddl-create-aggregate" ? "DDL_CREATE_AGGREGATE" :
+      operation == "ddl-alter-aggregate" ? "DDL_ALTER_AGGREGATE" :
+      operation == "ddl-drop-aggregate" ? "DDL_DROP_AGGREGATE" :
+      operation == "ddl-purge-system-history" ?
+          "DDL_PURGE_SYSTEM_HISTORY" :
+      operation == "ddl-set-index-optimizer-eligibility" ?
+          "DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY" :
+      operation == "ddl-set-table-type-enforcement" ?
+          "DDL_SET_TABLE_TYPE_ENFORCEMENT" :
+      operation == "database-serialize-logical-snapshot" ?
+          "DATABASE_SERIALIZE_LOGICAL_SNAPSHOT" :
+      operation == "database-deserialize-logical-snapshot" ?
+          "DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT" :
+      operation == "ddl-create-macro" ? "DDL_CREATE_MACRO" :
+      operation == "ddl-drop-macro" ? "DDL_DROP_MACRO" :
+      operation == "admin-register-external-relation-resolver" ?
+          "ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER" :
+      operation == "admin-unregister-external-relation-resolver" ?
+          "ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER" :
+      operation == "ddl-create-dictionary" ? "DDL_CREATE_DICTIONARY" :
+      operation == "ddl-drop-dictionary" ? "DDL_DROP_DICTIONARY" :
+      operation == "ddl-alter-dictionary" ? "DDL_ALTER_DICTIONARY" :
+      operation == "ddl-create-continuous-view" ?
+          "DDL_CREATE_CONTINUOUS_VIEW" :
+      operation == "ddl-alter-continuous-view" ?
+          "DDL_ALTER_CONTINUOUS_VIEW" :
+      operation == "ddl-drop-continuous-view" ?
+          "DDL_DROP_CONTINUOUS_VIEW" :
+      operation == "dml-async-insert-submit" ?
+          "DML_ASYNC_INSERT_SUBMIT" :
+      operation == "dml-async-insert-status" ?
+          "DML_ASYNC_INSERT_STATUS" :
+      operation == "dml-async-insert-cancel" ?
+          "DML_ASYNC_INSERT_CANCEL" :
+      operation == "dml-conditional-mutate" ?
+          "DML_CONDITIONAL_MUTATE" :
+      operation == "dml-timeseries-schema-write" ?
+          "DML_TIMESERIES_SCHEMA_WRITE" :
+      operation == "ddl-timeseries-series-cardinality-policy" ?
+          "DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY" :
+      operation == "ddl-create-timeseries-value-cache" ?
+          "DDL_CREATE_TIMESERIES_VALUE_CACHE" :
+      operation == "ddl-alter-timeseries-value-cache" ?
+          "DDL_ALTER_TIMESERIES_VALUE_CACHE" :
+      operation == "ddl-create-synonym" ? "DDL_CREATE_SYNONYM" :
+      operation == "ddl-create-foreign-table" ?
+          "DDL_CREATE_FOREIGN_TABLE" :
+      operation == "ddl-create-fdw" ? "DDL_CREATE_FDW" :
+      operation == "ddl-drop-fdw" ? "DDL_DROP_FDW" :
+      operation == "ddl-drop-foreign-table" ?
+          "DDL_DROP_FOREIGN_TABLE" : nullptr;
+  if (static_refusal_test_id != nullptr &&
+      static_refusal_operation_label != nullptr) {
+    const bool exact_refusal =
+        !result.accepted && result.messages.diagnostics.size() == 1 &&
+        result.messages.diagnostics.front().code ==
+            "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+    const bool no_result_publication =
+        result.server_operation_id.empty() && result.server_cursor_uuid.empty() &&
+        result.server_row_count == 0 && result.server_affected_rows == 0 &&
+        !result.server_affected_rows_present &&
+        result.server_result_payload.empty();
+    if (!exact_refusal || !no_result_publication) {
+      std::cerr << static_refusal_test_id << ' '
+                << static_refusal_operation_label
+                << " fail_closed_contract_failed\n";
+      return 4;
+    }
+    std::cout << static_refusal_test_id << ' '
+              << static_refusal_operation_label
+              << " deterministic_refusal="
+                 "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING"
+                 " no_engine_dispatch=true no_result_publication=true\n";
+    return 0;
+  }
   if (operation == "ddl-create-operator-class" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
     std::cout << "CSC-TEST-004009 DDL_CREATE_OPERATOR_CLASS deterministic_cluster_refusal\n";
     return 0;
@@ -772,6 +986,29 @@ int main(int argc, char** argv) {
   }
   if (operation == "ddl-create-subscription" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
     std::cout << "CSC-TEST-003989 DDL_CREATE_SUBSCRIPTION deterministic_cluster_refusal\n";
+    return 0;
+  }
+  if (operation == "ddl-alter-subscription" ||
+      operation == "ddl-drop-subscription") {
+    const bool exact_refusal =
+        !result.accepted && result.messages.diagnostics.size() == 1 &&
+        result.messages.diagnostics.front().code ==
+            "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN";
+    const bool no_canonical_result =
+        result.sblr_payload.empty() && result.server_operation_id.empty() &&
+        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_affected_rows == 0 &&
+        !result.server_affected_rows_present &&
+        result.server_result_payload.empty();
+    if (!exact_refusal || !no_canonical_result) {
+      std::cerr << (operation == "ddl-alter-subscription"
+                        ? "CSC-TEST-003993 DDL_ALTER_SUBSCRIPTION fail_closed_contract_failed\n"
+                        : "CSC-TEST-003997 DDL_DROP_SUBSCRIPTION fail_closed_contract_failed\n");
+      return 4;
+    }
+    std::cout << (operation == "ddl-alter-subscription"
+                      ? "CSC-TEST-003993 DDL_ALTER_SUBSCRIPTION deterministic_cluster_refusal\n"
+                      : "CSC-TEST-003997 DDL_DROP_SUBSCRIPTION deterministic_cluster_refusal\n");
     return 0;
   }
   if (operation == "cluster-create-placement-policy" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "SB_DIAG_CLUSTER_TXN_UNAVAILABLE") {

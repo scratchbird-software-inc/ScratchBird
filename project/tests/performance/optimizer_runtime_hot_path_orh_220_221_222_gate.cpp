@@ -357,15 +357,29 @@ void PhysicalJoinSuiteConsumesNonIndexOperatorsAndBlocksIndexClaims() {
           "merge join produced unexpected row count");
 
   const auto graph = opt::BuildJoinGraph(
-      {{"rel.orders", 1000, false},
-       {"rel.customers", 100, false},
-       {"rel.countries", 10, true}},
-      {{"rel.orders", "rel.customers", "orders.customer_id=customers.id",
-        opt::JoinSemanticKind::kInner, true, false, false, false, false,
-        false, false, 0.02},
-       {"rel.customers", "rel.countries", "customers.country_id=countries.id",
-        opt::JoinSemanticKind::kInner, true, false, false, false, false,
-        false, false, 0.05}},
+      {opt::JoinRelationNode{.relation_uuid = "rel.orders",
+                             .estimated_rows = 1000},
+       opt::JoinRelationNode{.relation_uuid = "rel.customers",
+                             .estimated_rows = 100},
+       opt::JoinRelationNode{.relation_uuid = "rel.countries",
+                             .estimated_rows = 10,
+                             .order_preserving_required = true}},
+      {opt::JoinPredicateEdge{
+           .left_relation_uuid = "rel.orders",
+           .right_relation_uuid = "rel.customers",
+           .predicate_kind = "orders.customer_id=customers.id",
+           .semantic_kind = opt::JoinSemanticKind::kInner,
+           .predicate_count = 1,
+           .equality = true,
+           .selectivity = 0.02},
+       opt::JoinPredicateEdge{
+           .left_relation_uuid = "rel.customers",
+           .right_relation_uuid = "rel.countries",
+           .predicate_kind = "customers.country_id=countries.id",
+           .semantic_kind = opt::JoinSemanticKind::kInner,
+           .predicate_count = 1,
+           .equality = true,
+           .selectivity = 0.05}},
       false, false);
   const auto dp = opt::EnumerateDeterministicJoinOrder(graph, 1024 * 1024);
   Require(dp.ok, "join-order DP rejected safe inner equi-join graph");

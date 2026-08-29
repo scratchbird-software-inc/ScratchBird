@@ -40,6 +40,24 @@ target_compile_features(sb_engine_public_abi_cpp_fixture PRIVATE cxx_std_23)
 target_link_libraries(sb_engine_public_abi_cpp_fixture PRIVATE sb_engine)
 add_test(NAME sb_engine_public_abi_cpp_fixture COMMAND sb_engine_public_abi_cpp_fixture)
 
+add_executable(sb_engine_public_typed_result_abi_fixture
+  public_typed_result_abi_fixture.cpp
+)
+target_compile_features(sb_engine_public_typed_result_abi_fixture PRIVATE cxx_std_20)
+target_include_directories(sb_engine_public_typed_result_abi_fixture PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(sb_engine_public_typed_result_abi_fixture PRIVATE
+  sb_engine
+  sb_engine_typed_result_producer_cursor
+  sb_wire_typed_result_transport_codec
+)
+add_test(NAME sb_engine_public_typed_result_abi_fixture
+  COMMAND sb_engine_public_typed_result_abi_fixture)
+set_tests_properties(sb_engine_public_typed_result_abi_fixture PROPERTIES
+  LABELS "public_abi;typed_result;PS-RESULT-TRANSPORT-BINARY-V1"
+)
+
 add_executable(sb_engine_public_sblr_admission_fixture
   public_sblr_admission_fixture.cpp
 )

@@ -31,6 +31,7 @@
 #include "catalog/sys_information_projection.hpp"
 #include "dml/global_aggregate_projection.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "datatype_catalog_manifest.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1283,7 +1284,7 @@ struct PsNameResolveRequest {
 
 constexpr std::uint8_t kPsNameProjectionRelationDescriptorV1 = 0x01u;
 constexpr std::uint8_t kPsRelationDescriptorExtensionKind = 0x02u;
-constexpr std::uint8_t kPsRelationDescriptorExtensionVersion = 0x02u;
+constexpr std::uint8_t kPsRelationDescriptorExtensionVersion = 0x03u;
 constexpr std::size_t kMaxPsRelationProjectionBytes = 512u * 1024u;
 constexpr std::uint32_t kMaxPsRelationProjectionColumns = 4096;
 constexpr std::size_t kMaxPsRelationMetadataTextBytes = 4096;
@@ -1847,6 +1848,15 @@ struct PsPublicRelationColumnProjection {
   std::uint32_t charset_min_bytes = 0;
   std::uint32_t charset_max_bytes = 0;
   bool charset_variable_width = false;
+  bool datatype_identity_present = false;
+  std::uint64_t datatype_descriptor_generation = 0;
+  std::array<std::uint8_t, 16> datatype_type_uuid{};
+  std::uint64_t datatype_type_generation = 0;
+  std::string datatype_codec_id;
+  std::uint16_t datatype_codec_version = 0;
+  std::uint64_t datatype_codec_generation = 0;
+  std::uint32_t datatype_canonical_value_bytes = 0;
+  std::uint8_t datatype_null_encoding = 0;
 };
 
 struct PsPublicRelationProjection {
@@ -1855,6 +1865,9 @@ struct PsPublicRelationProjection {
   std::array<std::uint8_t, 16> schema_uuid{};
   std::uint64_t descriptor_generation = 0;
   std::uint64_t validated_resource_epoch = 0;
+  std::array<std::uint8_t, 16> datatype_catalog_snapshot_uuid{};
+  std::uint64_t datatype_catalog_generation = 0;
+  std::uint64_t datatype_registry_generation = 0;
   std::vector<PsPublicRelationColumnProjection> columns;
 };
 
@@ -1977,6 +1990,26 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
   result.projection.descriptor_generation =
       loaded.descriptor.descriptor_generation;
   result.projection.validated_resource_epoch = context.resource_epoch;
+  constexpr std::string_view kDatatypeCatalogSnapshotUuid =
+      "019d0000-0000-7000-8000-00000000d701";
+  constexpr std::uint64_t kDatatypeCatalogGeneration = 1;
+  constexpr std::uint64_t kDatatypeRegistryGeneration = 1;
+  const auto datatype_catalog_snapshot_uuid =
+      PsNameUuidFromText(kDatatypeCatalogSnapshotUuid);
+  if (!datatype_catalog_snapshot_uuid) {
+    result.diagnostic = PsRelationProjectionDiagnostic(
+        "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
+        "parser_server_ipc.relation_descriptor_invalid",
+        "The engine datatype registry snapshot identity is invalid.",
+        "datatype_registry_snapshot_invalid");
+    return result;
+  }
+  result.projection.datatype_catalog_snapshot_uuid =
+      *datatype_catalog_snapshot_uuid;
+  result.projection.datatype_catalog_generation =
+      kDatatypeCatalogGeneration;
+  result.projection.datatype_registry_generation =
+      kDatatypeRegistryGeneration;
   result.projection.columns.reserve(loaded.descriptor.columns.size());
   std::set<std::string> column_uuids;
   std::set<std::uint32_t> ordinals;
@@ -2022,6 +2055,52 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
     column.generated = source.generated;
     column.identity_column = source.identity_column;
     column.character_length = source.character_length;
+
+    const auto datatype_identity =
+        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+            std::string(kDatatypeCatalogSnapshotUuid),
+            kDatatypeCatalogGeneration,
+            kDatatypeRegistryGeneration,
+            source.value_descriptor.descriptor_uuid.canonical,
+            1);
+    if (datatype_identity.ok) {
+      const bool exact_variable_width_text = scratchbird::core::datatypes::
+          IsExactCanonicalTextTypeCodecIdentityV1(datatype_identity.row);
+      const auto type_uuid =
+          PsNameUuidFromText(datatype_identity.row.type_uuid);
+      if (!type_uuid || datatype_identity.row.descriptor_generation == 0 ||
+          datatype_identity.row.type_generation == 0 ||
+          datatype_identity.row.codec_id.empty() ||
+          datatype_identity.row.codec_id.size() >
+              kMaxPsRelationMetadataTextBytes ||
+          datatype_identity.row.codec_version == 0 ||
+          datatype_identity.row.codec_generation == 0 ||
+          (datatype_identity.row.canonical_value_bytes == 0 &&
+           !exact_variable_width_text) ||
+          (datatype_identity.row.null_encoding_code != 1 &&
+           datatype_identity.row.null_encoding_code != 2)) {
+        result.diagnostic = PsRelationProjectionDiagnostic(
+            "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
+            "parser_server_ipc.relation_descriptor_invalid",
+            "A datatype registry row failed exact public projection validation.",
+            "datatype_registry_row_invalid");
+        return result;
+      }
+      column.datatype_identity_present = true;
+      column.datatype_descriptor_generation =
+          datatype_identity.row.descriptor_generation;
+      column.datatype_type_uuid = *type_uuid;
+      column.datatype_type_generation =
+          datatype_identity.row.type_generation;
+      column.datatype_codec_id = datatype_identity.row.codec_id;
+      column.datatype_codec_version = datatype_identity.row.codec_version;
+      column.datatype_codec_generation =
+          datatype_identity.row.codec_generation;
+      column.datatype_canonical_value_bytes =
+          datatype_identity.row.canonical_value_bytes;
+      column.datatype_null_encoding =
+          datatype_identity.row.null_encoding_code;
+    }
 
     if (!source.charset_uuid.empty()) {
       const auto charset_uuid = PsNameUuidFromText(source.charset_uuid);
@@ -2160,6 +2239,12 @@ EncodePsNameResolvePayloadV3(
   PsNamePutUuid(&extension, relation_projection->schema_uuid);
   PsNamePutU64(&extension, relation_projection->descriptor_generation);
   PsNamePutU64(&extension, relation_projection->validated_resource_epoch);
+  PsNamePutUuid(&extension,
+                relation_projection->datatype_catalog_snapshot_uuid);
+  PsNamePutU64(&extension,
+               relation_projection->datatype_catalog_generation);
+  PsNamePutU64(&extension,
+               relation_projection->datatype_registry_generation);
   PsNamePutU32(
       &extension,
       static_cast<std::uint32_t>(relation_projection->columns.size()));
@@ -2184,6 +2269,17 @@ EncodePsNameResolvePayloadV3(
     PsNamePutU32(&extension, column.character_length);
     PsNamePutU32(&extension, column.charset_min_bytes);
     PsNamePutU32(&extension, column.charset_max_bytes);
+    PsNamePutU8(&extension, column.datatype_identity_present ? 1u : 0u);
+    if (column.datatype_identity_present) {
+      PsNamePutU64(&extension, column.datatype_descriptor_generation);
+      PsNamePutUuid(&extension, column.datatype_type_uuid);
+      PsNamePutU64(&extension, column.datatype_type_generation);
+      PsNamePutString(&extension, column.datatype_codec_id);
+      PsNamePutU16(&extension, column.datatype_codec_version);
+      PsNamePutU64(&extension, column.datatype_codec_generation);
+      PsNamePutU32(&extension, column.datatype_canonical_value_bytes);
+      PsNamePutU8(&extension, column.datatype_null_encoding);
+    }
     if (extension.size() > kMaxPsRelationProjectionBytes) {
       return std::nullopt;
     }
@@ -3320,6 +3416,9 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kResolveNameRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kAcquireStatementContextRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kQueryNarrowBindingIssueRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(
+          sbps::MessageType::kContextualTextLiteralProfileIssueRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kNegotiateLiteralDescriptorsRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr) ||
@@ -3402,6 +3501,8 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateIndexRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropIndexRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterDomainRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlUpdateRowsBindRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlPlanImportRowsBindRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateViewRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreatePublicationRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterPublicationRequest) ||
@@ -3907,6 +4008,31 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
     WriteAll(client_fd, SessionOperationFrame(frame, result));
     return true;
   }
+  // Route a wrong half of the dedicated pair through the same terminal
+  // refusal path before any ordinary session operation can claim schema
+  // 7707.  No generic result wrapper or alternate success message is
+  // permitted for this raw-carrier operation.
+  if (frame.header.message_type == static_cast<std::uint16_t>(
+          sbps::MessageType::kQueryNarrowBindingIssueRequest) ||
+      frame.header.payload_schema_id ==
+          sbps::kSchemaQueryNarrowBindingIssueRequestV1) {
+    WriteAll(client_fd, SessionOperationFrame(
+        frame, HandleQueryNarrowBindingIssue(
+                   session_registry, engine_state, frame)));
+    return true;
+  }
+  // The contextual-TEXT coordination pair is success-only and raw-carrier.
+  // Route either an exact request message or a schema-7711 lookalike to the
+  // same closed handler so no ordinary TLV operation can claim the payload.
+  if (frame.header.message_type == static_cast<std::uint16_t>(
+          sbps::MessageType::kContextualTextLiteralProfileIssueRequest) ||
+      frame.header.payload_schema_id ==
+          sbps::kSchemaContextualTextLiteralProfileIssueRequestV2) {
+    WriteAll(client_fd, SessionOperationFrame(
+        frame, HandleIssueContextualTextLiteralProfiles(
+                   session_registry, engine_state, frame)));
+    return true;
+  }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice)) {
     if (release_heap_after_close != nullptr) {
@@ -4046,6 +4172,8 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==92&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAccessCursorCloseRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAccessCursorClose(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==94&&frame.header.payload_schema_id==sbps::kSchemaCoordinateInsertRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateInsert(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==96&&frame.header.payload_schema_id==sbps::kSchemaCoordinateUpdateRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateUpdate(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==390&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlUpdateRowsBindRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlUpdateRowsBind(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==392&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlPlanImportRowsBindRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlPlanImportRowsBind(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==98&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDeleteRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDelete(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==100&&frame.header.payload_schema_id==sbps::kSchemaCoordinateMergeRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateMerge(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==102&&frame.header.payload_schema_id==sbps::kSchemaCoordinateTableTruncateRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateTableTruncate(session_registry,engine_state,frame)));return true;}
@@ -4162,7 +4290,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==214&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateTemporaryTableRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateTemporaryTable(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==216&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropTemporaryTableRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropTemporaryTable(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==218&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlRenameObjectVectorRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlRenameObjectVector(session_registry,engine_state,frame)));return true;}
-  if(frame.header.message_type==230&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlRenameObjectRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlRenameObject(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==666&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlRenameObjectRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlRenameObject(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==220&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateOrReplaceSrsRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateOrReplaceSrs(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==222&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropSrsRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropSrs(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==224&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateRewriteRuleRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateRewriteRule(session_registry,engine_state,frame)));return true;}

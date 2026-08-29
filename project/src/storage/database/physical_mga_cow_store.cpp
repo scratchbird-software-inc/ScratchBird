@@ -285,6 +285,14 @@ PhysicalMgaCowMutationResult ValidateMutationRequest(
         "SB-PHYSICAL-MGA-COW-LOCAL-ID-INVALID",
         "storage.physical_mga_cow.local_id_invalid");
   }
+  if (request.predecessor_page_number != 0 &&
+      request.predecessor_page_number >= request.page_number) {
+    return ErrorResult<PhysicalMgaCowMutationResult>(
+        "SB-PHYSICAL-MGA-COW-PREDECESSOR-PAGE-INVALID",
+        "storage.physical_mga_cow.predecessor_page_invalid",
+        "predecessor=" + std::to_string(request.predecessor_page_number) +
+            " page=" + std::to_string(request.page_number));
+  }
   if ((request.kind == PhysicalMgaCowMutationKind::insert ||
        request.kind == PhysicalMgaCowMutationKind::update) &&
       request.cells.empty()) {
@@ -400,7 +408,11 @@ PhysicalMgaCowMutationResult ReadRowDataPage(FileDevice* device,
     body->page_number = request.page_number;
     body->page_generation = 1;
     body->compaction_generation = 1;
-    return PhysicalMgaCowMutationResult{CowStoreOkStatus(), {}, {}, {}, *body, {}, {}, {}};
+    body->next_page_number = request.predecessor_page_number;
+    PhysicalMgaCowMutationResult result;
+    result.status = CowStoreOkStatus();
+    result.row_page = *body;
+    return result;
   }
   if (size.size_bytes < page_offset.offset + context.page_size) {
     return ErrorResult<PhysicalMgaCowMutationResult>(
@@ -451,12 +463,16 @@ PhysicalMgaCowMutationResult ReadRowDataPage(FileDevice* device,
         std::to_string(request.page_number));
   }
   *body = parsed.body;
-  return PhysicalMgaCowMutationResult{CowStoreOkStatus(), {}, {}, {}, *body, {}, {}, {}};
+  PhysicalMgaCowMutationResult result;
+  result.status = CowStoreOkStatus();
+  result.row_page = *body;
+  return result;
 }
 
 RowDataPageBody MakeEmptyRowDataPageBody(
     const TypedUuid& relation_uuid,
-    u64 page_number) {
+    u64 page_number,
+    u64 predecessor_page_number) {
   RowDataPageBody body;
   body.relation_uuid = relation_uuid;
   body.segment_id = 1;
@@ -464,6 +480,7 @@ RowDataPageBody MakeEmptyRowDataPageBody(
   body.page_number = page_number;
   body.page_generation = 1;
   body.compaction_generation = 1;
+  body.next_page_number = predecessor_page_number;
   return body;
 }
 
@@ -496,7 +513,8 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
   }
   const auto page_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
       UuidKind::page,
-      1770000000000ull + body.page_number + body.page_generation);
+      1770000000000ull + built.body.page_number +
+          built.body.page_generation);
   if (!page_uuid.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(page_uuid.status,
                                                    page_uuid.diagnostic);
@@ -505,14 +523,15 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
   header_request.context = context.page_context;
   header_request.page_type = PageType::row_data;
   header_request.page_uuid = page_uuid.value;
-  header_request.page_number = body.page_number;
-  header_request.page_generation = body.page_generation;
+  header_request.page_number = built.body.page_number;
+  header_request.page_generation = built.body.page_generation;
   const auto header = BuildManagedPageHeader(header_request);
   if (!header.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(header.status,
                                                    header.diagnostic);
   }
-  const auto page_offset = CheckedPageOffset(context.page_size, body.page_number);
+  const auto page_offset = CheckedPageOffset(context.page_size,
+                                             built.body.page_number);
   if (!page_offset.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(page_offset.status,
                                                    page_offset.diagnostic);
@@ -525,7 +544,7 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
                                                    write_header.diagnostic);
   }
   const auto body_offset = CheckedPageBodyOffset(context.page_size,
-                                                 body.page_number,
+                                                 built.body.page_number,
                                                  kPageHeaderSerializedBytes);
   if (!body_offset.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(body_offset.status,
@@ -548,6 +567,8 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
   PhysicalMgaCowMutationResult result;
   result.status = CowStoreOkStatus();
   result.row_page = built.body;
+  result.page_uuid = page_uuid.value;
+  result.page_generation = built.body.page_generation;
   return result;
 }
 
@@ -830,6 +851,8 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
   result.mutation = mutation;
   result.row_page = written.row_page;
   result.row_version = new_row;
+  result.page_uuid = written.page_uuid;
+  result.page_generation = written.page_generation;
   result.evidence.push_back("physical_mga_cow.row_page_written=true");
   result.evidence.push_back(
       request.use_existing_transaction
@@ -960,7 +983,9 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
       }
       if (initial_device_size.size_bytes <= page_offset.offset) {
         loaded_page = MakeEmptyRowDataPageBody(mutation_request.relation_uuid,
-                                               mutation_request.page_number);
+                                               mutation_request.page_number,
+                                               mutation_request
+                                                   .predecessor_page_number);
       } else {
         auto read_page = ReadRowDataPage(&device,
                                          context,

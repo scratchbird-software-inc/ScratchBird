@@ -129,7 +129,7 @@ def validate_gitignore_and_tracking(repo_root: Path) -> None:
     for root in PROTECTED_LOCAL_ONLY_ROOTS:
         require(root in gitignore, f"protected local-only root missing from ignore file: {root}")
     tracked = subprocess.run(
-        ["git", "ls-files", "public_release_evidence",
+        ["git", "-c", f"safe.directory={repo_root}", "ls-files", "public_release_evidence",
          "docs/references", "docs" "/findings", "public_audit_summary"],
         cwd=repo_root,
         check=False,

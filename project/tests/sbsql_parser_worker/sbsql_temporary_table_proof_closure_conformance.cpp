@@ -7,8 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "backup_archive/backup_archive_api.hpp"
 #include "binder/binder.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "cst/cst.hpp"
@@ -63,6 +65,10 @@ constexpr std::string_view kTableUuid =
     "019f0000-0000-7000-8000-000000440101";
 constexpr std::string_view kColumnUuid =
     "019f0000-0000-7000-8000-000000440102";
+constexpr std::string_view kSchemaUuid =
+    "019f0000-0000-7000-8000-000000440012";
+constexpr std::string_view kSchemaSetupSessionUuid =
+    "019f0000-0000-7000-8000-000000440010";
 constexpr std::string_view kDurableShadowTableUuid =
     "019f0000-0000-7000-8000-000000440301";
 constexpr std::string_view kTemporaryShadowTableUuid =
@@ -111,6 +117,38 @@ constexpr std::string_view kBackupGlobalTempRowUuid =
     "019f0000-0000-7000-8000-000000440832";
 constexpr std::string_view kBackupPrivateTempRowUuid =
     "019f0000-0000-7000-8000-000000440833";
+constexpr std::string_view kNamespacePrivateFirstTableUuid =
+    "019f0000-0000-7000-8000-000000440330";
+constexpr std::string_view kNamespaceDurableAfterTableUuid =
+    "019f0000-0000-7000-8000-000000440331";
+constexpr std::string_view kNamespaceOtherPrivateTableUuid =
+    "019f0000-0000-7000-8000-000000440332";
+constexpr std::string_view kNamespaceDuplicatePrivateTableUuid =
+    "019f0000-0000-7000-8000-000000440333";
+constexpr std::string_view kNamespaceSameTxDurableTableUuid =
+    "019f0000-0000-7000-8000-000000440334";
+constexpr std::string_view kNamespaceSameTxPrivateTableUuid =
+    "019f0000-0000-7000-8000-000000440335";
+constexpr std::string_view kNamespaceSameTxDuplicateTableUuid =
+    "019f0000-0000-7000-8000-000000440336";
+constexpr std::string_view kNamespaceDurableCollisionTableUuid =
+    "019f0000-0000-7000-8000-000000440337";
+constexpr std::string_view kNamespaceGlobalCollisionTableUuid =
+    "019f0000-0000-7000-8000-000000440338";
+constexpr std::string_view kNamespaceInvalidCatalogObjectUuid =
+    "019f0000-0000-7000-8000-000000440339";
+constexpr std::string_view kNamespaceGlobalCollisionAttemptTableUuid =
+    "019f0000-0000-7000-8000-000000440340";
+constexpr std::string_view kNamespaceDurableCollisionAttemptTableUuid =
+    "019f0000-0000-7000-8000-000000440341";
+constexpr std::string_view kNamespaceMalformedPersistedTableUuid =
+    "019f0000-0000-7000-8000-000000440342";
+constexpr std::string_view kNamespaceMalformedPersistedAttemptTableUuid =
+    "019f0000-0000-7000-8000-000000440343";
+constexpr std::string_view kNamespaceLifecycleOnlyTableUuid =
+    "019f0000-0000-7000-8000-000000440344";
+constexpr std::string_view kNamespaceLifecycleOnlyAttemptTableUuid =
+    "019f0000-0000-7000-8000-000000440345";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -132,6 +170,47 @@ std::string ReadFile(const std::filesystem::path& path) {
   std::ostringstream output;
   output << input.rdbuf();
   return output.str();
+}
+
+void CorruptPersistedTemporaryOwnerForTest(
+    const std::filesystem::path& database_path,
+    std::string_view table_uuid,
+    std::string_view expected_owner,
+    std::string_view malformed_owner) {
+  const std::filesystem::path metadata_path =
+      database_path.string() + ".sb.mga_relation_metadata";
+  std::string contents = ReadFile(metadata_path);
+  const std::string table_marker = "\t" + std::string(table_uuid) + "\t";
+  const auto table_position = contents.find(table_marker);
+  Require(table_position != std::string::npos,
+          "TEMP-TABLE-GATE-005 persisted malformed-owner table row missing");
+  const auto row_begin = contents.rfind('\n', table_position);
+  const auto row_end = contents.find('\n', table_position);
+  const std::size_t row_offset =
+      row_begin == std::string::npos ? 0 : row_begin + 1;
+  const std::size_t row_limit =
+      row_end == std::string::npos ? contents.size() : row_end;
+  Require(contents.compare(row_offset,
+                           std::string_view("SBMGA1\t"
+                                            "TABLE_METADATA_SEALED_DESCRIPTOR_V2")
+                               .size(),
+                           "SBMGA1\tTABLE_METADATA_SEALED_DESCRIPTOR_V2") == 0,
+          "TEMP-TABLE-GATE-005 malformed-owner target was not a sealed MGA row");
+  const std::string owner_marker =
+      "\t" + std::string(expected_owner) + "\t";
+  const auto owner_position = contents.find(owner_marker, table_position);
+  Require(owner_position != std::string::npos && owner_position < row_limit,
+          "TEMP-TABLE-GATE-005 persisted temporary owner field missing");
+  contents.replace(owner_position + 1,
+                   expected_owner.size(),
+                   malformed_owner);
+  std::ofstream output(metadata_path, std::ios::binary | std::ios::trunc);
+  Require(static_cast<bool>(output),
+          "TEMP-TABLE-GATE-005 malformed-owner metadata rewrite open failed");
+  output << contents;
+  output.flush();
+  Require(static_cast<bool>(output),
+          "TEMP-TABLE-GATE-005 malformed-owner metadata rewrite failed");
 }
 
 std::string HexEncode(std::string_view text) {
@@ -318,7 +397,7 @@ void RequireAcceptedTemporarySql(std::string_view sql,
           "TEMP-TABLE-GATE-002 payload embedded SQL text as authority");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "TEMP-TABLE-GATE-003 server admission rejected route");
   Require(admission.requires_public_abi_dispatch,
           "TEMP-TABLE-GATE-003 server admission skipped public ABI dispatch");
@@ -411,20 +490,32 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   std::error_code ignored;
   std::filesystem::remove(path, ignored);
   for (const auto suffix : {".sb.api_events",
+                            ".sb.catalog_object_events",
                             ".sb.crud_events",
                             ".sb.name_events",
+                            ".sb.mga_event_sequence_allocator",
                             ".sb.mga_relation_metadata",
                             ".sb.mga_relation_descriptors",
                             ".sb.mga_row_versions",
                             ".sb.mga_index_entries",
+                            ".sb.mga_secondary_index_delta_ledger",
                             ".sb.mga_large_values",
                             ".sb.mga_savepoints",
+                            ".sb.mga_durable_operations",
+                            ".sb.mga_update_statement_savepoints.v1",
                             ".sb.transaction_inventory",
+                            ".sb.txn_publish",
+                            ".sb.txn_publish.tmp",
+                            ".sb.backup_archive_lifecycle",
+                            ".sb.backup_forward_sessions",
                             ".dirty.manifest",
                             ".recovery.evidence",
                             ".sb.owner.lock"}) {
     std::filesystem::remove(path.string() + suffix, ignored);
   }
+  ignored.clear();
+  std::filesystem::remove_all(path.string() + ".sb.mga_relation_scope",
+                              ignored);
 }
 
 std::string CreateMinimalDatabase(const std::filesystem::path& path) {
@@ -465,11 +556,15 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.database_uuid.canonical = database_uuid;
   context.session_uuid.canonical = std::move(session_uuid);
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000440011";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000440012";
+  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:CATALOG_MUTATE");
   context.trace_tags.push_back("right:DML_MUTATE");
@@ -836,6 +931,30 @@ api::EngineRollbackTransactionResult Rollback(api::EngineRequestContext context)
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = std::move(context);
   return api::EngineRollbackTransaction(rollback);
+}
+
+void CreateAndCommitRequiredSchema(const std::filesystem::path& path,
+                                   const std::string& database_uuid) {
+  auto context = BeginTransaction(
+      EngineContext(path, database_uuid, std::string(kSchemaSetupSessionUuid)));
+  scratchbird::tests::release::GrantMaterializedRights(
+      &context, {"CATALOG_MUTATE"});
+
+  api::EngineCreateSchemaRequest create;
+  create.context = context;
+  create.target_object.uuid.canonical = std::string(kSchemaUuid);
+  create.target_object.object_kind = "schema";
+  create.localized_names.push_back(
+      {"en", "primary", "", "temporary_fixture", true});
+  const auto created = api::EngineCreateSchema(create);
+  if (!created.ok) { PrintApiDiagnostics(created); }
+  Require(created.ok,
+          "TEMP-TABLE-GATE-004 required schema create failed");
+
+  const auto committed = Commit(std::move(context));
+  if (!committed.ok) { PrintApiDiagnostics(committed); }
+  Require(committed.ok,
+          "TEMP-TABLE-GATE-004 required schema commit failed");
 }
 
 api::EngineCleanupTemporarySessionResult CleanupTemporarySession(
@@ -1512,6 +1631,443 @@ void RequireEngineTemporaryNameScopesAndGttDataIsolation(
   if (!selected_b.ok) { PrintApiDiagnostics(selected_b); }
   Require(selected_b.ok && selected_b.visible_count == 1,
           "TEMP-TABLE-GATE-006 GTT session B data was affected by session A commit");
+}
+
+void RequireEngineTemporaryCatalogNamespaceSemantics(
+    const std::filesystem::path& path,
+    const std::string& database_uuid) {
+  constexpr std::string_view kSameTransactionName =
+      "same_transaction_shadow_customer";
+  constexpr std::string_view kPrivateFirstName =
+      "private_first_shadow_customer";
+  constexpr std::string_view kDurableCollisionName =
+      "durable_global_collision_customer";
+  constexpr std::string_view kGlobalCollisionName =
+      "global_durable_collision_customer";
+  const auto restart = [](api::EngineRequestContext context) {
+    context.local_transaction_id = 0;
+    context.transaction_uuid.canonical.clear();
+    context.snapshot_visible_through_local_transaction_id = 0;
+    return BeginTransaction(std::move(context));
+  };
+
+  auto invalid = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-000000440091"));
+  api::EngineCatalogCreateObjectRequest invalid_namespace;
+  invalid_namespace.context = invalid;
+  invalid_namespace.target_object.uuid.canonical =
+      std::string(kNamespaceInvalidCatalogObjectUuid);
+  invalid_namespace.target_object.object_kind = "table";
+  invalid_namespace.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  invalid_namespace.localized_names.push_back(
+      {"en", "primary", "", "forged_session_namespace", true});
+  invalid_namespace.name_namespace.kind =
+      api::EngineCatalogNameNamespaceKind::kSessionTemporary;
+  invalid_namespace.name_namespace.owner_session_uuid.canonical =
+      "019f0000-0000-7000-8000-000000440099";
+  const auto invalid_result =
+      api::EngineCatalogCreateObject(invalid_namespace);
+  Require(!invalid_result.ok &&
+              HasDiagnosticCode(
+                  invalid_result,
+                  api::kCatalogObjectDiagnosticNameNamespaceInvalid),
+          "TEMP-TABLE-GATE-005 forged session namespace did not fail closed");
+  auto malformed_namespace = invalid_namespace;
+  malformed_namespace.context.session_uuid.canonical =
+      "malformed-but-identical-session-owner";
+  malformed_namespace.name_namespace.owner_session_uuid.canonical =
+      malformed_namespace.context.session_uuid.canonical;
+  const auto malformed_namespace_result =
+      api::EngineCatalogCreateObject(malformed_namespace);
+  Require(!malformed_namespace_result.ok &&
+              HasDiagnosticCode(
+                  malformed_namespace_result,
+                  api::kCatalogObjectDiagnosticNameNamespaceInvalid),
+          "TEMP-TABLE-GATE-005 malformed identical session namespace did not fail closed");
+  auto rolled_back = Rollback(invalid);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 forged namespace transaction rollback failed");
+
+  auto lifecycle_only = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-00000044009a"));
+  api::EngineCatalogCreateObjectRequest lifecycle_only_create;
+  lifecycle_only_create.context = lifecycle_only;
+  lifecycle_only_create.target_object.uuid.canonical =
+      std::string(kNamespaceLifecycleOnlyTableUuid);
+  lifecycle_only_create.target_object.object_kind = "table";
+  lifecycle_only_create.target_schema.uuid.canonical =
+      std::string(kSchemaUuid);
+  lifecycle_only_create.localized_names.push_back(
+      {"en", "primary", "", "lifecycle_only_catalog_customer", true});
+  const auto lifecycle_only_created =
+      api::EngineCatalogCreateObject(lifecycle_only_create);
+  if (!lifecycle_only_created.ok) {
+    PrintApiDiagnostics(lifecycle_only_created);
+  }
+  Require(lifecycle_only_created.ok,
+          "TEMP-TABLE-GATE-005 lifecycle-only catalog relation create failed");
+  auto lifecycle_only_duplicate = lifecycle_only_create;
+  lifecycle_only_duplicate.target_object.uuid.canonical =
+      std::string(kNamespaceLifecycleOnlyAttemptTableUuid);
+  const auto lifecycle_only_duplicate_result =
+      api::EngineCatalogCreateObject(lifecycle_only_duplicate);
+  Require(!lifecycle_only_duplicate_result.ok &&
+              HasDiagnosticCode(
+                  lifecycle_only_duplicate_result,
+                  api::kCatalogObjectDiagnosticDuplicateName),
+          "TEMP-TABLE-GATE-005 lifecycle-only catalog duplicate was admitted");
+  rolled_back = Rollback(lifecycle_only);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 lifecycle-only duplicate rollback failed");
+
+  auto malformed_persisted = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-00000044009b"));
+  constexpr std::string_view kMalformedPersistedName =
+      "malformed_persisted_private_customer";
+  const auto malformed_persisted_created = api::EngineCreateTable(
+      TemporaryCreateTableRequest(
+          malformed_persisted,
+          "delete_rows",
+          kNamespaceMalformedPersistedTableUuid,
+          kMalformedPersistedName,
+          "019f0000-0000-7000-8000-000000440851",
+          "private"));
+  if (!malformed_persisted_created.ok) {
+    PrintApiDiagnostics(malformed_persisted_created);
+  }
+  Require(malformed_persisted_created.ok,
+          "TEMP-TABLE-GATE-005 malformed-owner fixture create failed");
+  CorruptPersistedTemporaryOwnerForTest(
+      path,
+      kNamespaceMalformedPersistedTableUuid,
+      malformed_persisted.session_uuid.canonical,
+      "019f0000-0000-6000-8000-00000044009b");
+  const auto malformed_persisted_resolved = api::EngineResolveName(
+      ResolveTableRequest(malformed_persisted, kMalformedPersistedName));
+  Require(!malformed_persisted_resolved.ok &&
+              HasDiagnosticCode(malformed_persisted_resolved,
+                                "SB_ENGINE_API_INVALID_REQUEST"),
+          "TEMP-TABLE-GATE-005 malformed persisted owner resolved as private");
+  const auto malformed_persisted_collision = api::EngineCreateTable(
+      DurableCreateTableRequest(
+          malformed_persisted,
+          kNamespaceMalformedPersistedAttemptTableUuid,
+          kMalformedPersistedName,
+          "019f0000-0000-7000-8000-000000440852"));
+  Require(!malformed_persisted_collision.ok &&
+              HasDiagnosticCode(
+                  malformed_persisted_collision,
+                  api::kCatalogObjectDiagnosticNameNamespaceInvalid),
+          "TEMP-TABLE-GATE-005 malformed persisted owner admitted a catalog collision");
+  rolled_back = Rollback(malformed_persisted);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 malformed-owner fixture rollback failed");
+
+  auto same_tx = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-000000440092"));
+  auto same_tx_durable = api::EngineCreateTable(
+      DurableCreateTableRequest(same_tx,
+                                kNamespaceSameTxDurableTableUuid,
+                                kSameTransactionName,
+                                "019f0000-0000-7000-8000-000000440840"));
+  if (!same_tx_durable.ok) { PrintApiDiagnostics(same_tx_durable); }
+  Require(same_tx_durable.ok,
+          "TEMP-TABLE-GATE-005 same-transaction durable create failed");
+  auto same_tx_private = api::EngineCreateTable(
+      TemporaryCreateTableRequest(
+          same_tx,
+          "delete_rows",
+          kNamespaceSameTxPrivateTableUuid,
+          kSameTransactionName,
+          "019f0000-0000-7000-8000-000000440841",
+          "private"));
+  if (!same_tx_private.ok) { PrintApiDiagnostics(same_tx_private); }
+  Require(same_tx_private.ok,
+          "TEMP-TABLE-GATE-005 same-transaction private overlay failed");
+  auto same_tx_resolved = api::EngineResolveName(
+      ResolveTableRequest(same_tx, kSameTransactionName));
+  if (!same_tx_resolved.ok) { PrintApiDiagnostics(same_tx_resolved); }
+  Require(same_tx_resolved.ok &&
+              same_tx_resolved.primary_object.uuid.canonical ==
+                  std::string(kNamespaceSameTxPrivateTableUuid) &&
+              HasEvidence(same_tx_resolved,
+                          "temporary_name_resolution",
+                          "session_visible_shadow"),
+          "TEMP-TABLE-GATE-005 same-transaction private overlay did not win");
+  auto same_tx_duplicate = api::EngineCreateTable(
+      TemporaryCreateTableRequest(
+          same_tx,
+          "delete_rows",
+          kNamespaceSameTxDuplicateTableUuid,
+          kSameTransactionName,
+          "019f0000-0000-7000-8000-000000440842",
+          "private"));
+  Require(!same_tx_duplicate.ok &&
+              HasDiagnosticCode(
+                  same_tx_duplicate,
+                  api::kCatalogObjectDiagnosticDuplicateName),
+          "TEMP-TABLE-GATE-005 same-session same-transaction duplicate was admitted");
+  rolled_back = Rollback(same_tx);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 same-transaction overlay rollback failed");
+  auto same_tx_observer = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-000000440093"));
+  same_tx_resolved = api::EngineResolveName(
+      ResolveTableRequest(same_tx_observer, kSameTransactionName));
+  Require(!same_tx_resolved.ok,
+          "TEMP-TABLE-GATE-005 rolled-back same-transaction names remained visible");
+  rolled_back = Rollback(same_tx_observer);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 same-transaction observer rollback failed");
+
+  auto owner = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-000000440094"));
+  auto private_first = api::EngineCreateTable(
+      TemporaryCreateTableRequest(
+          owner,
+          "preserve_rows",
+          kNamespacePrivateFirstTableUuid,
+          kPrivateFirstName,
+          "019f0000-0000-7000-8000-000000440843",
+          "private"));
+  if (!private_first.ok) { PrintApiDiagnostics(private_first); }
+  Require(private_first.ok,
+          "TEMP-TABLE-GATE-005 private-first create failed");
+  auto committed = Commit(owner);
+  if (!committed.ok) { PrintApiDiagnostics(committed); }
+  Require(committed.ok,
+          "TEMP-TABLE-GATE-005 private-first commit failed");
+  owner = restart(owner);
+
+  auto durable = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-000000440095"));
+  auto durable_after = api::EngineCreateTable(
+      DurableCreateTableRequest(durable,
+                                kNamespaceDurableAfterTableUuid,
+                                kPrivateFirstName,
+                                "019f0000-0000-7000-8000-000000440844"));
+  if (!durable_after.ok) { PrintApiDiagnostics(durable_after); }
+  Require(durable_after.ok,
+          "TEMP-TABLE-GATE-005 durable create behind private namespace failed");
+  committed = Commit(durable);
+  if (!committed.ok) { PrintApiDiagnostics(committed); }
+  Require(committed.ok,
+          "TEMP-TABLE-GATE-005 durable-behind-private commit failed");
+
+  auto owner_resolved = api::EngineResolveName(
+      ResolveTableRequest(owner, kPrivateFirstName));
+  if (!owner_resolved.ok) { PrintApiDiagnostics(owner_resolved); }
+  Require(owner_resolved.ok &&
+              owner_resolved.primary_object.uuid.canonical ==
+                  std::string(kNamespacePrivateFirstTableUuid),
+          "TEMP-TABLE-GATE-005 private-first owner did not retain shadow");
+  auto duplicate_private = api::EngineCreateTable(
+      TemporaryCreateTableRequest(
+          owner,
+          "delete_rows",
+          kNamespaceDuplicatePrivateTableUuid,
+          kPrivateFirstName,
+          "019f0000-0000-7000-8000-000000440845",
+          "private"));
+  Require(!duplicate_private.ok &&
+              HasDiagnosticCode(
+                  duplicate_private,
+                  api::kCatalogObjectDiagnosticDuplicateName),
+          "TEMP-TABLE-GATE-005 same-session private duplicate was admitted");
+
+  auto other = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-000000440096"));
+  auto other_private = api::EngineCreateTable(
+      TemporaryCreateTableRequest(
+          other,
+          "delete_rows",
+          kNamespaceOtherPrivateTableUuid,
+          kPrivateFirstName,
+          "019f0000-0000-7000-8000-000000440846",
+          "private"));
+  if (!other_private.ok) { PrintApiDiagnostics(other_private); }
+  Require(other_private.ok,
+          "TEMP-TABLE-GATE-005 cross-session private coexistence failed");
+  auto other_resolved = api::EngineResolveName(
+      ResolveTableRequest(other, kPrivateFirstName));
+  if (!other_resolved.ok) { PrintApiDiagnostics(other_resolved); }
+  Require(other_resolved.ok &&
+              other_resolved.primary_object.uuid.canonical ==
+                  std::string(kNamespaceOtherPrivateTableUuid),
+          "TEMP-TABLE-GATE-005 cross-session private owner resolved wrong UUID");
+
+  auto observer = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-000000440097"));
+  auto observer_resolved = api::EngineResolveName(
+      ResolveTableRequest(observer, kPrivateFirstName));
+  if (!observer_resolved.ok) { PrintApiDiagnostics(observer_resolved); }
+  Require(observer_resolved.ok &&
+              observer_resolved.primary_object.uuid.canonical ==
+                  std::string(kNamespaceDurableAfterTableUuid),
+          "TEMP-TABLE-GATE-005 foreign private candidate hid durable relation");
+
+  rolled_back = Rollback(other);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 cross-session private rollback failed");
+  other = restart(other);
+  other_resolved = api::EngineResolveName(
+      ResolveTableRequest(other, kPrivateFirstName));
+  if (!other_resolved.ok) { PrintApiDiagnostics(other_resolved); }
+  Require(other_resolved.ok &&
+              other_resolved.primary_object.uuid.canonical ==
+                  std::string(kNamespaceDurableAfterTableUuid),
+          "TEMP-TABLE-GATE-005 rolled-back private did not reveal durable relation");
+  rolled_back = Rollback(other);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 cross-session observer rollback failed");
+  rolled_back = Rollback(observer);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 foreign-candidate observer rollback failed");
+
+  api::EngineDropObjectRequest drop_private;
+  drop_private.context = owner;
+  drop_private.target_object.uuid.canonical =
+      std::string(kNamespacePrivateFirstTableUuid);
+  drop_private.target_object.object_kind = "table";
+  auto dropped = api::EngineDropObject(drop_private);
+  if (!dropped.ok) { PrintApiDiagnostics(dropped); }
+  Require(dropped.ok,
+          "TEMP-TABLE-GATE-005 private shadow drop failed");
+  owner_resolved = api::EngineResolveName(
+      ResolveTableRequest(owner, kPrivateFirstName));
+  if (!owner_resolved.ok) { PrintApiDiagnostics(owner_resolved); }
+  Require(owner_resolved.ok &&
+              owner_resolved.primary_object.uuid.canonical ==
+                  std::string(kNamespaceDurableAfterTableUuid),
+          "TEMP-TABLE-GATE-005 retired private candidate short-circuited durable fallback");
+  rolled_back = Rollback(owner);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 private shadow drop rollback failed");
+  owner = restart(owner);
+  owner_resolved = api::EngineResolveName(
+      ResolveTableRequest(owner, kPrivateFirstName));
+  if (!owner_resolved.ok) { PrintApiDiagnostics(owner_resolved); }
+  Require(owner_resolved.ok &&
+              owner_resolved.primary_object.uuid.canonical ==
+                  std::string(kNamespacePrivateFirstTableUuid),
+          "TEMP-TABLE-GATE-005 drop rollback did not restore private shadow");
+  drop_private.context = owner;
+  dropped = api::EngineDropObject(drop_private);
+  if (!dropped.ok) { PrintApiDiagnostics(dropped); }
+  Require(dropped.ok,
+          "TEMP-TABLE-GATE-005 committed private shadow drop failed");
+  committed = Commit(owner);
+  if (!committed.ok) { PrintApiDiagnostics(committed); }
+  Require(committed.ok,
+          "TEMP-TABLE-GATE-005 private shadow drop commit failed");
+  owner = restart(owner);
+  owner_resolved = api::EngineResolveName(
+      ResolveTableRequest(owner, kPrivateFirstName));
+  if (!owner_resolved.ok) { PrintApiDiagnostics(owner_resolved); }
+  Require(owner_resolved.ok &&
+              owner_resolved.primary_object.uuid.canonical ==
+                  std::string(kNamespaceDurableAfterTableUuid),
+          "TEMP-TABLE-GATE-005 committed retired candidate hid durable relation");
+  rolled_back = Rollback(owner);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 post-drop owner rollback failed");
+
+  auto durable_collision = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-0000004400a1"));
+  auto durable_collision_created = api::EngineCreateTable(
+      DurableCreateTableRequest(
+          durable_collision,
+          kNamespaceDurableCollisionTableUuid,
+          kDurableCollisionName,
+          "019f0000-0000-7000-8000-000000440847"));
+  if (!durable_collision_created.ok) {
+    PrintApiDiagnostics(durable_collision_created);
+  }
+  Require(durable_collision_created.ok,
+          "TEMP-TABLE-GATE-005 durable collision target create failed");
+  committed = Commit(durable_collision);
+  if (!committed.ok) { PrintApiDiagnostics(committed); }
+  Require(committed.ok,
+          "TEMP-TABLE-GATE-005 durable collision target commit failed");
+
+  auto global_collision = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-0000004400a2"));
+  auto global_collision_result = api::EngineCreateTable(
+      TemporaryCreateTableRequest(
+          global_collision,
+          "delete_rows",
+          kNamespaceGlobalCollisionAttemptTableUuid,
+          kDurableCollisionName,
+          "019f0000-0000-7000-8000-000000440848",
+          "global"));
+  Require(!global_collision_result.ok &&
+              HasDiagnosticCode(
+                  global_collision_result,
+                  api::kCatalogObjectDiagnosticDuplicateName),
+          "TEMP-TABLE-GATE-005 global definition shadowed durable catalog name");
+  rolled_back = Rollback(global_collision);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 global collision rollback failed");
+
+  auto global_target = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-0000004400a3"));
+  auto global_target_created = api::EngineCreateTable(
+      TemporaryCreateTableRequest(
+          global_target,
+          "delete_rows",
+          kNamespaceGlobalCollisionTableUuid,
+          kGlobalCollisionName,
+          "019f0000-0000-7000-8000-000000440849",
+          "global"));
+  if (!global_target_created.ok) { PrintApiDiagnostics(global_target_created); }
+  Require(global_target_created.ok,
+          "TEMP-TABLE-GATE-005 global collision target create failed");
+  committed = Commit(global_target);
+  if (!committed.ok) { PrintApiDiagnostics(committed); }
+  Require(committed.ok,
+          "TEMP-TABLE-GATE-005 global collision target commit failed");
+
+  auto durable_global_collision = BeginTransaction(
+      EngineContext(path, database_uuid,
+                    "019f0000-0000-7000-8000-0000004400a4"));
+  auto durable_global_collision_result = api::EngineCreateTable(
+      DurableCreateTableRequest(
+          durable_global_collision,
+          kNamespaceDurableCollisionAttemptTableUuid,
+          kGlobalCollisionName,
+          "019f0000-0000-7000-8000-000000440850"));
+  Require(!durable_global_collision_result.ok &&
+              HasDiagnosticCode(
+                  durable_global_collision_result,
+                  api::kCatalogObjectDiagnosticDuplicateName),
+          "TEMP-TABLE-GATE-005 durable relation shadowed global catalog definition");
+  rolled_back = Rollback(durable_global_collision);
+  if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
+  Require(rolled_back.ok,
+          "TEMP-TABLE-GATE-005 durable/global collision rollback failed");
 }
 
 void RequireEngineTemporaryRollbackAndSavepoints(
@@ -2279,6 +2835,7 @@ int main() {
   const auto recovery_path = TestRecoveryDatabasePath();
   RemoveDatabaseArtifacts(recovery_path);
   const auto recovery_database_uuid = CreateMinimalDatabase(recovery_path);
+  CreateAndCommitRequiredSchema(recovery_path, recovery_database_uuid);
   RequireEngineTemporaryCrashRestartClassification(recovery_path,
                                                    recovery_database_uuid);
   RemoveDatabaseArtifacts(recovery_path);
@@ -2286,6 +2843,7 @@ int main() {
   const auto backup_path = TestBackupDatabasePath();
   RemoveDatabaseArtifacts(backup_path);
   const auto backup_database_uuid = CreateMinimalDatabase(backup_path);
+  CreateAndCommitRequiredSchema(backup_path, backup_database_uuid);
   RequireEngineTemporaryBackupAndDeltaExclusion(backup_path,
                                                 backup_database_uuid);
   RemoveDatabaseArtifacts(backup_path);
@@ -2293,10 +2851,12 @@ int main() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
+  CreateAndCommitRequiredSchema(path, database_uuid);
   RequireEngineRefusals(path, database_uuid);
   RequireEngineTemporaryDmlAndCommit(path, database_uuid);
   RequireEngineTemporaryDropRetiresMetadata(path, database_uuid);
   RequireEngineTemporaryNameScopesAndGttDataIsolation(path, database_uuid);
+  RequireEngineTemporaryCatalogNamespaceSemantics(path, database_uuid);
   RequireEngineTemporaryRollbackAndSavepoints(path, database_uuid);
   RequireEngineTemporaryIndexAndConstraintIsolation(path, database_uuid);
   RequireEngineTemporaryLargeValueCleanup(path, database_uuid);

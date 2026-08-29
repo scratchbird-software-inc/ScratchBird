@@ -1,2 +1,92 @@
 #include "engine/sblr/sblr_bulk_import_stream_runtime.hpp"
-int main(){namespace s=scratchbird::engine::sblr;std::string d;s::SblrBulkImportStreamRequestV1 q;q.receipt[0]=1;q.occurrence=q.import_occurrence=1;auto qb=s::EncodeSblrBulkImportStreamRequestV1(q);s::SblrBulkImportStreamRequestV1 qo;if(qb.size()!=64||!s::DecodeSblrBulkImportStreamRequestV1(qb.data(),qb.size(),&qo,&d))return 1;qb[44]=1;if(s::DecodeSblrBulkImportStreamRequestV1(qb.data(),qb.size(),&qo,&d))return 2;s::SblrBulkImportStreamDescriptorV1 v;v.canonical_body[0]=1;v.availability_generation=1;auto b=s::EncodeSblrBulkImportStreamDescriptorV1(v,false);s::SblrBulkImportStreamDescriptorV1 o;if(b.size()!=424||!s::DecodeSblrBulkImportStreamDescriptorV1(b.data(),b.size(),&o,&d,false))return 3;auto op=s::EncodeSblrBulkImportStreamDescriptorV1(o,true);if(op.size()!=424||!s::DecodeSblrBulkImportStreamDescriptorV1(op.data(),op.size(),&o,&d,true))return 4;op[384]^=1;if(s::DecodeSblrBulkImportStreamDescriptorV1(op.data(),op.size(),&o,&d,true))return 5;s::SblrBulkImportStreamResultV1 r;r.canonical_body[0]=1;r.availability_generation=1;auto rb=s::EncodeSblrBulkImportStreamResultV1(r);s::SblrBulkImportStreamResultV1 ro;if(rb.size()!=192||!s::DecodeSblrBulkImportStreamResultV1(rb.data(),rb.size(),&ro,&d))return 6;rb[152]^=1;return s::DecodeSblrBulkImportStreamResultV1(rb.data(),rb.size(),&ro,&d)?7:0;}
+
+#include <string>
+
+int main()
+{
+    namespace s = scratchbird::engine::sblr;
+    std::string detail;
+
+    s::SblrBulkImportStreamRequestV1 request;
+    request.receipt[0] = 1;
+    request.occurrence = 1;
+    request.import_occurrence = 1;
+    auto request_bytes = s::EncodeSblrBulkImportStreamRequestV1(request);
+    s::SblrBulkImportStreamRequestV1 decoded_request;
+    if (request_bytes.size() != 64 ||
+        !s::DecodeSblrBulkImportStreamRequestV1(
+            request_bytes.data(), request_bytes.size(), &decoded_request,
+            &detail)) {
+        return 1;
+    }
+    request_bytes[44] = 1;
+    if (s::DecodeSblrBulkImportStreamRequestV1(
+            request_bytes.data(), request_bytes.size(), &decoded_request,
+            &detail)) {
+        return 2;
+    }
+
+    s::SblrBulkImportStreamDescriptorV1 descriptor;
+    descriptor.canonical_body[0] = 1;
+    descriptor.availability_generation = 1;
+    auto descriptor_bytes =
+        s::EncodeSblrBulkImportStreamDescriptorV1(descriptor, false);
+    s::SblrBulkImportStreamDescriptorV1 decoded_descriptor;
+    if (descriptor_bytes.size() != 424 ||
+        !s::DecodeSblrBulkImportStreamDescriptorV1(
+            descriptor_bytes.data(), descriptor_bytes.size(),
+            &decoded_descriptor, &detail, false)) {
+        return 3;
+    }
+    auto operation_bytes =
+        s::EncodeSblrBulkImportStreamDescriptorV1(decoded_descriptor, true);
+    if (operation_bytes.size() != 424 ||
+        !s::DecodeSblrBulkImportStreamDescriptorV1(
+            operation_bytes.data(), operation_bytes.size(),
+            &decoded_descriptor, &detail, true)) {
+        return 4;
+    }
+    operation_bytes[384] ^= 1;
+    if (s::DecodeSblrBulkImportStreamDescriptorV1(
+            operation_bytes.data(), operation_bytes.size(),
+            &decoded_descriptor, &detail, true)) {
+        return 5;
+    }
+
+    s::SblrBulkImportStreamResultV1 result;
+    result.canonical_body[0] = 1;
+    result.availability_generation = 1;
+    auto result_bytes = s::EncodeSblrBulkImportStreamResultV1(result);
+    s::SblrBulkImportStreamResultV1 decoded_result;
+    if (result_bytes.size() != 192 ||
+        !s::DecodeSblrBulkImportStreamResultV1(
+            result_bytes.data(), result_bytes.size(), &decoded_result,
+            &detail)) {
+        return 6;
+    }
+    result_bytes[152] ^= 1;
+    if (s::DecodeSblrBulkImportStreamResultV1(
+            result_bytes.data(), result_bytes.size(), &decoded_result,
+            &detail)) {
+        return 7;
+    }
+
+    if (s::DecodeSblrBulkImportStreamRequestV1(
+            nullptr, 64, &decoded_request, &detail)) {
+        return 8;
+    }
+    if (s::DecodeSblrBulkImportStreamDescriptorV1(
+            nullptr, 424, &decoded_descriptor, &detail, false)) {
+        return 9;
+    }
+    if (s::DecodeSblrBulkImportStreamDescriptorV1(
+            nullptr, 424, &decoded_descriptor, &detail, true)) {
+        return 10;
+    }
+    if (s::DecodeSblrBulkImportStreamResultV1(
+            nullptr, 192, &decoded_result, &detail)) {
+        return 11;
+    }
+
+    return 0;
+}

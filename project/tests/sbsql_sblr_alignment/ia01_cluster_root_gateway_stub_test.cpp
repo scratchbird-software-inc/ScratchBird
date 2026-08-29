@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "cluster_provider/cluster_provider.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "engine/sblr/sblr_dispatch.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "server/sblr_local_gateway.hpp"
@@ -15,20 +16,12 @@
 namespace sblr = scratchbird::engine::sblr;
 
 namespace {
-constexpr std::string_view kParserUuid =
-    "018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
-constexpr std::string_view kRegistryUuid =
-    "018f4321-8765-7cba-8fed-ba9876543210";
-
 sblr::SblrOperationEnvelope Frame(bool begin) {
   auto operation = sblr::MakeSblrEnvelope(
       begin ? "engine.op.package_begin" : "engine.op.package_end",
       begin ? "SBLR_PACKAGE_BEGIN" : "SBLR_PACKAGE_END", "cluster.gateway");
-  operation.opcode_code = begin ? 1 : 2;
   operation.result_shape = "void";
   operation.diagnostic_shape = "diagnostic_vector";
-  operation.parser_package_uuid = std::string(kParserUuid);
-  operation.registry_snapshot_uuid = std::string(kRegistryUuid);
   sblr::SblrOperand operand;
   operand.ordinal = 1;
   operand.type = begin ? "package.header" : "package.footer";
@@ -37,36 +30,38 @@ sblr::SblrOperationEnvelope Frame(bool begin) {
   operand.value_body = {0x01, 0x8f, 0x12, 0x34, 0x56, 0x78, 0x7a, 0xbc,
                         0x8d, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab};
   operation.operands.push_back(std::move(operand));
-  return operation;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(operation));
 }
 
 std::vector<std::uint8_t> ClusterPackage() {
-  auto root = sblr::MakeSblrEnvelope(
-      "cluster.join", "SBLR_CLUSTER_JOIN", "cluster.gateway");
-  root.opcode_code = 0x0B00;
+  auto root = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+      "engine.op.cluster_join", "SBLR_CLUSTER_JOIN", "cluster.gateway");
   root.result_shape = "void";
   root.diagnostic_shape = "diagnostic_vector";
   root.requires_security_context = true;
   root.requires_transaction_context = true;
   root.requires_cluster_authority = true;
-  root.parser_package_uuid = std::string(kParserUuid);
-  root.registry_snapshot_uuid = std::string(kRegistryUuid);
 
   sblr::SblrOpcodeStream stream;
   stream.package_descriptor_uuid = "018f1234-5678-7abc-8def-0123456789ab";
-  stream.registry_snapshot_uuid = std::string(kRegistryUuid);
+  stream.registry_snapshot_uuid = root.registry_snapshot_uuid;
   stream.operations = {Frame(true), std::move(root), Frame(false)};
   return sblr::EncodeSblrOpcodeStream(stream);
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc != 1 && argc != 3) {
+    std::cerr << "usage: cluster-provider-proof [EXPECTED_MODE EXPECTED_DIAGNOSTIC]\n";
+    return EXIT_FAILURE;
+  }
   const auto payload = ClusterPackage();
   scratchbird::server::LocalSblrGatewayRequest gateway_request;
   gateway_request.canonical_sbos = payload;
   gateway_request.root_opcode_code = 0x0B00;
   gateway_request.root_opcode = "SBLR_CLUSTER_JOIN";
-  gateway_request.root_operation_id = "cluster.join";
+  gateway_request.root_operation_id = "engine.op.cluster_join";
   gateway_request.route_snapshot_uuid = "018f1111-2222-7333-8444-555555555555";
   gateway_request.route_epoch = 7;
   gateway_request.route_generation = 9;
@@ -89,14 +84,12 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  auto envelope = sblr::MakeSblrEnvelope(
-      "cluster.join", "SBLR_CLUSTER_JOIN", "cluster.gateway");
-  envelope.opcode_code = 0x0B00;
+  auto envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "engine.op.cluster_join", "SBLR_CLUSTER_JOIN", "cluster.gateway");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = true;
-  envelope.parser_package_uuid = std::string(kParserUuid);
-  envelope.registry_snapshot_uuid = std::string(kRegistryUuid);
   sblr::SblrDispatchRequest dispatch_request;
   dispatch_request.context.security_context_present = true;
   dispatch_request.context.local_transaction_id = 7;
@@ -117,6 +110,21 @@ int main() {
   const std::string expected = info.provider_type == "compile_link_stub"
       ? std::string(scratchbird::engine::cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode)
       : std::string(scratchbird::engine::cluster_provider::kClusterSupportNotEnabledCode);
+  if (argc == 3 &&
+      (info.provider_type != argv[1] || expected != argv[2])) {
+    std::cerr << "configured cluster provider mismatch: mode=" << info.provider_type
+              << " diagnostic=" << expected << " expected_mode=" << argv[1]
+              << " expected_diagnostic=" << argv[2] << '\n';
+    return EXIT_FAILURE;
+  }
+  if (info.supports_execution ||
+      (info.provider_type == "compile_link_stub" &&
+       (info.support_status != "compile_link_only" || !info.compile_link_only)) ||
+      (info.provider_type == "no_cluster" &&
+       (info.support_status != "not_enabled" || info.compile_link_only))) {
+    std::cerr << "configured cluster provider advertised executable support\n";
+    return EXIT_FAILURE;
+  }
   const bool diagnostic_present = std::any_of(
       dispatched.api_result.diagnostics.begin(), dispatched.api_result.diagnostics.end(),
       [&](const auto& diagnostic) { return diagnostic.code == expected; });
@@ -124,5 +132,9 @@ int main() {
     std::cerr << "cluster provider refusal diagnostic missing: " << expected << '\n';
     return EXIT_FAILURE;
   }
+  std::cout << "cluster_provider_proof=passed cluster_provider_mode="
+            << info.provider_type << " cluster_provider_support="
+            << info.support_status << " cluster_provider_diagnostic=" << expected
+            << '\n';
   return EXIT_SUCCESS;
 }

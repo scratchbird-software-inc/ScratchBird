@@ -53,6 +53,12 @@ import json
 import sys
 from pathlib import Path
 
+from plan_import_rows_generated_evidence import (
+    authenticated_route_override,
+    normalize_fixture_status,
+    validate_authoritative_runtime_inputs,
+)
+
 
 REGISTRY_CSV = (
     "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
@@ -105,7 +111,8 @@ ALLOWED_AUTHORED_FIXTURE_STATUSES = {
     "e2e_passed",
     "exact_refusal_passed",
 }
-PUBLIC_BOOTSTRAP_REFUSAL_SURFACE_ID = "SBSQL-EB95D772BD63"
+ENGINE_LIFECYCLE_CREATE_SURFACE_ID = "SBSQL-EB95D772BD63"
+BRIDGE_CLUSTER_ROUTE_SURFACE_ID = "SBSQL-D50EC7C4422E"
 
 
 def fail(message: str) -> None:
@@ -157,6 +164,27 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
 
     fixture_path = f"project/tests/sbsql_parser_worker/generated/full_surface/authenticated_route/{surface_id}.route.yaml"
 
+    if surface_id == BRIDGE_CLUSTER_ROUTE_SURFACE_ID:
+        return {
+            "fixture_path": fixture_path,
+            "credential_profile_accepted": "not_applicable_exact_refusal_surface",
+            "credential_profile_refused": "sbsql_test_user_any_valid_credential_exact_refusal_is_route_driven",
+            "auth_policy": AUTH_POLICY,
+            "session_profile": SESSION_PROFILE,
+            "transaction_profile": TRANSACTION_PROFILE,
+            "transport_route": TRANSPORT_ROUTE,
+            "tls_profile_ref": TLS_PROFILE_REF,
+            "listener_path": LISTENER_PATH,
+            "ipc_admission_path": IPC_ADMISSION_PATH,
+            "engine_admission_authority": ENGINE_ADMISSION_AUTHORITY,
+            "mga_execution_authority": MGA_EXECUTION_AUTHORITY,
+            "expected_authorization_accepted_outcome": "not_applicable_bridge_cluster_route_is_exact_refusal_only",
+            "expected_authorization_refused_outcome": "canonical_sblr_admission_then_trusted_udr_dispatch_refuses_with_UDR_BRIDGE_UNSUPPORTED",
+            "expected_diagnostic_codes": "UDR.BRIDGE.UNSUPPORTED;SBLR.ENVELOPE.*;SBLR.OPCODE.*",
+            "fixture_status": "pending_authoring",
+            "notes": "Bridge cluster route is a Core refusal-only surface. The authenticated parser path binds and lowers bridge.cluster_route/SBLR_BRIDGE_VALIDATE, canonical SBLR admission succeeds, and trusted parser-support UDR dispatch returns UDR.BRIDGE.UNSUPPORTED without provider-route success, private cluster execution, or MGA mutation.",
+        }
+
     if cluster_scope == "cluster_private":
         return {
             "fixture_path": fixture_path,
@@ -178,25 +206,25 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
             "notes": "cluster_scope=cluster_private row: public build must fail-closed regardless of canonical source status; fixture must prove that the authenticated route refuses at parser/lowering admission without entering any cluster execution path; private-profile acceptance evidence, where available, lives outside the public matrix per SBSFC-025.",
         }
 
-    if surface_id == PUBLIC_BOOTSTRAP_REFUSAL_SURFACE_ID:
+    if surface_id == ENGINE_LIFECYCLE_CREATE_SURFACE_ID:
         return {
             "fixture_path": fixture_path,
-            "credential_profile_accepted": "not_applicable_public_create_database_is_not_credential_authorized",
-            "credential_profile_refused": "not_applicable_public_create_database_refuses_for_every_credential",
+            "credential_profile_accepted": "authenticated_lifecycle_admin_with_engine_owned_management_transaction",
+            "credential_profile_refused": "missing_or_stale_security_or_management_transaction_context",
             "auth_policy": AUTH_POLICY,
             "session_profile": SESSION_PROFILE,
-            "transaction_profile": TRANSACTION_PROFILE,
+            "transaction_profile": "mga_authority_required;authenticated_management_transaction_required;isolation_read_committed_default;intent_from_sblr_envelope;visibility_through_transaction_inventory_and_version_chains",
             "transport_route": TRANSPORT_ROUTE,
             "tls_profile_ref": TLS_PROFILE_REF,
             "listener_path": LISTENER_PATH,
-            "ipc_admission_path": IPC_ADMISSION_PATH,
-            "engine_admission_authority": ENGINE_ADMISSION_AUTHORITY,
-            "mga_execution_authority": MGA_EXECUTION_AUTHORITY,
-            "expected_authorization_accepted_outcome": "refused_with_SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED_before_storage_mutation_for_every_credential",
-            "expected_authorization_refused_outcome": "refused_with_SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED_before_storage_mutation_for_every_credential",
-            "expected_diagnostic_codes": "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED;SBLR.ENVELOPE.*;SBLR.OPCODE.*",
+            "ipc_admission_path": "sbps_frame_handshake_kFrameMagic_0x53504253;canonical_sblr_container;canonical_sbee_ingress;canonical_sbop_admission;sblr_dispatch_server;parser_server_event_ipc_round_trip",
+            "engine_admission_authority": "engine_internal_api_security_authority_api;revoke_all_default;evidence_before_success;engine_assigned_database_and_filespace_uuids;catalog_authority_through_sblr_envelope_descriptors_and_uuids",
+            "mga_execution_authority": "mga_copy_on_write;no_wal_authority;engine_owned_tx1_bootstrap;transaction_inventory_and_version_chains;dirty_object_manifest_acceleration_only;page_level_durability_before_visibility",
+            "expected_authorization_accepted_outcome": "database_created_with_engine_assigned_database_and_filespace_uuid_and_durable_tx1_evidence",
+            "expected_authorization_refused_outcome": "refused_before_storage_mutation_when_security_or_management_transaction_context_is_missing",
+            "expected_diagnostic_codes": "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED;SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED;PROCESS.CANCELLED;CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN;DATABASE.CREATE_FAILED;SBLR.ENVELOPE.*;SBLR.OPCODE.*",
             "fixture_status": "pending_authoring",
-            "notes": "public CREATE DATABASE is parseable and SBLR-serializable but exact-refusal only: neither an authenticated client nor a listener, manager, or parser may establish first-principal bootstrap authority. The engine returns SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED before database or security-sidecar creation; only the explicit local embedded first-principal bootstrap command may create the database.",
+            "notes": "Authenticated CREATE DATABASE lowers to the canonical lifecycle opcode and engine.op.lifecycle_create_database executor, is admitted through canonical SBLR/SBEE/SBOP validation, and dispatches to EngineCreateLifecycle. The engine owns database and filespace identities, creates storage and catalog bootstrap state, and publishes durable tx1 lifecycle evidence; the parser supplies no storage, identity, or finality authority.",
         }
 
     if status == "native_now":
@@ -258,6 +286,8 @@ def main() -> int:
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
 
+    validate_authoritative_runtime_inputs(root)
+
     surfaces = read_csv(root / REGISTRY_CSV)
     if not surfaces:
         fail("SBSQL_SURFACE_REGISTRY.csv is empty")
@@ -267,7 +297,7 @@ def main() -> int:
     accepted_counts: dict[str, int] = {}
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
-        classification = classify(surface)
+        classification = authenticated_route_override(surface, classify(surface))
         ledger_row = {
         "surface_id": surface["surface_id"],
         "canonical_name": surface["canonical_name"],
@@ -277,15 +307,15 @@ def main() -> int:
             "sblr_operation_family": surface["sblr_operation_family"],
         }
         ledger_row.update(classification)
-        ledger_row["fixture_status"] = fixture_status_for(root, ledger_row["fixture_path"], surface["surface_id"])
+        ledger_row["fixture_status"] = normalize_fixture_status(
+            surface["surface_id"],
+            fixture_status_for(root, ledger_row["fixture_path"], surface["surface_id"]),
+        )
         output_rows.append(ledger_row)
 
         source_status = surface.get("source_status") or surface["status"]
         status_counts[source_status] = status_counts.get(source_status, 0) + 1
         outcome = (
-            "bootstrap_refusal_only"
-            if surface["surface_id"] == PUBLIC_BOOTSTRAP_REFUSAL_SURFACE_ID
-            else
             "accepted_route_required"
             if source_status == "native_now" and surface["cluster_scope"] != "cluster_private"
             else "fail_closed_only"

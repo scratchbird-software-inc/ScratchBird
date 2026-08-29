@@ -429,7 +429,7 @@ operations:
     sblr_mapping_required: true
     accepts_names: false
     requires_transaction_context: true
-    notes: exports review-only catalog snapshots for external Git workflows; Git is not runtime authority
+    notes: direct internal API exports review-only catalog snapshots; Git is not runtime authority; no Core canonical SBLR identity is allocated and public SBsql recognition is refused before external dispatch
   - operation_id: artifact.external_git.diff_snapshot
     scope_status: noncluster_required
     closure_slice: NCE-0503
@@ -448,7 +448,7 @@ operations:
     sblr_mapping_required: true
     accepts_names: false
     requires_transaction_context: true
-    notes: compares an authorized candidate snapshot to the ScratchBird catalog without granting Git authority
+    notes: direct internal API compares an authorized candidate snapshot without granting Git authority; no Core canonical SBLR identity is allocated and public SBsql recognition is refused before external dispatch
   - operation_id: artifact.external_git.rollback_plan
     scope_status: noncluster_required
     closure_slice: NCE-0503
@@ -467,7 +467,7 @@ operations:
     sblr_mapping_required: true
     accepts_names: false
     requires_transaction_context: true
-    notes: plans catalog rollback actions for review; apply authority remains the authorized catalog API
+    notes: direct internal API plans catalog rollback actions for review; apply authority remains the authorized catalog API; no Core canonical SBLR identity is allocated and public SBsql recognition is refused before external dispatch
   - operation_id: dml.execute_import_rows
     category: dml
     function_name: EngineExecuteImportRows
@@ -529,24 +529,53 @@ operations:
       - Import execution slices must call this model before accepting dirty-row handling policies.
 
   - operation_id: dml.plan_import_rows
+    scope_status: local_or_cluster
+    sblr_opcode: SBLR_DML_PLAN_IMPORT_ROWS
+    sblr_opcode_code: 793
+    sblr_opcode_version: "1.0"
+    semantic_contract_key: SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1
+    operand_contract: import_rows_plan_descriptor
+    operand_descriptor_class: sblr.import_rows_plan.v1
+    result_contract: import_plan_result
+    executor_id: dml.plan_import_rows
+    executor_availability_registry: SBLR-EXECUTOR-AVAILABILITY-REGISTRY-V1
+    executor_availability_row: {executor_id: dml.plan_import_rows, opcode_code: 793, opcode_version: "1.0", operand_descriptor_id: import_rows_plan_descriptor, result_descriptor_id: import_plan_result, result_descriptor_version: 1}
+    executor_availability_generation_binding: exact_live_generation_copied_to_IPLP_and_IPEV_and_revalidated_before_result
     category: dml
     function_name: EnginePlanImportRows
     request_type: EnginePlanImportRowsRequest
     result_type: EnginePlanImportRowsResult
     header: dml/import_api.hpp
     implementation: dml/import_api.cpp
-    authority_domain: row_import_planning
+    family: data-mutation
+    authority_domain: engine.bound_import_descriptor_registry.v1
+    descriptor_binding: exact_generation_only_no_nearest_or_latest_fallback
     closure_slice: PID-007
     implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    transaction_effect: read
+    security_class: object_authorized
+    required_rights: [INSERT]
     requires_transaction_context: true
     requires_security_context: true
     accepts_names: false
     sblr_mapping_required: true
     cluster_only: false
+    requires_cluster_authority: conditional
+    cluster_activation_predicate: cluster_context_or_cluster_transaction_or_route_fence_present
+    cluster_provider_capability: cluster.context_execution.v1
+    cluster_local_fallback: forbidden
+    cluster_refusal_diagnostic: CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN
+    parser_text_authority: forbidden
+    invalid_transaction_predicate: absent_or_malformed_or_ended_or_non_active_transaction
+    invalid_transaction_diagnostic: MGA.TRANSACTION_INVALID
+    stale_or_incompatible_live_binding_predicate: valid_active_transaction_with_stale_or_incompatible_live_binding
+    stale_or_incompatible_live_binding_diagnostic: MGA.AUTHORITY_MISMATCH
+    diagnostic_precedence: [SBLR.OPCODE_INVALID, SBLR.OPERAND_INVALID, SECURITY.ACCESS_DENIED, MGA.TRANSACTION_INVALID, MGA.AUTHORITY_MISMATCH, CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN, PROCESS.CANCELLED, SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING, SBLR.OPERATION_UNSUPPORTED]
     notes:
-      - Parsers decode client import syntax, bulk APIs, and source handles before this boundary.
-      - Engine accepts only UUID-bound target objects, descriptor mappings, source/format envelopes, and policy envelopes.
-      - This operation plans import execution; PID-010 wires row ingestion through insert and bulk-load execution.
+      - Parsers copy only the exact SBOP v1 reference; the engine import binder owns the immutable IPLP descriptor and its four child rows.
+      - Absent malformed ended or non-active transactions diagnose MGA.TRANSACTION_INVALID before binding comparison; only a valid active transaction with a stale or incompatible live binding diagnoses MGA.AUTHORITY_MISMATCH.
+      - This operation is read-only planning evidence and never a durable plan or row-finality handle; dml.execute_import_rows must bind and revalidate its own execution descriptor.
 
   - operation_id: ddl.create_database
     scope_status: noncluster_required
@@ -569,7 +598,7 @@ operations:
     notes:
       - Catalog DDL creates a logical database namespace descriptor inside an already-open ScratchBird database.
       - It does not create a database file, seed a security catalog, or establish a first principal.
-      - Physical first-principal creation belongs solely to the explicit local embedded bootstrap command; public lifecycle.create_database refuses with SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED.
+      - Physical database creation belongs to the authenticated engine-owned lifecycle.create_database route, never to catalog DDL or a parser-owned filesystem action.
   - operation_id: ddl.create_schema
     scope_status: noncluster_required
     closure_slice: NCE-1101
@@ -608,7 +637,7 @@ operations:
     accepts_names: true
     requires_transaction_context: true
     notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
-  - operation_id: ddl.create_index
+  - operation_id: engine.op.ddl_create_index
     scope_status: noncluster_required
     closure_slice: SBSFC-020R-QP
     function_name: EngineCreateIndex
@@ -686,7 +715,7 @@ operations:
     accepts_names: true
     requires_transaction_context: true
     notes: non-cluster behavior implemented with local MGA domain descriptor evidence, base type descriptor evidence, and name-registry evidence
-  - operation_id: ddl.create_sequence
+  - operation_id: engine.op.ddl_create_sequence
     scope_status: noncluster_required
     closure_slice: SBSFC-020R-QM
     function_name: EngineCreateSequence
@@ -705,7 +734,7 @@ operations:
     accepts_names: true
     requires_transaction_context: true
     notes: non-cluster behavior implemented with local MGA/event evidence, sequence descriptor evidence, and name-registry evidence
-  - operation_id: ddl.create_view
+  - operation_id: engine.op.ddl_create_view
     scope_status: noncluster_required
     closure_slice: SBSFC-020R-QN
     function_name: EngineCreateView
@@ -724,7 +753,7 @@ operations:
     accepts_names: true
     requires_transaction_context: true
     notes: non-cluster behavior implemented with local MGA/event evidence, view descriptor evidence, and name-registry evidence
-  - operation_id: ddl.drop_view
+  - operation_id: engine.op.ddl_drop_view
     scope_status: noncluster_required
     closure_slice: SBSFC-020R-QQ
     function_name: EngineDropView
@@ -744,44 +773,6 @@ operations:
     requires_transaction_context: true
     notes: non-cluster behavior implemented with local MGA/event evidence, view descriptor evidence, dependency policy, and name-registry evidence
   - operation_id: ddl.create_synonym
-  - operation_id: ddl.alter_table
-    scope_status: noncluster_required
-    closure_slice: SBSFC-020R-QU
-    function_name: EngineAlterTable
-    request_type: EngineAlterTableRequest
-    result_type: EngineAlterTableResult
-    family: ddl
-    authority_domain: catalog_ddl
-    header: ddl/alter_api.hpp
-    implementation: ddl/alter_api.cpp
-    implementation_status: exact_profile_refusal
-    default_diagnostic: PROFILE.BUILTIN_PROFILE_UNAVAILABLE
-    cluster_only: false
-    requires_security_context: true
-    requires_cluster_authority: false
-    sblr_mapping_required: true
-    accepts_names: true
-    requires_transaction_context: true
-    notes: exact local profile refusal until table-alter executor profile is available; no mutation or cluster dispatch
-  - operation_id: ddl.drop_schema
-    scope_status: noncluster_required
-    closure_slice: SBSFC-020R-QS
-    function_name: EngineDropSchema
-    request_type: EngineDropSchemaRequest
-    result_type: EngineDropSchemaResult
-    family: ddl
-    authority_domain: catalog_ddl
-    header: ddl/drop_api.hpp
-    implementation: ddl/drop_api.cpp
-    implementation_status: exact_profile_refusal
-    default_diagnostic: PROFILE.BUILTIN_PROFILE_UNAVAILABLE
-    cluster_only: false
-    requires_security_context: true
-    requires_cluster_authority: false
-    sblr_mapping_required: true
-    accepts_names: true
-    requires_transaction_context: true
-    notes: exact local profile refusal until schema-drop executor profile is available; no mutation or cluster dispatch
     scope_status: noncluster_required
     closure_slice: SBSFC-020
     function_name: EngineCreateSynonym
@@ -800,6 +791,44 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: synonym object identity is UUID-backed; target UUID and kind are resolved before engine catalog mutation
+  - operation_id: engine.op.ddl_alter_table
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QU
+    function_name: EngineAlterTable
+    request_type: EngineAlterTableRequest
+    result_type: EngineAlterTableResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/alter_api.hpp
+    implementation: ddl/alter_api.cpp
+    implementation_status: exact_profile_refusal
+    default_diagnostic: PROFILE.BUILTIN_PROFILE_UNAVAILABLE
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: exact local profile refusal until table-alter executor profile is available; no mutation or cluster dispatch
+  - operation_id: engine.op.ddl_drop_schema
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QS
+    function_name: EngineDropSchema
+    request_type: EngineDropSchemaRequest
+    result_type: EngineDropSchemaResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/drop_api.hpp
+    implementation: ddl/drop_api.cpp
+    implementation_status: exact_profile_refusal
+    default_diagnostic: PROFILE.BUILTIN_PROFILE_UNAVAILABLE
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: exact local profile refusal until schema-drop executor profile is available; no mutation or cluster dispatch
   - operation_id: ddl.constraint.create
     scope_status: noncluster_required
     closure_slice: SBSFC-021R-X
@@ -819,7 +848,7 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: applies UUID-resolved constraint descriptors to a UUID-resolved owner object through sys.constraint_descriptor and MGA catalog lifecycle events
-  - operation_id: ddl.create_function
+  - operation_id: engine.op.ddl_create_function
     scope_status: noncluster_required
     closure_slice: NCE-1101
     function_name: EngineCreateFunction
@@ -838,7 +867,7 @@ operations:
     accepts_names: true
     requires_transaction_context: true
     notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
-  - operation_id: ddl.alter_function
+  - operation_id: engine.op.ddl_alter_function
     scope_status: noncluster_required
     closure_slice: CATALOG-DDL
     function_name: EngineAlterFunction
@@ -857,7 +886,7 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: exact bound function identity; cluster gateway contexts fail closed
-  - operation_id: ddl.create_procedure
+  - operation_id: engine.op.ddl_create_procedure
     scope_status: noncluster_required
     closure_slice: NCE-1101
     function_name: EngineCreateProcedure
@@ -876,7 +905,7 @@ operations:
     accepts_names: true
     requires_transaction_context: true
     notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
-  - operation_id: ddl.create_package
+  - operation_id: engine.op.ddl_create_package
     scope_status: noncluster_required
     closure_slice: CATALOG-DDL
     function_name: EngineCreatePackage
@@ -895,7 +924,7 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: exact bound package identity; cluster gateway contexts fail closed
-  - operation_id: ddl.drop_package
+  - operation_id: engine.op.ddl_drop_package
     scope_status: noncluster_required
     closure_slice: CATALOG-DDL
     function_name: EngineDropPackage
@@ -914,7 +943,7 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: exact bound package identity; cluster gateway contexts fail closed
-  - operation_id: ddl.alter_sequence
+  - operation_id: engine.op.ddl_alter_sequence
     scope_status: noncluster_required
     closure_slice: CATALOG-DDL
     function_name: EngineAlterSequence
@@ -933,7 +962,7 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: exact bound sequence identity and alteration vector; cluster gateway contexts fail closed
-  - operation_id: ddl.create_materialized_view
+  - operation_id: engine.op.ddl_create_materialized_view
     scope_status: noncluster_required
     closure_slice: CATALOG-DDL
     function_name: EngineCreateMaterializedView
@@ -952,7 +981,7 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: exact bound materialized-view identity; cluster gateway contexts fail closed
-  - operation_id: ddl.create_type
+  - operation_id: engine.op.ddl_create_type
     scope_status: noncluster_required
     closure_slice: CATALOG-DDL
     function_name: EngineCreateType
@@ -971,7 +1000,7 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: exact bound type identity; cluster gateway contexts fail closed
-  - operation_id: ddl.drop_procedure
+  - operation_id: engine.op.ddl_drop_procedure
     scope_status: noncluster_required
     closure_slice: CATALOG-DDL
     function_name: EngineDropProcedure
@@ -990,7 +1019,7 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: exact bound procedure identity; cluster gateway contexts fail closed
-  - operation_id: ddl.create_trigger
+  - operation_id: engine.op.ddl_create_trigger
     scope_status: noncluster_required
     closure_slice: NCE-1101
     function_name: EngineCreateTrigger
@@ -2543,15 +2572,15 @@ operations:
     authority_domain: engine_lifecycle
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
-    implementation_status: exact_refusal
-    default_diagnostic: SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
-    requires_security_context: false
+    requires_security_context: true
     requires_cluster_authority: false
     sblr_mapping_required: true
     accepts_names: false
-    requires_transaction_context: false
-    notes: public SBLR/API create is refused before any storage mutation; only the explicit local embedded first-principal bootstrap command may establish a database and its Tx1 security catalog
+    requires_transaction_context: true
+    notes: authenticated SBLR/API create delegates storage and catalog bootstrap to EngineCreateLifecycle; the engine assigns database and filespace identities and publishes durable Tx1 lifecycle evidence
   - operation_id: lifecycle.open_database
     sblr_opcode: SBLR_LIFECYCLE_OPEN_DATABASE
     sblr_opcode_code: 5129
@@ -3784,6 +3813,321 @@ operations:
     requires_cluster_authority: false
     requires_security_context: true
     notes: current-session event subscription cleanup
+  - operation_id: engine.op.ddl_drop_table
+    sblr_opcode: SBLR_DDL_DROP_TABLE
+    sblr_opcode_code: 1539
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    function_name: EngineDropTable
+    request_type: DropTableRequest
+    result_type: DdlResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_drop_table_coordinator.hpp
+    implementation: sblr_ddl_drop_table_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: conditional
+    requires_security_context: true
+    notes: exact UUID-bound table-drop descriptor route with conditional cluster gateway
+  - operation_id: engine.op.ddl_drop_index
+    sblr_opcode: SBLR_DDL_DROP_INDEX
+    sblr_opcode_code: 1541
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    function_name: EngineDropIndex
+    request_type: DropIndexRequest
+    result_type: DdlResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_drop_index_coordinator.hpp
+    implementation: sblr_ddl_drop_index_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: conditional
+    requires_security_context: true
+    notes: exact UUID-bound index-drop descriptor route with conditional cluster gateway
+  - operation_id: engine.op.ddl_alter_trigger
+    sblr_opcode: SBLR_DDL_ALTER_TRIGGER
+    sblr_opcode_code: 1552
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    function_name: EngineAlterTrigger
+    request_type: AlterTriggerRequest
+    result_type: DdlResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_alter_trigger_coordinator.hpp
+    implementation: sblr_ddl_alter_trigger_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: conditional
+    requires_security_context: true
+    notes: exact UUID-bound trigger-alter descriptor route with conditional cluster gateway
+  - operation_id: engine.op.ddl_alter_type
+    sblr_opcode: SBLR_DDL_ALTER_TYPE
+    sblr_opcode_code: 1570
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    function_name: EngineAlterType
+    request_type: AlterTypeRequest
+    result_type: DdlResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_alter_type_coordinator.hpp
+    implementation: sblr_ddl_alter_type_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: conditional
+    requires_security_context: true
+    notes: exact UUID-bound type-alter descriptor route with conditional cluster gateway
+  - operation_id: engine.op.ddl_alter_domain
+    sblr_opcode: SBLR_DDL_ALTER_DOMAIN
+    sblr_opcode_code: 1547
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    function_name: EngineAlterDomain
+    request_type: AlterDomainRequest
+    result_type: DdlResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_alter_domain_coordinator.hpp
+    implementation: sblr_ddl_alter_domain_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: conditional
+    requires_security_context: true
+    notes: exact UUID-bound domain-alter descriptor route with conditional cluster gateway
+  - operation_id: engine.op.ddl_alter_view
+    sblr_opcode: SBLR_DDL_ALTER_VIEW
+    sblr_opcode_code: 1549
+    scope_status: local_or_cluster
+    closure_slice: CATALOG-DDL
+    function_name: EngineAlterView
+    request_type: AlterViewRequest
+    result_type: DdlResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_alter_view_coordinator.hpp
+    implementation: sblr_ddl_alter_view_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: conditional
+    requires_security_context: true
+    notes: exact UUID-bound view-alter descriptor route with conditional cluster gateway
+  - operation_id: engine.op.ddl_drop_sequence
+    sblr_opcode: SBLR_DDL_DROP_SEQUENCE
+    sblr_opcode_code: 1565
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QZ
+    function_name: EngineDropSequence
+    request_type: EngineDropSequenceRequest
+    result_type: EngineDropSequenceResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_drop_sequence_coordinator.hpp
+    implementation: sblr_ddl_drop_sequence_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: exact engine-bound sequence-drop descriptor route
+  - operation_id: engine.op.ddl_refresh_materialized_view
+    sblr_opcode: SBLR_DDL_REFRESH_MATERIALIZED_VIEW
+    sblr_opcode_code: 1567
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-RA
+    function_name: EngineRefreshMaterializedView
+    request_type: EngineRefreshMaterializedViewRequest
+    result_type: EngineRefreshMaterializedViewResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_refresh_materialized_view_coordinator.hpp
+    implementation: sblr_ddl_refresh_materialized_view_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: exact engine-bound materialized-view refresh descriptor route
+  - operation_id: engine.op.ddl_drop_materialized_view
+    sblr_opcode: SBLR_DDL_DROP_MATERIALIZED_VIEW
+    sblr_opcode_code: 1568
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-RB
+    function_name: EngineDropMaterializedView
+    request_type: EngineDropMaterializedViewRequest
+    result_type: EngineDropMaterializedViewResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_drop_materialized_view_coordinator.hpp
+    implementation: sblr_ddl_drop_materialized_view_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: exact engine-bound materialized-view drop descriptor route
+  - operation_id: engine.op.ddl_drop_type
+    sblr_opcode: SBLR_DDL_DROP_TYPE
+    sblr_opcode_code: 1571
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-RC
+    function_name: EngineDropType
+    request_type: EngineDropTypeRequest
+    result_type: EngineDropTypeResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_drop_type_coordinator.hpp
+    implementation: sblr_ddl_drop_type_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: exact engine-bound type-drop descriptor route
+  - operation_id: engine.op.ddl_drop_function
+    sblr_opcode: SBLR_DDL_DROP_FUNCTION
+    sblr_opcode_code: 1559
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QX
+    function_name: EngineDropFunction
+    request_type: EngineDropFunctionRequest
+    result_type: EngineDropFunctionResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_drop_function_coordinator.hpp
+    implementation: sblr_ddl_drop_function_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: exact engine-bound function-drop descriptor route
+  - operation_id: engine.op.ddl_alter_package
+    sblr_opcode: SBLR_DDL_ALTER_PACKAGE
+    sblr_opcode_code: 1561
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QY
+    function_name: EngineAlterPackage
+    request_type: EngineAlterPackageRequest
+    result_type: EngineAlterPackageResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_alter_package_coordinator.hpp
+    implementation: sblr_ddl_alter_package_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: exact engine-bound package-alter descriptor route
+  - operation_id: engine.op.ddl_alter_procedure
+    sblr_opcode: SBLR_DDL_ALTER_PROCEDURE
+    sblr_opcode_code: 1555
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QW
+    function_name: EngineAlterProcedure
+    request_type: EngineAlterProcedureRequest
+    result_type: EngineAlterProcedureResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_alter_procedure_coordinator.hpp
+    implementation: sblr_ddl_alter_procedure_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: exact engine-bound procedure-alter descriptor route
+  - operation_id: engine.op.ddl_drop_trigger
+    sblr_opcode: SBLR_DDL_DROP_TRIGGER
+    sblr_opcode_code: 1553
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QV
+    function_name: EngineDropTrigger
+    request_type: EngineDropTriggerRequest
+    result_type: EngineDropTriggerResult
+    family: catalog-ddl
+    authority_domain: catalog_ddl
+    header: sblr_ddl_drop_trigger_coordinator.hpp
+    implementation: sblr_ddl_drop_trigger_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: exact engine-bound trigger-drop descriptor route
+  - operation_id: engine.op.system_config_set
+    sblr_opcode: SBLR_SYSTEM_CONFIG_SET
+    sblr_opcode_code: 5125
+    scope_status: noncluster_required
+    closure_slice: PRIORITY-D-CLOSURE
+    function_name: EngineSystemConfigSet
+    request_type: SystemConfigSetRequest
+    result_type: ManagementResult
+    family: management-envelope
+    authority_domain: system_configuration
+    header: sblr_system_config_set_coordinator.hpp
+    implementation: sblr_system_config_set_coordinator.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: authenticated engine-bound system-configuration descriptor route
   - operation_id: engine.op.ddl_create_fdw
     scope_status: noncluster_required
     closure_slice: IA-08-DDL-CREATE-FDW

@@ -16,6 +16,7 @@ int main() {
       a::kSblrDdlDropSynonymResultDescriptorVersion};
   const auto loaded = a::LoadSblrExecutorAvailabilitySnapshot(c, row);
   assert(loaded.ok && loaded.snapshot.installed);
-  assert(loaded.snapshot.executor_id == row.executor_id);
+  assert(loaded.snapshot.row_identity_sha256 ==
+         a::ComputeSblrExecutorAvailabilityRowIdentitySha256(row));
   return 0;
 }

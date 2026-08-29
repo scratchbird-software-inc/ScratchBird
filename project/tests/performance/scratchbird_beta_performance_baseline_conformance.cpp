@@ -8,10 +8,19 @@
 
 #include "api_types.hpp"
 #include "database_lifecycle.hpp"
+#include "ddl/create_api.hpp"
+#include "dml/insert_api.hpp"
+#include "dml/select_api.hpp"
+#include "hash_digest.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "memory.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_registry.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "sblr_transaction_commit_runtime.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
 #include "../database_lifecycle/credentialed_database_fixture.hpp"
 
@@ -48,6 +57,7 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace memory = scratchbird::core::memory;
 namespace sblr = scratchbird::engine::sblr;
+namespace uuid = scratchbird::core::uuid;
 
 #ifndef SB_PERF_THRESHOLD_JSON
 #define SB_PERF_THRESHOLD_JSON "project/tests/performance/BETA_PERFORMANCE_BASELINE_THRESHOLDS.json"
@@ -353,7 +363,15 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
 }
 
 sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcode) {
+  const auto* registry_entry = sblr::LookupSblrOperation(operation_id);
+  Require(registry_entry != nullptr,
+          "performance baseline operation is absent from the canonical SBLR registry: " +
+              operation_id);
+  Require(registry_entry->opcode == opcode,
+          "performance baseline opcode mnemonic drifted from the canonical SBLR registry");
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "PHASE7M");
+  envelope.opcode_code = registry_entry->code;
+  envelope.result_shape = registry_entry->result_contract;
   envelope.parser_package_uuid = "019e07f0-0000-7000-8000-000000000010";
   envelope.registry_snapshot_uuid = "019e07f0-0000-7000-8000-000000000011";
   envelope.contains_sql_text = false;
@@ -442,120 +460,199 @@ api::EngineRowValue Row(std::uint64_t index) {
   return row;
 }
 
-api::EngineRequestContext BeginTransaction(const std::filesystem::path& database_path,
-                                           std::string session_suffix) {
-  const std::string session_id = session_suffix;
-  auto begin = Dispatch(database_path,
-                        "transaction.begin",
-                        "SBLR_TRANSACTION_BEGIN",
-                        BaseContext(database_path, session_id));
-  Require(begin.api_result.local_transaction_id != 0, "transaction begin did not return local id");
-  auto context = BaseContext(database_path, session_id);
-  context.local_transaction_id = begin.api_result.local_transaction_id;
-  context.transaction_uuid = begin.api_result.transaction_uuid;
+struct BaselineTransaction {
+  api::EngineRequestContext context;
+  scratchbird::core::hash::Digest256 begin_admission_sha256{};
+};
+
+BaselineTransaction BeginTransaction(const std::filesystem::path& database_path,
+                                     std::string session_suffix) {
+  auto context = BaseContext(database_path, std::move(session_suffix));
+  auto envelope = Envelope("engine.op.txn_begin", "SBLR_TXN_BEGIN");
+  envelope.requires_transaction_context = false;
+
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  auto body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  Require(!body.empty(), "canonical transaction-begin options failed to encode");
+  const auto admission_sha = scratchbird::core::hash::ComputeSha256Digest(body);
+  Require(admission_sha.ok(), "canonical transaction-begin evidence hash failed");
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = std::move(body);
+  envelope.operands.push_back(std::move(operand));
+
+  api::EngineApiRequest admission_request;
+  admission_request.context = context;
+  admission_request.operation_id = "engine.op.txn_begin";
+  auto admitted = sblr::DispatchSblrOperation(
+      {context, std::move(envelope), std::move(admission_request), std::nullopt});
+  Require(admitted.accepted && admitted.envelope_validated &&
+              admitted.dispatched_to_api && admitted.api_result.ok,
+          "canonical transaction-begin admission failed");
+  Require(admitted.api_result.local_transaction_id == 0 &&
+              admitted.api_result.transaction_uuid.canonical.empty(),
+          "transaction-begin admission published engine MGA state");
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.operation_id = "transaction.begin";
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok && begun.local_transaction_id != 0 &&
+              !begun.transaction_uuid.canonical.empty(),
+          "engine-owned transaction begin failed after canonical admission");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
-      EvidenceU64(begin.api_result, "snapshot_visible_through_local_transaction_id");
-  return context;
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  return {std::move(context), admission_sha.digest};
 }
 
-void Commit(const std::filesystem::path& database_path, const api::EngineRequestContext& context) {
-  auto commit = Dispatch(database_path,
-                         "transaction.commit",
-                         "SBLR_TRANSACTION_COMMIT",
-                         context,
-                         {},
-                         true);
-  Require(HasEvidence(commit.api_result, "transaction_state", "committed"), "commit evidence missing");
+void Commit(const std::filesystem::path& database_path,
+            const BaselineTransaction& transaction) {
+  (void)database_path;
+  auto envelope = Envelope("engine.op.txn_commit", "SBLR_TXN_COMMIT");
+  envelope.requires_transaction_context = true;
+
+  const auto parsed_transaction =
+      uuid::ParseUuid(transaction.context.transaction_uuid.canonical);
+  Require(parsed_transaction.ok(), "transaction UUID is not canonical");
+  sblr::SblrTransactionCommitOptionsV1 options;
+  std::copy(parsed_transaction.value.bytes.begin(),
+            parsed_transaction.value.bytes.end(),
+            options.transaction_uuid.begin());
+  options.local_transaction_id = transaction.context.local_transaction_id;
+  options.admitted_handle_evidence_sha256 = transaction.begin_admission_sha256;
+  options.commit_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  auto body = sblr::EncodeSblrTransactionCommitOptionsV1(&options);
+  Require(!body.empty(), "canonical transaction-commit options failed to encode");
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.commit.options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_commit_options;
+  operand.value_body = std::move(body);
+  envelope.operands.push_back(std::move(operand));
+
+  api::EngineApiRequest admission_request;
+  admission_request.context = transaction.context;
+  admission_request.operation_id = "engine.op.txn_commit";
+  auto admitted = sblr::DispatchSblrOperation(
+      {transaction.context, std::move(envelope), std::move(admission_request),
+       std::nullopt});
+  Require(admitted.accepted && admitted.envelope_validated &&
+              admitted.dispatched_to_api && admitted.api_result.ok,
+          "canonical transaction-commit admission failed");
+
+  api::EngineCommitTransactionRequest commit;
+  commit.context = transaction.context;
+  commit.operation_id = "transaction.commit";
+  const auto committed = api::EngineCommitTransaction(commit);
+  Require(committed.ok && committed.engine_finality_known &&
+              committed.commit_finality_state == "committed_by_engine_inventory",
+          "engine-owned transaction commit failed after canonical admission");
 }
 
 void CreateSchemaAndTable(const std::filesystem::path& database_path,
                           const api::EngineRequestContext& context) {
-  api::EngineApiRequest schema_request;
+  (void)database_path;
+  api::EngineCreateSchemaRequest schema_request;
+  schema_request.context = context;
+  schema_request.operation_id = "ddl.create_schema";
   schema_request.target_object.uuid.canonical = kSchemaUuid;
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("phase7m_perf_schema"));
-  auto schema = Dispatch(database_path,
-                         "ddl.create_schema",
-                         "SBLR_DDL_CREATE_SCHEMA",
-                         context,
-                         schema_request,
-                         true);
-  Require(schema.api_result.primary_object.uuid.canonical == kSchemaUuid, "schema UUID not preserved");
+  const auto schema = api::EngineCreateSchema(schema_request);
+  Require(schema.ok, "engine-owned schema create failed");
+  Require(schema.primary_object.uuid.canonical == kSchemaUuid,
+          "schema UUID not preserved");
 
-  api::EngineApiRequest table_request;
+  api::EngineCreateTableRequest table_request;
+  table_request.context = context;
+  table_request.operation_id = "ddl.create_table";
   table_request.target_schema.uuid.canonical = kSchemaUuid;
   table_request.target_schema.object_kind = "schema";
+  table_request.requested_table_uuid.canonical = kTableUuid;
   table_request.target_object.uuid.canonical = kTableUuid;
   table_request.target_object.object_kind = "table";
-  table_request.localized_names.push_back(Name("phase7m_perf_table"));
-  table_request.columns.push_back(Column(0, "id", "text", "01"));
-  table_request.columns.push_back(Column(1, "note", "text", "02"));
-  auto table = Dispatch(database_path,
-                        "ddl.create_table",
-                        "SBLR_DDL_CREATE_TABLE",
-                        context,
-                        table_request,
-                        true);
-  Require(table.api_result.primary_object.uuid.canonical == kTableUuid, "table UUID not preserved");
+  table_request.table_names.push_back(Name("phase7m_perf_table"));
+  table_request.table_columns.push_back(Column(0, "id", "text", "01"));
+  table_request.table_columns.push_back(Column(1, "note", "text", "02"));
+  const auto table = api::EngineCreateTable(table_request);
+  Require(table.ok, "engine-owned table create failed");
+  Require(table.table_object.uuid.canonical == kTableUuid,
+          "table UUID not preserved");
 }
 
 void InsertRows(const std::filesystem::path& database_path,
                 const api::EngineRequestContext& context,
                 std::uint64_t row_count) {
-  api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
-  request.target_object.object_kind = "table";
+  (void)database_path;
+  api::EngineInsertRowsRequest request;
+  request.context = context;
+  request.operation_id = "dml.insert_rows";
+  request.target_table.uuid.canonical = kTableUuid;
+  request.target_table.object_kind = "table";
   for (std::uint64_t i = 0; i < row_count; ++i) {
-    request.rows.push_back(Row(i));
+    request.input_rows.push_back(Row(i));
   }
-  auto inserted = Dispatch(database_path,
-                           "dml.insert_rows",
-                           "SBLR_DML_INSERT_ROWS",
-                           context,
-                           request,
-                           true);
-  Require(EvidenceU64(inserted.api_result, "dml_summary.rows_changed") == row_count,
+  const auto inserted = api::EngineInsertRows(request);
+  Require(inserted.ok, "engine-owned insert failed");
+  Require(inserted.inserted_count == row_count,
           "inserted row count mismatch");
-  Require(inserted.api_result.result_shape.rows.size() <= row_count,
+  Require(inserted.result_shape.rows.size() <= row_count,
           "insert returned more rows than it inserted");
 }
 
 std::size_t SelectById(const std::filesystem::path& database_path,
                        const api::EngineRequestContext& context,
                        std::string id) {
-  api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
-  request.target_object.object_kind = "table";
-  request.predicate.predicate_kind = "column_equals";
-  request.predicate.canonical_predicate_envelope = "id";
-  request.predicate.bound_values.push_back(TextValue(std::move(id)));
-  request.projection.canonical_projection_envelopes.push_back("id");
-  request.projection.canonical_projection_envelopes.push_back("note");
-  auto selected = Dispatch(database_path,
-                           "dml.select_rows",
-                           "SBLR_DML_SELECT_ROWS",
-                           context,
-                           request,
-                           true);
-  return selected.api_result.result_shape.rows.size();
+  (void)database_path;
+  api::EngineSelectRowsRequest request;
+  request.context = context;
+  request.operation_id = "dml.select_rows";
+  request.source_object.uuid.canonical = kTableUuid;
+  request.source_object.object_kind = "table";
+  request.select_predicate.predicate_kind = "column_equals";
+  request.select_predicate.canonical_predicate_envelope = "id";
+  request.select_predicate.bound_values.push_back(TextValue(std::move(id)));
+  request.select_projection.canonical_projection_envelopes.push_back("id");
+  request.select_projection.canonical_projection_envelopes.push_back("note");
+  const auto selected = api::EngineSelectRows(request);
+  Require(selected.ok, "engine-owned point select failed");
+  return selected.result_shape.rows.size();
 }
 
 std::size_t SelectAll(const std::filesystem::path& database_path,
                       const api::EngineRequestContext& context,
                       std::uint64_t limit) {
-  api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
-  request.target_object.object_kind = "table";
-  request.option_envelopes.push_back("limit:" + std::to_string(limit));
-  request.projection.canonical_projection_envelopes.push_back("id");
-  request.projection.canonical_projection_envelopes.push_back("note");
-  auto selected = Dispatch(database_path,
-                           "dml.select_rows",
-                           "SBLR_DML_SELECT_ROWS",
-                           context,
-                           request,
-                           true);
-  return selected.api_result.result_shape.rows.size();
+  (void)database_path;
+  api::EngineSelectRowsRequest request;
+  request.context = context;
+  request.operation_id = "dml.select_rows";
+  request.source_object.uuid.canonical = kTableUuid;
+  request.source_object.object_kind = "table";
+  request.limit = limit;
+  request.select_projection.canonical_projection_envelopes.push_back("id");
+  request.select_projection.canonical_projection_envelopes.push_back("note");
+  const auto selected = api::EngineSelectRows(request);
+  Require(selected.ok, "engine-owned full select failed");
+  return selected.result_shape.rows.size();
 }
 
 std::string JsonEscape(std::string_view value) {
@@ -828,33 +925,37 @@ int main() {
   });
 
   measurements.session_begin_commit_latency_ms = MeasureMs([&]() {
-    auto context = BeginTransaction(database_path, "101");
-    Commit(database_path, context);
+    auto transaction = BeginTransaction(database_path, "101");
+    Commit(database_path, transaction);
   });
 
-  auto ddl_context = BeginTransaction(database_path, "201");
-  CreateSchemaAndTable(database_path, ddl_context);
-  Commit(database_path, ddl_context);
+  auto ddl_transaction = BeginTransaction(database_path, "201");
+  CreateSchemaAndTable(database_path, ddl_transaction.context);
+  Commit(database_path, ddl_transaction);
 
-  auto insert_context = BeginTransaction(database_path, "202");
-  const double insert_ms = MeasureMs([&]() { InsertRows(database_path, insert_context, thresholds.sample_rows); });
-  Commit(database_path, insert_context);
+  auto insert_transaction = BeginTransaction(database_path, "202");
+  const double insert_ms = MeasureMs([&]() {
+    InsertRows(database_path, insert_transaction.context, thresholds.sample_rows);
+  });
+  Commit(database_path, insert_transaction);
   measurements.inserted_rows = thresholds.sample_rows;
   measurements.insert_rows_per_second =
       insert_ms > 0.0 ? (static_cast<double>(thresholds.sample_rows) * 1000.0 / insert_ms) : thresholds.sample_rows;
 
-  auto query_context = BeginTransaction(database_path, "203");
+  auto query_transaction = BeginTransaction(database_path, "203");
   measurements.simple_query_stats = MeasureRepeatedMs([&]() {
-    Require(SelectById(database_path, query_context, "perf-" + std::to_string(thresholds.sample_rows / 2)) == 1,
+    Require(SelectById(database_path, query_transaction.context,
+                       "perf-" + std::to_string(thresholds.sample_rows / 2)) == 1,
             "simple query did not return exactly one row");
   }, thresholds.repeat_count);
   measurements.simple_query_latency_ms = measurements.simple_query_stats.mean_ms;
   std::size_t selected_rows = 0;
   measurements.select_all_stats = MeasureRepeatedMs([&]() {
-    selected_rows = SelectAll(database_path, query_context, thresholds.sample_rows);
+    selected_rows = SelectAll(database_path, query_transaction.context,
+                              thresholds.sample_rows);
     Require(selected_rows == thresholds.sample_rows, "select throughput sample row count mismatch");
   }, thresholds.repeat_count);
-  Commit(database_path, query_context);
+  Commit(database_path, query_transaction);
   measurements.selected_rows = selected_rows;
   measurements.select_rows_per_second =
       measurements.select_all_stats.mean_ms > 0.0

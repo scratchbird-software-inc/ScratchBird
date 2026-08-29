@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -247,7 +248,7 @@ void RequireExactLowering(const ManagementRowEvidence& row) {
           EvidenceMessage(row, "parser_bind_lower", "parser process-control denial missing"));
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted,
           EvidenceMessage(row, "server_admission", "server admission rejected management route"));
   Require(admission.requires_public_abi_dispatch,

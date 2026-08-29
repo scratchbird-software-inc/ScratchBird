@@ -21,11 +21,15 @@
 #include "lowering/lowering.hpp"
 #include "memory.hpp"
 #include "rendering/rendering.hpp"
-#include "sblr_admission.hpp"
+#include "sblr_dispatch.hpp"
+#include "sblr_executor_availability_registry.hpp"
+#include "sblr_opcode_registry.hpp"
 #include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
 #include "../../database_lifecycle/credentialed_database_fixture.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -37,6 +41,9 @@
 namespace api = scratchbird::engine::internal_api;
 namespace memory = scratchbird::core::memory;
 namespace parser = scratchbird::parser::sbsql;
+namespace platform = scratchbird::core::platform;
+namespace sblr = scratchbird::engine::sblr;
+namespace uuid = scratchbird::core::uuid;
 
 namespace {
 
@@ -50,6 +57,11 @@ constexpr const char* kTableUuid = "019f2900-0000-7000-8000-000000000102";
 constexpr const char* kUniqueIdIndexUuid = "019f2900-0000-7000-8000-000000000103";
 constexpr const char* kArtifactUuid = "019f2900-0000-7000-8000-000000000901";
 constexpr const char* kSourceUuid = "019f2900-0000-7000-8000-000000000903";
+// The authenticated SBPS/public-ABI row, full IPEV, and no-query-handle leg is
+// exhaustively owned by this adjacent non-QOW target. This executable proves
+// its own parser surface and exact typed engine-dispatch leg.
+constexpr std::string_view kPlanImportPublicAbiProofTarget =
+    "sbsql_sblr_alignment_plan_import_rows_sbps_coordination";
 
 void Require(bool condition, std::string_view message) {
   if (condition) return;
@@ -235,6 +247,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("SBSQL-MISS-009");
   return context;
@@ -292,31 +308,253 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
   Commit(context);
 }
 
-api::EnginePlanImportRowsResult VerifyImportPlanning(
-    const api::EngineRequestContext& context) {
-  api::EnginePlanImportRowsRequest request;
-  request.context = context;
-  request.target_table.uuid.canonical = kTableUuid;
-  request.target_table.object_kind = "table";
-  request.source.source_kind = "csv_stream";
-  request.source.redacted_source_handle = "client-stream";
-  request.format.format_family = "csv";
-  request.format.encoding = "utf-8";
-  request.format.header_policy = "no_header";
+std::string PlanFixtureUuid(std::uint64_t salt) {
+  const auto generated = uuid::GenerateEngineIdentityV7(
+      platform::UuidKind::object, 1947000000000ull + salt);
+  Require(generated.ok(), "MISS-009 plan fixture UUID generation failed");
+  return uuid::UuidToString(generated.value.value);
+}
 
-  auto plan = api::EnginePlanImportRows(request);
-  Require(plan.ok, "MISS-009 import planning failed");
-  Require(plan.surface_accepted, "MISS-009 import planning surface not accepted");
-  Require(plan.planning_only, "MISS-009 import planning was not planning-only");
-  Require(plan.execution_requires_execute_import_rows,
-          "MISS-009 import plan did not require execute_import_rows");
-  Require(plan.normalized_insert_mode == "copy_import",
-          "MISS-009 import planning insert mode mismatch");
-  Require(HasEvidence(plan, "parser_boundary",
-                      "parser_decodes_bytes_engine_validates_uuid_rows"),
-          "MISS-009 parser boundary evidence missing from plan");
-  Require(HasEvidence(plan, "import_plan_row_persistence_claimed", "false"),
-          "MISS-009 plan claimed row persistence");
+api::EngineRequestContext AttachPlanStatementAuthority(
+    api::EngineRequestContext context) {
+  const auto salt = context.local_transaction_id * 32;
+  context.statement_uuid.canonical = PlanFixtureUuid(salt + 1);
+  context.statement_snapshot_uuid.canonical.clear();
+  api::EnginePublishStatementSnapshotRequest publish;
+  publish.context = context;
+  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
+  Require(snapshot.ok, "MISS-009 plan statement snapshot publication failed");
+  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
+  context.statement_snapshot_generation =
+      snapshot.snapshot_vector.publication_inventory_next_local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  context.statement_receipt_uuid.canonical = PlanFixtureUuid(salt + 2);
+  context.statement_metadata_snapshot_uuid.canonical = PlanFixtureUuid(salt + 3);
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.statement_metadata_snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
+  context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
+  context.transaction_policy_snapshot_uuid.canonical = PlanFixtureUuid(salt + 4);
+  context.transaction_policy_snapshot_generation = 1;
+  context.resource_admission_uuid.canonical = PlanFixtureUuid(salt + 5);
+  context.authorization_context.security_context_generation = 1;
+  context.authorization_context.authority_uuid.canonical = PlanFixtureUuid(salt + 6);
+  context.authorization_context.security_epoch = context.security_epoch;
+  context.authorization_context.policy_epoch = 1;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  return context;
+}
+
+api::SblrExecutorAvailabilityRowIdentity PlanAvailabilityIdentity() {
+  return {api::kSblrDmlPlanImportRowsExecutorId,
+          api::kSblrDmlPlanImportRowsOpcodeCode,
+          api::kSblrDmlPlanImportRowsOpcodeVersion,
+          api::kSblrDmlPlanImportRowsOperandDescriptorId,
+          api::kSblrDmlPlanImportRowsResultDescriptorId,
+          api::kSblrDmlPlanImportRowsResultDescriptorVersion};
+}
+
+bool HasExactEnvelopeRefusal(const sblr::SblrDispatchResult& result,
+                             std::string_view root_code) {
+  return result.diagnostics.size() == 1 &&
+         result.diagnostics.front().code == root_code &&
+         result.api_result.diagnostics.size() == 1 &&
+         result.api_result.diagnostics.front().code ==
+             "SB_SBLR_DISPATCH_ENVELOPE_REJECTED";
+}
+
+bool HasExactIdentityEnvelopeRefusal(const sblr::SblrDispatchResult& result) {
+  return !result.diagnostics.empty() &&
+         result.diagnostics.front().code == "SBLR.OPCODE_INVALID" &&
+         std::all_of(result.diagnostics.begin(), result.diagnostics.end(),
+                     [](const auto& diagnostic) {
+                       return diagnostic.code == "SBLR.OPCODE_INVALID" ||
+                              diagnostic.code == "SBLR.OPERAND_INVALID";
+                     }) &&
+         result.api_result.diagnostics.size() == 1 &&
+         result.api_result.diagnostics.front().code ==
+             "SB_SBLR_DISPATCH_ENVELOPE_REJECTED";
+}
+
+sblr::SblrOperationEnvelope ExactPlanEnvelope(
+    const sblr::PlanImportRowsDescriptorRefV1& descriptor_ref) {
+  std::vector<std::uint8_t> descriptor_ref_bytes;
+  sblr::PlanImportRowsCodecDiagnosticV1 diagnostic;
+  Require(sblr::EncodePlanImportRowsDescriptorRefV1(
+              descriptor_ref, &descriptor_ref_bytes, &diagnostic) &&
+              descriptor_ref_bytes.size() ==
+                  sblr::kPlanImportRowsDescriptorRefBytesV1,
+          "MISS-009 exact descriptor reference encoding failed");
+
+  auto envelope = sblr::MakeSblrEnvelope(
+      "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS",
+      "miss009.plan_import_rows.typed_dispatch");
+  envelope.opcode_code = 793;
+  envelope.operation_version_major = 1;
+  envelope.operation_version_minor = 0;
+  envelope.result_shape = "import_plan_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = PlanFixtureUuid(1001);
+  envelope.registry_snapshot_uuid = PlanFixtureUuid(1002);
+  envelope.requires_security_context = true;
+  envelope.requires_transaction_context = true;
+  envelope.requires_cluster_authority = false;
+  envelope.contains_sql_text = false;
+  envelope.parser_resolved_names_to_uuids = true;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "import_rows_plan_descriptor";
+  operand.name = "request";
+  operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+  operand.value_body = std::move(descriptor_ref_bytes);
+  envelope.operands.push_back(std::move(operand));
+  return envelope;
+}
+
+api::EnginePlanImportRowsResult VerifyImportPlanning(
+    const api::EngineRequestContext& transaction_context) {
+  auto context = AttachPlanStatementAuthority(transaction_context);
+  const auto installed = api::LoadSblrExecutorAvailabilitySnapshot(
+      context, PlanAvailabilityIdentity());
+  Require(installed.ok && installed.snapshot.installed &&
+              installed.snapshot.generation != 0,
+          "MISS-009 plan executor availability bootstrap failed");
+  const auto current = api::LoadCurrentSblrExecutorAvailabilitySnapshot(
+      context, PlanAvailabilityIdentity());
+  Require(current.ok && current.snapshot.installed &&
+              current.snapshot.generation == installed.snapshot.generation,
+          "MISS-009 current plan executor availability missing");
+
+  auto binder_context = context;
+  binder_context.trace_tags = {"private_dml_plan_import_rows_binder"};
+  api::EngineCreateImportRowsPlanDescriptorRequestV1 bind;
+  bind.context = binder_context;
+  bind.structural_occurrence_id = 1;
+  bind.target_table_uuid.canonical = kTableUuid;
+  bind.source_kind = sblr::PlanImportRowsSourceKindV1::csv_stream;
+  bind.source_fingerprint_present = false;
+  bind.mappings.clear();
+  bind.format_family = sblr::PlanImportRowsFormatFamilyV1::csv;
+  bind.reject_mode = sblr::PlanImportRowsRejectModeV1::fail_fast;
+  bind.reject_payload_policy =
+      sblr::PlanImportRowsRejectPayloadPolicyV1::diagnostic_only;
+  bind.resume_policy = sblr::PlanImportRowsResumePolicyV1::fail_closed;
+  bind.strict_bulk_load_requested = false;
+  bind.reference_relaxed_semantics_requested = false;
+  bind.reference_relaxed_semantics_authorized = false;
+  bind.reject_limit_ppm = 0;
+  bind.reject_limit_rows = 0;
+  const auto bound =
+      api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(bind);
+  if (!bound.ok) {
+    std::cerr << bound.diagnostic.code << ':' << bound.diagnostic.detail << '\n';
+  }
+  Require(bound.ok, "MISS-009 exact engine import binder failed");
+
+  auto consumer_context = context;
+  consumer_context.trace_tags = {"private_dml_plan_import_rows_consumer"};
+  sblr::SblrDispatchRequest request;
+  request.context = consumer_context;
+  request.envelope = ExactPlanEnvelope(bound.descriptor_ref);
+  request.standalone_package_root = true;
+  Require(request.envelope.opcode_code == 793 &&
+              request.envelope.operation_version_major == 1 &&
+              request.envelope.operation_version_minor == 0 &&
+              request.envelope.result_shape == "import_plan_result" &&
+              request.envelope.operands.size() == 1 &&
+              request.envelope.operands.front().ordinal == 1 &&
+              request.envelope.operands.front().type ==
+                  "import_rows_plan_descriptor" &&
+              request.envelope.operands.front().name == "request" &&
+              request.envelope.operands.front().value.empty() &&
+              request.envelope.operands.front().value_body.size() == 24,
+          "MISS-009 exact 793/v1 descriptor-ref envelope drifted");
+  const std::string opaque_operand(
+      request.envelope.operands.front().value_body.begin(),
+      request.envelope.operands.front().value_body.end());
+  Require(opaque_operand.find(kTableUuid) == std::string::npos &&
+              opaque_operand.find("miss009_table") == std::string::npos &&
+              opaque_operand.find("LOAD") == std::string::npos,
+          "MISS-009 exact descriptor-ref leaked UUID/name/SQL text");
+  const auto dispatched = sblr::DispatchSblrOperation(request);
+  for (const auto& diagnostic : dispatched.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : dispatched.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(dispatched.envelope_validated && dispatched.accepted &&
+              dispatched.dispatched_to_api && dispatched.api_result.ok &&
+              dispatched.plan_import_rows_result.has_value(),
+          "MISS-009 exact 793/v1 typed dispatch failed");
+  const auto plan = *dispatched.plan_import_rows_result;
+  Require(plan.surface_accepted && plan.planning_only &&
+              plan.execution_requires_execute_import_rows &&
+              !plan.row_execution_completed && !plan.row_persistence_claimed,
+          "MISS-009 import planning-only result contract drifted");
+  Require(plan.normalized_insert_mode_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsInsertModeV1::copy_import) &&
+              plan.normalized_source_kind_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsSourceKindV1::csv_stream) &&
+              plan.normalized_format_family_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsFormatFamilyV1::csv) &&
+              plan.mapped_column_count == 0 &&
+              !plan.validated_request_descriptor_uuid.canonical.empty() &&
+              plan.validated_request_descriptor_generation ==
+                  bound.descriptor_ref.descriptor_generation &&
+              std::any_of(
+                  plan.validated_request_projection_sha256.begin(),
+                  plan.validated_request_projection_sha256.end(),
+                  [](std::uint8_t byte) { return byte != 0; }) &&
+              plan.accepted_executor_evidence.exact_bytes.size() ==
+                  sblr::kPlanImportRowsExecutorEvidenceBytesV1 &&
+              plan.accepted_executor_evidence.request_descriptor_uuid ==
+                  bound.descriptor_ref.descriptor_uuid &&
+              plan.accepted_executor_evidence.request_descriptor_generation ==
+                  bound.descriptor_ref.descriptor_generation &&
+              plan.accepted_executor_evidence.executor_availability_generation ==
+                  current.snapshot.generation &&
+              plan.accepted_executor_evidence.completed_validation_bits ==
+                  sblr::kPlanImportRowsAcceptedValidationBitsV1,
+          "MISS-009 exact descriptor/result/IPEV fields drifted");
+  Require(plan.evidence.size() == 1 &&
+              plan.evidence.front().evidence_kind ==
+                  "accepted_executor_evidence" &&
+              plan.evidence.front().evidence_id.find("@1#sha256:") !=
+                  std::string::npos &&
+              plan.evidence.front().evidence_id.find("miss009_table") ==
+                  std::string::npos &&
+              plan.evidence.front().evidence_id.find(kTableUuid) ==
+                  std::string::npos,
+          "MISS-009 canonical accepted planning evidence missing or unredacted");
+
+  auto missing_operand = request;
+  missing_operand.envelope.operands.clear();
+  const auto missing = sblr::DispatchSblrOperation(missing_operand);
+  Require(!missing.api_result.ok &&
+              HasExactEnvelopeRefusal(missing, "SBLR.OPERAND_INVALID"),
+          "MISS-009 missing descriptor did not use SBLR.OPERAND_INVALID");
+  auto wrong_identity = request;
+  wrong_identity.envelope.opcode_code = 0;
+  const auto wrong = sblr::DispatchSblrOperation(wrong_identity);
+  Require(!wrong.accepted && HasExactIdentityEnvelopeRefusal(wrong),
+          "MISS-009 code-zero identity did not use SBLR.OPCODE_INVALID");
+
+  const auto released =
+      api::ReleaseEngineBoundImportRowsPlanDescriptorsV1(binder_context);
+  Require(released.ok && released.released_row_count == 1,
+          "MISS-009 exact plan descriptor release failed");
+  Require(kPlanImportPublicAbiProofTarget ==
+              "sbsql_sblr_alignment_plan_import_rows_sbps_coordination",
+          "MISS-009 public-ABI proof provenance drifted");
   return plan;
 }
 
@@ -378,8 +616,11 @@ void VerifyFailFastCopyExecution(const api::EngineRequestContext& context) {
           "MISS-009 fail-fast import did not use direct physical COPY path");
   Require(HasEvidence(executed, "import_execution_delegate", "none"),
           "MISS-009 fail-fast import delegated unexpectedly");
-  Require(HasEvidence(executed, "import_plan_consumed", "true"),
-          "MISS-009 import plan was not consumed");
+  Require(HasEvidence(executed, "import_plan_consumed", "false"),
+          "MISS-009 execution claimed implicit plan consumption");
+  Require(HasEvidence(executed,
+                      "import_execution_descriptor_revalidated", "true"),
+          "MISS-009 execution did not revalidate its import descriptor");
   Require(HasEvidence(executed, "parser_finality_authority", "false"),
           "MISS-009 import allowed parser finality authority");
   Require(HasEvidence(executed, "reference_finality_authority", "false"),
@@ -419,6 +660,11 @@ void VerifyRejectRowExecution(const api::EngineRequestContext& context) {
           "MISS-009 reject-row diagnostics not materialized");
   Require(HasEvidence(executed, "copy_append_reject_fallback", "bisection"),
           "MISS-009 reject-row bisection proof missing");
+  Require(HasEvidence(executed, "import_plan_consumed", "false"),
+          "MISS-009 reject-row execution claimed implicit plan consumption");
+  Require(HasEvidence(executed,
+                      "import_execution_descriptor_revalidated", "true"),
+          "MISS-009 reject-row execution did not revalidate its descriptor");
   Require(FieldValue(executed, "diagnostic_code", executed.result_shape.rows.size() - 1) ==
               "CLI.CONSTRAINT_UNIQUE_VIOLATION",
           "MISS-009 reject diagnostic code mismatch");
@@ -572,16 +818,29 @@ void VerifyBulkParserRoute(const ParserCase& test_case) {
           "MISS-009 bulk route claimed row persistence");
   Require(envelope.payload.find(test_case.sql) == std::string::npos,
           "MISS-009 bulk route embedded source SQL text");
+  Require(envelope.payload.find("customer") == std::string::npos &&
+              envelope.payload.find("\"source_handle\"") ==
+                  std::string::npos &&
+              envelope.payload.find("\"source_object_name\"") ==
+                  std::string::npos &&
+              envelope.payload.find("\"sql\":") == std::string::npos,
+          "MISS-009 bulk route leaked a name, handle, or SQL field");
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{envelope.payload, false});
-  Require(admission.admitted, "MISS-009 bulk route server admission failed");
-  Require(admission.requires_public_abi_dispatch,
-          "MISS-009 bulk route did not require public ABI dispatch");
-  Require(admission.operation_id == "dml.plan_import_rows",
-          "MISS-009 bulk route server operation mismatch");
-  Require(admission.operation_family == "sblr.bulk.import.v3",
-          "MISS-009 bulk route server family mismatch");
+  // The legacy generic-v3 admission helper cannot carry the mandatory exact
+  // descriptor reference. Pin the parser handoff to the registered numeric
+  // identity here; the live descriptor-ref typed dispatch is exercised below.
+  const auto* operation = sblr::LookupSblrOperation("dml.plan_import_rows");
+  Require(operation != nullptr && operation->code == 793 &&
+              operation->operation_id == "dml.plan_import_rows" &&
+              operation->opcode == "SBLR_DML_PLAN_IMPORT_ROWS" &&
+              operation->operand_contract == "import_rows_plan_descriptor" &&
+              operation->result_contract == "import_plan_result" &&
+              operation->executor_evidence_required &&
+              operation->executor_evidence_accepted,
+          "MISS-009 parser handoff lost exact 793/v1 registry identity");
+  Require(kPlanImportPublicAbiProofTarget ==
+              "sbsql_sblr_alignment_plan_import_rows_sbps_coordination",
+          "MISS-009 public-ABI proof provenance drifted");
 }
 
 void VerifyBulkParserRoutes() {
@@ -622,5 +881,7 @@ int main() {
 
   std::error_code cleanup_error;
   std::filesystem::remove_all(work, cleanup_error);
+  std::cout << "plan_import_public_abi_proof="
+            << kPlanImportPublicAbiProofTarget << '\n';
   return EXIT_SUCCESS;
 }

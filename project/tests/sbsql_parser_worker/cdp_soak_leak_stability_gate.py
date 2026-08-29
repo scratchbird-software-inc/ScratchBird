@@ -33,16 +33,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from live_auth_fixture import (
-    DEFAULT_PRINCIPAL_UUID,
-    local_password_evidence,
-    write_local_password_auth_fixture,
-)
+from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
 
 
 SCHEMA_VERSION = "cdp.soak_leak_stability_gate.v1"
 GATE_NAME = "cdp_soak_leak_stability_gate"
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 ROUTE_NAMES = ("embedded", "local-ipc", "inet")
 FORBIDDEN_EXECUTION_PLAN_PATH = "docs" + "/execution-plans/"
 SHOW_MANAGEMENT_FIELDS = (
@@ -141,7 +136,16 @@ class Route:
     def cli_args(self) -> list[str]:
         if self.embedded:
             self.database.parent.mkdir(parents=True, exist_ok=True)
-            return [self.sb_isql, str(self.database), "--mode=embedded", "--sslmode=disable"]
+            return [
+                self.sb_isql,
+                str(self.database),
+                "--mode=embedded",
+                "--sslmode=disable",
+                "-U",
+                "alice",
+                "-P",
+                PUBLIC_TEST_PASSWORD,
+            ]
         return list(self.fixed_args)
 
 
@@ -179,16 +183,6 @@ def make_work_dir(preferred_root: Path) -> Path:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise SoakGateError("unable to allocate a short-enough CDP-047 workspace")
-
-
-def auth_file(database: Path) -> None:
-    write_local_password_auth_fixture(
-        database,
-        "alice",
-        VERIFIER,
-        DEFAULT_PRINCIPAL_UUID,
-        "right:CONNECT",
-    )
 
 
 def wait_for_path(path: Path, timeout: float = 8.0) -> None:
@@ -250,7 +244,15 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> dict[str, Any]:
 def start_embedded(args: argparse.Namespace, work: Path) -> Route:
     root = work / "e"
     root.mkdir(parents=True, exist_ok=True)
-    return Route(name="embedded", root=root, database=root / "soak.sbdb", sb_isql=args.sb_isql, embedded=True)
+    database = root / "soak.sbdb"
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="embedded",
+    )
+    return Route(name="embedded", root=root, database=database, sb_isql=args.sb_isql, embedded=True)
 
 
 def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
@@ -260,13 +262,18 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
     runtime = root / "sr"
     endpoint = control / "s.sock"
     root.mkdir(parents=True, exist_ok=True)
-    auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="local-ipc",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(control),
             "--runtime-dir",
@@ -280,7 +287,6 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
         stderr=(root / "server.err").open("wb"),
     )
     wait_for_path(endpoint)
-    evidence = local_password_evidence("alice", VERIFIER)
     return Route(
         name="local-ipc",
         root=root,
@@ -296,7 +302,7 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
             "-U",
             "alice",
             "-P",
-            evidence,
+            PUBLIC_TEST_PASSWORD,
         ],
         processes=[server],
     )
@@ -312,13 +318,18 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
     endpoint = server_control / "s.sock"
     port = find_free_port()
     root.mkdir(parents=True, exist_ok=True)
-    auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="inet",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -353,7 +364,6 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
         stderr=(root / "listener.err").open("wb"),
     )
     wait_for_tcp(port)
-    evidence = local_password_evidence("alice", VERIFIER)
     return Route(
         name="inet",
         root=root,
@@ -368,7 +378,7 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
             "-U",
             "alice",
             "-P",
-            evidence,
+            PUBLIC_TEST_PASSWORD,
         ],
         processes=[server, listener],
     )
@@ -886,8 +896,11 @@ def assert_record_budgets(record: dict[str, Any]) -> None:
 
 def run_route(args: argparse.Namespace, route: Route, cycles: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     inputs = route_inputs(route)
-    route_initial = database_stats(route.database)
     management_before = run_show_management(route, "before")
+    # Establish the leak baseline only after the mandatory capability probe has
+    # materialized the immutable executor-availability evidence registry.  That
+    # one-time durable registry is route initialization, not per-cycle growth.
+    route_initial = database_stats(route.database)
     records: list[dict[str, Any]] = []
     for cycle in range(1, cycles + 1):
         management_cycle = run_show_management(route, f"cycle_{cycle}_before")
@@ -1067,7 +1080,11 @@ def build_payload(args: argparse.Namespace, work: Path) -> dict[str, Any]:
 
     output_dir = work / "evidence"
     evidence_json = output_dir / "cdp-soak-leak-stability-evidence.json"
-    package_bytes = evidence_package_size(work)
+    # The support-bundle budget governs the declared evidence package, not the
+    # live route databases and filespaces that have separate growth budgets.
+    # Measuring the workspace made the package check count three fresh 16 MiB
+    # database images even though the package path below is `output_dir`.
+    package_bytes = evidence_package_size(output_dir)
     package_check = budget_check("evidence_package_bytes", package_bytes)
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -1097,7 +1114,7 @@ def build_payload(args: argparse.Namespace, work: Path) -> dict[str, Any]:
     }
     validate_payload(payload)
     write_json(evidence_json, payload)
-    payload["support_bundle_evidence_package"]["bytes_after_write"] = evidence_package_size(work)
+    payload["support_bundle_evidence_package"]["bytes_after_write"] = evidence_package_size(output_dir)
     budget_check("evidence_package_bytes", payload["support_bundle_evidence_package"]["bytes_after_write"])
     write_json(evidence_json, payload)
     return payload
@@ -1116,6 +1133,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--build-mode", default="unknown")
     parser.add_argument("--cycles", type=int, default=3)

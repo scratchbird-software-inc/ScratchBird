@@ -20,6 +20,9 @@
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include "../release/public_release_authz_fixture.hpp"
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
+
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -143,9 +146,16 @@ api::EngineRequestContext Begin(Fixture& fixture, std::uint64_t ordinal) {
   begin.context.session_uuid.canonical = fixture.session_uuid;
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
+  begin.context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  begin.context.datatype_catalog_generation = 1;
+  begin.context.datatype_registry_generation = 1;
   begin.context.security_epoch = 1;
   begin.context.resource_epoch = 1;
   begin.context.name_resolution_epoch = 1;
+  begin.context.trace_tags.push_back("right:CATALOG_MUTATE");
+  scratchbird::tests::release::GrantMaterializedRights(
+      &begin.context, {"CATALOG_MUTATE"});
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
   RequireOk(begun, "routine vertical-slice transaction begin failed");
@@ -268,7 +278,7 @@ sblr::SblrDispatchResult DispatchCreateOrAlter(
     bool include_published_uuid = true,
     bool valid_compiled_descriptor = true) {
   auto envelope = sblr::MakeSblrEnvelope(
-      "ddl.create_procedure",
+      "engine.op.ddl_create_procedure",
       "SBLR_DDL_CREATE_PROCEDURE",
       "trace.routine.delete_column_range.create_or_alter");
   envelope.requires_security_context = true;
@@ -308,6 +318,8 @@ sblr::SblrDispatchResult DispatchCreateOrAlter(
   AddText(&envelope, "related_object_0_uuid", fixture.table_uuid);
   AddText(&envelope, "related_object_0_kind", "table");
   AddText(&envelope, "permission", "manage_executable");
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
   return sblr::DispatchSblrOperation(
       {context, std::move(envelope), api::EngineApiRequest{}});
 }
@@ -335,7 +347,8 @@ sblr::SblrOperationEnvelope MakeInvokeEnvelope(
     AddText(&envelope, "routine_argument_1_value", std::move(upper));
   }
   AddText(&envelope, "permission", "invoke_executable");
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 sblr::SblrDispatchResult DispatchInvoke(

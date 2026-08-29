@@ -7,9 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
+#include "dml/import_api.hpp"
 #include "lowering/lowering.hpp"
 #include "memory.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
@@ -17,7 +19,9 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_executor_availability_registry.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -44,6 +48,8 @@ constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000076001";
 constexpr std::string_view kSourceUuid = "019f0000-0000-7000-8000-000000076002";
 constexpr std::string_view kSeedSchemaUuid = "019f0000-0000-7000-8000-000000076501";
 constexpr std::string_view kFamily = "sblr.dml.operation.v3";
+constexpr std::string_view kPlanImportPublicAbiProofTarget =
+    "sbsql_sblr_alignment_plan_import_rows_sbps_coordination";
 
 struct CaseRow {
   std::string_view surface_id;
@@ -66,15 +72,15 @@ const CaseRow kCases[] = {
     {"SBSQL-3E9BCF3982B5", "graph_delete_edge_stmt", "GRAPH DELETE EDGE knows;", "dml.delete_rows", "SBLR_DML_DELETE_ROWS", "graph_delete_edge", "mga_row_version", "row_delete_tombstone", 406},
     {"SBSQL-4B841304A70D", "doc_bulk_op", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_bulk", "mga_row_version", "row_update", 407},
     {"SBSQL-5CA04B524AF6", "doc_bulk_stmt", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_bulk", "mga_row_version", "row_update", 408},
-    {"SBSQL-7254347122CB", "gpu_workload_action", "GPU WORKLOAD APPLY batches;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "gpu_workload_action", "import_surface", "dml.plan_import_rows", 409},
+    {"SBSQL-7254347122CB", "gpu_workload_action", "GPU WORKLOAD APPLY batches;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "gpu_workload_action", "accepted_executor_evidence", "", 409},
     {"SBSQL-728CB259DD81", "lock_row_for_update", "SELECT id FROM customer FOR UPDATE;", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "select_for_update", "mga_row_version", "row_update", 410},
     {"SBSQL-93FC08B02C21", "merge_when_clause", "MERGE INTO customer USING staging WHEN MATCHED THEN UPDATE;", "dml.merge_rows", "SBLR_DML_MERGE_ROWS", "merge", "merge_surface", "matched_update_or_not_matched_insert", 411},
     {"SBSQL-95DC04E9EFA1", "doc_update_op", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_path_update", "mga_row_version", "row_update", 412},
     {"SBSQL-A87E3D993D3D", "doc_update_verb", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_path_update", "mga_row_version", "row_update", 413},
-    {"SBSQL-B7DCE9CB07B6", "cypher_load_csv", "CYPHER LOAD CSV FROM source INTO social;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "cypher_load_csv", "import_surface", "dml.plan_import_rows", 414},
+    {"SBSQL-B7DCE9CB07B6", "cypher_load_csv", "CYPHER LOAD CSV FROM source INTO social;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "cypher_load_csv", "accepted_executor_evidence", "", 414},
     {"SBSQL-BD2510DCAAF9", "doc_path_update_stmt", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_path_update", "mga_row_version", "row_update", 415},
     {"SBSQL-C0FC7EA71693", "cypher_merge_clause", "CYPHER MERGE NODE person ON MATCH SET touched;", "dml.merge_rows", "SBLR_DML_MERGE_ROWS", "cypher_merge", "merge_surface", "matched_update_or_not_matched_insert", 416},
-    {"SBSQL-DB993AE8EDBB", "load_data_clause", "LOAD DATA INTO customer FROM source CSV;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "load_data", "import_surface", "dml.plan_import_rows", 417},
+    {"SBSQL-DB993AE8EDBB", "load_data_clause", "LOAD DATA INTO customer FROM source CSV;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "load_data", "accepted_executor_evidence", "", 417},
     {"SBSQL-E3C1995D3B54", "doc_update_op_list", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_path_update", "mga_row_version", "row_update", 418},
     {"SBSQL-FACE78497E93", "bulk_target", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_bulk", "mga_row_version", "row_update", 419},
 };
@@ -129,7 +135,6 @@ std::string_view ExpectedAdmissionFamily(std::string_view operation_id) {
   if (operation_id == "dml.delete_rows") return "sblr.dml.delete.v3";
   if (operation_id == "dml.merge_rows") return "sblr.dml.merge.v3";
   if (operation_id == "dml.update_rows") return "sblr.dml.update.v3";
-  if (operation_id == "dml.plan_import_rows") return "sblr.bulk.import.v3";
   return kFamily;
 }
 
@@ -233,8 +238,35 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
               !Contains(artifacts.envelope.payload, "recovery"),
           "SBSFC-076 payload carried WAL/recovery authority");
 
+  if (row.operation_id == "dml.plan_import_rows") {
+    Require(Contains(artifacts.envelope.payload,
+                     "\"import_execution_deferred\":true") &&
+                Contains(artifacts.envelope.payload,
+                         "\"mga_access_model\":\"import_plan_no_row_write\"") &&
+                Contains(artifacts.envelope.payload,
+                         "\"source_handle_included\":false") &&
+                Contains(artifacts.envelope.payload,
+                         "\"row_persistence_claimed\":false") &&
+                !Contains(artifacts.envelope.payload, "customer") &&
+                !Contains(artifacts.envelope.payload, "social") &&
+                !Contains(artifacts.envelope.payload, "batches"),
+            "SBSFC-076 import semantic demand was incomplete or unredacted");
+    const auto* opcode = sblr::LookupSblrOperation("dml.plan_import_rows");
+    Require(opcode != nullptr && opcode->code == 793 &&
+                opcode->opcode == "SBLR_DML_PLAN_IMPORT_ROWS" &&
+                opcode->operand_contract == "import_rows_plan_descriptor" &&
+                opcode->result_contract == "import_plan_result" &&
+                opcode->executor_evidence_required &&
+                opcode->executor_evidence_accepted,
+            "SBSFC-076 import parser handoff lost exact 793/v1 identity");
+    Require(kPlanImportPublicAbiProofTarget ==
+                "sbsql_sblr_alignment_plan_import_rows_sbps_coordination",
+            "SBSFC-076 public-ABI proof provenance drifted");
+    return;
+  }
+
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "SBSFC-076 server admission rejected exact route");
   Require(admission.requires_public_abi_dispatch,
           std::string("SBSFC-076 server admission did not require public ABI dispatch for ") +
@@ -300,8 +332,25 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   return context;
+}
+
+void ApplyRegisteredFixtureEnvelopeIdentity(
+    sblr::SblrOperationEnvelope* envelope) {
+  Require(envelope != nullptr, "SBSFC-076 fixture envelope pointer was null");
+  const auto* operation = sblr::LookupSblrOperation(envelope->operation_id);
+  Require(operation != nullptr && operation->code != 0,
+          "SBSFC-076 fixture operation lacked numeric identity");
+  envelope->opcode = operation->opcode;
+  envelope->opcode_code = operation->code;
+  envelope->parser_package_uuid = std::string(kSourceUuid);
+  envelope->registry_snapshot_uuid = std::string(kSeedSchemaUuid);
+  envelope->parser_resolved_names_to_uuids = true;
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
@@ -310,6 +359,7 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
                                          "SBLR_TRANSACTION_BEGIN",
                                          "trace.sbsfc076.transaction.begin");
+  ApplyRegisteredFixtureEnvelopeIdentity(&envelope);
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
@@ -368,7 +418,8 @@ void PrintDispatchDiagnostics(const sblr::SblrDispatchResult& result) {
   }
 }
 
-void SeedDmlTargetTableAndRows(const api::EngineRequestContext& context) {
+void SeedDmlTargetTableAndRows(const api::EngineRequestContext& context,
+                               bool seed_rows = true) {
   api::EngineApiRequest schema_request;
   schema_request.target_object.uuid.canonical = std::string(kSeedSchemaUuid);
   schema_request.target_object.object_kind = "schema";
@@ -376,6 +427,7 @@ void SeedDmlTargetTableAndRows(const api::EngineRequestContext& context) {
   auto create_schema = sblr::MakeSblrEnvelope("ddl.create_schema",
                                               "SBLR_DDL_CREATE_SCHEMA",
                                               "trace.sbsfc076.seed_schema");
+  ApplyRegisteredFixtureEnvelopeIdentity(&create_schema);
   create_schema.requires_security_context = true;
   create_schema.requires_transaction_context = true;
   create_schema.contains_sql_text = false;
@@ -403,6 +455,7 @@ void SeedDmlTargetTableAndRows(const api::EngineRequestContext& context) {
   auto create_table = sblr::MakeSblrEnvelope("ddl.create_table",
                                              "SBLR_DDL_CREATE_TABLE",
                                              "trace.sbsfc076.seed_table");
+  ApplyRegisteredFixtureEnvelopeIdentity(&create_table);
   create_table.requires_security_context = true;
   create_table.requires_transaction_context = true;
   create_table.contains_sql_text = false;
@@ -413,6 +466,7 @@ void SeedDmlTargetTableAndRows(const api::EngineRequestContext& context) {
   Require(table_result.accepted, "SBSFC-076 seed table dispatch rejected");
   Require(table_result.dispatched_to_api, "SBSFC-076 seed table did not dispatch");
   Require(table_result.api_result.ok, "SBSFC-076 seed table create failed");
+  if (!seed_rows) return;
 
   api::EngineApiRequest insert_request;
   insert_request.target_object.uuid.canonical = std::string(kTargetUuid);
@@ -440,6 +494,202 @@ void SeedDmlTargetTableAndRows(const api::EngineRequestContext& context) {
           "SBSFC-076 seed insert row count mismatch");
 }
 
+std::string PlanFixtureUuid(std::uint64_t salt) {
+  const auto generated = uuid::GenerateEngineIdentityV7(
+      UuidKind::object, 1779810761000ull + salt);
+  Require(generated.ok(), "SBSFC-076 plan UUID generation failed");
+  return uuid::UuidToString(generated.value.value);
+}
+
+api::EngineRequestContext AttachPlanStatementAuthority(
+    api::EngineRequestContext context) {
+  const auto salt = context.local_transaction_id * 32;
+  context.statement_uuid.canonical = PlanFixtureUuid(salt + 1);
+  context.statement_snapshot_uuid.canonical.clear();
+  api::EnginePublishStatementSnapshotRequest publish;
+  publish.context = context;
+  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
+  Require(snapshot.ok, "SBSFC-076 statement snapshot publication failed");
+  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
+  context.statement_snapshot_generation =
+      snapshot.snapshot_vector.publication_inventory_next_local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  context.statement_receipt_uuid.canonical = PlanFixtureUuid(salt + 2);
+  context.statement_metadata_snapshot_uuid.canonical = PlanFixtureUuid(salt + 3);
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.statement_metadata_snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
+  context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
+  context.transaction_policy_snapshot_uuid.canonical = PlanFixtureUuid(salt + 4);
+  context.transaction_policy_snapshot_generation = 1;
+  context.resource_admission_uuid.canonical = PlanFixtureUuid(salt + 5);
+
+  auto& authorization = context.authorization_context;
+  authorization.present = true;
+  authorization.authority_uuid.canonical = PlanFixtureUuid(salt + 6);
+  authorization.security_context_generation = 1;
+  authorization.principal_uuid = context.principal_uuid;
+  authorization.security_epoch = context.security_epoch;
+  authorization.policy_epoch = 1;
+  authorization.catalog_generation_id = context.catalog_generation_id;
+  authorization.effective_subjects.clear();
+  authorization.effective_subjects.push_back(
+      {context.principal_uuid, "principal"});
+  authorization.grants.clear();
+  api::EngineMaterializedAuthorizationGrant grant;
+  grant.grant_uuid.canonical = PlanFixtureUuid(salt + 7);
+  grant.subject_uuid = context.principal_uuid;
+  grant.subject_kind = "principal";
+  grant.target_uuid.canonical = std::string(kTargetUuid);
+  grant.right = "INSERT";
+  grant.security_epoch = context.security_epoch;
+  authorization.grants.push_back(std::move(grant));
+  return context;
+}
+
+api::SblrExecutorAvailabilityRowIdentity PlanAvailabilityIdentity() {
+  return {api::kSblrDmlPlanImportRowsExecutorId,
+          api::kSblrDmlPlanImportRowsOpcodeCode,
+          api::kSblrDmlPlanImportRowsOpcodeVersion,
+          api::kSblrDmlPlanImportRowsOperandDescriptorId,
+          api::kSblrDmlPlanImportRowsResultDescriptorId,
+          api::kSblrDmlPlanImportRowsResultDescriptorVersion};
+}
+
+sblr::SblrOperationEnvelope ExactPlanEnvelope(
+    const sblr::PlanImportRowsDescriptorRefV1& descriptor_ref,
+    std::string_view trace_suffix) {
+  std::vector<std::uint8_t> encoded_ref;
+  sblr::PlanImportRowsCodecDiagnosticV1 diagnostic;
+  Require(sblr::EncodePlanImportRowsDescriptorRefV1(
+              descriptor_ref, &encoded_ref, &diagnostic) &&
+              encoded_ref.size() == sblr::kPlanImportRowsDescriptorRefBytesV1,
+          "SBSFC-076 exact descriptor ref encoding failed");
+  auto envelope = sblr::MakeSblrEnvelope(
+      "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS",
+      "trace.sbsfc076.plan_import_rows." + std::string(trace_suffix));
+  envelope.opcode_code = 793;
+  envelope.operation_version_major = 1;
+  envelope.operation_version_minor = 0;
+  envelope.result_shape = "import_plan_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = std::string(kSourceUuid);
+  envelope.registry_snapshot_uuid = std::string(kSeedSchemaUuid);
+  envelope.requires_security_context = true;
+  envelope.requires_transaction_context = true;
+  envelope.requires_cluster_authority = false;
+  envelope.contains_sql_text = false;
+  envelope.parser_resolved_names_to_uuids = true;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "import_rows_plan_descriptor";
+  operand.name = "request";
+  operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+  operand.value_body = std::move(encoded_ref);
+  envelope.operands.push_back(std::move(operand));
+  return envelope;
+}
+
+void RequireExactPlanImportDispatch(const api::EngineRequestContext& context,
+                                    const CaseRow& row) {
+  auto binder_context = context;
+  binder_context.trace_tags = {"private_dml_plan_import_rows_binder"};
+  api::EngineCreateImportRowsPlanDescriptorRequestV1 bind;
+  bind.context = binder_context;
+  bind.structural_occurrence_id = 1;
+  bind.target_table_uuid.canonical = std::string(kTargetUuid);
+  bind.source_kind = sblr::PlanImportRowsSourceKindV1::native_sbsql_import;
+  bind.source_fingerprint_present = false;
+  bind.mappings.clear();
+  bind.format_family = sblr::PlanImportRowsFormatFamilyV1::csv;
+  bind.reject_mode = sblr::PlanImportRowsRejectModeV1::fail_fast;
+  bind.reject_payload_policy =
+      sblr::PlanImportRowsRejectPayloadPolicyV1::diagnostic_only;
+  bind.resume_policy = sblr::PlanImportRowsResumePolicyV1::fail_closed;
+  bind.strict_bulk_load_requested = false;
+  bind.reference_relaxed_semantics_requested = false;
+  bind.reference_relaxed_semantics_authorized = false;
+  bind.reject_limit_ppm = 0;
+  bind.reject_limit_rows = 0;
+  const auto bound =
+      api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(bind);
+  if (!bound.ok) {
+    std::cerr << bound.diagnostic.code << ':' << bound.diagnostic.detail << '\n';
+  }
+  Require(bound.ok, "SBSFC-076 exact import binder failed");
+
+  auto consumer_context = context;
+  consumer_context.trace_tags = {"private_dml_plan_import_rows_consumer"};
+  sblr::SblrDispatchRequest request;
+  request.context = consumer_context;
+  request.envelope = ExactPlanEnvelope(bound.descriptor_ref, row.surface_id);
+  request.standalone_package_root = true;
+  Require(request.envelope.opcode_code == 793 &&
+              request.envelope.operation_version_major == 1 &&
+              request.envelope.operation_version_minor == 0 &&
+              request.envelope.result_shape == "import_plan_result" &&
+              request.envelope.operands.size() == 1 &&
+              request.envelope.operands.front().ordinal == 1 &&
+              request.envelope.operands.front().type ==
+                  "import_rows_plan_descriptor" &&
+              request.envelope.operands.front().name == "request" &&
+              request.envelope.operands.front().value.empty() &&
+              request.envelope.operands.front().value_body.size() == 24,
+          "SBSFC-076 exact 793/v1 descriptor-ref envelope drifted");
+  const std::string opaque_operand(
+      request.envelope.operands.front().value_body.begin(),
+      request.envelope.operands.front().value_body.end());
+  Require(!Contains(opaque_operand, kTargetUuid) &&
+              !Contains(opaque_operand, row.sql) &&
+              !Contains(opaque_operand, row.canonical_name),
+          "SBSFC-076 descriptor-ref operand leaked UUID/name/SQL text");
+
+  const auto result = sblr::DispatchSblrOperation(request);
+  PrintDispatchDiagnostics(result);
+  Require(result.envelope_validated && result.accepted &&
+              result.dispatched_to_api && result.api_result.ok &&
+              result.plan_import_rows_result.has_value(),
+          "SBSFC-076 exact typed plan-import dispatch failed");
+  const auto& plan = *result.plan_import_rows_result;
+  Require(plan.surface_accepted && plan.planning_only &&
+              plan.execution_requires_execute_import_rows &&
+              !plan.row_execution_completed && !plan.row_persistence_claimed &&
+              plan.normalized_insert_mode_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsInsertModeV1::copy_import) &&
+              plan.normalized_source_kind_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsSourceKindV1::native_sbsql_import) &&
+              plan.normalized_format_family_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsFormatFamilyV1::csv) &&
+              plan.mapped_column_count == 0 &&
+              plan.validated_request_descriptor_generation ==
+                  bound.descriptor_ref.descriptor_generation &&
+              plan.accepted_executor_evidence.exact_bytes.size() ==
+                  sblr::kPlanImportRowsExecutorEvidenceBytesV1 &&
+              plan.accepted_executor_evidence.request_descriptor_uuid ==
+                  bound.descriptor_ref.descriptor_uuid &&
+              plan.accepted_executor_evidence.request_descriptor_generation ==
+                  bound.descriptor_ref.descriptor_generation &&
+              plan.accepted_executor_evidence.completed_validation_bits ==
+                  sblr::kPlanImportRowsAcceptedValidationBitsV1 &&
+              HasEvidence(plan, row.runtime_evidence_kind,
+                          row.runtime_evidence_id),
+          "SBSFC-076 exact planning result/evidence drifted");
+  Require(kPlanImportPublicAbiProofTarget ==
+              "sbsql_sblr_alignment_plan_import_rows_sbps_coordination",
+          "SBSFC-076 public-ABI proof provenance drifted");
+  const auto released =
+      api::ReleaseEngineBoundImportRowsPlanDescriptorsV1(binder_context);
+  Require(released.ok && released.released_row_count == 1,
+          "SBSFC-076 exact import descriptor release failed");
+}
+
 sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
   auto envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
                                          std::string(row.opcode),
@@ -464,10 +714,6 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
     envelope.operands.push_back({"row_field:text", RowUuidFor(row) + "|note",
                                  std::string(row.canonical_name)});
   }
-  if (row.operation_id == "dml.plan_import_rows") {
-    envelope.operands.push_back({"text", "source_kind", "native_sbsql_import"});
-    envelope.operands.push_back({"text", "format_family", "csv"});
-  }
   return envelope;
 }
 
@@ -482,6 +728,10 @@ api::EngineApiRequest ApiRequestFor(const CaseRow& row) {
 }
 
 void RequireEngineDispatch(const api::EngineRequestContext& context, const CaseRow& row) {
+  if (row.operation_id == "dml.plan_import_rows") {
+    RequireExactPlanImportDispatch(context, row);
+    return;
+  }
   const auto result = sblr::DispatchSblrOperation({context, EngineEnvelope(row), ApiRequestFor(row)});
   for (const auto& diagnostic : result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
@@ -497,17 +747,24 @@ void RequireEngineDispatch(const api::EngineRequestContext& context, const CaseR
   Require(result.api_result.ok, "SBSFC-076 runtime API did not complete");
   Require(HasEvidence(result.api_result, row.runtime_evidence_kind, row.runtime_evidence_id),
           "SBSFC-076 runtime evidence missing");
-  if (row.operation_id != "dml.plan_import_rows") {
-    Require(!result.api_result.result_shape.rows.empty(),
-            "SBSFC-076 row DML did not return affected row evidence");
-  }
+  Require(!result.api_result.result_shape.rows.empty(),
+          "SBSFC-076 row DML did not return affected row evidence");
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  Require(argc == 1 ||
+              (argc == 2 &&
+               std::string_view(argv[1]) == "--plan-import-only"),
+          "usage: sbsql_sbsfc_076_dml_residual_exact_route_conformance "
+          "[--plan-import-only]");
+  const bool plan_import_only = argc == 2;
   ConfigureMemoryFixture();
   for (const auto& row : kCases) {
+    if (plan_import_only && row.operation_id != "dml.plan_import_rows") {
+      continue;
+    }
     RequireRegistryEvidence(row);
     RequireExactLowering(row, RunPipeline(row));
   }
@@ -516,12 +773,36 @@ int main() {
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   const auto context = BeginEngineTransaction(path, database_uuid);
-  SeedDmlTargetTableAndRows(context);
+  SeedDmlTargetTableAndRows(context, !plan_import_only);
+  const auto plan_context = AttachPlanStatementAuthority(context);
+  const auto installed = api::LoadSblrExecutorAvailabilitySnapshot(
+      plan_context, PlanAvailabilityIdentity());
+  Require(installed.ok && installed.snapshot.installed &&
+              installed.snapshot.generation != 0,
+          "SBSFC-076 plan executor availability bootstrap failed");
+  const auto current = api::LoadCurrentSblrExecutorAvailabilitySnapshot(
+      plan_context, PlanAvailabilityIdentity());
+  Require(current.ok && current.snapshot.installed &&
+              current.snapshot.generation == installed.snapshot.generation,
+          "SBSFC-076 current plan executor availability missing");
   for (const auto& row : kCases) {
-    RequireEngineDispatch(context, row);
+    if (plan_import_only && row.operation_id != "dml.plan_import_rows") {
+      continue;
+    }
+    RequireEngineDispatch(row.operation_id == "dml.plan_import_rows"
+                              ? plan_context
+                              : context,
+                          row);
   }
   RemoveDatabaseArtifacts(path);
 
+  std::cout << "plan_import_public_abi_proof="
+            << kPlanImportPublicAbiProofTarget << '\n';
+  if (plan_import_only) {
+    std::cout << "sbsql_sbsfc_076_dml_residual_exact_route_conformance."
+                 "plan_import=passed\n";
+    return EXIT_SUCCESS;
+  }
   std::cout << "sbsql_sbsfc_076_dml_residual_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

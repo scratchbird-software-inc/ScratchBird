@@ -47,6 +47,10 @@ EngineRequestContext BaseContext(const Args& args, bool security_context_present
   context.request_id = security_context_present ? "domain-read-policy-secure" : "domain-read-policy-untrusted";
   context.database_path = args.path;
   context.principal_uuid.canonical = "00000000-0000-7000-8000-00000000abcd";
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   return context;
 }
 
@@ -146,11 +150,17 @@ int main(int argc, char** argv) {
   const auto setup_context = TxContext(secure_base, setup_tx);
   const auto domain = CreateSecretDomain(setup_context);
   const auto descriptor = LookupDescriptor(setup_context, domain.primary_object.uuid.canonical);
+  auto column_descriptor = descriptor.descriptor;
+  column_descriptor.canonical_type_name = "text";
+  column_descriptor.encoded_descriptor =
+      "type=text;nullable=true;domain_uuid=" +
+      domain.primary_object.uuid.canonical;
 
   EngineCreateTableRequest create_table;
   create_table.context = setup_context;
   create_table.table_names.push_back({"en", "default", "secrets", "secrets", true});
-  create_table.table_columns.push_back(Column("secret", descriptor.descriptor, 1));
+  create_table.table_columns.push_back(
+      Column("secret", std::move(column_descriptor), 1));
   const auto table = EngineCreateTable(create_table);
 
   EngineRowValue row;

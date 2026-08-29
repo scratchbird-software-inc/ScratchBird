@@ -49,6 +49,11 @@ import sys
 from pathlib import Path
 
 from sbsql_bridge_command_surface import BRIDGE_COMMAND_BY_SURFACE_ID, BRIDGE_CTEST, BRIDGE_TEST_SOURCE
+from plan_import_rows_generated_evidence import (
+    is_plan_import_rows_surface,
+    per_row_manifest_override,
+    validate_authoritative_runtime_inputs,
+)
 
 
 PUBLIC_SURFACE_INPUT = (
@@ -1339,10 +1344,12 @@ DATABASE_LIFECYCLE_EXACT_ROUTE_ROW_EVIDENCE = {
         "api": "EngineCreateLifecycle",
         "fixture": "CREATE DATABASE qa_lifecycle",
         "mapping_key": "sbsql.lifecycle.create_database",
-        "final_state": "exact_refusal_passed",
         "result_evidence": (
-            "api_result=refused;diagnostic=SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED;"
-            "database_file=not_created;security_sidecars=not_created"
+            "executor_id=engine.op.lifecycle_create_database;api_result=success;"
+            "engine_lifecycle=database_created;identity_authority=engine;"
+            "mga_lifecycle_evidence=tx1_committed;database_file=created;"
+            "database_uuid=engine_assigned;filespace_uuid=engine_assigned;"
+            "publication_barrier=durable"
         ),
         "row_surface_ids": "SBSQL-EB95D772BD63",
     },
@@ -2991,7 +2998,8 @@ CLUSTER_PRIVATE_PUBLIC_REFUSAL_CTEST_LABEL = (
 )
 CLUSTER_PROVIDER_BUILD_MODE_EVIDENCE = (
     "default_open_core_build_no_cluster_provider_returns_SBLR.CLUSTER.SUPPORT_NOT_ENABLED;"
-    "cluster_enabled_build_separate_provider_returns_cluster.provider.stub.v1_and_SBLR.CLUSTER.STUB_RESPONSE;"
+    "compile_link_stub_build_returns_cluster.provider.stub.v1_and_"
+    "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY_with_supports_execution_false;"
     "provider_interface=project/src/cluster_provider/cluster_provider.hpp;"
     "provider_stub_target=project/src/cluster_provider_stub"
 )
@@ -3013,8 +3021,9 @@ def cluster_provider_contract_note(notes: str) -> str:
     return (
         f"{normalized} Build-mode contract: default/open-core builds route through the no-cluster "
         "provider and must return SBLR.CLUSTER.SUPPORT_NOT_ENABLED; cluster-enabled builds route "
-        "through the separate cluster provider target and must return the row-identifiable "
-        "cluster.provider.stub.v1/SBLR.CLUSTER.STUB_RESPONSE response until the private provider is linked."
+        "through the compile-link-only stub provider, which reports supports_execution=false and "
+        "returns cluster.provider.stub.v1/SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY until the "
+        "private provider is linked."
     )
 
 
@@ -3799,6 +3808,10 @@ def cluster_provider_route_manifest_row(
             "project/src/cluster_provider_stub/stub_cluster_provider.cpp",
             "project/src/engine/sblr/sblr_dispatch.cpp#cluster_provider_boundary",
             "project/src/server/sblr_admission.cpp#cluster_private_family_admission",
+            "scratchbird.cluster.compile_link_stub_provider",
+            "provider_type=compile_link_stub",
+            "support_status=compile_link_only",
+            "supports_execution=false",
             "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
             "no_direct_open_core_private_cluster_executor_dispatch",
             "private_cluster_execution=false",
@@ -3810,15 +3823,15 @@ def cluster_provider_route_manifest_row(
         "fixture_path": "project/tests/sbsql_parser_worker/sbsql_sblr_final_cleanup_b015_cluster_provider_route_conformance.cpp",
         "implementation_refs": ";".join(implementation_refs),
         "diagnostic_proof": (
-            "SBLR.CLUSTER.SUPPORT_NOT_ENABLED;SBLR.CLUSTER.STUB_RESPONSE;"
-            "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;"
+            "SBLR.CLUSTER.SUPPORT_NOT_ENABLED;"
+            "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;accepted=false;"
             "canonical_message_vector_set;no_row_detail_leak;no_private_cluster_execution"
         ),
         "result_proof": (
             f"ctest:{ctest};surface_id={surface_id};canonical_name={canonical_name};"
             "default_open_core_build_no_cluster_provider_returns_SBLR.CLUSTER.SUPPORT_NOT_ENABLED;"
-            "cluster_enabled_stub_build_returns_cluster.provider.stub.v1_and_SBLR.CLUSTER.STUB_RESPONSE;"
-            "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;"
+            "compile_link_stub_build_returns_cluster.provider.stub.v1_and_"
+            "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY_with_supports_execution_false;"
             "request_lifecycle_routed_through_cluster_provider_boundary"
         ),
         "evidence_collected_utc": "static_existing_ctest_evidence",
@@ -3831,8 +3844,9 @@ def cluster_provider_route_manifest_row(
             f"Bounded provider-boundary evidence for {surface_id}/{canonical_name}. "
             "Default/open-core builds route through the no-cluster provider and return "
             "SBLR.CLUSTER.SUPPORT_NOT_ENABLED without private cluster execution or stub dispatch. "
-            "Cluster-enabled stub builds route through the separate cluster provider target and return "
-            "cluster.provider.stub.v1 with SBLR.CLUSTER.STUB_RESPONSE. The evidence remains structural "
+            "Compile-link-stub builds route through the separate provider target and return the "
+            "cluster.provider.stub.v1 refusal shape with SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY; "
+            "the stub declares supports_execution=false. The evidence remains structural "
             "and provider-boundary only: no private cluster implementation, parser-side SQL execution, "
             "parser storage/finality, reference execution, transaction finality claim, or WAL/recovery "
             "authority is claimed."
@@ -3881,37 +3895,35 @@ def bridge_command_surface_manifest_row(
         if ledger_row.get("current_state") != "exact_refusal_passed":
             fail(f"{surface_id} bridge cluster manifest override requires exact_refusal_passed strict ledger state")
         implementation_refs = common_refs + [
-            "provider_boundary_route_evidence",
-            "cluster_provider_gate=compile_time",
-            "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
-            "SBLR.CLUSTER.STUB_RESPONSE",
-            "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
-            "request_lifecycle_routed_through_cluster_provider_boundary",
+            "canonical_sblr_admission_before_trusted_udr_dispatch",
+            "public_fail_closed_refusal_only",
+            "expected_refusal_code=UDR.BRIDGE.UNSUPPORTED",
             "UDR.BRIDGE.UNSUPPORTED",
-            "UDR.BRIDGE.UNLICENSED",
             "private_cluster_execution=false",
         ]
         return {
-            "final_state": "cluster_provider_route_passed",
-            "ctest_label": f"{BRIDGE_CTEST};sbsql_cluster_provider_split;sbsql_parser_worker;sbsql_e2e_passed",
+            "final_state": "exact_refusal_passed",
+            "ctest_label": (
+                f"sbsql_surface_to_sblr_full_implementation_closure;{BRIDGE_CTEST};"
+                "trusted_udr_bridge_gate;sbsql_parser_worker;"
+                "cluster_private_public_fail_closed;sbsql_exact_refusal_passed"
+            ),
             "fixture_path": BRIDGE_TEST_SOURCE,
             "implementation_refs": ";".join(implementation_refs),
             "diagnostic_proof": (
-                "canonical_message_vector_set;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;"
-                "SBLR.CLUSTER.STUB_RESPONSE;SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;UDR.BRIDGE.UNSUPPORTED;"
-                "UDR.BRIDGE.UNLICENSED;provider_boundary_route_evidence;"
-                "private_cluster_execution=false"
+                "canonical_message_vector_set;UDR.BRIDGE.UNSUPPORTED;"
+                "accepted=false;no_row_detail_leak;private_cluster_execution=false"
             ),
             "result_proof": (
                 f"ctest:{BRIDGE_CTEST};surface_id={surface_id};sql_fixture={bridge.sql};"
-                "request_lifecycle_routed_through_cluster_provider_boundary;"
-                "default_public_build_returns_UDR.BRIDGE.UNSUPPORTED;"
-                "cluster_admitted_stub_returns_UDR.BRIDGE.UNLICENSED;SBLR.CLUSTER.STUB_RESPONSE;"
-                "private_cluster_execution=false"
+                f"operation_id={bridge.operation_id};opcode={bridge.opcode};"
+                "parser_bound=true;verifier_admitted=true;server_admission_admitted=true;"
+                "trusted_udr_bridge_dispatch_refuses_UDR.BRIDGE.UNSUPPORTED;"
+                "engine_result_retained=false;private_cluster_execution=false"
             ),
             "evidence_collected_utc": "static_existing_ctest_evidence",
             "promoter_slice": "SBSQL-BRIDGE-COMMAND-SURFACE-FULL-TRACKING",
-            "notes": "Bridge cluster route command is tracked as a cluster-provider boundary proof, not public cluster execution. The route reaches SBLR bridge validation and trusted UDR dispatch, then fail-closes unsupported when cluster routing is disabled and unlicensed through the cluster stub when admitted. No private cluster implementation, distributed query, parser-side execution/finality, reference execution, WAL/recovery authority, or transaction finality change is claimed.",
+            "notes": "Bridge cluster routing is an exact-refusal surface, not a provider-route success. The route reaches canonical SBLR validation and admission, then trusted parser-support UDR dispatch returns UDR.BRIDGE.UNSUPPORTED with no cluster-provider dispatch or private execution. No private cluster implementation, distributed query, parser-side execution/finality, reference execution, WAL/recovery authority, or transaction finality change is claimed.",
         }
 
     if ledger_row.get("current_state") != "e2e_passed":
@@ -12919,7 +12931,7 @@ def classify(
                 f"{CLUSTER_PROVIDER_NO_DIRECT_PRIVATE_EXECUTOR};"
                 "no_prepared_state;no_cursor_state"
             ),
-            "diagnostic_proof": "SBLR.CAPABILITY.FORBIDDEN;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;SBLR.CLUSTER.STUB_RESPONSE;no_row_detail_leak;request_lifecycle_routed_through_cluster_provider",
+            "diagnostic_proof": "SBLR.CAPABILITY.FORBIDDEN;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;supports_execution=false;no_row_detail_leak;request_lifecycle_routed_through_cluster_provider",
             "result_proof": (
                 f"ctest:{CLUSTER_PRIVATE_PUBLIC_REFUSAL_CTEST};surface_id={surface_id};"
                 "accepted=false;engine_result_retained=false;MGA_transaction_evidence_unchanged;"
@@ -12963,7 +12975,8 @@ def classify(
                 f"{cluster_scope_residual_refusal['runtime_evidence_suffix']}"
             ),
             "diagnostic_proof": (
-                "SBLR.CAPABILITY.FORBIDDEN;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;SBLR.CLUSTER.STUB_RESPONSE;"
+                "SBLR.CAPABILITY.FORBIDDEN;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;"
+                "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;supports_execution=false;"
                 "diagnostic.cluster_provider_boundary;"
                 "SBSQL.CLUSTER.AUTHORITY_REQUIRED_public_policy_context;no_row_detail_leak;"
                 f"request_lifecycle_routed_through_cluster_provider_before_{cluster_scope_residual_refusal['blocked_path']}"
@@ -13015,7 +13028,8 @@ def classify(
                 f"{cluster_profile_gate_refusal['runtime_evidence_suffix']}"
             ),
             "diagnostic_proof": (
-                "SBLR.CAPABILITY.FORBIDDEN;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;SBLR.CLUSTER.STUB_RESPONSE;"
+                "SBLR.CAPABILITY.FORBIDDEN;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;"
+                "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;supports_execution=false;"
                 "diagnostic.cluster_provider_boundary;"
                 "SBSQL.CLUSTER.AUTHORITY_REQUIRED_public_policy_context;no_row_detail_leak;"
                 f"request_lifecycle_routed_through_cluster_provider_before_{cluster_profile_gate_refusal['blocked_path']}"
@@ -24843,14 +24857,10 @@ def classify(
         fixture = database_lifecycle_evidence["fixture"]
         mapping_key = database_lifecycle_evidence["mapping_key"]
         row_surface_ids = database_lifecycle_evidence["row_surface_ids"]
-        is_public_bootstrap_refusal = expected_final_state == "exact_refusal_passed"
+        is_create_database = surface_id == "SBSQL-EB95D772BD63"
         return {
             "final_state": expected_final_state,
-            "ctest_label": (
-                DATABASE_LIFECYCLE_CREATE_REFUSAL_CTEST_LABEL
-                if is_public_bootstrap_refusal
-                else DATABASE_LIFECYCLE_EXACT_ROUTE_CTEST_LABEL
-            ),
+            "ctest_label": DATABASE_LIFECYCLE_EXACT_ROUTE_CTEST_LABEL,
             "fixture_path": DATABASE_LIFECYCLE_EXACT_ROUTE_TEST_SOURCE,
             "implementation_refs": (
                 f"operation_id={operation_id};opcode={sblr_operation};"
@@ -24858,13 +24868,20 @@ def classify(
                 f"canonical_operation_family={surface['sblr_operation_family']};"
                 f"route_operation_family={route_family};mapping_key={mapping_key};"
                 "server_public_abi_dispatch=true;scratchbird_lifecycle_api=true;"
-                "public_bootstrap_authority=false"
+                + (
+                    "public_bootstrap_authority=engine_lifecycle;"
+                    "engine_assigned_database_and_filespace_ids=true;"
+                    "authenticated_management_transaction_required=true"
+                    if is_create_database
+                    else "public_bootstrap_authority=false"
+                )
             ),
             "diagnostic_proof": (
                 "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
-                "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED;"
-                "public_create_database_refused_before_storage_mutation"
-                if is_public_bootstrap_refusal
+                "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED;"
+                "SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED;PROCESS.CANCELLED;"
+                "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN;DATABASE.CREATE_FAILED"
+                if is_create_database
                 else "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
                 "SBSQL.LIFECYCLE.MAPPED;ENGINE.DBLC_*_for_lifecycle_storage_refusals"
             ),
@@ -24874,16 +24891,18 @@ def classify(
                 f"{sblr_operation};{database_lifecycle_evidence['result_evidence']};"
                 "authority.engine.lifecycle_api_required=true;"
                 "authority.engine.mga_lifecycle_evidence_required=true;"
-                "parser_executes_sql=false;real_file_effects=false;"
+                "parser_executes_sql=false;"
+                + ("" if is_create_database else "real_file_effects=false;")
+                +
                 "sql_text_included=false;source_payload_embedded=false;no_wal_authority"
             ),
             "evidence_collected_utc": "static_existing_ctest_evidence",
             "promoter_slice": "SBSFC-020R-QV-through-SBSFC-020R-QW-SBSFC-030-database-lifecycle-selection-control-exact-route",
             "notes": (
                 "Bounded database lifecycle exact-route row evidence. "
-                "SBSQL-EB95D772BD63 create_database_stmt is exact_refusal_passed: public CREATE DATABASE parses, binds, lowers, and dispatches to EngineCreateLifecycle, which returns SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED before any database or security sidecar is created. The test's credentialed direct-storage fixture is isolated setup only; production database creation belongs solely to the explicit local embedded first-principal bootstrap command, never to a parser, listener, manager, or public SBLR request. SBSQL-80C5BA542433 attach_database_stmt, SBSQL-A3F3AF6910F9 database_name, SBSQL-5B1C5630A433 use_database_alias, SBSQL-1F38A5CF36B0 alter_database_action, SBSQL-796DE5C0B192 alter_database_extra, SBSQL-F9BE1FC733F6 maintenance_stmt, SBSQL-0E7563017DCD verify_options, and SBSQL-F4F4216A8C8A repair_options remain e2e_passed against that credentialed fixture. "
-                "The route proves generated registry validation, parser/CST/AST/bound acceptance, lifecycle row_surface_ids payload evidence, lowering to ScratchBird lifecycle SBLR operations, server public ABI admission, engine-owned MGA lifecycle evidence for the operating routes, no source SQL/path/name text authority, no parser-side file effects, no reference authority, no cluster-positive behavior, and no WAL/recovery authority. "
-                "The alter_database_action and alter_database_extra rows are deliberately published from the real ALTER DATABASE lifecycle route, superseding older descriptor-token evidence. No broad DROP/OPEN/SHUTDOWN lifecycle closure, multi-database alias catalog semantics, authenticated SBWP driver route, transaction-finality change, or final no-grey closure is claimed."
+                "SBSQL-EB95D772BD63 create_database_stmt is e2e_passed: authenticated CREATE DATABASE parses, binds, lowers, is admitted through canonical SBLR/SBEE/SBOP bytes as engine.op.lifecycle_create_database, and dispatches to EngineCreateLifecycle. The engine assigns database and filespace UUIDs, creates storage/catalog bootstrap state, and publishes durable tx1 lifecycle evidence; parser syntax and lowering carry no storage, identity, or finality authority. "
+                "The route also proves the existing attach/use/maintenance/verify/repair lifecycle sequence against the engine-created database, with no source SQL/path/name text authority, no parser-side file effects, no reference authority, no cluster-positive behavior, and no WAL authority. "
+                "No multi-database alias catalog semantics, authenticated SBWP driver route, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
 
@@ -25495,11 +25514,11 @@ def classify(
             "ctest_label": CTEST_LABEL_CLUSTER_PRIVATE,
             "fixture_path": fixture_path,
             "implementation_refs": f"covered_by_sblr_admission_refusal_route_family_only;{CLUSTER_PROVIDER_BUILD_MODE_EVIDENCE};{CLUSTER_PROVIDER_NO_DIRECT_PRIVATE_EXECUTOR}",
-            "diagnostic_proof": "SBSQL.SURFACE.NOT_ADMITTED;SBSQL.SURFACE.PARSER_PRIVATE_REFUSED;SBSQL.CLUSTER.AUTHORITY_REQUIRED;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;SBLR.CLUSTER.STUB_RESPONSE",
-            "result_proof": "default_open_core_provider_error_vector_or_cluster_enabled_provider_stub_response_no_private_details_leaked",
+            "diagnostic_proof": "SBSQL.SURFACE.NOT_ADMITTED;SBSQL.SURFACE.PARSER_PRIVATE_REFUSED;SBSQL.CLUSTER.AUTHORITY_REQUIRED;SBLR.CLUSTER.SUPPORT_NOT_ENABLED;SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;supports_execution=false",
+            "result_proof": "default_open_core_provider_error_vector_or_compile_link_stub_handshake_refusal_no_private_details_leaked",
             "evidence_collected_utc": "",
             "promoter_slice": "SBSFC-025_cluster_private_public_fail_closed_evidence",
-            "notes": "cluster_private row: provider-boundary evidence pending SBSFC-025; default/open-core builds must route through the no-cluster provider and return SBLR.CLUSTER.SUPPORT_NOT_ENABLED, while cluster-enabled builds must route through the separate cluster provider target and return cluster.provider.stub.v1/SBLR.CLUSTER.STUB_RESPONSE until the private provider is linked.",
+            "notes": "cluster_private row: provider-boundary evidence pending SBSFC-025; default/open-core builds must route through the no-cluster provider and return SBLR.CLUSTER.SUPPORT_NOT_ENABLED, while cluster-enabled builds must route through the compile-link-only stub provider, which reports supports_execution=false and returns cluster.provider.stub.v1/SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY until the private provider is linked.",
         }
 
     fail(f"{surface_id} has unrecognized status: {status}")
@@ -25515,6 +25534,8 @@ def main() -> int:
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
+
+    validate_authoritative_runtime_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     ledger_by_id = index_by_surface(read_csv(artifact_root / STRICT_LEDGER_NAME))
@@ -25644,43 +25665,48 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         surface_id = surface["surface_id"]
-        classification = classify(
-            surface,
-            ledger_by_id.get(surface_id),
-            oracle_by_id.get(surface_id),
-            oracle_by_builtin.get(sbsfc010_numeric_fixture_by_id[surface_id]["canonical_builtin_id"])
-            if surface_id in sbsfc010_numeric_fixture_by_id
-            else None,
-            full_oracle_by_builtin.get(
-                sbsfc012_temporal_session_provider_field_arithmetic_fixture_by_id[surface_id][
-                    "canonical_builtin_id"
-                ]
+        if is_plan_import_rows_surface(surface_id):
+            classification = per_row_manifest_override(surface)
+            if classification is None:
+                fail(f"{surface_id} plan-import manifest override unexpectedly missing")
+        else:
+            classification = classify(
+                surface,
+                ledger_by_id.get(surface_id),
+                oracle_by_id.get(surface_id),
+                oracle_by_builtin.get(sbsfc010_numeric_fixture_by_id[surface_id]["canonical_builtin_id"])
+                if surface_id in sbsfc010_numeric_fixture_by_id
+                else None,
+                full_oracle_by_builtin.get(
+                    sbsfc012_temporal_session_provider_field_arithmetic_fixture_by_id[surface_id][
+                        "canonical_builtin_id"
+                    ]
+                )
+                if surface_id in sbsfc012_temporal_session_provider_field_arithmetic_fixture_by_id
+                else None,
+                sbsfc012_temporal_session_provider_field_arithmetic_fixture_by_id.get(surface_id),
+                route_by_id.get(surface_id),
+                round_trip_by_id.get(surface_id),
+                sbsfc010_numeric_fixture_by_id.get(surface_id),
+                sbsfc011_trim_fixture_by_id.get(surface_id),
+                sbsfc011_text_alias_conditional_fixture_by_id.get(surface_id),
+                sbsfc011_operator_concat_fixture_by_id.get(surface_id),
+                sbsfc011_bit_string_position_substring_fixture_by_id.get(surface_id),
+                sbsfc011_text_binary_uuid_metadata_fixture_by_id.get(surface_id),
+                sbsfc011_remaining_text_conditional_scalar_fixture_by_id.get(surface_id),
+                sbsfc013_fixture_by_id.get(surface_id),
+                sbsfc014_vector_fixture_by_id.get(surface_id),
+                sbsfc014_fuzzy_fixture_by_id.get(surface_id),
+                sbsfc015_population_aggregate_fixture_by_id.get(surface_id),
+                sbsfc015_listagg_aggregate_fixture_by_id.get(surface_id),
+                sbsfc015_listagg_within_group_route_fixture_row,
+                sbsfc015_string_agg_aggregate_fixture_by_id.get(surface_id),
+                sbsfc015_json_agg_aggregate_fixture_by_id.get(surface_id),
+                sbsfc015_json_object_agg_aggregate_fixture_by_id.get(surface_id),
+                sbsfc015_array_agg_aggregate_fixture_by_id.get(surface_id),
+                sbsfc015_window_function_fixture_by_id.get(surface_id),
+                sbsfc015_ordered_distribution_statistical_aggregate_fixture_by_id.get(surface_id),
             )
-            if surface_id in sbsfc012_temporal_session_provider_field_arithmetic_fixture_by_id
-            else None,
-            sbsfc012_temporal_session_provider_field_arithmetic_fixture_by_id.get(surface_id),
-            route_by_id.get(surface_id),
-            round_trip_by_id.get(surface_id),
-            sbsfc010_numeric_fixture_by_id.get(surface_id),
-            sbsfc011_trim_fixture_by_id.get(surface_id),
-            sbsfc011_text_alias_conditional_fixture_by_id.get(surface_id),
-            sbsfc011_operator_concat_fixture_by_id.get(surface_id),
-            sbsfc011_bit_string_position_substring_fixture_by_id.get(surface_id),
-            sbsfc011_text_binary_uuid_metadata_fixture_by_id.get(surface_id),
-            sbsfc011_remaining_text_conditional_scalar_fixture_by_id.get(surface_id),
-            sbsfc013_fixture_by_id.get(surface_id),
-            sbsfc014_vector_fixture_by_id.get(surface_id),
-            sbsfc014_fuzzy_fixture_by_id.get(surface_id),
-            sbsfc015_population_aggregate_fixture_by_id.get(surface_id),
-            sbsfc015_listagg_aggregate_fixture_by_id.get(surface_id),
-            sbsfc015_listagg_within_group_route_fixture_row,
-            sbsfc015_string_agg_aggregate_fixture_by_id.get(surface_id),
-            sbsfc015_json_agg_aggregate_fixture_by_id.get(surface_id),
-            sbsfc015_json_object_agg_aggregate_fixture_by_id.get(surface_id),
-            sbsfc015_array_agg_aggregate_fixture_by_id.get(surface_id),
-            sbsfc015_window_function_fixture_by_id.get(surface_id),
-            sbsfc015_ordered_distribution_statistical_aggregate_fixture_by_id.get(surface_id),
-        )
         ledger_row = {
             "surface_id": surface_id,
             "canonical_name": surface["canonical_name"],

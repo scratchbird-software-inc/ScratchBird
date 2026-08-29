@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -399,7 +400,7 @@ PipelineArtifacts RequireLockRoute(std::string_view sql,
           "Gate 011 lock payload carried WAL authority");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "Gate 011 server admission rejected lock route");
   Require(admission.requires_public_abi_dispatch,
           "Gate 011 server admission did not require public ABI dispatch");

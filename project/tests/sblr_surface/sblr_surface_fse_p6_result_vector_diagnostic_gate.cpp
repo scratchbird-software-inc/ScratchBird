@@ -10,6 +10,7 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -146,6 +147,14 @@ std::map<std::string, Row> IndexBySourceImportId(const std::vector<Row>& rows,
 
 bool HasAdmissionDiagnostic(const server::ServerSblrAdmissionResult& result,
                             std::string_view code) {
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
+bool HasDecodeDiagnostic(const sblr::SblrDecodeResult& result,
+                         std::string_view code) {
   for (const auto& diagnostic : result.diagnostics) {
     if (diagnostic.code == code) return true;
   }
@@ -315,9 +324,19 @@ void VerifyDiagnosticPolicyRows(const std::vector<Row>& diagnostic_rows) {
     }
     if (source_type == "cluster_normalization") {
       ++cluster_rows;
-      Require(Contains(Field(row, "failure_vector"), "unsupported") ||
-                  Contains(Field(row, "failure_vector"), "exact_pre_provider_refusal"),
-              "cluster failure vector drift " + source_import_id);
+      if (impl == "exact_refusal") {
+        Require(Contains(Field(row, "failure_vector"),
+                         "exact_pre_provider_refusal"),
+                "cluster exact-refusal vector drift " + source_import_id);
+      } else {
+        Require(Contains(Field(row, "failure_vector"),
+                         "SBLR.CLUSTER.SUPPORT_NOT_ENABLED") &&
+                    Contains(Field(row, "failure_vector"),
+                             "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY") &&
+                    Contains(Field(row, "failure_vector"),
+                             "supports_execution=false"),
+                "cluster provider failure vector drift " + source_import_id);
+      }
       Require(Contains(Field(row, "message_vector_code_policy"), "kCluster") ||
                   Contains(Field(row, "message_vector_code_policy"), "EXACT_PRE_PROVIDER"),
               "cluster message vector drift " + source_import_id);
@@ -368,16 +387,26 @@ void VerifyCompiledSblrSamples(const std::vector<Row>& diagnostic_rows) {
     const auto envelope = EnvelopeForRow(row);
     const auto encoded = sblr::EncodeSblrEnvelope(envelope);
     const auto decoded = sblr::DecodeSblrEnvelope(encoded);
-    Require(decoded.ok, "SBLR decode failed " + Field(row, "source_import_id"));
-    const auto validation = sblr::ValidateSblrEnvelope(decoded.envelope);
-    Require(validation.ok, "SBLR validation failed " + Field(row, "source_import_id"));
-    const auto admission = server::AdmitServerSblrEnvelope(
-        server::ServerSblrAdmissionRequest{encoded, envelope.requires_cluster_authority});
-    if (Field(row, "implementation_expectation") == "external_authority_fail_closed" ||
-        Field(row, "implementation_expectation") == "architecture_refusal" ||
-        Field(row, "implementation_expectation") == "exact_refusal") {
-      Require(!admission.admitted,
-              "fail-closed/refusal row admitted " + Field(row, "source_import_id"));
+    if (decoded.ok) {
+      Require(decoded.envelope.operation_id == envelope.operation_id &&
+                  decoded.envelope.opcode == envelope.opcode,
+              "registered result identity changed " +
+                  Field(row, "source_import_id"));
+    } else if (!encoded.empty()) {
+      Require(HasDecodeDiagnostic(
+                  decoded, "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+              "inventory-only result failed without exact identity refusal " +
+                  Field(row, "source_import_id"));
+    }
+    if (!encoded.empty()) {
+      const auto admission = server::AdmitServerSblrEnvelope(
+          server::ServerSblrAdmissionRequest{
+              encoded, envelope.requires_cluster_authority});
+      Require(!admission.admitted &&
+                  HasAdmissionDiagnostic(admission,
+                                         "SBLR.OPERATION.NONCANONICAL"),
+              "retired raw SBOP admission lane was not refused " +
+                  Field(row, "source_import_id"));
     }
     if (Field(row, "authority_class") == "MGA_TRANSACTION_FINALITY") {
       Require(envelope.requires_transaction_context,
@@ -389,26 +418,31 @@ void VerifyCompiledSblrSamples(const std::vector<Row>& diagnostic_rows) {
     }
   }
 
+  const auto canonical = server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION"));
+  Require(canonical.admitted &&
+              canonical.operation_id == "observability.show_version",
+          "canonical SBEE/SBLR/SBOP admission route was not executable");
+
   const auto raw_sql = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{"select * from fse_p6_forbidden", false});
-  Require(!raw_sql.admitted && HasAdmissionDiagnostic(raw_sql, "SBLR.SQL_TEXT_FORBIDDEN"),
+  Require(!raw_sql.admitted &&
+              HasAdmissionDiagnostic(raw_sql,
+                                     "SBLR.OPERATION.NONCANONICAL"),
           "raw SQL was accepted as SBLR");
 
-  auto local_query = sblr::MakeSblrEnvelope("query.plan_operation",
-                                            "SBLR_QUERY_PLAN_OPERATION",
-                                            "FSE-P6-local-query-cluster-refusal");
-  local_query.requires_cluster_authority = true;
-  local_query.source_artifact_map.policy_status = "non_authoritative_render_metadata";
-  local_query.source_artifact_map.source_identity = "fse-p6:local-query-refusal";
-  local_query.source_artifact_map.source_hash = "sha256:fse-p6-local-query-refusal";
-  local_query.source_artifact_map.contains_sql_text = false;
-  local_query.source_artifact_map.raw_sql_text_authoritative = false;
-  const auto local_query_admission = server::AdmitServerSblrEnvelope(
-      server::ServerSblrAdmissionRequest{sblr::EncodeSblrEnvelope(local_query), true});
-  Require(!local_query_admission.admitted &&
-              HasAdmissionDiagnostic(local_query_admission,
-                                     "SBLR.CLUSTER_MAPPING.UNAVAILABLE"),
-          "local query operation admitted as cluster query authority");
+  const auto canonical_probe =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION",
+          "FSE-P6-retired-raw-SBOP-proof");
+  const auto retired_canonical_sbop = server::AdmitServerSblrEnvelope(
+      server::ServerSblrAdmissionRequest{
+          sblr::EncodeSblrEnvelope(canonical_probe), true});
+  Require(!retired_canonical_sbop.admitted &&
+              HasAdmissionDiagnostic(retired_canonical_sbop,
+                                     "SBLR.OPERATION.NONCANONICAL"),
+          "exact SBOP bypassed the canonical container/SBEE admission chain");
 }
 
 void VerifyClusterProviderDiagnostics() {
@@ -424,6 +458,13 @@ void VerifyClusterProviderDiagnostics() {
           "public cluster provider enables local runtime execution");
   Require(!info.mutable_by_local_core,
           "public cluster provider enables local mutation");
+  if (no_cluster) {
+    Require(info.support_status == "not_enabled",
+            "no-cluster provider support status drift");
+  } else {
+    Require(info.compile_link_only && info.support_status == "compile_link_only",
+            "compile-link-stub provider support status drift");
+  }
 
   for (const auto operation_id :
        cluster_provider::RequiredClusterProviderOperationSet()) {

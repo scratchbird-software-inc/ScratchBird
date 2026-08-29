@@ -15,11 +15,224 @@ from pathlib import Path
 from ia01_package_process_e2e import ProofError, allocate_work, seed_database, stop, wait_path
 
 
+STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
+    "ddl-create-or-replace-srs": (
+        "CSC-TEST-002673", "DDL_CREATE_OR_REPLACE_SRS",
+        "engine.op.ddl_create_or_replace_srs",
+        "SBLR_DDL_CREATE_OR_REPLACE_SRS", 1615,
+    ),
+    "ddl-drop-srs": (
+        "CSC-TEST-002677", "DDL_DROP_SRS", "engine.op.ddl_drop_srs",
+        "SBLR_DDL_DROP_SRS", 1616,
+    ),
+    "ddl-create-rewrite-rule": (
+        "CSC-TEST-002681", "DDL_CREATE_REWRITE_RULE",
+        "engine.op.ddl_create_rewrite_rule", "SBLR_DDL_CREATE_REWRITE_RULE",
+        1617,
+    ),
+    "ddl-alter-rewrite-rule": (
+        "CSC-TEST-002685", "DDL_ALTER_REWRITE_RULE",
+        "engine.op.ddl_alter_rewrite_rule", "SBLR_DDL_ALTER_REWRITE_RULE",
+        1618,
+    ),
+    "ddl-drop-rewrite-rule": (
+        "CSC-TEST-002689", "DDL_DROP_REWRITE_RULE",
+        "engine.op.ddl_drop_rewrite_rule", "SBLR_DDL_DROP_REWRITE_RULE",
+        1619,
+    ),
+    "ddl-validate-constraint": (
+        "CSC-TEST-002693", "DDL_VALIDATE_CONSTRAINT",
+        "engine.op.ddl_validate_constraint", "SBLR_DDL_VALIDATE_CONSTRAINT",
+        1620,
+    ),
+    "ddl-create-macro": (
+        "CSC-TEST-002745", "DDL_CREATE_MACRO",
+        "engine.op.ddl_create_macro", "SBLR_DDL_CREATE_MACRO", 1633,
+    ),
+    "ddl-alter-aggregate": (
+        "CSC-TEST-002717", "DDL_ALTER_AGGREGATE",
+        "engine.op.ddl_alter_aggregate", "SBLR_DDL_ALTER_AGGREGATE", 1626,
+    ),
+    "ddl-drop-aggregate": (
+        "CSC-TEST-002721", "DDL_DROP_AGGREGATE",
+        "engine.op.ddl_drop_aggregate", "SBLR_DDL_DROP_AGGREGATE", 1627,
+    ),
+    "ddl-purge-system-history": (
+        "CSC-TEST-002725", "DDL_PURGE_SYSTEM_HISTORY",
+        "engine.op.ddl_purge_system_history", "SBLR_DDL_PURGE_SYSTEM_HISTORY",
+        1628,
+    ),
+    "ddl-set-index-optimizer-eligibility": (
+        "CSC-TEST-002729", "DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY",
+        "engine.op.ddl_set_index_optimizer_eligibility",
+        "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY", 1629,
+    ),
+    "ddl-set-table-type-enforcement": (
+        "CSC-TEST-002733", "DDL_SET_TABLE_TYPE_ENFORCEMENT",
+        "engine.op.ddl_set_table_type_enforcement",
+        "SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT", 1630,
+    ),
+    "database-serialize-logical-snapshot": (
+        "CSC-TEST-002737", "DATABASE_SERIALIZE_LOGICAL_SNAPSHOT",
+        "engine.op.database_serialize_logical_snapshot",
+        "SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT", 1631,
+    ),
+    "database-deserialize-logical-snapshot": (
+        "CSC-TEST-002741", "DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT",
+        "engine.op.database_deserialize_logical_snapshot",
+        "SBLR_DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT", 1632,
+    ),
+    "ddl-drop-macro": (
+        "CSC-TEST-002749", "DDL_DROP_MACRO",
+        "engine.op.ddl_drop_macro", "SBLR_DDL_DROP_MACRO", 1634,
+    ),
+    "admin-register-external-relation-resolver": (
+        "CSC-TEST-002753", "ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER",
+        "engine.op.admin_register_external_relation_resolver",
+        "SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER", 1635,
+    ),
+    "admin-unregister-external-relation-resolver": (
+        "CSC-TEST-002757", "ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER",
+        "engine.op.admin_unregister_external_relation_resolver",
+        "SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER", 1636,
+    ),
+    "security-alter-privilege-template": (
+        "CSC-TEST-002701", "SECURITY_ALTER_PRIVILEGE_TEMPLATE",
+        "engine.op.security_alter_privilege_template",
+        "SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE", 1622,
+    ),
+    "security-drop-privilege-template": (
+        "CSC-TEST-002705", "SECURITY_DROP_PRIVILEGE_TEMPLATE",
+        "engine.op.security_drop_privilege_template",
+        "SBLR_SECURITY_DROP_PRIVILEGE_TEMPLATE", 1623,
+    ),
+    "database-create-template-clone": (
+        "CSC-TEST-002709", "DATABASE_CREATE_TEMPLATE_CLONE",
+        "engine.op.database_create_template_clone",
+        "SBLR_DATABASE_CREATE_TEMPLATE_CLONE", 1624,
+    ),
+    "ddl-create-aggregate": (
+        "CSC-TEST-002713", "DDL_CREATE_AGGREGATE",
+        "engine.op.ddl_create_aggregate", "SBLR_DDL_CREATE_AGGREGATE",
+        1625,
+    ),
+    "ddl-create-dictionary": (
+        "CSC-TEST-002761", "DDL_CREATE_DICTIONARY",
+        "engine.op.ddl_create_dictionary", "SBLR_DDL_CREATE_DICTIONARY",
+        1637,
+    ),
+    "ddl-drop-dictionary": (
+        "CSC-TEST-002769", "DDL_DROP_DICTIONARY",
+        "engine.op.ddl_drop_dictionary", "SBLR_DDL_DROP_DICTIONARY", 1638,
+    ),
+    "ddl-alter-dictionary": (
+        "CSC-TEST-002765", "DDL_ALTER_DICTIONARY",
+        "engine.op.ddl_alter_dictionary", "SBLR_DDL_ALTER_DICTIONARY",
+        1639,
+    ),
+    "ddl-create-continuous-view": (
+        "CSC-TEST-002773", "DDL_CREATE_CONTINUOUS_VIEW",
+        "engine.op.ddl_create_continuous_view",
+        "SBLR_DDL_CREATE_CONTINUOUS_VIEW", 1640,
+    ),
+    "ddl-alter-continuous-view": (
+        "CSC-TEST-002777", "DDL_ALTER_CONTINUOUS_VIEW",
+        "engine.op.ddl_alter_continuous_view",
+        "SBLR_DDL_ALTER_CONTINUOUS_VIEW", 1641,
+    ),
+    "ddl-drop-continuous-view": (
+        "CSC-TEST-002781", "DDL_DROP_CONTINUOUS_VIEW",
+        "engine.op.ddl_drop_continuous_view",
+        "SBLR_DDL_DROP_CONTINUOUS_VIEW", 1642,
+    ),
+    "dml-async-insert-submit": (
+        "CSC-TEST-002785", "DML_ASYNC_INSERT_SUBMIT",
+        "engine.op.dml_async_insert_submit",
+        "SBLR_DML_ASYNC_INSERT_SUBMIT", 1643,
+    ),
+    "dml-async-insert-status": (
+        "CSC-TEST-002789", "DML_ASYNC_INSERT_STATUS",
+        "engine.op.dml_async_insert_status",
+        "SBLR_DML_ASYNC_INSERT_STATUS", 1644,
+    ),
+    "dml-async-insert-cancel": (
+        "CSC-TEST-002793", "DML_ASYNC_INSERT_CANCEL",
+        "engine.op.dml_async_insert_cancel",
+        "SBLR_DML_ASYNC_INSERT_CANCEL", 1645,
+    ),
+    "dml-conditional-mutate": (
+        "CSC-TEST-002797", "DML_CONDITIONAL_MUTATE",
+        "engine.op.dml_conditional_mutate",
+        "SBLR_DML_CONDITIONAL_MUTATE", 1646,
+    ),
+    "dml-timeseries-schema-write": (
+        "CSC-TEST-002805", "DML_TIMESERIES_SCHEMA_WRITE",
+        "engine.op.dml_timeseries_schema_write",
+        "SBLR_DML_TIMESERIES_SCHEMA_WRITE", 1648,
+    ),
+    "ddl-timeseries-series-cardinality-policy": (
+        "CSC-TEST-002809", "DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY",
+        "engine.op.ddl_set_timeseries_series_cardinality_policy",
+        "SBLR_DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY", 1649,
+    ),
+    "ddl-create-timeseries-value-cache": (
+        "CSC-TEST-002813", "DDL_CREATE_TIMESERIES_VALUE_CACHE",
+        "engine.op.ddl_create_timeseries_value_cache",
+        "SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE", 1650,
+    ),
+    "ddl-alter-timeseries-value-cache": (
+        "CSC-TEST-002817", "DDL_ALTER_TIMESERIES_VALUE_CACHE",
+        "engine.op.ddl_alter_timeseries_value_cache",
+        "SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE", 1651,
+    ),
+    "ddl-create-synonym": (
+        "CSC-TEST-002941", "DDL_CREATE_SYNONYM",
+        "engine.op.ddl_create_synonym", "SBLR_DDL_CREATE_SYNONYM", 1574,
+    ),
+    "ddl-create-foreign-table": (
+        "CSC-TEST-002949", "DDL_CREATE_FOREIGN_TABLE",
+        "engine.op.ddl_create_foreign_table",
+        "SBLR_DDL_CREATE_FOREIGN_TABLE", 1576,
+    ),
+    "ddl-create-fdw": (
+        "CSC-TEST-002957", "DDL_CREATE_FDW", "engine.op.ddl_create_fdw",
+        "SBLR_DDL_CREATE_FDW", 1578,
+    ),
+    "ddl-drop-fdw": (
+        "CSC-TEST-002961", "DDL_DROP_FDW", "engine.op.ddl_drop_fdw",
+        "SBLR_DDL_DROP_FDW", 1579,
+    ),
+    "ddl-drop-foreign-table": (
+        "CSC-TEST-002953", "DDL_DROP_FOREIGN_TABLE",
+        "engine.op.ddl_drop_foreign_table", "SBLR_DDL_DROP_FOREIGN_TABLE",
+        1577,
+    ),
+}
+
+PRE_CONTEXT_COMMAND_REFUSALS = {
+    "stmt-prepare": (
+        "CSC-TEST-003573", "STMT_PREPARE",
+        (
+            "engine.op.stmt_prepare",
+            "statement.prepare",
+            "session.prepare_statement",
+            "SBLR_STMT_PREPARE",
+            "SBLR_SESSION_PREPARE_STATEMENT",
+            "opcode_code=4608",
+            "stmt_prepare_descriptor",
+            "stmt_prepare_result",
+            "observability.show_version",
+            "SBLR_OBSERVABILITY_SHOW_VERSION",
+        ),
+    ),
+}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
     parser.add_argument("--client", required=True)
-    parser.add_argument("--operation", choices=("show-version", "show-wait-events", "show-object-detail", "source-map", "error-vector", "txn-begin", "txn-commit", "txn-rollback", "txn-savepoint", "txn-release-savepoint", "psql-autonomous-frame", "transaction-reservation-release", "temporary-instance-cleanup", "cursor-open", "cursor-fetch", "cursor-close", "read-by-key", "read-range", "read-stream", "result-set-pass", "access-cursor-open", "access-cursor-fetch", "access-cursor-close", "insert", "update", "delete", "merge", "table-truncate", "table-analyze", "bulk-import-stream", "bulk-export-stream", "statement-batch", "atomic-cas", "atomic-rmw", "advisory-lock", "advisory-lock-release", "function-call", "operator-call", "cast", "compare", "domain-operation", "udr-invoke", "procedure-invoke", "function-invoke", "aggregate-invoke", "sequence-nextval", "sequence-currval", "sequence-setval", "query-numeric", "advanced-datatype-family", "project", "aggregate", "group", "sort", "limit", "window", "return-result-set", "kv-structured-read", "kv-structured-mutate", "kv-structured-scan", "kv-structured-stream-read", "kv-structured-stream-append", "kv-structured-timeseries", "system-config-set", "ddl-create-domain", "ddl-alter-domain", "ddl-create-view", "ddl-alter-view", "ddl-drop-view", "ddl-create-trigger", "ddl-create-schema", "ddl-create-table", "ddl-create-index", "ddl-drop-index"),
+    parser.add_argument("--operation", choices=("show-version", "show-wait-events", "show-object-detail", "source-map", "error-vector", "txn-begin", "txn-commit", "txn-rollback", "txn-rollback-to-savepoint", "txn-savepoint", "txn-release-savepoint", "psql-autonomous-frame", "transaction-reservation-release", "temporary-instance-cleanup", "cursor-open", "cursor-fetch", "cursor-close", "read-by-key", "read-range", "read-stream", "result-set-pass", "access-cursor-open", "access-cursor-fetch", "access-cursor-close", "insert", "update", "delete", "merge", "table-truncate", "table-analyze", "bulk-import-stream", "bulk-export-stream", "statement-batch", "atomic-cas", "atomic-rmw", "advisory-lock", "advisory-lock-release", "function-call", "operator-call", "cast", "compare", "domain-operation", "udr-invoke", "procedure-invoke", "function-invoke", "aggregate-invoke", "sequence-nextval", "sequence-currval", "sequence-setval", "query-numeric", "advanced-datatype-family", "project", "aggregate", "group", "sort", "limit", "window", "return-result-set", "kv-structured-read", "kv-structured-mutate", "kv-structured-scan", "kv-structured-stream-read", "kv-structured-stream-append", "kv-structured-timeseries", "system-config-set", "ddl-create-domain", "ddl-alter-domain", "ddl-create-view", "ddl-alter-view", "ddl-drop-view", "ddl-create-trigger", "ddl-create-schema", "ddl-create-table", "ddl-create-index", "ddl-drop-index"),
                         default="source-map")
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "system-config-get", "system-config-reset", "ddl-create-rule", "ddl-drop-rule", "ddl-create-publication", "ddl-alter-publication", "ddl-drop-publication", "ddl-create-subscription", "ddl-alter-subscription", "ddl-drop-subscription", "ddl-create-operator", "ddl-drop-operator", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-trigger", "ddl-refresh-materialized-view", "ddl-create-materialized-view", "ddl-drop-materialized-view", "ddl-drop-package", "ddl-drop-synonym", "ddl-drop-foreign-table", "ddl-alter-package", "ddl-alter-sequence", "ddl-drop-sequence", "ddl-create-type", "ddl-alter-type", "ddl-drop-type", "ddl-drop-table", "ddl-create-table-as-query-with-data", "ddl-create-table-as-query-with-no-data", "ddl-create-sequence"))
@@ -67,10 +280,50 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "alter-gpu-profile-disable"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "filespace-create"))
     parser.add_argument("--work-dir", required=True)
+    parser.add_argument("--cluster-provider-proof")
+    parser.add_argument("--expected-cluster-provider-mode")
+    parser.add_argument("--expected-cluster-provider-diagnostic")
     args = parser.parse_args()
     work = allocate_work(Path(args.work_dir))
     server = None
     try:
+        if args.cluster_provider_proof:
+            if not (
+                args.expected_cluster_provider_mode
+                and args.expected_cluster_provider_diagnostic
+            ):
+                raise ProofError(
+                    "cluster provider proof requires exact mode and diagnostic expectations"
+                )
+            proof = subprocess.run(
+                [
+                    args.cluster_provider_proof,
+                    args.expected_cluster_provider_mode,
+                    args.expected_cluster_provider_diagnostic,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            expected_support = (
+                "compile_link_only"
+                if args.expected_cluster_provider_mode == "compile_link_stub"
+                else "not_enabled"
+            )
+            expected_markers = (
+                "cluster_provider_proof=passed",
+                f"cluster_provider_mode={args.expected_cluster_provider_mode}",
+                f"cluster_provider_support={expected_support}",
+                "cluster_provider_diagnostic="
+                f"{args.expected_cluster_provider_diagnostic}",
+            )
+            if proof.returncode != 0 or not all(
+                marker in proof.stdout for marker in expected_markers
+            ):
+                raise ProofError(
+                    "configured cluster provider proof failed: "
+                    f"{proof.stdout}{proof.stderr}"
+                )
         database = work / "source_map.sbdb"
         endpoint = work / "sc" / "s.sock"
         evidence = seed_database(Path(args.server), database)
@@ -88,11 +341,133 @@ def main() -> int:
             stderr=(work / "server.err").open("wb"), env=env,
         )
         wait_path(endpoint)
+        catalog_event_path = Path(f"{database}.sb.catalog_object_events")
+        catalog_event_before = None
+        executor_availability_before = None
+        executor_availability_pattern = (
+            f"{database.name}.sb.sblr_executor_availability_registry.v1*"
+        )
+
+        def executor_availability_snapshot() -> dict[str, bytes]:
+            return {
+                path.name: path.read_bytes()
+                for path in sorted(database.parent.glob(
+                    executor_availability_pattern
+                ))
+                if path.is_file()
+            }
+
+        if args.operation in STATIC_EXECUTOR_EVIDENCE_REFUSALS:
+            if not catalog_event_path.exists():
+                raise ProofError(
+                    "canonical catalog-object event journal is unavailable"
+                )
+            bootstrap = subprocess.run(
+                [
+                    args.client,
+                    f"unix:{endpoint}",
+                    str(database),
+                    "alice",
+                    evidence,
+                    "show-version",
+                    "sbsql-sblr-static-refusal-bootstrap",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if bootstrap.returncode != 0 or bootstrap.stderr:
+                raise ProofError(
+                    "neutral authenticated executor-availability bootstrap "
+                    f"failed: {bootstrap.stdout}{bootstrap.stderr}"
+                )
+            for trace_path in (server_trace, dispatch_trace):
+                if trace_path.exists():
+                    trace_path.write_bytes(b"")
+            catalog_event_before = catalog_event_path.read_bytes()
+            executor_availability_before = executor_availability_snapshot()
         command = [args.client, f"unix:{endpoint}", str(database), "alice",
                    evidence, args.operation, f"sbsql-sblr-{args.operation}-e2e-first"]
         first = subprocess.run(command, capture_output=True, text=True, timeout=30)
         if first.returncode != 0:
             raise ProofError(f"explicit source-map operation failed: {first.stdout}{first.stderr}")
+        if args.operation == "ddl-create-index":
+            expected_refusal = (
+                "CSC-TEST-002601 DDL_CREATE_INDEX "
+                "deterministic_refusal=SBSQL.IMPL.NOT_AVAILABLE "
+                "no_canonical_execution=true\n"
+            )
+            if first.stdout != expected_refusal or first.stderr:
+                raise ProofError(
+                    "CREATE INDEX did not return the exact deterministic "
+                    "SBSQL.IMPL.NOT_AVAILABLE refusal"
+                )
+        elif args.operation in (
+            "ddl-create-type",
+            "ddl-alter-type",
+            "ddl-drop-type",
+        ):
+            test_id, operation_label = {
+                "ddl-create-type": ("CSC-TEST-002673", "DDL_CREATE_TYPE"),
+                "ddl-alter-type": ("CSC-TEST-002675", "DDL_ALTER_TYPE"),
+                "ddl-drop-type": ("CSC-TEST-002677", "DDL_DROP_TYPE"),
+            }[args.operation]
+            expected_refusal = (
+                f"{test_id} {operation_label} "
+                "deterministic_refusal=SBSQL.IMPL.NOT_AVAILABLE "
+                "no_canonical_execution=true\n"
+            )
+            if first.stdout != expected_refusal or first.stderr:
+                raise ProofError(
+                    f"{operation_label} did not return the exact deterministic "
+                    "SBSQL.IMPL.NOT_AVAILABLE refusal"
+                )
+        elif args.operation in PRE_CONTEXT_COMMAND_REFUSALS:
+            test_id, operation_label, _ = (
+                PRE_CONTEXT_COMMAND_REFUSALS[args.operation]
+            )
+            expected_refusal = (
+                f"{test_id} {operation_label} "
+                "deterministic_refusal=SBSQL.IMPL.NOT_AVAILABLE "
+                "no_statement_context=true no_canonical_execution=true "
+                "no_result_publication=true\n"
+            )
+            if first.stdout != expected_refusal or first.stderr:
+                raise ProofError(
+                    f"{operation_label} did not return the exact pre-context "
+                    "SBSQL.IMPL.NOT_AVAILABLE refusal"
+                )
+        elif args.operation in (
+            "ddl-alter-subscription",
+            "ddl-drop-subscription",
+        ):
+            expected_refusal = (
+                "CSC-TEST-003993 DDL_ALTER_SUBSCRIPTION "
+                "deterministic_cluster_refusal\n"
+                if args.operation == "ddl-alter-subscription"
+                else "CSC-TEST-003997 DDL_DROP_SUBSCRIPTION "
+                "deterministic_cluster_refusal\n"
+            )
+            if first.stdout != expected_refusal or first.stderr:
+                raise ProofError(
+                    "subscription cluster refusal did not return its exact "
+                    "single-diagnostic/no-result proof"
+                )
+        elif args.operation in STATIC_EXECUTOR_EVIDENCE_REFUSALS:
+            test_id, operation_label, _, _, _ = (
+                STATIC_EXECUTOR_EVIDENCE_REFUSALS[args.operation]
+            )
+            expected_refusal = (
+                f"{test_id} {operation_label} "
+                "deterministic_refusal="
+                "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING "
+                "no_engine_dispatch=true no_result_publication=true\n"
+            )
+            if first.stdout != expected_refusal or first.stderr:
+                raise ProofError(
+                    f"{operation_label} did not return the exact static "
+                    "executor-evidence refusal"
+                )
         audit_paths = (server_trace, dispatch_trace,
                        work / "sc" / "sb_server.audit.jsonl")
         audit = "\n".join(p.read_text(encoding="utf-8", errors="replace")
@@ -318,11 +693,9 @@ def main() -> int:
             expected = ("executor_id=engine.op.ddl_drop_sequence", "opcode=SBLR_DDL_DROP_SEQUENCE", "opcode_code=1565", "operand_descriptor_id=drop_sequence_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "executor_availability_generation=")
         elif args.operation == "ddl-create-type":
             expected = ()
-        elif args.operation == "ddl-alter-rewrite-rule":
-            expected = ("executor_id=engine.op.ddl_alter_rewrite_rule", "opcode=SBLR_DDL_ALTER_REWRITE_RULE", "opcode_code=1618", "operand_descriptor_id=rewrite_rule_alter_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_alter_rewrite_rule_result_sha256=", "executor_availability_generation=")
-        elif args.operation == "ddl-drop-rewrite-rule":
-            expected = ("executor_id=engine.op.ddl_drop_rewrite_rule", "opcode=SBLR_DDL_DROP_REWRITE_RULE", "opcode_code=1619", "operand_descriptor_id=rewrite_rule_drop_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "executor_availability_generation=")
-        elif args.operation == "ddl-validate-constraint":
+        elif args.operation in PRE_CONTEXT_COMMAND_REFUSALS:
+            expected = ()
+        elif args.operation in STATIC_EXECUTOR_EVIDENCE_REFUSALS:
             expected = ()
         elif args.operation == "security-create-privilege-template":
             expected = ()
@@ -415,7 +788,7 @@ def main() -> int:
         elif args.operation == "ddl-create-table":
             expected = ("executor_id=engine.op.ddl_create_table", "opcode=SBLR_DDL_CREATE_TABLE", "opcode_code=1537", "operand_descriptor_id=create_table_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_create_table_result_sha256=", "executor_availability_generation=")
         elif args.operation == "ddl-create-index":
-            expected = ("executor_id=engine.op.ddl_create_index", "opcode=SBLR_DDL_CREATE_INDEX", "opcode_code=1540", "operand_descriptor_id=create_index_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_create_index_result_sha256=", "executor_availability_generation=")
+            expected = ()
         elif args.operation == "ddl-drop-index":
             expected = ("executor_id=engine.op.ddl_drop_index", "opcode=SBLR_DDL_DROP_INDEX", "opcode_code=1541", "operand_descriptor_id=drop_index_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_drop_index_result_sha256=", "executor_availability_generation=")
         else:
@@ -425,7 +798,17 @@ def main() -> int:
                         "result_descriptor_version=1", "transaction_handle_sha256=",
                         "executor_availability_generation=")
         required_markers = (*expected, "parent_success_barrier=passed")
-        if args.operation in ("filespace-create", "ddl-create-subscription", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"):
+        if args.operation == "ddl-create-index" or args.operation in (
+            "ddl-create-type",
+            "ddl-alter-type",
+            "ddl-drop-type",
+        ):
+            required_markers = ()
+        if args.operation in STATIC_EXECUTOR_EVIDENCE_REFUSALS:
+            required_markers = ()
+        if args.operation in PRE_CONTEXT_COMMAND_REFUSALS:
+            required_markers = ()
+        if args.operation in ("filespace-create", "ddl-create-subscription", "ddl-alter-subscription", "ddl-drop-subscription", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"):
             # This is a standalone cluster-gated refusal proof.  No local
             # executor receipt exists, so the transaction success barrier is
             # intentionally not required for this refusal-only route.
@@ -438,6 +821,194 @@ def main() -> int:
         verified = subprocess.run(second, capture_output=True, text=True, timeout=30)
         if verified.returncode != 0 or (verified.stdout != first.stdout and args.operation != "ddl-drop-operator"):
             raise ProofError("independent authenticated process/receipt verification failed")
+        if args.operation in PRE_CONTEXT_COMMAND_REFUSALS:
+            if verified.stderr:
+                raise ProofError(
+                    "independent pre-context command refusal emitted "
+                    "unexpected stderr"
+                )
+            nonempty_phase_traces = tuple(
+                str(path)
+                for path in (server_trace, dispatch_trace)
+                if path.exists() and path.stat().st_size != 0
+            )
+            if nonempty_phase_traces:
+                raise ProofError(
+                    "pre-context command refusal reached statement-context, "
+                    "executor, result, or publication tracing: "
+                    f"{', '.join(nonempty_phase_traces)}"
+                )
+            _, operation_label, operation_markers = (
+                PRE_CONTEXT_COMMAND_REFUSALS[args.operation]
+            )
+            final_audit = "\n".join(
+                path.read_text(encoding="utf-8", errors="replace")
+                for path in audit_paths
+                if path.exists()
+            )
+            forbidden_markers = (
+                *operation_markers,
+                "parent_success_barrier=passed",
+                "result_descriptor_id=",
+                "result_descriptor_version=",
+                "executor_availability_generation=",
+                "_result_sha256=",
+            )
+            leaked_markers = tuple(
+                marker for marker in forbidden_markers
+                if marker in final_audit
+            )
+            if leaked_markers:
+                raise ProofError(
+                    f"{operation_label} refusal leaked statement-context, "
+                    "canonical executor, result, or publication evidence: "
+                    f"{', '.join(leaked_markers)}"
+                )
+        if args.operation in STATIC_EXECUTOR_EVIDENCE_REFUSALS:
+            if verified.stderr:
+                raise ProofError(
+                    "independent static executor-evidence refusal emitted "
+                    "unexpected stderr"
+                )
+            _, operation_label, operation_id, opcode, opcode_code = (
+                STATIC_EXECUTOR_EVIDENCE_REFUSALS[args.operation]
+            )
+            dispatch_audit = (
+                dispatch_trace.read_text(encoding="utf-8", errors="replace")
+                if dispatch_trace.exists()
+                else ""
+            )
+            preflight_marker = (
+                f"preflight_observe op={operation_id} opcode={opcode} "
+                f"code={opcode_code}"
+            )
+            dispatch_lines = tuple(
+                line for line in dispatch_audit.splitlines() if line
+            )
+            if dispatch_lines != (preflight_marker, preflight_marker):
+                raise ProofError(
+                    f"{operation_label} did not produce exactly two "
+                    "authenticated canonical-SBLR static preflights"
+                )
+            server_dispatch_audit = (
+                server_trace.read_text(encoding="utf-8", errors="replace")
+                if server_trace.exists()
+                else ""
+            )
+            if server_dispatch_audit:
+                raise ProofError(
+                    f"{operation_label} refusal reached engine dispatch"
+                )
+            forbidden_markers = (
+                "parent_success_barrier=passed",
+                "result_descriptor_id=",
+                "result_descriptor_version=",
+                "executor_availability_generation=",
+                "_result_sha256=",
+                "layer=ddl_",
+            )
+            leaked_markers = tuple(
+                marker for marker in forbidden_markers
+                if marker in dispatch_audit
+            )
+            if leaked_markers:
+                raise ProofError(
+                    f"{operation_label} refusal leaked executor/result/"
+                    f"publication evidence: {', '.join(leaked_markers)}"
+                )
+            if catalog_event_before != catalog_event_path.read_bytes():
+                raise ProofError(
+                    f"{operation_label} refusal mutated the canonical "
+                    "catalog-object event journal"
+                )
+            executor_availability_after = executor_availability_snapshot()
+            if executor_availability_before != executor_availability_after:
+                changed_availability_paths = sorted(
+                    set(executor_availability_before or {}) |
+                    set(executor_availability_after)
+                )
+                raise ProofError(
+                    f"{operation_label} refusal mutated executor-availability "
+                    "state: " + ", ".join(changed_availability_paths)
+                )
+        if args.operation == "ddl-create-index":
+            if verified.stderr:
+                raise ProofError(
+                    "independent CREATE INDEX refusal emitted unexpected stderr"
+                )
+            nonempty_phase_traces = tuple(
+                str(path)
+                for path in (server_trace, dispatch_trace)
+                if path.exists() and path.stat().st_size != 0
+            )
+            if nonempty_phase_traces:
+                raise ProofError(
+                    "CREATE INDEX refusal reached executor/result/publication "
+                    f"tracing: {', '.join(nonempty_phase_traces)}"
+                )
+            final_audit = "\n".join(
+                path.read_text(encoding="utf-8", errors="replace")
+                for path in audit_paths
+                if path.exists()
+            )
+            forbidden_markers = (
+                "engine.op.ddl_create_index",
+                "SBLR_DDL_CREATE_INDEX",
+                "opcode_code=1540",
+                "create_index_descriptor",
+                "ddl_create_index_result_sha256=",
+            )
+            leaked_markers = tuple(
+                marker for marker in forbidden_markers if marker in final_audit
+            )
+            if leaked_markers:
+                raise ProofError(
+                    "CREATE INDEX refusal leaked canonical executor/result/"
+                    f"publication evidence: {', '.join(leaked_markers)}"
+                )
+        if args.operation in (
+            "ddl-create-type",
+            "ddl-alter-type",
+            "ddl-drop-type",
+        ):
+            if verified.stderr:
+                raise ProofError(
+                    "independent TYPE refusal emitted unexpected stderr"
+                )
+            nonempty_phase_traces = tuple(
+                str(path)
+                for path in (server_trace, dispatch_trace)
+                if path.exists() and path.stat().st_size != 0
+            )
+            if nonempty_phase_traces:
+                raise ProofError(
+                    "TYPE refusal reached statement-context/executor/result "
+                    f"tracing: {', '.join(nonempty_phase_traces)}"
+                )
+            final_audit = "\n".join(
+                path.read_text(encoding="utf-8", errors="replace")
+                for path in audit_paths
+                if path.exists()
+            )
+            forbidden_markers = (
+                "engine.op.ddl_create_type",
+                "engine.op.ddl_alter_type",
+                "engine.op.ddl_drop_type",
+                "SBLR_DDL_CREATE_TYPE",
+                "SBLR_DDL_ALTER_TYPE",
+                "SBLR_DDL_DROP_TYPE",
+                "create_type_descriptor",
+                "alter_type_descriptor",
+                "drop_type_descriptor",
+            )
+            leaked_markers = tuple(
+                marker for marker in forbidden_markers if marker in final_audit
+            )
+            if leaked_markers:
+                raise ProofError(
+                    "TYPE refusal leaked canonical executor/result/publication "
+                    f"evidence: {', '.join(leaked_markers)}"
+                )
         print(f"sbsql_sblr_alignment_ia01_{args.operation.replace('-', '_')}_process_e2e=passed work={work}")
         return 0
     except Exception as exc:  # noqa: BLE001

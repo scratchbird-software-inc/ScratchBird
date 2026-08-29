@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -31,6 +32,11 @@ struct SblrExpressionNodeTableCodecResultV1 {
   SblrExpressionNodeTableV1 table;
   std::vector<std::uint8_t> canonical_bytes;
 };
+
+inline constexpr std::size_t kSblrExpressionNodeTableMaximumBytesV1 =
+    610336;
+inline constexpr std::size_t
+    kSblrContextualComposedExpressionNodeTableMaximumBytesV2 = 642875;
 
 struct SblrExpressionNodeReferenceV1 {
   std::uint32_t occurrence_ordinal = 0;
@@ -153,6 +159,18 @@ inline constexpr bool IsAdmittedBigintLiteralDemandV1(
          !demand.nullable;
 }
 
+inline constexpr bool IsAdmittedExactDecimalLiteralDemandV1(
+    const SblrLiteralDemandV1& demand) {
+  return demand.lexical_class==2 && demand.context_class==1 &&
+         !demand.nullable;
+}
+
+inline constexpr bool IsAdmittedLiteralDemandV1(
+    const SblrLiteralDemandV1& demand) {
+  return IsAdmittedBigintLiteralDemandV1(demand) ||
+         IsAdmittedExactDecimalLiteralDemandV1(demand);
+}
+
 std::array<std::uint8_t, 32> ComputeSblrLiteralDescriptorProfileBindingV1(
     const SblrLiteralStatementDescriptorProfileV1& profile,
     std::uint64_t receipt_security_epoch,
@@ -166,6 +184,20 @@ DecodeSblrLiteralDescriptorProfileV1(const std::uint8_t* bytes,
 inline constexpr std::string_view kSblrLiteralInt64LeCodecId =
     "datatype.int64.le.v1";
 inline constexpr std::uint16_t kSblrLiteralInt64LeCodecVersion = 1;
+inline constexpr std::string_view kSblrLiteralExactDecimalCodecId =
+    "datatype.decimal.base1e9.le.v1";
+inline constexpr std::uint16_t kSblrLiteralExactDecimalCodecVersion = 1;
+inline constexpr std::size_t kSblrLiteralExactDecimalBytes = 24;
+
+struct SblrLiteralExactDecimalCodecResultV1 {
+  bool ok = false;
+  std::string diagnostic_id;
+  std::string detail;
+  std::uint8_t precision = 0;
+  std::uint8_t scale = 0;
+  std::string canonical_lexical;
+  std::array<std::uint8_t, kSblrLiteralExactDecimalBytes> canonical_bytes{};
+};
 
 struct SblrLiteralExecutorEvidenceV1 {
   std::string executor_id = "engine.op.literal";
@@ -189,6 +221,15 @@ std::optional<std::int64_t> DecodeSblrLiteralInt64LeV1(
     const std::uint8_t* bytes, std::size_t size);
 std::array<std::uint8_t, 8> EncodeSblrLiteralInt64LeV1(std::int64_t value);
 
+// Exact decimal literals use the manifest-admitted 24-byte base-1e9 codec.
+// The encoder validates and canonicalizes lexical input through sbl_numeric;
+// the decoder reconstructs the exact fixed-point spelling and requires a
+// canonical decode/re-encode identity. Neither API uses a binary float.
+SblrLiteralExactDecimalCodecResultV1 EncodeSblrLiteralExactDecimalV1(
+    std::string_view lexical);
+SblrLiteralExactDecimalCodecResultV1 DecodeSblrLiteralExactDecimalV1(
+    const std::uint8_t* bytes, std::size_t size);
+
 bool DecodeSblrExpressionNodeReferenceV1(
     const std::uint8_t* bytes, std::size_t size,
     SblrExpressionNodeReferenceV1* out);
@@ -197,6 +238,9 @@ bool ValidateSblrLiteralReferenceBijectionV1(
     const std::vector<SblrExpressionNodeReferenceV1>& references);
 
 SblrExpressionNodeTableCodecResultV1 DecodeSblrExpressionNodeTableV1(
+    const std::uint8_t* bytes, std::size_t size);
+SblrExpressionNodeTableCodecResultV1
+DecodeSblrContextualComposedExpressionNodeTableV2(
     const std::uint8_t* bytes, std::size_t size);
 std::vector<std::uint8_t> EncodeSblrExpressionNodeTableV1(
     const SblrExpressionNodeTableV1& table);

@@ -31,9 +31,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 import cdp_benchmark_fixture_support as support
+from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
 
 
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 class RouteBenchmarkError(RuntimeError):
     pass
 
@@ -90,6 +90,10 @@ class RouteContext:
             str(database),
             "--mode=embedded",
             "--sslmode=disable",
+            "-U",
+            "alice",
+            "-P",
+            PUBLIC_TEST_PASSWORD,
         ]
 
 
@@ -148,11 +152,6 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> None:
 def stop_route(route: RouteContext) -> None:
     for proc in reversed(route.processes):
         stop_process(proc)
-
-
-def auth_file(database: Path) -> None:
-    Path(str(database) + ".sb.local_password_auth").write_text(
-        f"alice\tlocal_password\t{VERIFIER}\n", encoding="utf-8")
 
 
 def quote_sql_path(path: Path) -> str:
@@ -316,8 +315,8 @@ LANES: tuple[LaneSpec, ...] = (
         operation="update",
         rows_input=5,
         rows_affected=1,
-        rows_returned=6,
-        semantic_lines=("20", "1", "3", "4", "5", "20"),
+        rows_returned=5,
+        semantic_lines=("1", "3", "4", "5", "20"),
         script_builder=update_script,
     ),
     LaneSpec(
@@ -337,6 +336,14 @@ LANES: tuple[LaneSpec, ...] = (
 def start_embedded(args: argparse.Namespace, work: Path) -> RouteContext:
     root = work / "e"
     root.mkdir(parents=True, exist_ok=True)
+    for lane in LANES:
+        seed_database(
+            database_seed=args.database_seed,
+            resource_seed_pack_root=args.resource_seed_pack_root,
+            database=root / f"{lane.lane_id}.sbdb",
+            evidence_root=root / "bootstrap",
+            fixture_label=lane.lane_id,
+        )
     return RouteContext(
         name="embedded",
         root=root,
@@ -353,13 +360,18 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> RouteContext:
     runtime = root / "sr"
     endpoint = control / "s.sock"
     root.mkdir(parents=True, exist_ok=True)
-    auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="local-ipc",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(control),
             "--runtime-dir",
@@ -373,7 +385,6 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> RouteContext:
         stderr=(root / "server.err").open("wb"),
     )
     wait_for_path(endpoint)
-    evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
     return RouteContext(
         name="ipc",
         root=root,
@@ -389,7 +400,7 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> RouteContext:
             "-U",
             "alice",
             "-P",
-            evidence,
+            PUBLIC_TEST_PASSWORD,
         ],
         processes=[server],
     )
@@ -405,13 +416,18 @@ def start_inet(args: argparse.Namespace, work: Path) -> RouteContext:
     endpoint = server_control / "s.sock"
     port = find_free_port()
     root.mkdir(parents=True, exist_ok=True)
-    auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="inet",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -446,7 +462,6 @@ def start_inet(args: argparse.Namespace, work: Path) -> RouteContext:
         stderr=(root / "listener.err").open("wb"),
     )
     wait_for_tcp(port)
-    evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
     return RouteContext(
         name="inet",
         root=root,
@@ -461,7 +476,7 @@ def start_inet(args: argparse.Namespace, work: Path) -> RouteContext:
             "-U",
             "alice",
             "-P",
-            evidence,
+            PUBLIC_TEST_PASSWORD,
         ],
         processes=[server, listener],
     )
@@ -733,6 +748,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--build-mode", default="unknown")
     args = parser.parse_args(argv[1:])

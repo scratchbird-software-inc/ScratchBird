@@ -8,6 +8,7 @@
 
 #include "ast_model.hpp"
 #include "bound_ast_model.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
@@ -168,29 +169,38 @@ bool ValidateRoute(const v3_sblr::CommandFamilySblrRoute& route) {
                   std::string("engine opcode is not implemented for ") + route.operation_id);
   }
 
-  const server::ServerSblrAdmissionRequest request{
-      v3_sblr::EncodeRouteForServerAdmission(route),
-      false};
-  const auto admission = server::AdmitServerSblrEnvelope(request);
-  ok &= Require(admission.admitted,
-                std::string("server rejected lowered route for ") + route.command_family);
-  if (!admission.admitted) {
-    for (const auto& diagnostic : admission.diagnostics) {
-      std::cerr << route.command_family << ": " << diagnostic.code << " "
-                << diagnostic.message_key << "\n";
+  try {
+    const auto request =
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+            route.operation_id, route.sblr_opcode);
+    const auto admission = server::AdmitServerSblrEnvelope(request);
+    ok &= Require(admission.admitted,
+                  std::string("server rejected lowered route for ") +
+                      route.command_family);
+    if (!admission.admitted) {
+      for (const auto& diagnostic : admission.diagnostics) {
+        std::cerr << route.command_family << ": " << diagnostic.code << " "
+                  << diagnostic.message_key << "\n";
+      }
+    } else {
+      ok &= Require(admission.operation_family == route.route_operation_family,
+                    "server admission family mismatch");
+      ok &= Require(admission.operation_id == route.operation_id,
+                    "server admission operation id mismatch");
     }
-  } else {
-    ok &= Require(admission.operation_family == route.route_operation_family,
-                  "server admission family mismatch");
-    ok &= Require(admission.operation_id == route.operation_id,
-                  "server admission operation id mismatch");
+  } catch (const std::exception& error) {
+    ok &= Require(false, error.what());
   }
 
   auto raw_sql_payload = v3_sblr::EncodeRouteForServerAdmission(route);
   raw_sql_payload += "sql_text=SELECT 1\n";
   const auto raw_sql_admission = server::AdmitServerSblrEnvelope({raw_sql_payload, false});
   ok &= Require(!raw_sql_admission.admitted,
-                "server admitted a lowered route carrying SQL text");
+                "server admitted a retired textual route carrying SQL text");
+  ok &= Require(!raw_sql_admission.diagnostics.empty() &&
+                    raw_sql_admission.diagnostics.front().code ==
+                        "SBLR.OPERATION.NONCANONICAL",
+                "retired textual route did not receive NONCANONICAL refusal");
   return ok;
 }
 

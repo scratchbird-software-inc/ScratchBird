@@ -20,11 +20,12 @@
   EngineRequestContext relation_descriptor_context = request.context;
   relation_descriptor_context.current_schema_uuid.canonical =
       target_schema_uuid;
-  const auto relation_descriptor_ready = EnsureMgaRelationStorageDescriptor(
-      relation_descriptor_context,
-      created_table,
-      relation_descriptor_indexes,
-      &relation_descriptor);
+  const auto relation_descriptor_ready =
+      AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+          relation_descriptor_context,
+          created_table,
+          relation_descriptor_indexes,
+          &relation_descriptor);
   if (relation_descriptor_ready.error) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(
         request.context,

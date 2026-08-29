@@ -7,15 +7,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
+#include "dml/import_api.hpp"
 #include "lowering/lowering.hpp"
 #include "memory.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_executor_availability_registry.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -53,6 +57,11 @@ constexpr std::string_view kBoundedWhereEqualitySelectSql =
 constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000002130";
 constexpr std::string_view kColumnIdUuid = "019f0000-0000-7000-8000-000000002131";
 constexpr std::string_view kColumnNameUuid = "019f0000-0000-7000-8000-000000002132";
+// The authenticated SBPS/public-ABI row, full IPEV, and no-query-handle leg is
+// exhaustively owned by this adjacent non-QOW target. This executable proves
+// its own parser surface and exact typed engine-dispatch leg.
+constexpr std::string_view kPlanImportPublicAbiProofTarget =
+    "sbsql_sblr_alignment_plan_import_rows_sbps_coordination";
 
 api::EngineRequestContext g_engine_context;
 bool g_engine_context_ready = false;
@@ -976,9 +985,26 @@ api::EngineRequestContext EngineContextForDatabase(const std::string& database_u
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:DML_ROUTE_TEST");
   return context;
+}
+
+void ApplyRegisteredFixtureEnvelopeIdentity(
+    sblr::SblrOperationEnvelope* envelope) {
+  Require(envelope != nullptr, "fixture envelope pointer was null");
+  const auto* operation = sblr::LookupSblrOperation(envelope->operation_id);
+  Require(operation != nullptr && operation->code != 0,
+          "fixture operation lacked a registered numeric identity");
+  envelope->opcode = operation->opcode;
+  envelope->opcode_code = operation->code;
+  envelope->parser_package_uuid = std::string(kRelatedUuid);
+  envelope->registry_snapshot_uuid = std::string(kThirdRelationUuid);
+  envelope->parser_resolved_names_to_uuids = true;
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::string& database_uuid) {
@@ -986,6 +1012,7 @@ api::EngineRequestContext BeginEngineTransaction(const std::string& database_uui
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
                                          "SBLR_TRANSACTION_BEGIN",
                                          "trace.dml.exact_route.transaction.begin");
+  ApplyRegisteredFixtureEnvelopeIdentity(&envelope);
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
@@ -1052,6 +1079,7 @@ void PrepareEngineDispatchContext() {
   auto schema_envelope = sblr::MakeSblrEnvelope("ddl.create_schema",
                                                 "SBLR_DDL_CREATE_SCHEMA",
                                                 "trace.dml.exact_route.seed_schema");
+  ApplyRegisteredFixtureEnvelopeIdentity(&schema_envelope);
   schema_envelope.requires_security_context = true;
   schema_envelope.requires_transaction_context = true;
   schema_envelope.contains_sql_text = false;
@@ -1074,6 +1102,7 @@ void PrepareEngineDispatchContext() {
   auto envelope = sblr::MakeSblrEnvelope("ddl.create_table",
                                          "SBLR_DDL_CREATE_TABLE",
                                          "trace.dml.exact_route.seed_table");
+  ApplyRegisteredFixtureEnvelopeIdentity(&envelope);
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;
@@ -1231,6 +1260,25 @@ void RequireWindowClauseGrammarRegistryEvidence(const WindowClauseGrammarEvidenc
           WindowClauseEvidenceMessage(row, "registry", "validation fixture id mismatch"));
 }
 
+void RequirePlanImportParserHandoff(const SblrEnvelope& envelope,
+                                    std::string_view detail) {
+  Require(envelope.operation_id == "dml.plan_import_rows" &&
+              envelope.sblr_opcode == "SBLR_DML_PLAN_IMPORT_ROWS",
+          std::string(detail) + ": parser operation identity drifted");
+  const auto* operation = sblr::LookupSblrOperation("dml.plan_import_rows");
+  Require(operation != nullptr && operation->code == 793 &&
+              operation->operation_id == "dml.plan_import_rows" &&
+              operation->opcode == "SBLR_DML_PLAN_IMPORT_ROWS" &&
+              operation->operand_contract == "import_rows_plan_descriptor" &&
+              operation->result_contract == "import_plan_result" &&
+              operation->executor_evidence_required &&
+              operation->executor_evidence_accepted,
+          std::string(detail) + ": exact 793/v1 registry handoff drifted");
+  Require(kPlanImportPublicAbiProofTarget ==
+              "sbsql_sblr_alignment_plan_import_rows_sbps_coordination",
+          std::string(detail) + ": public-ABI proof provenance drifted");
+}
+
 void RequireExactLowering(std::string_view sql,
                           std::string_view operation_family,
                           std::string_view operation_id,
@@ -1242,6 +1290,10 @@ void RequireExactLowering(std::string_view sql,
     resolved.push_back(std::string(kRelatedUuid));
   }
   const auto artifacts = RunPipeline(sql, resolved);
+  if (!artifacts.bound.bound) {
+    std::cerr << "binding failed for exact DML route SQL: " << sql << '\n';
+    PrintMessageSet(artifacts.bound.messages);
+  }
   Require(artifacts.bound.bound, "DML/query statement did not bind after UUID resolution");
   Require(artifacts.verifier.admitted, "DML/query SBLR verifier rejected exact route");
   Require(artifacts.envelope.operation_family == operation_family,
@@ -1307,8 +1359,14 @@ void RequireExactLowering(std::string_view sql,
   Require(!Contains(artifacts.envelope.payload, "\"sql_text\":true"),
           "DML/query envelope marked SQL text present");
 
+  if (operation_id == "dml.plan_import_rows") {
+    RequirePlanImportParserHandoff(artifacts.envelope,
+                                   "COPY/import parser handoff");
+    return;
+  }
+
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
     for (const auto& field : diagnostic.fields) {
@@ -1427,28 +1485,8 @@ void RequireCopySourceExactRouteEvidence() {
           EvidenceMessage(kBoundedCopySourceRow, "parser_bind_lower",
                           "COPY source embedded SQL text field"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
-  for (const auto& diagnostic : admission.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-    for (const auto& field : diagnostic.fields) {
-      std::cerr << field.key << '=' << field.value << '\n';
-    }
-  }
-  Require(admission.admitted,
-          EvidenceMessage(kBoundedCopySourceRow, "server_admission",
-                          "server admission rejected COPY source route"));
-  Require(admission.requires_public_abi_dispatch,
-          EvidenceMessage(kBoundedCopySourceRow, "server_admission",
-                          "server admission did not require public ABI dispatch"));
-  Require(admission.operation_id == "dml.plan_import_rows",
-          EvidenceMessage(kBoundedCopySourceRow, "server_admission",
-                          "server admission operation id mismatch"));
-  Require(admission.operation_family ==
-              ExpectedServerAdmissionFamily(admission.operation_id,
-                                            artifacts.envelope.operation_family),
-          EvidenceMessage(kBoundedCopySourceRow, "server_admission",
-                          "server admission operation family mismatch"));
+  RequirePlanImportParserHandoff(artifacts.envelope,
+                                 "COPY source parser handoff");
 }
 
 void RequireCopyFormatExactRouteEvidence() {
@@ -1547,28 +1585,8 @@ void RequireCopyFormatExactRouteEvidence() {
           EvidenceMessage(kBoundedCopyFormatRow, "parser_bind_lower",
                           "COPY format embedded SQL text field"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
-  for (const auto& diagnostic : admission.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-    for (const auto& field : diagnostic.fields) {
-      std::cerr << field.key << '=' << field.value << '\n';
-    }
-  }
-  Require(admission.admitted,
-          EvidenceMessage(kBoundedCopyFormatRow, "server_admission",
-                          "server admission rejected COPY format route"));
-  Require(admission.requires_public_abi_dispatch,
-          EvidenceMessage(kBoundedCopyFormatRow, "server_admission",
-                          "server admission did not require public ABI dispatch"));
-  Require(admission.operation_id == "dml.plan_import_rows",
-          EvidenceMessage(kBoundedCopyFormatRow, "server_admission",
-                          "server admission operation id mismatch"));
-  Require(admission.operation_family ==
-              ExpectedServerAdmissionFamily(admission.operation_id,
-                                            artifacts.envelope.operation_family),
-          EvidenceMessage(kBoundedCopyFormatRow, "server_admission",
-                          "server admission operation family mismatch"));
+  RequirePlanImportParserHandoff(artifacts.envelope,
+                                 "COPY format parser handoff");
 }
 
 void RequireCopyOptionsExactRouteEvidence() {
@@ -1679,28 +1697,8 @@ void RequireCopyOptionsExactRouteEvidence() {
           EvidenceMessage(kBoundedCopyOptionsRow, "parser_bind_lower",
                           "COPY options embedded SQL text field"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
-  for (const auto& diagnostic : admission.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-    for (const auto& field : diagnostic.fields) {
-      std::cerr << field.key << '=' << field.value << '\n';
-    }
-  }
-  Require(admission.admitted,
-          EvidenceMessage(kBoundedCopyOptionsRow, "server_admission",
-                          "server admission rejected COPY options route"));
-  Require(admission.requires_public_abi_dispatch,
-          EvidenceMessage(kBoundedCopyOptionsRow, "server_admission",
-                          "server admission did not require public ABI dispatch"));
-  Require(admission.operation_id == "dml.plan_import_rows",
-          EvidenceMessage(kBoundedCopyOptionsRow, "server_admission",
-                          "server admission operation id mismatch"));
-  Require(admission.operation_family ==
-              ExpectedServerAdmissionFamily(admission.operation_id,
-                                            artifacts.envelope.operation_family),
-          EvidenceMessage(kBoundedCopyOptionsRow, "server_admission",
-                          "server admission operation family mismatch"));
+  RequirePlanImportParserHandoff(artifacts.envelope,
+                                 "COPY options parser handoff");
 }
 
 void RequireCopyEndpointExactRouteEvidence() {
@@ -1802,28 +1800,8 @@ void RequireCopyEndpointExactRouteEvidence() {
           EvidenceMessage(kBoundedCopyEndpointRow, "parser_bind_lower",
                           "COPY endpoint embedded SQL text field"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
-  for (const auto& diagnostic : admission.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-    for (const auto& field : diagnostic.fields) {
-      std::cerr << field.key << '=' << field.value << '\n';
-    }
-  }
-  Require(admission.admitted,
-          EvidenceMessage(kBoundedCopyEndpointRow, "server_admission",
-                          "server admission rejected COPY endpoint route"));
-  Require(admission.requires_public_abi_dispatch,
-          EvidenceMessage(kBoundedCopyEndpointRow, "server_admission",
-                          "server admission did not require public ABI dispatch"));
-  Require(admission.operation_id == "dml.plan_import_rows",
-          EvidenceMessage(kBoundedCopyEndpointRow, "server_admission",
-                          "server admission operation id mismatch"));
-  Require(admission.operation_family ==
-              ExpectedServerAdmissionFamily(admission.operation_id,
-                                            artifacts.envelope.operation_family),
-          EvidenceMessage(kBoundedCopyEndpointRow, "server_admission",
-                          "server admission operation family mismatch"));
+  RequirePlanImportParserHandoff(artifacts.envelope,
+                                 "COPY endpoint parser handoff");
 }
 
 api::EngineRequestContext EngineContext() {
@@ -1884,7 +1862,269 @@ bool ApiDiagnosticContains(const api::EngineApiResult& result, std::string_view 
   return false;
 }
 
+std::string PlanFixtureUuid(std::uint64_t salt) {
+  const auto generated = uuid::GenerateEngineIdentityV7(
+      UuidKind::object, 1779821700000ull + salt);
+  Require(generated.ok(), "plan-import fixture UUID generation failed");
+  return uuid::UuidToString(generated.value.value);
+}
+
+api::EngineRequestContext AttachPlanStatementAuthority(
+    api::EngineRequestContext context) {
+  const auto salt = context.local_transaction_id * 32;
+  context.statement_uuid.canonical = PlanFixtureUuid(salt + 1);
+  context.statement_snapshot_uuid.canonical.clear();
+  api::EnginePublishStatementSnapshotRequest publish;
+  publish.context = context;
+  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
+  Require(snapshot.ok, "plan-import statement snapshot publication failed");
+  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
+  context.statement_snapshot_generation =
+      snapshot.snapshot_vector.publication_inventory_next_local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  context.statement_receipt_uuid.canonical = PlanFixtureUuid(salt + 2);
+  context.statement_metadata_snapshot_uuid.canonical = PlanFixtureUuid(salt + 3);
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.statement_metadata_snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
+  context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
+  context.transaction_policy_snapshot_uuid.canonical = PlanFixtureUuid(salt + 4);
+  context.transaction_policy_snapshot_generation = 1;
+  context.resource_admission_uuid.canonical = PlanFixtureUuid(salt + 5);
+
+  auto& authorization = context.authorization_context;
+  authorization.present = true;
+  authorization.authority_uuid.canonical = PlanFixtureUuid(salt + 6);
+  authorization.security_context_generation = 1;
+  authorization.principal_uuid = context.principal_uuid;
+  authorization.security_epoch = context.security_epoch;
+  authorization.policy_epoch = 1;
+  authorization.catalog_generation_id = context.catalog_generation_id;
+  authorization.effective_subjects.clear();
+  authorization.effective_subjects.push_back(
+      {context.principal_uuid, "principal"});
+  authorization.grants.clear();
+  api::EngineMaterializedAuthorizationGrant grant;
+  grant.grant_uuid.canonical = PlanFixtureUuid(salt + 7);
+  grant.subject_uuid = context.principal_uuid;
+  grant.subject_kind = "principal";
+  grant.target_uuid.canonical = std::string(kTargetUuid);
+  grant.right = "INSERT";
+  grant.security_epoch = context.security_epoch;
+  authorization.grants.push_back(std::move(grant));
+  return context;
+}
+
+api::SblrExecutorAvailabilityRowIdentity PlanAvailabilityIdentity() {
+  return {api::kSblrDmlPlanImportRowsExecutorId,
+          api::kSblrDmlPlanImportRowsOpcodeCode,
+          api::kSblrDmlPlanImportRowsOpcodeVersion,
+          api::kSblrDmlPlanImportRowsOperandDescriptorId,
+          api::kSblrDmlPlanImportRowsResultDescriptorId,
+          api::kSblrDmlPlanImportRowsResultDescriptorVersion};
+}
+
+bool HasExactEnvelopeRefusal(const sblr::SblrDispatchResult& result,
+                             std::string_view root_code) {
+  return result.diagnostics.size() == 1 &&
+         result.diagnostics.front().code == root_code &&
+         result.api_result.diagnostics.size() == 1 &&
+         result.api_result.diagnostics.front().code ==
+             "SB_SBLR_DISPATCH_ENVELOPE_REJECTED";
+}
+
+bool HasExactIdentityEnvelopeRefusal(const sblr::SblrDispatchResult& result) {
+  return !result.diagnostics.empty() &&
+         result.diagnostics.front().code == "SBLR.OPCODE_INVALID" &&
+         std::all_of(result.diagnostics.begin(), result.diagnostics.end(),
+                     [](const auto& diagnostic) {
+                       return diagnostic.code == "SBLR.OPCODE_INVALID" ||
+                              diagnostic.code == "SBLR.OPERAND_INVALID";
+                     }) &&
+         result.api_result.diagnostics.size() == 1 &&
+         result.api_result.diagnostics.front().code ==
+             "SB_SBLR_DISPATCH_ENVELOPE_REJECTED";
+}
+
+sblr::SblrOperationEnvelope ExactPlanEnvelope(
+    const sblr::PlanImportRowsDescriptorRefV1& descriptor_ref) {
+  std::vector<std::uint8_t> descriptor_ref_bytes;
+  sblr::PlanImportRowsCodecDiagnosticV1 diagnostic;
+  Require(sblr::EncodePlanImportRowsDescriptorRefV1(
+              descriptor_ref, &descriptor_ref_bytes, &diagnostic) &&
+              descriptor_ref_bytes.size() ==
+                  sblr::kPlanImportRowsDescriptorRefBytesV1,
+          "exact plan-import descriptor reference encoding failed");
+  auto envelope = sblr::MakeSblrEnvelope(
+      "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS",
+      "trace.dml.exact_route.plan_import_rows");
+  envelope.opcode_code = 793;
+  envelope.operation_version_major = 1;
+  envelope.operation_version_minor = 0;
+  envelope.result_shape = "import_plan_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = PlanFixtureUuid(1001);
+  envelope.registry_snapshot_uuid = PlanFixtureUuid(1002);
+  envelope.requires_security_context = true;
+  envelope.requires_transaction_context = true;
+  envelope.requires_cluster_authority = false;
+  envelope.contains_sql_text = false;
+  envelope.parser_resolved_names_to_uuids = true;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "import_rows_plan_descriptor";
+  operand.name = "request";
+  operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+  operand.value_body = std::move(descriptor_ref_bytes);
+  envelope.operands.push_back(std::move(operand));
+  return envelope;
+}
+
+void RequireExactPlanImportDispatch() {
+  auto context = AttachPlanStatementAuthority(EngineContext());
+  const auto installed = api::LoadSblrExecutorAvailabilitySnapshot(
+      context, PlanAvailabilityIdentity());
+  Require(installed.ok && installed.snapshot.installed &&
+              installed.snapshot.generation != 0,
+          "plan-import executor availability bootstrap failed");
+  const auto current = api::LoadCurrentSblrExecutorAvailabilitySnapshot(
+      context, PlanAvailabilityIdentity());
+  Require(current.ok && current.snapshot.installed &&
+              current.snapshot.generation == installed.snapshot.generation,
+          "plan-import current executor availability missing");
+
+  auto binder_context = context;
+  binder_context.trace_tags = {"private_dml_plan_import_rows_binder"};
+  api::EngineCreateImportRowsPlanDescriptorRequestV1 bind;
+  bind.context = binder_context;
+  bind.structural_occurrence_id = 1;
+  bind.target_table_uuid.canonical = std::string(kTargetUuid);
+  bind.source_kind = sblr::PlanImportRowsSourceKindV1::native_sbsql_import;
+  bind.source_fingerprint_present = false;
+  bind.mappings.clear();
+  bind.format_family = sblr::PlanImportRowsFormatFamilyV1::csv;
+  bind.reject_mode = sblr::PlanImportRowsRejectModeV1::fail_fast;
+  bind.reject_payload_policy =
+      sblr::PlanImportRowsRejectPayloadPolicyV1::diagnostic_only;
+  bind.resume_policy = sblr::PlanImportRowsResumePolicyV1::fail_closed;
+  bind.strict_bulk_load_requested = false;
+  bind.reference_relaxed_semantics_requested = false;
+  bind.reference_relaxed_semantics_authorized = false;
+  bind.reject_limit_ppm = 0;
+  bind.reject_limit_rows = 0;
+  const auto bound =
+      api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(bind);
+  if (!bound.ok) {
+    std::cerr << bound.diagnostic.code << ':' << bound.diagnostic.detail << '\n';
+  }
+  Require(bound.ok, "exact engine plan-import binder failed");
+
+  auto consumer_context = context;
+  consumer_context.trace_tags = {"private_dml_plan_import_rows_consumer"};
+  sblr::SblrDispatchRequest request;
+  request.context = consumer_context;
+  request.envelope = ExactPlanEnvelope(bound.descriptor_ref);
+  request.standalone_package_root = true;
+  Require(request.envelope.opcode_code == 793 &&
+              request.envelope.operation_version_major == 1 &&
+              request.envelope.operation_version_minor == 0 &&
+              request.envelope.result_shape == "import_plan_result" &&
+              request.envelope.operands.size() == 1 &&
+              request.envelope.operands.front().ordinal == 1 &&
+              request.envelope.operands.front().type ==
+                  "import_rows_plan_descriptor" &&
+              request.envelope.operands.front().name == "request" &&
+              request.envelope.operands.front().value.empty() &&
+              request.envelope.operands.front().value_body.size() == 24,
+          "exact 793/v1 single descriptor-ref envelope drifted");
+  const std::string opaque_operand(
+      request.envelope.operands.front().value_body.begin(),
+      request.envelope.operands.front().value_body.end());
+  Require(!Contains(opaque_operand, kTargetUuid) &&
+              !Contains(opaque_operand, "customer") &&
+              !Contains(opaque_operand, "COPY"),
+          "exact descriptor-ref operand leaked UUID/name/SQL text");
+  const auto result = sblr::DispatchSblrOperation(request);
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(result.envelope_validated && result.accepted &&
+              result.dispatched_to_api && result.api_result.ok &&
+              result.plan_import_rows_result.has_value(),
+          "exact 793/v1 typed plan-import dispatch failed");
+  const auto& plan = *result.plan_import_rows_result;
+  Require(plan.surface_accepted && plan.planning_only &&
+              plan.execution_requires_execute_import_rows &&
+              !plan.row_execution_completed && !plan.row_persistence_claimed,
+          "exact import planning-only result contract drifted");
+  Require(plan.normalized_insert_mode_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsInsertModeV1::copy_import) &&
+              plan.normalized_source_kind_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsSourceKindV1::native_sbsql_import) &&
+              plan.normalized_format_family_code ==
+                  static_cast<std::uint16_t>(
+                      sblr::PlanImportRowsFormatFamilyV1::csv) &&
+              plan.mapped_column_count == 0 &&
+              !plan.validated_request_descriptor_uuid.canonical.empty() &&
+              plan.validated_request_descriptor_generation ==
+                  bound.descriptor_ref.descriptor_generation &&
+              std::any_of(
+                  plan.validated_request_projection_sha256.begin(),
+                  plan.validated_request_projection_sha256.end(),
+                  [](std::uint8_t byte) { return byte != 0; }) &&
+              plan.accepted_executor_evidence.exact_bytes.size() ==
+                  sblr::kPlanImportRowsExecutorEvidenceBytesV1 &&
+              plan.accepted_executor_evidence.request_descriptor_uuid ==
+                  bound.descriptor_ref.descriptor_uuid &&
+              plan.accepted_executor_evidence.request_descriptor_generation ==
+                  bound.descriptor_ref.descriptor_generation &&
+              plan.accepted_executor_evidence.executor_availability_generation ==
+                  current.snapshot.generation &&
+              plan.accepted_executor_evidence.completed_validation_bits ==
+                  sblr::kPlanImportRowsAcceptedValidationBitsV1,
+          "exact descriptor/result/IPEV planning fields drifted");
+  Require(plan.evidence.size() == 1 &&
+              plan.evidence.front().evidence_kind ==
+                  "accepted_executor_evidence" &&
+              Contains(plan.evidence.front().evidence_id, "@1#sha256:") &&
+              !Contains(plan.evidence.front().evidence_id, "customer") &&
+              !Contains(plan.evidence.front().evidence_id, kTargetUuid),
+          "exact canonical accepted planning evidence missing or unredacted");
+  auto missing_operand = request;
+  missing_operand.envelope.operands.clear();
+  const auto missing = sblr::DispatchSblrOperation(missing_operand);
+  Require(!missing.api_result.ok &&
+              HasExactEnvelopeRefusal(missing, "SBLR.OPERAND_INVALID"),
+          "missing descriptor did not use SBLR.OPERAND_INVALID");
+  auto wrong_identity = request;
+  wrong_identity.envelope.opcode_code = 0;
+  const auto wrong = sblr::DispatchSblrOperation(wrong_identity);
+  Require(!wrong.accepted && HasExactIdentityEnvelopeRefusal(wrong),
+          "code-zero plan identity did not use SBLR.OPCODE_INVALID");
+
+  const auto released =
+      api::ReleaseEngineBoundImportRowsPlanDescriptorsV1(binder_context);
+  Require(released.ok && released.released_row_count == 1,
+          "exact plan-import descriptor release failed");
+  Require(kPlanImportPublicAbiProofTarget ==
+              "sbsql_sblr_alignment_plan_import_rows_sbps_coordination",
+          "plan-import public-ABI proof provenance drifted");
+}
+
 void RequireEngineDispatch(std::string operation_id, std::string opcode) {
+  if (operation_id == "dml.plan_import_rows") {
+    RequireExactPlanImportDispatch();
+    return;
+  }
   const sblr::SblrDispatchRequest request{
       EngineContext(),
       EngineEnvelope(operation_id, opcode),
@@ -1901,9 +2141,6 @@ void RequireEngineDispatch(std::string operation_id, std::string opcode) {
   Require(result.dispatched_to_api, "engine SBLR dispatch did not route to a DML API");
   Require(result.api_result.operation_id == operation_id,
           "engine SBLR dispatch returned wrong DML/query operation id");
-  if (operation_id == "dml.plan_import_rows") {
-    Require(result.api_result.ok, "engine import planning API did not accept canonical COPY plan");
-  }
   Require(!ApiDiagnosticContains(result.api_result, "target_table_uuid_required"),
           "engine DML dispatch lost the UUID-bound target table");
   Require(!ApiDiagnosticContains(result.api_result, "source_table_uuid_required"),
@@ -1946,7 +2183,7 @@ void RequireInsertSourceExactRouteEvidence() {
           "insert_source envelope marked SQL text present");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected insert_source exact route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require engine public ABI dispatch for insert_source");
@@ -2013,8 +2250,7 @@ void RequireInsertValuesKeywordStringLiteralEvidence() {
                    "\"insert_values_0_2_value\":\"SBSQL_SURFACE_REPLAY SBSQL-E57785E2BD95\""),
           "surface-replay command literal INSERT lost replay command literal");
   const auto replay_command_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{
-          replay_command_literal.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(replay_command_literal.envelope));
   for (const auto& diagnostic : replay_command_admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -2120,7 +2356,7 @@ void RequireSelectOrderLimitLowering() {
           "SELECT ORDER/LIMIT envelope embedded SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected SELECT ORDER/LIMIT route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require engine public ABI dispatch for SELECT ORDER/LIMIT");
@@ -2400,7 +2636,7 @@ void RequireTopClauseLowering() {
                                    "validation fixture id mismatch"));
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected SELECT TOP route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for SELECT TOP");
@@ -2516,7 +2752,7 @@ void RequireFetchClauseLowering() {
                                      "validation fixture id mismatch"));
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected SELECT FETCH FIRST route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for SELECT FETCH FIRST");
@@ -2598,7 +2834,7 @@ void RequireWhereEqualityPredicateLowering() {
   }
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected SELECT WHERE equality route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require engine public ABI dispatch for SELECT WHERE equality");
@@ -2638,7 +2874,7 @@ void RequireWhereEqualityPredicateLowering() {
           "SELECT WHERE LIKE envelope embedded SQL syntax text");
 
   const auto like_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{like_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(like_artifacts.envelope));
   Require(like_admission.admitted, "server admission rejected SELECT WHERE LIKE route");
   Require(like_admission.requires_public_abi_dispatch,
           "server admission did not require engine public ABI dispatch for SELECT WHERE LIKE");
@@ -2677,7 +2913,7 @@ void RequireSimpleSelectSkeletonLowering() {
           "simple SELECT skeleton envelope embedded source_text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected simple SELECT skeleton route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for simple SELECT skeleton");
@@ -2774,7 +3010,7 @@ void RequireTableJoinLowering() {
           "table join envelope embedded SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -2877,7 +3113,7 @@ void RequireTableSetOperationLowering() {
             "table set operation envelope embedded SQL text");
 
     const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
     Require(admission.admitted, "server admission rejected table set operation route");
     Require(admission.requires_public_abi_dispatch,
             "server admission did not require public ABI dispatch for table set operation");
@@ -2937,7 +3173,7 @@ void RequireTableSetOperationLowering() {
           "set-operation count assertion payload embedded SQL text");
 
   const auto count_union_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{count_union.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(count_union.envelope));
   Require(count_union_admission.admitted,
           "server admission rejected set-operation count assertion route");
   Require(count_union_admission.requires_public_abi_dispatch,
@@ -3011,7 +3247,7 @@ void RequireRowNumberWindowLowering() {
   }
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected row_number window route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for row_number window");
@@ -3093,7 +3329,7 @@ void RequireRowNumberWindowLowering() {
   }
 
   const auto count_partition_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{count_partition.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(count_partition.envelope));
   Require(count_partition_admission.admitted,
           "server admission rejected count partition window route");
   Require(count_partition_admission.requires_public_abi_dispatch,
@@ -3267,7 +3503,7 @@ void RequireGroupByAggregateLowering() {
           "grouped aggregate envelope embedded SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected grouped aggregate route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for grouped aggregate");
@@ -3598,7 +3834,7 @@ void RequireGroupByAggregateLowering() {
             "typed grouped aggregate envelope carried population variance source spelling");
 
     const auto stat_admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{stat_artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(stat_artifacts.envelope));
     Require(stat_admission.admitted,
             "server admission rejected typed grouped aggregate route");
     Require(stat_admission.requires_public_abi_dispatch,
@@ -3679,7 +3915,7 @@ void RequireGroupByAggregateLowering() {
           "LISTAGG WITHIN GROUP envelope embedded SQL syntax text");
 
   const auto listagg_admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{listagg_artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(listagg_artifacts.envelope));
   Require(listagg_admission.admitted,
           "server admission rejected LISTAGG WITHIN GROUP route");
   Require(listagg_admission.requires_public_abi_dispatch,
@@ -3733,7 +3969,7 @@ void RequireGroupByAggregateLowering() {
             "STRING_AGG grouped route envelope embedded SQL syntax text");
 
     const auto string_agg_admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{string_agg_artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(string_agg_artifacts.envelope));
     Require(string_agg_admission.admitted,
             "server admission rejected STRING_AGG grouped route");
     Require(string_agg_admission.requires_public_abi_dispatch,
@@ -3818,7 +4054,7 @@ void RequireGroupByAggregateLowering() {
             "JSON_AGG grouped route envelope embedded SQL syntax text");
 
     const auto json_agg_admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{json_agg_artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(json_agg_artifacts.envelope));
     Require(json_agg_admission.admitted,
             "server admission rejected JSON_AGG grouped route");
     Require(json_agg_admission.requires_public_abi_dispatch,
@@ -3912,7 +4148,7 @@ void RequireGroupByAggregateLowering() {
             "JSON_OBJECT_AGG grouped route envelope embedded SQL syntax text");
 
     const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
     Require(admission.admitted,
             "server admission rejected JSON_OBJECT_AGG grouped route");
     Require(admission.requires_public_abi_dispatch,
@@ -4001,7 +4237,7 @@ void RequireGroupByAggregateLowering() {
             "ARRAY_AGG grouped route envelope embedded SQL syntax text");
 
     const auto array_agg_admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{array_agg_artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(array_agg_artifacts.envelope));
     Require(array_agg_admission.admitted,
             "server admission rejected ARRAY_AGG grouped route");
     Require(array_agg_admission.requires_public_abi_dispatch,
@@ -4236,7 +4472,7 @@ void RequireMaterializedCteLowering() {
           "materialized CTE envelope embedded SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected materialized CTE route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for materialized CTE");
@@ -4374,7 +4610,7 @@ void RequireRecursiveCteLowering() {
           "recursive CTE envelope embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected recursive CTE route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for recursive CTE");
@@ -4570,7 +4806,7 @@ void RequireScalarSubqueryLowering() {
           "scalar subquery envelope embedded SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, "server admission rejected scalar subquery route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for scalar subquery");
@@ -4644,7 +4880,7 @@ void RequireHavingClauseLowering() {
           HavingClauseEvidenceMessage(row, "fixture", "HAVING envelope embedded clause text"));
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted,
           HavingClauseEvidenceMessage(row, "server_admission", "server admission rejected HAVING route"));
   Require(admission.requires_public_abi_dispatch,
@@ -4687,9 +4923,33 @@ void RequireUnsupportedQueryFamiliesFailClosed() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  Require(argc == 1 ||
+              (argc == 2 &&
+               std::string_view(argv[1]) == "--plan-import-only"),
+          "usage: sbsql_dml_exact_route_conformance [--plan-import-only]");
   ConfigureMemoryFixture();
   RequireRegistryEvidence();
+  if (argc == 2) {
+    RequireExactLowering("COPY customer FROM STDIN",
+                         "sblr.dml.operation.v3",
+                         "dml.plan_import_rows",
+                         "SBLR_DML_PLAN_IMPORT_ROWS",
+                         "right.write",
+                         "copy_import_export");
+    RequireCopySourceExactRouteEvidence();
+    RequireCopyOptionsExactRouteEvidence();
+    RequireCopyFormatExactRouteEvidence();
+    RequireCopyEndpointExactRouteEvidence();
+    PrepareEngineDispatchContext();
+    RequireEngineDispatch("dml.plan_import_rows",
+                          "SBLR_DML_PLAN_IMPORT_ROWS");
+    RemoveDatabaseArtifacts(TestDatabasePath());
+    std::cout << "plan_import_public_abi_proof="
+              << kPlanImportPublicAbiProofTarget << '\n';
+    std::cout << "sbsql_dml_exact_route_conformance.plan_import=passed\n";
+    return EXIT_SUCCESS;
+  }
   RequireExactLowering("SELECT * FROM customer",
                        "sblr.query.relational.v3",
                        "dml.select_rows",
@@ -4766,6 +5026,8 @@ int main() {
   RequireEngineDispatch("dml.merge_rows", "SBLR_DML_MERGE_ROWS");
   RequireEngineDispatch("dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS");
   RemoveDatabaseArtifacts(TestDatabasePath());
+  std::cout << "plan_import_public_abi_proof="
+            << kPlanImportPublicAbiProofTarget << '\n';
   std::cout << "sbsql_dml_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

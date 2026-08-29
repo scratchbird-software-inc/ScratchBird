@@ -1,0 +1,215 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+// SPDX-License-Identifier: MPL-2.0
+
+#include "server/sbps_private_narrow_profile.hpp"
+
+#include <cstdlib>
+#include <stdexcept>
+#include <string>
+
+namespace {
+
+namespace profile = scratchbird::server::sbps::private_narrow;
+using scratchbird::core::platform::byte;
+
+static_assert(profile::kPairUniverseCountV1 == 47);
+static_assert(profile::kRequiredPairCountV1 == 29);
+static_assert(profile::kForbiddenPairCountV1 == 18);
+static_assert(profile::kSuccessOnlyPairCountV1 == 10);
+
+void Require(bool condition, const std::string& detail) {
+  if (!condition) throw std::runtime_error(detail);
+}
+
+profile::UuidV1 Uuid(std::uint16_t discriminator) {
+  profile::UuidV1 uuid{};
+  uuid[0] = 0x01;
+  uuid[1] = 0x9d;
+  uuid[6] = 0x70;
+  uuid[8] = 0x80;
+  uuid[14] = static_cast<byte>((discriminator >> 8u) & 0xffu);
+  uuid[15] = static_cast<byte>(discriminator & 0xffu);
+  return uuid;
+}
+
+profile::Hash256V1 Hash(byte discriminator) {
+  profile::Hash256V1 hash{};
+  hash.fill(discriminator);
+  return hash;
+}
+
+profile::EvidenceRecordV1 SyntheticUsableEvidenceFixture() {
+  auto evidence = profile::CorePendingPrivateNarrowEvidenceV1();
+  evidence.status = profile::EvidenceStatusV1::usable;
+  evidence.usable = true;
+  byte discriminator = 1;
+  for (auto& role : evidence.role_artifacts) {
+    role.implementation_artifact_sha256 = Hash(discriminator++);
+    role.executable_fixture_sha256 = Hash(discriminator++);
+    role.verification_result_sha256 = Hash(discriminator++);
+    role.verified = true;
+  }
+  for (auto& corpus : evidence.corpus_results) {
+    corpus.manifest_sha256 = Hash(discriminator++);
+    corpus.executable_fixture_set_sha256 = Hash(discriminator++);
+    corpus.result_sha256 = Hash(discriminator++);
+    corpus.passed = true;
+  }
+  evidence.endpoint_generation_evidence_sha256 = Hash(discriminator++);
+  evidence.aggregate_evidence_sha256 = Hash(discriminator++);
+  return evidence;
+}
+
+profile::EndpointActivationRequestV1 ActivationRequest(
+    const profile::CoreProfileRecordV1& core) {
+  profile::EndpointActivationRequestV1 request;
+  request.endpoint_profile_uuid = core.endpoint_profile_uuid;
+  request.live_endpoint_uuid = Uuid(0x9001);
+  request.live_endpoint_generation = 1;
+  request.approved_profile_id = core.profile_id;
+  request.activation_set_uuid = core.activation_set_uuid;
+  request.protocol_major = core.protocol_major;
+  request.protocol_minor = core.protocol_minor;
+  request.proposed_active_pairs = core.required_pairs;
+  return request;
+}
+
+void CoreRecordAndPendingEvidenceStayInactive() {
+  const auto core = profile::CorePrivateNarrowProfileRecordV1();
+  Require(profile::ValidateCorePrivateNarrowProfileRecordV1(core).ok(),
+          "compiled Core private profile record failed validation");
+  Require(core.pair_universe.size() == 47 &&
+              core.required_pairs.size() == 29 &&
+              core.forbidden_pairs.size() == 18 &&
+              core.candidate_activation_records.size() == 29 &&
+              core.actual_active_pairs.empty(),
+          "compiled Core pair projection drifted");
+  for (const auto& record : core.candidate_activation_records) {
+    Require(!record.exact_nul_serialization.empty() &&
+                record.exact_nul_serialization.back() == 0 &&
+                record.exact_nul_serialization ==
+                    profile::SerializeActivationRecordV1(record),
+            "activation record NUL serialization drifted");
+  }
+
+  const auto pending = profile::CorePendingPrivateNarrowEvidenceV1();
+  const auto evidence =
+      profile::ValidatePrivateNarrowEvidenceV1(core, pending);
+  Require(evidence.status == profile::ProfileValidationStatusV1::evidence_pending,
+          "manifest-listed pending evidence was not fail-closed");
+  const auto activation = profile::BuildPrivateNarrowActivationStateV1(
+      core, pending, ActivationRequest(core));
+  Require(!activation.ok() && !activation.state.active &&
+              activation.state.active_pairs.empty(),
+          "pending evidence created an active pair projection");
+}
+
+void CoreAndEvidenceNegativeDrift() {
+  const auto core = profile::CorePrivateNarrowProfileRecordV1();
+  auto capability = core;
+  capability.offered_capability_bitmap[0] = 1;
+  Require(profile::ValidateCorePrivateNarrowProfileRecordV1(capability).status ==
+              profile::ProfileValidationStatusV1::capability_invalid,
+          "nonzero capability bit was admitted");
+
+  auto complement = core;
+  complement.forbidden_pairs.pop_back();
+  Require(!profile::ValidateCorePrivateNarrowProfileRecordV1(complement).ok(),
+          "29/18 complement drift was admitted");
+
+  auto nul_drift = core;
+  nul_drift.candidate_activation_records.front()
+      .exact_nul_serialization.back() = 'x';
+  Require(profile::ValidateCorePrivateNarrowProfileRecordV1(nul_drift).status ==
+              profile::ProfileValidationStatusV1::activation_record_invalid,
+          "activation-record trailing NUL drift was admitted");
+
+  auto incomplete = SyntheticUsableEvidenceFixture();
+  incomplete.role_artifacts.front().verification_result_sha256 = {};
+  Require(profile::ValidatePrivateNarrowEvidenceV1(core, incomplete).status ==
+              profile::ProfileValidationStatusV1::evidence_invalid,
+          "incomplete usable evidence was admitted");
+
+  auto revoked = SyntheticUsableEvidenceFixture();
+  revoked.status = profile::EvidenceStatusV1::revoked;
+  revoked.revoked = true;
+  const auto activation = profile::BuildPrivateNarrowActivationStateV1(
+      core, revoked, ActivationRequest(core));
+  Require(activation.outcome.status ==
+              profile::ProfileValidationStatusV1::evidence_revoked &&
+              activation.state.active_pairs.empty(),
+          "revoked evidence retained active pairs");
+}
+
+void SyntheticUsableFixtureProvesExactDispatchOnly() {
+  const auto core = profile::CorePrivateNarrowProfileRecordV1();
+  const auto evidence = SyntheticUsableEvidenceFixture();
+  const auto activation = profile::BuildPrivateNarrowActivationStateV1(
+      core, evidence, ActivationRequest(core));
+  Require(activation.ok() && activation.state.active &&
+              activation.state.active_pairs == core.required_pairs,
+          "synthetic complete evidence fixture did not activate exact pairs");
+
+  const auto key = [&](std::uint16_t message, std::uint32_t schema) {
+    profile::DispatchKeyV1 value;
+    value.endpoint_uuid = activation.state.live_endpoint_uuid;
+    value.endpoint_generation = activation.state.live_endpoint_generation;
+    value.approved_profile_id = activation.state.approved_profile_id;
+    value.protocol_major = activation.state.protocol_major;
+    value.protocol_minor = activation.state.protocol_minor;
+    value.message_code = message;
+    value.payload_schema_id = schema;
+    return value;
+  };
+  const auto execute = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(42, 1042));
+  Require(execute.admitted && !execute.success_only &&
+              !execute.semantic_refusal,
+          "exact 42/1042 dispatch failed");
+  const auto result = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(43, 1043));
+  Require(result.admitted && result.success_only &&
+              !result.semantic_refusal,
+          "43/1043 success-only overlay failed");
+  const auto contextual_issue = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(698, 7711));
+  Require(contextual_issue.admitted && !contextual_issue.success_only &&
+              !contextual_issue.semantic_refusal,
+          "698/7711 contextual-TEXT issue dispatch failed");
+  const auto contextual_result = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(699, 7712));
+  Require(contextual_result.admitted && contextual_result.success_only &&
+              !contextual_result.semantic_refusal,
+          "699/7712 contextual-TEXT success-only overlay failed");
+  const auto refusal = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(60, 2001));
+  Require(refusal.admitted && !refusal.success_only &&
+              refusal.semantic_refusal,
+          "60/2001 refusal identity failed");
+
+  const auto mixed_pair = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(42, 1043));
+  Require(!mixed_pair.admitted && mixed_pair.outcome.status ==
+              profile::ProfileValidationStatusV1::message_unregistered,
+          "message-only/schema-only dispatch was admitted");
+  auto wrong_generation = key(42, 1042);
+  ++wrong_generation.endpoint_generation;
+  Require(!profile::AdmitPrivateNarrowDispatchV1(
+               core, activation.state, wrong_generation)
+               .admitted,
+          "cross-generation dispatch was admitted");
+}
+
+}  // namespace
+
+int main() {
+  try {
+    CoreRecordAndPendingEvidenceStayInactive();
+    CoreAndEvidenceNegativeDrift();
+    SyntheticUsableFixtureProvesExactDispatchOnly();
+  } catch (const std::exception& error) {
+    (void)error;
+    return EXIT_FAILURE;
+  }
+  return EXIT_SUCCESS;
+}

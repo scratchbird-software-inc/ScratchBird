@@ -39,7 +39,7 @@ import cdp_route_split_benchmark_gate as route_split  # noqa: E402
 
 QUERY = "SELECT 1;"
 EXPECTED_ROWS = [["1"]]
-VERIFIER = route_split.VERIFIER
+PASSWORD = "ScratchBird-E2E-2026!"
 
 
 class Orh125LiveRouteError(RuntimeError):
@@ -149,7 +149,7 @@ def base_database_parameters_hash() -> str:
 
 
 def auth_evidence() -> str:
-    return f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
+    return PASSWORD
 
 
 def database_identity(evidence: dict[str, Any]) -> str:
@@ -438,7 +438,6 @@ def start_shared_embedded(args: argparse.Namespace, work: Path, database: Path) 
     root = work / "e"
     root.mkdir(parents=True, exist_ok=True)
     database.parent.mkdir(parents=True, exist_ok=True)
-    route_split.auth_file(database)
     return route_split.RouteContext(
         name="embedded",
         root=root,
@@ -457,19 +456,51 @@ def start_shared_embedded(args: argparse.Namespace, work: Path, database: Path) 
     )
 
 
+def bootstrap_shared_database(args: argparse.Namespace,
+                              work: Path,
+                              database: Path) -> None:
+    """Create the shared fixture through the engine-owned lifecycle route."""
+    root = work / "b"
+    root.mkdir(parents=True, exist_ok=True)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    manifest = root / "driver-test-database.manifest.json"
+    completed = subprocess.run(
+        [
+            args.database_seed,
+            "--output",
+            str(database),
+            "--manifest",
+            str(manifest),
+            "--resource-seed-pack-root",
+            args.resource_seed_pack_root,
+            "--overwrite",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    (root / "database-seed.out").write_text(
+        completed.stdout, encoding="utf-8")
+    (root / "database-seed.err").write_text(
+        completed.stderr, encoding="utf-8")
+    if completed.returncode != 0 or not database.is_file() or not manifest.is_file():
+        raise Orh125LiveRouteError(
+            "engine lifecycle bootstrap did not publish the shared database: "
+            f"rc={completed.returncode}")
+
+
 def start_shared_local_ipc(args: argparse.Namespace, work: Path, database: Path) -> route_split.RouteContext:
     root = work / "i"
     control = root / "sc"
     runtime = root / "sr"
     endpoint = control / "s.sock"
     root.mkdir(parents=True, exist_ok=True)
-    route_split.auth_file(database)
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(control),
             "--runtime-dir",
@@ -513,13 +544,11 @@ def start_shared_inet(args: argparse.Namespace, work: Path, database: Path) -> r
     endpoint = server_control / "s.sock"
     port = route_split.find_free_port()
     root.mkdir(parents=True, exist_ok=True)
-    route_split.auth_file(database)
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -579,6 +608,7 @@ def build_payload(args: argparse.Namespace, work: Path) -> dict[str, Any]:
     captures: list[RouteCapture] = []
     routes: list[route_split.RouteContext] = []
     try:
+        bootstrap_shared_database(args, work, shared_database)
         embedded = start_shared_embedded(args, work, shared_database)
         captures.append(run_cli_capture(embedded, "embedded", "embedded:sb_isql", "embedded"))
 
@@ -632,6 +662,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--build-mode", default="unknown")
     args = parser.parse_args(argv[1:])

@@ -20,12 +20,36 @@ int Finish(const std::vector<std::string>& errors) { std::cout << "{\"ok\":" << 
 }
 int main() {
   std::vector<std::string> errors;
-  auto graph = opt::BuildJoinGraph({{"b", 1000, false}, {"a", 10, false}}, {{"a", "b", "scalar_eq", true, false, false, 0.01}}, false, false);
+  auto graph = opt::BuildJoinGraph(
+      {opt::JoinRelationNode{.relation_uuid = "b", .estimated_rows = 1000},
+       opt::JoinRelationNode{.relation_uuid = "a", .estimated_rows = 10}},
+      {opt::JoinPredicateEdge{.left_relation_uuid = "a",
+                              .right_relation_uuid = "b",
+                              .predicate_kind = "scalar_eq",
+                              .semantic_kind = opt::JoinSemanticKind::kInner,
+                              .predicate_count = 1,
+                              .equality = true,
+                              .selectivity = 0.01}},
+      false,
+      false);
   auto plan = opt::EnumerateDeterministicJoinOrder(graph, 1024 * 1024);
   Expect(plan.ok, "join plan ok", &errors);
   Expect(plan.ordered_relation_uuids.front() == "a", "smallest relation first", &errors);
   Expect(plan.method == planner::PhysicalAccessKind::kJoinHash || plan.method == planner::PhysicalAccessKind::kJoinNestedLoop || plan.method == planner::PhysicalAccessKind::kJoinMerge, "join method chosen", &errors);
-  auto blocked = opt::BuildJoinGraph({{"a", 10, false}, {"b", 1000, false}}, {{"a", "b", "scalar_eq", true, true, true, 0.01}}, true, false);
+  auto blocked = opt::BuildJoinGraph(
+      {opt::JoinRelationNode{.relation_uuid = "a", .estimated_rows = 10},
+       opt::JoinRelationNode{.relation_uuid = "b", .estimated_rows = 1000}},
+      {opt::JoinPredicateEdge{.left_relation_uuid = "a",
+                              .right_relation_uuid = "b",
+                              .predicate_kind = "scalar_eq",
+                              .semantic_kind = opt::JoinSemanticKind::kLeftOuter,
+                              .predicate_count = 1,
+                              .equality = true,
+                              .nullable = true,
+                              .outer_join_sensitive = true,
+                              .selectivity = 0.01}},
+      true,
+      false);
   Expect(!opt::JoinReorderAllowed(blocked), "outer/nullable join blocks reorder", &errors);
   return Finish(errors);
 }

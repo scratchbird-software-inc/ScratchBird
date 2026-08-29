@@ -3287,7 +3287,7 @@ bool SpatialColumnarWireFrontdoorProjectionCohort() {
           ast.native_relational.model_object_resolution_requests.size() == 2,
       "spatial/columnar JOIN did not reach the ordinary typed AST: " +
           DiagnosticSummary(ast.messages));
-  constexpr std::uint64_t kExpectedMask = (1ull << 13) - 1;
+  constexpr std::uint64_t kExpectedMask = (1ull << 15) - 1;
   const auto mask = sbsql::Rcp079SpatialColumnarFrontdoorProofMaskForTest();
   return ast_exact && Require(mask == kExpectedMask,
                  "spatial/columnar front-door projection mask was incomplete: " +

@@ -26,6 +26,8 @@ import json
 import sys
 from pathlib import Path
 
+from plan_import_rows_generated_evidence import is_plan_import_rows_surface
+
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 AUTH_MATRIX_NAME = "AUTHENTICATED_FULL_ROUTE_MATRIX.csv"
@@ -198,6 +200,23 @@ def expected_round_fields(matrix: dict[str, str], manifest: dict[str, str]) -> d
     return fields
 
 
+def validate_nonfinal_plan_import_fixture(
+    surface_id: str,
+    fields: dict[str, str],
+    expected: dict[str, str],
+    fixture_kind: str,
+) -> None:
+    if fields.get("fixture_kind") != fixture_kind:
+        fail(f"{surface_id} nonfinal plan-import fixture kind drift")
+    if fields.get("fixture_status") != "fixture_authored":
+        fail(f"{surface_id} nonfinal plan-import fixture must remain fixture_authored")
+    for key, value in expected.items():
+        if fields.get(key, "") != value:
+            fail(f"{surface_id} nonfinal plan-import fixture {key} drift")
+    if fields.get("per_row_final_state") != "pending":
+        fail(f"{surface_id} nonfinal plan-import fixture must retain pending per-row state")
+
+
 def require_common(surface_id: str, fields: dict[str, str], manifest: dict[str, str], matrix: dict[str, str]) -> None:
     checks = {
         "surface_id": surface_id,
@@ -237,6 +256,7 @@ def require_common(surface_id: str, fields: dict[str, str], manifest: dict[str, 
             "SBLR.CAPABILITY.FORBIDDEN",
             "SBSQL.SURFACE.NOT_ADMITTED",
             "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
+            "UDR.BRIDGE.UNSUPPORTED",
         )
     ):
         fail(f"{surface_id} exact-refusal fixture is missing refusal message-vector proof")
@@ -245,7 +265,8 @@ def require_common(surface_id: str, fields: dict[str, str], manifest: dict[str, 
         for token in (
             "provider_boundary_route_evidence",
             "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
-            "SBLR.CLUSTER.STUB_RESPONSE",
+            "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
+            "supports_execution=false",
             "request_lifecycle_routed_through_cluster_provider_boundary",
         )
     ):
@@ -286,10 +307,19 @@ def validate_auth(surface_id: str, fields: dict[str, str], manifest: dict[str, s
     if matrix["cluster_scope"] == "cluster_private":
         if manifest["final_state"] not in CLUSTER_FINAL_STATES:
             fail(f"{surface_id} cluster fixture must promote only cluster final evidence")
-        if "not_applicable_cluster_private_public_build" not in fields.get("credential_profile_accepted", ""):
-            fail(f"{surface_id} cluster fixture has a public acceptance credential")
-        if "NOT_ADMITTED" not in fields.get("expected_authorization_refused_outcome", ""):
-            fail(f"{surface_id} cluster fixture lost public fail-closed route")
+        if surface_id == "SBSQL-D50EC7C4422E":
+            if (
+                fields.get("credential_profile_accepted", "")
+                != "not_applicable_exact_refusal_surface"
+                or "UDR_BRIDGE_UNSUPPORTED"
+                not in fields.get("expected_authorization_refused_outcome", "")
+            ):
+                fail(f"{surface_id} bridge exact-refusal authorization proof drifted")
+        else:
+            if "not_applicable_cluster_private_public_build" not in fields.get("credential_profile_accepted", ""):
+                fail(f"{surface_id} cluster fixture has a public acceptance credential")
+            if "NOT_ADMITTED" not in fields.get("expected_authorization_refused_outcome", ""):
+                fail(f"{surface_id} cluster fixture lost public fail-closed route")
     elif manifest["final_state"] not in {"e2e_passed", "exact_refusal_passed"}:
         fail(f"{surface_id} noncluster authenticated fixture has an unsupported final state")
     elif manifest["final_state"] == "exact_refusal_passed":
@@ -338,7 +368,15 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
             fail(f"{surface_id} cluster round-trip fixture must promote only cluster final evidence")
         if fields.get("byte_identical_round_trip_required", "") != "not_applicable_no_round_trip_in_public_build":
             fail(f"{surface_id} cluster round-trip fixture must remain no-public-round-trip")
-        if "no_dispatch_path_in_public_build" not in fields.get("dispatch_phase_expectation", ""):
+        if surface_id == "SBSQL-D50EC7C4422E":
+            if (
+                fields.get("expected_canonical_function_or_api_operation_id", "")
+                != "bridge.cluster_route"
+                or "trusted_udr_dispatch_refuses_UDR_BRIDGE_UNSUPPORTED"
+                not in fields.get("dispatch_phase_expectation", "")
+            ):
+                fail(f"{surface_id} bridge exact-refusal dispatch proof drifted")
+        elif "no_dispatch_path_in_public_build" not in fields.get("dispatch_phase_expectation", ""):
             fail(f"{surface_id} cluster round-trip fixture lost no-dispatch proof")
     else:
         if manifest["final_state"] not in {"e2e_passed", "exact_refusal_passed"}:
@@ -392,6 +430,7 @@ def main() -> int:
     promoted_round = 0
     already_auth = 0
     already_round = 0
+    retained_nonfinal = 0
     for surface_id in surface_ids:
         auth_row = auth_by_id[surface_id]
         round_row = round_by_id[surface_id]
@@ -407,6 +446,17 @@ def main() -> int:
         round_fields = parse_fixture(round_path)
         expected_auth = expected_auth_fields(auth_row, manifest)
         expected_round = expected_round_fields(round_row, manifest)
+        if is_plan_import_rows_surface(surface_id):
+            if manifest.get("final_state") != "pending":
+                fail(f"{surface_id} plan-import fixture may not promote without independent final evidence")
+            validate_nonfinal_plan_import_fixture(
+                surface_id, auth_fields, expected_auth, "authenticated_route"
+            )
+            validate_nonfinal_plan_import_fixture(
+                surface_id, round_fields, expected_round, "sblr_binary_round_trip"
+            )
+            retained_nonfinal += 1
+            continue
         auth_validation_fields = dict(auth_fields)
         round_validation_fields = dict(round_fields)
         if not args.dry_run:
@@ -437,6 +487,7 @@ def main() -> int:
         f"rows={len(surface_ids)} "
         f"authenticated_promoted={promoted_auth} authenticated_already_e2e={already_auth} "
         f"sblr_round_trip_promoted={promoted_round} sblr_round_trip_already_e2e={already_round} "
+        f"retained_nonfinal={retained_nonfinal} "
         f"dry_run={args.dry_run}"
     )
     return 0

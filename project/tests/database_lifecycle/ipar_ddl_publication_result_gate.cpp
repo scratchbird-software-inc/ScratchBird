@@ -230,6 +230,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   return context;
 }
@@ -295,7 +299,7 @@ int main() {
   table.requested_table_uuid.canonical = table_uuid;
   table.table_names.push_back(Name("ipar_publication_table"));
   table.table_columns.push_back(Column("id", "int64", 0));
-  table.table_columns.push_back(Column("payload", "varchar", 1));
+  table.table_columns.push_back(Column("payload", "text", 1));
   const auto created_table = api::EngineCreateTable(table);
   ExpectPublication(created_table,
                     "ddl.create_table",

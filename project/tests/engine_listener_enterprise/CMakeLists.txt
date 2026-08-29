@@ -194,18 +194,46 @@ sb_add_engine_listener_enterprise_gate(
   soak-certification
   "ELER-081;ELER-GATE-081;ELER-102;ELER-GATE-102;long_duration_soak;bounded_soak;high_concurrency;memory_pressure;crash_fault;security_negative;artifact_retention;linux_proof"
 )
-set_tests_properties(engine_listener_soak_certification_gate PROPERTIES
-  DEPENDS "public_release_soak_lane;public_release_soak_gate;memory_sanitizer_soak_concurrency_gate;dpc_soak_leak_resource_stability_gate;agent_enterprise_soak_performance_gate;ceic_093_reliability_security_suite_gate"
+set(_engine_listener_soak_certification_depends
+  public_release_soak_lane
+  public_release_soak_gate
+  memory_sanitizer_soak_concurrency_gate
+  agent_enterprise_soak_performance_gate
+  ceic_093_reliability_security_suite_gate
 )
+if(TARGET dpc_soak_leak_resource_stability_gate)
+  list(APPEND _engine_listener_soak_certification_depends
+    dpc_soak_leak_resource_stability_gate
+  )
+endif()
+set_tests_properties(engine_listener_soak_certification_gate PROPERTIES
+  DEPENDS "${_engine_listener_soak_certification_depends}"
+)
+unset(_engine_listener_soak_certification_depends)
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_compatibility_upgrade_downgrade_gate
   compatibility-upgrade-downgrade
   "ELER-106;ELER-GATE-106;compatibility_upgrade_downgrade;format_version_policy;protocol_version_policy;downgrade_refusal;cluster_stub_boundary;linux_proof"
 )
-set_tests_properties(engine_listener_compatibility_upgrade_downgrade_gate PROPERTIES
-  DEPENDS "public_upgrade_migration_gate;database_lifecycle_upgrade_migration_conformance;database_lifecycle_protocol_versioning_conformance;optimizer_enterprise_plan_cache_gate"
+set(_engine_listener_compatibility_upgrade_downgrade_depends
+  public_upgrade_migration_gate
+  optimizer_enterprise_plan_cache_gate
 )
+if(TARGET database_lifecycle_upgrade_migration_conformance)
+  list(APPEND _engine_listener_compatibility_upgrade_downgrade_depends
+    database_lifecycle_upgrade_migration_conformance
+  )
+endif()
+if(TARGET database_lifecycle_protocol_versioning_conformance)
+  list(APPEND _engine_listener_compatibility_upgrade_downgrade_depends
+    database_lifecycle_protocol_versioning_conformance
+  )
+endif()
+set_tests_properties(engine_listener_compatibility_upgrade_downgrade_gate PROPERTIES
+  DEPENDS "${_engine_listener_compatibility_upgrade_downgrade_depends}"
+)
+unset(_engine_listener_compatibility_upgrade_downgrade_depends)
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_parser_contract_freeze_gate
@@ -240,9 +268,27 @@ sb_add_engine_listener_enterprise_gate(
   "ELER-107;ELER-GATE-107;operational_readiness;health_readiness_liveness;diagnostics;supportability;linux_proof"
 )
 
-set_tests_properties(engine_listener_operational_readiness_gate PROPERTIES
-  DEPENDS "engine_listener_management_envelope_conformance;engine_listener_graceful_drain_stop_conformance;engine_listener_support_bundle_conformance;database_lifecycle_observability_conformance;database_lifecycle_supportability_evidence_conformance;database_lifecycle_maintenance_repair_conformance"
+set(_engine_listener_operational_readiness_depends
+  engine_listener_management_envelope_conformance
+  engine_listener_graceful_drain_stop_conformance
+  engine_listener_support_bundle_conformance
 )
+foreach(_database_lifecycle_operational_readiness_test IN ITEMS
+    database_lifecycle_observability_conformance
+    database_lifecycle_supportability_evidence_conformance
+    database_lifecycle_maintenance_repair_conformance
+)
+  if(TARGET "${_database_lifecycle_operational_readiness_test}")
+    list(APPEND _engine_listener_operational_readiness_depends
+      "${_database_lifecycle_operational_readiness_test}"
+    )
+  endif()
+endforeach()
+unset(_database_lifecycle_operational_readiness_test)
+set_tests_properties(engine_listener_operational_readiness_gate PROPERTIES
+  DEPENDS "${_engine_listener_operational_readiness_depends}"
+)
+unset(_engine_listener_operational_readiness_depends)
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_release_artifact_trust_gate
@@ -846,4 +892,174 @@ add_test(
 )
 set_tests_properties(engine_listener_mga_integrated_physical_cleanup_conformance PROPERTIES
   LABELS "ELER-024;ELER-GATE-024;ELER-101;ELER-GATE-101;engine_listener_enterprise;transaction;mga;physical_cleanup;row_data;relation_store;secondary_index;overflow;current_row_map;page_finality;allocation_map;linux_proof"
+)
+
+# Aggregate gates are available in reduced profiles, while several of their
+# prerequisite tests are profile-gated or registered later by tests/release.
+# Resolve the dependency lists after every local test has been declared.  Keep
+# forward public-release dependencies only when that profile is enabled; all
+# other edges must name a test already registered in the selected graph.
+function(sb_set_engine_listener_registered_dependencies test_name)
+  set(_registered_dependencies)
+  foreach(_dependency IN LISTS ARGN)
+    if(TEST "${_dependency}")
+      list(APPEND _registered_dependencies "${_dependency}")
+    elseif(SB_BUILD_PUBLIC_RELEASE_CORRECTNESS AND
+           _dependency MATCHES "^public_")
+      list(APPEND _registered_dependencies "${_dependency}")
+    endif()
+  endforeach()
+  set_tests_properties("${test_name}" PROPERTIES
+    DEPENDS "${_registered_dependencies}"
+  )
+endfunction()
+
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_platform_matrix_gate
+  public_platform_matrix_gate
+  engine_listener_storage_io_conformance
+  engine_listener_storage_io_platform_source_gate
+  engine_listener_management_envelope_conformance
+  engine_listener_ipv6_dual_stack_transport_conformance
+  engine_listener_parser_pool_lifecycle_conformance
+  engine_listener_tls_channel_binding_conformance
+  engine_listener_owner_lifecycle_artifact_conformance
+  engine_listener_windows_transport_source_gate
+  engine_listener_bsd_peer_owner_management_gate
+  engine_listener_owner_lifecycle_platform_source_gate
+  public_crypto_entropy_policy_gate
+  public_install_service_hardening_gate
+  engine_listener_no_skip_waiver_xfail_release_gate
+  public_no_skip_waiver_xfail_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_native_platform_handoff_gate
+  engine_listener_platform_matrix_gate
+  public_platform_matrix_gate
+  engine_listener_no_skip_waiver_xfail_release_gate
+  public_no_skip_waiver_xfail_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_native_platform_proof_package_import_gate
+  engine_listener_native_platform_handoff_gate
+  engine_listener_no_skip_waiver_xfail_release_gate
+  public_no_skip_waiver_xfail_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_performance_scalability_baseline_gate
+  scratchbird_beta_performance_baseline_conformance
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_soak_certification_gate
+  public_release_soak_lane
+  public_release_soak_gate
+  memory_sanitizer_soak_concurrency_gate
+  dpc_soak_leak_resource_stability_gate
+  agent_enterprise_soak_performance_gate
+  ceic_093_reliability_security_suite_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_compatibility_upgrade_downgrade_gate
+  public_upgrade_migration_gate
+  database_lifecycle_upgrade_migration_conformance
+  database_lifecycle_protocol_versioning_conformance
+  optimizer_enterprise_plan_cache_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_operational_readiness_gate
+  engine_listener_management_envelope_conformance
+  engine_listener_graceful_drain_stop_conformance
+  engine_listener_support_bundle_conformance
+  database_lifecycle_observability_conformance
+  database_lifecycle_supportability_evidence_conformance
+  database_lifecycle_maintenance_repair_conformance
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_release_artifact_trust_gate
+  public_release_attestation_gate
+  public_artifact_reproducibility_gate
+  public_artifact_signature_gate
+  public_dependency_sbom_gate
+  public_platform_matrix_gate
+  public_sanitizer_static_analysis_gate
+  public_release_version_metadata_gate
+  public_crypto_entropy_policy_gate
+  public_generated_provenance_gate
+  public_install_service_hardening_gate
+  public_admin_runbook_gate
+  public_api_abi_compat_gate
+  public_cluster_provider_boundary_cleanup_gate
+  public_cluster_boundary_cleanup_audit_gate
+  database_lifecycle_release_provenance_sbom_license_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_enterprise_documentation_gate
+  public_enterprise_documentation_gate
+  public_doc_consistency_gate
+  public_admin_runbook_gate
+  public_api_abi_compat_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_support_maintenance_policy_gate
+  public_support_policy_gate
+  public_support_bundle_incident_gate
+  public_disaster_recovery_gate
+  public_audit_privacy_gate
+  public_api_abi_compat_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_project_only_implementation_proof_gate
+  engine_listener_no_skip_waiver_xfail_release_gate
+  engine_listener_row_level_traceability_manifest_gate
+  engine_listener_parser_contract_freeze_gate
+  engine_listener_generated_resource_determinism_gate
+  engine_listener_sbsql_parser_sync_gate
+  engine_listener_release_profile_completeness_gate
+  engine_listener_support_bundle_redaction_gate
+  public_project_export_gate
+  sblr_surface_reference_interface_closure_gate
+  sblr_surface_sbsql_sync_guardrail_gate
+  sblr_surface_function_registry_dispatch_conformance
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_external_review_closure_package_gate
+  engine_listener_adversarial_security_validation_gate
+  engine_listener_fuzz_property_invariant_suite_gate
+  engine_listener_crash_recovery_certification_gate
+  engine_listener_operational_readiness_gate
+  engine_listener_release_artifact_trust_gate
+  engine_listener_enterprise_documentation_gate
+  engine_listener_support_maintenance_policy_gate
+  engine_listener_parser_contract_freeze_gate
+  engine_listener_sbsql_parser_sync_gate
+  sblr_surface_reference_interface_closure_gate
+  sblr_surface_sbsql_sync_guardrail_gate
+  public_cluster_provider_boundary_cleanup_gate
+  public_cluster_boundary_cleanup_audit_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_gold_enterprise_readiness_gate
+  engine_listener_project_only_implementation_proof_gate
+  engine_listener_external_review_closure_package_gate
+  engine_listener_integrated_product_proof_gate
+  engine_listener_crash_recovery_certification_gate
+  engine_listener_soak_certification_gate
+  engine_listener_performance_scalability_baseline_gate
+  engine_listener_compatibility_upgrade_downgrade_gate
+  engine_listener_operational_readiness_gate
+  engine_listener_release_artifact_trust_gate
+  engine_listener_enterprise_documentation_gate
+  engine_listener_support_maintenance_policy_gate
+  engine_listener_native_platform_handoff_gate
+  engine_listener_native_platform_proof_package_import_gate
+  public_platform_matrix_gate
+)
+sb_set_engine_listener_registered_dependencies(
+  engine_listener_third_audit_evidence_package_gate
+  engine_listener_gold_enterprise_readiness_gate
+  engine_listener_project_only_implementation_proof_gate
+  engine_listener_external_review_closure_package_gate
+  engine_listener_no_skip_waiver_xfail_release_gate
+  engine_listener_generated_resource_determinism_gate
+  public_project_export_gate
 )

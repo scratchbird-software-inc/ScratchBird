@@ -1391,12 +1391,12 @@ PERFORMANCE_SCALABILITY_ROWS: tuple[dict[str, Any], ...] = (
         "row_id": "dml_insert_throughput",
         "surface": "dml",
         "required_operation_id": "dml_insert_batch",
-        "metric_claim": "bounded DML insert throughput is measured through SBLR DML and native MGA storage",
+        "metric_claim": "bounded DML insert throughput is measured through the engine-owned DML API and native MGA storage",
         "behavior_gates": ("scratchbird_beta_performance_baseline_conformance",),
         "evidence_files": {
             "tests/performance/scratchbird_beta_performance_baseline_conformance.cpp": (
                 "insert_rows_per_second",
-                "SBLR_DML_INSERT_ROWS",
+                "EngineInsertRows",
                 "scratchbird_mga_native_storage",
                 "reference_or_embedded_storage_backend",
             ),

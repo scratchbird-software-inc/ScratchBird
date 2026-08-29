@@ -29,11 +29,8 @@ constexpr std::string_view kLifecycleReportShape = "result.shape.management_repo
 constexpr std::string_view kLifecycleManagementResource = "resource.contract.lifecycle_management";
 constexpr std::string_view kLifecycleReadResource = "resource.contract.lifecycle_read";
 constexpr std::string_view kDatabaseUuidFromContext = "database_uuid_from_context";
-// A parser can describe CREATE DATABASE but cannot carry the first-principal
-// authority that makes a database creation valid.  That authority is only
-// available to the explicit local embedded bootstrap command.
-constexpr std::string_view kPublicBootstrapAuthorityNotSerializable =
-    "none_public_bootstrap_authority_not_serializable";
+constexpr std::string_view kEngineAssignedDatabaseCreateIdentities =
+    "engine_assigned_database_uuid;engine_assigned_filespace_uuid";
 
 bool Contains(std::string_view value, std::string_view needle) {
   return value.find(needle) != std::string_view::npos;
@@ -201,15 +198,15 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        kLifecycleStatusShape,
        kLifecycleDiagnosticShape,
        kLifecycleManagementResource,
-       "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
-       "ERROR",
-       "Public CREATE DATABASE is lowered only to the engine bootstrap-boundary refusal.",
+       "",
+       "INFO",
+       "Authenticated CREATE DATABASE is lowered to the engine-owned lifecycle bootstrap.",
        kLifecycleAuthorityDomain,
        kLifecycleSecurityAuthority,
-       "right.local_embedded_first_principal_bootstrap",
-       kPublicBootstrapAuthorityNotSerializable,
-       false,
-       false,
+       "right.lifecycle_create",
+       kEngineAssignedDatabaseCreateIdentities,
+       true,
+       true,
        false,
        false,
        false,

@@ -23,6 +23,8 @@
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include "canonical_sblr_admission_test_helper.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -160,6 +162,10 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:CATALOG_MUTATE");
   context.trace_tags.push_back("CBQ-005");
@@ -202,6 +208,9 @@ api::EngineColumnDefinition Column(std::string name, std::string type, std::uint
       GeneratedUuidText(UuidKind::object, 300 + ordinal);
   column.names.push_back(Name(std::move(name)));
   column.descriptor = Descriptor(std::move(type));
+  if (column.descriptor.canonical_type_name == "text") {
+    column.descriptor.encoded_descriptor = "type=text";
+  }
   column.ordinal = ordinal;
   column.nullable = true;
   return column;
@@ -660,7 +669,7 @@ void RequireCoreIndexManagementAndStatistics() {
 }
 
 void RequireSblrCreateIndexRoute(const api::EngineRequestContext& context) {
-  auto envelope = sblr::MakeSblrEnvelope("ddl.create_index",
+  auto envelope = sblr::MakeSblrEnvelope("engine.op.ddl_create_index",
                                          "SBLR_DDL_CREATE_INDEX",
                                          "trace.cbq005.sblr.create_bitmap_index");
   envelope.requires_security_context = true;
@@ -673,6 +682,8 @@ void RequireSblrCreateIndexRoute(const api::EngineRequestContext& context) {
   AddOptionOperand(&envelope, "index_name", "status_bitmap_idx");
   AddOptionOperand(&envelope, "index_profile", "bitmap");
   AddOptionOperand(&envelope, "index_key_envelope", "status");
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
   if (!result.accepted || !result.api_result.ok) {
@@ -685,7 +696,7 @@ void RequireSblrCreateIndexRoute(const api::EngineRequestContext& context) {
   }
   Require(result.envelope_validated && result.accepted && result.api_result.ok,
           "SBLR ddl.create_index route failed");
-  Require(result.api_result.operation_id == "ddl.create_index",
+  Require(result.api_result.operation_id == "engine.op.ddl_create_index",
           "SBLR ddl.create_index operation id drifted");
   Require(EvidenceContains(result.api_result, "index_family", "bitmap"),
           "SBLR create index route did not persist bitmap family evidence");

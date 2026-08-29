@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 
-BENCHMARK_VERIFIER = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+BENCHMARK_PASSWORD = "ScratchBird-E2E-2026!"
 
 
 class LiveBenchmarkError(RuntimeError):
@@ -161,9 +161,7 @@ def benchmark_env(repo_root: Path, port: int) -> dict[str, str]:
     env["BENCHMARK_SCRATCHBIRD_PORT"] = str(port)
     env["BENCHMARK_SCRATCHBIRD_DB"] = "default"
     env["BENCHMARK_SCRATCHBIRD_USER"] = "benchmark_user"
-    env["BENCHMARK_SCRATCHBIRD_PASSWORD"] = (
-        f"scheme=local_password_v1;principal=benchmark_user;verifier={BENCHMARK_VERIFIER}"
-    )
+    env["BENCHMARK_SCRATCHBIRD_PASSWORD"] = BENCHMARK_PASSWORD
     env["BENCHMARK_SCRATCHBIRD_SSLMODE"] = "prefer"
     env["SCRATCHBIRD_ENABLE_COPY_STREAMING"] = "1"
     env["BENCHMARK_SCRATCHBIRD_ISQL_TIMEOUT"] = "1200"
@@ -192,8 +190,10 @@ def validate_sb_isql_monitor_artifacts(input_dir: Path, output_dir: Path, monito
     require(monitor_path.exists(), f"missing sb_isql benchmark monitor stream: {monitor_path}")
     scripts = sorted(input_dir.glob("*.sql"))
     require(scripts, "benchmark did not preserve any generated sb_isql scripts")
-    require(any(path.name.endswith(".copy") for path in input_dir.iterdir()),
-            "benchmark did not preserve generated COPY input files")
+    require(any("INSERT INTO users.public.sbsfc021_stream_table" in
+                path.read_text(encoding="utf-8", errors="replace")
+                for path in scripts),
+            "benchmark did not preserve its single-row INSERT script")
     result_files = sorted(output_dir.glob("*.result.json"))
     require(result_files, "benchmark did not preserve per-script result JSON files")
     events = [
@@ -292,7 +292,7 @@ def main(argv: list[str]) -> int:
     cert, key = generate_server_cert(args.openssl, work)
     port = find_free_port()
 
-    run([args.example_db_seeder, str(database), "benchmark_user", BENCHMARK_VERIFIER], cwd=repo_root)
+    run([args.example_db_seeder, str(database), "benchmark_user", BENCHMARK_PASSWORD], cwd=repo_root)
 
     server = None
     listener = None
@@ -302,7 +302,6 @@ def main(argv: list[str]) -> int:
                 args.server,
                 "--foreground",
                 "--no-listeners",
-                "--create-if-missing",
                 "--control-dir",
                 str(server_control),
                 "--runtime-dir",

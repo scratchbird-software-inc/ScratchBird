@@ -25,17 +25,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from live_auth_fixture import (
-    DEFAULT_PRINCIPAL_UUID,
-    local_password_evidence,
-    write_local_password_auth_fixture,
-)
+from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
 
 
 SCHEMA_VERSION = "cdp.config_defaults_rollback_gate.v1"
 EXPECTED_DISABLED = "DML.NATIVE_BULK_INGEST.DISABLED"
 TARGET = "cdp049_copy_survives_native_disabled"
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 FORBIDDEN_EXECUTION_PLAN_PATH = "docs" + "/execution-plans"
 
 SHOW_MANAGEMENT_FIELDS = (
@@ -181,29 +176,31 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> None:
         proc.wait(timeout=4)
 
 
-def write_auth_file(database: Path) -> None:
-    write_local_password_auth_fixture(
-        database,
-        "alice",
-        VERIFIER,
-        DEFAULT_PRINCIPAL_UUID,
-        "right:CONNECT",
-    )
-
-
-def auth_evidence() -> str:
-    return local_password_evidence("alice", VERIFIER)
-
-
 def start_embedded(args: argparse.Namespace, work: Path) -> Route:
     root = work / "embedded"
     root.mkdir(parents=True, exist_ok=True)
     database = root / "e.sbdb"
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="embedded",
+    )
     return Route(
         name="embedded",
         root=root,
         database=database,
-        args=[args.sb_isql, str(database), "--mode=embedded", "--sslmode=disable"],
+        args=[
+            args.sb_isql,
+            str(database),
+            "--mode=embedded",
+            "--sslmode=disable",
+            "-U",
+            "alice",
+            "-P",
+            PUBLIC_TEST_PASSWORD,
+        ],
     )
 
 
@@ -213,13 +210,18 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
     database = root / "l.sbdb"
     control = root / "sc"
     endpoint = control / "s.sock"
-    write_auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="local-ipc",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(control),
             "--runtime-dir",
@@ -247,7 +249,7 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
             "-U",
             "alice",
             "-P",
-            auth_evidence(),
+            PUBLIC_TEST_PASSWORD,
         ],
         processes=[server],
     )
@@ -260,13 +262,18 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
     server_control = root / "sc"
     endpoint = server_control / "s.sock"
     port = free_port()
-    write_auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="inet",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -314,7 +321,7 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
             "-U",
             "alice",
             "-P",
-            auth_evidence(),
+            PUBLIC_TEST_PASSWORD,
         ],
         processes=[server, listener],
     )
@@ -756,6 +763,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args(argv[1:])
 

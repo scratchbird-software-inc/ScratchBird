@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "cst/cst.hpp"
@@ -158,11 +159,24 @@ sblr::SblrDispatchRequest DispatchRequest(const OperationRow& row,
   request.envelope = sblr::MakeSblrEnvelope(std::string(row.operation_id),
                                             std::string(row.opcode),
                                             "trace.pfar013b.agent_surface");
+  const auto* registry = sblr::LookupSblrOperation(row.operation_id);
+  Require(registry != nullptr,
+          std::string(row.operation_id) + " canonical registry row missing");
+  Require(registry->opcode == row.opcode,
+          std::string(row.operation_id) + " canonical opcode mismatch");
+  request.envelope.opcode_code = registry->code;
+  request.envelope.parser_package_uuid =
+      "019f013b-0000-7000-8000-000000000104";
+  request.envelope.registry_snapshot_uuid =
+      "019f013b-0000-7000-8000-000000000106";
   request.envelope.result_shape = row.cluster_scoped ? "cluster.provider.stub.v1"
                                                      : "agent.command_surface.v1";
   request.envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
-  request.envelope.requires_security_context = true;
-  request.envelope.requires_cluster_authority = row.cluster_scoped;
+  request.envelope.requires_security_context = registry->requires_security_context;
+  request.envelope.requires_transaction_context =
+      registry->requires_transaction_context;
+  request.envelope.requires_cluster_authority =
+      registry->requires_cluster_authority;
   request.api_request.context = request.context;
   request.api_request.operation_id = std::string(row.operation_id);
   if (row.expected_code == "METRIC.STALE") {
@@ -201,7 +215,7 @@ void RequireCommandLowering(const CommandRow& row) {
   Require(envelope.payload.find(row.sql) == std::string::npos,
           std::string(row.sql) + " embedded source SQL text");
   const auto admission = server::AdmitServerSblrEnvelope(
-      server::ServerSblrAdmissionRequest{envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
   Require(admission.admitted,
           std::string(row.sql) + " server admission rejected route");
   Require(admission.operation_id == row.operation_id,

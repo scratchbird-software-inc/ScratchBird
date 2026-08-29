@@ -39,6 +39,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
     sblr_table_truncate_runtime.cpp
   sblr_table_analyze_runtime.cpp
   sblr_bulk_import_stream_runtime.cpp
+  sblr_plan_import_rows_codec.cpp
   sblr_bulk_export_stream_runtime.cpp
   sblr_statement_batch_runtime.cpp
   sblr_atomic_cas_runtime.cpp
@@ -248,6 +249,22 @@ target_include_directories(sb_sblr_parameter_wire_codec PUBLIC
 target_link_libraries(sb_sblr_parameter_wire_codec PUBLIC sb_core_hash)
 endif()
 
+# Pure manifest-owned contextual-TEXT carrier codec shared by parser and
+# engine consumers.  The guarded duplicate declaration also supports build
+# modes that enter this directory before engine/internal_api.
+if(NOT TARGET sb_contextual_text_literal_v2_codec)
+add_library(sb_contextual_text_literal_v2_codec STATIC
+  contextual_text_literal_v2_codec.cpp
+)
+target_compile_features(sb_contextual_text_literal_v2_codec PUBLIC cxx_std_20)
+target_include_directories(sb_contextual_text_literal_v2_codec PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api
+)
+target_link_libraries(sb_contextual_text_literal_v2_codec PUBLIC sb_core_hash)
+endif()
+
 # Pure canonical SBOP producer/decoder shared with parser producers.  It owns
 # wire validation only and carries no admission, catalog, MGA, or executor
 # authority.
@@ -265,7 +282,8 @@ target_include_directories(sb_sblr_operation_wire_codec PUBLIC
   ${CMAKE_SOURCE_DIR}/src/engine/internal_api
 )
 target_link_libraries(sb_sblr_operation_wire_codec PUBLIC
-  sb_sblr_parameter_wire_codec sb_core_hash)
+  sb_sblr_parameter_wire_codec sb_contextual_text_literal_v2_codec
+  sb_core_hash sbl_numeric)
 endif()
 
 if(SB_BUILD_QOW_CLOSURE_TESTS)
@@ -425,7 +443,7 @@ if(BUILD_TESTING)
   target_include_directories(sbsql_sblr_alignment_ia10c_event_notification PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(sbsql_sblr_alignment_ia10c_event_notification PRIVATE sb_engine_sblr)
   add_test(NAME sbsql_sblr_alignment_ia10c_event_notification COMMAND sbsql_sblr_alignment_ia10c_event_notification)
-  set_tests_properties(sbsql_sblr_alignment_ia10c_event_notification PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-10;IA-10C;event-notification;CSC-TEST-003338;CSC-TEST-003339;CSC-TEST-003340;CSC-TEST-003341;protocol_binary;contract" TIMEOUT 30)
+  set_tests_properties(sbsql_sblr_alignment_ia10c_event_notification PROPERTIES LABELS "sbsql_sblr_alignment;IA-10;IA-10C;event-notification;protocol_binary;static_executor_evidence_refusal;component_regression;authority_diagnostic_registry_blocked" TIMEOUT 30)
 
   add_executable(sbsql_sblr_alignment_ia10b_local_metrics_read
     ${CMAKE_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia10b_local_metrics_read_test.cpp
@@ -437,7 +455,7 @@ if(BUILD_TESTING)
   add_test(NAME sbsql_sblr_alignment_ia10b_local_metrics_read
     COMMAND sbsql_sblr_alignment_ia10b_local_metrics_read)
   set_tests_properties(sbsql_sblr_alignment_ia10b_local_metrics_read PROPERTIES
-    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-10;IA-10B;SBLR_READ_METRICS;CSC-TEST-003334;CSC-TEST-003335;CSC-TEST-003336;CSC-TEST-003337;protocol_binary;contract"
+    LABELS "sbsql_sblr_alignment;IA-10;IA-10B;SBLR_READ_METRICS;protocol_binary;static_executor_evidence_refusal;component_regression;authority_diagnostic_registry_blocked"
     TIMEOUT 30)
 
   add_executable(sbsql_sblr_alignment_ia10a_management_envelope

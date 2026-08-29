@@ -37,10 +37,38 @@ REQUIRED_IMPL_FIELDS = (
 )
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    """Safe loader that refuses duplicate mapping keys."""
+
+
+def construct_unique_mapping(
+    loader: UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    construct_unique_mapping,
+)
+
+
 def load_yaml(path: Path) -> Any:
     try:
         with path.open(encoding="utf-8") as handle:
-            return yaml.safe_load(handle)
+            return yaml.load(handle, Loader=UniqueKeyLoader)
     except Exception as exc:  # pragma: no cover - CTest reports the message.
         raise SystemExit(f"FAIL: {path} does not parse as YAML: {exc}") from exc
 
@@ -56,14 +84,20 @@ def validate_impl_row_semantics(operation_id: str, impl: dict[str, Any], errors:
     scope = impl.get("scope_status")
     status = str(impl.get("current_implementation_status", ""))
     readiness = impl.get("executor_readiness_status")
-    if scope == "noncluster_required":
+    if scope in {"noncluster_required", "local_or_cluster"}:
         if status not in {
             "behavior_implemented",
             "behavior_implemented_policy_gated_no_hardware_release_claim",
+            "exact_profile_refusal",
         }:
-            errors.append(f"{operation_id} noncluster row has unsupported implementation status {status}")
-        if readiness not in {"mapped_ready", "sblr_callable", "not_sblr_callable"}:
-            errors.append(f"{operation_id} noncluster row has unsupported readiness {readiness}")
+            errors.append(f"{operation_id} local row has unsupported implementation status {status}")
+        expected_readiness = (
+            {"mapped_refusal"}
+            if status == "exact_profile_refusal"
+            else {"mapped_ready", "sblr_callable", "not_sblr_callable"}
+        )
+        if readiness not in expected_readiness:
+            errors.append(f"{operation_id} local row has unsupported readiness {readiness}")
     elif scope in {"cluster_only_fail_closed", "cluster_mapping_unavailable"}:
         if "fail_closed" not in status:
             errors.append(f"{operation_id} cluster row must have fail_closed status, got {status}")

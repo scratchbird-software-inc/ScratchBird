@@ -26,8 +26,8 @@ from pathlib import Path
 from typing import Any
 
 
-SURFACE_REGISTRY = "public_input_snapshot"
-BUILTIN_EXPRESSION_REGISTRY = "public_contract_snapshot"
+SURFACE_REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
+BUILTIN_EXPRESSION_REGISTRY = "../Specifications/Core/registries/builtin-expression-registry.yaml"
 SEED_REGISTRY = "project/src/engine/functions/registry/function_seed_registry.cpp"
 DISPATCH_SOURCE = "project/src/engine/functions/families/data_scalar_functions_06_system_session_catalog.inc"
 FIXTURES = "project/tests/sbsql_parser_worker/generated/full_surface/SBSFC_016_PROCEDURAL_CONTEXT_FIXTURES.csv"

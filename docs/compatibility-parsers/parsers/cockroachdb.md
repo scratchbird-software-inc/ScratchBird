@@ -10,13 +10,13 @@ Reference profile: `26.1.3`
 
 Release batch: `distributed`
 
-Public beta status: `beta_gate_passed_mapped_or_explicit_refusal`
+Retained pre-hold beta evidence status: `beta_gate_passed_mapped_or_explicit_refusal`
 
 Declared public surfaces covered: `97`
 
 Surface digest: `46eb9643f631d564848f80f086bdc75646fbf5b34f31aedb2b613dd62e928c2a`
 
-This page is generated from the public compatibility parser remap matrix. Every row below is a declared beta parser surface and states whether it is supported through ScratchBird SBLR/parser-support routing, routed to a cluster/provider boundary, documented as presentation-only behavior, or explicitly refused with a deterministic diagnostic.
+This page is generated from the public compatibility parser remap matrix. Its status and support wording records the last verified pre-hold SBLR baseline; it is historical evidence and is not a claim of executable conformance to the in-progress SBLR contract. Every row below is a declared beta parser surface and states whether it was supported through ScratchBird SBLR/parser-support routing, routed to a cluster/provider boundary, documented as presentation-only behavior, or explicitly refused with a deterministic diagnostic.
 
 The ScratchBird engine remains SBLR/UUID-only. Compatibility SQL is parsed outside the engine, and accepted work is still revalidated by ScratchBird authority before execution.
 

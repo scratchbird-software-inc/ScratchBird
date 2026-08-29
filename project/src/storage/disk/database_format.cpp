@@ -39,6 +39,12 @@ constexpr u32 kOffsetCreationMillis = 48;
 constexpr u32 kOffsetFeatureFlags = 56;
 constexpr u32 kOffsetCompatibilityFlags = 64;
 constexpr u32 kOffsetHeaderChecksum = 72;
+constexpr u32 kOffsetDatabaseLocalPrivateRelationLocatorMarker = 80;
+constexpr u32 kOffsetReservedZero = 256;
+static_assert(kOffsetDatabaseLocalPrivateRelationLocatorMarker +
+                  kDatabaseHeaderOpaqueMarkerBytes ==
+              kOffsetReservedZero);
+static_assert(kOffsetReservedZero < kDatabaseHeaderSerializedBytes);
 constexpr u32 kDatabaseFormatMajorCurrent = kScratchBirdDatabaseFormatMajor;
 constexpr u32 kDatabaseFormatMajorMinSupported = kScratchBirdDatabaseFormatMajor;
 constexpr u32 kDatabaseFormatMajorMaxSupported = kScratchBirdDatabaseFormatMajor;
@@ -257,6 +263,10 @@ SerializedDatabaseHeaderResult SerializeDatabaseHeader(const DatabaseHeader& hea
   Store64(&serialized, kOffsetCreationMillis, header.creation_unix_epoch_millis);
   Store64(&serialized, kOffsetFeatureFlags, header.feature_flags);
   Store64(&serialized, kOffsetCompatibilityFlags, header.compatibility_flags);
+  std::copy(header.database_local_private_relation_locator_marker.begin(),
+            header.database_local_private_relation_locator_marker.end(),
+            serialized.begin() +
+                kOffsetDatabaseLocalPrivateRelationLocatorMarker);
   const u64 checksum = header.checksum_algorithm == ChecksumAlgorithm::none ? 0 : ComputeDatabaseHeaderChecksum(serialized);
   Store64(&serialized, kOffsetHeaderChecksum, checksum);
   result.serialized = serialized;
@@ -267,6 +277,14 @@ DatabaseHeaderResult ParseDatabaseHeader(const SerializedDatabaseHeader& seriali
   if (!std::equal(kScratchBirdDatabaseMagic.begin(), kScratchBirdDatabaseMagic.end(), serialized.begin() + kOffsetMagic)) {
     return HeaderError("SB-STORAGE-DATABASE-MAGIC-INVALID",
                        "storage.database.magic_invalid");
+  }
+  if (std::any_of(serialized.begin() + kOffsetReservedZero,
+                  serialized.end(),
+                  [](byte value) { return value != 0; })) {
+    return HeaderError(
+        "SB-STORAGE-DATABASE-HEADER-RESERVED-NONZERO",
+        "storage.database.header_reserved_nonzero",
+        "reserved_range=256..511");
   }
 
   DatabaseHeader header;
@@ -282,6 +300,11 @@ DatabaseHeaderResult ParseDatabaseHeader(const SerializedDatabaseHeader& seriali
   header.feature_flags = Load64(serialized, kOffsetFeatureFlags);
   header.compatibility_flags = Load64(serialized, kOffsetCompatibilityFlags);
   header.header_checksum = Load64(serialized, kOffsetHeaderChecksum);
+  std::copy(
+      serialized.begin() + kOffsetDatabaseLocalPrivateRelationLocatorMarker,
+      serialized.begin() + kOffsetDatabaseLocalPrivateRelationLocatorMarker +
+          header.database_local_private_relation_locator_marker.size(),
+      header.database_local_private_relation_locator_marker.begin());
 
   DatabaseHeaderResult validated = ValidateDatabaseHeader(header);
   if (!validated.ok()) {

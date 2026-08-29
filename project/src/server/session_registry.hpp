@@ -973,6 +973,20 @@ SessionOperationResult HandleAcquireStatementContext(
     ServerSessionRegistry* registry,
     const HostedEngineState& engine_state,
     const sbps::Frame& request);
+// Coordinates the private raw-carrier pair 694/7707 -> 695/7708.  Success
+// returns the exact engine-issued SBQNPB01 bytes; every refusal returns only a
+// correlated PS_DIAGNOSTIC (60/2001).
+SessionOperationResult HandleQueryNarrowBindingIssue(
+    ServerSessionRegistry* registry,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request);
+// Coordinates the private contextual-TEXT literal-profile pair
+// 698/7711 -> 699/7712. Success returns the exact engine-issued SBTLNS02;
+// every refusal returns only correlated PS_DIAGNOSTIC (60/2001).
+SessionOperationResult HandleIssueContextualTextLiteralProfiles(
+    ServerSessionRegistry* registry,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request);
 SessionOperationResult HandleNegotiateLiteralDescriptors(
     ServerSessionRegistry* registry,
     const sbps::Frame& request);
@@ -1027,6 +1041,10 @@ SessionOperationResult HandleCoordinateAccessCursorFetch(ServerSessionRegistry*,
 SessionOperationResult HandleCoordinateAccessCursorClose(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateInsert(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateUpdate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDmlUpdateRowsBind(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateDmlPlanImportRowsBind(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateDelete(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateMerge(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateTableTruncate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

@@ -39,7 +39,11 @@ unsigned BoundedSignedIntegerTypeRank(const std::string_view type_name) {
       "int8", "int16", "int32", "int64"};
   for (std::size_t ordinal = 0; ordinal < kTypes.size(); ++ordinal) {
     if (type_name == kTypes[ordinal] ||
-        (type_name == "integer" && kTypes[ordinal] == "int32")) {
+        (type_name == "tinyint" && kTypes[ordinal] == "int8") ||
+        (type_name == "smallint" && kTypes[ordinal] == "int16") ||
+        ((type_name == "integer" || type_name == "int") &&
+         kTypes[ordinal] == "int32") ||
+        (type_name == "bigint" && kTypes[ordinal] == "int64")) {
       return static_cast<unsigned>(ordinal + 1);
     }
   }
@@ -2399,11 +2403,11 @@ constexpr std::array<EngineApiCommandSpec, 54> kEngineApiCommandSpecs{{
     {"engine.query.bind_predicate", "ENGINE QUERY BIND PREDICATE", "ENGINE QUERY BIND PREDICATE", "query.bind_predicate", "SBLR_QUERY_BIND_PREDICATE", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindPredicate", "query_binding", "sys.query.predicate_descriptor", "right.query_execute", false, false},
     {"engine.query.bind_projection", "ENGINE QUERY BIND PROJECTION", "ENGINE QUERY BIND PROJECTION", "query.bind_projection", "SBLR_QUERY_BIND_PROJECTION", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindProjection", "query_binding", "sys.query.projection_descriptor", "right.query_execute", false, false},
     {"engine.transaction.prepare", "PREPARE TRANSACTION", "PREPARE TRANSACTION", "transaction.prepare", "SBLR_TRANSACTION_PREPARE", "sblr.transaction.control.v3", "result.shape.transaction_status", "EnginePrepareTransaction", "transaction_prepare", "sys.transaction.inventory", "right.transaction_control", true, true},
-    {"engine.catalog.resolve_name", "ENGINE CATALOG RESOLVE NAME", "ENGINE CATALOG RESOLVE NAME", "catalog.resolve_name", "SBLR_CATALOG_RESOLVE_NAME", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineResolveName", "catalog_lookup", "sys.name_registry", "right.catalog_read", false, false},
-    {"engine.catalog.map_uuid_to_name", "ENGINE CATALOG MAP UUID TO NAME", "ENGINE CATALOG MAP UUID TO NAME", "catalog.map_uuid_to_name", "SBLR_CATALOG_MAP_UUID_TO_NAME", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineMapUuidToName", "catalog_lookup", "sys.name_registry", "right.catalog_read", false, false},
-    {"engine.catalog.lookup_object", "ENGINE CATALOG LOOKUP OBJECT", "ENGINE CATALOG LOOKUP OBJECT", "catalog.lookup_object", "SBLR_CATALOG_LOOKUP_OBJECT", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineLookupObject", "catalog_lookup", "sys.catalog.object_descriptor", "right.catalog_read", false, false},
-    {"engine.catalog.list_children", "ENGINE CATALOG LIST CHILDREN", "ENGINE CATALOG LIST CHILDREN", "catalog.list_children", "SBLR_CATALOG_LIST_CHILDREN", "sblr.catalog.mutation.v3", "result.shape.catalog_children", "EngineListCatalogChildren", "catalog_lookup", "sys.catalog.object_descriptor", "right.catalog_read", false, false},
-    {"engine.catalog.get_dependencies", "ENGINE CATALOG GET DEPENDENCIES", "ENGINE CATALOG GET DEPENDENCIES", "catalog.get_dependencies", "SBLR_CATALOG_GET_DEPENDENCIES", "sblr.catalog.mutation.v3", "result.shape.catalog_dependencies", "EngineGetDependencies", "catalog_lookup", "sys.catalog.dependency_graph", "right.catalog_read", false, false},
+    {"engine.catalog.resolve_name", "ENGINE CATALOG RESOLVE NAME", "ENGINE CATALOG RESOLVE NAME", "catalog.resolve_name", "SBLR_CATALOG_RESOLVE_NAME", "sblr.catalog.introspect.v3", "result.shape.catalog_lookup", "EngineResolveName", "catalog_lookup", "sys.name_registry", "right.catalog_read", false, false},
+    {"engine.catalog.map_uuid_to_name", "ENGINE CATALOG MAP UUID TO NAME", "ENGINE CATALOG MAP UUID TO NAME", "catalog.map_uuid_to_name", "SBLR_CATALOG_MAP_UUID_TO_NAME", "sblr.catalog.introspect.v3", "result.shape.catalog_lookup", "EngineMapUuidToName", "catalog_lookup", "sys.name_registry", "right.catalog_read", false, false},
+    {"engine.catalog.lookup_object", "ENGINE CATALOG LOOKUP OBJECT", "ENGINE CATALOG LOOKUP OBJECT", "catalog.lookup_object", "SBLR_CATALOG_LOOKUP_OBJECT", "sblr.catalog.introspect.v3", "result.shape.catalog_lookup", "EngineLookupObject", "catalog_lookup", "sys.catalog.object_descriptor", "right.catalog_read", false, false},
+    {"engine.catalog.list_children", "ENGINE CATALOG LIST CHILDREN", "ENGINE CATALOG LIST CHILDREN", "catalog.list_children", "SBLR_CATALOG_LIST_CHILDREN", "sblr.catalog.introspect.v3", "result.shape.catalog_children", "EngineListCatalogChildren", "catalog_lookup", "sys.catalog.object_descriptor", "right.catalog_read", false, false},
+    {"engine.catalog.get_dependencies", "ENGINE CATALOG GET DEPENDENCIES", "ENGINE CATALOG GET DEPENDENCIES", "catalog.get_dependencies", "SBLR_CATALOG_GET_DEPENDENCIES", "sblr.catalog.introspect.v3", "result.shape.catalog_dependencies", "EngineGetDependencies", "catalog_lookup", "sys.catalog.dependency_graph", "right.catalog_read", false, false},
     {"engine.security.create_identity", "ENGINE SECURITY CREATE IDENTITY", "ENGINE SECURITY CREATE IDENTITY", "security.create_identity", "SBLR_SECURITY_CREATE_IDENTITY", "sblr.security.mutation.v3", "result.shape.security_status", "EngineCreateIdentity", "security_identity", "sys.security.identity", "right.security_admin", true, true},
     {"engine.security.alter_identity", "ENGINE SECURITY ALTER IDENTITY", "ENGINE SECURITY ALTER IDENTITY", "security.alter_identity", "SBLR_SECURITY_ALTER_IDENTITY", "sblr.security.mutation.v3", "result.shape.security_status", "EngineAlterIdentity", "security_identity", "sys.security.identity", "right.security_admin", true, true},
     {"engine.security.grant_right", "ENGINE SECURITY GRANT RIGHT", "ENGINE SECURITY GRANT RIGHT", "security.grant_right", "SBLR_SECURITY_GRANT_RIGHT", "sblr.security.mutation.v3", "result.shape.security_grant", "EngineGrantRight", "security_grant", "sys.security.grants", "right.security_admin", true, true},
@@ -2417,14 +2421,14 @@ constexpr std::array<EngineApiCommandSpec, 54> kEngineApiCommandSpecs{{
     {"engine.management.prepare_support_bundle", "ENGINE MANAGEMENT PREPARE SUPPORT BUNDLE", "ENGINE MANAGEMENT PREPARE SUPPORT BUNDLE", "management.prepare_support_bundle", "SBLR_MANAGEMENT_PREPARE_SUPPORT_BUNDLE", "sblr.management.runtime_operation.v3", "result.shape.support_bundle_manifest", "EnginePrepareSupportBundle", "management_support_bundle", "sys.management.support_bundle", "right.management_runtime_control", false, false},
     {"engine.lifecycle.enter_restricted_open", "ALTER DATABASE ENTER RESTRICTED OPEN", "ALTER DATABASE ENTER RESTRICTED OPEN", "lifecycle.enter_restricted_open", "SBLR_LIFECYCLE_ENTER_RESTRICTED_OPEN", "sblr.management.runtime_operation.v3", "result.shape.lifecycle_state", "EngineEnterRestrictedOpenLifecycle", "lifecycle_control", "sys.database.lifecycle", "right.lifecycle_control", true, false},
     {"engine.lifecycle.exit_restricted_open", "ALTER DATABASE EXIT RESTRICTED OPEN", "ALTER DATABASE EXIT RESTRICTED OPEN", "lifecycle.exit_restricted_open", "SBLR_LIFECYCLE_EXIT_RESTRICTED_OPEN", "sblr.management.runtime_operation.v3", "result.shape.lifecycle_state", "EngineExitRestrictedOpenLifecycle", "lifecycle_control", "sys.database.lifecycle", "right.lifecycle_control", true, false},
-    {"engine.extensibility.register_parser_package", "REGISTER PARSER PACKAGE", "REGISTER PARSER PACKAGE", "extensibility.register_parser_package", "SBLR_EXTENSIBILITY_REGISTER_PARSER_PACKAGE", "sblr.udr.operation.v3", "result.shape.parser_package_status", "EngineRegisterParserPackage", "parser_package", "sys.parser_package_registry", "right.parser_package_manage", true, true},
+    {"engine.extensibility.register_parser_package", "REGISTER PARSER PACKAGE", "REGISTER PARSER PACKAGE", "extensibility.register_parser_package", "SBLR_EXTENSIBILITY_REGISTER_PARSER_PACKAGE", "sblr.parser.operation.v3", "result.shape.parser_package_status", "EngineRegisterParserPackage", "parser_package", "sys.parser_package_registry", "right.parser_package_manage", true, true},
     {"engine.query.extract_value", "ENGINE QUERY EXTRACT VALUE", "ENGINE QUERY EXTRACT VALUE", "query.extract_value", "SBLR_QUERY_EXTRACT_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineExtractValue", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
     {"engine.query.set_operation", "ENGINE QUERY SET OPERATION", "ENGINE QUERY SET OPERATION", "query.set_operation", "SBLR_QUERY_SET_OPERATION", "sblr.query.relational.v3", "result.shape.typed_value", "EngineSetOperation", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
     {"engine.query.apply_numeric_operation", "ENGINE QUERY APPLY NUMERIC OPERATION", "ENGINE QUERY APPLY NUMERIC OPERATION", "query.apply_numeric_operation", "SBLR_QUERY_APPLY_NUMERIC_OPERATION", "sblr.query.relational.v3", "result.shape.typed_value", "EngineApplyNumericOperation", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
     {"engine.query.canonicalize_document_value", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "query.canonicalize_document_value", "SBLR_QUERY_CANONICALIZE_DOCUMENT_VALUE", "sblr.query.document.v3", "result.shape.typed_value", "EngineCanonicalizeDocumentValue", "query_value_helper", "sys.query.document_descriptor", "right.query_execute", false, false},
     {"engine.query.evaluate_advanced_datatype_family", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "query.evaluate_advanced_datatype_family", "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", "sblr.query.relational.v3", "result.shape.datatype_family_evaluation", "EngineEvaluateAdvancedDatatypeFamily", "query_value_helper", "sys.query.datatype_family_descriptor", "right.query_execute", false, false},
-    {"engine.query.validate_domain_value", "ENGINE QUERY VALIDATE DOMAIN VALUE", "ENGINE QUERY VALIDATE DOMAIN VALUE", "query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineValidateDomainValue", "query_value_helper", "sys.query.domain_descriptor", "right.query_execute", false, false},
-    {"engine.query.invoke_domain_method", "ENGINE QUERY INVOKE DOMAIN METHOD", "ENGINE QUERY INVOKE DOMAIN METHOD", "query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", "sblr.query.relational.v3", "result.shape.typed_value", "EngineInvokeDomainMethod", "query_value_helper", "sys.query.domain_descriptor", "right.query_execute", false, false},
+    {"engine.query.validate_domain_value", "ENGINE QUERY VALIDATE DOMAIN VALUE", "ENGINE QUERY VALIDATE DOMAIN VALUE", "query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineValidateDomainValue", "query_value_helper", "sys.query.domain_descriptor", "right.query_execute", false, true, false},
+    {"engine.query.invoke_domain_method", "ENGINE QUERY INVOKE DOMAIN METHOD", "ENGINE QUERY INVOKE DOMAIN METHOD", "query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", "sblr.query.relational.v3", "result.shape.typed_value", "EngineInvokeDomainMethod", "query_value_helper", "sys.query.domain_descriptor", "right.query_execute", false, true, false},
     {"engine.notification.unlisten_all", "UNLISTEN ALL NOTIFICATIONS", "UNLISTEN ALL NOTIFICATIONS", "session.notification.unlisten_all", "SBLR_EVENT_CHANNEL_UNLISTEN_ALL", "sblr.event.channel.v3", "result.shape.event_subscription_status", "EngineUnlistenSessionNotifications", "event_notification", "sys.event.notification_subscription", "right.event_subscribe", true, false},
     {"engine.cluster.sys_agents", "ENGINE CLUSTER SYS AGENTS", "ENGINE CLUSTER SYS AGENTS", "cluster.sys.agents", "SBLR_CLUSTER_SYS_AGENTS", "sblr.cluster.private_operation.v3", "cluster.provider.stub.v1", "EngineClusterProviderRoute", "cluster_provider_route", "sys.cluster.agents", "right.cluster_inspect", false, false, true},
     {"engine.cluster.inspect_state", "ENGINE CLUSTER INSPECT STATE", "ENGINE CLUSTER INSPECT STATE", "cluster.inspect_state", "SBLR_CLUSTER_INSPECT_STATE", "sblr.cluster.private_operation.v3", "cluster.provider.stub.v1", "EngineClusterProviderRoute", "cluster_provider_route", "sys.cluster.state", "right.cluster_inspect", false, false, true},
@@ -2448,6 +2452,84 @@ const EngineApiCommandSpec* EngineApiCommandSpecByOperation(std::string_view ope
     if (spec.operation_id == operation_id) return &spec;
   }
   return nullptr;
+}
+
+enum class EngineApiExternalAdmission {
+  canonical,
+  internal_only,
+  not_manifest_listed,
+};
+
+struct EngineApiWireIdentity {
+  std::string_view operation_id;
+  std::string_view opcode;
+  std::string_view operation_family;
+  EngineApiExternalAdmission admission{EngineApiExternalAdmission::canonical};
+};
+
+EngineApiWireIdentity EngineApiCommandWireIdentity(
+    const EngineApiCommandSpec& spec) {
+  static constexpr std::array<std::string_view, 10> kInternalOnly{{
+      "security.create_identity",
+      "security.alter_identity",
+      "security.grant_right",
+      "security.revoke_right",
+      "security.evaluate_visibility",
+      "security.evaluate_policy",
+      "management.inspect_config",
+      "management.set_config",
+      "management.reset_config",
+      "management.prepare_support_bundle",
+  }};
+  static constexpr std::array<std::string_view, 3> kNotManifestListed{{
+      "artifact.external_git.export_snapshot",
+      "artifact.external_git.diff_snapshot",
+      "artifact.external_git.rollback_plan",
+  }};
+
+  if (std::find(kNotManifestListed.begin(), kNotManifestListed.end(),
+                spec.operation_id) != kNotManifestListed.end()) {
+    return {"artifact.export_catalog", "SBLR_ARTIFACT_EXPORT_CATALOG",
+            "sblr.catalog.mutation.v3",
+            EngineApiExternalAdmission::not_manifest_listed};
+  }
+  if (std::find(kInternalOnly.begin(), kInternalOnly.end(),
+                spec.operation_id) == kInternalOnly.end()) {
+    return {spec.operation_id, spec.opcode, spec.operation_family,
+            EngineApiExternalAdmission::canonical};
+  }
+  if (spec.operation_id == "security.evaluate_visibility" ||
+      spec.operation_id == "security.evaluate_policy") {
+    return {"security.policy.show", "SBLR_SECURITY_POLICY_SHOW",
+            "sblr.policy.operation.v3",
+            EngineApiExternalAdmission::internal_only};
+  }
+  if (spec.operation_id == "management.inspect_config") {
+    return {"management.inspect_runtime", "SBLR_MANAGEMENT_INSPECT_RUNTIME",
+            "sblr.management.report.v3",
+            EngineApiExternalAdmission::internal_only};
+  }
+  if (spec.operation_id == "management.set_config" ||
+      spec.operation_id == "management.reset_config" ||
+      spec.operation_id == "management.prepare_support_bundle") {
+    return {"management.control_runtime", "SBLR_MANAGEMENT_CONTROL_RUNTIME",
+            "sblr.management.control.v3",
+            EngineApiExternalAdmission::internal_only};
+  }
+  return {"security.grant_right", "SBLR_SECURITY_GRANT_RIGHT",
+          "sblr.security.mutation.v3",
+          EngineApiExternalAdmission::internal_only};
+}
+
+std::string_view EngineApiExternalAdmissionMarker(
+    EngineApiExternalAdmission admission) {
+  if (admission == EngineApiExternalAdmission::internal_only) {
+    return "internal_engine_api_operation_id";
+  }
+  if (admission == EngineApiExternalAdmission::not_manifest_listed) {
+    return "unlisted_engine_api_operation_id";
+  }
+  return {};
 }
 
 std::string EngineApiCommandOpcodeForOperation(std::string_view operation_id) {
@@ -3835,7 +3917,6 @@ std::string ObservabilityOpcodeForOperation(std::string_view operation_id) {
 
 std::string CatalogOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "catalog.get_descriptor") return "SBLR_CATALOG_GET_DESCRIPTOR";
-  if (operation_id == "catalog.mutation.create_materialized_view") return "SBLR_CATALOG_MUTATION_CREATE_MATERIALIZED_VIEW";
   if (operation_id == "catalog.mutation.create_cast") return "SBLR_CATALOG_MUTATION_CREATE_CAST";
   if (operation_id == "catalog.mutation.create_server") return "SBLR_CATALOG_MUTATION_CREATE_SERVER";
   if (operation_id == "catalog.mutation.show_storage_buffer_io_index") return "SBLR_CATALOG_MUTATION_SHOW_STORAGE_BUFFER_IO_INDEX";
@@ -3870,15 +3951,10 @@ std::string CatalogOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "catalog.mutation.alter_reference") return "SBLR_CATALOG_MUTATION_ALTER_REFERENCE";
   if (operation_id == "catalog.mutation.create_pipeline") return "SBLR_CATALOG_MUTATION_CREATE_PIPELINE";
   if (operation_id == "catalog.mutation.create_collation") return "SBLR_CATALOG_MUTATION_CREATE_COLLATION";
-  if (operation_id == "catalog.mutation.create_type") return "SBLR_CATALOG_MUTATION_CREATE_TYPE";
-  if (operation_id == "catalog.mutation.alter_type") return "SBLR_CATALOG_MUTATION_ALTER_TYPE";
-  if (operation_id == "catalog.mutation.drop_type") return "SBLR_CATALOG_MUTATION_DROP_TYPE";
-  if (operation_id == "catalog.type.show") return "SBLR_SHOW_TYPE";
-  if (operation_id == "catalog.type.show_all") return "SBLR_SHOW_TYPES";
-  if (operation_id == "query.structured_type.constructor") return "SBLR_QUERY_STRUCTURED_TYPE_CONSTRUCTOR";
-  if (operation_id == "query.structured_type.cast") return "SBLR_QUERY_STRUCTURED_TYPE_CAST";
-  if (operation_id == "query.structured_type.compare") return "SBLR_QUERY_STRUCTURED_TYPE_COMPARE";
-  if (operation_id == "query.structured_type.serialize") return "SBLR_QUERY_STRUCTURED_TYPE_SERIALIZE";
+  if (operation_id == "engine.op.ddl_create_type") return "SBLR_DDL_CREATE_TYPE";
+  if (operation_id == "engine.op.ddl_alter_type") return "SBLR_DDL_ALTER_TYPE";
+  if (operation_id == "engine.op.ddl_drop_type") return "SBLR_DDL_DROP_TYPE";
+  if (operation_id == "engine.op.catalog_introspect") return "SBLR_CATALOG_INTROSPECT";
   if (operation_id == "catalog.mutation.alter_view") return "SBLR_CATALOG_MUTATION_ALTER_VIEW";
   if (operation_id == "catalog.mutation.create_udr") return "SBLR_CATALOG_MUTATION_CREATE_UDR";
   if (operation_id == "catalog.mutation.create_tenant") return "SBLR_CATALOG_MUTATION_CREATE_TENANT";
@@ -25731,19 +25807,6 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
     const CstDocument& cst,
     const std::vector<std::string>& resolved_object_uuids) {
   auto words = MeaningfulUpperTokens(cst);
-  std::vector<std::string> source_create_materialized_view_name_parts;
-  const bool source_create_materialized_view =
-      LifecycleCommandStartsWith(cst.source, "CREATE MATERIALIZED VIEW");
-  const bool source_create_materialized_view_name =
-      source_create_materialized_view &&
-      ExtractSourceQualifiedNameAfterPrefix(
-          cst.source, "CREATE MATERIALIZED VIEW",
-          &source_create_materialized_view_name_parts);
-  if (source_create_materialized_view &&
-      (words.size() < 3 || words[0] != "CREATE" || words[1] != "MATERIALIZED" ||
-       words[2] != "VIEW")) {
-    words = {"CREATE", "MATERIALIZED", "VIEW", "__SOURCE_NAME__"};
-  }
   if (words.empty()) return {};
   CatalogDescriptorMutationInfo info;
 
@@ -25764,12 +25827,7 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
         "sys.catalog." + suffix, std::move(descriptor_ref), true);
   };
 
-  if (words.size() >= 4 && words[0] == "CREATE" && words[1] == "MATERIALIZED" &&
-      words[2] == "VIEW") {
-    info = create("SBSQL-02482A768886", "create_materialized_view_stmt",
-                  "create_materialized_view", "materialized_view",
-                  "sys.catalog.materialized_view");
-  } else if (words.size() >= 3 && words[0] == "CREATE" && words[1] == "CAST") {
+  if (words.size() >= 3 && words[0] == "CREATE" && words[1] == "CAST") {
     info = create("SBSQL-0D79A271D250", "create_cast_stmt",
                   "create_cast", "cast", "sys.catalog.cast_descriptor");
   } else if (words.size() >= 3 && words[0] == "CREATE" && words[1] == "SERVER") {
@@ -25890,8 +25948,10 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
     info = create("SBSQL-CDF9CAB99BFE", "create_collation_stmt",
                   "create_collation", "collation", "sys.catalog.collation");
   } else if (words.size() >= 3 && words[0] == "CREATE" && words[1] == "TYPE") {
-    info = create("SBSQL-D13498FA0EF4", "create_type_stmt",
-                  "create_type", "type", "sys.catalog.type");
+    info = MakeCatalogDescriptorMutation(
+        "SBSQL-D13498FA0EF4", "create_type_stmt",
+        "engine.op.ddl_create_type", "create", "type",
+        "sys.catalog.type", "sys.catalog.type");
   } else if (words.size() >= 3 && words[0] == "ALTER" && words[1] == "VIEW") {
     info = alter("SBSQL-DDC745405168", "alter_view_action",
                  "alter_view", "view", "sys.catalog.view");
@@ -25921,16 +25981,7 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
   }
 
   std::size_t index = 0;
-  if (source_create_materialized_view &&
-      info.operation_id == "catalog.mutation.create_materialized_view") {
-    if (!source_create_materialized_view_name) {
-      info.valid = false;
-      info.invalid_reason = "catalog_descriptor_name_required";
-    } else {
-      ApplyCatalogDescriptorNameParts(&info,
-                                      source_create_materialized_view_name_parts);
-    }
-  } else if (words[0] == "CREATE") {
+  if (words[0] == "CREATE") {
     ConsumeKeyword(cst, &index, "CREATE");
     if (PeekKeyword(cst, index, "MATERIALIZED")) ConsumeKeyword(cst, &index, "MATERIALIZED");
     if (PeekKeyword(cst, index, "TIME")) {
@@ -27527,9 +27578,13 @@ void PopulateSimpleCreateSequenceAuthority(SblrEnvelope* envelope, const SimpleC
 
 void PopulateSimpleCreateViewAuthority(SblrEnvelope* envelope, const SimpleCreateViewInfo& info) {
   if (!info.active || !info.valid) return;
-  envelope->operation_id = "ddl.create_view";
-  envelope->sblr_opcode = "SBLR_DDL_CREATE_VIEW";
-  envelope->engine_api_operation_id = "ddl.create_view";
+  envelope->operation_id = info.materialized
+                               ? "engine.op.ddl_create_materialized_view"
+                               : "engine.op.ddl_create_view";
+  envelope->sblr_opcode = info.materialized
+                              ? "SBLR_DDL_CREATE_MATERIALIZED_VIEW"
+                              : "SBLR_DDL_CREATE_VIEW";
+  envelope->engine_api_operation_id = envelope->operation_id;
   envelope->operation_family = "sblr.catalog.mutation.v3";
   envelope->sblr_operation_key = "sblr.catalog.mutation.v3";
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
@@ -27538,15 +27593,24 @@ void PopulateSimpleCreateViewAuthority(SblrEnvelope* envelope, const SimpleCreat
                   "authority.server.security_policy_context_required");
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.server.transaction_context_required");
-  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.ddl_create_view_api_required");
+  AppendIfMissing(
+      &envelope->required_authority_steps,
+      info.materialized
+          ? "authority.engine.ddl_create_materialized_view_api_required"
+          : "authority.engine.ddl_create_view_api_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.engine.mga_catalog_commit_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.view");
+  AppendIfMissing(&envelope->descriptor_refs,
+                  info.materialized ? "sys.catalog.materialized_view"
+                                    : "sys.catalog.view");
   AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
   AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
-  AppendIfMissing(&envelope->policy_refs, "ddl_create_view_authorization_policy");
+  AppendIfMissing(&envelope->policy_refs,
+                  info.materialized
+                      ? "ddl_create_materialized_view_authorization_policy"
+                      : "ddl_create_view_authorization_policy");
 }
 
 void PopulateSimpleCreateDomainAuthority(SblrEnvelope* envelope, const SimpleCreateDomainInfo& info) {
@@ -27941,6 +28005,34 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
   envelope->sblr_operation_key = std::string(spec.operation_family);
   envelope->result_shape_key = std::string(spec.result_shape);
   envelope->diagnostic_shape_key = "diagnostic.canonical_message_vector";
+  envelope->trace_key = std::string("trace.sbsql.exact_command.") +
+                        std::string(spec.surface_key);
+  if (spec.requires_cluster_authority) {
+    // Public SBsql recognizes private-cluster command syntax only far enough
+    // to issue the Core-mandated exact refusal.  A private operation key is
+    // diagnostic metadata here: no executable payload is serialized and no
+    // cluster-provider authority or dispatch path is requested.
+    envelope->exact_emulated_diagnostic = true;
+    envelope->required_authority_steps.clear();
+    envelope->required_rights.clear();
+    envelope->descriptor_refs.clear();
+    envelope->policy_refs.clear();
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.parser.syntax_evidence_only");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.parser.no_sql_text_execution");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.parser.no_storage_or_finality");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
+    AddVerifierError(
+        &envelope->messages,
+        "SBSQL.SURFACE.NOT_ADMITTED",
+        "The recognized SBsql surface is not admitted in the public profile.",
+        {{"surface_key", std::string(spec.surface_key)},
+         {"profile", "public"},
+         {"cluster_scope", "private_cluster"}});
+    return;
+  }
   if (spec.route_kind == "encryption_key_control" ||
       spec.route_kind == "encryption_key_inspect" ||
       spec.route_kind == "protected_material_control" ||
@@ -27986,8 +28078,6 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
   } else {
     envelope->resource_contract_key = "resource.contract.management_report";
   }
-  envelope->trace_key = std::string("trace.sbsql.exact_command.") +
-                        std::string(spec.surface_key);
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
   envelope->descriptor_refs.clear();
@@ -28149,12 +28239,13 @@ void PopulateEngineApiCommandAuthority(SblrEnvelope* envelope,
                                        const EngineApiCommandRouteInfo& info) {
   if (!info.active || !info.valid || info.spec == nullptr) return;
   const auto& spec = *info.spec;
-  envelope->operation_id = std::string(spec.operation_id);
-  envelope->sblr_opcode = std::string(spec.opcode);
+  const auto wire = EngineApiCommandWireIdentity(spec);
+  envelope->operation_id = std::string(wire.operation_id);
+  envelope->sblr_opcode = std::string(wire.opcode);
   envelope->engine_api_operation_id = std::string(spec.operation_id);
   envelope->engine_api_function = std::string(spec.engine_api_function);
-  envelope->operation_family = std::string(spec.operation_family);
-  envelope->sblr_operation_key = std::string(spec.operation_family);
+  envelope->operation_family = std::string(wire.operation_family);
+  envelope->sblr_operation_key = std::string(wire.operation_family);
   envelope->result_shape_key = std::string(spec.result_shape);
   envelope->diagnostic_shape_key = "diagnostic.canonical_message_vector";
   envelope->resource_contract_key = EngineApiCommandResourceContract(spec);
@@ -28164,6 +28255,7 @@ void PopulateEngineApiCommandAuthority(SblrEnvelope* envelope,
   envelope->required_rights.clear();
   envelope->descriptor_refs.clear();
   envelope->policy_refs.clear();
+  envelope->operands.clear();
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.server.security_policy_context_required");
@@ -28189,6 +28281,12 @@ void PopulateEngineApiCommandAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->descriptor_refs, "sys.engine.internal_api_registry");
   AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
   AppendIfMissing(&envelope->descriptor_refs, std::string(spec.descriptor_ref));
+  const auto admission_marker =
+      EngineApiExternalAdmissionMarker(wire.admission);
+  if (!admission_marker.empty()) {
+    envelope->operands.push_back(
+        {"text", std::string(admission_marker), std::string(spec.operation_id)});
+  }
   if (spec.requires_cluster_authority) {
     AppendIfMissing(&envelope->descriptor_refs, "sys.cluster.provider");
     AppendIfMissing(&envelope->policy_refs, "cluster_provider_boundary_policy");
@@ -30510,7 +30608,10 @@ void AppendSimpleCreateViewJson(std::ostream& out, const SimpleCreateViewInfo& i
       << "\"catalog_authority\":\""
       << (info.materialized ? "sys.catalog.materialized_view" : "sys.catalog.view") << "\","
       << "\"catalog_action\":\"create_view_descriptor\","
-      << "\"ddl_operation_id\":\"ddl.create_view\","
+      << "\"ddl_operation_id\":\""
+      << (info.materialized ? "engine.op.ddl_create_materialized_view"
+                            : "engine.op.ddl_create_view")
+      << "\","
       << "\"target_object_kind\":\""
       << (info.materialized ? "materialized_view" : "view") << "\","
       << "\"view_name_parts\":" << info.view_name_parts << ','
@@ -30840,13 +30941,22 @@ void AppendEngineApiCommandJson(std::ostream& out,
                                 const EngineApiCommandRouteInfo& info) {
   if (!info.active || !info.valid || info.spec == nullptr) return;
   const auto& spec = *info.spec;
+  const auto wire = EngineApiCommandWireIdentity(spec);
   out << "\"engine_api_command_route\":true,"
       << "\"surface_key\":\"" << EscapeJson(spec.surface_key) << "\","
       << "\"exact_syntax\":\"" << EscapeJson(spec.exact_syntax) << "\","
       << "\"normalized_syntax\":\"" << EscapeJson(spec.normalized_syntax) << "\","
       << "\"engine_api_route_kind\":\"" << EscapeJson(spec.route_kind) << "\","
       << "\"operation_mutates_engine_state\":" << (spec.mutation ? "true" : "false") << ','
-      << "\"canonical_sblr_operation\":\"" << EscapeJson(spec.operation_id) << "\","
+      << "\"canonical_sblr_operation\":\"" << EscapeJson(wire.operation_id) << "\","
+      << "\"engine_api_operation_id\":\"" << EscapeJson(spec.operation_id) << "\","
+      << "\"external_sblr_admission\":\""
+      << (wire.admission == EngineApiExternalAdmission::canonical
+              ? "canonical"
+              : wire.admission == EngineApiExternalAdmission::internal_only
+                    ? "internal_only"
+                    : "not_manifest_listed")
+      << "\","
       << "\"engine_api_function\":\"" << EscapeJson(spec.engine_api_function) << "\","
       << "\"engine_result_shape_contract\":\"" << EscapeJson(spec.result_shape) << "\","
       << "\"cluster_provider_dispatch\":"
@@ -31128,7 +31238,8 @@ void AppendScalarProjectionExpressionJson(std::ostream& out,
                                           const ScalarProjectionItem& item) {
   out << "\"" << prefix << "expr_kind\":\"" << EscapeJson(item.expression_kind) << "\","
       << "\"" << prefix << "type\":\"" << EscapeJson(item.type_name) << "\","
-      << "\"" << prefix << "value\":\"" << EscapeJson(item.value) << "\","
+      << "\"" << prefix << "value\":\""
+      << EscapeJson(item.is_null ? std::string{} : item.value) << "\","
       << "\"" << prefix << "is_null\":\"" << (item.is_null ? "true" : "false") << "\",";
   if (!item.literal_family.empty()) {
     out << "\"" << prefix << "literal_family\":\"" << EscapeJson(item.literal_family)
@@ -32644,9 +32755,9 @@ SblrEnvelope LowerLifecycleMapping(const LifecycleMappingDescriptor& mapping,
       << "\"requires_cluster_authority\":" << (mapping.requires_cluster_authority ? "true" : "false") << ','
       << "\"bound_object_uuid_inputs\":\"" << EscapeJson(mapping.bound_object_uuid_inputs) << "\","
       << "\"database_uuid_generated_by_engine\":"
-      << "false,"
+      << (IsLifecycleCreate(mapping) ? "true" : "false") << ','
       << "\"bootstrap_authority\":\""
-      << (IsLifecycleCreate(mapping) ? "local_embedded_only" : "not_applicable") << "\",";
+      << (IsLifecycleCreate(mapping) ? "engine_lifecycle" : "not_applicable") << "\",";
   if (lifecycle_database_name_present) {
     out << "\"database_name\":\""
         << EscapeJson(lifecycle_database_name_parts.back()) << "\",";
@@ -32944,6 +33055,9 @@ std::string_view ExpectedNativeAggregateSemanticVariant(
     const NativeAggregateGroupingForm grouping_form,
     const NativeAggregateProjectionForm projection_form) {
   if (grouping_form == NativeAggregateGroupingForm::kSimple) {
+    if (projection_form == NativeAggregateProjectionForm::kKeySumInt128) {
+      return "aggregate.grouped-int64-key-sum.v1";
+    }
     if (projection_form == NativeAggregateProjectionForm::kKeyCountSum) {
       return "aggregate.grouped-int64-key-count-sum.v1";
     }
@@ -33093,6 +33207,190 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "canonical relational lowering requires parser identity and exact engine epochs");
     return envelope;
   }
+
+  // Descriptor authority is descriptor-local, not query-shape-local.  Every
+  // lowering profile, including the specialized early-return profiles below,
+  // must therefore pass through this one closed emitter.  A descriptor is
+  // either a genuinely non-authoritative v1 tuple or one complete v2 receipt
+  // tuple; partial, crossed, or conflicting repeated authority never falls
+  // back to v1.
+  const auto emit_relational_descriptors = [&]() {
+    const auto carries_any_authoritative_field =
+        [](const BoundDescriptorAstRecord& descriptor) {
+          return descriptor.descriptor_generation != 0 ||
+                 descriptor.type_generation != 0 ||
+                 !descriptor.codec_id.empty() || descriptor.codec_version != 0 ||
+                 descriptor.codec_generation != 0 ||
+                 !descriptor.statement_receipt_uuid.empty() ||
+                 !descriptor.datatype_catalog_snapshot_uuid.empty() ||
+                 descriptor.datatype_catalog_generation != 0 ||
+                 descriptor.datatype_registry_generation != 0;
+        };
+    const auto carries_complete_authority =
+        [](const BoundDescriptorAstRecord& descriptor) {
+          return descriptor.descriptor_generation != 0 &&
+                 descriptor.type_generation != 0 &&
+                 !descriptor.codec_id.empty() &&
+                 descriptor.codec_id.find('|') == std::string::npos &&
+                 descriptor.codec_version != 0 &&
+                 descriptor.codec_generation != 0 &&
+                 descriptor.nullability != BoundNullability::kUnknown &&
+                 IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) &&
+                 IsCanonicalBoundSourceUuid(descriptor.type_uuid) &&
+                 (!descriptor.collation_uuid.has_value() ||
+                  IsCanonicalBoundSourceUuid(*descriptor.collation_uuid)) &&
+                 IsCanonicalBoundSourceUuid(
+                     descriptor.statement_receipt_uuid) &&
+                 IsCanonicalBoundSourceUuid(
+                     descriptor.datatype_catalog_snapshot_uuid) &&
+                 descriptor.datatype_catalog_generation != 0 &&
+                 descriptor.datatype_registry_generation != 0;
+        };
+    const auto same_non_authoritative_descriptor =
+        [](const BoundDescriptorAstRecord& left,
+           const BoundDescriptorAstRecord& right) {
+          return left.type_uuid == right.type_uuid &&
+                 left.nullability == right.nullability &&
+                 left.collation_uuid == right.collation_uuid &&
+                 left.timezone_profile_id == right.timezone_profile_id &&
+                 left.width_precision_scale.width ==
+                     right.width_precision_scale.width &&
+                 left.width_precision_scale.precision ==
+                     right.width_precision_scale.precision &&
+                 left.width_precision_scale.scale ==
+                     right.width_precision_scale.scale &&
+                 left.canonical_type_name == right.canonical_type_name &&
+                 left.element_profile == right.element_profile &&
+                 left.descriptor_generation == right.descriptor_generation &&
+                 left.type_generation == right.type_generation &&
+                 left.codec_id == right.codec_id &&
+                 left.codec_version == right.codec_version &&
+                 left.codec_generation == right.codec_generation &&
+                 left.statement_receipt_uuid == right.statement_receipt_uuid &&
+                 left.datatype_catalog_snapshot_uuid ==
+                     right.datatype_catalog_snapshot_uuid &&
+                 left.datatype_catalog_generation ==
+                     right.datatype_catalog_generation &&
+                 left.datatype_registry_generation ==
+                     right.datatype_registry_generation;
+        };
+    const auto same_immutable_datatype_authority =
+        [](const BoundDescriptorAstRecord& left,
+           const BoundDescriptorAstRecord& right) {
+          return left.type_uuid == right.type_uuid &&
+                 left.canonical_type_name == right.canonical_type_name &&
+                 left.element_profile == right.element_profile &&
+                 left.descriptor_generation == right.descriptor_generation &&
+                 left.type_generation == right.type_generation &&
+                 left.codec_id == right.codec_id &&
+                 left.codec_version == right.codec_version &&
+                 left.codec_generation == right.codec_generation &&
+                 left.statement_receipt_uuid == right.statement_receipt_uuid &&
+                 left.datatype_catalog_snapshot_uuid ==
+                     right.datatype_catalog_snapshot_uuid &&
+                 left.datatype_catalog_generation ==
+                     right.datatype_catalog_generation &&
+                 left.datatype_registry_generation ==
+                     right.datatype_registry_generation;
+        };
+
+    const BoundDescriptorAstRecord* receipt_authority = nullptr;
+    std::unordered_map<std::string, const BoundDescriptorAstRecord*>
+        descriptor_authority_by_uuid;
+    for (const auto& descriptor : native.descriptors) {
+      const bool carries_any =
+          carries_any_authoritative_field(descriptor);
+      const bool carries_complete = carries_complete_authority(descriptor);
+      if (carries_any != carries_complete) {
+        AddNativeRelationalLoweringError(
+            &envelope, "DATATYPE.DESCRIPTOR.INVALID",
+            "relational descriptor carries a partial authoritative receipt tuple",
+            {{"descriptor_id", std::to_string(descriptor.descriptor_id)}});
+        return false;
+      }
+      if (carries_complete) {
+        if (receipt_authority == nullptr) {
+          receipt_authority = &descriptor;
+        } else if (descriptor.statement_receipt_uuid !=
+                       receipt_authority->statement_receipt_uuid ||
+                   descriptor.datatype_catalog_snapshot_uuid !=
+                       receipt_authority->datatype_catalog_snapshot_uuid ||
+                   descriptor.datatype_catalog_generation !=
+                       receipt_authority->datatype_catalog_generation ||
+                   descriptor.datatype_registry_generation !=
+                       receipt_authority->datatype_registry_generation) {
+          AddNativeRelationalLoweringError(
+              &envelope, "DATATYPE.DESCRIPTOR.INVALID",
+              "relational descriptors carry stale or crossed receipt authority",
+              {{"descriptor_id", std::to_string(descriptor.descriptor_id)}});
+          return false;
+        }
+      }
+      const auto [prior, inserted] = descriptor_authority_by_uuid.emplace(
+          descriptor.descriptor_uuid, &descriptor);
+      const bool repeated_uuid_authority_matches =
+          inserted ||
+          (carries_complete_authority(*prior->second) == carries_complete &&
+           (carries_complete
+                ? same_immutable_datatype_authority(*prior->second, descriptor)
+                : same_non_authoritative_descriptor(*prior->second,
+                                                      descriptor)));
+      if (!repeated_uuid_authority_matches) {
+        AddNativeRelationalLoweringError(
+            &envelope, "DATATYPE.DESCRIPTOR.INVALID",
+            "repeated relational descriptor UUID carries conflicting authority",
+            {{"descriptor_id", std::to_string(descriptor.descriptor_id)}});
+        return false;
+      }
+    }
+
+    for (const auto& descriptor : native.descriptors) {
+      if (carries_complete_authority(descriptor)) {
+        envelope.operands.push_back(
+            {"relational_descriptor_v2",
+             std::to_string(descriptor.descriptor_id),
+             descriptor.descriptor_uuid + "|" +
+                 std::to_string(descriptor.descriptor_generation) + "|" +
+                 descriptor.type_uuid + "|" +
+                 std::to_string(descriptor.type_generation) + "|" +
+                 descriptor.codec_id + "|" +
+                 std::to_string(descriptor.codec_version) + "|" +
+                 std::to_string(descriptor.codec_generation) + "|" +
+                 std::to_string(static_cast<std::uint8_t>(
+                     descriptor.nullability)) +
+                 "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
+                 "|" +
+                 EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
+                 "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.width) +
+                 "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.precision) +
+                 "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.scale) +
+                 "|" + descriptor.statement_receipt_uuid + "|" +
+                 descriptor.datatype_catalog_snapshot_uuid + "|" +
+                 std::to_string(descriptor.datatype_catalog_generation) + "|" +
+                 std::to_string(descriptor.datatype_registry_generation)});
+      } else {
+        envelope.operands.push_back(
+            {"relational_descriptor_v1",
+             std::to_string(descriptor.descriptor_id),
+             descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+                 std::to_string(
+                     static_cast<std::uint8_t>(descriptor.nullability) + 1) +
+                 "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
+                 "|" +
+                 EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
+                 "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.width) +
+                 "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.precision) +
+                 "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.scale)});
+      }
+    }
+    return true;
+  };
 
   const auto table_function_relation = std::ranges::find_if(
       native.relations, [](const auto& relation) {
@@ -33285,15 +33583,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(
              native.snapshot_visible_through_local_transaction_id)});
     envelope.operands.push_back({"uint32", "relational_root_node_id", "2"});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1",
-           std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(
-                   static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-               "|-|-|-|-|-"});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       envelope.operands.push_back(
           {"relational_expression_v1",
@@ -33498,15 +33788,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(
              native.snapshot_visible_through_local_transaction_id)});
     envelope.operands.push_back({"uint32", "relational_root_node_id", "1"});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1",
-           std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(
-                   static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-               "|-|-|-|-|-"});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       envelope.operands.push_back(
           {"relational_expression_v1",
@@ -33770,20 +34052,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"uint32", "relational_root_node_id",
          std::to_string(native.root_relation_id)});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-               "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale)});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       const auto literal_kind =
           expression.literal_kind.has_value()
@@ -34154,20 +34423,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"uint32", "relational_root_node_id",
          std::to_string(native.root_relation_id)});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-               "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale)});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       const auto literal_kind =
           expression.literal_kind.has_value()
@@ -34476,20 +34732,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"uint32", "relational_root_node_id",
          std::to_string(native.root_relation_id)});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-               "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale)});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       const auto literal_kind =
           expression.literal_kind.has_value()
@@ -34972,20 +35215,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"uint32", "relational_root_node_id",
          std::to_string(native.root_relation_id)});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-               "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale)});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       const auto literal_kind =
           expression.literal_kind.has_value()
@@ -35282,20 +35512,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"uint32", "relational_root_node_id",
          std::to_string(native.root_relation_id)});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-               "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale)});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       const auto literal_kind =
           expression.literal_kind.has_value()
@@ -35590,23 +35807,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"uint32", "relational_root_node_id",
          std::to_string(native.root_relation_id)});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(static_cast<std::uint8_t>(
-                                  descriptor.nullability) +
-                              1) +
-               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-               "|" +
-               EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale)});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       const auto literal_kind =
           expression.literal_kind.has_value()
@@ -35891,24 +36092,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"uint32", "relational_root_node_id",
          std::to_string(native.root_relation_id)});
-    for (const auto& descriptor : native.descriptors) {
-      envelope.operands.push_back(
-          {"relational_descriptor_v1",
-           std::to_string(descriptor.descriptor_id),
-           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-               std::to_string(static_cast<std::uint8_t>(
-                                  descriptor.nullability) +
-                              1) +
-               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-               "|" +
-               EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-               "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale)});
-    }
+    if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
       const auto literal_kind =
           expression.literal_kind.has_value()
@@ -36184,6 +36368,22 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                "aggregate.global-json-object-agg-ordered-expression.v1" ||
            relation.semantic_variant_id ==
                "aggregate.global-approx-top-k-expression.v1");
+      const bool grouped_catalog_sum_int128_profile =
+          catalog_relation != nullptr && catalog_filter_relation == nullptr &&
+          relation.input_relation_ids ==
+              std::vector<std::uint32_t>{catalog_relation->relation_id} &&
+          relation.aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kSimple &&
+          relation.aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeySumInt128 &&
+          relation.grouping_key_expression_ids.size() == 1 &&
+          relation.aggregate_expression_ids.size() == 1 &&
+          relation.output_expression_ids ==
+              std::vector<std::uint32_t>{
+                  relation.grouping_key_expression_ids.front(),
+                  relation.aggregate_expression_ids.front()} &&
+          relation.semantic_variant_id ==
+              "aggregate.grouped-int64-key-sum.v1";
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -36209,22 +36409,27 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                NativeAggregateGroupingForm::kCube) &&
            (projects_keys_count_sum || projects_grouping_metadata));
       const std::size_t expected_output_count =
-          one_key_profile ? 3 : (projects_grouping_metadata ? 7 : 4);
+          grouped_catalog_sum_int128_profile
+              ? 2
+              : (one_key_profile ? 3
+                                 : (projects_grouping_metadata ? 7 : 4));
       if (aggregate_relation != nullptr ||
           relation.input_relation_ids.size() != 1 ||
           !relation.values_row_ids.empty() ||
           !relation.predicate_expression_ids.empty() ||
           !relation.limit_expression_ids.empty() ||
-          (!global_catalog_profile &&
+          (!global_catalog_profile && !grouped_catalog_sum_int128_profile &&
            relation.grouping_key_expression_ids.size() !=
               (one_key_profile ? 1 : 2)) ||
-          (!global_catalog_profile &&
+          (!global_catalog_profile && !grouped_catalog_sum_int128_profile &&
            relation.aggregate_expression_ids.size() != 2) ||
-          (!global_catalog_profile && !one_key_profile && !two_key_profile) ||
+          (!global_catalog_profile && !grouped_catalog_sum_int128_profile &&
+           !one_key_profile && !two_key_profile) ||
           (!global_catalog_profile &&
            relation.output_expression_ids.size() != expected_output_count) ||
           relation.bound_expression_ids != relation.output_expression_ids ||
-          (!global_catalog_profile && relation.semantic_variant_id !=
+          (!global_catalog_profile && !grouped_catalog_sum_int128_profile &&
+           relation.semantic_variant_id !=
               ExpectedNativeAggregateSemanticVariant(
                   relation.aggregate_grouping_form,
                   relation.aggregate_projection_form))) {
@@ -36651,7 +36856,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
        (aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kNone &&
         aggregate_relation->aggregate_projection_form ==
-            NativeAggregateProjectionForm::kGlobalUnary)) &&
+            NativeAggregateProjectionForm::kGlobalUnary) ||
+       (aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kSimple &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeySumInt128 &&
+        aggregate_relation->semantic_variant_id ==
+            "aggregate.grouped-int64-key-sum.v1")) &&
       (catalog_project_relation == nullptr ||
        (catalog_sort_relation != nullptr ||
         catalog_filter_relation != nullptr)) &&
@@ -37835,10 +38046,24 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         limit_value->second->expression_kind ==
             NativeExpressionAstKind::kParameter &&
         limit_value->second->structural_parameter_occurrence_id == 1;
-    if (!literal_filter_parameter_limit) {
+    const bool literal_filter_literal_limit =
+        filter_value != nullptr && limit_value != expressions_by_id.end() &&
+        filter_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+        filter_value->literal_kind == NativeLiteralAstKind::kNumeric &&
+        filter_value->structural_literal_occurrence_id == 1 &&
+        filter_value->structural_parameter_occurrence_id == 0 &&
+        filter_value->structural_variable_occurrence_id == 0 &&
+        limit_value->second->expression_kind ==
+            NativeExpressionAstKind::kLiteral &&
+        limit_value->second->literal_kind == NativeLiteralAstKind::kNumeric &&
+        limit_value->second->structural_literal_occurrence_id == 2 &&
+        limit_value->second->structural_parameter_occurrence_id == 0 &&
+        limit_value->second->structural_variable_occurrence_id == 0;
+    if (!literal_filter_parameter_limit &&
+        !literal_filter_literal_limit) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-          "typed JOIN FILTER and LIMIT operands are not composable");
+          "typed catalog FILTER and LIMIT operands are not composable");
       return envelope;
     }
   }
@@ -38056,7 +38281,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     std::size_t descriptor_offset = 0;
     std::size_t source_projection_count = 0;
     std::vector<std::uint32_t> expected_join_projection_ids;
-    std::unordered_set<std::string> object_uuids;
+    std::unordered_map<std::string, bool> object_occurrences;
     std::unordered_map<std::string, bool> ordinary_source_binding_names;
     std::unordered_set<std::uint32_t> source_ids;
     std::unordered_set<std::uint32_t> owned_model_expression_ids;
@@ -38128,6 +38353,74 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           source.resolved_object_type == "materialized_view" ||
           source.resolved_object_type == "external_table" ||
           source.resolved_object_type == "foreign_table";
+      const auto [prior_object_occurrence, first_object_occurrence] =
+          object_occurrences.emplace(relation_uuid, source.alias.has_value());
+      const bool repeated_object_occurrence_invalid =
+          !first_object_occurrence &&
+          (model || !prior_object_occurrence->second ||
+           !source.alias.has_value());
+      const auto invalid_source_authority_reason = [&]() -> std::string_view {
+        if (source.source_id == 0) return "source_id_zero";
+        if (source_ids.contains(source.source_id)) return "source_id_repeated";
+        if (!spatial_columnar_join && !bounded_multimodel_join &&
+            source.source_kind !=
+                NativeRelationSourceAstKind::kCatalogRelation) {
+          return "ordinary_source_kind_changed";
+        }
+        if (spatial_columnar_join && !spatial && !columnar) {
+          return "spatial_columnar_source_kind_changed";
+        }
+        if (source.resolution_state !=
+            NativeCatalogRelationResolutionState::kBound) {
+          return "resolution_state_not_bound";
+        }
+        if (!exact_ordinary_source) return "source_profile_not_exact";
+        if (ordinary_binding_collision) return "binding_name_collision";
+        if (source.qualified_name.empty()) return "qualified_name_empty";
+        if (std::ranges::any_of(source.qualified_name,
+                                [](const auto& component) {
+                                  return component.spelling.empty();
+                                })) {
+          return "qualified_name_component_empty";
+        }
+        if (source.alias.has_value() && source.alias->spelling.empty()) {
+          return "alias_empty";
+        }
+        if (!source.alias.has_value() && source.alias_is_explicit) {
+          return "explicit_alias_absent";
+        }
+        if (!IsCanonicalBoundSourceUuid(relation_uuid)) {
+          return "relation_uuid_invalid";
+        }
+        if (repeated_object_occurrence_invalid) {
+          return "repeated_object_occurrence_unaliased";
+        }
+        if (source.object_uuid != relation_uuid) {
+          return "source_relation_uuid_mismatch";
+        }
+        if (bound.resolved_object_uuids[source_ordinal] != relation_uuid) {
+          return "resolved_occurrence_uuid_mismatch";
+        }
+        if (!accepted_object_type &&
+            !(model && source.resolved_object_type ==
+                           expected_model_object_type)) {
+          return "resolved_object_type_invalid";
+        }
+        if (!IsCanonicalBoundSourceUuid(source.resolved_schema_uuid)) {
+          return "schema_uuid_invalid";
+        }
+        if (source.parent_object_uuid.has_value() &&
+            !IsCanonicalBoundSourceUuid(*source.parent_object_uuid)) {
+          return "parent_object_uuid_invalid";
+        }
+        if (source.catalog_generation_id == 0) {
+          return "catalog_generation_zero";
+        }
+        if (source.security_epoch == 0) return "security_epoch_zero";
+        if (source.resource_epoch == 0) return "resource_epoch_zero";
+        if (source.columns.empty()) return "source_columns_empty";
+        return {};
+      }();
       if (source.source_id == 0 ||
           !source_ids.insert(source.source_id).second ||
           (!spatial_columnar_join && !bounded_multimodel_join &&
@@ -38145,7 +38438,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           (source.alias.has_value() && source.alias->spelling.empty()) ||
           (!source.alias.has_value() && source.alias_is_explicit) ||
           !IsCanonicalBoundSourceUuid(relation_uuid) ||
-          !object_uuids.insert(relation_uuid).second ||
+          repeated_object_occurrence_invalid ||
           source.object_uuid != relation_uuid ||
           bound.resolved_object_uuids[source_ordinal] != relation_uuid ||
           (!accepted_object_type &&
@@ -38158,7 +38451,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           source.resource_epoch == 0 || source.columns.empty()) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed CROSS JOIN source identity and epoch evidence are incomplete");
+            "typed CROSS JOIN source identity and epoch evidence are incomplete: " +
+                std::string(invalid_source_authority_reason));
         return envelope;
       }
 
@@ -38898,8 +39192,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
     const auto limit_expression_count =
         limit_relation == nullptr ? 0 : limit_relation->limit_expression_ids.size();
-    const auto numeric_descriptor_count =
-        limit_relation != nullptr ? 1 : 0;
+    const auto numeric_descriptor_count = limit_expression_count;
     const auto aggregate_descriptor_count =
         aggregate_relation != nullptr ? 1 : 0;
     const bool string_aggregate_profile =
@@ -39101,6 +39394,146 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_relation->aggregate_expression_ids.front());
       const auto& aggregate_outputs =
           outputs_by_relation.at(aggregate_relation->relation_id);
+      const bool grouped_sum_int128 =
+          aggregate_relation->semantic_variant_id ==
+              "aggregate.grouped-int64-key-sum.v1" &&
+          aggregate_relation->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kSimple &&
+          aggregate_relation->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeySumInt128;
+      if (grouped_sum_int128) {
+        constexpr std::string_view kBigintDescriptorUuid =
+            "019d0000-0000-7000-8000-00000000d711";
+        constexpr std::string_view kBigintTypeUuid =
+            "019d0000-0000-7000-8000-00000000d712";
+        constexpr std::string_view kInt128DescriptorUuid =
+            "019d0000-0000-7000-8000-00000000d714";
+        constexpr std::string_view kInt128TypeUuid =
+            "019d0000-0000-7000-8000-00000000d715";
+        constexpr std::string_view kSumFunctionUuid =
+            "019de5fc-2400-72e4-8549-82b2eef5a777";
+        const auto& grouped_key_descriptor = native.descriptors[0];
+        const auto& grouped_value_descriptor = native.descriptors[1];
+        const auto grouped_receipt_identity_exact =
+            !aggregate_descriptor.statement_receipt_uuid.empty() &&
+            grouped_key_descriptor.statement_receipt_uuid ==
+                aggregate_descriptor.statement_receipt_uuid &&
+            grouped_value_descriptor.statement_receipt_uuid ==
+                aggregate_descriptor.statement_receipt_uuid &&
+            !aggregate_descriptor.datatype_catalog_snapshot_uuid.empty() &&
+            grouped_key_descriptor.datatype_catalog_snapshot_uuid ==
+                aggregate_descriptor.datatype_catalog_snapshot_uuid &&
+            grouped_value_descriptor.datatype_catalog_snapshot_uuid ==
+                aggregate_descriptor.datatype_catalog_snapshot_uuid &&
+            grouped_key_descriptor.datatype_catalog_generation ==
+                aggregate_descriptor.datatype_catalog_generation &&
+            grouped_value_descriptor.datatype_catalog_generation ==
+                aggregate_descriptor.datatype_catalog_generation &&
+            grouped_key_descriptor.datatype_registry_generation ==
+                aggregate_descriptor.datatype_registry_generation &&
+            grouped_value_descriptor.datatype_registry_generation ==
+                aggregate_descriptor.datatype_registry_generation;
+        if (width != 2 ||
+            grouped_key_descriptor.descriptor_uuid != kBigintDescriptorUuid ||
+            grouped_key_descriptor.descriptor_generation != 1 ||
+            grouped_key_descriptor.type_uuid != kBigintTypeUuid ||
+            grouped_key_descriptor.type_generation != 1 ||
+            grouped_key_descriptor.codec_id != "datatype.int64.le.v1" ||
+            grouped_key_descriptor.codec_version != 1 ||
+            grouped_key_descriptor.codec_generation != 1 ||
+            grouped_value_descriptor.descriptor_uuid != kBigintDescriptorUuid ||
+            grouped_value_descriptor.descriptor_generation != 1 ||
+            grouped_value_descriptor.type_uuid != kBigintTypeUuid ||
+            grouped_value_descriptor.type_generation != 1 ||
+            grouped_value_descriptor.codec_id != "datatype.int64.le.v1" ||
+            grouped_value_descriptor.codec_version != 1 ||
+            grouped_value_descriptor.codec_generation != 1 ||
+            aggregate_descriptor.descriptor_id != 3 ||
+            aggregate_descriptor.descriptor_uuid != kInt128DescriptorUuid ||
+            aggregate_descriptor.descriptor_generation != 1 ||
+            aggregate_descriptor.type_uuid != kInt128TypeUuid ||
+            aggregate_descriptor.type_generation != 1 ||
+            aggregate_descriptor.codec_id != "datatype.int128.le.v1" ||
+            aggregate_descriptor.codec_version != 1 ||
+            aggregate_descriptor.codec_generation != 1 ||
+            aggregate_descriptor.datatype_catalog_generation == 0 ||
+            aggregate_descriptor.datatype_registry_generation == 0 ||
+            !grouped_receipt_identity_exact ||
+            aggregate_descriptor.canonical_type_name != "int128" ||
+            aggregate_descriptor.nullability != BoundNullability::kNullable ||
+            aggregate_descriptor.collation_uuid.has_value() ||
+            aggregate_descriptor.timezone_profile_id.has_value() ||
+            aggregate_descriptor.width_precision_scale.width.has_value() ||
+            aggregate_descriptor.width_precision_scale.precision.has_value() ||
+            aggregate_descriptor.width_precision_scale.scale.has_value() ||
+            bound.descriptor_refs[width] !=
+                aggregate_descriptor.descriptor_uuid) {
+          AddNativeRelationalLoweringError(
+              &envelope, "DATATYPE.DESCRIPTOR_INVALID",
+              "catalog grouped SUM requires the exact bigint input and nullable int128 result identities");
+          return envelope;
+        }
+        const auto key_expression = expressions_by_id.find(
+            aggregate_relation->grouping_key_expression_ids.front());
+        const auto argument_expression =
+            key_expression == expressions_by_id.end()
+                ? expressions_by_id.end()
+                : expressions_by_id.find(
+                      catalog_relation->output_expression_ids[1]);
+        if (key_expression == expressions_by_id.end() ||
+            argument_expression == expressions_by_id.end() ||
+            key_expression->second->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            argument_expression->second->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            key_expression->second->expression_id !=
+                catalog_relation->output_expression_ids[0] ||
+            argument_expression->second->expression_id !=
+                catalog_relation->output_expression_ids[1] ||
+            aggregate_expression == expressions_by_id.end() ||
+            aggregate_expression->second->expression_kind !=
+                NativeExpressionAstKind::kFunctionCall ||
+            aggregate_expression->second->bound_function_uuid !=
+                kSumFunctionUuid ||
+            aggregate_expression->second->child_expression_ids !=
+                std::vector<std::uint32_t>{
+                    argument_expression->second->expression_id} ||
+            aggregate_expression->second->result_descriptor_id !=
+                aggregate_descriptor.descriptor_id ||
+            aggregate_relation->output_expression_ids !=
+                std::vector<std::uint32_t>{
+                    key_expression->second->expression_id,
+                    aggregate_expression->second->expression_id} ||
+            aggregate_relation->bound_expression_ids !=
+                aggregate_relation->output_expression_ids ||
+            !native.grouping_sets.empty()) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "catalog grouped SUM expression lineage is outside the exact single-key SUM profile");
+          return envelope;
+        }
+        if (aggregate_outputs.size() != 2 ||
+            aggregate_outputs[0]->expression_id !=
+                key_expression->second->expression_id ||
+            aggregate_outputs[0]->descriptor_id !=
+                native.descriptors[0].descriptor_id ||
+            aggregate_outputs[0]->output_name_utf8 !=
+                source_outputs[0]->output_name_utf8 ||
+            !aggregate_outputs[0]->visible ||
+            aggregate_outputs[0]->ordinal != 0 ||
+            aggregate_outputs[1]->expression_id !=
+                aggregate_expression->second->expression_id ||
+            aggregate_outputs[1]->descriptor_id !=
+                aggregate_descriptor.descriptor_id ||
+            aggregate_outputs[1]->output_name_utf8 != "total_amount" ||
+            !aggregate_outputs[1]->visible ||
+            aggregate_outputs[1]->ordinal != 1) {
+          AddNativeRelationalLoweringError(
+              &envelope, "RESULT_SET.SHAPE_INVALID",
+              "catalog grouped SUM must expose exactly the key and nullable int128 SUM outputs");
+          return envelope;
+        }
+      } else {
       const bool count_aggregate =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-count-");
@@ -39341,6 +39774,20 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           if (direct_text || direct_numeric) {
             const auto& direct_descriptor =
                 native.descriptors[width + aggregate_descriptor_count];
+            const bool direct_numeric_descriptor_exact =
+                !direct_numeric ||
+                ((!direct_descriptor.width_precision_scale.precision
+                      .has_value() &&
+                  !direct_descriptor.width_precision_scale.scale.has_value() &&
+                  direct_descriptor.canonical_type_name == "int64") ||
+                 (direct_descriptor.width_precision_scale.precision
+                      .has_value() &&
+                  direct_descriptor.width_precision_scale.scale.has_value() &&
+                  direct_descriptor.canonical_type_name == "decimal" &&
+                  *direct_descriptor.width_precision_scale.precision > 0 &&
+                  *direct_descriptor.width_precision_scale.precision <= 38 &&
+                  *direct_descriptor.width_precision_scale.scale <=
+                      *direct_descriptor.width_precision_scale.precision));
             if (argument == expressions_by_id.end() ||
                 argument->second->expression_kind !=
                     NativeExpressionAstKind::kLiteral ||
@@ -39358,8 +39805,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 direct_descriptor.collation_uuid.has_value() ||
                 direct_descriptor.timezone_profile_id.has_value() ||
                 direct_descriptor.width_precision_scale.width.has_value() ||
-                direct_descriptor.width_precision_scale.precision.has_value() ||
-                direct_descriptor.width_precision_scale.scale.has_value() ||
+                (direct_text &&
+                 (direct_descriptor.width_precision_scale.precision
+                      .has_value() ||
+                  direct_descriptor.width_precision_scale.scale.has_value())) ||
+                !direct_numeric_descriptor_exact ||
                 !IsCanonicalBoundSourceUuid(
                     direct_descriptor.descriptor_uuid) ||
                 !IsCanonicalBoundSourceUuid(direct_descriptor.type_uuid)) {
@@ -39385,33 +39835,32 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           }
         }
       }
+      }
     }
     if (numeric_descriptor_count != 0) {
-      const auto& numeric_descriptor =
-          native.descriptors[width + aggregate_descriptor_count +
-                             aggregate_direct_descriptor_count];
-      if (!IsCanonicalBoundSourceUuid(numeric_descriptor.descriptor_uuid) ||
-          !IsCanonicalBoundSourceUuid(numeric_descriptor.type_uuid) ||
-          numeric_descriptor.nullability != BoundNullability::kNonNull ||
-          numeric_descriptor.collation_uuid.has_value() ||
-          numeric_descriptor.timezone_profile_id.has_value() ||
-          numeric_descriptor.width_precision_scale.width.has_value() ||
-          numeric_descriptor.width_precision_scale.precision.has_value() ||
-          numeric_descriptor.width_precision_scale.scale.has_value()) {
-        AddNativeRelationalLoweringError(
-            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed catalog numeric operand descriptor is incomplete");
-        return envelope;
-      }
-      if (limit_relation != nullptr) {
-        for (const auto expression_id : limit_relation->limit_expression_ids) {
-          if (expressions_by_id.at(expression_id)->result_descriptor_id !=
-              numeric_descriptor.descriptor_id) {
-            AddNativeRelationalLoweringError(
-                &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-                "typed catalog LIMIT operands do not share their numeric descriptor");
-            return envelope;
-          }
+      const auto descriptor_base =
+          width + aggregate_descriptor_count +
+          aggregate_direct_descriptor_count;
+      for (std::size_t ordinal = 0; ordinal < numeric_descriptor_count;
+           ++ordinal) {
+        const auto& numeric_descriptor =
+            native.descriptors[descriptor_base + ordinal];
+        const auto expression_id =
+            limit_relation->limit_expression_ids[ordinal];
+        if (!IsCanonicalBoundSourceUuid(numeric_descriptor.descriptor_uuid) ||
+            !IsCanonicalBoundSourceUuid(numeric_descriptor.type_uuid) ||
+            numeric_descriptor.nullability != BoundNullability::kNonNull ||
+            numeric_descriptor.collation_uuid.has_value() ||
+            numeric_descriptor.timezone_profile_id.has_value() ||
+            numeric_descriptor.width_precision_scale.width.has_value() ||
+            numeric_descriptor.width_precision_scale.precision.has_value() ||
+            numeric_descriptor.width_precision_scale.scale.has_value() ||
+            expressions_by_id.at(expression_id)->result_descriptor_id !=
+                numeric_descriptor.descriptor_id) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed catalog LIMIT operand lacks its exact numeric descriptor");
+          return envelope;
         }
       }
     }
@@ -39494,9 +39943,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             (downstream.relation_id == aggregate_relation->relation_id ||
              (limit_relation != nullptr &&
               downstream.relation_id == limit_relation->relation_id))) {
-          const auto& aggregate_output = *outputs_by_relation
-                                              .at(aggregate_relation->relation_id)
-                                              .front();
+          const auto& aggregate_outputs =
+              outputs_by_relation.at(aggregate_relation->relation_id);
+          if (ordinal >= aggregate_outputs.size()) {
+            AddNativeRelationalLoweringError(
+                &envelope, "RESULT_SET.SHAPE_INVALID",
+                "typed catalog aggregate output ordinal exceeds its terminal projection");
+            return envelope;
+          }
+          const auto& aggregate_output = *aggregate_outputs[ordinal];
           if (downstream_output.expression_id !=
                   aggregate_output.expression_id ||
               downstream_output.descriptor_id !=
@@ -39554,6 +40009,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeAggregateGroupingForm::kSimple &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeyCountSum;
+    const bool grouped_sum_int128_profile =
+        catalog_relation != nullptr &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kSimple &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeySumInt128 &&
+        aggregate_relation->semantic_variant_id ==
+            "aggregate.grouped-int64-key-sum.v1";
     const bool output_shape_matches =
         global_catalog_profile
             ? aggregate_relation->output_expression_ids.size() == 1 &&
@@ -39561,6 +40024,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                   aggregate_relation->aggregate_expression_ids.size() == 1 &&
                   aggregate_relation->output_expression_ids ==
                       aggregate_relation->aggregate_expression_ids
+            : grouped_sum_int128_profile
+            ? aggregate_relation->output_expression_ids.size() == 2 &&
+                  aggregate_relation->grouping_key_expression_ids.size() == 1 &&
+                  aggregate_relation->aggregate_expression_ids.size() == 1 &&
+                  aggregate_relation->output_expression_ids[0] ==
+                      aggregate_relation->grouping_key_expression_ids[0] &&
+                  aggregate_relation->output_expression_ids[1] ==
+                      aggregate_relation->aggregate_expression_ids[0]
             : one_key_profile
             ? aggregate_relation->output_expression_ids.size() == 3 &&
                   aggregate_relation->grouping_key_expression_ids.size() == 1 &&
@@ -41252,20 +41723,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   envelope.operands.push_back(
       {"uint32", "relational_root_node_id",
        std::to_string(emitted_root_relation_id)});
-  for (const auto& descriptor : native.descriptors) {
-    envelope.operands.push_back(
-        {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
-         descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-             std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-             "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-             "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-             "|" + EncodeOptionalCanonicalU32(
-                         descriptor.width_precision_scale.width) +
-             "|" + EncodeOptionalCanonicalU32(
-                         descriptor.width_precision_scale.precision) +
-             "|" + EncodeOptionalCanonicalU32(
-                         descriptor.width_precision_scale.scale)});
-  }
+  if (!emit_relational_descriptors()) return envelope;
   for (const auto& expression : native.expressions) {
     const auto literal_kind = expression.literal_kind.has_value()
                                   ? std::to_string(
@@ -41840,7 +42298,10 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
     return routine_invocation.operation_id;
   }
   if (AnalyzeSimpleCreateSequence(cst).active) return "ddl.create_sequence";
-  if (AnalyzeSimpleCreateView(cst).active) return "ddl.create_view";
+  if (const auto create_view = AnalyzeSimpleCreateView(cst); create_view.active) {
+    return create_view.materialized ? "engine.op.ddl_create_materialized_view"
+                                    : "engine.op.ddl_create_view";
+  }
   if (AnalyzeSimpleCreateDomain(cst).active) return "ddl.create_domain";
   if (AnalyzeSimpleCreateSchema(cst).active) return "ddl.create_schema";
   if (bound.statement_surface_name == "begin_transaction" ||
@@ -41850,7 +42311,8 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
     return "transaction.set_characteristics";
   }
   if (bound.statement_surface_name == "commit" ||
-      bound.statement_surface_name == "commit_stmt") return "engine.op.txn_commit";
+      bound.statement_surface_name == "commit_stmt" ||
+      bound.statement_surface_name == "commit_options") return "engine.op.txn_commit";
   if (bound.statement_surface_name == "rollback" ||
       bound.statement_surface_name == "rollback_stmt") return "engine.op.txn_rollback";
   if (bound.statement_surface_name == "savepoint" ||
@@ -41925,7 +42387,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto udr_package_route = AnalyzeUdrPackageRoute(cst);
   const auto catalog_descriptor_mutation =
       (transaction_lock_route.active || exact_command_route.active ||
-       language_control_route.active || udr_package_route.active)
+       language_control_route.active || udr_package_route.active ||
+       simple_create_view.active)
           ? CatalogDescriptorMutationInfo{}
           : AnalyzeCatalogDescriptorMutation(cst, bound.resolved_object_uuids);
   const auto index_template_ddl =
@@ -43252,6 +43715,16 @@ struct ParsedRelationalDescriptor {
   std::optional<std::uint32_t> width;
   std::optional<std::uint32_t> precision;
   std::optional<std::uint32_t> scale;
+  bool datatype_identity_authoritative{false};
+  std::uint64_t descriptor_generation{0};
+  std::uint64_t type_generation{0};
+  std::string codec_id;
+  std::uint16_t codec_version{0};
+  std::uint64_t codec_generation{0};
+  std::string statement_receipt_uuid;
+  std::string datatype_catalog_snapshot_uuid;
+  std::uint64_t datatype_catalog_generation{0};
+  std::uint64_t datatype_registry_generation{0};
 };
 
 struct ParsedRelationalExpression {
@@ -44029,6 +44502,80 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       descriptor.type_uuid = fields[1];
       descriptor.nullability = static_cast<std::uint8_t>(nullability);
       if (fields[3] != "-") descriptor.collation_uuid = std::string(fields[3]);
+      graph->descriptors.push_back(std::move(descriptor));
+      continue;
+    }
+    if (operand.type == "relational_descriptor_v2") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t id = 0;
+      std::uint64_t descriptor_generation = 0;
+      std::uint64_t type_generation = 0;
+      std::uint64_t codec_version = 0;
+      std::uint64_t codec_generation = 0;
+      std::uint64_t nullability = 0;
+      std::uint64_t catalog_generation = 0;
+      std::uint64_t registry_generation = 0;
+      std::array<std::string_view, 17> fields{};
+      ParsedRelationalDescriptor descriptor;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
+          id == 0 || !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[1], std::numeric_limits<std::uint64_t>::max(),
+              &descriptor_generation) ||
+          descriptor_generation == 0 ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[3], std::numeric_limits<std::uint64_t>::max(),
+              &type_generation) ||
+          type_generation == 0 || fields[4].empty() ||
+          fields[4].find('|') != std::string_view::npos ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[5], std::numeric_limits<std::uint16_t>::max(),
+              &codec_version) ||
+          codec_version == 0 ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[6], std::numeric_limits<std::uint64_t>::max(),
+              &codec_generation) ||
+          codec_generation == 0 ||
+          !ParseCanonicalRelationalUnsigned(fields[7], 1, &nullability) ||
+          !DecodeOptionalCanonicalRelationalHex(
+              fields[9], &descriptor.timezone_profile_id) ||
+          !ParseOptionalCanonicalRelationalU32(fields[10], &descriptor.width) ||
+          !ParseOptionalCanonicalRelationalU32(fields[11],
+                                               &descriptor.precision) ||
+          !ParseOptionalCanonicalRelationalU32(fields[12], &descriptor.scale) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[15], std::numeric_limits<std::uint64_t>::max(),
+              &catalog_generation) ||
+          catalog_generation == 0 ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[16], std::numeric_limits<std::uint64_t>::max(),
+              &registry_generation) ||
+          registry_generation == 0) {
+        return RefuseRelationalGraph("SBLR.OPERAND.INVALID",
+                                     "authoritative relational descriptor record is malformed",
+                                     "descriptor_record");
+      }
+      descriptor.id = static_cast<std::uint32_t>(id);
+      descriptor.descriptor_uuid = fields[0];
+      descriptor.descriptor_generation = descriptor_generation;
+      descriptor.type_uuid = fields[2];
+      descriptor.type_generation = type_generation;
+      descriptor.codec_id = fields[4];
+      descriptor.codec_version = static_cast<std::uint16_t>(codec_version);
+      descriptor.codec_generation = codec_generation;
+      descriptor.nullability = static_cast<std::uint8_t>(nullability + 1);
+      if (fields[8] != "-") descriptor.collation_uuid = std::string(fields[8]);
+      descriptor.statement_receipt_uuid = fields[13];
+      descriptor.datatype_catalog_snapshot_uuid = fields[14];
+      descriptor.datatype_catalog_generation = catalog_generation;
+      descriptor.datatype_registry_generation = registry_generation;
+      descriptor.datatype_identity_authoritative = true;
       graph->descriptors.push_back(std::move(descriptor));
       continue;
     }
@@ -45247,8 +45794,68 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   std::optional<std::uint32_t> search_predicate_root;
   std::unordered_map<std::uint32_t, const ParsedRelationalDescriptor*>
       descriptors;
-  std::unordered_set<std::string> descriptor_uuids;
+  std::unordered_map<std::string, const ParsedRelationalDescriptor*>
+      descriptors_by_uuid;
+  // The wire ID names a DAG occurrence.  A complete v2 tuple authenticates
+  // the immutable datatype row, while nullability/collation/timezone/shape
+  // remain local to that occurrence handle.  Non-authoritative v1 records
+  // retain their stricter legacy equality rule.
+  const auto same_non_authoritative_descriptor =
+      [](const ParsedRelationalDescriptor& left,
+         const ParsedRelationalDescriptor& right) {
+        return left.type_uuid == right.type_uuid &&
+               left.nullability == right.nullability &&
+               left.collation_uuid == right.collation_uuid &&
+               left.timezone_profile_id == right.timezone_profile_id &&
+               left.width == right.width &&
+               left.precision == right.precision &&
+               left.scale == right.scale &&
+               left.datatype_identity_authoritative ==
+                   right.datatype_identity_authoritative &&
+               left.descriptor_generation == right.descriptor_generation &&
+               left.type_generation == right.type_generation &&
+               left.codec_id == right.codec_id &&
+               left.codec_version == right.codec_version &&
+               left.codec_generation == right.codec_generation &&
+               left.statement_receipt_uuid == right.statement_receipt_uuid &&
+               left.datatype_catalog_snapshot_uuid ==
+                   right.datatype_catalog_snapshot_uuid &&
+               left.datatype_catalog_generation ==
+                   right.datatype_catalog_generation &&
+               left.datatype_registry_generation ==
+                   right.datatype_registry_generation;
+      };
+  const auto same_immutable_datatype_authority =
+      [](const ParsedRelationalDescriptor& left,
+         const ParsedRelationalDescriptor& right) {
+        return left.type_uuid == right.type_uuid &&
+               left.descriptor_generation == right.descriptor_generation &&
+               left.type_generation == right.type_generation &&
+               left.codec_id == right.codec_id &&
+               left.codec_version == right.codec_version &&
+               left.codec_generation == right.codec_generation &&
+               left.statement_receipt_uuid == right.statement_receipt_uuid &&
+               left.datatype_catalog_snapshot_uuid ==
+                   right.datatype_catalog_snapshot_uuid &&
+               left.datatype_catalog_generation ==
+                   right.datatype_catalog_generation &&
+               left.datatype_registry_generation ==
+                   right.datatype_registry_generation;
+      };
+  const ParsedRelationalDescriptor* authoritative_descriptor_anchor = nullptr;
   for (const auto& descriptor : graph.descriptors) {
+    const bool exact_datatype_identity =
+        !descriptor.datatype_identity_authoritative ||
+        (descriptor.descriptor_generation != 0 &&
+         descriptor.type_generation != 0 && !descriptor.codec_id.empty() &&
+         descriptor.codec_id.find('|') == std::string::npos &&
+         descriptor.codec_version != 0 && descriptor.codec_generation != 0 &&
+         IsNonNullCanonicalRelationalUuid(
+             descriptor.statement_receipt_uuid) &&
+         IsNonNullCanonicalRelationalUuid(
+             descriptor.datatype_catalog_snapshot_uuid) &&
+         descriptor.datatype_catalog_generation != 0 &&
+         descriptor.datatype_registry_generation != 0);
     if (!IsCanonicalRelationalUuid(descriptor.descriptor_uuid) ||
         !IsCanonicalRelationalUuid(descriptor.type_uuid) ||
         descriptor.nullability < 1 || descriptor.nullability > 3 ||
@@ -45259,11 +45866,56 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         (descriptor.scale.has_value() &&
          (!descriptor.precision.has_value() ||
           *descriptor.scale > *descriptor.precision)) ||
-        !descriptors.emplace(descriptor.id, &descriptor).second ||
-        !descriptor_uuids.insert(descriptor.descriptor_uuid).second) {
-      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
-                                   "relational descriptor identity or type is invalid",
-                                   "descriptor_record");
+        !exact_datatype_identity ||
+        !descriptors.emplace(descriptor.id, &descriptor).second) {
+      return RefuseRelationalGraph(
+          descriptor.datatype_identity_authoritative
+              ? "DATATYPE.DESCRIPTOR.INVALID"
+              : "SBLR.PLAN_TREE.INVALID_HANDLE",
+          descriptor.datatype_identity_authoritative
+              ? "authoritative relational datatype identity is absent stale or contradictory"
+              : "relational descriptor identity or type is invalid",
+          "descriptor_record");
+    }
+    if (descriptor.datatype_identity_authoritative) {
+      if (authoritative_descriptor_anchor == nullptr) {
+        authoritative_descriptor_anchor = &descriptor;
+      } else if (descriptor.statement_receipt_uuid !=
+                     authoritative_descriptor_anchor
+                         ->statement_receipt_uuid ||
+                 descriptor.datatype_catalog_snapshot_uuid !=
+                     authoritative_descriptor_anchor
+                         ->datatype_catalog_snapshot_uuid ||
+                 descriptor.datatype_catalog_generation !=
+                     authoritative_descriptor_anchor
+                         ->datatype_catalog_generation ||
+                 descriptor.datatype_registry_generation !=
+                     authoritative_descriptor_anchor
+                         ->datatype_registry_generation) {
+        return RefuseRelationalGraph(
+            "DATATYPE.DESCRIPTOR.INVALID",
+            "authoritative relational descriptors cross receipt or registry snapshot authority",
+            "descriptor_record", descriptor.id);
+      }
+    }
+    const auto [prior, inserted] =
+        descriptors_by_uuid.emplace(descriptor.descriptor_uuid, &descriptor);
+    const bool repeated_uuid_authority_matches =
+        inserted ||
+        (prior->second->datatype_identity_authoritative ==
+             descriptor.datatype_identity_authoritative &&
+         (descriptor.datatype_identity_authoritative
+              ? same_immutable_datatype_authority(*prior->second, descriptor)
+              : same_non_authoritative_descriptor(*prior->second,
+                                                    descriptor)));
+    if (!repeated_uuid_authority_matches) {
+      return RefuseRelationalGraph(
+          (prior->second->datatype_identity_authoritative ||
+           descriptor.datatype_identity_authoritative)
+              ? "DATATYPE.DESCRIPTOR.INVALID"
+              : "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "repeated relational descriptor UUID carries conflicting type authority",
+          "descriptor_record");
     }
   }
 
@@ -45577,6 +46229,69 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
             "delivered relational property reference is invalid",
             "delivered_property_uuids", node.id);
       }
+    }
+  }
+  const auto grouped_sum_node = std::ranges::find_if(
+      graph.nodes, [](const auto& node) {
+        return node.semantic_variant_id ==
+               "aggregate.grouped-int64-key-sum.v1";
+      });
+  if (grouped_sum_node != graph.nodes.end()) {
+    constexpr std::string_view kBigintDescriptorUuid =
+        "019d0000-0000-7000-8000-00000000d711";
+    constexpr std::string_view kInt128DescriptorUuid =
+        "019d0000-0000-7000-8000-00000000d714";
+    if (graph.descriptors.size() != 3 ||
+        !std::ranges::all_of(graph.descriptors, [](const auto& descriptor) {
+          const bool bigint =
+              descriptor.descriptor_uuid ==
+              "019d0000-0000-7000-8000-00000000d711";
+          const bool int128 =
+              descriptor.descriptor_uuid ==
+              "019d0000-0000-7000-8000-00000000d714";
+          return descriptor.datatype_identity_authoritative &&
+                 descriptor.descriptor_generation == 1 &&
+                 descriptor.type_uuid ==
+                     (bigint
+                          ? "019d0000-0000-7000-8000-00000000d712"
+                          : "019d0000-0000-7000-8000-00000000d715") &&
+                 descriptor.type_generation == 1 &&
+                 descriptor.codec_id ==
+                     (bigint ? "datatype.int64.le.v1"
+                             : "datatype.int128.le.v1") &&
+                 descriptor.codec_version == 1 &&
+                 descriptor.codec_generation == 1 &&
+                 descriptor.datatype_catalog_snapshot_uuid ==
+                     "019d0000-0000-7000-8000-00000000d701" &&
+                 descriptor.datatype_catalog_generation == 1 &&
+                 descriptor.datatype_registry_generation == 1 &&
+                 (bigint || int128);
+        }) ||
+        std::ranges::count(graph.descriptors, kBigintDescriptorUuid,
+                           &ParsedRelationalDescriptor::descriptor_uuid) != 2 ||
+        std::ranges::count(graph.descriptors, kInt128DescriptorUuid,
+                           &ParsedRelationalDescriptor::descriptor_uuid) != 1) {
+      return RefuseRelationalGraph(
+          "DATATYPE.DESCRIPTOR.INVALID",
+          "catalog grouped SUM requires exactly three receipt-bound authoritative datatype descriptors",
+          "descriptor_record", grouped_sum_node->id);
+    }
+    const auto& identity_anchor = graph.descriptors.front();
+    if (!std::ranges::all_of(
+            graph.descriptors, [&](const auto& descriptor) {
+              return descriptor.statement_receipt_uuid ==
+                         identity_anchor.statement_receipt_uuid &&
+                     descriptor.datatype_catalog_snapshot_uuid ==
+                         identity_anchor.datatype_catalog_snapshot_uuid &&
+                     descriptor.datatype_catalog_generation ==
+                         identity_anchor.datatype_catalog_generation &&
+                     descriptor.datatype_registry_generation ==
+                         identity_anchor.datatype_registry_generation;
+            })) {
+      return RefuseRelationalGraph(
+          "DATATYPE.DESCRIPTOR.INVALID",
+          "catalog grouped SUM datatype descriptors cross receipt or registry snapshot authority",
+          "descriptor_record", grouped_sum_node->id);
     }
   }
   for (const auto& output : graph.outputs) {
@@ -47609,18 +48324,38 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
   }
   if (envelope.payload.find("\"engine_api_command_route\":true") !=
       std::string::npos) {
-    const auto* spec = EngineApiCommandSpecByOperation(envelope.operation_id);
-    if (spec == nullptr || envelope.sblr_opcode != spec->opcode) {
+    const auto* spec =
+        EngineApiCommandSpecByOperation(envelope.engine_api_operation_id);
+    const auto wire = spec == nullptr
+                          ? EngineApiWireIdentity{}
+                          : EngineApiCommandWireIdentity(*spec);
+    const auto admission_marker =
+        EngineApiExternalAdmissionMarker(wire.admission);
+    const bool marker_matches =
+        admission_marker.empty() ||
+        std::any_of(envelope.operands.begin(), envelope.operands.end(),
+                    [&](const auto& operand) {
+                      return operand.type == "text" &&
+                             operand.name == admission_marker &&
+                             operand.value == spec->operation_id;
+                    });
+    if (spec == nullptr || envelope.operation_id != wire.operation_id ||
+        envelope.sblr_opcode != wire.opcode) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.ENGINE_API_COMMAND_OPCODE_INVALID",
                        "Engine API command SBLR must use the canonical operation opcode");
-    } else if (envelope.operation_family != spec->operation_family ||
-               envelope.sblr_operation_key != spec->operation_family ||
+    } else if (envelope.operation_family != wire.operation_family ||
+               envelope.sblr_operation_key != wire.operation_family ||
+               envelope.engine_api_operation_id != spec->operation_id ||
                envelope.result_shape_key != spec->result_shape ||
                envelope.engine_api_function != spec->engine_api_function ||
                envelope.payload.find("\"canonical_sblr_operation\":\"" +
+                                     std::string(wire.operation_id) + "\"") ==
+                   std::string::npos ||
+               envelope.payload.find("\"engine_api_operation_id\":\"" +
                                      std::string(spec->operation_id) + "\"") ==
                    std::string::npos ||
+               !marker_matches ||
                envelope.payload.find("\"engine_api_function\":\"" +
                                      std::string(spec->engine_api_function) + "\"") ==
                    std::string::npos ||
@@ -48512,25 +49247,43 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     }
   }
   if (envelope.payload.find("\"catalog_envelope_kind\":\"create_view_ddl\"") != std::string::npos) {
-    if (envelope.operation_id != "ddl.create_view" ||
-        envelope.sblr_opcode != "SBLR_DDL_CREATE_VIEW") {
+    const bool materialized =
+        envelope.payload.find("\"view_materialized\":true") != std::string::npos;
+    const std::string_view expected_operation =
+        materialized ? "engine.op.ddl_create_materialized_view"
+                     : "engine.op.ddl_create_view";
+    const std::string_view expected_opcode =
+        materialized ? "SBLR_DDL_CREATE_MATERIALIZED_VIEW"
+                     : "SBLR_DDL_CREATE_VIEW";
+    if (envelope.operation_id != expected_operation ||
+        envelope.sblr_opcode != expected_opcode) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_VIEW_OPERATION_INVALID",
-                       "CREATE VIEW SBLR must use ddl.create_view and SBLR_DDL_CREATE_VIEW");
+                       "CREATE VIEW SBLR must use its exact Core DDL operation id and opcode");
     }
     if (envelope.operation_family != "sblr.catalog.mutation.v3" ||
         envelope.sblr_operation_key != "sblr.catalog.mutation.v3" ||
-        envelope.payload.find("\"catalog_authority\":\"sys.catalog.view\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_kind\":\"view\"") == std::string::npos ||
-        envelope.payload.find("\"view_definition_embedded\":false") == std::string::npos ||
-        envelope.payload.find("\"view_query_dependencies_included\":false") == std::string::npos ||
+        envelope.payload.find(
+            materialized
+                ? "\"catalog_authority\":\"sys.catalog.materialized_view\""
+                : "\"catalog_authority\":\"sys.catalog.view\"") == std::string::npos ||
+        envelope.payload.find(
+            materialized
+                ? "\"target_object_kind\":\"materialized_view\""
+                : "\"target_object_kind\":\"view\"") == std::string::npos ||
+        envelope.payload.find("\"view_definition_embedded\":true") == std::string::npos ||
+        envelope.payload.find("\"view_query_dependencies_included\":true") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         !HasValue(envelope.required_rights, "right.catalog_mutate") ||
-        !HasValue(envelope.required_authority_steps, "authority.engine.ddl_create_view_api_required") ||
+        !HasValue(envelope.required_authority_steps,
+                  materialized
+                      ? "authority.engine.ddl_create_materialized_view_api_required"
+                      : "authority.engine.ddl_create_view_api_required") ||
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.view") ||
+        !HasValue(envelope.descriptor_refs,
+                  materialized ? "sys.catalog.materialized_view" : "sys.catalog.view") ||
         !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_VIEW_CATALOG_ENVELOPE_INVALID",
                        "CREATE VIEW SBLR must carry view descriptor authority without text authority");
@@ -48713,7 +49466,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "agent runtime SBLR must route through engine agent management authority without parser execution");
     }
   }
-  if (IsSupportedManagementRuntimeOperation(envelope.operation_id)) {
+  if (IsSupportedManagementRuntimeOperation(envelope.operation_id) &&
+      envelope.payload.find("\"engine_api_command_route\":true") ==
+          std::string::npos) {
     if (envelope.sblr_opcode != ManagementOpcodeForOperation(envelope.operation_id)) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.MANAGEMENT_OPCODE_MISMATCH",
                        "management runtime SBLR operation id and opcode do not match");
@@ -49398,7 +50153,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "security membership SBLR must use UUID-bound engine security authority without parser authorization");
     }
   }
-  if (envelope.operation_id == "security.session.set_role" ||
+  if (envelope.payload.find("\"engine_api_command_route\":true") ==
+          std::string::npos &&
+      (envelope.operation_id == "security.session.set_role" ||
       envelope.operation_id == "security.role.create" ||
       envelope.operation_id == "security.role.drop" ||
       envelope.operation_id == "security.group.create" ||
@@ -49414,8 +50171,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       envelope.operation_id == "security.policy.attach" ||
       envelope.operation_id == "security.policy.activate" ||
       envelope.operation_id == "security.policy.deactivate" ||
-      envelope.operation_id == "security.policy.validate" ||
-      envelope.operation_id == "security.policy.show") {
+       envelope.operation_id == "security.policy.validate" ||
+       envelope.operation_id == "security.policy.show")) {
     const std::string expected_opcode = SecurityOpcodeForOperation(envelope.operation_id);
     if (expected_opcode.empty() || envelope.sblr_opcode != expected_opcode) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_POLICY_OPCODE_MISMATCH",

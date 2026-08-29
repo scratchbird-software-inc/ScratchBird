@@ -292,6 +292,9 @@ class NativeRelationalParser final {
         LooksLikeBoundedCatalogRelationSelect()) {
       return ParseCatalogRelationSelect();
     }
+    if (LooksLikeBoundedObjectFreeConstantSelect()) {
+      return ParseObjectFreeConstantSelect();
+    }
     if (tokens_.empty() || !IsWord(*tokens_.front(), "VALUES")) {
       return std::move(document_);
     }
@@ -350,6 +353,59 @@ class NativeRelationalParser final {
     }
     relation.output_expression_ids =
         document_.values_rows.front().expression_ids;
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
+  }
+
+  bool LooksLikeBoundedObjectFreeConstantSelect() const {
+    if (tokens_.size() != 2 && tokens_.size() != 3) return false;
+    return IsWord(*tokens_[0], "SELECT") &&
+           tokens_[1]->kind == TokenKind::kNumericLiteral &&
+           (tokens_.size() == 2 || tokens_[2]->text == ";");
+  }
+
+  NativeRelationalAstDocument ParseObjectFreeConstantSelect() {
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "native relational token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select_token = Consume();
+    const Token& literal_token = Consume();
+    NativeExpressionAstNode literal;
+    literal.expression_id = 1;
+    literal.expression_kind = NativeExpressionAstKind::kLiteral;
+    literal.literal_kind = NativeLiteralAstKind::kNumeric;
+    literal.spelling = literal_token.text;
+    literal.range = TokenSourceRange(literal_token);
+    document_.expressions.push_back(std::move(literal));
+
+    NativeValuesRowAstNode row;
+    row.row_id = 1;
+    row.expression_ids = {1};
+    row.range = TokenSourceRange(literal_token);
+    document_.values_rows.push_back(std::move(row));
+
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("object_free_constant_select_trailing_input",
+             "bounded object-free constant SELECT has unexpected trailing input");
+      return FinishRefusal();
+    }
+
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kValues;
+    relation.values_row_ids = {1};
+    relation.output_expression_ids = {1};
+    relation.range = Span(select_token, literal_token);
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
     document_.status = NativeRelationalParseStatus::kAccepted;
@@ -4197,6 +4253,9 @@ class NativeRelationalParser final {
     }
     for (std::size_t index = from_index + 1;
          index + 1 < tokens_.size(); ++index) {
+      if (IsWord(*tokens_[index], "JOIN")) {
+        return true;
+      }
       const bool accepted_kind =
           IsWord(*tokens_[index], "CROSS") ||
           IsWord(*tokens_[index], "INNER") ||
@@ -4478,7 +4537,9 @@ class NativeRelationalParser final {
     if (!left_source.has_value()) return FinishRefusal();
     NativeJoinAstKind join_kind = NativeJoinAstKind::kNone;
     std::string_view join_word;
-    if (!AtEnd() && IsWord(Current(), "CROSS")) {
+    if (!AtEnd() && IsWord(Current(), "JOIN")) {
+      join_kind = NativeJoinAstKind::kInner;
+    } else if (!AtEnd() && IsWord(Current(), "CROSS")) {
       join_kind = NativeJoinAstKind::kCross;
       join_word = "CROSS";
     } else if (!AtEnd() && IsWord(Current(), "INNER")) {
@@ -4494,7 +4555,12 @@ class NativeRelationalParser final {
       join_kind = NativeJoinAstKind::kFullOuter;
       join_word = "FULL";
     }
-    if (join_kind == NativeJoinAstKind::kNone ||
+    if (join_kind == NativeJoinAstKind::kNone) {
+      Refuse("catalog_join_kind_required",
+             "bounded catalog JOIN kind is required");
+      return FinishRefusal();
+    }
+    if (!join_word.empty() &&
         !RequireWord(join_word,
                      "catalog_join_kind_required",
                      "bounded catalog JOIN kind is required")) {
@@ -4541,32 +4607,49 @@ class NativeRelationalParser final {
         Refuse("catalog_inner_join_key_required", missing_detail);
         return std::nullopt;
       }
-      const Token* first = &Consume();
-      const Token* key = first;
-      if (AtSymbol(".")) {
+      std::vector<const Token*> components{&Consume()};
+      while (AtSymbol(".")) {
         Consume();
         if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
           Refuse("catalog_inner_join_qualified_key_incomplete",
                  "bounded catalog JOIN qualified key is incomplete");
           return std::nullopt;
         }
-        key = &Consume();
-        const auto expected_alias =
-            source.alias.has_value() ? &*source.alias
-                                     : &source.qualified_name.back();
+        components.push_back(&Consume());
+      }
+      if (components.size() > 1) {
+        const auto component_matches = [](const Token* presented,
+                                          const NativeIdentifierAstNode& expected) {
+          return presented != nullptr && presented->quoted == expected.quoted &&
+                 (presented->quoted
+                      ? presented->text == expected.spelling
+                      : ToLowerAscii(presented->text) ==
+                            ToLowerAscii(expected.spelling));
+        };
+        const auto qualifier_count = components.size() - 1;
         const bool alias_matches =
-            first->quoted == expected_alias->quoted &&
-            (first->quoted
-                 ? first->text == expected_alias->spelling
-                 : ToLowerAscii(first->text) ==
-                       ToLowerAscii(expected_alias->spelling));
-        if (!alias_matches) {
+            source.alias.has_value() && qualifier_count == 1 &&
+            component_matches(components.front(), *source.alias);
+        const bool terminal_matches =
+            !source.alias.has_value() && qualifier_count == 1 &&
+            component_matches(components.front(),
+                              source.qualified_name.back());
+        const bool qualified_name_matches =
+            !source.alias.has_value() &&
+            qualifier_count == source.qualified_name.size() &&
+            std::equal(components.begin(),
+                       components.begin() + qualifier_count,
+                       source.qualified_name.begin(),
+                       source.qualified_name.end(), component_matches);
+        if (!alias_matches && !terminal_matches &&
+            !qualified_name_matches) {
           Refuse("catalog_inner_join_qualifier_mismatch",
                  "bounded catalog JOIN key qualifier does not match its leg");
           return std::nullopt;
         }
       }
-      return std::pair<const Token*, const Token*>{first, key};
+      return std::pair<const Token*, const Token*>{components.front(),
+                                                   components.back()};
     };
     const auto parse_join_comparison = [&]()
         -> std::optional<std::size_t> {
@@ -5362,6 +5445,14 @@ class NativeRelationalParser final {
     std::size_t cursor = 1;
     if (tokens_[cursor]->text == "*") {
       ++cursor;
+    } else if (cursor + 5 < tokens_.size() &&
+               tokens_[cursor]->kind == TokenKind::kIdentifier &&
+               tokens_[cursor + 1]->text == "," &&
+               IsWord(*tokens_[cursor + 2], "SUM") &&
+               tokens_[cursor + 3]->text == "(" &&
+               tokens_[cursor + 4]->kind == TokenKind::kIdentifier &&
+               tokens_[cursor + 5]->text == ")") {
+      cursor += 6;
     } else if (cursor + 3 < tokens_.size() &&
                IsBoundedCatalogGlobalAggregate(*tokens_[cursor]) &&
                tokens_[cursor + 1]->text == "(") {
@@ -5497,11 +5588,59 @@ class NativeRelationalParser final {
     std::vector<std::uint32_t> source_projection_expression_ids;
     std::optional<std::uint32_t> global_aggregate_expression_id;
     std::string global_aggregate_function;
+    const bool grouped_sum_int128 =
+        cursor_ + 5 < tokens_.size() &&
+        Current().kind == TokenKind::kIdentifier &&
+        tokens_[cursor_ + 1]->text == "," &&
+        IsWord(*tokens_[cursor_ + 2], "SUM") &&
+        tokens_[cursor_ + 3]->text == "(" &&
+        tokens_[cursor_ + 4]->kind == TokenKind::kIdentifier &&
+        tokens_[cursor_ + 5]->text == ")";
     const bool global_aggregate =
-        !AtEnd() &&
+        !grouped_sum_int128 && !AtEnd() &&
         IsBoundedCatalogGlobalAggregate(Current());
     bool global_count_star = false;
-    if (global_aggregate) {
+    std::optional<std::uint32_t> grouped_key_expression_id;
+    std::optional<std::uint32_t> grouped_sum_expression_id;
+    std::string grouped_key_spelling;
+    bool grouped_key_quoted = false;
+    if (grouped_sum_int128) {
+      const Token& key_token = Consume();
+      grouped_key_spelling = key_token.text;
+      grouped_key_quoted = key_token.quoted;
+      NativeExpressionAstNode key;
+      key.expression_id = NextExpressionId();
+      key.expression_kind = NativeExpressionAstKind::kIdentifier;
+      key.spelling = key_token.text;
+      key.range = TokenSourceRange(key_token);
+      grouped_key_expression_id = key.expression_id;
+      projection_expression_ids.push_back(key.expression_id);
+      source_projection_expression_ids.push_back(key.expression_id);
+      document_.expressions.push_back(std::move(key));
+      Consume();  // comma
+      const Token& sum_token = Consume();
+      Consume();  // opening parenthesis
+      const Token& argument_token = Consume();
+      NativeExpressionAstNode argument;
+      argument.expression_id = NextExpressionId();
+      argument.expression_kind = NativeExpressionAstKind::kIdentifier;
+      argument.spelling = argument_token.text;
+      argument.range = TokenSourceRange(argument_token);
+      const auto argument_expression_id = argument.expression_id;
+      source_projection_expression_ids.push_back(argument.expression_id);
+      document_.expressions.push_back(std::move(argument));
+      const Token& close_token = Consume();
+      NativeExpressionAstNode sum;
+      sum.expression_id = NextExpressionId();
+      sum.expression_kind = NativeExpressionAstKind::kFunctionCall;
+      sum.operator_name = "SUM";
+      sum.child_expression_ids = {argument_expression_id};
+      sum.spelling = SourceSpelling(sum_token, close_token);
+      sum.range = Span(sum_token, close_token);
+      grouped_sum_expression_id = sum.expression_id;
+      projection_expression_ids.push_back(sum.expression_id);
+      document_.expressions.push_back(std::move(sum));
+    } else if (global_aggregate) {
       const Token& function_token = Consume();
       global_aggregate_function = CanonicalTokenText(function_token);
       const bool pair_aggregate =
@@ -5946,9 +6085,31 @@ class NativeRelationalParser final {
     }
     source.range = Span(first_name_token, *source_end);
 
+    if (grouped_sum_int128) {
+      if (!RequireWord("GROUP", "catalog_grouped_sum_group_required",
+                       "catalog grouped SUM requires GROUP BY") ||
+          !RequireWord("BY", "catalog_grouped_sum_by_required",
+                       "catalog grouped SUM requires GROUP BY") ||
+          AtEnd() || Current().kind != TokenKind::kIdentifier ||
+          Current().text != grouped_key_spelling ||
+          Current().quoted != grouped_key_quoted) {
+        if (!document_.messages.has_errors()) {
+          Refuse("catalog_grouped_sum_key_mismatch",
+                 "catalog grouped SUM GROUP BY must repeat the exact projected key");
+        }
+        return FinishRefusal();
+      }
+      source_end = &Consume();
+    }
+
     std::optional<std::uint32_t> predicate_expression_id;
     std::optional<std::uint32_t> hidden_predicate_expression_id;
     if (!AtEnd() && IsWord(Current(), "WHERE")) {
+      if (grouped_sum_int128) {
+        Refuse("catalog_grouped_sum_extra_clause",
+               "catalog grouped SUM does not admit WHERE");
+        return FinishRefusal();
+      }
       Consume();
       predicate_expression_id = ParseExpression(0, 0);
       if (!predicate_expression_id.has_value()) return FinishRefusal();
@@ -6007,7 +6168,7 @@ class NativeRelationalParser final {
           document_.expressions[*predicate_expression_id - 1].range);
     }
     if (!AtEnd() && IsWord(Current(), "ORDER")) {
-      if (global_aggregate) {
+      if (global_aggregate || grouped_sum_int128) {
         Refuse("catalog_aggregate_order_unsupported",
                "bounded catalog aggregate does not admit ORDER BY");
         return FinishRefusal();
@@ -6106,6 +6267,11 @@ class NativeRelationalParser final {
       }
     }
     if (!AtEnd() && IsWord(Current(), "LIMIT")) {
+      if (grouped_sum_int128) {
+        Refuse("catalog_grouped_sum_extra_clause",
+               "catalog grouped SUM does not admit LIMIT or OFFSET");
+        return FinishRefusal();
+      }
       Consume();
       const auto parse_row_bound = [&](const std::string_view diagnostic_id,
                                        const std::string_view detail)
@@ -6213,7 +6379,24 @@ class NativeRelationalParser final {
       document_.relations.push_back(std::move(project));
       document_.root_relation_id = document_.relations.back().relation_id;
     }
-    if (global_aggregate) {
+    if (grouped_sum_int128) {
+      NativeRelationAstNode aggregate;
+      aggregate.relation_id = document_.root_relation_id + 1;
+      aggregate.relation_kind = NativeRelationAstKind::kAggregate;
+      aggregate.aggregate_grouping_form =
+          NativeAggregateGroupingForm::kSimple;
+      aggregate.aggregate_projection_form =
+          NativeAggregateProjectionForm::kKeySumInt128;
+      aggregate.input_relation_ids = {document_.root_relation_id};
+      aggregate.output_expression_ids = {
+          *grouped_key_expression_id, *grouped_sum_expression_id};
+      aggregate.grouping_key_expression_ids = {
+          *grouped_key_expression_id};
+      aggregate.aggregate_expression_ids = {*grouped_sum_expression_id};
+      aggregate.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(aggregate));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    } else if (global_aggregate) {
       NativeRelationAstNode aggregate;
       aggregate.relation_id = document_.root_relation_id + 1;
       aggregate.relation_kind = NativeRelationAstKind::kAggregate;

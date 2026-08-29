@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -192,7 +193,7 @@ void RequireExactLowering(const MemoryRouteRow& row) {
           Message(row, "payload", "source SQL text leaked into payload"));
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   Require(admission.admitted, Message(row, "server_admission", "admission rejected route"));
   Require(admission.requires_public_abi_dispatch,
           Message(row, "server_admission", "public ABI dispatch not required"));

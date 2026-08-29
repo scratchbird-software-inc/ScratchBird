@@ -333,10 +333,18 @@ void VerifyPolicyRows(const std::vector<Row>& policy_rows) {
       } else {
         Require(Contains(Field(row, "compile_flag_policy"), "SB_ENABLE_CLUSTER_PROVIDER_OFF"),
                 "cluster disabled compile policy missing " + source_import_id);
-        Require(Contains(Field(row, "disabled_behavior"), "functionality_unsupported"),
-                "cluster disabled behavior drift " + source_import_id);
-        Require(Contains(Field(row, "public_stub_behavior"), "functionality_unlicensed"),
-                "cluster public stub behavior drift " + source_import_id);
+        Require(Contains(Field(row, "disabled_behavior"),
+                         "SBLR.CLUSTER.SUPPORT_NOT_ENABLED") &&
+                    Contains(Field(row, "disabled_behavior"),
+                             "kClusterSupportNotEnabledCode"),
+                "cluster no-provider diagnostic drift " + source_import_id);
+        Require(Contains(Field(row, "public_stub_behavior"),
+                         "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY") &&
+                    Contains(Field(row, "public_stub_behavior"),
+                             "support_status=compile_link_only") &&
+                    Contains(Field(row, "public_stub_behavior"),
+                             "supports_execution=false"),
+                "cluster compile-link-stub behavior drift " + source_import_id);
       }
       continue;
     }
@@ -450,6 +458,13 @@ void VerifyClusterProviderBoundary(const std::vector<Row>& policy_rows) {
   Require(!info.local_runtime_execution_enabled,
           "public provider enabled local runtime execution");
   Require(!info.mutable_by_local_core, "public provider enabled local mutation");
+  if (no_cluster) {
+    Require(info.support_status == "not_enabled",
+            "no-cluster provider support status drift");
+  } else {
+    Require(info.compile_link_only && info.support_status == "compile_link_only",
+            "compile-link-stub provider support status drift");
+  }
 
   for (const auto operation_id :
        cluster_provider::RequiredClusterProviderOperationSet()) {

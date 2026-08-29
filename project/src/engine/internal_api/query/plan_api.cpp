@@ -1820,8 +1820,76 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
 
   std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
       descriptors_by_id;
-  std::unordered_set<std::string> descriptor_uuids;
+  std::unordered_map<std::string, const RelationalTypeDescriptor*>
+      descriptors_by_uuid;
+  const auto carries_any_datatype_authority =
+      [](const RelationalTypeDescriptor& descriptor) {
+        return descriptor.datatype_identity_authoritative ||
+               descriptor.descriptor_generation != 0 ||
+               descriptor.type_generation != 0 || !descriptor.codec_id.empty() ||
+               descriptor.codec_version != 0 ||
+               descriptor.codec_generation != 0 ||
+               !descriptor.statement_receipt_uuid.empty() ||
+               !descriptor.datatype_catalog_snapshot_uuid.empty() ||
+               descriptor.datatype_catalog_generation != 0 ||
+               descriptor.datatype_registry_generation != 0;
+      };
+  const auto carries_complete_datatype_authority =
+      [&](const RelationalTypeDescriptor& descriptor) {
+        return descriptor.datatype_identity_authoritative &&
+               descriptor.descriptor_generation != 0 &&
+               descriptor.type_generation != 0 && !descriptor.codec_id.empty() &&
+               descriptor.codec_id.find('|') == std::string::npos &&
+               descriptor.codec_version != 0 &&
+               descriptor.codec_generation != 0 &&
+               descriptor.nullability != RelationalNullability::kUnknown &&
+               canonical_uuid(descriptor.statement_receipt_uuid) &&
+               canonical_uuid(descriptor.datatype_catalog_snapshot_uuid) &&
+               descriptor.datatype_catalog_generation != 0 &&
+               descriptor.datatype_registry_generation != 0;
+      };
+  const auto same_non_authoritative_descriptor =
+      [](const RelationalTypeDescriptor& left,
+         const RelationalTypeDescriptor& right) {
+        return left.type_uuid == right.type_uuid &&
+               left.nullability == right.nullability &&
+               left.collation_uuid == right.collation_uuid &&
+               left.timezone_profile_id == right.timezone_profile_id &&
+               left.width == right.width && left.precision == right.precision &&
+               left.scale == right.scale;
+      };
+  const auto same_immutable_datatype_authority =
+      [](const RelationalTypeDescriptor& left,
+         const RelationalTypeDescriptor& right) {
+        return left.type_uuid == right.type_uuid &&
+               left.descriptor_generation == right.descriptor_generation &&
+               left.type_generation == right.type_generation &&
+               left.codec_id == right.codec_id &&
+               left.codec_version == right.codec_version &&
+               left.codec_generation == right.codec_generation &&
+               left.statement_receipt_uuid == right.statement_receipt_uuid &&
+               left.datatype_catalog_snapshot_uuid ==
+                   right.datatype_catalog_snapshot_uuid &&
+               left.datatype_catalog_generation ==
+                   right.datatype_catalog_generation &&
+               left.datatype_registry_generation ==
+                   right.datatype_registry_generation;
+      };
+  const RelationalTypeDescriptor* authoritative_descriptor_anchor = nullptr;
   for (const auto& descriptor : dag.descriptors) {
+    const bool carries_any = carries_any_datatype_authority(descriptor);
+    const bool carries_complete =
+        carries_complete_datatype_authority(descriptor);
+    const auto prior_uuid = descriptors_by_uuid.find(descriptor.descriptor_uuid);
+    const bool descriptor_uuid_authority_matches =
+        prior_uuid == descriptors_by_uuid.end() ||
+        (carries_complete_datatype_authority(*prior_uuid->second) ==
+             carries_complete &&
+         (carries_complete
+              ? same_immutable_datatype_authority(*prior_uuid->second,
+                                                   descriptor)
+              : same_non_authoritative_descriptor(*prior_uuid->second,
+                                                    descriptor)));
     if (descriptor.descriptor_id == 0 ||
         !canonical_uuid(descriptor.descriptor_uuid) ||
         !canonical_uuid(descriptor.type_uuid) ||
@@ -1833,9 +1901,36 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         (descriptor.scale.has_value() &&
          (!descriptor.precision.has_value() ||
           *descriptor.scale > *descriptor.precision)) ||
+        carries_any != carries_complete ||
         !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor).second ||
-        !descriptor_uuids.emplace(descriptor.descriptor_uuid).second) {
-      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0, "descriptor_record");
+        !descriptor_uuid_authority_matches) {
+      const bool authoritative_failure =
+          carries_any ||
+          (prior_uuid != descriptors_by_uuid.end() &&
+           carries_any_datatype_authority(*prior_uuid->second));
+      return refuse(authoritative_failure ? "DATATYPE.DESCRIPTOR.INVALID"
+                                          : "SBLR.PLAN_TREE.INVALID_HANDLE",
+                    0, "descriptor_record");
+    }
+    if (carries_complete) {
+      if (authoritative_descriptor_anchor == nullptr) {
+        authoritative_descriptor_anchor = &descriptor;
+      } else if (descriptor.statement_receipt_uuid !=
+                     authoritative_descriptor_anchor->statement_receipt_uuid ||
+                 descriptor.datatype_catalog_snapshot_uuid !=
+                     authoritative_descriptor_anchor
+                         ->datatype_catalog_snapshot_uuid ||
+                 descriptor.datatype_catalog_generation !=
+                     authoritative_descriptor_anchor
+                         ->datatype_catalog_generation ||
+                 descriptor.datatype_registry_generation !=
+                     authoritative_descriptor_anchor
+                         ->datatype_registry_generation) {
+        return refuse("DATATYPE.DESCRIPTOR.INVALID", 0, "descriptor_record");
+      }
+    }
+    if (prior_uuid == descriptors_by_uuid.end()) {
+      descriptors_by_uuid.emplace(descriptor.descriptor_uuid, &descriptor);
     }
   }
 
@@ -1853,6 +1948,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         expression.expression_kind == RelationalExpressionKind::kLiteral;
     const bool parameter =
         expression.expression_kind == RelationalExpressionKind::kParameter;
+    const bool contextual_literal =
+        expression.contextual_text_literal_v2.has_value();
     const bool identifier =
         expression.expression_kind == RelationalExpressionKind::kIdentifier;
     const bool function_call =
@@ -1948,14 +2045,28 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         ((literal || parameter) !=
          (expression.literal_or_parameter_ref.has_value() ||
           expression.literal_typed_value_v1.has_value() ||
-          expression.parameter_typed_value_v1.has_value())) ||
+          expression.parameter_typed_value_v1.has_value() ||
+          contextual_literal)) ||
         (parameter && expression.literal_or_parameter_ref.has_value() &&
          expression.parameter_typed_value_v1.has_value()) ||
         (literal &&
-         (expression.literal_or_parameter_ref.has_value() ==
-          expression.literal_typed_value_v1.has_value())) ||
+         (static_cast<unsigned>(
+              expression.literal_or_parameter_ref.has_value()) +
+          static_cast<unsigned>(
+              expression.literal_typed_value_v1.has_value()) +
+          static_cast<unsigned>(contextual_literal) != 1)) ||
         (!literal && expression.literal_typed_value_v1.has_value()) ||
-        (!parameter && expression.parameter_typed_value_v1.has_value())) {
+        (!parameter && expression.parameter_typed_value_v1.has_value()) ||
+        (!literal && contextual_literal) ||
+        (contextual_literal &&
+         (*expression.literal_kind != RelationalLiteralKind::kString ||
+          expression.contextual_text_literal_v2->literal_occurrence == 0 ||
+          expression.contextual_text_literal_v2->node_id == 0 ||
+          expression.contextual_text_literal_v2
+                  ->literal_descriptor_handle == 0 ||
+          expression.contextual_text_literal_v2
+                  ->literal_descriptor_handle !=
+              expression.result_descriptor_id))) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
                     expression.expression_id,
                     "expression_typed_fields");

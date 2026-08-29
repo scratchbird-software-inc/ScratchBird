@@ -28,7 +28,7 @@ Use MSYS2 UCRT64 with GNU C++ and gcc 15. Install or provide:
 Native proof contract:
 
 ```powershell
-cmake -S project -B build-windows-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake -DSB_BUILD_TESTS=ON -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSB_CLUSTER_PROVIDER_STUB=ON -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic
+cmake -S project -B build-windows-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake -DSB_BUILD_TESTS=ON -DSB_BUILD_COMPATIBILITY_PARSERS=OFF -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSB_CLUSTER_PROVIDER_STUB=ON -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic
 cmake --build build-windows-public-release-proof -j 2
 ctest --test-dir build-windows-public-release-proof -L public_release_correctness --output-on-failure
 ctest --test-dir build-windows-public-release-proof -L engine_listener_enterprise --output-on-failure

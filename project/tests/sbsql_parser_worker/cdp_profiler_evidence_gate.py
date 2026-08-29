@@ -32,11 +32,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 import cdp_benchmark_fixture_support as support
+from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
 
 
 SCHEMA_VERSION = "cdp.profiler_evidence_gate.v1"
 GATE_NAME = "cdp_profiler_evidence_gate"
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 FORBIDDEN_EXECUTION_PLAN_PATH = "docs" + "/execution-plans/"
 SHOW_MANAGEMENT_FIELDS = (
     "read_only_mode",
@@ -114,6 +114,10 @@ class Route:
                 str(self.database),
                 "--mode=embedded",
                 "--sslmode=disable",
+                "-U",
+                "alice",
+                "-P",
+                PUBLIC_TEST_PASSWORD,
             ]
         return list(self.fixed_args)
 
@@ -154,12 +158,6 @@ def make_work_dir(preferred_root: Path) -> Path:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise ProfilerGateError("unable to allocate a short-enough profiler evidence workspace")
-
-
-def auth_file(database: Path) -> None:
-    Path(str(database) + ".sb.local_password_auth").write_text(
-        f"alice\tlocal_password\t{VERIFIER}\n", encoding="utf-8"
-    )
 
 
 def wait_for_path(path: Path, timeout: float = 8.0) -> None:
@@ -204,7 +202,15 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> None:
 def start_embedded(args: argparse.Namespace, work: Path) -> Route:
     root = work / "e"
     root.mkdir(parents=True, exist_ok=True)
-    return Route(name="embedded", root=root, database=root / "profiler.sbdb", sb_isql=args.sb_isql, embedded=True)
+    database = root / "profiler.sbdb"
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="embedded",
+    )
+    return Route(name="embedded", root=root, database=database, sb_isql=args.sb_isql, embedded=True)
 
 
 def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
@@ -214,13 +220,18 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
     runtime = root / "sr"
     endpoint = control / "s.sock"
     root.mkdir(parents=True, exist_ok=True)
-    auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="local-ipc",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(control),
             "--runtime-dir",
@@ -234,7 +245,6 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
         stderr=(root / "server.err").open("wb"),
     )
     wait_for_path(endpoint)
-    evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
     return Route(
         name="local-ipc",
         root=root,
@@ -250,7 +260,7 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
             "-U",
             "alice",
             "-P",
-            evidence,
+            PUBLIC_TEST_PASSWORD,
         ],
         processes=[server],
     )
@@ -266,13 +276,18 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
     endpoint = server_control / "s.sock"
     port = find_free_port()
     root.mkdir(parents=True, exist_ok=True)
-    auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="inet",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -307,7 +322,6 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
         stderr=(root / "listener.err").open("wb"),
     )
     wait_for_tcp(port)
-    evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
     return Route(
         name="inet",
         root=root,
@@ -322,7 +336,7 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
             "-U",
             "alice",
             "-P",
-            evidence,
+            PUBLIC_TEST_PASSWORD,
         ],
         processes=[server, listener],
     )
@@ -404,12 +418,36 @@ def join_script(prefix: str, inputs: dict[str, Path]) -> str:
     ])
 
 
+def grouped_sum_int128_script(prefix: str, inputs: dict[str, Path]) -> str:
+    del inputs
+    widened = table_name(prefix, "grouped_sum_widened")
+    all_null = table_name(prefix, "grouped_sum_all_null")
+    return "\n".join([
+        f"CREATE TABLE {widened} (group_id bigint, amount bigint);",
+        f"INSERT INTO {widened} (group_id, amount) VALUES "
+        "(1, 9223372036854775807), (1, 1);",
+        f"SELECT group_id, SUM(amount) FROM {widened} GROUP BY group_id;",
+        f"CREATE TABLE {all_null} (group_id bigint, amount bigint);",
+        f"INSERT INTO {all_null} (group_id, amount) VALUES "
+        "(2, NULL), (2, NULL);",
+        f"SELECT group_id, SUM(amount) FROM {all_null} GROUP BY group_id;",
+        "",
+    ])
+
+
 WORKLOADS: tuple[Workload, ...] = (
     Workload("select_one", "select", 0, ("1",), select_one_script),
     Workload("copy_count", "copy", 5, ("5",), copy_count_script),
     Workload("range_select", "select", 5, ("2", "3", "4"), range_select_script),
-    Workload("single_row_update", "update", 5, ("20", "1", "3", "4", "5", "20"), update_script),
+    Workload("single_row_update", "update", 5, ("1", "3", "4", "5", "20"), update_script),
     Workload("join_probe", "join", 7, ("2|2", "3|3"), join_script),
+    Workload(
+        "grouped_sum_int128",
+        "aggregate",
+        4,
+        ("1|9223372036854775808", "2|"),
+        grouped_sum_int128_script,
+    ),
 )
 
 
@@ -957,6 +995,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--build-mode", default="unknown")
     args = parser.parse_args(argv[1:])

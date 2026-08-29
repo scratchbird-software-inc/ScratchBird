@@ -152,12 +152,27 @@ def main(argv: list[str]) -> int:
     ):
         require(option in runner_source, f"ScratchBird benchmark runner missing monitoring option {option}")
     schema_sql = benchmark_runner.MICRO_BENCHMARKS["single_insert"]["sql"].get("scratchbird")
-    copy_data = benchmark_runner.MICRO_BENCHMARKS["single_insert"]["copy_data"].get("scratchbird")
-    require(schema_sql == "COPY users.public.sbsfc021_stream_table FROM STDIN",
-            "ScratchBird single_insert no longer uses live COPY route")
-    rendered_params = benchmark_runner.render_benchmark_params(copy_data, 7, 1000000)
-    require(rendered_params == b"id=1000007;payload=benchmark\n",
-            "ScratchBird benchmark COPY payload rendering drifted")
+    require(
+        schema_sql
+        == (
+            "INSERT INTO users.public.sbsfc021_stream_table (id, payload) "
+            "VALUES ('{unique_id}', 'benchmark')"
+        ),
+        "ScratchBird single_insert no longer uses the live INSERT route",
+    )
+    rendered_sql = benchmark_runner.render_benchmark_sql(schema_sql, 7, 1000000)
+    require(
+        rendered_sql
+        == (
+            "INSERT INTO users.public.sbsfc021_stream_table (id, payload) "
+            "VALUES ('1000007', 'benchmark')"
+        ),
+        "ScratchBird benchmark INSERT identity rendering drifted",
+    )
+    require(
+        benchmark_runner.render_benchmark_params(None, 7, 1000000) is None,
+        "ScratchBird INSERT benchmark unexpectedly retained COPY payload bytes",
+    )
     require("scratchbird" in benchmark_runner.SCHEMA_SQL, "ScratchBird schema DDL is not registered")
     require_no_forbidden_sql(benchmark_runner.SCHEMA_SQL["scratchbird"], "ScratchBird micro benchmark schema")
     for test_name, test_config in benchmark_runner.MICRO_BENCHMARKS.items():

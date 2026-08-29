@@ -127,12 +127,24 @@ api::DurableAuthorizationPolicyRecord Policy(api::EngineUuid subject,
   policy.requires_runtime_recheck = recheck;
   policy.policy_epoch = 9;
   policy.canonical_policy_envelope = "sblr.policy.v1";
+  if (policy.policy_kind == "row_policy") {
+    policy.source_policy_generation = id_offset;
+    policy.update_policy_phase = 1;
+    policy.effective_policy_uuid =
+        MakeUuid(UuidKind::object, id_offset + 100);
+    policy.effective_policy_generation = 2;
+    policy.effective_expression_uuid =
+        MakeUuid(UuidKind::object, id_offset + 200);
+    policy.effective_expression_generation = 3;
+    policy.effective_expression_evidence_sha256.fill(0xa5);
+  }
   return policy;
 }
 
 api::DurableAuthorizationState DurableState(const FixtureIds& ids) {
   api::DurableAuthorizationState state;
   state.authority_uuid = ids.authority;
+  state.security_context_generation = 5;
   state.security_epoch = 7;
   state.policy_epoch = 9;
   state.catalog_generation_id = 11;
@@ -235,12 +247,30 @@ bool MaterializesNestedGroupsAndPolicies(const std::filesystem::path& work_dir) 
   bool ok = true;
   ok = Expect(materialized.ok, "durable authorization context should materialize") && ok;
   ok = Expect(materialized.context.present, "materialized context should be present") && ok;
+  ok = Expect(materialized.context.security_context_generation == 5,
+              "materialized context generation should remain provider-issued") && ok;
   ok = Expect(materialized.context.effective_subjects.size() == 5,
               "principal plus nested groups and roles should resolve") && ok;
   ok = Expect(materialized.context.grants.size() == 5,
               "effective durable grants should materialize") && ok;
   ok = Expect(materialized.context.policies.size() == 2,
               "row and domain policies should materialize") && ok;
+  const auto& row_policy = materialized.context.policies.front();
+  const auto& source_row_policy = state.policies.front();
+  ok = Expect(row_policy.source_policy_generation ==
+                  source_row_policy.source_policy_generation &&
+                  row_policy.update_policy_phase == 1 &&
+                  row_policy.effective_policy_uuid.canonical ==
+                      source_row_policy.effective_policy_uuid.canonical &&
+                  row_policy.effective_policy_generation ==
+                      source_row_policy.effective_policy_generation &&
+                  row_policy.effective_expression_uuid.canonical ==
+                      source_row_policy.effective_expression_uuid.canonical &&
+                  row_policy.effective_expression_generation ==
+                      source_row_policy.effective_expression_generation &&
+                  row_policy.effective_expression_evidence_sha256 ==
+                      source_row_policy.effective_expression_evidence_sha256,
+              "typed row-policy authority should survive materialization") && ok;
 
   auto select = api::EngineAuthorize(AuthorizeRequest(
       RequestContext(ids, materialized.context),
@@ -355,6 +385,35 @@ bool RejectsMembershipCycle() {
                 "cycle should report stable diagnostic");
 }
 
+bool RejectsMissingNativePolicyAuthority() {
+  const FixtureIds ids;
+  auto state = DurableState(ids);
+  state.policies.front().effective_expression_generation = 0;
+  const auto refused = api::MaterializeDurableAuthorizationContext(
+      state, MaterializeRequest(ids));
+  return Expect(!refused.ok,
+                "row policy without native expression generation should fail closed") &&
+         Expect(!refused.diagnostics.empty() &&
+                    refused.diagnostics.front().code == "SECURITY.CONTEXT.EXPIRED" &&
+                    refused.diagnostics.front().detail.find(
+                        "row_policy_native_authority_missing") != std::string::npos,
+                "missing native row-policy authority diagnostic drifted");
+}
+
+bool RejectsMissingSecurityContextGeneration() {
+  const FixtureIds ids;
+  auto state = DurableState(ids);
+  state.security_context_generation = 0;
+  const auto refused = api::MaterializeDurableAuthorizationContext(
+      state, MaterializeRequest(ids));
+  return Expect(!refused.ok,
+                "missing durable security-context generation should fail closed") &&
+         Expect(!refused.diagnostics.empty() &&
+                    refused.diagnostics.front().code ==
+                        "SECURITY.AUTHORIZATION.STATE_EPOCH_REQUIRED",
+                "missing security-context generation diagnostic drifted");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -370,6 +429,8 @@ int main(int argc, char** argv) {
   ok = MaterializesNestedGroupsAndPolicies(work_dir) && ok;
   ok = RejectsStaleEpoch() && ok;
   ok = RejectsMembershipCycle() && ok;
+  ok = RejectsMissingNativePolicyAuthority() && ok;
+  ok = RejectsMissingSecurityContextGeneration() && ok;
 
   std::filesystem::remove_all(work_dir, ignored);
   return ok ? 0 : 1;

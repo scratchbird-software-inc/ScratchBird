@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 
-SURFACE_REGISTRY = "public_input_snapshot"
+SURFACE_REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
 SEED_REGISTRY = "project/src/engine/functions/registry/function_seed_registry.cpp"
 FIXTURES = "project/tests/sbsql_parser_worker/generated/full_surface/SBSFC_055_LOB_LOCATOR_FIXTURES.csv"
 

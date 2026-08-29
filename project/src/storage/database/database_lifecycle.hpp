@@ -111,6 +111,12 @@ struct DatabaseOpenConfig {
   std::string expected_resource_seed_pack_version;
   std::string expected_resource_seed_pack_content_hash;
   std::string ipar_fault_injection_point;
+  // Test-only cut point for the sealed bootstrap security-context authority
+  // migration.  Production callers leave this empty.
+  std::string security_context_migration_fault_injection_point;
+  // Test-only cut point for the sealed database-local private-relation
+  // locator migration. Production callers leave this empty.
+  std::string private_relation_locator_migration_fault_injection_point;
 };
 
 enum class DatabaseLifecyclePhase : u16 {
@@ -144,6 +150,7 @@ struct DatabaseBootstrapSecurityCatalogState {
   TypedUuid membership_uuid;
   u64 creator_tx = 0;
   u32 policy_generation = 0;
+  u64 security_context_generation = 0;
 };
 
 struct DatabaseBootstrapSecurityCatalogReadResult {

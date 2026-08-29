@@ -2225,6 +2225,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                          candidate.input_node_ids ==
                              std::vector<std::uint32_t>{cte_node->node_id};
                 }));
+  const bool grouped_sum_int64_int128_profile =
+      aggregate_node != nullptr && filter_node == nullptr &&
+      project_node == nullptr && sort_node == nullptr &&
+      window_node == nullptr && cte_node == nullptr &&
+      limit_node == nullptr &&
+      aggregate_node->semantic_variant_id ==
+          "aggregate.grouped-int64-key-sum.v1";
   if (scan_node == nullptr ||
       terminal_node == nullptr ||
       (relational.root_node_id != terminal_node->node_id && !cte_is_root) ||
@@ -2431,9 +2438,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_node->semantic_variant_id !=
              "aggregate.global-json-object-agg-ordered-expression.v1" &&
          aggregate_node->semantic_variant_id !=
-             "aggregate.global-approx-top-k-expression.v1") ||
-        aggregate_node->bound_expression_ids.size() != 1 ||
-        aggregate_node->output_descriptor_ids.size() != 1 ||
+             "aggregate.global-approx-top-k-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.grouped-int64-key-sum.v1") ||
+        aggregate_node->bound_expression_ids.size() !=
+            (grouped_sum_int64_int128_profile ? 2U : 1U) ||
+        aggregate_node->output_descriptor_ids.size() !=
+            (grouped_sum_int64_int128_profile ? 2U : 1U) ||
         !aggregate_node->required_object_uuids.empty() ||
         !aggregate_node->values_row_ids.empty() ||
         !aggregate_node->required_property_uuids.empty() ||

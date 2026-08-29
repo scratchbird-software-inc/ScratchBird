@@ -8,21 +8,33 @@
 
 #include "api_types.hpp"
 #include "database_lifecycle.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "dml/select_api.hpp"
+#include "dml/update_api.hpp"
+#include "hash_digest.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "memory.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "typed_update_carrier_codec.hpp"
+
+#include "canonical_sblr_admission_test_helper.hpp"
 
 #include "../database_lifecycle/credentialed_database_fixture.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,12 +49,16 @@ namespace memory = scratchbird::core::memory;
 namespace sblr = scratchbird::engine::sblr;
 namespace server = scratchbird::server;
 namespace sbps = scratchbird::server::sbps;
+namespace update_wire = scratchbird::wire;
 
 #ifndef SB_SBSFC021_SEED_PACK_ROOT
 #define SB_SBSFC021_SEED_PACK_ROOT "project/resources/seed-packs/initial-resource-pack"
 #endif
 
 constexpr const char* kDatabaseUuid = "019f2100-0000-7000-8000-000000000001";
+std::string g_database_uuid = kDatabaseUuid;
+std::string g_principal_uuid =
+    "019f2100-0000-7000-8000-000000000002";
 constexpr const char* kSchemaUuid = "019f2100-0000-7000-8000-000000000101";
 constexpr const char* kTableUuid = "019f2100-0000-7000-8000-000000000102";
 constexpr const char* kIndexUuid = "019f2100-0000-7000-8000-000000000103";
@@ -221,13 +237,17 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "sbsfc021-dml-mga-row-result";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = kDatabaseUuid;
-  context.principal_uuid.canonical = "019f2100-0000-7000-8000-000000000002";
+  context.database_uuid.canonical = g_database_uuid;
+  context.principal_uuid.canonical = g_principal_uuid;
   context.session_uuid.canonical = "019f2100-0000-7000-8000-000000000" + std::move(session_suffix);
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("SBSFC-021");
   context.trace_tags.push_back("dml-mga-row-result");
@@ -277,7 +297,8 @@ std::string AdmissionEnvelope(std::string_view operation_id, std::string_view op
 
 void RequireServerAdmitted(std::string_view operation_id, std::string_view opcode) {
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{AdmissionEnvelope(operation_id, opcode), false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          operation_id, opcode));
   if (!admission.admitted) {
     std::cerr << "server admission rejected " << operation_id << '\n';
     for (const auto& diagnostic : admission.diagnostics) {
@@ -288,7 +309,8 @@ void RequireServerAdmitted(std::string_view operation_id, std::string_view opcod
 }
 
 sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcode) {
-  auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "SBSFC-021");
+  auto envelope = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+      operation_id, opcode, "SBSFC-021");
   envelope.parser_package_uuid = "019f2100-0000-7000-8000-000000000010";
   envelope.registry_snapshot_uuid = "019f2100-0000-7000-8000-000000000011";
   envelope.contains_sql_text = false;
@@ -386,14 +408,20 @@ api::EngineColumnDefinition QueryPlanInt64Column(std::uint32_t ordinal,
                                                  std::string name,
                                                  std::string column_uuid,
                                                  std::string descriptor_uuid) {
+  (void)descriptor_uuid;
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
   column.requested_column_uuid.canonical = std::move(column_uuid);
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid.canonical = std::move(descriptor_uuid);
+  column.descriptor.descriptor_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d711";
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "int64";
-  column.descriptor.encoded_descriptor = "type=int64";
+  column.descriptor.encoded_descriptor =
+      "type=int64;nullable=false;type_uuid="
+      "019d0000-0000-7000-8000-00000000d712;"
+      "datatype_descriptor_uuid="
+      "019d0000-0000-7000-8000-00000000d711";
   return column;
 }
 
@@ -503,7 +531,13 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
                          const std::string& encoded) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  // v4003 is retained only to prove that the historical textual carrier is
+  // rejected as noncanonical.  Accepted execution in this test must use the
+  // canonical v4015 statement-context route.
+  frame.header.payload_schema_id = 4003;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
+  frame.header.session_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload = server::EncodeExecuteSblrPayloadForTest(session_uuid, {}, encoded, false);
   return frame;
@@ -521,14 +555,26 @@ ServerRouteForTest MakeServerRoute(const std::filesystem::path& database_path,
   ServerRouteForTest route;
   server::ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = session.session_uuid;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = database_path.string();
-  session.database_uuid = kDatabaseUuid;
+  session.database_uuid = g_database_uuid;
   session.local_transaction_id = local_transaction_override.value_or(context.local_transaction_id);
+  session.default_local_transaction_id = session.local_transaction_id;
+  session.transaction_uuid = context.transaction_uuid.canonical;
   session.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
+  if (session.local_transaction_id != 0 && !session.transaction_uuid.empty()) {
+    server::ServerTransactionState transaction;
+    transaction.local_transaction_id = session.local_transaction_id;
+    transaction.transaction_uuid = session.transaction_uuid;
+    transaction.snapshot_visible_through_local_transaction_id =
+        session.snapshot_visible_through_local_transaction_id;
+    session.transactions_by_local_id.emplace(transaction.local_transaction_id,
+                                             std::move(transaction));
+  }
   route.session_uuid = session.session_uuid;
   route.registry.sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
 
@@ -539,7 +585,7 @@ ServerRouteForTest MakeServerRoute(const std::filesystem::path& database_path,
   database.database_open = true;
   database.write_admission_fenced = false;
   database.database_path = database_path.string();
-  database.database_uuid = kDatabaseUuid;
+  database.database_uuid = g_database_uuid;
   route.engine_state.databases.push_back(database);
   return route;
 }
@@ -1059,45 +1105,43 @@ api::EngineApiResult ExecuteImportRowsThroughServer(const std::filesystem::path&
                                                     const api::EngineRequestContext& context) {
   RequirePublicAbiImportRefuses(database_path,
                                 context,
-                                "canonical_rows_required",
+                                "retired_sblr_frame_or_text_input",
                                 true,
                                 false);
   RequirePublicAbiImportRefuses(database_path,
                                 context,
-                                "transaction_uuid and local_transaction_id are both absent",
+                                "default_transaction_not_active",
                                 true,
                                 true,
                                 std::optional<std::uint64_t>{0});
 
-  auto route = MakeServerRoute(database_path, context);
-  auto execute = server::HandleExecuteSblr(
-      &route.registry,
-      route.engine_state,
-      ExecuteFrame(route.session_uuid, PublicCopyExecuteEnvelope(true, true)));
-  if (!execute.accepted) {
-    std::cerr << "server public ABI import rejected\n";
-    for (const auto& diagnostic : execute.diagnostics) {
-      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-      for (const auto& field : diagnostic.fields) {
-        std::cerr << field.key << '=' << field.value << '\n';
-      }
-    }
-  }
-  Require(execute.accepted, "server public ABI COPY execution was rejected");
-  const auto decoded = DecodeServerExecuteResult(execute.payload);
-  Require(decoded.outcome == "accepted", "server public ABI COPY outcome mismatch");
-  Require(decoded.operation_id == "dml.execute_import_rows",
-          "server public ABI COPY operation mismatch");
-  Require(decoded.row_count == 2, "server public ABI COPY row count mismatch");
-  Require(Contains(decoded.row_packet, "operation_id=dml.execute_import_rows"),
-          "server public ABI COPY row packet missing operation id");
-  Require(Contains(decoded.row_packet, "note=copy-public-a") &&
-              Contains(decoded.row_packet, "note=copy-public-b"),
-          "server public ABI COPY row packet missing imported rows");
-  Require(Contains(decoded.row_packet, "evidence=import_execution:delegated_to_dml.insert_rows"),
-          "server public ABI COPY did not report insert delegation evidence");
-  Require(Contains(decoded.row_packet, "evidence=mga_row_store:row_insert"),
-          "server public ABI COPY did not report MGA insert evidence");
+  // The historical text carrier above is refusal-only.  Exercise the same
+  // engine import contract through the canonical in-memory dispatch seam;
+  // independent COPY process tests cover the authenticated v4015 route.
+  api::EngineApiRequest request;
+  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.object_kind = "table";
+  request.rows.push_back(Row(kRowF, "6", "copy-public-a"));
+  request.rows.push_back(Row(kRowG, "7", "copy-public-b"));
+  request.option_envelopes.push_back("source_kind:csv_stream");
+  request.option_envelopes.push_back("format_family:csv");
+  request.option_envelopes.push_back("estimated_row_count:2");
+  request.option_envelopes.push_back("reject_mode:reject_row");
+  request.option_envelopes.push_back("reject_limit_rows:10");
+  request.option_envelopes.push_back("reject_payload_policy:diagnostic_only");
+  request.option_envelopes.push_back("resume_policy:fail_closed");
+  request.option_envelopes.push_back("checkpoint_mode:disabled");
+  RequestFullPayload(&request);
+  const auto dispatched = Dispatch(database_path,
+                                   "dml.execute_import_rows",
+                                   "SBLR_DML_EXECUTE_IMPORT_ROWS",
+                                   context,
+                                   std::move(request),
+                                   true);
+  Require(dispatched.api_result.ok,
+          "canonical import contract execution failed");
+  Require(dispatched.api_result.result_shape.rows.size() == 2,
+          "canonical import contract row count mismatch");
 
   return SelectById(database_path, context, "6");
 }
@@ -1105,35 +1149,37 @@ api::EngineApiResult ExecuteImportRowsThroughServer(const std::filesystem::path&
 api::EngineApiResult ExecuteFailFastImportRowsThroughServer(
     const std::filesystem::path& database_path,
     const api::EngineRequestContext& context) {
-  auto route = MakeServerRoute(database_path, context);
-  auto execute = server::HandleExecuteSblr(
-      &route.registry,
-      route.engine_state,
-      ExecuteFrame(route.session_uuid, PublicCopyFailFastExecuteEnvelope()));
-  if (!execute.accepted) {
-    std::cerr << "server public ABI fail-fast import rejected\n";
-    for (const auto& diagnostic : execute.diagnostics) {
-      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-      for (const auto& field : diagnostic.fields) {
-        std::cerr << field.key << '=' << field.value << '\n';
-      }
-    }
-  }
-  Require(execute.accepted, "server public ABI fail-fast COPY execution was rejected");
-  const auto decoded = DecodeServerExecuteResult(execute.payload);
-  Require(decoded.outcome == "accepted",
-          "server public ABI fail-fast COPY outcome mismatch");
-  Require(decoded.operation_id == "dml.execute_import_rows",
-          "server public ABI fail-fast COPY operation mismatch");
-  Require(decoded.row_count == 2,
-          "server public ABI fail-fast COPY row count mismatch");
-  Require(Contains(decoded.row_packet, "evidence=import_execution:direct_physical"),
-          "server public ABI fail-fast COPY did not select direct physical import");
-  Require(Contains(decoded.row_packet, "evidence=direct_physical_bulk_row_count:2"),
-          "server public ABI fail-fast COPY did not report direct bulk row count");
-  Require(Contains(decoded.row_packet, "note=copy-public-fast-a") &&
-              Contains(decoded.row_packet, "note=copy-public-fast-b"),
-          "server public ABI fail-fast COPY row packet missing imported rows");
+  RequirePublicAbiImportRefuses(database_path,
+                                context,
+                                "retired_sblr_frame_or_text_input",
+                                true,
+                                true);
+  api::EngineApiRequest request;
+  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.object_kind = "table";
+  request.rows.push_back(Row(kPublicCopyFastRowA, "13", "copy-public-fast-a"));
+  request.rows.push_back(Row(kPublicCopyFastRowB, "14", "copy-public-fast-b"));
+  request.option_envelopes.push_back("source_kind:csv_stream");
+  request.option_envelopes.push_back("source_fingerprint:sbsfc021-public-copy-fast-fixture");
+  request.option_envelopes.push_back("source_position:row:0");
+  request.option_envelopes.push_back("format_family:csv");
+  request.option_envelopes.push_back("estimated_row_count:2");
+  request.option_envelopes.push_back("reject_mode:fail_fast");
+  request.option_envelopes.push_back("reject_limit_rows:0");
+  request.option_envelopes.push_back("reject_payload_policy:diagnostic_only");
+  request.option_envelopes.push_back("resume_policy:fail_closed");
+  request.option_envelopes.push_back("checkpoint_mode:disabled");
+  RequestFullPayload(&request);
+  const auto dispatched = Dispatch(database_path,
+                                   "dml.execute_import_rows",
+                                   "SBLR_DML_EXECUTE_IMPORT_ROWS",
+                                   context,
+                                   std::move(request),
+                                   true);
+  Require(dispatched.api_result.ok,
+          "canonical fail-fast import contract execution failed");
+  Require(dispatched.api_result.result_shape.rows.size() == 2,
+          "canonical fail-fast import contract row count mismatch");
 
   return SelectById(database_path, context, "13");
 }
@@ -1145,29 +1191,15 @@ void RequireOrderedSelectThroughServer(const std::filesystem::path& database_pat
       &route.registry,
       route.engine_state,
       ExecuteFrame(route.session_uuid, PublicOrderedSelectEnvelope()));
-  if (!execute.accepted) {
-    std::cerr << "server public ABI ordered SELECT rejected\n";
-    for (const auto& diagnostic : execute.diagnostics) {
-      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-      for (const auto& field : diagnostic.fields) {
-        std::cerr << field.key << '=' << field.value << '\n';
-      }
-    }
+  Require(!execute.accepted,
+          "retired textual dml.select_rows carrier was unexpectedly admitted");
+  bool noncanonical = false;
+  for (const auto& diagnostic : execute.diagnostics) {
+    noncanonical = noncanonical ||
+        diagnostic.code == "SBLR.OPERATION.NONCANONICAL";
   }
-  Require(execute.accepted, "server public ABI ordered SELECT was rejected");
-  const auto decoded = DecodeServerExecuteResult(execute.payload);
-  Require(decoded.outcome == "accepted", "server ordered SELECT outcome mismatch");
-  Require(decoded.operation_id == "dml.select_rows",
-          "server ordered SELECT operation mismatch");
-  Require(decoded.row_count == 2, "server ordered SELECT row count mismatch");
-  const auto id7 = decoded.row_packet.find("id=7");
-  const auto id6 = decoded.row_packet.find("id=6");
-  Require(id7 != std::string::npos && id6 != std::string::npos,
-          "server ordered SELECT did not return expected ordered/sliced ids");
-  Require(id7 < id6, "server ordered SELECT did not preserve descending order after offset");
-  Require(Contains(decoded.row_packet, "note=copy-public-b") &&
-              Contains(decoded.row_packet, "note=copy-public-a"),
-          "server ordered SELECT did not return expected row values");
+  Require(noncanonical,
+          "retired textual dml.select_rows carrier did not fail as noncanonical");
 }
 
 void RequireFetchBoundedSelectThroughServer(const std::filesystem::path& database_path,
@@ -2729,7 +2761,7 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& database
                                            std::string isolation = "read_committed") {
   auto begin = Dispatch(database_path,
                         "transaction.begin",
-                        "SBLR_TRANSACTION_BEGIN",
+                        "SBLR_TXN_BEGIN",
                         BaseContext(database_path, session_suffix));
   Require(begin.api_result.local_transaction_id != 0, "transaction begin did not return local id");
   auto context = BaseContext(database_path, std::move(session_suffix));
@@ -2744,7 +2776,7 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& database
 void Commit(const std::filesystem::path& database_path, const api::EngineRequestContext& context) {
   auto commit = Dispatch(database_path,
                          "transaction.commit",
-                         "SBLR_TRANSACTION_COMMIT",
+                         "SBLR_TXN_COMMIT",
                          context,
                          {},
                          true);
@@ -2756,7 +2788,7 @@ void Commit(const std::filesystem::path& database_path, const api::EngineRequest
 void Rollback(const std::filesystem::path& database_path, const api::EngineRequestContext& context) {
   auto rollback = Dispatch(database_path,
                            "transaction.rollback",
-                           "SBLR_TRANSACTION_ROLLBACK",
+                           "SBLR_TXN_ROLLBACK",
                            context,
                            {},
                            true);
@@ -2954,22 +2986,41 @@ api::EngineApiResult InsertInt64FieldsRowIntoTable(
 api::EngineApiResult SelectById(const std::filesystem::path& database_path,
                                 const api::EngineRequestContext& context,
                                 std::string id) {
-  api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
-  request.target_object.object_kind = "table";
-  request.predicate.predicate_kind = "column_equals";
-  request.predicate.canonical_predicate_envelope = "id";
-  request.predicate.bound_values.push_back(TextValue(std::move(id)));
-  request.projection.canonical_projection_envelopes.push_back("id");
-  request.projection.canonical_projection_envelopes.push_back("note");
-  auto selected = Dispatch(database_path,
-                           "dml.select_rows",
-                           "SBLR_DML_SELECT_ROWS",
-                           context,
-                           request,
-                           true);
-  Require(selected.api_result.ok, "select failed");
-  return selected.api_result;
+  (void)database_path;
+  // This helper is the independent engine post-state oracle for mutations in
+  // this fixture.  There is deliberately no public dml.select_rows opcode:
+  // public relational reads are query.execute descriptor DAGs.  Keeping the
+  // oracle on the private typed API prevents a retired synthetic opcode from
+  // becoming admission authority while preserving the MGA visibility check.
+  api::EngineSelectRowsRequest request;
+  request.context = context;
+  request.source_object.uuid.canonical = kTableUuid;
+  request.source_object.object_kind = "table";
+  request.select_predicate.predicate_kind = "column_equals";
+  request.select_predicate.canonical_predicate_envelope = "id";
+  request.select_predicate.bound_values.push_back(TextValue(std::move(id)));
+  request.select_projection.canonical_projection_envelopes.push_back("id");
+  request.select_projection.canonical_projection_envelopes.push_back("note");
+  const auto selected = api::EngineSelectRows(request);
+  Require(selected.ok, "select failed");
+  return selected;
+}
+
+api::EngineApiResult SelectFromTableById(
+    const api::EngineRequestContext& context,
+    std::string_view table_uuid,
+    std::string id) {
+  api::EngineSelectRowsRequest request;
+  request.context = context;
+  request.source_object.uuid.canonical = std::string(table_uuid);
+  request.source_object.object_kind = "table";
+  request.select_predicate.predicate_kind = "column_equals";
+  request.select_predicate.canonical_predicate_envelope = "id";
+  request.select_predicate.bound_values.push_back(TextValue(std::move(id)));
+  request.select_projection.canonical_projection_envelopes.push_back("id");
+  const auto selected = api::EngineSelectRows(request);
+  Require(selected.ok, "typed UPDATE post-state select failed");
+  return selected;
 }
 
 void RequireWhereEqualityPredicateRowResult(const std::filesystem::path& database_path,
@@ -3390,6 +3441,623 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
   Commit(database_path, context);
 }
 
+api::EngineRequestContext TypedUpdateStatementContext(
+    api::EngineRequestContext context,
+    std::string_view suffix) {
+  context.statement_uuid.canonical =
+      "019f2100-0000-7000-8000-0000000008" + std::string(suffix);
+  context.statement_receipt_uuid.canonical =
+      "019f2100-0000-7000-8000-0000000009" + std::string(suffix);
+  context.statement_snapshot_uuid.canonical =
+      "019f2100-0000-7000-8000-000000000a" + std::string(suffix);
+  context.statement_metadata_snapshot_uuid.canonical =
+      "019f2100-0000-7000-8000-000000000b" + std::string(suffix);
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
+  context.trace_tags.push_back("private_dml_update_rows_binder");
+  const auto security = api::LoadSecurityPrincipalLifecycleState(context);
+  if (!security.ok) {
+    std::cerr << security.diagnostic.code << ':'
+              << security.diagnostic.message_key << ':'
+              << security.diagnostic.detail << '\n';
+  }
+  Require(security.ok && security.state.security_generation != 0 &&
+              security.state.policy_generation != 0 &&
+              security.state.security_context_generation != 0,
+          "typed UPDATE durable security authority was unavailable");
+  context.security_epoch = security.state.security_generation;
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      "019f2100-0000-7000-8000-000000000004";
+  context.authorization_context.security_context_generation =
+      security.state.security_context_generation;
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.security_epoch =
+      security.state.security_generation;
+  context.authorization_context.policy_epoch =
+      security.state.policy_generation;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  return context;
+}
+
+api::EngineRequestContext TypedUpdateConsumerContext(
+    api::EngineRequestContext context) {
+  context.trace_tags.erase(
+      std::remove(context.trace_tags.begin(), context.trace_tags.end(),
+                  "private_dml_update_rows_binder"),
+      context.trace_tags.end());
+  context.trace_tags.erase(
+      std::remove(context.trace_tags.begin(), context.trace_tags.end(),
+                  "private_dml_update_rows_recovery"),
+      context.trace_tags.end());
+  if (std::find(context.trace_tags.begin(), context.trace_tags.end(),
+                "private_dml_update_rows_consumer") ==
+      context.trace_tags.end()) {
+    context.trace_tags.push_back("private_dml_update_rows_consumer");
+  }
+  return context;
+}
+
+bool BytesNonzero(const std::vector<std::uint8_t>& bytes,
+                  std::size_t offset,
+                  std::size_t count) {
+  return offset <= bytes.size() && count <= bytes.size() - offset &&
+         std::any_of(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                     bytes.begin() + static_cast<std::ptrdiff_t>(offset + count),
+                     [](std::uint8_t byte) { return byte != 0; });
+}
+
+std::array<std::uint8_t, 32> TypedUpdateHash(
+    std::string_view domain,
+    const std::vector<std::uint8_t>& material) {
+  std::vector<std::uint8_t> domain_material(domain.begin(), domain.end());
+  domain_material.insert(domain_material.end(), material.begin(),
+                         material.end());
+  const auto digest =
+      scratchbird::core::hash::ComputeSha256Digest(domain_material);
+  Require(digest.ok(), "typed UPDATE SHA-256 computation failed");
+  return digest.digest;
+}
+
+std::vector<std::uint8_t> TypedUpdateEvidenceMaterial(
+    const std::vector<std::uint8_t>& durs,
+    const std::vector<api::EngineEvidenceReference>& evidence) {
+  Require(durs.size() == 256,
+          "typed UPDATE evidence material requires DURS256");
+  std::vector<std::string> records;
+  records.reserve(evidence.size());
+  for (const auto& item : evidence) {
+    Require(!item.evidence_kind.empty() && !item.evidence_id.empty() &&
+                item.evidence_kind.find('=') == std::string::npos &&
+                item.evidence_kind.find('\0') == std::string::npos &&
+                item.evidence_id.find('\0') == std::string::npos,
+            "typed UPDATE executor emitted malformed hash evidence");
+    records.push_back(item.evidence_kind + "=" + item.evidence_id);
+  }
+  std::sort(records.begin(), records.end(),
+            [](std::string_view left, std::string_view right) {
+              return std::lexicographical_compare(
+                  left.begin(), left.end(), right.begin(), right.end(),
+                  [](char left_byte, char right_byte) {
+                    return static_cast<unsigned char>(left_byte) <
+                           static_cast<unsigned char>(right_byte);
+                  });
+            });
+  std::vector<std::uint8_t> material;
+  material.reserve(64 + records.size() * 32);
+  for (const auto offset : {16U, 40U, 56U, 80U}) {
+    material.insert(material.end(), durs.begin() + offset,
+                    durs.begin() + offset + 16);
+  }
+  for (const auto& record : records) {
+    material.insert(material.end(), record.begin(), record.end());
+    material.push_back(0);
+  }
+  return material;
+}
+
+void RequireTypedUpdateHash(std::string_view domain,
+                            const std::vector<std::uint8_t>& material,
+                            const std::vector<std::uint8_t>& durs,
+                            std::size_t offset,
+                            std::string_view message) {
+  const auto expected = TypedUpdateHash(domain, material);
+  Require(offset <= durs.size() && expected.size() <= durs.size() - offset &&
+              std::equal(expected.begin(), expected.end(),
+                         durs.begin() + static_cast<std::ptrdiff_t>(offset)),
+          message);
+}
+
+void VerifyTypedUpdateDescriptorContract(
+    const std::filesystem::path& database_path) {
+  auto transaction = BeginTransaction(database_path, "205");
+  (void)InsertInt64FieldsRowIntoTable(
+      database_path,
+      transaction,
+      kQueryLeftTableUuid,
+      "019f2100-0000-7000-8000-000000000226",
+      {{"id", "1"}});
+  auto context = TypedUpdateStatementContext(transaction, "01");
+  const auto boolean_identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_generation,
+          context.datatype_registry_generation,
+          "01000000-626f-7f6c-a561-6e0000000000", 1);
+  Require(boolean_identity.ok &&
+              boolean_identity.row.type_uuid ==
+                  "01000000-626f-7f6c-a561-6e0000000000" &&
+              boolean_identity.row.type_generation == 1 &&
+              boolean_identity.row.codec_id == "datatype.boolean.u8.v1" &&
+              boolean_identity.row.codec_version == 1 &&
+              boolean_identity.row.codec_generation == 1 &&
+              boolean_identity.row.canonical_value_bytes == 1,
+          "typed UPDATE boolean predicate identity registry row drifted");
+
+  api::EngineDmlUpdateRowsBindingDemandV1 demand;
+  demand.authenticated_statement_receipt_uuid =
+      context.statement_receipt_uuid.canonical;
+  demand.structural_occurrence_id = 1;
+  demand.target_relation_uuid_hint = kQueryLeftTableUuid;
+  demand.assignments.push_back({1, "id", "2", "int64"});
+  demand.predicate_kind = "column_equals";
+  demand.predicate_column_spelling = "id";
+  demand.predicate_literal_spelling = "1";
+  demand.predicate_literal_type_spelling = "int64";
+
+  const auto bound = api::BindDmlUpdateRowsDescriptorV1(context, demand);
+  if (!bound.ok) {
+    std::cerr << "typed UPDATE bind diagnostic: "
+              << bound.diagnostic.code << ':'
+              << bound.diagnostic.message_key << ':'
+              << bound.diagnostic.detail << '\n';
+  }
+  Require(bound.ok && !bound.descriptor_ref.descriptor_uuid.empty() &&
+              bound.descriptor_ref.descriptor_generation == 1,
+          "typed UPDATE descriptor binding failed");
+  const auto consumer_context = TypedUpdateConsumerContext(context);
+  const auto binder_execution = api::ExecuteDmlUpdateRowsDescriptorV1(
+      context, bound.descriptor_ref, 1);
+  Require(!binder_execution.ok &&
+              binder_execution.diagnostic.code == "SECURITY.ACCESS_DENIED",
+          "typed UPDATE binder capability was admitted for execution");
+
+  auto stale_ref = bound.descriptor_ref;
+  ++stale_ref.descriptor_generation;
+  const auto stale =
+      api::ExecuteDmlUpdateRowsDescriptorV1(consumer_context, stale_ref, 1);
+  Require(!stale.ok && stale.diagnostic.code == "MGA.TRANSACTION.STALE",
+          "typed UPDATE stale descriptor generation was admitted");
+
+  auto foreign_context = consumer_context;
+  foreign_context.statement_receipt_uuid.canonical =
+      "019f2100-0000-7000-8000-000000000902";
+  const auto foreign = api::ExecuteDmlUpdateRowsDescriptorV1(
+      foreign_context, bound.descriptor_ref, 1);
+  Require(!foreign.ok &&
+              foreign.diagnostic.code == "SECURITY.ACCESS_DENIED",
+          "typed UPDATE cross-receipt descriptor was admitted");
+
+  const auto require_stale_context =
+      [&](api::EngineRequestContext stale_context,
+          std::string_view failure_message) {
+        const auto stale_execution = api::ExecuteDmlUpdateRowsDescriptorV1(
+            stale_context, bound.descriptor_ref, 1);
+        Require(!stale_execution.ok &&
+                    stale_execution.diagnostic.code ==
+                        "MGA.TRANSACTION.STALE",
+                failure_message);
+      };
+  auto stale_transaction = consumer_context;
+  stale_transaction.transaction_uuid.canonical =
+      "019f2100-0000-7000-8000-000000000903";
+  require_stale_context(std::move(stale_transaction),
+                        "typed UPDATE crossed transaction identity");
+  auto stale_statement_snapshot = consumer_context;
+  stale_statement_snapshot.statement_snapshot_uuid.canonical =
+      "019f2100-0000-7000-8000-000000000904";
+  require_stale_context(std::move(stale_statement_snapshot),
+                        "typed UPDATE crossed statement snapshot");
+  auto stale_metadata_snapshot = consumer_context;
+  stale_metadata_snapshot.statement_metadata_snapshot_uuid.canonical =
+      "019f2100-0000-7000-8000-000000000905";
+  require_stale_context(std::move(stale_metadata_snapshot),
+                        "typed UPDATE crossed catalog snapshot");
+  auto stale_datatype_snapshot = consumer_context;
+  stale_datatype_snapshot.datatype_catalog_snapshot_uuid.canonical =
+      "019f2100-0000-7000-8000-000000000906";
+  require_stale_context(std::move(stale_datatype_snapshot),
+                        "typed UPDATE crossed datatype snapshot");
+  auto stale_datatype_catalog_generation = consumer_context;
+  ++stale_datatype_catalog_generation.datatype_catalog_generation;
+  require_stale_context(std::move(stale_datatype_catalog_generation),
+                        "typed UPDATE crossed datatype catalog generation");
+  auto stale_datatype_registry_generation = consumer_context;
+  ++stale_datatype_registry_generation.datatype_registry_generation;
+  require_stale_context(std::move(stale_datatype_registry_generation),
+                        "typed UPDATE crossed datatype registry generation");
+  auto stale_security_generation = consumer_context;
+  ++stale_security_generation.security_epoch;
+  require_stale_context(std::move(stale_security_generation),
+                        "typed UPDATE crossed security generation");
+  auto stale_catalog_generation = consumer_context;
+  ++stale_catalog_generation.catalog_generation_id;
+  require_stale_context(std::move(stale_catalog_generation),
+                        "typed UPDATE crossed catalog generation");
+  auto missing_security_context = consumer_context;
+  missing_security_context.security_context_present = false;
+  require_stale_context(std::move(missing_security_context),
+                        "typed UPDATE executed without security context");
+  const auto wrong_occurrence = api::ExecuteDmlUpdateRowsDescriptorV1(
+      consumer_context, bound.descriptor_ref, 2);
+  Require(!wrong_occurrence.ok &&
+              wrong_occurrence.diagnostic.code == "MGA.TRANSACTION.STALE",
+          "typed UPDATE descriptor crossed structural occurrence");
+
+  const auto executed = api::ExecuteDmlUpdateRowsDescriptorV1(
+      consumer_context, bound.descriptor_ref, 1);
+  if (!executed.ok) {
+    std::cerr << "typed UPDATE execute diagnostic: "
+              << executed.diagnostic.code << ':'
+              << executed.diagnostic.message_key << ':'
+              << executed.diagnostic.detail << '\n';
+  }
+  Require(executed.ok && !executed.immutable_replay &&
+              executed.update_result.ok &&
+              executed.update_result.matched_count == 1 &&
+              executed.update_result.updated_count == 1,
+          "typed UPDATE exact descriptor execution failed");
+  Require(executed.canonical_result_bytes.size() == 256,
+          "typed UPDATE did not publish exact DURS256");
+  const auto& durs = executed.canonical_result_bytes;
+  Require(durs[0] == 'D' && durs[1] == 'U' && durs[2] == 'R' &&
+              durs[3] == 'S' && durs[4] == 1 && durs[5] == 0 &&
+              GetU16(durs, 6) == 256 && GetU64(durs, 104) == 1 &&
+              GetU64(durs, 112) == 1 && durs[120] == 1,
+          "typed UPDATE DURS header/count fields drifted");
+  Require(BytesNonzero(durs, 16, 16) && BytesNonzero(durs, 40, 16) &&
+              BytesNonzero(durs, 56, 16) && BytesNonzero(durs, 80, 16) &&
+              BytesNonzero(durs, 128, 32) && BytesNonzero(durs, 160, 32) &&
+              BytesNonzero(durs, 192, 16) && BytesNonzero(durs, 216, 32),
+          "typed UPDATE DURS authority/evidence fields were zero");
+  Require(std::all_of(durs.begin() + 121, durs.begin() + 128,
+                      [](std::uint8_t byte) { return byte == 0; }) &&
+              std::all_of(durs.begin() + 248, durs.end(),
+                          [](std::uint8_t byte) { return byte == 0; }),
+          "typed UPDATE DURS reserved bytes were nonzero");
+  const auto evidence_material = TypedUpdateEvidenceMaterial(
+      durs, executed.update_result.evidence);
+  RequireTypedUpdateHash(
+      "ScratchBird.SblrDmlUpdateRowsEffectSet.V1", evidence_material,
+      durs, 128, "typed UPDATE effect-set hash material drifted");
+  RequireTypedUpdateHash(
+      "ScratchBird.SblrDmlUpdateRowsExecutorEvidence.V1",
+      evidence_material, durs, 160,
+      "typed UPDATE executor-evidence hash material drifted");
+  RequireTypedUpdateHash(
+      "ScratchBird.SblrDmlUpdateRowsResult.V1",
+      std::vector<std::uint8_t>(durs.begin(), durs.begin() + 216), durs,
+      216, "typed UPDATE result-evidence hash material drifted");
+
+  const auto replay = api::ExecuteDmlUpdateRowsDescriptorV1(
+      consumer_context, bound.descriptor_ref, 1);
+  Require(replay.ok && replay.immutable_replay &&
+              replay.update_result.updated_count == 1 &&
+              replay.canonical_result_bytes == durs,
+          "typed UPDATE exact replay did not return immutable prior DURS");
+  const auto visible = SelectFromTableById(transaction, kQueryLeftTableUuid,
+                                           "2");
+  Require(visible.result_shape.rows.size() == 1,
+          "typed UPDATE post-state did not expose the replacement value");
+
+  auto no_effect_context = TypedUpdateStatementContext(transaction, "0e");
+  auto no_effect_demand = demand;
+  no_effect_demand.authenticated_statement_receipt_uuid =
+      no_effect_context.statement_receipt_uuid.canonical;
+  no_effect_demand.assignments.front().literal_spelling = "2";
+  no_effect_demand.predicate_literal_spelling = "2";
+  const auto no_effect_bound = api::BindDmlUpdateRowsDescriptorV1(
+      no_effect_context, no_effect_demand);
+  Require(no_effect_bound.ok,
+          "typed UPDATE no-effect descriptor bind failed");
+  no_effect_context = TypedUpdateConsumerContext(
+      std::move(no_effect_context));
+  const auto no_effect = api::ExecuteDmlUpdateRowsDescriptorV1(
+      no_effect_context, no_effect_bound.descriptor_ref, 1);
+  Require(no_effect.ok && !no_effect.immutable_replay &&
+              no_effect.update_result.matched_count == 1 &&
+              no_effect.update_result.updated_count == 0 &&
+              no_effect.canonical_result_bytes.size() == 256 &&
+              GetU64(no_effect.canonical_result_bytes, 104) == 1 &&
+              GetU64(no_effect.canonical_result_bytes, 112) == 0 &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "2")
+                      .result_shape.rows.size() == 1,
+          "typed UPDATE no-effect rule created a replacement effect");
+
+  const auto bind_recovery_update =
+      [&](std::string_view context_suffix, std::string_view prior_value,
+          std::string_view replacement_value,
+          std::string_view row_uuid) {
+        (void)InsertInt64FieldsRowIntoTable(
+            database_path, transaction, kQueryLeftTableUuid,
+            std::string(row_uuid), {{"id", std::string(prior_value)}});
+        auto recovery_context =
+            TypedUpdateStatementContext(transaction, context_suffix);
+        auto recovery_demand = demand;
+        recovery_demand.authenticated_statement_receipt_uuid =
+            recovery_context.statement_receipt_uuid.canonical;
+        recovery_demand.assignments.front().literal_spelling =
+            std::string(replacement_value);
+        recovery_demand.predicate_literal_spelling = std::string(prior_value);
+        const auto recovery_bound = api::BindDmlUpdateRowsDescriptorV1(
+            recovery_context, recovery_demand);
+        Require(recovery_bound.ok,
+                "typed UPDATE recovery descriptor bind failed");
+        return std::make_pair(
+                              TypedUpdateConsumerContext(
+                                  std::move(recovery_context)),
+                              recovery_bound.descriptor_ref);
+      };
+
+  auto [live_reload_context, live_reload_ref] = bind_recovery_update(
+      "09", "20", "21", "019f2100-0000-7000-8000-000000000228");
+  api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
+  const auto live_reload = api::ExecuteDmlUpdateRowsDescriptorV1(
+      live_reload_context, live_reload_ref, 1);
+  Require(!live_reload.ok &&
+              live_reload.diagnostic.code == "MGA.TRANSACTION.STALE" &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "20")
+                      .result_shape.rows.size() == 1 &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "21")
+                  .result_shape.rows.empty(),
+          "typed UPDATE reopened bound descriptor was executed");
+
+  auto [intent_fault_context, intent_fault_ref] = bind_recovery_update(
+      "0a", "30", "31", "019f2100-0000-7000-8000-000000000229");
+  api::SetDmlUpdateRowsTestFaultPointV1(
+      api::EngineDmlUpdateRowsTestFaultPointV1::after_durable_intent);
+  const auto intent_fault = api::ExecuteDmlUpdateRowsDescriptorV1(
+      intent_fault_context, intent_fault_ref, 1);
+  Require(!intent_fault.ok &&
+              intent_fault.diagnostic.code == "DML.UPDATE_FAILED",
+          "typed UPDATE durable-intent fault was not injected");
+  api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
+  const auto intent_recovery = api::ExecuteDmlUpdateRowsDescriptorV1(
+      intent_fault_context, intent_fault_ref, 1);
+  Require(!intent_recovery.ok &&
+              intent_recovery.diagnostic.code == "MGA.TRANSACTION.STALE" &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "30")
+                      .result_shape.rows.size() == 1 &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "31")
+                  .result_shape.rows.empty(),
+          "typed UPDATE durable-intent recovery retained a row effect");
+
+  auto [prepared_fault_context, prepared_fault_ref] = bind_recovery_update(
+      "0b", "40", "41", "019f2100-0000-7000-8000-00000000022a");
+  api::SetDmlUpdateRowsTestFaultPointV1(
+      api::EngineDmlUpdateRowsTestFaultPointV1::after_prepared_outcome);
+  const auto prepared_fault = api::ExecuteDmlUpdateRowsDescriptorV1(
+      prepared_fault_context, prepared_fault_ref, 1);
+  Require(!prepared_fault.ok &&
+              prepared_fault.diagnostic.code == "DML.UPDATE_FAILED",
+          "typed UPDATE prepared-outcome fault was not injected");
+  api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
+  const auto prepared_recovery = api::ExecuteDmlUpdateRowsDescriptorV1(
+      prepared_fault_context, prepared_fault_ref, 1);
+  const auto prepared_prior =
+      SelectFromTableById(transaction, kQueryLeftTableUuid, "40");
+  const auto prepared_replacement =
+      SelectFromTableById(transaction, kQueryLeftTableUuid, "41");
+  if (prepared_recovery.ok ||
+      prepared_recovery.diagnostic.code != "MGA.TRANSACTION.STALE" ||
+      prepared_prior.result_shape.rows.size() != 1 ||
+      !prepared_replacement.result_shape.rows.empty()) {
+    std::cerr << "prepared recovery diagnostic="
+              << prepared_recovery.diagnostic.code << ':'
+              << prepared_recovery.diagnostic.message_key << ':'
+              << prepared_recovery.diagnostic.detail
+              << " prior_rows=" << prepared_prior.result_shape.rows.size()
+              << " replacement_rows="
+              << prepared_replacement.result_shape.rows.size() << '\n';
+  }
+  Require(!prepared_recovery.ok &&
+              prepared_recovery.diagnostic.code == "MGA.TRANSACTION.STALE" &&
+              prepared_prior.result_shape.rows.size() == 1 &&
+              prepared_replacement.result_shape.rows.empty(),
+          "typed UPDATE prepared-outcome recovery retained a row effect");
+
+  auto [barrier_fault_context, barrier_fault_ref] = bind_recovery_update(
+      "0c", "50", "51", "019f2100-0000-7000-8000-00000000022b");
+  api::SetDmlUpdateRowsTestFaultPointV1(
+      api::EngineDmlUpdateRowsTestFaultPointV1::after_publication_barrier);
+  const auto barrier_fault = api::ExecuteDmlUpdateRowsDescriptorV1(
+      barrier_fault_context, barrier_fault_ref, 1);
+  Require(!barrier_fault.ok &&
+              barrier_fault.diagnostic.code == "DML.UPDATE_FAILED",
+          "typed UPDATE publication-barrier fault was not injected");
+  const auto barrier_same_process_recovery =
+      api::ExecuteDmlUpdateRowsDescriptorV1(
+          barrier_fault_context, barrier_fault_ref, 1);
+  Require(barrier_same_process_recovery.ok &&
+              barrier_same_process_recovery.immutable_replay &&
+              barrier_same_process_recovery.update_result.updated_count == 1 &&
+              barrier_same_process_recovery.canonical_result_bytes.size() ==
+                  256 &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "50")
+                  .result_shape.rows.empty() &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "51")
+                      .result_shape.rows.size() == 1,
+          "typed UPDATE same-process known-applied recovery did not use the "
+          "MGA staged successor");
+  api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
+  const auto barrier_recovery = api::ExecuteDmlUpdateRowsDescriptorV1(
+      barrier_fault_context, barrier_fault_ref, 1);
+  Require(barrier_recovery.ok && barrier_recovery.immutable_replay &&
+              barrier_recovery.update_result.updated_count == 1 &&
+              barrier_recovery.canonical_result_bytes.size() == 256 &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "50")
+                  .result_shape.rows.empty() &&
+              SelectFromTableById(transaction, kQueryLeftTableUuid, "51")
+                      .result_shape.rows.size() == 1,
+          "typed UPDATE publication-barrier recovery did not replay exactly");
+  api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
+  auto barrier_foreign_context = barrier_fault_context;
+  barrier_foreign_context.statement_receipt_uuid.canonical =
+      "019f2100-0000-7000-8000-00000000090d";
+  const auto barrier_foreign = api::ExecuteDmlUpdateRowsDescriptorV1(
+      barrier_foreign_context, barrier_fault_ref, 1);
+  Require(!barrier_foreign.ok &&
+              barrier_foreign.diagnostic.code == "SECURITY.ACCESS_DENIED",
+          "typed UPDATE recovered outcome crossed statement receipts");
+
+  (void)InsertInt64FieldsRowIntoTable(
+      database_path,
+      transaction,
+      kQueryLeftTableUuid,
+      "019f2100-0000-7000-8000-000000000227",
+      {{"id", "10"}});
+  auto cancel_context = TypedUpdateStatementContext(transaction, "05");
+  auto cancel_demand = demand;
+  cancel_demand.authenticated_statement_receipt_uuid =
+      cancel_context.statement_receipt_uuid.canonical;
+  cancel_demand.assignments.front().literal_spelling = "11";
+  cancel_demand.predicate_literal_spelling = "10";
+  const auto cancel_bound =
+      api::BindDmlUpdateRowsDescriptorV1(cancel_context, cancel_demand);
+  Require(cancel_bound.ok,
+          "typed UPDATE prepublication cancellation descriptor bind failed");
+  cancel_context = TypedUpdateConsumerContext(std::move(cancel_context));
+  auto mutation_observed = std::make_shared<bool>(false);
+  cancel_context.query_cancellation_requested =
+      [database_path, transaction, mutation_observed] {
+        const auto candidate = SelectFromTableById(
+            transaction, kQueryLeftTableUuid, "11");
+        *mutation_observed = candidate.result_shape.rows.size() == 1;
+        return *mutation_observed;
+      };
+  const auto cancelled_execution = api::ExecuteDmlUpdateRowsDescriptorV1(
+      cancel_context, cancel_bound.descriptor_ref, 1);
+  Require(!cancelled_execution.ok && *mutation_observed &&
+              cancelled_execution.diagnostic.code == "PROCESS.CANCELLED",
+          "typed UPDATE did not observe cancellation before publication");
+  const auto retained_ten = SelectFromTableById(
+      transaction, kQueryLeftTableUuid, "10");
+  const auto rolled_back_eleven = SelectFromTableById(
+      transaction, kQueryLeftTableUuid, "11");
+  Require(retained_ten.result_shape.rows.size() == 1 &&
+              rolled_back_eleven.result_shape.rows.empty(),
+          "typed UPDATE cancellation left a partial row effect");
+  auto cancelled_replay_context = cancel_context;
+  cancelled_replay_context.query_cancellation_requested = {};
+  const auto cancelled_replay = api::ExecuteDmlUpdateRowsDescriptorV1(
+      cancelled_replay_context, cancel_bound.descriptor_ref, 1);
+  Require(!cancelled_replay.ok &&
+              cancelled_replay.diagnostic.code == "MGA.TRANSACTION.STALE",
+          "typed UPDATE cancelled descriptor was replayed as live");
+
+  update_wire::TypedUpdateResultCarrier evidence_result_carrier;
+  update_wire::TypedUpdateCarrierError evidence_error;
+  Require(update_wire::DecodeAndValidateTypedUpdateResult(
+              durs, &evidence_result_carrier, &evidence_error),
+          "typed UPDATE evidence test could not decode prior DURS256");
+  std::vector<std::uint8_t> evidence_bytes;
+  std::vector<update_wire::TypedUpdateResultEvidenceReference>
+      malformed_evidence{{"bad=kind", "value"}};
+  Require(!update_wire::EncodeTypedUpdateResultEvidenceMaterial(
+              evidence_result_carrier, malformed_evidence, &evidence_bytes,
+              &evidence_error) &&
+              evidence_error.diagnostic_code == "DML.UPDATE_FAILED",
+          "typed UPDATE evidence kind containing '=' was hashed");
+
+  const std::vector<update_wire::TypedUpdateResultEvidenceReference>
+      nul_evidence{{"kind", std::string("bad\0id", 6)}};
+  Require(!update_wire::EncodeTypedUpdateResultEvidenceMaterial(
+              evidence_result_carrier, nul_evidence, &evidence_bytes,
+              &evidence_error) &&
+              evidence_error.diagnostic_code == "DML.UPDATE_FAILED",
+          "typed UPDATE evidence id containing NUL was hashed");
+
+  const std::vector<update_wire::TypedUpdateResultEvidenceReference>
+      duplicate_evidence{{"kind", "id=allowed"},
+                         {"kind", "id=allowed"}};
+  update_wire::TypedUpdateHash duplicate_effect_hash{};
+  update_wire::TypedUpdateHash duplicate_executor_hash{};
+  Require(update_wire::EncodeTypedUpdateResultEvidenceMaterial(
+              evidence_result_carrier, duplicate_evidence, &evidence_bytes,
+              &evidence_error) &&
+              update_wire::ComputeTypedUpdateResultInnerEvidence(
+                  evidence_result_carrier, duplicate_evidence,
+                  &duplicate_effect_hash, &duplicate_executor_hash,
+                  &evidence_error) &&
+              evidence_bytes.size() ==
+                  64U + 2U * (std::string_view("kind=id=allowed").size() + 1U) &&
+              std::any_of(duplicate_effect_hash.begin(),
+                          duplicate_effect_hash.end(),
+                          [](std::uint8_t byte) { return byte != 0; }) &&
+              std::any_of(duplicate_executor_hash.begin(),
+                          duplicate_executor_hash.end(),
+                          [](std::uint8_t byte) { return byte != 0; }),
+          "typed UPDATE valid duplicate evidence was not preserved");
+
+  auto duplicate = demand;
+  duplicate.authenticated_statement_receipt_uuid =
+      TypedUpdateStatementContext(transaction, "02")
+          .statement_receipt_uuid.canonical;
+  duplicate.assignments.push_back({2, "id", "3", "int64"});
+  auto duplicate_context = TypedUpdateStatementContext(transaction, "02");
+  const auto duplicate_result =
+      api::BindDmlUpdateRowsDescriptorV1(duplicate_context, duplicate);
+  Require(!duplicate_result.ok &&
+              duplicate_result.diagnostic.code ==
+                  "DML.ASSIGNMENT_SHAPE_INVALID",
+          "typed UPDATE duplicate target column was admitted");
+
+  auto unknown_context = TypedUpdateStatementContext(transaction, "03");
+  auto unknown = demand;
+  unknown.authenticated_statement_receipt_uuid =
+      unknown_context.statement_receipt_uuid.canonical;
+  unknown.assignments.front().target_column_spelling = "unknown_column";
+  const auto unknown_result =
+      api::BindDmlUpdateRowsDescriptorV1(unknown_context, unknown);
+  Require(!unknown_result.ok &&
+              unknown_result.diagnostic.code ==
+                  "DML.ASSIGNMENT_SHAPE_INVALID",
+          "typed UPDATE unknown target column was admitted");
+
+  auto cancelled_context = TypedUpdateStatementContext(transaction, "04");
+  cancelled_context.query_cancellation_requested = [] { return true; };
+  auto cancelled = demand;
+  cancelled.authenticated_statement_receipt_uuid =
+      cancelled_context.statement_receipt_uuid.canonical;
+  const auto cancelled_result =
+      api::BindDmlUpdateRowsDescriptorV1(cancelled_context, cancelled);
+  Require(!cancelled_result.ok &&
+              cancelled_result.diagnostic.code ==
+                  "PROCESS.CANCELLED",
+          "typed UPDATE pre-bind cancellation was ignored");
+
+  api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
+  api::MgaDmlUpdateDurableOperationLookupV1 tampered_lookup;
+  tampered_lookup.descriptor_uuid = barrier_fault_ref.descriptor_uuid;
+  tampered_lookup.descriptor_generation =
+      barrier_fault_ref.descriptor_generation;
+  tampered_lookup.structural_occurrence_id = 1;
+  Require(api::CorruptMgaDmlUpdateDurableExtentByteForTestingV1(
+              barrier_fault_context, tampered_lookup, 0, 0x01),
+          "typed UPDATE MGA durable extent tamper injection failed");
+  const auto tampered_replay = api::ExecuteDmlUpdateRowsDescriptorV1(
+      barrier_fault_context, barrier_fault_ref, 1);
+  Require(!tampered_replay.ok &&
+              tampered_replay.diagnostic.code == "DML.UPDATE_FAILED",
+          "typed UPDATE admitted a malformed MGA durable extent");
+
+  Commit(database_path, transaction);
+}
+
 void VerifyDmlRowEffects(const std::filesystem::path& database_path) {
   auto writer = BeginTransaction(database_path, "201");
   const auto inserted = InsertRow(database_path, writer, kRowA, "1", "alpha");
@@ -3456,58 +4124,11 @@ void VerifyDmlRowEffects(const std::filesystem::path& database_path) {
           "duplicate id baseline row missing after rejected import");
   Require(FieldValue(selected_rejected_duplicate, "note") == "copy-public-a",
           "duplicate rejected row replaced the baseline row");
+  // The legacy textual SELECT fixtures below predate canonical query.execute
+  // descriptor DAGs.  Prove that carrier remains fail-closed here; the
+  // parser/query exact-route suites own executable join/window/set/aggregate
+  // coverage and must not be replaced by a synthetic query.plan_operation.
   RequireOrderedSelectThroughServer(database_path, writer);
-  RequireTopBoundedSelectThroughServer(database_path, writer);
-  RequireFetchBoundedSelectThroughServer(database_path, writer);
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryLeftTableUuid, kJoinRowA, "1");
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryLeftTableUuid, kJoinRowB, "7");
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryLeftTableUuid, kJoinRowC, "8");
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryRightTableUuid, kSetRowA, "1");
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryRightTableUuid, kSetRowB, "7");
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryRightTableUuid, kSetRowC, "9");
-  (void)InsertAggregateRowIntoTable(database_path, writer, kAggregateTableUuid, kAggRowA, "1", "10", "12");
-  (void)InsertAggregateRowIntoTable(database_path, writer, kAggregateTableUuid, kAggRowB, "2", "10", "13");
-  (void)InsertAggregateRowIntoTable(database_path, writer, kAggregateTableUuid, kAggRowC, "3", "20", "7");
-  (void)InsertBoolAggregateRowIntoTable(database_path, writer, kBoolAggregateTableUuid, kBoolAggRowA, "1", "10", "true");
-  (void)InsertBoolAggregateRowIntoTable(database_path, writer, kBoolAggregateTableUuid, kBoolAggRowB, "2", "10", "true");
-  (void)InsertBoolAggregateRowIntoTable(database_path, writer, kBoolAggregateTableUuid, kBoolAggRowC, "3", "20", "true");
-  (void)InsertBoolAggregateRowIntoTable(database_path, writer, kBoolAggregateTableUuid, kBoolAggRowD, "4", "20", "false");
-  (void)InsertBoolAggregateRowIntoTable(database_path, writer, kBoolAggregateTableUuid, kBoolAggRowE, "5", "30", "", true);
-  (void)InsertInt64FieldsRowIntoTable(database_path,
-                                      writer,
-                                      kByNameLeftTableUuid,
-                                      kByNameLeftRowA,
-                                      {{"id", "1"}, {"score", "10"}});
-  (void)InsertInt64FieldsRowIntoTable(database_path,
-                                      writer,
-                                      kByNameLeftTableUuid,
-                                      kByNameLeftRowB,
-                                      {{"id", "2"}, {"score", "20"}});
-  (void)InsertInt64FieldsRowIntoTable(database_path,
-                                      writer,
-                                      kByNameRightTableUuid,
-                                      kByNameRightRowA,
-                                      {{"score", "20"}, {"id", "2"}});
-  (void)InsertInt64FieldsRowIntoTable(database_path,
-                                      writer,
-                                      kByNameRightTableUuid,
-                                      kByNameRightRowB,
-                                      {{"score", "30"}, {"id", "3"}});
-  RequireTableJoinThroughServer(database_path, writer);
-  RequireTableSetOperationsThroughServer(database_path, writer);
-  RequireTableSetByNameOperationsThroughServer(database_path, writer);
-  RequireRowNumberWindowThroughServer(database_path, writer);
-  RequirePartitionCountWindowThroughServer(database_path, writer);
-  RequireNavigationWindowsThroughServer(database_path, writer);
-  RequireGroupByAggregateThroughServer(database_path, writer);
-  RequireTableCountThroughServer(database_path, writer);
-  RequireMaterializedCteThroughServer(database_path, writer);
-  RequireRecursiveCteThroughServer(database_path, writer);
-  RequireScalarSubqueryThroughServer(database_path, writer);
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryLeftTableUuid, kJoinRowD, "7");
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryLeftTableUuid, kJoinRowE, "7");
-  (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryRightTableUuid, kSetRowD, "7");
-  RequireTableSetAllOperationsThroughServer(database_path, writer);
   const auto bulk_insert = InsertBulkRowsIntoTable(database_path, writer);
   Require(FieldValue(bulk_insert, "note", 0) == "bulk-direct-a",
           "bulk direct insert first row result mismatch");
@@ -3598,6 +4219,14 @@ int main() {
       scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
           database_path, SB_SBSFC021_SEED_PACK_ROOT);
   Require(created.ok(), "credentialed lifecycle fixture database create failed");
+  Require(created.state.database_uuid.valid(),
+          "credentialed lifecycle fixture database UUID missing");
+  Require(created.bootstrap_principal_uuid.valid(),
+          "credentialed lifecycle fixture principal UUID missing");
+  g_database_uuid = scratchbird::core::uuid::UuidToString(
+      created.state.database_uuid.value);
+  g_principal_uuid = scratchbird::core::uuid::UuidToString(
+      created.bootstrap_principal_uuid.value);
   Require(std::filesystem::exists(database_path), "lifecycle create did not create database file");
 
   auto open = Dispatch(database_path,
@@ -3607,6 +4236,7 @@ int main() {
   Require(open.api_result.ok, "lifecycle open failed");
 
   CreateSchemaAndTable(database_path);
+  VerifyTypedUpdateDescriptorContract(database_path);
   VerifyDmlRowEffects(database_path);
 
   std::cout << "sbsql_dml_mga_row_result_conformance=passed\n";

@@ -348,9 +348,19 @@ void SblrSurfaceRegistersAndDispatchesKvBatchOperations() {
     sblr::SblrDispatchRequest request;
     request.context = Context("/tmp/sb_odf_071_sblr.sbdb", 77);
     request.context.security_context_present = true;
-    request.envelope = sblr::MakeSblrEnvelope(route.operation_id, route.opcode);
-    request.envelope.requires_transaction_context = true;
-    request.envelope.requires_security_context = true;
+    request.envelope = sblr::MakeSblrEnvelope(
+        route.operation_id, route.opcode, "trace.odf071.kv_batch");
+    request.envelope.opcode_code = by_operation->code;
+    request.envelope.parser_package_uuid =
+        "019df071-0000-7000-8000-000000000101";
+    request.envelope.registry_snapshot_uuid =
+        "019df071-0000-7000-8000-000000000102";
+    request.envelope.requires_transaction_context =
+        by_operation->requires_transaction_context;
+    request.envelope.requires_security_context =
+        by_operation->requires_security_context;
+    request.envelope.requires_cluster_authority =
+        by_operation->requires_cluster_authority;
     const auto dispatched = sblr::DispatchSblrOperation(request);
     Require(dispatched.envelope_validated && dispatched.accepted &&
                 dispatched.dispatched_to_api,

@@ -111,6 +111,7 @@ struct Fixture {
   api::EngineUuid transaction = MakeUuid(UuidKind::transaction, 5);
   api::EngineUuid unused_principal = MakeUuid(UuidKind::principal, 6);
   api::EngineUuid lifecycle_principal = MakeUuid(UuidKind::principal, 7);
+  api::EngineUuid global_connect_grant = MakeUuid(UuidKind::object, 8);
   std::filesystem::path work_dir;
   std::filesystem::path database_path;
 };
@@ -169,8 +170,10 @@ api::EngineRequestContext SecurityAdminContext(const Fixture& fixture,
   auto context = Context(fixture);
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = true;
+  context.principal_uuid = fixture.admin_principal;
   context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
+  context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
   context.local_transaction_id = local_tx;
   context.snapshot_visible_through_local_transaction_id = local_tx;
   return context;
@@ -224,23 +227,52 @@ void AlterPrincipalCredential(const Fixture& fixture,
           "failed to alter durable principal credential state");
 }
 
-void WriteGlobalGrantEvent(const Fixture& fixture,
-                           const api::EngineUuid& principal_uuid,
-                           std::string_view privilege,
-                           std::uint64_t generation) {
-  std::ofstream events(fixture.database_path.string() + ".sb.security_principal_events",
-                       std::ios::app);
-  events << api::kSecurityPrincipalLifecycleEventMagic
-         << "\tGRANT\t0\t"
-         << MakeUuid(UuidKind::object, generation + 500).canonical
-         << '\t' << principal_uuid.canonical
-         << "\tprincipal\t\t\t"
-         << privilege
-         << '\t' << principal_uuid.canonical
-         << "\tallow\t"
-         << generation
-         << "\t0\n";
-  Require(static_cast<bool>(events), "failed to write durable global grant event");
+void GrantGlobalConnectPrivilege(const Fixture& fixture,
+                                 const api::EngineUuid& principal_uuid,
+                                 std::uint64_t local_tx) {
+  api::EngineSecurityGrantPrivilegeRequest request;
+  request.context = SecurityAdminContext(fixture, local_tx);
+  request.grant_uuid = fixture.global_connect_grant.canonical;
+  request.grantee_uuid = principal_uuid.canonical;
+  request.grantee_kind = "principal";
+  request.target_object_uuid.clear();
+  request.target_object_kind.clear();
+  request.privilege = "CONNECT";
+  request.grant_effect = "allow";
+  request.option_envelopes.push_back("grant_authority:engine");
+
+  const auto granted = api::EngineSecurityGrantPrivilege(request);
+  Require(granted.ok && granted.privilege_granted,
+          "failed to grant durable global CONNECT privilege");
+  Require(granted.primary_object.uuid.canonical ==
+              fixture.global_connect_grant.canonical &&
+              granted.primary_object.object_kind == "security_privilege_grant" &&
+              granted.security_generation != 0,
+          "global CONNECT grant result did not preserve exact durable identity");
+
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(request.context);
+  Require(loaded.ok, "global CONNECT grant durable state did not reload");
+  const api::EngineSecurityPrivilegeGrantRecord* exact_grant = nullptr;
+  for (const auto& grant : loaded.state.grants) {
+    if (grant.grant_uuid == fixture.global_connect_grant.canonical) {
+      Require(exact_grant == nullptr,
+              "global CONNECT durable grant identity was duplicated");
+      exact_grant = &grant;
+    }
+  }
+  Require(exact_grant != nullptr && !exact_grant->revoked,
+          "active global CONNECT durable grant was not reloaded");
+  Require(exact_grant->grantee_uuid == principal_uuid.canonical &&
+              exact_grant->grantee_kind == "principal" &&
+              exact_grant->target_object_uuid.empty() &&
+              exact_grant->target_object_kind.empty() &&
+              exact_grant->privilege == "CONNECT" &&
+              exact_grant->grant_effect == "allow" &&
+              exact_grant->grantor_principal_uuid ==
+                  request.context.principal_uuid.canonical &&
+              exact_grant->creator_tx == local_tx &&
+              exact_grant->security_generation != 0,
+          "reloaded global CONNECT grant did not preserve exact authority fields");
 }
 
 std::string StructuredVerifierClaim(std::string_view principal,
@@ -372,7 +404,7 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
                             "alice",
                             initial_fingerprint,
                             91);
-  WriteGlobalGrantEvent(fixture, fixture.principal, "CONNECT", 92);
+  GrantGlobalConnectPrivilege(fixture, fixture.principal, 92);
 
   const auto structured_verifier_claim = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
@@ -564,6 +596,8 @@ int main(int argc, char** argv) {
   Require(std::filesystem::create_directories(fixture.work_dir),
           "failed to create PCR-091 work directory");
   fixture.database_path = fixture.work_dir / "pcr091.sbdb";
+  Require(!std::filesystem::exists(fixture.database_path),
+          "PCR-091 must exercise the nonexistent-path security lifecycle");
 
   TestCryptoPrimitives();
   TestLocalPasswordDurableState(fixture);

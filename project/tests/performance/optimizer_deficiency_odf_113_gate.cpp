@@ -40,6 +40,26 @@ namespace mga = scratchbird::transaction::mga;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
+constexpr std::string_view kGraphVertexA =
+    "019df113-0000-7000-8000-00000000000a";
+constexpr std::string_view kGraphVertexB =
+    "019df113-0000-7000-8000-00000000000b";
+constexpr std::string_view kGraphVertexC =
+    "019df113-0000-7000-8000-00000000000c";
+constexpr std::string_view kGraphVertexD =
+    "019df113-0000-7000-8000-00000000000d";
+constexpr std::string_view kGraphVertexE =
+    "019df113-0000-7000-8000-00000000000e";
+
+std::string GraphPath(std::initializer_list<std::string_view> vertices) {
+  std::string path;
+  for (const auto vertex : vertices) {
+    if (!path.empty()) { path += "->"; }
+    path += vertex;
+  }
+  return path;
+}
+
 #ifndef ODF113_OUTPUT_JSON
 #define ODF113_OUTPUT_JSON "optimizer_deficiency_odf_113_gate.json"
 #endif
@@ -195,11 +215,28 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
   return generated.value;
 }
 
+std::string TransactionUuidText(std::uint64_t local_id) {
+  if (local_id == 113) {
+    return "019df113-0000-7000-8000-000000000071";
+  }
+  Require(local_id == 130, "ODF-113 unexpected transaction identity");
+  return "019df113-0000-7000-8000-000000000082";
+}
+
+platform::TypedUuid TransactionUuid(std::uint64_t local_id) {
+  const auto parsed = uuid::ParseUuid(TransactionUuidText(local_id));
+  Require(parsed.ok(), "ODF-113 transaction UUID parse failed");
+  const auto typed =
+      uuid::MakeTypedUuid(platform::UuidKind::transaction, parsed.value);
+  Require(typed.ok(), "ODF-113 transaction UUID typing failed");
+  return typed.value;
+}
+
 mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
                                               mga::TransactionState state) {
   auto identity = mga::MakeTransactionIdentity(
       mga::MakeLocalTransactionId(local_id),
-      NewUuid(platform::UuidKind::transaction, local_id),
+      TransactionUuid(local_id),
       mga::TransactionScope::local_node);
   Require(identity.ok(), "ODF-113 could not create transaction identity");
 
@@ -262,8 +299,9 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
   api::EngineRequestContext context;
   context.database_path = database_path.string();
   context.local_transaction_id = tx;
+  context.snapshot_visible_through_local_transaction_id = tx;
   context.database_uuid.canonical = "odf113-database";
-  context.transaction_uuid.canonical = "odf113-transaction-" + std::to_string(tx);
+  context.transaction_uuid.canonical = TransactionUuidText(tx);
   context.security_context_present = true;
   context.request_id = "odf113-request-" + std::to_string(tx);
   context.trace_tags = {"optimizer_deficiency_odf_113_gate",
@@ -632,23 +670,42 @@ api::EngineVectorSearchRequest BaseVectorRequest() {
 
 std::vector<api::EngineGraphVertexInput> GraphVertices() {
   return {
-      {"A", {"person", "seed"}, {{"tenant", "blue"}, {"name", "alpha"}}},
-      {"B", {"person"}, {{"tenant", "green"}, {"name", "beta"}}},
-      {"C", {"account"}, {{"tenant", "blue"}, {"name", "connector"}}},
-      {"D", {"account"}, {{"tenant", "red"}, {"name", "detour"}}},
-      {"E", {"person"}, {{"tenant", "blue"}, {"name", "cycle"}}},
+      {std::string(kGraphVertexA), {"person", "seed"},
+       {{"tenant", "blue"}, {"name", "alpha"}}},
+      {std::string(kGraphVertexB), {"person"},
+       {{"tenant", "green"}, {"name", "beta"}}},
+      {std::string(kGraphVertexC), {"account"},
+       {{"tenant", "blue"}, {"name", "connector"}}},
+      {std::string(kGraphVertexD), {"account"},
+       {{"tenant", "red"}, {"name", "detour"}}},
+      {std::string(kGraphVertexE), {"person"},
+       {{"tenant", "blue"}, {"name", "cycle"}}},
   };
 }
 
 std::vector<api::EngineGraphEdgeInput> GraphEdges() {
   return {
-      {"e-ac", "A", "C", "knows", {{"since", "2024"}}, 1.0},
-      {"e-ad", "A", "D", "knows", {{"since", "2025"}}, 2.0},
-      {"e-cb", "C", "B", "knows", {{"since", "2026"}}, 1.5},
-      {"e-db", "D", "B", "knows", {{"since", "2026"}}, 2.5},
-      {"e-ba", "B", "A", "blocks", {{"since", "2023"}}, 3.0},
-      {"e-ae", "A", "E", "blocks", {{"since", "2022"}}, 4.0},
-      {"e-ea", "E", "A", "knows", {{"since", "2022"}}, 5.0},
+      {"019df113-0000-7000-8000-000000000101",
+       std::string(kGraphVertexA), std::string(kGraphVertexC), "knows",
+       {{"since", "2024"}}, 1.0},
+      {"019df113-0000-7000-8000-000000000102",
+       std::string(kGraphVertexA), std::string(kGraphVertexD), "knows",
+       {{"since", "2025"}}, 2.0},
+      {"019df113-0000-7000-8000-000000000103",
+       std::string(kGraphVertexC), std::string(kGraphVertexB), "knows",
+       {{"since", "2026"}}, 1.5},
+      {"019df113-0000-7000-8000-000000000104",
+       std::string(kGraphVertexD), std::string(kGraphVertexB), "knows",
+       {{"since", "2026"}}, 2.5},
+      {"019df113-0000-7000-8000-000000000105",
+       std::string(kGraphVertexB), std::string(kGraphVertexA), "blocks",
+       {{"since", "2023"}}, 3.0},
+      {"019df113-0000-7000-8000-000000000106",
+       std::string(kGraphVertexA), std::string(kGraphVertexE), "blocks",
+       {{"since", "2022"}}, 4.0},
+      {"019df113-0000-7000-8000-000000000107",
+       std::string(kGraphVertexE), std::string(kGraphVertexA), "knows",
+       {{"since", "2022"}}, 5.0},
   };
 }
 
@@ -1184,9 +1241,11 @@ ScenarioEvidence GraphPhysicalProviderScenario() {
   const auto seeded_result = api::EngineGraphQuery(seeded);
   RequirePhysicalProviderHygiene(seeded_result,
                                  "ODF-113 graph seeded traversal");
-  Require(RowField(seeded_result, 0, "vertex_id") == "A",
+  Require(RowField(seeded_result, 0, "vertex_id") == kGraphVertexA,
           "ODF-113 graph seed result changed");
-  Require(AnyRowFieldEquals(seeded_result, "path", "A->C->B"),
+  Require(AnyRowFieldEquals(
+              seeded_result, "path",
+              GraphPath({kGraphVertexA, kGraphVertexC, kGraphVertexB})),
           "ODF-113 graph frontier traversal missed A->C->B");
   Require(EvidenceContains(seeded_result,
                            "graph_seed_index",
@@ -1210,13 +1269,14 @@ ScenarioEvidence GraphPhysicalProviderScenario() {
           "ODF-113 graph row security recheck proof missing");
 
   auto bidirectional = BaseGraphRequest();
-  bidirectional.bidirectional_start_vertex_id = "A";
-  bidirectional.bidirectional_end_vertex_id = "B";
+  bidirectional.bidirectional_start_vertex_id = kGraphVertexA;
+  bidirectional.bidirectional_end_vertex_id = kGraphVertexB;
   bidirectional.max_depth = 4;
   const auto bidirectional_result = api::EngineGraphQuery(bidirectional);
   RequirePhysicalProviderHygiene(bidirectional_result,
                                  "ODF-113 graph bidirectional search");
-  Require(RowField(bidirectional_result, 2, "path") == "A->C->B",
+  Require(RowField(bidirectional_result, 2, "path") ==
+              GraphPath({kGraphVertexA, kGraphVertexC, kGraphVertexB}),
           "ODF-113 graph bidirectional path changed");
   Require(EvidenceContains(bidirectional_result,
                            "graph_bidirectional_search",
@@ -1225,7 +1285,8 @@ ScenarioEvidence GraphPhysicalProviderScenario() {
 
   auto vector_fusion = BaseGraphRequest();
   vector_fusion.fusion_source_kind = api::EngineGraphFusionSourceKind::kVector;
-  vector_fusion.fused_candidate_seed_vertex_ids = {"C"};
+  vector_fusion.fused_candidate_seed_vertex_ids = {
+      std::string(kGraphVertexC)};
   vector_fusion.max_depth = 1;
   const auto vector_fusion_result = api::EngineGraphQuery(vector_fusion);
   RequirePhysicalProviderHygiene(vector_fusion_result,
@@ -1237,7 +1298,8 @@ ScenarioEvidence GraphPhysicalProviderScenario() {
 
   auto search_fusion = BaseGraphRequest();
   search_fusion.fusion_source_kind = api::EngineGraphFusionSourceKind::kSearch;
-  search_fusion.fused_candidate_seed_vertex_ids = {"A"};
+  search_fusion.fused_candidate_seed_vertex_ids = {
+      std::string(kGraphVertexA)};
   search_fusion.max_depth = 1;
   const auto search_fusion_result = api::EngineGraphQuery(search_fusion);
   RequirePhysicalProviderHygiene(search_fusion_result,

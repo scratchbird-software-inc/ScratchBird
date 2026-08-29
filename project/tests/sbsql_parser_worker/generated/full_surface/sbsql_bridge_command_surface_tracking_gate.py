@@ -153,15 +153,11 @@ def main() -> int:
         if bridge.cluster_route:
             if led.get("current_state") != "exact_refusal_passed":
                 errors.append(f"{surface_id} cluster strict ledger state drift")
-            if man.get("final_state") != "cluster_provider_route_passed":
+            if man.get("final_state") != "exact_refusal_passed":
                 errors.append(f"{surface_id} cluster manifest final_state drift")
             for token in (
-                "provider_boundary_route_evidence",
-                "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
-                "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
-                "request_lifecycle_routed_through_cluster_provider_boundary",
+                "canonical_sblr_admission_before_trusted_udr_dispatch",
                 "UDR.BRIDGE.UNSUPPORTED",
-                "UDR.BRIDGE.UNLICENSED",
                 "private_cluster_execution=false",
             ):
                 require_contains(errors, surface_id, final_text, token)
@@ -186,11 +182,19 @@ def main() -> int:
         ):
             require_contains(errors, f"{surface_id} generated bridge operation evidence", operation_evidence, token)
         if bridge.cluster_route:
-            require_contains(errors, f"{surface_id} generated cluster bridge evidence", operation_evidence, "cluster_provider_gate=compile_time")
+            require_contains(
+                errors,
+                f"{surface_id} generated cluster bridge evidence",
+                operation_evidence,
+                "trusted_udr_dispatch_refuses_UDR_BRIDGE_UNSUPPORTED",
+            )
         else:
             require_contains(errors, f"{surface_id} generated noncluster bridge evidence", operation_evidence, "private_cluster_execution=false")
         for fields, kind in ((auth_fields, "authenticated_route"), (round_fields, "sblr_binary_round_trip")):
-            if fields.get("fixture_status") != "e2e_passed":
+            expected_fixture_status = (
+                "exact_refusal_passed" if bridge.cluster_route else "e2e_passed"
+            )
+            if fields.get("fixture_status") != expected_fixture_status:
                 errors.append(f"{surface_id} {kind} fixture not promoted")
             if fields.get("canonical_name") != bridge.canonical_name:
                 errors.append(f"{surface_id} {kind} canonical_name drift")

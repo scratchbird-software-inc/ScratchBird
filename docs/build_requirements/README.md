@@ -56,6 +56,9 @@ survive in `SBsrv` or `SBcore`.
 
 Every support-eligible platform must prove before support is claimed:
 
+- `SB_BUILD_COMPATIBILITY_PARSERS=OFF` while the shared SBLR contract remains
+  under stabilization; compatibility parser remediation uses an isolated,
+  explicitly opted-in build and is not part of the public release proof.
 - `SB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON`
 - `SB_ENABLE_CLUSTER_PROVIDER=OFF`
 - `SB_CLUSTER_PROVIDER_STUB=ON`

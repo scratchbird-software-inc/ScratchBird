@@ -3,10 +3,13 @@
 
 #include "engine/sblr/sblr_dispatch.hpp"
 #include "engine/sblr/sblr_local_metrics_read.hpp"
+#include "engine/sblr/sblr_opcode_registry.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <utility>
 
 namespace sb = scratchbird::engine::sblr;
 
@@ -53,33 +56,77 @@ sb::SblrDispatchResult Dispatch(const sb::SblrLocalMetricsReadCodecResult& encod
 
 int main() {
   auto encoded = sb::EncodeSblrLocalMetricsReadRequest(Request());
-  Require(encoded.ok, "CSC-TEST-003334 encode");
+  Require(encoded.ok, "local metrics request encode");
   const auto decoded = sb::DecodeSblrLocalMetricsReadRequest(
       encoded.canonical_bytes.data(), encoded.canonical_bytes.size());
-  Require(decoded.ok && decoded.request.selector == "sys.metrics.*", "CSC-TEST-003334 roundtrip");
+  Require(decoded.ok && decoded.request.selector == "sys.metrics.*",
+          "local metrics request roundtrip");
   auto corrupted = encoded.canonical_bytes;
   corrupted.back() ^= 1;
   Require(!sb::DecodeSblrLocalMetricsReadRequest(corrupted.data(), corrupted.size()).ok,
-          "CSC-TEST-003334 digest refusal");
+          "local metrics digest refusal");
 
   auto rejected = Request();
   rejected.selector = "cluster.sys.metrics.*";
   Require(!sb::EncodeSblrLocalMetricsReadRequest(rejected).ok,
-          "CSC-TEST-003335 cluster scope refusal");
+          "local metrics cluster scope refusal");
   rejected = Request();
   rejected.cursor_digest[0] = 1;
   Require(!sb::EncodeSblrLocalMetricsReadRequest(rejected).ok,
-          "CSC-TEST-003335 unissued cursor refusal");
+          "local metrics unissued cursor refusal");
 
-  const auto dispatch = Dispatch(encoded);
-  Require(dispatch.accepted && dispatch.api_result.ok, "CSC-TEST-003336 local projection admission");
-  bool executor_evidence = false;
-  for (const auto& evidence : dispatch.api_result.evidence) {
-    executor_evidence = executor_evidence ||
-        (evidence.evidence_kind == "executor_id" && evidence.evidence_id == "engine.op.read_metrics");
-  }
-  Require(executor_evidence, "CSC-TEST-003336 executor evidence");
-  Require(!Dispatch(encoded, false).accepted, "CSC-TEST-003336 security refusal");
-  Require(!Dispatch(encoded, true, true).accepted, "CSC-TEST-003337 cancellation before projection");
+  const auto envelope = Envelope(encoded);
+  const auto* entry = sb::LookupSblrOperation("engine.op.read_metrics");
+  Require(entry != nullptr && entry->code == 0x0c01 &&
+              entry->opcode == "SBLR_READ_METRICS" &&
+              entry->operand_contract == "metrics_read_request" &&
+              entry->result_contract == "metrics_result_set" &&
+              entry->executor_id == "engine.op.read_metrics" &&
+              entry->transaction_effect == sb::SblrOpcodeTransactionEffect::read &&
+              entry->security_class == sb::SblrOpcodeSecurityClass::authenticated &&
+              entry->requires_security_context &&
+              !entry->requires_transaction_context &&
+              !entry->requires_cluster_authority &&
+              entry->executor_evidence_required &&
+              !entry->executor_evidence_accepted &&
+              entry->missing_executor_evidence_diagnostic ==
+                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+          "exact fail-closed local metrics registry contract");
+  Require(sb::LookupSblrOpcodeCode(0x0c01) == entry,
+          "unique local metrics opcode identity");
+
+  const auto unavailable = sb::ValidateSblrOpcodeForEnvelope(envelope);
+  Require(!unavailable.ok &&
+              unavailable.diagnostic_id ==
+                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+          "registered local metrics executor evidence refusal");
+
+  scratchbird::engine::internal_api::EngineRequestContext context;
+  context.security_context_present = true;
+  unsigned cancellation_probes = 0;
+  context.query_cancellation_requested = [&] {
+    ++cancellation_probes;
+    return true;
+  };
+  const auto refused = sb::DispatchSblrLocalMetricsRead(envelope, context);
+  Require(!refused.accepted &&
+              refused.diagnostic_id ==
+                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" &&
+              refused.evidence.empty() && cancellation_probes == 0,
+          "local metrics evidence refusal before cancellation and API access");
+
+  const auto full_dispatch = Dispatch(encoded, true, true);
+  Require(!full_dispatch.accepted && !full_dispatch.dispatched_to_api &&
+              !full_dispatch.api_result.ok &&
+              full_dispatch.api_result.evidence.empty() &&
+              !full_dispatch.api_result.diagnostics.empty() &&
+              full_dispatch.api_result.diagnostics.front().code ==
+                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+          "local metrics full dispatch publishes no synthetic result");
+
+  auto zero_prefix = envelope;
+  std::fill_n(zero_prefix.operands.front().value_body.begin(), 16, 0);
+  Require(!sb::DecodeSblrLocalMetricsReadOperand(zero_prefix).ok,
+          "local metrics zero descriptor prefix refusal");
   return 0;
 }

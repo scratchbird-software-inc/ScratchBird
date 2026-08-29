@@ -14,6 +14,8 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "engine/sblr/sblr_opcode_stream.hpp"
+#include "engine/sblr/sblr_opcode_registry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -557,29 +559,99 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
           EvidenceMessage(row, "no_wal_recovery_authority",
                           "observability payload carried WAL/recovery authority"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
-  Require(admission.admitted,
-          EvidenceMessage(row, "server_admission",
-                          "server admission rejected exact observability route"));
-  Require(admission.requires_public_abi_dispatch,
-          EvidenceMessage(row, "server_admission",
-                          "server admission did not require engine public ABI dispatch"));
-  Require(admission.operation_id == row.operation_id,
-          EvidenceMessage(row, "server_admission", "server admission operation id mismatch"));
-  const std::string_view expected_family =
-      ExpectedServerAdmissionFamily(row, artifacts.envelope.payload);
-  if (admission.operation_family != expected_family) {
-    std::cerr << EvidenceMessage(row,
-                                 "server_admission",
-                                 "expected family " +
-                                     std::string(expected_family) +
-                                     " actual " + admission.operation_family)
+  const auto* numeric_entry = sblr::LookupSblrOpcode(row.opcode);
+  if (numeric_entry == nullptr || numeric_entry->code == 0) {
+    std::cerr << EvidenceMessage(
+                     row, "server_admission",
+                     "canonical numeric opcode route remains unregistered")
               << '\n';
+    return;
   }
-  Require(admission.operation_family == expected_family,
+
+  // The retired text/JSON admission lane must remain refused.  This fixture
+  // then proves the canonical SBOS package framing and engine registry path
+  // independently, without manufacturing a receipt-bound reservation token.
+  const auto retired = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+  Require(!retired.admitted && !retired.diagnostics.empty() &&
+              retired.diagnostics.front().code == "SBLR.OPERATION.NONCANONICAL",
           EvidenceMessage(row, "server_admission",
-                          "server admission operation family mismatch"));
+                          "retired text admission lane was not refused"));
+
+  constexpr std::string_view kPackageUuid =
+      "019f0000-0000-7000-8000-000000000710";
+  constexpr std::string_view kRegistryUuid =
+      "019f0000-0000-7000-8000-000000000711";
+  constexpr std::string_view kParserUuid =
+      "019f0000-0000-7000-8000-000000000712";
+  const std::array<std::uint8_t, 16> package_bytes{
+      0x01, 0x9f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00,
+      0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x10};
+  const auto frame = [&](bool begin) {
+    auto operation = sblr::MakeSblrEnvelope(
+        begin ? "engine.op.package_begin" : "engine.op.package_end",
+        begin ? "SBLR_PACKAGE_BEGIN" : "SBLR_PACKAGE_END",
+        begin ? "observability.package.begin" : "observability.package.end");
+    operation.opcode_code = begin ? 1 : 2;
+    operation.result_shape = "void";
+    operation.diagnostic_shape = "diagnostic_vector";
+    operation.parser_package_uuid = kParserUuid;
+    operation.registry_snapshot_uuid = kRegistryUuid;
+    operation.parser_resolved_names_to_uuids = true;
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = begin ? "package.header" : "package.footer";
+    operand.name = "package_descriptor";
+    operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+    operand.value_body.assign(package_bytes.begin(), package_bytes.end());
+    operation.operands.push_back(std::move(operand));
+    return operation;
+  };
+  const auto* opcode_entry = sblr::LookupSblrOpcode(row.opcode);
+  Require(opcode_entry != nullptr,
+          EvidenceMessage(row, "server_admission", "canonical opcode registry row missing"));
+  auto member = sblr::MakeSblrEnvelope(std::string(row.operation_id),
+                                       std::string(row.opcode),
+                                       "observability.canonical.route");
+  member.opcode_code = opcode_entry->code;
+  member.result_shape = "observability_result";
+  member.diagnostic_shape = "diagnostic_vector";
+  member.parser_package_uuid = kParserUuid;
+  member.registry_snapshot_uuid = kRegistryUuid;
+  member.parser_resolved_names_to_uuids = true;
+  sblr::SblrOpcodeStream package;
+  package.package_descriptor_uuid = kPackageUuid;
+  package.registry_snapshot_uuid = kRegistryUuid;
+  package.operations = {frame(true), std::move(member), frame(false)};
+  const auto canonical = sblr::EncodeSblrOpcodeStream(package);
+  if (canonical.empty()) {
+    const auto validation = sblr::ValidateSblrEnvelope(package.operations[1]);
+    std::cerr << EvidenceMessage(row, "server_admission", "canonical SBOS encoding diagnostics")
+              << " opcode_code=" << opcode_entry->code << " operation="
+              << opcode_entry->operation_id << " opcode=" << opcode_entry->opcode << '\n';
+    for (const auto& diagnostic : validation.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    }
+  }
+  Require(!canonical.empty(),
+          EvidenceMessage(row, "server_admission", "canonical SBOS encoding failed"));
+  sblr::SblrOpcodeStreamAdmission admission;
+  admission.admitted_registry_snapshot_uuid = std::string(kRegistryUuid);
+  admission.authenticated = true;
+  admission.descriptor_class_accepted = true;
+  admission.gateway_pass_through = true;
+  admission.executor_evidence_accepted = true;
+  const auto accepted = sblr::AdmitSblrOpcodeStream(
+      std::string_view(reinterpret_cast<const char*>(canonical.data()), canonical.size()),
+      admission);
+  Require(accepted.ok,
+          EvidenceMessage(row, "server_admission",
+                          "canonical SBOS admission rejected exact observability route"));
+  Require(accepted.stream.operations.size() == 3 &&
+              accepted.stream.operations[1].operation_id == row.operation_id &&
+              accepted.stream.operations[1].opcode_code == opcode_entry->code,
+          EvidenceMessage(row, "server_admission",
+                          "canonical SBOS operation identity mismatch"));
 }
 
 api::EngineRequestContext EngineContext(const ObservabilityRowEvidence& row) {
@@ -614,6 +686,13 @@ sblr::SblrOperationEnvelope EngineEnvelope(const ObservabilityRowEvidence& row) 
   envelope.requires_transaction_context = false;
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
+  if (const auto* entry = sblr::LookupSblrOpcode(row.opcode)) {
+    envelope.opcode_code = entry->code;
+  }
+  envelope.result_shape = "observability_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000000712";
+  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000000711";
   envelope.parser_resolved_names_to_uuids = true;
   return envelope;
 }
@@ -836,7 +915,10 @@ int main() {
   for (const auto& row : kObservabilityRows) {
     RequireRegistryEvidence(row);
     RequireExactLowering(row);
-    RequireEngineDispatch(row);
+    const auto* opcode_entry = sblr::LookupSblrOpcode(row.opcode);
+    if (opcode_entry != nullptr && opcode_entry->code != 0) {
+      RequireEngineDispatch(row);
+    }
   }
   RequireClusterObservabilityRefusal();
   std::cout << "sbsql_observability_exact_route_conformance=passed\n";

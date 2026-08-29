@@ -78,6 +78,52 @@ enum class SblrCodecStatus : std::uint8_t {
   size_limit_exceeded = 9,
 };
 
+// Stable diagnostics exposed at the public engine ABI boundary. The codec and
+// routed server may retain a more precise internal diagnostic, but public
+// clients receive one of these bounded categories for the corresponding
+// fail-closed codec state.
+struct SblrPublicAbiDiagnosticRow {
+  SblrCodecStatus status;
+  std::string_view diagnostic_code;
+  std::string_view message_key;
+};
+
+inline constexpr std::array<SblrPublicAbiDiagnosticRow, 6>
+    kSblrPublicAbiDiagnostics{{
+        {SblrCodecStatus::envelope_invalid, "SBLR.ENVELOPE.INVALID",
+         "sblr.envelope.invalid"},
+        {SblrCodecStatus::checksum_invalid,
+         "SBLR.ENVELOPE.CHECKSUM_INVALID",
+         "sblr.envelope.checksum_invalid"},
+        {SblrCodecStatus::version_unsupported, "SBLR.VERSION.UNSUPPORTED",
+         "sblr.version.unsupported"},
+        {SblrCodecStatus::opcode_unknown, "SBLR.OPCODE.UNKNOWN",
+         "sblr.opcode.unknown"},
+        {SblrCodecStatus::reference_meta_forbidden,
+         "SBLR.OPCODE.REFERENCE_META_FORBIDDEN",
+         "sblr.opcode.reference_meta_forbidden"},
+        {SblrCodecStatus::descriptor_invalid, "SBLR.DESCRIPTOR.INVALID",
+         "sblr.descriptor.invalid"},
+    }};
+
+inline constexpr const SblrPublicAbiDiagnosticRow*
+FindSblrPublicAbiDiagnostic(SblrCodecStatus status) noexcept {
+  // Truncation and size failures are envelope-shape failures at the public
+  // boundary. A malformed canonical field/structure is the public descriptor
+  // category. The exact internal codec diagnostic remains available to routed
+  // server audit evidence and is not weakened by this mapping.
+  if (status == SblrCodecStatus::envelope_truncated ||
+      status == SblrCodecStatus::size_limit_exceeded) {
+    status = SblrCodecStatus::envelope_invalid;
+  } else if (status == SblrCodecStatus::field_invalid) {
+    status = SblrCodecStatus::descriptor_invalid;
+  }
+  for (const auto& row : kSblrPublicAbiDiagnostics) {
+    if (row.status == status) return &row;
+  }
+  return nullptr;
+}
+
 struct SblrDescriptor {
   std::uint16_t kind = 1;
   std::uint16_t flags = 0;

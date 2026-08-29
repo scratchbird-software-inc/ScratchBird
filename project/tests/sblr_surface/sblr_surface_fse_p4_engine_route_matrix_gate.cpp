@@ -9,6 +9,7 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -151,6 +152,14 @@ bool HasDiagnostic(const server::ServerSblrAdmissionResult& result,
   return false;
 }
 
+bool HasDecodeDiagnostic(const sblr::SblrDecodeResult& result,
+                         std::string_view code) {
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
@@ -275,14 +284,23 @@ void VerifyCompiledSamples(const std::vector<Row>& route_rows) {
       const auto envelope = EnvelopeForRoute(route);
       const auto encoded = sblr::EncodeSblrEnvelope(envelope);
       const auto decoded = sblr::DecodeSblrEnvelope(encoded);
-      Require(decoded.ok, "sample envelope decode failed " + Field(route, "source_import_id"));
-      const auto admission = server::AdmitServerSblrEnvelope(
-          server::ServerSblrAdmissionRequest{encoded, false});
-      if (Field(route, "engine_route_class") == "exact_policy_refusal" ||
-          Field(route, "engine_route_class") == "engine_binding_resolution_guard" ||
-          Field(route, "engine_route_class") == "external_authority_fail_closed_guard") {
-        Require(!admission.admitted,
-                "guarded route admitted before engine binding/admission " +
+      if (decoded.ok) {
+        Require(decoded.envelope.operation_id == envelope.operation_id &&
+                    decoded.envelope.opcode == envelope.opcode,
+                "registered route identity changed " +
+                    Field(route, "source_import_id"));
+      } else if (!encoded.empty()) {
+        Require(HasDecodeDiagnostic(
+                    decoded, "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+                "inventory-only route failed without exact identity refusal " +
+                    Field(route, "source_import_id"));
+      }
+      if (!encoded.empty()) {
+        const auto admission = server::AdmitServerSblrEnvelope(
+            server::ServerSblrAdmissionRequest{encoded, false});
+        Require(!admission.admitted &&
+                    HasDiagnostic(admission, "SBLR.OPERATION.NONCANONICAL"),
+                "retired raw SBOP admission lane was not refused " +
                     Field(route, "source_import_id"));
       }
       const auto dispatch = sblr::DecodeAndDispatchSblrOperation(encoded, Context());
@@ -312,23 +330,30 @@ void VerifyCompiledSamples(const std::vector<Row>& route_rows) {
     }
   }
 
+  const auto canonical = server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION"));
+  Require(canonical.admitted &&
+              canonical.operation_id == "observability.show_version",
+          "canonical SBEE/SBLR/SBOP admission route was not executable");
+
   const auto raw_sql = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{"select * from p4_forbidden", false});
-  Require(!raw_sql.admitted && HasDiagnostic(raw_sql, "SBLR.SQL_TEXT_FORBIDDEN"),
+  Require(!raw_sql.admitted &&
+              HasDiagnostic(raw_sql, "SBLR.OPERATION.NONCANONICAL"),
           "raw SQL was accepted as SBLR");
 
-  auto local_query = sblr::MakeSblrEnvelope("query.plan_operation",
-                                            "SBLR_QUERY_PLAN_OPERATION",
-                                            "FSE-P4-local-query-cluster-refusal");
-  local_query.requires_cluster_authority = true;
-  local_query.source_artifact_map.policy_status = "non_authoritative_render_metadata";
-  local_query.source_artifact_map.source_identity = "fse-p4:local-query-refusal";
-  local_query.source_artifact_map.source_hash = "sha256:fse-p4-local-query-refusal";
-  const auto local_query_admission = server::AdmitServerSblrEnvelope(
-      server::ServerSblrAdmissionRequest{sblr::EncodeSblrEnvelope(local_query), true});
-  Require(!local_query_admission.admitted &&
-              HasDiagnostic(local_query_admission, "SBLR.CLUSTER_MAPPING.UNAVAILABLE"),
-          "local query operation was admitted as cluster query authority");
+  const auto canonical_probe =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION",
+          "FSE-P4-retired-raw-SBOP-proof");
+  const auto retired_canonical_sbop = server::AdmitServerSblrEnvelope(
+      server::ServerSblrAdmissionRequest{
+          sblr::EncodeSblrEnvelope(canonical_probe), true});
+  Require(!retired_canonical_sbop.admitted &&
+              HasDiagnostic(retired_canonical_sbop,
+                            "SBLR.OPERATION.NONCANONICAL"),
+          "exact SBOP bypassed the canonical container/SBEE admission chain");
 }
 
 }  // namespace

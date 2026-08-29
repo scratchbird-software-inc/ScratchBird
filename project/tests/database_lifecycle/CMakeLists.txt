@@ -122,7 +122,7 @@ set(SB_DATABASE_LIFECYCLE_EXAMPLES_SMOKE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/examples_smoke_scripts_gate.py"
 )
 
-if(NOT SB_BUILD_DRIVER_GATES)
+if(NOT SB_BUILD_DRIVER_GATES AND NOT SB_BUILD_TESTS)
   set(SB_DATABASE_LIFECYCLE_DRIVER_BUILD_ROOT
     "${CMAKE_BINARY_DIR}/drivers"
   )
@@ -215,35 +215,37 @@ if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr AND
     LABELS "database_lifecycle_sblr_composite_key_authority_gate;SBLR_COMPOSITE_KEY_AUTHORITY;composite_primary_key;composite_unique_key;engine_uuid_authority;database_lifecycle;mga_transaction_regression"
   )
 
-  add_executable(
-    database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
-    firebird_foreign_key_descriptor_closure_conformance.cpp
-  )
-  target_compile_features(
-    database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
-    PRIVATE cxx_std_23
-  )
-  target_link_libraries(
-    database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
-    PRIVATE
-      sb_core_platform
-      sb_core_uuid
-      sb_engine_internal_api
-      sb_engine_sblr
-      sb_storage_database
-      sb_storage_disk
-      sb_storage_page
-      sb_transaction_mga
-  )
-  add_test(
-    NAME database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
-    COMMAND database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
-  )
-  set_tests_properties(
-    database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
-    PROPERTIES
-      LABELS "database_lifecycle;firebird_foreign_key_d1;engine_uuid_authority;mga_transaction_regression;standalone_parser_authority"
-  )
+  if(TARGET sbu_firebird_parser_support)
+    add_executable(
+      database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+      firebird_foreign_key_descriptor_closure_conformance.cpp
+    )
+    target_compile_features(
+      database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+      PRIVATE cxx_std_23
+    )
+    target_link_libraries(
+      database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+      PRIVATE
+        sb_core_platform
+        sb_core_uuid
+        sb_engine_internal_api
+        sb_engine_sblr
+        sb_storage_database
+        sb_storage_disk
+        sb_storage_page
+        sb_transaction_mga
+    )
+    add_test(
+      NAME database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+      COMMAND database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+    )
+    set_tests_properties(
+      database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+      PROPERTIES
+        LABELS "database_lifecycle;firebird_foreign_key_d1;engine_uuid_authority;mga_transaction_regression;standalone_parser_authority"
+    )
+  endif()
 endif()
 
 add_custom_target(database_lifecycle_examples_smoke_scripts_gate_check
@@ -566,6 +568,27 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   )
   set_tests_properties(cdp_copy_append_batching_gate PROPERTIES
     LABELS "cdp_copy_append_batching_gate;CDP-011;PID-007;PID-010;IPAR-P5-02;CDP_P1_COPY_BATCHED;database_lifecycle_storage;sblr_opcode_registry_conformance;mga_transaction_regression"
+  )
+
+  add_executable(sblr_plan_import_rows_conformance
+    sblr_plan_import_rows_conformance.cpp
+  )
+  target_compile_features(sblr_plan_import_rows_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sblr_plan_import_rows_conformance
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+  )
+
+  add_test(
+    NAME sblr_plan_import_rows_conformance
+    COMMAND sblr_plan_import_rows_conformance
+  )
+  set_tests_properties(sblr_plan_import_rows_conformance PROPERTIES
+    LABELS "sblr_plan_import_rows_conformance;SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1;PID-007;database_lifecycle_storage;sblr_opcode_registry_conformance;mga_transaction_regression"
   )
 
   add_executable(cdp_native_bulk_ingest_api_gate
@@ -1095,11 +1118,17 @@ set_tests_properties(database_lifecycle_canonical_spec_closure PROPERTIES
 set(SB_DATABASE_LIFECYCLE_REGISTRY_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle_registry_conformance.py"
 )
+set(SB_DATABASE_LIFECYCLE_REGISTRY_GATE_ARGS
+  --repo-root "${SB_PRIVATE_REPO_ROOT}"
+)
+if(TARGET sbl_firebird_parser_pipeline)
+  list(APPEND SB_DATABASE_LIFECYCLE_REGISTRY_GATE_ARGS --compatibility-parsers)
+endif()
 
 add_test(
   NAME database_lifecycle_engine_api
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_REGISTRY_GATE}"
-          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          ${SB_DATABASE_LIFECYCLE_REGISTRY_GATE_ARGS}
 )
 set_tests_properties(database_lifecycle_engine_api PROPERTIES
   LABELS "database_lifecycle_engine_api;database_lifecycle"
@@ -2449,6 +2478,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     routine_delete_column_range_vertical_slice.cpp
   )
   target_compile_features(database_lifecycle_routine_delete_column_range_vertical_slice PRIVATE cxx_std_23)
+  target_include_directories(database_lifecycle_routine_delete_column_range_vertical_slice PRIVATE
+    "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker"
+    "${PROJECT_SOURCE_DIR}/src/server"
+  )
   target_link_libraries(database_lifecycle_routine_delete_column_range_vertical_slice
     PRIVATE
       sb_core_platform
@@ -2485,6 +2518,30 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   )
   set_tests_properties(database_lifecycle_security_principal_conformance PROPERTIES
     LABELS "database_lifecycle_security_principal_conformance;database_lifecycle_security_principal;database_lifecycle;database_lifecycle_security;authorization_privilege_gate;audit_event_gate;security_policy_gate;mga_transaction_regression"
+  )
+
+  add_executable(database_local_security_event_store_conformance
+    database_local_security_event_store_conformance.cpp
+  )
+  target_compile_features(database_local_security_event_store_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(database_local_security_event_store_conformance
+    PRIVATE
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_local_security_event_store_conformance
+    COMMAND database_local_security_event_store_conformance
+  )
+  set_tests_properties(database_local_security_event_store_conformance PROPERTIES
+    LABELS "database_local_security_event_store_conformance;CORE-ENGINE-PRIVATE-DB-SECURITY-LIFECYCLE-V1;database_lifecycle;database_lifecycle_security;security_auth_gate;audit_event_gate;mga_transaction_regression"
   )
 
   add_executable(database_lifecycle_security_auth_audit_p4_conformance
@@ -5139,7 +5196,7 @@ if(TARGET sb_server_core)
     LABELS "database_lifecycle_capability_profile_conformance;database_lifecycle_capability_profile;database_lifecycle;database_lifecycle_config_policy_security_provider;database_lifecycle_cluster_boundary;mga_transaction_regression"
   )
 
-  if(TARGET sb_engine_internal_api)
+  if(TARGET sb_engine_internal_api AND TARGET sbu_firebird_parser_support)
     add_executable(database_lifecycle_udr_extension_conformance
       udr_extension_conformance.cpp
     )
@@ -5573,6 +5630,9 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
     cluster_boundary_conformance.cpp
   )
   target_compile_features(database_lifecycle_cluster_boundary_conformance PRIVATE cxx_std_23)
+  target_include_directories(database_lifecycle_cluster_boundary_conformance PRIVATE
+    "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker"
+  )
   target_link_libraries(database_lifecycle_cluster_boundary_conformance
     PRIVATE
       sb_core_agents

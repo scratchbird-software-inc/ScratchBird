@@ -142,6 +142,40 @@ endif()
 if(NOT TARGET sb_core_hash)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/hash ${CMAKE_CURRENT_BINARY_DIR}/core_hash)
 endif()
+
+# Pure manifest-owned contextual-TEXT carrier codec.  Keep this separate from
+# the receipt/MGA provider so parser producers and engine validators share one
+# canonical byte implementation without inheriting live authority.
+if(NOT TARGET sb_contextual_text_literal_v2_codec)
+  add_library(sb_contextual_text_literal_v2_codec STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../sblr/contextual_text_literal_v2_codec.cpp
+  )
+  target_compile_features(sb_contextual_text_literal_v2_codec PUBLIC cxx_std_20)
+  target_include_directories(sb_contextual_text_literal_v2_codec PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../sblr
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(sb_contextual_text_literal_v2_codec PUBLIC sb_core_hash)
+endif()
+
+# Pure manifest-owned construction/validation for the sealed per-relation
+# contextual-TEXT sidecar vector. Publication and visible-MGA selection remain
+# in the live internal API; this target is intentionally state-free.
+if(NOT TARGET sb_mga_contextual_text_sidecar_set_v2)
+  add_library(sb_mga_contextual_text_sidecar_set_v2 STATIC
+    mga_relation_store/mga_contextual_text_sidecar_set_v2.cpp
+  )
+  target_compile_features(sb_mga_contextual_text_sidecar_set_v2 PUBLIC cxx_std_20)
+  target_include_directories(sb_mga_contextual_text_sidecar_set_v2 PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(sb_mga_contextual_text_sidecar_set_v2 PUBLIC
+    sb_contextual_text_literal_v2_codec
+    sb_core_hash
+  )
+endif()
 if(NOT TARGET sb_core_resources)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/resources ${CMAKE_CURRENT_BINARY_DIR}/core_resources)
 endif()
@@ -213,6 +247,96 @@ set_source_files_properties(query/expression_api.cpp PROPERTIES
   COMPILE_DEFINITIONS
     SCRATCHBIRD_TYPED_SCALAR_DESCRIPTOR_CONTRACT_EXTERNAL=1
 )
+
+if(NOT TARGET sb_wire_typed_update_carrier_codec)
+  add_library(sb_wire_typed_update_carrier_codec STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire/typed_update_carrier_codec.cpp
+  )
+  target_compile_features(sb_wire_typed_update_carrier_codec PUBLIC cxx_std_20)
+  target_include_directories(sb_wire_typed_update_carrier_codec PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire
+  )
+  target_link_libraries(sb_wire_typed_update_carrier_codec PUBLIC
+    sb_core_platform
+    sb_core_hash
+  )
+endif()
+
+if(NOT TARGET sb_wire_typed_result_transport_codec)
+  add_library(sb_wire_typed_result_transport_codec STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire/typed_result_transport_carrier.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire/typed_result_transport_codec.cpp
+  )
+  target_compile_features(sb_wire_typed_result_transport_codec PUBLIC cxx_std_20)
+  target_include_directories(sb_wire_typed_result_transport_codec PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire
+  )
+  target_link_libraries(sb_wire_typed_result_transport_codec PUBLIC
+    sb_core_platform
+    sb_core_datatypes
+    sb_core_hash
+  )
+endif()
+
+if(NOT TARGET sb_engine_typed_result_producer_cursor)
+  add_library(sb_engine_typed_result_producer_cursor STATIC
+    typed_result_producer_cursor.cpp
+  )
+  target_compile_features(sb_engine_typed_result_producer_cursor PUBLIC cxx_std_20)
+  target_include_directories(sb_engine_typed_result_producer_cursor PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(sb_engine_typed_result_producer_cursor PUBLIC
+    sb_wire_typed_result_transport_codec
+  )
+endif()
+
+if(NOT TARGET sb_wire_narrow_query_binding_codec)
+  add_library(sb_wire_narrow_query_binding_codec STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire/narrow_query_binding_codec.cpp
+  )
+  target_compile_features(sb_wire_narrow_query_binding_codec
+    PUBLIC cxx_std_20)
+  target_include_directories(sb_wire_narrow_query_binding_codec PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire
+  )
+  target_link_libraries(sb_wire_narrow_query_binding_codec PUBLIC
+    sb_core_platform
+    sb_core_hash
+  )
+endif()
+
+if(NOT TARGET sb_wire_narrow_query_binding_demand_codec)
+  add_library(sb_wire_narrow_query_binding_demand_codec STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire/narrow_query_binding_demand_codec.cpp
+  )
+  target_compile_features(sb_wire_narrow_query_binding_demand_codec
+    PUBLIC cxx_std_20)
+  target_include_directories(sb_wire_narrow_query_binding_demand_codec PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire
+  )
+  target_link_libraries(sb_wire_narrow_query_binding_demand_codec PUBLIC
+    sb_core_platform
+  )
+endif()
+
+if(NOT TARGET sb_engine_narrow_query_typed_result_publication)
+  add_library(sb_engine_narrow_query_typed_result_publication STATIC
+    query/narrow_query_typed_result_publication.cpp
+  )
+  target_compile_features(sb_engine_narrow_query_typed_result_publication
+    PUBLIC cxx_std_20)
+  target_include_directories(sb_engine_narrow_query_typed_result_publication
+    PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(sb_engine_narrow_query_typed_result_publication PUBLIC
+    sb_engine_typed_result_producer_cursor
+    sb_wire_narrow_query_binding_codec
+  )
+endif()
 
 add_library(sb_engine_internal_api
   artifacts/artifact_api.cpp
@@ -295,7 +419,12 @@ add_library(sb_engine_internal_api
   dml/serializable_mutation_guard.cpp
   dml/temporal_bitemporal_api.cpp
   dml/update_batch.cpp
+  dml/update_datatype_operator_authority_provider.cpp
   dml/update_delete_optimized.cpp
+  dml/update_durable_operation_authority_provider.cpp
+  dml/update_immutable_authority_provider.cpp
+  dml/update_policy_catalog_authority_provider.cpp
+  dml/update_statement_mga_authority_provider.cpp
   dml/update_api.cpp
   extensibility/executable_object_lifecycle.cpp
   extensibility/extension_boundary_manifest.cpp
@@ -339,6 +468,12 @@ add_library(sb_engine_internal_api
   observability/repair_history_api.cpp
   observability/show_api.cpp
   procedural/procedural_api.cpp
+  query/narrow_query_binding_authority.cpp
+  query/contextual_text_policy_registry_v2.cpp
+  query/contextual_text_target_authority_resolver_v2.cpp
+  query/contextual_text_graph_authority_verifier_v2.cpp
+  query/contextual_text_literal_authority.cpp
+  query/narrow_query_profile_source.cpp
   query/canonical_heap_optimizer_admission.cpp
   query/expression_api.cpp
   query/optimizer_plan_lifecycle.cpp
@@ -367,6 +502,7 @@ add_library(sb_engine_internal_api
   security/plugin_trust_api.cpp
   security/protected_material_api.cpp
   security/security_crypto_policy.cpp
+  security/database_local_security_event_store.cpp
   security/security_principal_lifecycle.cpp
   security/security_model.cpp
   security/standard_bundle_api.cpp
@@ -628,6 +764,13 @@ target_compile_features(sb_engine_internal_api PUBLIC cxx_std_20)
 find_package(OpenSSL REQUIRED)
 
 target_link_libraries(sb_engine_internal_api PUBLIC
+  sb_contextual_text_literal_v2_codec
+  sb_sblr_operation_wire_codec
+  sb_mga_contextual_text_sidecar_set_v2
+  sb_engine_narrow_query_typed_result_publication
+  sb_engine_typed_result_producer_cursor
+  sb_wire_narrow_query_binding_demand_codec
+  sb_wire_typed_update_carrier_codec
   sb_sblr_parameter_wire_codec
   sb_core_datatypes
   sb_core_hash

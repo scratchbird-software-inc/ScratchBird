@@ -152,6 +152,7 @@ enum class NativeAggregateGroupingForm {
 
 enum class NativeAggregateProjectionForm {
   kNone,
+  kKeySumInt128,
   kKeyCountSum,
   kKeysCountSum,
   kKeysCountSumGrouping,

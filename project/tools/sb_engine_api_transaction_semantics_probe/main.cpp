@@ -79,6 +79,10 @@ EngineRequestContext BaseContext(const Args& args) {
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   return context;
 }
@@ -92,12 +96,19 @@ std::string DeterministicUuidText(scratchbird::core::platform::UuidKind kind,
 
 bool CreateProbeDatabase(const Args& args) {
   if (args.overwrite) {
+    std::filesystem::remove(args.path);
     std::filesystem::remove(args.path + ".sb.mga_row_versions");
     std::filesystem::remove(args.path + ".sb.mga_relation_metadata");
     std::filesystem::remove(args.path + ".sb.mga_index_entries");
     std::filesystem::remove(args.path + ".sb.mga_large_values");
     std::filesystem::remove(args.path + ".sb.mga_savepoints");
     std::filesystem::remove(args.path + ".sb.mga_relation_descriptors");
+    std::filesystem::remove(args.path + ".sb.api_events");
+    std::filesystem::remove(args.path + ".sb.catalog_object_events");
+    std::filesystem::remove(args.path + ".sb.mga_event_sequence_allocator");
+    std::filesystem::remove_all(args.path + ".sb.mga_relation_scope");
+    std::filesystem::remove(args.path + ".sb.txn_publish");
+    std::filesystem::remove(args.path + ".sb.txn_publish.tmp");
   }
   const auto database_uuid =
       scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::database,
@@ -179,6 +190,7 @@ EngineColumnDefinition Column(std::string name, std::string type, std::uint32_t 
   column.ordinal = ordinal;
   column.names.push_back({"en", "default", name, name, true});
   column.descriptor.canonical_type_name = type;
+  column.descriptor.encoded_descriptor = "type=" + type;
   return column;
 }
 

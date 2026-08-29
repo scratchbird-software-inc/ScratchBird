@@ -25,11 +25,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from live_auth_fixture import local_password_evidence, write_local_password_auth_fixture
+from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
 
 
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-WRONG_VERIFIER = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+WRONG_PASSWORD = "ScratchBird-E2E-incorrect"
 EXPECTED_DISABLED = "DML.NATIVE_BULK_INGEST.DISABLED;native_bulk_ingest_enabled:false"
 EXPECTED_AUTH_FAILURE = "SECURITY.AUTHENTICATION.FAILED"
 
@@ -144,14 +143,6 @@ def stop_route(route: Route) -> None:
         stop_process(proc)
 
 
-def auth_evidence(verifier: str) -> str:
-    return local_password_evidence("alice", verifier)
-
-
-def write_auth_file(database: Path) -> None:
-    write_local_password_auth_fixture(database, "alice", VERIFIER)
-
-
 def quote_path(path: Path) -> str:
     if "'" in str(path):
         raise GateError(f"fixture path cannot contain a quote: {path}")
@@ -168,11 +159,27 @@ def start_embedded(args: argparse.Namespace, work: Path) -> Route:
     root = work / "embedded"
     root.mkdir(parents=True, exist_ok=True)
     database = root / "e.sbdb"
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="embedded",
+    )
     return Route(
         name="embedded",
         root=root,
         database=database,
-        args=[args.sb_isql, str(database), "--mode=embedded", "--sslmode=disable"],
+        args=[
+            args.sb_isql,
+            str(database),
+            "--mode=embedded",
+            "--sslmode=disable",
+            "-U",
+            "alice",
+            "-P",
+            PUBLIC_TEST_PASSWORD,
+        ],
     )
 
 
@@ -182,13 +189,18 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
     database = root / "i.sbdb"
     control = root / "sc"
     endpoint = control / "s.sock"
-    write_auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="local-ipc",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(control),
             "--runtime-dir",
@@ -216,8 +228,8 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
         name="local-ipc",
         root=root,
         database=database,
-        args=common + ["-P", auth_evidence(VERIFIER)],
-        bad_auth_args=common + ["-P", auth_evidence(WRONG_VERIFIER)],
+        args=common + ["-P", PUBLIC_TEST_PASSWORD],
+        bad_auth_args=common + ["-P", WRONG_PASSWORD],
         processes=[server],
     )
 
@@ -229,13 +241,18 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
     server_control = root / "sc"
     endpoint = server_control / "s.sock"
     port = free_port()
-    write_auth_file(database)
+    seed_database(
+        database_seed=args.database_seed,
+        resource_seed_pack_root=args.resource_seed_pack_root,
+        database=database,
+        evidence_root=root / "bootstrap",
+        fixture_label="inet",
+    )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -283,8 +300,8 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
         name="inet-listener",
         root=root,
         database=database,
-        args=common + ["-P", auth_evidence(VERIFIER)],
-        bad_auth_args=common + ["-P", auth_evidence(WRONG_VERIFIER)],
+        args=common + ["-P", PUBLIC_TEST_PASSWORD],
+        bad_auth_args=common + ["-P", WRONG_PASSWORD],
         processes=[server, listener],
     )
 
@@ -647,6 +664,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args(argv[1:])
 

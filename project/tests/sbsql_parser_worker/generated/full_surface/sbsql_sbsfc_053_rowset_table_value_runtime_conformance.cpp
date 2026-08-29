@@ -10,6 +10,7 @@
 #include "query/projection_api.hpp"
 #include "registry/function_seed_registry.hpp"
 #include "sblr/sblr_dispatch.hpp"
+#include "canonical_projection_test_envelope.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -166,7 +167,8 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(
     envelope.operands.push_back({"text", prefix + "value", arguments[index].encoded_value});
     envelope.operands.push_back({"text", prefix + "is_null", arguments[index].is_null ? "true" : "false"});
   }
-  return envelope;
+  return scratchbird::tests::sbsql::CanonicalizeProjectionEnvelopeForTest(
+      std::move(envelope));
 }
 
 api::EngineRequestContext ProjectionContext() {

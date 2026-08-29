@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -289,7 +290,7 @@ void RequireValuesLowering() {
           "VALUES payload embedded source_text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
@@ -387,7 +388,7 @@ void RequireValuesSetOperationLowering() {
                             "VALUES set operation claimed table-backed set query route"));
 
     const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-        scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
     for (const auto& diagnostic : admission.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
     }

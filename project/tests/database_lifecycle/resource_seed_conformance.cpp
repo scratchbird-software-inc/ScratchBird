@@ -396,6 +396,10 @@ engine::EngineRequestContext BeginEngineTransaction(
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
 
   engine::EngineBeginTransactionRequest begin;
@@ -646,8 +650,8 @@ void RequireGbkRelationDescriptorPersistence(
       schema_uuid,
       "explicit_gbk",
       EngineColumn("f1",
-                   "VARCHAR(20)",
-                   "type=VARCHAR(20);charset_uuid=" + gbk->resource_uuid +
+                   "text",
+                   "type=text;charset_uuid=" + gbk->resource_uuid +
                        ";collation_uuid=" + gbk_unicode->resource_uuid +
                        ";character_length=20"));
   RequireEngineOk(explicit_table,
@@ -660,8 +664,8 @@ void RequireGbkRelationDescriptorPersistence(
       schema_uuid,
       "default_gbk",
       EngineColumn("f1",
-                   "VARCHAR(20)",
-                   "type=VARCHAR(20);charset_uuid=" + gbk->resource_uuid +
+                   "text",
+                   "type=text;charset_uuid=" + gbk->resource_uuid +
                        ";character_length=20"));
   RequireEngineOk(default_table,
                   "GBK default-collation table creation failed");
@@ -775,7 +779,7 @@ void RequireGbkRelationDescriptorPersistence(
           "integer column accepted text resource modifiers");
 
   const auto descriptor_path = std::filesystem::path(
-      database_path.string() + ".sb.mga_relation_descriptors");
+      database_path.string() + ".sb.mga_relation_metadata");
   const auto explicit_descriptor = LoadPersistedDescriptorWithoutWrite(
       context, explicit_table.primary_object.uuid.canonical, descriptor_path);
   const auto default_descriptor = LoadPersistedDescriptorWithoutWrite(

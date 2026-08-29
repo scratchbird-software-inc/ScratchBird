@@ -23,6 +23,8 @@ import json
 import sys
 from pathlib import Path
 
+from plan_import_rows_generated_evidence import is_plan_import_rows_surface
+
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 AUTH_MATRIX_NAME = "AUTHENTICATED_FULL_ROUTE_MATRIX.csv"
@@ -153,6 +155,15 @@ def selectable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict[
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
         )
 
+    if is_plan_import_rows_surface(auth.get("surface_id", "")):
+        return (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+            and manifest.get("final_state") == "pending"
+            and round_trip_required == "yes"
+            and operation_id == "dml.plan_import_rows"
+        )
+
     return (
         auth.get("status") == "native_now"
         and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
@@ -171,6 +182,14 @@ def refreshable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict
         return (
             manifest.get("final_state") in {"exact_refusal_passed", "cluster_provider_route_passed"}
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
+        )
+    if is_plan_import_rows_surface(auth.get("surface_id", "")):
+        return (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+            and manifest.get("final_state") == "pending"
+            and round_trip_required == "yes"
+            and operation_id == "dml.plan_import_rows"
         )
     return (
         auth.get("status") == "native_now"

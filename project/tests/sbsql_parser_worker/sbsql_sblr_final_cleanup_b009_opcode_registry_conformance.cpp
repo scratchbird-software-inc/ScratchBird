@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 
@@ -36,56 +37,56 @@ struct OpcodeRow {
 };
 
 constexpr std::array<OpcodeRow, 50> kRows{{
-    {"result.window", "SBLR_WINDOW", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized},
-    {"result.return_result_set", "SBLR_RETURN_RESULT_SET", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized},
-    {"ddl.table.create", "SBLR_DDL_CREATE_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.table.alter", "SBLR_DDL_ALTER_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.table.drop", "SBLR_DDL_DROP_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.index.drop", "SBLR_DDL_DROP_INDEX", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.domain.drop", "SBLR_DDL_DROP_DOMAIN", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.schema.drop", "SBLR_DDL_DROP_SCHEMA", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.schema.alter", "SBLR_DDL_ALTER_SCHEMA", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.index.alter", "SBLR_DDL_ALTER_INDEX", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.domain.alter", "SBLR_DDL_ALTER_DOMAIN", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.view.alter", "SBLR_DDL_ALTER_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.view.drop", "SBLR_DDL_DROP_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.trigger.alter", "SBLR_DDL_ALTER_TRIGGER", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.trigger.drop", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.procedure.alter", "SBLR_DDL_ALTER_PROCEDURE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.procedure.drop", "SBLR_DDL_DROP_PROCEDURE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.function.alter", "SBLR_DDL_ALTER_FUNCTION", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.function.drop", "SBLR_DDL_DROP_FUNCTION", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.package.create", "SBLR_DDL_CREATE_PACKAGE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.package.alter", "SBLR_DDL_ALTER_PACKAGE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.package.drop", "SBLR_DDL_DROP_PACKAGE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.sequence.alter", "SBLR_DDL_ALTER_SEQUENCE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.sequence.drop", "SBLR_DDL_DROP_SEQUENCE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.materialized_view.create", "SBLR_DDL_CREATE_MATERIALIZED_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.materialized_view.refresh", "SBLR_DDL_REFRESH_MATERIALIZED_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.materialized_view.drop", "SBLR_DDL_DROP_MATERIALIZED_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.type.create", "SBLR_DDL_CREATE_TYPE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.type.alter", "SBLR_DDL_ALTER_TYPE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.type.drop", "SBLR_DDL_DROP_TYPE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.object.rename", "SBLR_DDL_RENAME_OBJECT", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.synonym.drop", "SBLR_DDL_DROP_SYNONYM", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.foreign_table.create", "SBLR_DDL_CREATE_FOREIGN_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.foreign_table.drop", "SBLR_DDL_DROP_FOREIGN_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.fdw.create", "SBLR_DDL_CREATE_FDW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"ddl.fdw.drop", "SBLR_DDL_DROP_FDW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.user.create", "SBLR_SEC_CREATE_USER", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.user.alter", "SBLR_SEC_ALTER_USER", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.role.create", "SBLR_SEC_CREATE_ROLE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.grant", "SBLR_SEC_GRANT", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.revoke", "SBLR_SEC_REVOKE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.group_mapping.create", "SBLR_SEC_CREATE_GROUP_MAPPING", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.policy.lifecycle_alter", "SBLR_SEC_ALTER_POLICY", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.user.drop", "SBLR_SEC_DROP_USER", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.role.alter", "SBLR_SEC_ALTER_ROLE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.role.drop", "SBLR_SEC_DROP_ROLE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.policy.lifecycle_create", "SBLR_SEC_CREATE_POLICY", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.policy.lifecycle_drop", "SBLR_SEC_DROP_POLICY", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
-    {"security.authenticate", "SBLR_SEC_AUTHENTICATE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::authenticated},
-    {"security.deauthenticate", "SBLR_SEC_DEAUTHENTICATE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::authenticated},
+    {"engine.op.window", "SBLR_WINDOW", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized},
+    {"engine.op.return_result_set", "SBLR_RETURN_RESULT_SET", "result-shape", sblr::SblrOpcodeCategory::result_shape, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::object_authorized},
+    {"engine.op.ddl_create_table", "SBLR_DDL_CREATE_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_table", "SBLR_DDL_ALTER_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_table", "SBLR_DDL_DROP_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_index", "SBLR_DDL_DROP_INDEX", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_domain", "SBLR_DDL_DROP_DOMAIN", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_schema", "SBLR_DDL_DROP_SCHEMA", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_schema", "SBLR_DDL_ALTER_SCHEMA", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_index", "SBLR_DDL_ALTER_INDEX", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_domain", "SBLR_DDL_ALTER_DOMAIN", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_view", "SBLR_DDL_ALTER_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_view", "SBLR_DDL_DROP_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_trigger", "SBLR_DDL_ALTER_TRIGGER", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_procedure", "SBLR_DDL_ALTER_PROCEDURE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_procedure", "SBLR_DDL_DROP_PROCEDURE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_function", "SBLR_DDL_ALTER_FUNCTION", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_function", "SBLR_DDL_DROP_FUNCTION", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_create_package", "SBLR_DDL_CREATE_PACKAGE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_package", "SBLR_DDL_ALTER_PACKAGE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_package", "SBLR_DDL_DROP_PACKAGE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_sequence", "SBLR_DDL_ALTER_SEQUENCE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_sequence", "SBLR_DDL_DROP_SEQUENCE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_create_materialized_view", "SBLR_DDL_CREATE_MATERIALIZED_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_refresh_materialized_view", "SBLR_DDL_REFRESH_MATERIALIZED_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_materialized_view", "SBLR_DDL_DROP_MATERIALIZED_VIEW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_create_type", "SBLR_DDL_CREATE_TYPE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_alter_type", "SBLR_DDL_ALTER_TYPE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_type", "SBLR_DDL_DROP_TYPE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_rename_object", "SBLR_DDL_RENAME_OBJECT", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_synonym", "SBLR_DDL_DROP_SYNONYM", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_create_foreign_table", "SBLR_DDL_CREATE_FOREIGN_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_foreign_table", "SBLR_DDL_DROP_FOREIGN_TABLE", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_create_fdw", "SBLR_DDL_CREATE_FDW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.ddl_drop_fdw", "SBLR_DDL_DROP_FDW", "catalog-ddl", sblr::SblrOpcodeCategory::ddl, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_create_user", "SBLR_SEC_CREATE_USER", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_alter_user", "SBLR_SEC_ALTER_USER", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_create_role", "SBLR_SEC_CREATE_ROLE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_grant", "SBLR_SEC_GRANT", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_revoke", "SBLR_SEC_REVOKE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_create_group_mapping", "SBLR_SEC_CREATE_GROUP_MAPPING", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_alter_policy", "SBLR_SEC_ALTER_POLICY", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_drop_user", "SBLR_SEC_DROP_USER", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_alter_role", "SBLR_SEC_ALTER_ROLE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_drop_role", "SBLR_SEC_DROP_ROLE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_create_policy", "SBLR_SEC_CREATE_POLICY", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_drop_policy", "SBLR_SEC_DROP_POLICY", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized},
+    {"engine.op.sec_authenticate", "SBLR_SEC_AUTHENTICATE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::authenticated},
+    {"engine.op.sec_deauthenticate", "SBLR_SEC_DEAUTHENTICATE", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::authenticated},
 }};
 
 void Require(bool condition, std::string_view message) {
@@ -117,7 +118,8 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      envelope);
 }
 
 void RequireCanonicalLookupAndMetadata(const OpcodeRow& row) {
@@ -145,6 +147,11 @@ void RequireCanonicalLookupAndMetadata(const OpcodeRow& row) {
   Require(!by_opcode->cluster_private,
           EvidenceMessage(row, "authority", "cluster-private flag leaked into non-cluster row"));
 
+  Require(by_opcode->executor_id == row.operation_id,
+          EvidenceMessage(row, "executor", "Core executor binding drifted"));
+  Require(by_opcode->executor_evidence_required,
+          EvidenceMessage(row, "executor", "Core executor evidence gate is not required"));
+
   const auto* by_operation = sblr::LookupSblrOperation(row.operation_id);
   Require(by_operation == by_opcode,
           EvidenceMessage(row, "lookup", "operation lookup did not return canonical entry"));
@@ -156,10 +163,23 @@ void RequireCanonicalEnvelopeValidation(const OpcodeRow& row) {
   Require(envelope_validation.ok,
           EvidenceMessage(row, "envelope", "base engine envelope rejected valid canonical opcode"));
 
+  const auto* entry = sblr::LookupSblrOperation(row.operation_id);
+  Require(entry != nullptr,
+          EvidenceMessage(row, "opcode_validation", "canonical operation disappeared"));
   const auto opcode_validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
+  if (!entry->executor_evidence_accepted) {
+    Require(!opcode_validation.ok &&
+                opcode_validation.diagnostic_id ==
+                    "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" &&
+                opcode_validation.diagnostic_id ==
+                    entry->missing_executor_evidence_diagnostic,
+            EvidenceMessage(row, "opcode_validation",
+                            "missing executor evidence did not fail closed"));
+    return;
+  }
   Require(opcode_validation.ok,
           EvidenceMessage(row, "opcode_validation", "canonical opcode validation failed"));
-  Require(opcode_validation.entry != nullptr &&
+  Require(opcode_validation.entry == entry &&
               opcode_validation.entry->opcode == row.opcode,
           EvidenceMessage(row, "opcode_validation", "validation did not bind canonical entry"));
 
@@ -178,33 +198,38 @@ void RequireCanonicalEnvelopeValidation(const OpcodeRow& row) {
           EvidenceMessage(row, "transaction_refusal", "missing transaction context was not refused"));
 }
 
-void RequireAliasPreservation() {
-  struct AliasRow {
+void RequireCanonicalOperationPreservation() {
+  struct CanonicalOperationRow {
     std::string_view operation_id;
     std::string_view opcode;
   };
-  constexpr std::array<AliasRow, 6> aliases{{
-      {"ddl.create_table", "SBLR_DDL_CREATE_TABLE"},
-      {"ddl.create_view", "SBLR_DDL_CREATE_VIEW"},
-      {"ddl.create_sequence", "SBLR_DDL_CREATE_SEQUENCE"},
-      {"security.create_identity", "SBLR_SECURITY_CREATE_IDENTITY"},
+  constexpr std::array<CanonicalOperationRow, 4> canonical_operations{{
+      {"engine.op.ddl_create_table", "SBLR_DDL_CREATE_TABLE"},
+      {"engine.op.ddl_create_view", "SBLR_DDL_CREATE_VIEW"},
+      {"engine.op.ddl_create_sequence", "SBLR_DDL_CREATE_SEQUENCE"},
       {"security.grant_right", "SBLR_SECURITY_GRANT_RIGHT"},
-      {"security.revoke_right", "SBLR_SECURITY_REVOKE_RIGHT"},
   }};
 
-  for (const auto& alias : aliases) {
-    const auto* entry = sblr::LookupSblrOperation(alias.operation_id);
-    Require(entry != nullptr, "existing DDL/security alias disappeared from opcode registry");
-    Require(entry->opcode == alias.opcode, "existing DDL/security alias opcode changed");
+  for (const auto& canonical : canonical_operations) {
+    const auto* entry = sblr::LookupSblrOperation(canonical.operation_id);
+    Require(entry != nullptr, "existing DDL/security canonical disappeared from opcode registry");
+    Require(entry->opcode == canonical.opcode, "existing DDL/security canonical opcode changed");
 
-    auto envelope = sblr::MakeSblrEnvelope(std::string(alias.operation_id),
-                                           std::string(alias.opcode),
-                                           "opcode-alias-preservation");
+    auto envelope = sblr::MakeSblrEnvelope(std::string(canonical.operation_id),
+                                           std::string(canonical.opcode),
+                                           "opcode-canonical-preservation");
     envelope.requires_security_context = entry->requires_security_context;
     envelope.requires_transaction_context = entry->requires_transaction_context;
     envelope.requires_cluster_authority = entry->requires_cluster_authority;
     const auto validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
-    Require(validation.ok, "existing DDL/security alias validation regressed");
+    if (entry->executor_evidence_accepted) {
+      Require(validation.ok, "canonical operation validation regressed");
+    } else {
+      Require(entry->executor_evidence_required && !validation.ok &&
+                  validation.diagnostic_id ==
+                      "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+              "canonical operation did not fail closed on missing executor evidence");
+    }
   }
 }
 
@@ -222,7 +247,7 @@ void RequireUnknownAndMismatchDiagnostics() {
               unknown_operation_validation.diagnostic_id == "SB_DIAG_SBLR_UNKNOWN_OPERATION",
           "unknown operation diagnostic changed");
 
-  auto mismatch = sblr::MakeSblrEnvelope("result.window",
+  auto mismatch = sblr::MakeSblrEnvelope("engine.op.window",
                                          "SBLR_NOT_A_REAL_OPCODE",
                                          "opcode-mismatch");
   mismatch.requires_transaction_context = true;
@@ -296,7 +321,7 @@ int main() {
     RequireCanonicalLookupAndMetadata(row);
     RequireCanonicalEnvelopeValidation(row);
   }
-  RequireAliasPreservation();
+  RequireCanonicalOperationPreservation();
   RequireUnknownAndMismatchDiagnostics();
   std::cout << "sbsql_sblr_final_cleanup_b009_opcode_registry_conformance=passed\n";
   return EXIT_SUCCESS;

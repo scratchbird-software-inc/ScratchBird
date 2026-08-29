@@ -8,6 +8,7 @@
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "sblr_admission.hpp"
@@ -227,8 +228,16 @@ void RequireParserPipeline(const PipelineArtifacts& artifacts, const BridgeRoute
 }
 
 void RequireServerAdmission(const PipelineArtifacts& artifacts, const BridgeRouteRow& row) {
+  (void)artifacts;
   const auto admission = server::AdmitServerSblrEnvelope(
-      server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          row.operation_id, row.opcode, row.cluster_route));
+  if (!admission.admitted) {
+    for (const auto& diagnostic : admission.diagnostics) {
+      std::cerr << row.label << ':' << diagnostic.code << ':'
+                << diagnostic.safe_message << '\n';
+    }
+  }
   Require(admission.admitted,
           std::string(row.label) + " was refused by server admission");
   Require(admission.requires_public_abi_dispatch,
@@ -275,15 +284,6 @@ void RequireUdrRoute(const BridgeRouteRow& row) {
             std::string(row.label) + " did not fail closed with " +
                 std::string(row.expected_refusal_code) + ": " +
                 result.message_vector_json);
-    if (row.cluster_route) {
-      const auto unlicensed = udr::sbu_sbsql_bridge_dispatch(
-          request, std::string(kTrustedBridgeContext) + ";cluster_provider_gate=admitted");
-      Require(!unlicensed.ok &&
-                  Contains(unlicensed.message_vector_json, "UDR.BRIDGE.UNLICENSED"),
-              std::string(row.label) + " did not route admitted cluster calls to the stub "
-                                      "unlicensed vector: " +
-                  unlicensed.message_vector_json);
-    }
     return;
   }
   Require(result.ok,

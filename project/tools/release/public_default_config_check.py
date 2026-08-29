@@ -100,7 +100,7 @@ REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
     ),
     "project/src/listener/dbbt_lpreface.cpp": (
         "out->bytes.size() < 32",
-        '"LISTENER.DBBT.KEYRING_KEY_INVALID"',
+        '"LISTENER.DBBT_KEY_MATERIAL_INVALID"',
     ),
     "project/src/manager/node/manager_runtime.hpp": (
         "bool proxy_enabled = false",

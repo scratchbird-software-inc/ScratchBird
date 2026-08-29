@@ -687,8 +687,8 @@ void NoSqlPhysicalFamiliesRouteThroughPrimitive() {
   api::EngineGraphQueryRequest graph;
   graph.context = Context(database_path, 90);
   graph.physical_query = true;
-  graph.vertices.push_back({"v1", {"Account"}, {{"tenant", "a"}}});
-  graph.seed_vertex_ids.push_back("v1");
+  graph.vertices.push_back({row_uuid, {"Account"}, {{"tenant", "a"}}});
+  graph.seed_vertex_ids.push_back(row_uuid);
   graph.physical_proof = GraphProof();
   auto graph_result = api::EngineGraphQuery(graph);
   Require(graph_result.ok, "ODF-092 graph route failed");

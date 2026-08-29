@@ -32,7 +32,9 @@
 #include "diagnostic_fields.hpp"
 #include "prepared_metadata_binding.hpp"
 #include "../engine/sblr/sblr_opcode_registry.hpp"
+#include "../engine/sblr/sblr_opcode_stream.hpp"
 #include "../engine/sblr/sblr_transaction_begin_runtime.hpp"
+#include "../engine/sblr/sblr_transaction_commit_runtime.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -2787,6 +2789,55 @@ std::string DecodedBinaryOperationEnvelopeText(std::string_view encoded) {
   return {};
 }
 
+std::optional<scratchbird::engine::sblr::SblrTransactionCommitOptionsV1>
+CanonicalTransactionCommitOptionsFromContainer(std::string_view encoded,
+                                               std::string* detail) {
+  namespace tx = scratchbird::engine::sblr;
+  const auto container = scratchbird::engine::DecodeSblrContainerBytes(
+      reinterpret_cast<const std::uint8_t*>(encoded.data()), encoded.size());
+  if (container.status != scratchbird::engine::SblrCodecStatus::ok ||
+      container.container.operation_payload.empty()) {
+    if (detail != nullptr) *detail = "canonical_commit_container_invalid";
+    return std::nullopt;
+  }
+  const std::string_view operation_bytes(
+      reinterpret_cast<const char*>(
+          container.container.operation_payload.data()),
+      container.container.operation_payload.size());
+  const auto stream = tx::DecodeSblrOpcodeStream(operation_bytes);
+  if (!stream.ok || stream.stream.operations.size() != 3) {
+    if (detail != nullptr) *detail = "canonical_commit_stream_shape_invalid";
+    return std::nullopt;
+  }
+  const auto& operation = stream.stream.operations[1];
+  if (operation.operation_id != "engine.op.txn_commit" ||
+      operation.opcode != "SBLR_TXN_COMMIT" || operation.opcode_code != 257 ||
+      operation.operands.size() != 1) {
+    if (detail != nullptr) *detail = "canonical_commit_identity_invalid";
+    return std::nullopt;
+  }
+  const auto& operand = operation.operands.front();
+  if (operand.ordinal != 1 ||
+      operand.type != "transaction.commit.options" ||
+      operand.name != "options" ||
+      operand.value_kind != tx::SblrValueKind::transaction_commit_options) {
+    if (detail != nullptr) *detail = "canonical_commit_operand_identity_invalid";
+    return std::nullopt;
+  }
+  tx::SblrTransactionCommitOptionsV1 options;
+  std::string decode_detail;
+  if (!tx::DecodeSblrTransactionCommitOptionsV1(
+          operand.value_body.data(), operand.value_body.size(), &options,
+          &decode_detail)) {
+    if (detail != nullptr) {
+      *detail = decode_detail.empty() ? "canonical_commit_options_invalid"
+                                      : decode_detail;
+    }
+    return std::nullopt;
+  }
+  return options;
+}
+
 std::optional<std::string> TextLineValue(std::string_view encoded, std::string_view key) {
   std::size_t start = 0;
   while (start <= encoded.size()) {
@@ -3825,12 +3876,10 @@ std::optional<std::string> EvidenceText(std::string_view encoded, std::string_vi
 }
 
 bool IsClusterDispatchOperation(std::string_view operation_id) {
-  return operation_id.starts_with("cluster.") ||
-         operation_id.starts_with("placement.cluster.");
+  return operation_id.starts_with("cluster.");
 }
 
 const char* CatalogMutationPublicAbiOpcodeForOperation(std::string_view operation_id) {
-  if (operation_id == "catalog.mutation.create_materialized_view") return "SBLR_CATALOG_MUTATION_CREATE_MATERIALIZED_VIEW";
   if (operation_id == "catalog.mutation.create_cast") return "SBLR_CATALOG_MUTATION_CREATE_CAST";
   if (operation_id == "catalog.mutation.create_server") return "SBLR_CATALOG_MUTATION_CREATE_SERVER";
   if (operation_id == "catalog.mutation.show_storage_buffer_io_index") return "SBLR_CATALOG_MUTATION_SHOW_STORAGE_BUFFER_IO_INDEX";
@@ -3865,15 +3914,10 @@ const char* CatalogMutationPublicAbiOpcodeForOperation(std::string_view operatio
   if (operation_id == "catalog.mutation.alter_reference") return "SBLR_CATALOG_MUTATION_ALTER_REFERENCE";
   if (operation_id == "catalog.mutation.create_pipeline") return "SBLR_CATALOG_MUTATION_CREATE_PIPELINE";
   if (operation_id == "catalog.mutation.create_collation") return "SBLR_CATALOG_MUTATION_CREATE_COLLATION";
-  if (operation_id == "catalog.mutation.create_type") return "SBLR_CATALOG_MUTATION_CREATE_TYPE";
-  if (operation_id == "catalog.mutation.alter_type") return "SBLR_CATALOG_MUTATION_ALTER_TYPE";
-  if (operation_id == "catalog.mutation.drop_type") return "SBLR_CATALOG_MUTATION_DROP_TYPE";
-  if (operation_id == "catalog.type.show") return "SBLR_SHOW_TYPE";
-  if (operation_id == "catalog.type.show_all") return "SBLR_SHOW_TYPES";
-  if (operation_id == "query.structured_type.constructor") return "SBLR_QUERY_STRUCTURED_TYPE_CONSTRUCTOR";
-  if (operation_id == "query.structured_type.cast") return "SBLR_QUERY_STRUCTURED_TYPE_CAST";
-  if (operation_id == "query.structured_type.compare") return "SBLR_QUERY_STRUCTURED_TYPE_COMPARE";
-  if (operation_id == "query.structured_type.serialize") return "SBLR_QUERY_STRUCTURED_TYPE_SERIALIZE";
+  if (operation_id == "engine.op.ddl_create_type") return "SBLR_DDL_CREATE_TYPE";
+  if (operation_id == "engine.op.ddl_alter_type") return "SBLR_DDL_ALTER_TYPE";
+  if (operation_id == "engine.op.ddl_drop_type") return "SBLR_DDL_DROP_TYPE";
+  if (operation_id == "engine.op.catalog_introspect") return "SBLR_CATALOG_INTROSPECT";
   if (operation_id == "catalog.mutation.alter_view") return "SBLR_CATALOG_MUTATION_ALTER_VIEW";
   if (operation_id == "catalog.mutation.create_udr") return "SBLR_CATALOG_MUTATION_CREATE_UDR";
   if (operation_id == "catalog.mutation.create_tenant") return "SBLR_CATALOG_MUTATION_CREATE_TENANT";
@@ -4001,8 +4045,6 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "nosql.key_value_pipeline") return "SBLR_NOSQL_KEY_VALUE_PIPELINE";
   if (operation_id == "nosql.key_value_atomic_program") return "SBLR_NOSQL_KEY_VALUE_ATOMIC_PROGRAM";
   if (operation_id == "nosql.backpressure_debt_plan") return "SBLR_NOSQL_BACKPRESSURE_DEBT_PLAN";
-  if (operation_id == "nosql.family_maintenance_plan") return "SBLR_NOSQL_FAMILY_MAINTENANCE_PLAN";
-  if (operation_id == "nosql.statistics_advisor_plan") return "SBLR_NOSQL_STATISTICS_ADVISOR_PLAN";
   if (operation_id == "nosql.time_series_append") return "SBLR_NOSQL_TIME_SERIES_APPEND";
   if (operation_id == "nosql.vector_search") return "SBLR_NOSQL_VECTOR_SEARCH";
   if (operation_id == "nosql.vector_collection_op") return "SBLR_NOSQL_VECTOR_COLLECTION_OP";
@@ -4188,13 +4230,13 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "ddl.alter_object") return "SBLR_DDL_ALTER_OBJECT";
   if (operation_id == "ddl.drop_object") return "SBLR_DDL_DROP_OBJECT";
   if (operation_id == "ddl.comment_on_object") return "SBLR_DDL_COMMENT_ON";
-  if (operation_id == "transaction.begin") return "SBLR_TRANSACTION_BEGIN";
+  if (operation_id == "transaction.begin") return "SBLR_TXN_BEGIN";
   if (operation_id == "transaction.set_characteristics") return "SBLR_TRANSACTION_SET_CHARACTERISTICS";
-  if (operation_id == "transaction.commit") return "SBLR_TRANSACTION_COMMIT";
-  if (operation_id == "transaction.rollback") return "SBLR_TRANSACTION_ROLLBACK";
+  if (operation_id == "transaction.commit") return "SBLR_TXN_COMMIT";
+  if (operation_id == "transaction.rollback") return "SBLR_TXN_ROLLBACK";
   if (operation_id == "transaction.create_savepoint") return "SBLR_TRANSACTION_CREATE_SAVEPOINT";
   if (operation_id == "transaction.release_savepoint") return "SBLR_TRANSACTION_RELEASE_SAVEPOINT";
-  if (operation_id == "transaction.rollback_to_savepoint") return "SBLR_TRANSACTION_ROLLBACK_TO_SAVEPOINT";
+  if (operation_id == "transaction.rollback_to_savepoint") return "SBLR_TXN_ROLLBACK_TO_SAVEPOINT";
   if (operation_id == "transaction.execute_block") return "SBLR_TRANSACTION_EXECUTE_BLOCK";
   if (operation_id == "transaction.lock_table") return "SBLR_TXN_LOCK_TABLE";
   if (operation_id == "transaction.unlock_table") return "SBLR_TXN_UNLOCK_TABLE";
@@ -8386,6 +8428,11 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
   request.catalog_epoch = admission_token->catalog_epoch;
   request.security_epoch = admission_token->security_epoch;
   request.resource_epoch = admission_token->resource_epoch;
+  request.result_delivery_mode =
+      retain_result_handle
+          ? engine_bridge::StatementContextResultDeliveryMode::
+                kCursorRetainedResult
+          : engine_bridge::StatementContextResultDeliveryMode::kDirect;
   request.literal_execution_binding = literal_execution_binding;
   request.parameter_execution_binding = parameter_execution_binding;
   request.parameter_value_set = parameter_value_set;
@@ -11211,6 +11258,38 @@ SessionOperationResult HandleExecuteSblrImpl(
     transaction_response.selected_present = true;
     transaction_response.selected = *selected_transaction;
   }
+  std::optional<scratchbird::engine::sblr::SblrTransactionCommitOptionsV1>
+      canonical_commit_options;
+  if (canonical_ingress &&
+      admission.operation_id == "engine.op.txn_commit") {
+    std::string commit_options_detail;
+    canonical_commit_options = CanonicalTransactionCommitOptionsFromContainer(
+        decoded->encoded_sblr_container, &commit_options_detail);
+    if (!canonical_commit_options.has_value()) {
+      transaction_response.finality =
+          ServerTransactionResponseState::Finality::kKnownNotApplied;
+      transaction_response.outcome_detail =
+          commit_options_detail.empty() ? "canonical_commit_options_invalid"
+                                        : commit_options_detail;
+      transaction_response.diagnostic_code = "SBLR.OPERAND_INVALID";
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     transaction_response.outcome_detail);
+      return V2TransactionOutcome(
+          false,
+          decoded->session_uuid,
+          request_record.request_uuid,
+          admission.operation_id,
+          {},
+          transaction_response.outcome_detail,
+          transaction_response,
+          {SblrServerDiagnostic(
+              transaction_response.diagnostic_code,
+              "The canonical transaction commit options are malformed.",
+              transaction_response.outcome_detail)});
+    }
+  }
   sb_engine_result_t engine_result = nullptr;
   std::vector<std::string> bulk_reject_records;
   std::uint64_t bulk_total_rows = bulk_stream_cursor ? requested_copy_total_rows : 0;
@@ -12032,8 +12111,255 @@ SessionOperationResult HandleExecuteSblrImpl(
       } else {
         row_count = synthetic_stream_cursor ? *requested_stream_rows : public_abi.row_count;
       }
-      if (admission.operation_id == "transaction.commit" ||
-          admission.operation_id == "transaction.rollback") {
+      const bool canonical_transaction_commit =
+          admission.operation_id == "engine.op.txn_commit";
+      const bool canonical_transaction_rollback =
+          admission.operation_id == "engine.op.txn_rollback";
+      if (canonical_transaction_commit || canonical_transaction_rollback) {
+        if (!selected_transaction.has_value()) {
+          CompleteServerRequestLifecycle(
+              registry,
+              request_record.request_uuid,
+              ServerRequestLifecycleState::kUnknownOutcome,
+              "canonical_transaction_finality_selector_missing");
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema,
+              decoded->session_uuid,
+              "PARSER_SERVER_IPC.TRANSACTION_SELECTOR_REQUIRED",
+              "Canonical transaction finality requires the exact selected transaction.",
+              "canonical_transaction_finality_selector_missing");
+        }
+        const auto finalized_transaction = *selected_transaction;
+        transaction_response.finality =
+            ServerTransactionResponseState::Finality::kKnownApplied;
+        transaction_response.finality_applied = true;
+        transaction_response.finalized_present = true;
+        transaction_response.finalized = finalized_transaction;
+        transaction_response.outcome_detail =
+            canonical_transaction_commit
+                ? "committed_by_engine_inventory"
+                : "rolled_back_by_engine_inventory";
+
+        const auto live = session->transactions_by_local_id.find(
+            finalized_transaction.local_transaction_id);
+        if (live == session->transactions_by_local_id.end() ||
+            live->second.transaction_uuid !=
+                finalized_transaction.transaction_uuid) {
+          session->detached_recovery_quarantined = true;
+          transaction_response.diagnostic_code =
+              "PARSER_SERVER_IPC.TRANSACTION_BINDING_CHANGED_AFTER_FINALITY";
+          transaction_response.outcome_detail =
+              "canonical_transaction_binding_changed_after_known_applied_finality";
+          CompleteServerRequestLifecycle(
+              registry,
+              request_record.request_uuid,
+              ServerRequestLifecycleState::kFailed,
+              transaction_response.outcome_detail);
+          return V2TransactionOutcome(
+              false,
+              decoded->session_uuid,
+              request_record.request_uuid,
+              admission.operation_id,
+              row_packet,
+              transaction_response.outcome_detail,
+              transaction_response);
+        }
+        const auto deferred_catalog_mutations =
+            live->second.deferred_catalog_cache_mutations;
+        const bool finalized_default =
+            session->default_local_transaction_id ==
+            finalized_transaction.local_transaction_id;
+        session->transactions_by_local_id.erase(live);
+        CloseCursorsOwnedByTransaction(registry,
+                                       decoded->session_uuid,
+                                       finalized_transaction,
+                                       admission.operation_id);
+        if (canonical_transaction_commit &&
+            !deferred_catalog_mutations.empty()) {
+          transaction_response.catalog_invalidation_applied = true;
+          for (const auto& mutation_operation :
+               deferred_catalog_mutations) {
+            ClearStablePublicRelationNameCacheForMutation(
+                registry, mutation_operation);
+          }
+        }
+
+        const bool retaining =
+            canonical_transaction_commit &&
+            canonical_commit_options.has_value() &&
+            canonical_commit_options->commit_mode == 2;
+        const bool last_active = session->transactions_by_local_id.empty();
+        if (retaining || last_active) {
+          ServerTransactionState replacement;
+          std::string replacement_code;
+          std::string replacement_detail;
+          if (!BeginIndependentTransactionForSession(
+                  *session,
+                  engine_state,
+                  request_record.request_uuid,
+                  retaining ? &finalized_transaction : nullptr,
+                  &replacement,
+                  &replacement_code,
+                  &replacement_detail)) {
+            ProjectDefaultTransactionToLegacyFields(session);
+            transaction_response.selected_present = false;
+            transaction_response.diagnostic_code =
+                replacement_code.empty()
+                    ? "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_FAILED"
+                    : replacement_code;
+            transaction_response.outcome_detail =
+                replacement_detail.empty()
+                    ? "replacement_transaction_begin_failed_after_known_finality"
+                    : replacement_detail;
+            CompleteServerRequestLifecycle(
+                registry,
+                request_record.request_uuid,
+                ServerRequestLifecycleState::kFailed,
+                transaction_response.outcome_detail);
+            return V2TransactionOutcome(
+                false,
+                decoded->session_uuid,
+                request_record.request_uuid,
+                admission.operation_id,
+                row_packet,
+                transaction_response.outcome_detail,
+                transaction_response);
+          }
+          bool replacement_local_id_alias = false;
+          if (TransactionIdentityAliasesSession(
+                  *session, replacement, &replacement_local_id_alias)) {
+            std::string cleanup_detail =
+                "cleanup_not_safe_for_local_id_alias";
+            const bool cleanup_applied =
+                !replacement_local_id_alias &&
+                RollbackUnpublishedTransaction(
+                    *session,
+                    engine_state,
+                    request_record.request_uuid,
+                    replacement,
+                    &cleanup_detail);
+            if (!cleanup_applied) {
+              QuarantineUnpublishedTransaction(session, replacement);
+            } else {
+              session->detached_recovery_quarantined = true;
+            }
+            ProjectDefaultTransactionToLegacyFields(session);
+            transaction_response.selected_present = false;
+            transaction_response.diagnostic_code =
+                "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_IDENTITY_ALIAS";
+            transaction_response.outcome_detail = cleanup_applied
+                ? "replacement_identity_alias_cleanup_applied_after_known_finality"
+                : "replacement_identity_alias_cleanup_unresolved_after_known_finality:" +
+                      cleanup_detail;
+            CompleteServerRequestLifecycle(
+                registry,
+                request_record.request_uuid,
+                cleanup_applied ? ServerRequestLifecycleState::kFailed
+                                : ServerRequestLifecycleState::kUnknownOutcome,
+                transaction_response.outcome_detail);
+            return V2TransactionOutcome(
+                false,
+                decoded->session_uuid,
+                request_record.request_uuid,
+                admission.operation_id,
+                row_packet,
+                transaction_response.outcome_detail,
+                transaction_response);
+          }
+          replacement.begin_ordinal =
+              session->next_transaction_begin_ordinal++;
+          const auto published = session->transactions_by_local_id.emplace(
+              replacement.local_transaction_id, replacement);
+          if (!published.second) {
+            std::string cleanup_detail;
+            const bool cleanup_applied = RollbackUnpublishedTransaction(
+                *session,
+                engine_state,
+                request_record.request_uuid,
+                replacement,
+                &cleanup_detail);
+            if (!cleanup_applied) {
+              QuarantineUnpublishedTransaction(session, replacement);
+            } else {
+              session->detached_recovery_quarantined = true;
+            }
+            ProjectDefaultTransactionToLegacyFields(session);
+            transaction_response.selected_present = false;
+            transaction_response.diagnostic_code =
+                "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_PUBLICATION_FAILED";
+            transaction_response.outcome_detail = cleanup_applied
+                ? "replacement_publication_failed_cleanup_applied_after_known_finality"
+                : "replacement_publication_failed_cleanup_unresolved_after_known_finality:" +
+                      cleanup_detail;
+            CompleteServerRequestLifecycle(
+                registry,
+                request_record.request_uuid,
+                cleanup_applied ? ServerRequestLifecycleState::kFailed
+                                : ServerRequestLifecycleState::kUnknownOutcome,
+                transaction_response.outcome_detail);
+            return V2TransactionOutcome(
+                false,
+                decoded->session_uuid,
+                request_record.request_uuid,
+                admission.operation_id,
+                row_packet,
+                transaction_response.outcome_detail,
+                transaction_response);
+          }
+          session->default_local_transaction_id =
+              replacement.local_transaction_id;
+          ProjectDefaultTransactionToLegacyFields(session);
+          transaction_response.replacement_present = true;
+          transaction_response.replacement = replacement;
+          transaction_response.replacement_reason =
+              retaining
+                  ? ServerTransactionResponseState::ReplacementReason::kRetaining
+                  : ServerTransactionResponseState::ReplacementReason::
+                        kLastActiveReady;
+        } else {
+          // The finalized transaction was not the session's final active
+          // boundary. Select one existing active transaction as the default;
+          // opening another transaction here would violate MGA concurrency.
+          if (finalized_default ||
+              session->transactions_by_local_id.find(
+                  session->default_local_transaction_id) ==
+                  session->transactions_by_local_id.end()) {
+            session->default_local_transaction_id = 0;
+          }
+          ProjectDefaultTransactionToLegacyFields(session);
+          const auto selected_default =
+              session->transactions_by_local_id.find(
+                  session->default_local_transaction_id);
+          if (selected_default == session->transactions_by_local_id.end() ||
+              selected_default->second.lifecycle_state !=
+                  ServerTransactionLifecycleState::kActive) {
+            session->detached_recovery_quarantined = true;
+            transaction_response.selected_present = false;
+            transaction_response.diagnostic_code =
+                "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_NOT_ACTIVE";
+            transaction_response.outcome_detail =
+                "existing_default_projection_missing_after_known_finality";
+            CompleteServerRequestLifecycle(
+                registry,
+                request_record.request_uuid,
+                ServerRequestLifecycleState::kFailed,
+                transaction_response.outcome_detail);
+            return V2TransactionOutcome(
+                false,
+                decoded->session_uuid,
+                request_record.request_uuid,
+                admission.operation_id,
+                row_packet,
+                transaction_response.outcome_detail,
+                transaction_response);
+          }
+          transaction_response.selected_present = true;
+          transaction_response.selected = selected_default->second;
+        }
+        mark_execute_phase("canonical_transaction_replacement_boundary");
+      } else if (admission.operation_id == "transaction.commit" ||
+                 admission.operation_id == "transaction.rollback") {
         std::string replacement_code;
         std::string replacement_detail;
         if (!BeginReplacementTransactionForSession(session,

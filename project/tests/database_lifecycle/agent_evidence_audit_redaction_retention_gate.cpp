@@ -203,6 +203,7 @@ void RequireUuidFieldAuthority(const api::EngineApiResult& result) {
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_uuid.canonical = Id(platform::UuidKind::database, 1);
   context.node_uuid.canonical = Id(platform::UuidKind::object, 2);
   context.session_uuid.canonical = Id(platform::UuidKind::object, 3);
@@ -212,7 +213,8 @@ api::EngineRequestContext Context() {
       "right:OBS_AGENT_EVIDENCE_READ",
       "right:OBS_AGENT_STATE_READ",
       "right:OBS_CONFIG_INSPECT",
-      "right:SUPPORT_BUNDLE_EXPORT"};
+      "right:SUPPORT_BUNDLE_EXPORT",
+      "security.fixture_trace_authority"};
   return context;
 }
 
@@ -228,7 +230,8 @@ api::EngineRequestContext DurableContext(const TestDatabase& database,
       database.local_transaction_id;
   context.trace_tags = {"right:OBS_AGENT_STATE_READ",
                         "right:OBS_CONFIG_INSPECT",
-                        "right:SUPPORT_BUNDLE_EXPORT"};
+                        "right:SUPPORT_BUNDLE_EXPORT",
+                        "security.fixture_trace_authority"};
   if (evidence_right) {
     context.trace_tags.push_back("right:OBS_AGENT_EVIDENCE_READ");
   }

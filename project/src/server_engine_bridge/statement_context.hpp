@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "query/contextual_text_literal_authority.hpp"
 #include "scratchbird/engine/engine.h"
 
 #include <cstdint>
@@ -36,6 +37,13 @@ enum class StatementParameterExecutionMode : std::uint8_t {
   kPrepared = 1,
   kBatch = 2,
   kDynamic = 3,
+};
+
+// Private delivery intent selected by the authenticated server request. This
+// is not serialized into SBLR and cannot be supplied by a parser operand.
+enum class StatementContextResultDeliveryMode : std::uint8_t {
+  kDirect = 0,
+  kCursorRetainedResult = 1,
 };
 
 struct StatementParameterExecutionSelectorV1 {
@@ -149,6 +157,10 @@ struct StatementContextReceiptView {
   std::string statement_metadata_snapshot_uuid;
   std::string catalog_epoch_uuid;
   std::string security_context_uuid;
+  // Statement-scoped engine resource-admission authority.  This is distinct
+  // from optimizer resource authority and is copied only through the opaque
+  // receipt bridge.
+  std::string resource_admission_uuid;
   std::string optimizer_capability_snapshot_uuid;
   std::string optimizer_resource_snapshot_uuid;
   std::string optimizer_route_snapshot_uuid;
@@ -269,6 +281,10 @@ struct StatementContextReceiptView {
   std::uint64_t ddl_create_table_executor_availability_generation = 0;
   std::uint64_t ddl_create_index_executor_availability_generation = 0;
   std::uint64_t ddl_drop_index_executor_availability_generation = 0;
+  // Exact engine-issued TXBH for the selected active transaction.  This is a
+  // copy-only public projection; the corresponding private handle remains
+  // owned by `session` and is the authority used by commit/rollback.
+  std::vector<std::uint8_t> active_transaction_handle_bytes;
   std::array<std::uint8_t, 32>
       parameter_preliminary_execution_mode_binding_sha256{};
   std::string variable_scope_uuid;
@@ -294,6 +310,14 @@ struct StatementContextReceiptView {
   std::uint64_t catalog_generation_id = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
+  // Exact statement resource-policy value issued with this receipt.  It is a
+  // per-source, per-physical-pass decoded MGA relation byte ceiling and is not
+  // an optimizer, result, LIMIT/OFFSET, or transport budget.
+  std::uint64_t maximum_mga_relation_decoded_bytes_per_pass = 0;
+  // Exact engine-issued, non-serializable ceiling for each typed-result
+  // descriptor vector and each row-data packet.  It is immutable for this
+  // receipt/resource epoch and is not a scan, row, optimizer, or client cap.
+  std::uint64_t maximum_typed_result_transport_bytes_per_packet = 0;
   std::uint64_t optimizer_route_epoch = 0;
   std::uint64_t optimizer_route_generation = 0;
   std::uint64_t optimizer_memory_budget_bytes = 0;
@@ -452,6 +476,8 @@ struct StatementContextDispatchRequest {
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
+  StatementContextResultDeliveryMode result_delivery_mode =
+      StatementContextResultDeliveryMode::kDirect;
   StatementGatewayDecisionEvidence gateway_evidence;
   StatementPackageExecutorEvidence package_executor_evidence;
   std::vector<std::uint8_t> data_packet;
@@ -486,6 +512,15 @@ sb_engine_status_t AcquireStatementContextReceipt(
 sb_engine_status_t ReleaseStatementContextReceipt(
     StatementContextReceiptHandle receipt);
 
+// Copies the immutable engine-owned context behind a live receipt for a
+// private authenticated server coordinator. The opaque receipt remains the
+// authority boundary; no parser-visible field can populate the returned MGA,
+// datatype, security, or transaction identities.
+sb_engine_status_t CopyStatementContextEngineContextV1(
+    StatementContextReceiptHandle receipt,
+    scratchbird::engine::internal_api::EngineRequestContext* out_context,
+    sb_engine_result_t* out_result);
+
 sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
     StatementContextReceiptHandle receipt,
     const std::vector<std::uint8_t>& canonical_sbln,
@@ -495,6 +530,50 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
     StatementContextReceiptHandle receipt,
     const std::vector<std::uint8_t>& canonical_sblf,
     std::vector<std::uint8_t>* out_canonical_sbla,
+    sb_engine_result_t* out_result);
+
+// Private query-1.1 contextual TEXT V2 coordination. Exact wire and graph
+// evidence is always re-decoded by the engine. The bridge owns no target,
+// sidecar, policy, or executor authority; absent engine-only resolver services
+// fail closed.
+sb_engine_status_t IssueStatementContextualTextLiteralProfilesV2(
+    StatementContextReceiptHandle receipt,
+    const std::vector<std::uint8_t>& exact_sbtlnr02,
+    std::vector<std::uint8_t>* out_exact_sbtlns02,
+    sb_engine_result_t* out_result);
+
+struct StatementContextualTextLiteralPrepareRequestV2 {
+  StatementContextReceiptHandle receipt;
+  std::vector<std::uint8_t> exact_sbel_v1;
+  std::vector<std::uint8_t> exact_canonical_sbos;
+  std::vector<std::uint8_t> exact_sbtlxe02;
+  std::vector<std::uint8_t> exact_pre_contextual_operand_records;
+  std::uint32_t pre_contextual_operand_count = 0;
+  std::vector<std::uint8_t> exact_sbxn;
+};
+
+sb_engine_status_t PrepareStatementContextualTextLiteralExecutionV2(
+    const StatementContextualTextLiteralPrepareRequestV2* request,
+    scratchbird::engine::internal_api::PreparedContextualTextLiteralSetV2*
+        out_prepared,
+    sb_engine_result_t* out_result);
+
+struct StatementContextualTextLiteralJointConsumeRequestV2 {
+  StatementContextReceiptHandle receipt;
+  std::vector<std::uint8_t> exact_sbel_v1;
+  scratchbird::engine::internal_api::PreparedContextualTextLiteralSetV2*
+      prepared = nullptr;
+};
+
+sb_engine_status_t JointConsumeStatementContextualTextLiteralExecutionV2(
+    const StatementContextualTextLiteralJointConsumeRequestV2* request,
+    scratchbird::engine::internal_api::
+        ContextualTextExecutionAuthorityLeaseV2* out_lease,
+    sb_engine_result_t* out_result);
+
+sb_engine_status_t RevokeStatementContextualTextLiteralProfilesV2(
+    StatementContextReceiptHandle receipt,
+    std::string_view reason,
     sb_engine_result_t* out_result);
 sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
     StatementContextReceiptHandle receipt,
@@ -532,5 +611,10 @@ sb_engine_status_t IssueStatementErrorVectorDescriptorV1(
 sb_engine_status_t DispatchStatementContextReceipt(
     const StatementContextDispatchRequest* request,
     sb_engine_result_t* out_result);
+
+// Deterministic proof of the production query.execute minor/kind-206
+// admission classifier. No receipt, authority handle, or mutable global state
+// is created by this test seam.
+std::uint32_t ContextualTextPublicAbiCarrierProofMaskForTest();
 
 }  // namespace scratchbird::server_engine_bridge

@@ -9,7 +9,7 @@
     {
       "name": "public-release-linux",
       "displayName": "Public Release Linux",
-      "description": "Configures the public source-review release profile without private parser source lanes.",
+      "description": "Configures the SBsql-only public source-review release profile during SBLR stabilization.",
       "generator": "Unix Makefiles",
       "binaryDir": "${sourceParentDir}/build/public-release-linux",
       "cacheVariables": {
@@ -18,13 +18,14 @@
         "SB_BUILD_PUBLIC_STANDALONE_OUTPUT": "ON",
         "SB_BUILD_REAL128_SPECIAL_VALUE_PROBE": "ON",
         "SB_BUILD_TESTS": "ON",
+        "SB_BUILD_COMPATIBILITY_PARSERS": "OFF",
         "SB_BUILD_DATABASE_LIFECYCLE_TESTS": "OFF"
       }
     },
     {
       "name": "public-release-windows",
       "displayName": "Public Release Windows",
-      "description": "Configures the public source-review release profile for Windows installer/nightly automation.",
+      "description": "Configures the SBsql-only public source-review release profile for Windows during SBLR stabilization.",
       "generator": "Ninja",
       "binaryDir": "${sourceParentDir}/build/public-release-windows",
       "cacheVariables": {
@@ -33,6 +34,7 @@
         "SB_BUILD_PUBLIC_STANDALONE_OUTPUT": "ON",
         "SB_BUILD_REAL128_SPECIAL_VALUE_PROBE": "ON",
         "SB_BUILD_TESTS": "ON",
+        "SB_BUILD_COMPATIBILITY_PARSERS": "OFF",
         "SB_BUILD_DATABASE_LIFECYCLE_TESTS": "OFF",
         "SB_PUBLIC_TARGET_PLATFORM": "windows"
       }
@@ -40,7 +42,7 @@
     {
       "name": "public-release-macos",
       "displayName": "Public Release macOS",
-      "description": "Configures the public source-review release profile for macOS GitHub-hosted Intel and Apple Silicon runners.",
+      "description": "Configures the SBsql-only public source-review release profile for macOS during SBLR stabilization.",
       "generator": "Ninja",
       "binaryDir": "${sourceParentDir}/build/public-release-macos",
       "cacheVariables": {
@@ -50,6 +52,7 @@
         "SB_BUILD_PUBLIC_STANDALONE_OUTPUT": "ON",
         "SB_BUILD_REAL128_SPECIAL_VALUE_PROBE": "ON",
         "SB_BUILD_TESTS": "ON",
+        "SB_BUILD_COMPATIBILITY_PARSERS": "OFF",
         "SB_BUILD_DATABASE_LIFECYCLE_TESTS": "OFF",
         "SB_PUBLIC_TARGET_PLATFORM": "macos",
         "SB_LLVM_MIN_MAJOR": "22"

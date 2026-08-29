@@ -16,6 +16,7 @@
 #include "hash_digest.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "sblr_literal_runtime.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "engine/optimizer/optimizer_catalog_backed_planning.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "query/plan_api.hpp"
@@ -25,7 +26,6 @@
 #include "sblr_context_variables.hpp"
 #include "sblr_operator_runtime.hpp"
 #include "sblr_procedural_block_runtime.hpp"
-#include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
 
 #include "agents/agent_action_hooks_api.hpp"
@@ -40,6 +40,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/relation_projection_view.hpp"
 #include "catalog/schema_tree_api.hpp"
+#include "catalog/structured_type_api.hpp"
 #include "cluster/cluster_control_api.hpp"
 #include "cluster/cluster_inspect_api.hpp"
 #include "cluster/cluster_insert_route_api.hpp"
@@ -125,6 +126,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
@@ -161,6 +163,7 @@ struct TypedPlanOperationDecodeResult {
 void WriteSblrLiteralEvidenceTrace(
     const std::vector<api::EngineEvidenceReference>& evidence,
     const std::size_t begin) {
+  if (begin >= evidence.size()) return;
   const char* trace_path =
       std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
   if (trace_path == nullptr || *trace_path == '\0') return;
@@ -171,7 +174,26 @@ void WriteSblrLiteralEvidenceTrace(
     out << '\t' << evidence[index].evidence_kind << '='
         << evidence[index].evidence_id;
   }
-  out << "\tparent_success_barrier=passed\n";
+  out << "\tparent_consumption=admitted_after_evidence"
+         "\tparent_success_barrier=passed\n";
+}
+
+void WriteSblrParameterEvidenceTrace(
+    const std::vector<api::EngineEvidenceReference>& evidence,
+    const std::size_t begin) {
+  if (begin >= evidence.size()) return;
+  const char* trace_path =
+      std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') return;
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) return;
+  out << "layer=parameter_executor";
+  for (std::size_t index = begin; index < evidence.size(); ++index) {
+    out << '\t' << evidence[index].evidence_kind << '='
+        << evidence[index].evidence_id;
+  }
+  out << "\tparent_consumption=admitted_after_evidence"
+         "\tparent_success_barrier=passed\n";
 }
 
 enum class BoundedModelFamilyV1 : std::uint8_t {
@@ -648,8 +670,7 @@ bool CanonicalQueryApiPayloadEmpty(const api::EngineApiRequest& request) {
   };
   const auto& sql_reference = request.sql_object_reference;
   const auto& bound_identity = request.bound_object_identity;
-  return request.operation_id.empty() &&
-         object_reference_empty(request.target_database) &&
+  return object_reference_empty(request.target_database) &&
          object_reference_empty(request.target_schema) &&
          object_reference_empty(request.target_object) &&
          request.related_objects.empty() && request.localized_names.empty() &&
@@ -1001,6 +1022,48 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     return decoded;
   }
 
+  const auto contextual_operand = std::ranges::find_if(
+      dispatch_request.envelope.operands, [](const auto& operand) {
+        return operand.value_kind ==
+               SblrValueKind::contextual_text_literal_profile_set;
+      });
+  const bool contextual_query =
+      dispatch_request.envelope.operation_version_major == 1 &&
+      dispatch_request.envelope.operation_version_minor == 1;
+  std::optional<ContextualTextLiteralExecuteV2> contextual_execute;
+  if (contextual_query !=
+          (contextual_operand != dispatch_request.envelope.operands.end()) ||
+      contextual_query !=
+          static_cast<bool>(dispatch_request.contextual_text_activation) ||
+      (contextual_query &&
+       (contextual_operand != dispatch_request.envelope.operands.end() - 1 ||
+        contextual_operand->type !=
+            "literal.contextual_text_profile_set.v2" ||
+        contextual_operand->name != "contextual_text_profiles" ||
+        contextual_operand->ordinal !=
+            dispatch_request.envelope.operands.size()))) {
+    decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+    decoded.detail =
+        "query.execute contextual carrier and receipt authority differ";
+    return decoded;
+  }
+  if (contextual_query) {
+    ContextualTextCodecDiagnosticV2 contextual_diagnostic;
+    ContextualTextLiteralExecuteV2 execute;
+    if (!DecodeContextualTextLiteralExecuteV2(
+            contextual_operand->value_body.data(),
+            contextual_operand->value_body.size(), &execute,
+            &contextual_diagnostic) ||
+        execute.mappings.empty()) {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail = contextual_diagnostic.detail.empty()
+                           ? "contextual TEXT execute carrier is invalid"
+                           : contextual_diagnostic.detail;
+      return decoded;
+    }
+    contextual_execute = std::move(execute);
+  }
+
   bool wire_version_present = false;
   bool root_node_present = false;
   bool bound_sblr_tree_present = false;
@@ -1020,6 +1083,10 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   std::vector<std::pair<std::uint32_t, SblrParameterNodeReferenceV1>>
       parameter_references;
   for (const auto& operand : dispatch_request.envelope.operands) {
+    if (operand.value_kind ==
+        SblrValueKind::contextual_text_literal_profile_set) {
+      continue;
+    }
     if (operand.value_kind == SblrValueKind::parameter_node_table) {
       if (parameter_node_table.has_value()) {
         decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
@@ -1058,8 +1125,14 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
         decoded.detail = "duplicate SBXN literal table";
         return decoded;
       }
-      literal_node_table = DecodeSblrExpressionNodeTableV1(
-          operand.value_body.data(), operand.value_body.size());
+      literal_node_table = contextual_query
+                               ? scratchbird::engine::internal_api::
+                                     DecodeContextualTextComposedSbxnV2(
+                                         operand.value_body.data(),
+                                         operand.value_body.size())
+                               : DecodeSblrExpressionNodeTableV1(
+                                     operand.value_body.data(),
+                                     operand.value_body.size());
       if (!literal_node_table->ok) {
         decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
         decoded.detail = literal_node_table->detail;
@@ -1514,6 +1587,113 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           std::move(descriptor));
       continue;
     }
+    if (operand.type == "relational_descriptor_v2") {
+      if (decoded.request.relational_dag.descriptors.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational descriptor transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t descriptor_id = 0;
+      std::uint64_t descriptor_generation = 0;
+      std::uint64_t type_generation = 0;
+      std::uint64_t codec_version = 0;
+      std::uint64_t codec_generation = 0;
+      std::uint64_t nullability = 0;
+      std::uint64_t catalog_generation = 0;
+      std::uint64_t registry_generation = 0;
+      std::array<std::string_view, 17> fields{};
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id) ||
+          descriptor_id == 0 || !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[1], std::numeric_limits<std::uint64_t>::max(),
+              &descriptor_generation) ||
+          descriptor_generation == 0 ||
+          !ParseCanonicalUnsigned(
+              fields[3], std::numeric_limits<std::uint64_t>::max(),
+              &type_generation) ||
+          type_generation == 0 || fields[4].empty() ||
+          fields[4].find('|') != std::string_view::npos ||
+          !ParseCanonicalUnsigned(
+              fields[5], std::numeric_limits<std::uint16_t>::max(),
+              &codec_version) ||
+          codec_version == 0 ||
+          !ParseCanonicalUnsigned(
+              fields[6], std::numeric_limits<std::uint64_t>::max(),
+              &codec_generation) ||
+          codec_generation == 0 ||
+          !ParseCanonicalUnsigned(fields[7], 1, &nullability) ||
+          !ParseCanonicalUnsigned(
+              fields[15], std::numeric_limits<std::uint64_t>::max(),
+              &catalog_generation) ||
+          catalog_generation == 0 ||
+          !ParseCanonicalUnsigned(
+              fields[16], std::numeric_limits<std::uint64_t>::max(),
+              &registry_generation) ||
+          registry_generation == 0) {
+        decoded.diagnostic_id = "SBLR.OPERAND.INVALID";
+        decoded.detail = "malformed authoritative relational descriptor record";
+        return decoded;
+      }
+      api::RelationalTypeDescriptor descriptor;
+      descriptor.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
+      descriptor.descriptor_uuid = fields[0];
+      descriptor.descriptor_generation = descriptor_generation;
+      descriptor.type_uuid = fields[2];
+      descriptor.type_generation = type_generation;
+      descriptor.codec_id = fields[4];
+      descriptor.codec_version = static_cast<std::uint16_t>(codec_version);
+      descriptor.codec_generation = codec_generation;
+      descriptor.nullability = static_cast<api::RelationalNullability>(
+          nullability + 1);
+      if (fields[8] != "-") descriptor.collation_uuid = std::string(fields[8]);
+      if (!DecodeOptionalCanonicalHex(fields[9],
+                                      &descriptor.timezone_profile_id) ||
+          !ParseOptionalCanonicalU32(fields[10], &descriptor.width) ||
+          !ParseOptionalCanonicalU32(fields[11], &descriptor.precision) ||
+          !ParseOptionalCanonicalU32(fields[12], &descriptor.scale)) {
+        decoded.diagnostic_id = "SBLR.OPERAND.INVALID";
+        decoded.detail = "malformed authoritative relational descriptor fields";
+        return decoded;
+      }
+      descriptor.statement_receipt_uuid = fields[13];
+      descriptor.datatype_catalog_snapshot_uuid = fields[14];
+      descriptor.datatype_catalog_generation = catalog_generation;
+      descriptor.datatype_registry_generation = registry_generation;
+      descriptor.datatype_identity_authoritative = true;
+      const auto identity = scratchbird::core::datatypes::
+          LookupDatatypeTypeCodecIdentityV1(
+              descriptor.datatype_catalog_snapshot_uuid,
+              descriptor.datatype_catalog_generation,
+              descriptor.datatype_registry_generation,
+              descriptor.descriptor_uuid,
+              descriptor.descriptor_generation);
+      if (!IsCanonicalNonNilUuid(descriptor.statement_receipt_uuid) ||
+          !IsCanonicalNonNilUuid(descriptor.datatype_catalog_snapshot_uuid) ||
+          descriptor.statement_receipt_uuid !=
+              dispatch_request.context.statement_receipt_uuid.canonical ||
+          descriptor.datatype_catalog_snapshot_uuid !=
+              dispatch_request.context.datatype_catalog_snapshot_uuid.canonical ||
+          descriptor.datatype_catalog_generation !=
+              dispatch_request.context.datatype_catalog_generation ||
+          descriptor.datatype_registry_generation !=
+              dispatch_request.context.datatype_registry_generation ||
+          !identity.ok || identity.row.type_uuid != descriptor.type_uuid ||
+          identity.row.type_generation != descriptor.type_generation ||
+          identity.row.codec_id != descriptor.codec_id ||
+          identity.row.codec_version != descriptor.codec_version ||
+          identity.row.codec_generation != descriptor.codec_generation) {
+        decoded.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
+        decoded.detail =
+            "authoritative relational datatype identity is stale cross-receipt or contradictory";
+        return decoded;
+      }
+      decoded.request.relational_dag.descriptors.push_back(
+          std::move(descriptor));
+      continue;
+    }
     if (operand.type == "relational_expression_v1") {
       if (decoded.request.relational_dag.expressions.size() >= 524288 ||
           operand.value.size() > 65536) {
@@ -1899,6 +2079,11 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     const auto uuid_text=[](const std::array<std::uint8_t,16>& bytes){
       constexpr char hex[]="0123456789abcdef";std::string out;out.reserve(36);
       for(std::size_t i=0;i<bytes.size();++i){if(i==4||i==6||i==8||i==10)out.push_back('-');out.push_back(hex[bytes[i]>>4]);out.push_back(hex[bytes[i]&15]);}return out;};
+    std::vector<bool> contextual_mapping_used(
+        contextual_execute.has_value()
+            ? contextual_execute->mappings.size()
+            : 0,
+        false);
     for(const auto& [expression_id,reference]:literal_references){
       if (dispatch_request.context.query_cancellation_requested &&
           dispatch_request.context.query_cancellation_requested()) {
@@ -1914,14 +2099,73 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       const auto node=std::ranges::find_if(literal_node_table->table.nodes,
           [&](const auto& candidate){return candidate.node_id==reference.node_id;});
       const auto descriptor_uuid=uuid_text(reference.descriptor_uuid);
-      const auto descriptor=std::ranges::find_if(decoded.request.relational_dag.descriptors,
-          [&](const auto& candidate){return candidate.descriptor_uuid==descriptor_uuid;});
-      const auto value=node==literal_node_table->table.nodes.end()?std::nullopt:
-          DecodeSblrLiteralInt64LeV1(node->literal_body.data(),node->literal_body.size());
+      std::optional<std::size_t> contextual_mapping_index;
+      if (contextual_execute.has_value()) {
+        for (std::size_t index = 0;
+             index != contextual_execute->mappings.size(); ++index) {
+          const auto& mapping = contextual_execute->mappings[index];
+          if (mapping.node_id != reference.node_id ||
+              mapping.literal_occurrence != reference.occurrence_ordinal) {
+            continue;
+          }
+          if (contextual_mapping_index.has_value()) {
+            decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+            decoded.detail =
+                "contextual SBXN reference maps more than one profile";
+            return decoded;
+          }
+          contextual_mapping_index = index;
+        }
+      }
+      const auto descriptor = std::ranges::find_if(
+          decoded.request.relational_dag.descriptors,
+          [&](const auto& candidate) {
+            return contextual_mapping_index.has_value()
+                       ? candidate.descriptor_id ==
+                             contextual_execute
+                                 ->mappings[*contextual_mapping_index]
+                                 .literal_descriptor_handle
+                       : candidate.descriptor_uuid == descriptor_uuid;
+          });
+      const bool canonical_literal = [&]() {
+        if (node == literal_node_table->table.nodes.end()) return false;
+        if (contextual_mapping_index.has_value()) return true;
+        if (DecodeSblrLiteralInt64LeV1(node->literal_body.data(),
+                                      node->literal_body.size()).has_value()) {
+          return true;
+        }
+        return DecodeSblrLiteralExactDecimalV1(node->literal_body.data(),
+                                               node->literal_body.size()).ok;
+      }();
       if(node==literal_node_table->table.nodes.end()||
-         descriptor==decoded.request.relational_dag.descriptors.end()||!value.has_value()){
+         descriptor==decoded.request.relational_dag.descriptors.end()||
+         !canonical_literal ||
+         (contextual_mapping_index.has_value() &&
+          (contextual_mapping_used[*contextual_mapping_index] ||
+           descriptor->descriptor_uuid != descriptor_uuid ||
+           descriptor->descriptor_generation !=
+               reference.descriptor_generation))){
         decoded.diagnostic_id="DATATYPE.DESCRIPTOR_INVALID";
-        decoded.detail="SBXN literal descriptor or canonical bigint codec is invalid";return decoded;
+        decoded.detail="SBXN literal descriptor or canonical codec is invalid";return decoded;
+      }
+      if (contextual_mapping_index.has_value()) {
+        const auto& mapping =
+            contextual_execute->mappings[*contextual_mapping_index];
+        contextual_mapping_used[*contextual_mapping_index] = true;
+        api::RelationalExpressionRecord expression;
+        expression.expression_id = expression_id;
+        expression.expression_kind = api::RelationalExpressionKind::kLiteral;
+        expression.result_descriptor_id = mapping.literal_descriptor_handle;
+        expression.literal_kind = api::RelationalLiteralKind::kString;
+        api::RelationalExpressionRecord::ContextualTextLiteralReferenceV2
+            marker;
+        marker.literal_occurrence = mapping.literal_occurrence;
+        marker.node_id = mapping.node_id;
+        marker.literal_descriptor_handle = mapping.literal_descriptor_handle;
+        expression.contextual_text_literal_v2 = marker;
+        decoded.request.relational_dag.expressions.push_back(
+            std::move(expression));
+        continue;
       }
       const auto body_sha = scratchbird::core::hash::ComputeSha256Digest(
           node->literal_body);
@@ -1980,7 +2224,14 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       expression.literal_typed_value_v1=std::move(typed_value);
       decoded.request.relational_dag.expressions.push_back(std::move(expression));
     }
-  }else if(!literal_references.empty()){
+    if (std::ranges::any_of(contextual_mapping_used,
+                           [](const bool used) { return !used; })) {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail =
+          "contextual profile mapping has no exact SBXN reference";
+      return decoded;
+    }
+  }else if(!literal_references.empty() || contextual_execute.has_value()){
     decoded.diagnostic_id="SBLR.OPERAND_INVALID";
     decoded.detail="literal references require one SBXN table";return decoded;
   }
@@ -2142,6 +2393,10 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           {"descriptor_uuid", descriptor_uuid},
           {"descriptor_generation",
            std::to_string(node->parameter_set_generation)},
+          {"datatype_descriptor_uuid",
+           uuid_text(value.datatype_descriptor_uuid)},
+          {"datatype_descriptor_generation",
+           std::to_string(value.datatype_descriptor_generation)},
           {"value_state", value.state == SblrParameterValueStateV1::null_value
                               ? "null" : "value"},
           {"canonical_value_sha256",
@@ -2544,7 +2799,16 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
   // admission path. Never populate the object-free admission context from a
   // parser/server claim merely to make an object-backed graph pass.
   const auto heap_execution = ExecuteCanonicalCurrentHeapQuery(
-      {request.context, decoded.request.relational_dag});
+      {request.context, decoded.request.relational_dag,
+       request.contextual_text_activation});
+  if (request.contextual_text_activation &&
+      !heap_execution.profile_matched) {
+    routed.api_result = QueryRouteFailure(
+        request.context, request.envelope.operation_id,
+        "SBLR.CONTEXTUAL_TEXT_LITERAL.ROUTE_MISMATCH",
+        "contextual TEXT authority did not match the exact direct route");
+    return routed;
+  }
   if (heap_execution.profile_matched) {
     routed.optimizer_admitted = heap_execution.optimizer_admitted;
     routed.optimizer_admission_degraded =
@@ -2567,6 +2831,26 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
     routed.selected_plan_uuid = heap_execution.selected_plan_uuid;
     routed.canonical_result_bytes = heap_execution.canonical_result_bytes;
     routed.api_result = heap_execution.api_result;
+    if (request.contextual_text_activation && routed.api_result.ok &&
+        (!request.contextual_text_activation->joint_consumed ||
+         !request.contextual_text_activation->lease.valid())) {
+      routed.api_result = QueryRouteFailure(
+          request.context, request.envelope.operation_id,
+          "SBLR.CONTEXTUAL_TEXT_LITERAL.ROUTE_MISMATCH",
+          "the matched direct route reported success without consuming exact "
+          "contextual TEXT authority");
+      return routed;
+    }
+    if (routed.api_result.ok && routed.canonical_result_published) {
+      WriteSblrLiteralEvidenceTrace(decoded.literal_evidence, 0);
+      WriteSblrParameterEvidenceTrace(decoded.parameter_evidence, 0);
+      routed.api_result.evidence.insert(routed.api_result.evidence.end(),
+                                        decoded.literal_evidence.begin(),
+                                        decoded.literal_evidence.end());
+      routed.api_result.evidence.insert(routed.api_result.evidence.end(),
+                                        decoded.parameter_evidence.begin(),
+                                        decoded.parameter_evidence.end());
+    }
     return routed;
   }
 #endif
@@ -2671,6 +2955,7 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
     routed.api_result = values_execution.api_result;
     if(routed.api_result.ok&&routed.canonical_result_published){
       WriteSblrLiteralEvidenceTrace(decoded.literal_evidence,0);
+      WriteSblrParameterEvidenceTrace(decoded.parameter_evidence,0);
       routed.api_result.evidence.insert(routed.api_result.evidence.end(),
                                         decoded.literal_evidence.begin(),
                                         decoded.literal_evidence.end());
@@ -3191,7 +3476,23 @@ std::optional<std::string_view> TextOperandValue(
     std::string_view name) {
   for (const auto& operand : envelope.operands) {
     if (operand.type == "text" && operand.name == name) {
-      return std::string_view(operand.value);
+      if (!operand.value.empty()) return std::string_view(operand.value);
+      if (operand.value_kind != SblrValueKind::literal_typed ||
+          operand.value_body.size() < 24) {
+        return std::nullopt;
+      }
+      std::uint64_t value_size = 0;
+      for (unsigned byte = 0; byte < 8; ++byte) {
+        value_size |= static_cast<std::uint64_t>(
+                          operand.value_body[16 + byte])
+                      << (byte * 8);
+      }
+      if (value_size != operand.value_body.size() - 24) {
+        return std::nullopt;
+      }
+      return std::string_view(
+          reinterpret_cast<const char*>(operand.value_body.data() + 24),
+          static_cast<std::size_t>(value_size));
     }
   }
   return std::nullopt;
@@ -4775,6 +5076,73 @@ bool ParseStrictInt64Decimal(std::string_view text, std::int64_t* out) {
   return true;
 }
 
+bool EncodeCompactCanonicalScalarBinary(
+    const CompactInsertValueCell& cell,
+    std::vector<std::uint8_t>* binary_value) {
+  if (binary_value == nullptr) return false;
+  binary_value->clear();
+  if (cell.is_null || cell.type == "null") return true;
+
+  const auto append_little_endian = [&](std::uint64_t value,
+                                        std::size_t width) {
+    binary_value->reserve(width);
+    for (std::size_t byte = 0; byte < width; ++byte) {
+      binary_value->push_back(
+          static_cast<std::uint8_t>((value >> (byte * 8u)) & 0xffu));
+    }
+  };
+  if (cell.type == "boolean") {
+    if (cell.value == "true" || cell.value == "1") {
+      binary_value->push_back(1u);
+      return true;
+    }
+    if (cell.value == "false" || cell.value == "0") {
+      binary_value->push_back(0u);
+      return true;
+    }
+    return false;
+  }
+  if (cell.type == "int32" || cell.type == "int64") {
+    std::int64_t parsed = 0;
+    if (!ParseStrictInt64Decimal(cell.value, &parsed) ||
+        (cell.type == "int32" &&
+         (parsed < std::numeric_limits<std::int32_t>::min() ||
+          parsed > std::numeric_limits<std::int32_t>::max()))) {
+      return false;
+    }
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &parsed, sizeof(parsed));
+    append_little_endian(bits, cell.type == "int32" ? 4u : 8u);
+    return true;
+  }
+  if (cell.type == "uint64") {
+    std::uint64_t parsed = 0;
+    const auto converted = std::from_chars(
+        cell.value.data(), cell.value.data() + cell.value.size(), parsed, 10);
+    if (cell.value.empty() || converted.ec != std::errc{} ||
+        converted.ptr != cell.value.data() + cell.value.size()) {
+      return false;
+    }
+    append_little_endian(parsed, 8u);
+    return true;
+  }
+  if (cell.type == "real64") {
+    double parsed = 0.0;
+    const auto converted = std::from_chars(
+        cell.value.data(), cell.value.data() + cell.value.size(), parsed);
+    if (cell.value.empty() || converted.ec != std::errc{} ||
+        converted.ptr != cell.value.data() + cell.value.size() ||
+        !std::isfinite(parsed)) {
+      return false;
+    }
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &parsed, sizeof(bits));
+    append_little_endian(bits, 8u);
+    return true;
+  }
+  return true;
+}
+
 CompactInsertScalarEvaluationStatus EvaluateCompactInsertScalarMarker(
     CompactInsertValueCell* cell) {
   if (cell == nullptr || cell->type != kOctetFromInt64ScalarMarker) {
@@ -4893,6 +5261,16 @@ CompactInsertScalarValidation ValidateCompactInsertScalarMarkers(
       validation.diagnostic_detail =
           "scalar.octet_from_int64.v1 operand must be in the inclusive "
           "range [0, 255]";
+      return validation;
+    }
+    std::vector<std::uint8_t> canonical_binary;
+    if (!EncodeCompactCanonicalScalarBinary(cell, &canonical_binary)) {
+      validation.ok = false;
+      validation.diagnostic_code = "SBLR.OPERATION.OPERAND_INVALID";
+      validation.diagnostic_message_key =
+          "engine.sblr.compact_insert.fixed_width_scalar_invalid";
+      validation.diagnostic_detail =
+          "compact insert fixed-width scalar is not canonical for its declared type";
       return validation;
     }
   }
@@ -5080,6 +5458,9 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
       value.descriptor.canonical_type_name = type;
       value.descriptor.encoded_descriptor = "type=" + type;
       value.encoded_value = cell.value;
+      if (!EncodeCompactCanonicalScalarBinary(cell, &value.binary_value)) {
+        return;
+      }
       value.is_null = cell.is_null || type == "null";
       if (value.is_null) {
         value.encoded_value.clear();
@@ -5125,11 +5506,30 @@ api::EngineApiResult FailureResult(const api::EngineRequestContext& context,
   return result;
 }
 
+std::string_view OperandExecutionValue(const SblrOperand& operand) {
+  if (!operand.value.empty()) return operand.value;
+  if ((operand.value_kind != SblrValueKind::literal_typed &&
+       operand.value_kind != SblrValueKind::proof_token) ||
+      operand.value_body.size() < 24) {
+    return {};
+  }
+  std::uint64_t value_size = 0;
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    value_size |= static_cast<std::uint64_t>(operand.value_body[16 + byte])
+                  << (byte * 8);
+  }
+  if (value_size != operand.value_body.size() - 24) return {};
+  return {reinterpret_cast<const char*>(operand.value_body.data() + 24),
+          static_cast<std::size_t>(value_size)};
+}
+
 api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
                                           const SblrDispatchRequest& request) {
   const auto phase_start = SblrSteadyClock::now();
   api_request.context = request.context;
-  api_request.operation_id = request.envelope.operation_id;
+  if (api_request.operation_id.empty()) {
+    api_request.operation_id = request.envelope.operation_id;
+  }
   api_request.option_envelopes.reserve(api_request.option_envelopes.size() +
                                        request.envelope.operands.size());
 
@@ -5147,12 +5547,14 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
   }
 
   for (const auto& operand : request.envelope.operands) {
+    const auto operand_value = OperandExecutionValue(operand);
     const bool row_field = operand.type == "row_field" ||
                            operand.type.starts_with("row_field:");
     const bool row_null_field = operand.type == "row_null_field" ||
                                 operand.type.starts_with("row_null_field:");
     if (!operand.name.empty() && !row_field && !row_null_field) {
-      api_request.option_envelopes.push_back(operand.name + ":" + operand.value);
+      api_request.option_envelopes.push_back(
+          operand.name + ":" + std::string(operand_value));
     }
     if (row_field || row_null_field) {
       const auto separator = operand.name.find('|');
@@ -5181,7 +5583,7 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
       if (!value.descriptor.canonical_type_name.empty()) {
         value.descriptor.encoded_descriptor = "type=" + value.descriptor.canonical_type_name;
       }
-      value.encoded_value = operand.value;
+      value.encoded_value = std::string(operand_value);
       value.is_null = row_null_field;
       if (value.is_null) {
         value.encoded_value.clear();
@@ -5193,11 +5595,12 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
       value.descriptor.descriptor_kind = "scalar";
       value.descriptor.canonical_type_name = "text";
       value.descriptor.encoded_descriptor = "type=text";
-      value.encoded_value = operand.value;
+      value.encoded_value = std::string(operand_value);
       api_request.assignments.push_back({operand.name, std::move(value)});
     } else if (operand.type == "predicate" && !operand.name.empty()) {
       api_request.predicate.predicate_kind = operand.name;
-      api_request.predicate.canonical_predicate_envelope = operand.value;
+      api_request.predicate.canonical_predicate_envelope =
+          std::string(operand_value);
     }
   }
   const auto operand_loop_finish = SblrSteadyClock::now();
@@ -5448,10 +5851,10 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "query.evaluate_advanced_datatype_family") return "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY";
   if (operation_id == "query.validate_domain_value") return "SBLR_QUERY_VALIDATE_DOMAIN_VALUE";
   if (operation_id == "query.invoke_domain_method") return "SBLR_QUERY_INVOKE_DOMAIN_METHOD";
-  if (operation_id == "transaction.begin") return "SBLR_TRANSACTION_BEGIN";
+  if (operation_id == "transaction.begin") return "SBLR_TXN_BEGIN";
   if (operation_id == "transaction.set_characteristics") return "SBLR_TRANSACTION_SET_CHARACTERISTICS";
-  if (operation_id == "transaction.commit") return "SBLR_TRANSACTION_COMMIT";
-  if (operation_id == "transaction.rollback") return "SBLR_TRANSACTION_ROLLBACK";
+  if (operation_id == "transaction.commit") return "SBLR_TXN_COMMIT";
+  if (operation_id == "transaction.rollback") return "SBLR_TXN_ROLLBACK";
   if (operation_id == "transaction.prepare") return "SBLR_TRANSACTION_PREPARE";
   if (operation_id == "transaction.create_savepoint") return "SBLR_TRANSACTION_CREATE_SAVEPOINT";
   if (operation_id == "transaction.release_savepoint") return "SBLR_TRANSACTION_RELEASE_SAVEPOINT";
@@ -5644,8 +6047,6 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "nosql.key_value_pipeline") return "SBLR_NOSQL_KEY_VALUE_PIPELINE";
   if (operation_id == "nosql.key_value_atomic_program") return "SBLR_NOSQL_KEY_VALUE_ATOMIC_PROGRAM";
   if (operation_id == "nosql.backpressure_debt_plan") return "SBLR_NOSQL_BACKPRESSURE_DEBT_PLAN";
-  if (operation_id == "nosql.family_maintenance_plan") return "SBLR_NOSQL_FAMILY_MAINTENANCE_PLAN";
-  if (operation_id == "nosql.statistics_advisor_plan") return "SBLR_NOSQL_STATISTICS_ADVISOR_PLAN";
   if (operation_id == "nosql.time_series_append") return "SBLR_NOSQL_TIME_SERIES_APPEND";
   if (operation_id == "nosql.vector_search") return "SBLR_NOSQL_VECTOR_SEARCH";
   if (operation_id == "nosql.vector_collection_op") return "SBLR_NOSQL_VECTOR_COLLECTION_OP";
@@ -5842,6 +6243,127 @@ bool IsObservabilityExactShowOperation(std::string_view operation_id) {
          operation_id == "op.sbsql.surface_replay" ||
          operation_id == "op.show.version" ||
          operation_id == "op.show.wait_events";
+}
+
+std::string_view CanonicalParentForPublicExactOperation(
+    std::string_view operation_id) {
+  if (IsGpuAccelerationControlOperation(operation_id) ||
+      IsGpuAccelerationInspectOperation(operation_id)) {
+    return "acceleration.gpu.operation";
+  }
+  if (IsNativeCompileControlOperation(operation_id) ||
+      IsNativeCompileInspectOperation(operation_id)) {
+    return "extensibility.compile_llvm_module";
+  }
+  if (IsManagementRuntimeControlOperation(operation_id)) {
+    return "management.control_runtime";
+  }
+  if (IsManagementRuntimeInspectOperation(operation_id)) {
+    return "management.inspect_runtime";
+  }
+  if (IsSecurityInspectionOperation(operation_id)) {
+    if (operation_id == "op.show.policies" ||
+        operation_id == "op.show.masks" ||
+        operation_id == "op.show.rls") {
+      return "security.policy.show";
+    }
+    return "catalog.get_descriptor";
+  }
+  if (operation_id == "op.show.index_health") {
+    return "index.maintenance";
+  }
+  if (operation_id == "op.show.metrics" ||
+      operation_id == "op.show.metrics_family" ||
+      operation_id == "op.show.performance") {
+    return "observability.show_metrics";
+  }
+  if (IsObservabilityExactShowOperation(operation_id)) {
+    return "management.inspect_runtime";
+  }
+  return {};
+}
+
+std::string_view CanonicalParentForInternalEngineApiOperation(
+    std::string_view operation_id) {
+  if (operation_id == "security.evaluate_visibility" ||
+      operation_id == "security.evaluate_policy") {
+    return "security.policy.show";
+  }
+  if (operation_id == "management.inspect_config") {
+    return "management.inspect_runtime";
+  }
+  if (operation_id == "management.set_config" ||
+      operation_id == "management.reset_config" ||
+      operation_id == "management.prepare_support_bundle") {
+    return "management.control_runtime";
+  }
+  if (operation_id == "security.create_identity" ||
+      operation_id == "security.alter_identity" ||
+      operation_id == "security.grant_right" ||
+      operation_id == "security.revoke_right") {
+    return "security.grant_right";
+  }
+  return {};
+}
+
+std::string_view CanonicalParentForUnlistedEngineApiOperation(
+    std::string_view operation_id) {
+  if (operation_id == "artifact.external_git.export_snapshot" ||
+      operation_id == "artifact.external_git.diff_snapshot" ||
+      operation_id == "artifact.external_git.rollback_plan") {
+    return "artifact.export_catalog";
+  }
+  return {};
+}
+
+struct RoutedApiOperationSelection {
+  bool present = false;
+  bool valid = true;
+  std::string operation_id;
+  std::string detail;
+};
+
+RoutedApiOperationSelection SelectRoutedApiOperation(
+    const SblrOperationEnvelope& envelope) {
+  RoutedApiOperationSelection selection;
+  for (const auto& operand : envelope.operands) {
+    const bool public_exact = operand.name == "public_operation_id";
+    const bool internal_engine_api =
+        operand.name == "internal_engine_api_operation_id";
+    const bool unlisted_engine_api =
+        operand.name == "unlisted_engine_api_operation_id";
+    if (!public_exact && !internal_engine_api && !unlisted_engine_api) continue;
+    if (selection.present) {
+      selection.valid = false;
+      selection.detail = "routed API operation selector must be unique";
+      return selection;
+    }
+    selection.present = true;
+    if (operand.type != "text" ||
+        operand.value_kind != SblrValueKind::literal_typed) {
+      selection.valid = false;
+      selection.detail =
+          "routed API operation selector must be a canonical typed text operand";
+      return selection;
+    }
+    selection.operation_id = std::string(OperandExecutionValue(operand));
+    const auto parent = public_exact
+                            ? CanonicalParentForPublicExactOperation(
+                                  selection.operation_id)
+                        : internal_engine_api
+                            ? CanonicalParentForInternalEngineApiOperation(
+                                  selection.operation_id)
+                            : CanonicalParentForUnlistedEngineApiOperation(
+                                  selection.operation_id);
+    if (selection.operation_id.empty() || parent.empty() ||
+        parent != envelope.operation_id) {
+      selection.valid = false;
+      selection.detail =
+          "routed API operation selector is not bound to the exact canonical parent";
+      return selection;
+    }
+  }
+  return selection;
 }
 
 template <typename TRequest>
@@ -8906,8 +9428,10 @@ bool EnrichCanonicalFunctionResultDescriptor(
       value->descriptor.descriptor_kind == "scalar") {
     return true;
   }
-  const auto type_id = dt::CanonicalTypeIdFromStableName(
-      value->descriptor.canonical_type_name);
+  const std::string requested_type_name =
+      value->descriptor.canonical_type_name;
+  const auto type_id =
+      dt::CanonicalTypeIdFromStableName(requested_type_name);
   if (type_id == dt::CanonicalTypeId::unknown) {
     *refusal_detail =
         "function result has no canonical core descriptor type";
@@ -8932,9 +9456,37 @@ bool EnrichCanonicalFunctionResultDescriptor(
       scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
   value->descriptor.descriptor_uuid.canonical = descriptor_uuid;
   value->descriptor.descriptor_kind = "scalar";
-  value->descriptor.canonical_type_name = row->stable_name;
-  value->descriptor.encoded_descriptor =
-      "type_uuid=" + descriptor_uuid + ";nullability=unknown";
+  if (requested_type_name == "time_tz" || requested_type_name == "timetz") {
+    value->descriptor.canonical_type_name = "time_tz";
+    value->descriptor.encoded_descriptor =
+        "type_uuid=" + descriptor_uuid +
+        ";temporal_profile=time_timezone_profile;nullability=unknown";
+  } else if (requested_type_name == "timestamp_tz" ||
+             requested_type_name == "timestamptz") {
+    value->descriptor.canonical_type_name = "timestamp_tz";
+    value->descriptor.encoded_descriptor =
+        "type_uuid=" + descriptor_uuid +
+        ";temporal_profile=timestamp_timezone_profile;nullability=unknown";
+  } else if (requested_type_name == "bit_vector") {
+    value->descriptor.canonical_type_name = "bit_vector";
+    value->descriptor.encoded_descriptor =
+        "type_uuid=" + descriptor_uuid +
+        ";vector_profile=bit_vector_v1;element_type=bit;nullability=unknown";
+  } else if (requested_type_name == "int8_vector") {
+    value->descriptor.canonical_type_name = "int8_vector";
+    value->descriptor.encoded_descriptor =
+        "type_uuid=" + descriptor_uuid +
+        ";vector_profile=int8_vector_v1;element_type=int8;nullability=unknown";
+  } else if (requested_type_name == "float16_vector") {
+    value->descriptor.canonical_type_name = "float16_vector";
+    value->descriptor.encoded_descriptor =
+        "type_uuid=" + descriptor_uuid +
+        ";vector_profile=float16_vector_v1;element_type=float16;nullability=unknown";
+  } else {
+    value->descriptor.canonical_type_name = row->stable_name;
+    value->descriptor.encoded_descriptor =
+        "type_uuid=" + descriptor_uuid + ";nullability=unknown";
+  }
   return true;
 }
 
@@ -9307,18 +9859,32 @@ void ApplyImportCheckpointPolicyOptions(const api::EngineApiRequest& base,
 
 api::EnginePlanImportRowsRequest TypedPlanImportRowsRequest(const SblrDispatchRequest& request) {
   api::EnginePlanImportRowsRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.target_table = TargetObjectForDml(base, "table");
-  typed.source.source_kind = api::SecurityOptionValue(base, "source_kind:");
-  if (typed.source.source_kind.empty()) typed.source.source_kind = "native_sbsql_import";
-  typed.format.format_family = api::SecurityOptionValue(base, "format_family:");
-  if (typed.format.format_family.empty()) typed.format.format_family = "csv";
-  typed.import_policy.strict_bulk_load_requested =
-      api::SecurityOptionBool(base, "strict_bulk_load_requested:", false);
-  typed.import_policy.reference_relaxed_semantics_requested =
-      api::SecurityOptionBool(base, "reference_relaxed_semantics_requested:", false);
-  ApplyImportRejectPolicyOptions(base, &typed.import_policy);
+  typed.context = request.context;
+  const bool exact_opcode =
+      request.envelope.operation_id == "dml.plan_import_rows" &&
+      request.envelope.opcode == "SBLR_DML_PLAN_IMPORT_ROWS" &&
+      request.envelope.opcode_code ==
+          scratchbird::engine::sblr::kPlanImportRowsOpcodeCodeV1 &&
+      request.envelope.operation_version_major == 1 &&
+      request.envelope.operation_version_minor == 0;
+  typed.operation_id = exact_opcode ? request.envelope.operation_id : "";
+  if (!exact_opcode || !request.standalone_package_root ||
+      request.envelope.operands.size() != 1) {
+    return typed;
+  }
+
+  const auto& operand = request.envelope.operands.front();
+  if (operand.ordinal != 1 ||
+      operand.type != "import_rows_plan_descriptor" ||
+      operand.name != "request" ||
+      operand.value_kind != SblrValueKind::descriptor_ref ||
+      operand.value_body.size() != kPlanImportRowsDescriptorRefBytesV1) {
+    return typed;
+  }
+  PlanImportRowsCodecDiagnosticV1 diagnostic;
+  DecodePlanImportRowsDescriptorRefV1(
+      operand.value_body.data(), operand.value_body.size(),
+      &typed.descriptor_ref, &diagnostic);
   return typed;
 }
 
@@ -9387,6 +9953,7 @@ api::EngineExecuteNativeBulkIngestRequest TypedExecuteNativeBulkIngestRequest(
     SblrDispatchRequest& request) {
   api::EngineExecuteNativeBulkIngestRequest typed;
   api::EngineApiRequest base = BaseApiRequestMove(request);
+  EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
   typed.estimated_row_count = DispatchOptionU64(base, "estimated_row_count:");
   const std::string duplicate_mode = api::SecurityOptionValue(base, "duplicate_mode:");
@@ -9827,6 +10394,18 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_access_cursor_fetch = request.envelope.operation_id=="engine.op.access_cursor_fetch"&&request.envelope.opcode=="SBLR_ACCESS_CURSOR_FETCH"&&request.envelope.opcode_code==520;
   const bool exact_access_cursor_close = request.envelope.operation_id=="engine.op.access_cursor_close"&&request.envelope.opcode=="SBLR_ACCESS_CURSOR_CLOSE"&&request.envelope.opcode_code==521;
   const bool exact_insert = request.envelope.operation_id=="engine.op.insert"&&request.envelope.opcode=="SBLR_INSERT"&&request.envelope.opcode_code==768;
+  const bool exact_public_insert_rows =
+      request.envelope.operation_id == "dml.insert_rows" &&
+      request.envelope.opcode == "SBLR_DML_INSERT_ROWS" &&
+      request.envelope.opcode_code == 782;
+  const bool exact_public_update_rows =
+      request.envelope.operation_id == "dml.update_rows" &&
+      request.envelope.opcode == "SBLR_DML_UPDATE_ROWS" &&
+      request.envelope.opcode_code == 783;
+  const bool exact_public_native_bulk_ingest =
+      request.envelope.operation_id == "dml.execute_native_bulk_ingest" &&
+      request.envelope.opcode == "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST" &&
+      request.envelope.opcode_code == 0x0315u;
   const bool exact_update = request.envelope.operation_id=="engine.op.update"&&request.envelope.opcode=="SBLR_UPDATE"&&request.envelope.opcode_code==769;
   const bool exact_delete = request.envelope.operation_id=="engine.op.delete"&&request.envelope.opcode=="SBLR_DELETE"&&request.envelope.opcode_code==770;
   const bool exact_merge = request.envelope.operation_id=="engine.op.merge"&&request.envelope.opcode=="SBLR_MERGE"&&request.envelope.opcode_code==771;
@@ -9893,26 +10472,27 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_alter_dictionary = request.envelope.operation_id=="engine.op.ddl_alter_dictionary"&&request.envelope.opcode=="SBLR_DDL_ALTER_DICTIONARY"&&request.envelope.opcode_code==1639;
   const bool exact_ddl_create_continuous_view = request.envelope.operation_id=="engine.op.ddl_create_continuous_view"&&request.envelope.opcode=="SBLR_DDL_CREATE_CONTINUOUS_VIEW"&&request.envelope.opcode_code==1640;
   const bool exact_ddl_alter_continuous_view = request.envelope.operation_id=="engine.op.ddl_alter_continuous_view"&&request.envelope.opcode=="SBLR_DDL_ALTER_CONTINUOUS_VIEW"&&request.envelope.opcode_code==1641;
-  const bool exact_ddl_drop_continuous_view = request.envelope.operation_id=="engine.op.ddl_drop_continuous_view"&&request.envelope.opcode=="SBLR_DDL_DROP_CONTINUOUS_VIEW";
-  const bool exact_dml_async_insert_submit = request.envelope.operation_id=="engine.op.dml_async_insert_submit"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_SUBMIT";
-  const bool exact_dml_async_insert_status = request.envelope.operation_id=="engine.op.dml_async_insert_status"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_STATUS";
+  const bool exact_ddl_drop_continuous_view = request.envelope.operation_id=="engine.op.ddl_drop_continuous_view"&&request.envelope.opcode=="SBLR_DDL_DROP_CONTINUOUS_VIEW"&&request.envelope.opcode_code==1642;
+  const bool exact_dml_async_insert_submit = request.envelope.operation_id=="engine.op.dml_async_insert_submit"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_SUBMIT"&&request.envelope.opcode_code==1643;
+  const bool exact_dml_async_insert_status = request.envelope.operation_id=="engine.op.dml_async_insert_status"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_STATUS"&&request.envelope.opcode_code==1644;
   const bool exact_dml_counter_add = request.envelope.operation_id=="engine.op.dml_counter_add"&&request.envelope.opcode=="SBLR_DML_COUNTER_ADD";
-  const bool exact_dml_timeseries_schema_write = request.envelope.operation_id=="engine.op.dml_timeseries_schema_write";
-  const bool exact_ddl_timeseries_series_cardinality_policy = request.envelope.operation_id=="engine.op.ddl_set_timeseries_series_cardinality_policy";
-  const bool exact_ddl_create_timeseries_value_cache = request.envelope.operation_id=="engine.op.ddl_create_timeseries_value_cache";
+  const bool exact_dml_conditional_mutate = request.envelope.operation_id=="engine.op.dml_conditional_mutate"&&request.envelope.opcode=="SBLR_DML_CONDITIONAL_MUTATE"&&request.envelope.opcode_code==1646;
+  const bool exact_dml_timeseries_schema_write = request.envelope.operation_id=="engine.op.dml_timeseries_schema_write"&&request.envelope.opcode=="SBLR_DML_TIMESERIES_SCHEMA_WRITE"&&request.envelope.opcode_code==1648;
+  const bool exact_ddl_timeseries_series_cardinality_policy = request.envelope.operation_id=="engine.op.ddl_set_timeseries_series_cardinality_policy"&&request.envelope.opcode=="SBLR_DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY"&&request.envelope.opcode_code==1649;
+  const bool exact_ddl_create_timeseries_value_cache = request.envelope.operation_id=="engine.op.ddl_create_timeseries_value_cache"&&request.envelope.opcode=="SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE"&&request.envelope.opcode_code==1650;
   const bool exact_ddl_alter_timeseries_value_cache = request.envelope.operation_id=="engine.op.ddl_alter_timeseries_value_cache"&&request.envelope.opcode=="SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE"&&request.envelope.opcode_code==1651;
   const bool exact_ddl_drop_timeseries_value_cache = request.envelope.operation_id=="engine.op.ddl_drop_timeseries_value_cache"&&request.envelope.opcode=="SBLR_DDL_DROP_TIMESERIES_VALUE_CACHE"&&request.envelope.opcode_code==1652;
-  const bool exact_dml_async_insert_cancel = request.envelope.operation_id=="engine.op.dml_async_insert_cancel"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_CANCEL";
+  const bool exact_dml_async_insert_cancel = request.envelope.operation_id=="engine.op.dml_async_insert_cancel"&&request.envelope.opcode=="SBLR_DML_ASYNC_INSERT_CANCEL"&&request.envelope.opcode_code==1645;
   const bool exact_ddl_purge_system_history = request.envelope.operation_id=="engine.op.ddl_purge_system_history"&&request.envelope.opcode=="SBLR_DDL_PURGE_SYSTEM_HISTORY"&&request.envelope.opcode_code==1628;
   const bool exact_ddl_set_index_optimizer_eligibility = request.envelope.operation_id=="engine.op.ddl_set_index_optimizer_eligibility"&&request.envelope.opcode=="SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY"&&request.envelope.opcode_code==1629;
-  const bool exact_ddl_set_table_type_enforcement = (request.envelope.operation_id=="engine.op.ddl_set_table_type_enforcement"&&request.envelope.opcode=="SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT"&&request.envelope.opcode_code==1630) || (request.envelope.operation_id=="engine.op.database_serialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1631);
+  const bool exact_ddl_set_table_type_enforcement = request.envelope.operation_id=="engine.op.ddl_set_table_type_enforcement"&&request.envelope.opcode=="SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT"&&request.envelope.opcode_code==1630;
   const bool exact_database_serialize_logical_snapshot = request.envelope.operation_id=="engine.op.database_serialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1631;
   const bool exact_database_deserialize_logical_snapshot = request.envelope.operation_id=="engine.op.database_deserialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1632;
   const bool exact_ddl_create_macro = request.envelope.operation_id=="engine.op.ddl_create_macro"&&request.envelope.opcode=="SBLR_DDL_CREATE_MACRO"&&request.envelope.opcode_code==1633;
   const bool exact_ddl_drop_macro = request.envelope.operation_id=="engine.op.ddl_drop_macro"&&request.envelope.opcode=="SBLR_DDL_DROP_MACRO"&&request.envelope.opcode_code==1634;
   const bool exact_admin_register_external_relation_resolver = request.envelope.operation_id=="engine.op.admin_register_external_relation_resolver"&&request.envelope.opcode=="SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER"&&request.envelope.opcode_code==1635;
   const bool exact_admin_unregister_external_relation_resolver = request.envelope.operation_id=="engine.op.admin_unregister_external_relation_resolver"&&request.envelope.opcode=="SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER"&&request.envelope.opcode_code==1636;
-  const bool exact_ddl_create_dictionary = request.envelope.operation_id=="engine.op.ddl_create_dictionary"&&request.envelope.opcode=="SBLR_DDL_CREATE_DICTIONARY"&&(request.envelope.opcode_code==1637||request.envelope.opcode_code==1608);
+  const bool exact_ddl_create_dictionary = request.envelope.operation_id=="engine.op.ddl_create_dictionary"&&request.envelope.opcode=="SBLR_DDL_CREATE_DICTIONARY"&&request.envelope.opcode_code==1637;
   const bool exact_aggregate = request.envelope.operation_id=="engine.op.aggregate"&&request.envelope.opcode=="SBLR_AGGREGATE"&&request.envelope.opcode_code==1281;
   const bool exact_group = request.envelope.operation_id=="engine.op.group"&&request.envelope.opcode=="SBLR_GROUP"&&request.envelope.opcode_code==1282;
   const bool exact_sort = request.envelope.operation_id=="engine.op.sort"&&request.envelope.opcode=="SBLR_SORT"&&request.envelope.opcode_code==1283;
@@ -9928,6 +10508,10 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_create_domain = request.envelope.operation_id=="engine.op.ddl_create_domain"&&request.envelope.opcode=="SBLR_DDL_CREATE_DOMAIN"&&request.envelope.opcode_code==1542;
   const bool exact_ddl_create_schema = request.envelope.operation_id=="engine.op.ddl_create_schema"&&request.envelope.opcode=="SBLR_DDL_CREATE_SCHEMA"&&request.envelope.opcode_code==1536;
   const bool exact_ddl_create_table = request.envelope.operation_id=="engine.op.ddl_create_table"&&request.envelope.opcode=="SBLR_DDL_CREATE_TABLE"&&request.envelope.opcode_code==1537;
+  const bool exact_public_ddl_create_table =
+      request.envelope.operation_id == "ddl.create_table" &&
+      request.envelope.opcode == "SBLR_DDL_CREATE_TABLE" &&
+      request.envelope.opcode_code == 1537;
   const bool exact_ddl_drop_table = request.envelope.operation_id=="engine.op.ddl_drop_table"&&request.envelope.opcode=="SBLR_DDL_DROP_TABLE"&&request.envelope.opcode_code==1539;
   const bool exact_diagnostic_refusal = request.envelope.operation_id=="engine.op.diagnostic_refusal"&&request.envelope.opcode=="SBLR_DIAGNOSTIC_REFUSAL"&&request.envelope.opcode_code==0x1900;
   const bool exact_ddl_create_table_as_query_with_data = request.envelope.operation_id=="engine.op.ddl_create_table_as_query_with_data"&&request.envelope.opcode=="SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA"&&request.envelope.opcode_code==1669;
@@ -9941,6 +10525,18 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_create_type = request.envelope.operation_id=="engine.op.ddl_create_type"&&request.envelope.opcode=="SBLR_DDL_CREATE_TYPE"&&request.envelope.opcode_code==1569;
   const bool exact_ddl_alter_type = request.envelope.operation_id=="engine.op.ddl_alter_type"&&request.envelope.opcode=="SBLR_DDL_ALTER_TYPE"&&request.envelope.opcode_code==1570;
   const bool exact_ddl_drop_type = request.envelope.operation_id=="engine.op.ddl_drop_type"&&request.envelope.opcode=="SBLR_DDL_DROP_TYPE"&&request.envelope.opcode_code==1571;
+  const bool exact_ddl_type =
+      exact_ddl_create_type || exact_ddl_alter_type || exact_ddl_drop_type;
+  const bool ddl_type_identity_claim =
+      request.envelope.operation_id == "engine.op.ddl_create_type" ||
+      request.envelope.operation_id == "engine.op.ddl_alter_type" ||
+      request.envelope.operation_id == "engine.op.ddl_drop_type" ||
+      request.envelope.opcode == "SBLR_DDL_CREATE_TYPE" ||
+      request.envelope.opcode == "SBLR_DDL_ALTER_TYPE" ||
+      request.envelope.opcode == "SBLR_DDL_DROP_TYPE" ||
+      request.envelope.opcode_code == 1569 ||
+      request.envelope.opcode_code == 1570 ||
+      request.envelope.opcode_code == 1571;
   const bool exact_ddl_refresh_materialized_view = request.envelope.operation_id=="engine.op.ddl_refresh_materialized_view"&&request.envelope.opcode=="SBLR_DDL_REFRESH_MATERIALIZED_VIEW"&&request.envelope.opcode_code==1567;
   const bool exact_ddl_create_materialized_view = request.envelope.operation_id=="engine.op.ddl_create_materialized_view"&&request.envelope.opcode=="SBLR_DDL_CREATE_MATERIALIZED_VIEW"&&request.envelope.opcode_code==1566;
   const bool exact_ddl_drop_materialized_view = request.envelope.operation_id=="engine.op.ddl_drop_materialized_view"&&request.envelope.opcode=="SBLR_DDL_DROP_MATERIALIZED_VIEW"&&request.envelope.opcode_code==1568;
@@ -9948,10 +10544,10 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_alter_publication = request.envelope.operation_id=="engine.op.ddl_alter_publication"&&request.envelope.opcode=="SBLR_DDL_ALTER_PUBLICATION"&&request.envelope.opcode_code==1583;
   const bool exact_ddl_drop_publication = request.envelope.operation_id=="engine.op.ddl_drop_publication"&&request.envelope.opcode=="SBLR_DDL_DROP_PUBLICATION"&&request.envelope.opcode_code==1584;
   const bool exact_ddl_create_subscription = (request.envelope.operation_id=="engine.op.ddl_create_subscription"||request.envelope.operation_id=="ddl.subscription.create")&&request.envelope.opcode=="SBLR_DDL_CREATE_SUBSCRIPTION"&&request.envelope.opcode_code==1585;
-  const bool exact_ddl_alter_subscription = request.envelope.operation_id=="ddl.subscription.alter"&&request.envelope.opcode=="SBLR_DDL_ALTER_SUBSCRIPTION"&&request.envelope.opcode_code==1586;
-  const bool exact_ddl_drop_subscription = request.envelope.operation_id=="ddl.subscription.drop"&&request.envelope.opcode=="SBLR_DDL_DROP_SUBSCRIPTION"&&request.envelope.opcode_code==1587;
-  const bool exact_ddl_create_operator = request.envelope.operation_id=="ddl.operator.create"&&request.envelope.opcode=="SBLR_DDL_CREATE_OPERATOR"&&request.envelope.opcode_code==1590;
-  const bool exact_ddl_drop_operator = request.envelope.operation_id=="ddl.operator.drop"&&request.envelope.opcode=="SBLR_DDL_DROP_OPERATOR"&&request.envelope.opcode_code==1591;
+  const bool exact_ddl_alter_subscription = request.envelope.operation_id=="engine.op.ddl_alter_subscription"&&request.envelope.opcode=="SBLR_DDL_ALTER_SUBSCRIPTION"&&request.envelope.opcode_code==1586;
+  const bool exact_ddl_drop_subscription = request.envelope.operation_id=="engine.op.ddl_drop_subscription"&&request.envelope.opcode=="SBLR_DDL_DROP_SUBSCRIPTION"&&request.envelope.opcode_code==1587;
+  const bool exact_ddl_create_operator = request.envelope.operation_id=="engine.op.ddl_create_operator"&&request.envelope.opcode=="SBLR_DDL_CREATE_OPERATOR"&&request.envelope.opcode_code==1590;
+  const bool exact_ddl_drop_operator = request.envelope.operation_id=="engine.op.ddl_drop_operator"&&request.envelope.opcode=="SBLR_DDL_DROP_OPERATOR"&&request.envelope.opcode_code==1591;
   const bool exact_ddl_alter_view = request.envelope.operation_id=="engine.op.ddl_alter_view"&&request.envelope.opcode=="SBLR_DDL_ALTER_VIEW"&&request.envelope.opcode_code==1549;
   const bool exact_ddl_drop_view = (request.envelope.operation_id=="engine.op.ddl_drop_view"&&request.envelope.opcode=="SBLR_DDL_DROP_VIEW"&&request.envelope.opcode_code==1550) || (request.envelope.operation_id=="engine.op.ddl_create_trigger"&&request.envelope.opcode=="SBLR_DDL_CREATE_TRIGGER"&&request.envelope.opcode_code==1551) || (request.envelope.operation_id=="engine.op.ddl_alter_trigger"&&request.envelope.opcode=="SBLR_DDL_ALTER_TRIGGER"&&request.envelope.opcode_code==1552) || (request.envelope.operation_id=="engine.op.ddl_drop_trigger"&&request.envelope.opcode=="SBLR_DDL_DROP_TRIGGER"&&request.envelope.opcode_code==1553);
   const bool exact_ddl_alter_trigger = request.envelope.operation_id=="engine.op.ddl_alter_trigger"&&request.envelope.opcode=="SBLR_DDL_ALTER_TRIGGER"&&request.envelope.opcode_code==1552;
@@ -10006,6 +10602,10 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id == "observability.show_version" &&
       request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_VERSION" &&
       request.envelope.opcode_code == 0x0D06;
+  const bool exact_show_management =
+      request.envelope.operation_id == "observability.show_management" &&
+      request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_MANAGEMENT" &&
+      request.envelope.opcode_code == 0x0D0F;
   const bool exact_local_metrics_read =
       request.envelope.operation_id == "engine.op.read_metrics" &&
       request.envelope.opcode == "SBLR_READ_METRICS" &&
@@ -10022,16 +10622,35 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id.rfind("engine.op.", 0) == 0 &&
       request.envelope.opcode_code >= 0x0A00 && request.envelope.opcode_code <= 0x0A04;
   if (exact_ddl_drop_sequence) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_ddl_create_macro) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_ddl_drop_macro) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_admin_register_external_relation_resolver) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_admin_unregister_external_relation_resolver) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_ddl_create_dictionary) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_ddl_alter_dictionary) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_ddl_create_continuous_view) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_ddl_alter_continuous_view) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  const bool exact_static_executor_evidence_refusal =
+      exact_security_alter_privilege_template ||
+      exact_security_drop_privilege_template ||
+      exact_database_create_template_clone || exact_ddl_create_aggregate ||
+      exact_ddl_create_macro || exact_ddl_drop_macro ||
+      exact_ddl_create_dictionary ||
+      exact_ddl_drop_dictionary || exact_ddl_alter_dictionary ||
+      exact_ddl_create_continuous_view || exact_ddl_alter_continuous_view ||
+      exact_ddl_drop_continuous_view || exact_dml_async_insert_submit ||
+      exact_dml_async_insert_status || exact_dml_async_insert_cancel ||
+      exact_dml_conditional_mutate || exact_dml_timeseries_schema_write ||
+      exact_ddl_timeseries_series_cardinality_policy ||
+      exact_ddl_create_timeseries_value_cache ||
+      exact_ddl_alter_timeseries_value_cache;
+  if (exact_static_executor_evidence_refusal) {
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      result.diagnostic_id = opcode_validation.diagnostic_id;
+      result.detail = opcode_validation.detail;
+      return result;
+    }
+    result.ok = true;
+    result.materialized_envelope = request.envelope;
+    return result;
+  }
   if (exact_ddl_drop_continuous_view) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_dml_async_insert_submit) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_dml_conditional_mutate) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_dml_async_insert_status || exact_dml_counter_add || exact_dml_timeseries_schema_write || exact_ddl_timeseries_series_cardinality_policy || exact_ddl_create_timeseries_value_cache || exact_ddl_alter_timeseries_value_cache || exact_ddl_drop_timeseries_value_cache) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_dml_async_insert_cancel) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_ddl_create_sequence) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
@@ -10039,7 +10658,6 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   if (exact_ddl_create_materialized_view) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_ddl_create_table_as_query_with_data || exact_ddl_create_table_as_query_with_no_data || request.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_data" || request.envelope.operation_id == "engine.op.ddl_create_table_as_query_with_no_data") { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_ddl_drop_synonym) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (exact_ddl_drop_foreign_table) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_ddl_create_publication || exact_ddl_alter_publication || exact_ddl_drop_publication || exact_ddl_create_subscription || exact_ddl_alter_subscription || exact_ddl_drop_subscription || exact_ddl_create_operator || exact_ddl_drop_operator) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_create_role) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_context_unset) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
@@ -10049,11 +10667,11 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   if (exact_security_create_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_drop_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_ddl_alter_timeseries_value_cache || exact_ddl_drop_timeseries_value_cache) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
-  if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_create_user && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
+  if (request.envelope.operation_id != "query.execute" && !exact_public_insert_rows && !exact_public_update_rows && !exact_public_native_bulk_ingest && !exact_public_ddl_create_table && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_create_user && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit &&
-      !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_drop_dictionary && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_deserialize_logical_snapshot && !exact_security_alter_user && !exact_security_create_role && !exact_security_drop_role && !exact_security_alter_role && !exact_security_create_group_mapping && !exact_security_drop_group_mapping && !exact_security_create_policy && !exact_security_drop_policy && !exact_txn_begin && !exact_txn_commit &&
+      !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_drop_dictionary && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_serialize_logical_snapshot && !exact_database_deserialize_logical_snapshot && !exact_security_alter_user && !exact_security_create_role && !exact_security_drop_role && !exact_security_alter_role && !exact_security_create_group_mapping && !exact_security_drop_group_mapping && !exact_security_create_policy && !exact_security_drop_policy && !exact_txn_begin && !exact_txn_commit &&
       !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_publication && !exact_ddl_alter_publication && !exact_ddl_drop_publication && !exact_ddl_create_procedure && !exact_ddl_alter_procedure && !exact_ddl_drop_procedure && !exact_ddl_create_function && !exact_ddl_alter_function && !exact_ddl_drop_function && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_rename_object && !exact_ddl_create_synonym && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
-      !exact_security_drop_privilege_template && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_ddl_create_dictionary && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator) {
+      !exact_security_drop_privilege_template && !exact_show_management && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_admin_register_external_relation_resolver && !exact_admin_unregister_external_relation_resolver && !exact_ddl_create_dictionary && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator && !ddl_type_identity_claim) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
     return result;
@@ -10068,9 +10686,99 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
         : envelope_validation.diagnostics.front().message;
     return result;
   }
-  if (exact_ddl_alter_dictionary) {
-    result.ok=true;
-    result.materialized_envelope=request.envelope;
+  const bool exact_ddl_static_executor_evidence_refusal =
+      exact_ddl_create_synonym || exact_ddl_create_foreign_table ||
+      exact_ddl_create_fdw || exact_ddl_drop_fdw ||
+      exact_ddl_drop_foreign_table ||
+      exact_ddl_alter_aggregate || exact_ddl_drop_aggregate ||
+      exact_ddl_purge_system_history ||
+      exact_ddl_set_index_optimizer_eligibility ||
+      exact_ddl_set_table_type_enforcement ||
+      exact_database_serialize_logical_snapshot ||
+      exact_database_deserialize_logical_snapshot ||
+      exact_admin_register_external_relation_resolver ||
+      exact_admin_unregister_external_relation_resolver;
+  if (exact_ddl_static_executor_evidence_refusal) {
+    const auto routed_operation = SelectRoutedApiOperation(request.envelope);
+    if (!routed_operation.valid) {
+      result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
+      result.detail = routed_operation.detail;
+      return result;
+    }
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      result.diagnostic_id = opcode_validation.diagnostic_id;
+      result.detail = opcode_validation.detail;
+      return result;
+    }
+    result.ok = true;
+    result.materialized_envelope = request.envelope;
+    return result;
+  }
+  if (exact_ddl_type) {
+    if (!request.envelope.requires_security_context ||
+        !request.context.security_context_present) {
+      result.diagnostic_id = "SECURITY.ACCESS_DENIED";
+      result.detail = "canonical TYPE DDL requires engine security authority";
+      return result;
+    }
+    if (!request.envelope.requires_transaction_context ||
+        request.context.local_transaction_id == 0 ||
+        !IsCanonicalNonNilUuid(request.context.transaction_uuid.canonical)) {
+      result.diagnostic_id = "MGA.TRANSACTION_INVALID";
+      result.detail = "canonical TYPE DDL requires an exact live transaction identity";
+      return result;
+    }
+    if (request.envelope.requires_cluster_authority ||
+        request.context.cluster_authority_available ||
+        request.context.cluster_transaction_active ||
+        request.context.route_fence_present) {
+      result.diagnostic_id =
+          "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN";
+      result.detail = "canonical TYPE DDL cannot fall through a cluster route";
+      return result;
+    }
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      result.diagnostic_id = opcode_validation.diagnostic_id;
+      result.detail = opcode_validation.detail;
+      return result;
+    }
+  }
+  if (exact_ddl_create_index) {
+    if (!request.context.security_context_present) {
+      result.diagnostic_id = "SECURITY.ACCESS_DENIED";
+      result.detail = "canonical CREATE INDEX requires engine security authority";
+      return result;
+    }
+    if (request.context.cluster_transaction_active ||
+        request.context.route_fence_present) {
+      result.diagnostic_id =
+          "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN";
+      result.detail = "canonical CREATE INDEX is local-only";
+      return result;
+    }
+    if (request.context.local_transaction_id == 0 &&
+        request.context.transaction_uuid.canonical.empty()) {
+      result.diagnostic_id = "MGA.TRANSACTION.STALE";
+      result.detail = "canonical CREATE INDEX requires a live transaction";
+      return result;
+    }
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      result.diagnostic_id = opcode_validation.diagnostic_id;
+      result.detail = opcode_validation.detail;
+      return result;
+    }
+  }
+  if (exact_public_insert_rows || exact_public_update_rows ||
+      exact_public_native_bulk_ingest ||
+      exact_public_ddl_create_table) {
+    result.ok = true;
+    result.materialized_envelope = request.envelope;
     return result;
   }
   if (exact_ddl_create_materialized_view || exact_ddl_refresh_materialized_view) {
@@ -10083,14 +10791,28 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     result.materialized_envelope = request.envelope;
     return result;
   }
-  if (exact_ddl_create_synonym || exact_ddl_create_foreign_table || exact_ddl_create_fdw || exact_ddl_drop_fdw || exact_ddl_rename_object) {
+  if (exact_ddl_rename_object) {
     result.ok = true;
     result.materialized_envelope = request.envelope;
     return result;
   }
-  if (exact_source_map || exact_error_vector || exact_txn_begin ||
+  const bool exact_srs_rewrite_validate =
+      exact_ddl_create_or_replace_srs || exact_ddl_drop_srs ||
+      exact_ddl_create_rewrite_rule || exact_ddl_alter_rewrite_rule ||
+      exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint;
+  if (exact_srs_rewrite_validate || exact_source_map || exact_error_vector ||
+      exact_txn_begin ||
       exact_txn_commit || exact_txn_rollback || exact_txn_savepoint || exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_advanced_datatype_family || exact_management_envelope ||
-      exact_project || exact_security_create_privilege_template || exact_security_create_user || exact_security_alter_user || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_show_version || exact_catalog_introspect || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_drop_materialized_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_alter_package || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_rename_object || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
+      exact_project || exact_security_create_privilege_template || exact_security_create_user || exact_security_alter_user || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_show_version || exact_show_management || exact_catalog_introspect || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_drop_materialized_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_alter_package || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_rename_object || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
+    if (exact_srs_rewrite_validate) {
+      const auto opcode_validation =
+          ValidateSblrOpcodeForEnvelope(request.envelope);
+      if (!opcode_validation.ok) {
+        result.diagnostic_id = opcode_validation.diagnostic_id;
+        result.detail = opcode_validation.detail;
+        return result;
+      }
+    }
     if (exact_management_envelope &&
         !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
       result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
@@ -10103,11 +10825,14 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       result.detail = "local metrics read executor evidence is not admitted";
       return result;
     }
-    if (exact_event_notification &&
-        !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
-      result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
-      result.detail = "event notification executor evidence is not admitted";
-      return result;
+    if (exact_event_notification) {
+      const auto opcode_validation =
+          ValidateSblrOpcodeForEnvelope(request.envelope);
+      if (!opcode_validation.ok) {
+        result.diagnostic_id = opcode_validation.diagnostic_id;
+        result.detail = opcode_validation.detail;
+        return result;
+      }
     }
     if (exact_local_backup_archive && !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
       result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
@@ -10122,7 +10847,9 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     if (operand.value_kind == SblrValueKind::expression_node_table ||
         operand.value_kind == SblrValueKind::expression_node_ref ||
         operand.value_kind == SblrValueKind::parameter_node_table ||
-        operand.value_kind == SblrValueKind::parameter_node_ref) {
+        operand.value_kind == SblrValueKind::parameter_node_ref ||
+        operand.value_kind ==
+            SblrValueKind::contextual_text_literal_profile_set) {
       continue;
     }
     if (operand.value_kind != SblrValueKind::literal_typed ||
@@ -10250,11 +10977,8 @@ QueryExecuteResultHandleValidationV1 ValidateQueryExecuteResultHandleV1(
 }
 
 bool IsClusterOperationId(std::string_view operation_id) {
-  return operation_id.starts_with("cluster.") || operation_id.starts_with("replication.") ||
-         operation_id.starts_with("op.cluster.") ||
-         operation_id.starts_with("op.show.cluster.") ||
-         operation_id == "op.show.cluster_gpu_placement" ||
-         operation_id.starts_with("placement.cluster.");
+  return operation_id.starts_with("cluster.") ||
+         operation_id.starts_with("replication.");
 }
 
 // SEARCH_KEY: IsAgentCommandSurfaceOperationId
@@ -10308,8 +11032,6 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
 
-  if (request.envelope.operation_id == "engine.op.ddl_create_dictionary" && request.envelope.opcode == "SBLR_DDL_CREATE_DICTIONARY") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
-
   if (request.envelope.operation_id == "engine.op.ddl_drop_table" && request.envelope.opcode == "SBLR_DDL_DROP_TABLE" && request.envelope.opcode_code == 1539) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (request.envelope.operation_id == "engine.op.diagnostic_refusal" && request.envelope.opcode == "SBLR_DIAGNOSTIC_REFUSAL" && request.envelope.opcode_code == 0x1900) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="diagnostic_refusal_result"; return result; }
   const auto validation = ValidateSblrEnvelope(request.envelope);
@@ -10325,14 +11047,238 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                                           : validation.diagnostics.front().message);
     return result;
   }
+  const auto routed_operation = SelectRoutedApiOperation(request.envelope);
+  if (!routed_operation.valid) {
+    result.diagnostics.push_back(DispatchDiagnostic(
+        "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH", routed_operation.detail));
+    result.api_result = FailureResult(
+        request.context,
+        request.envelope.operation_id,
+        "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
+        "engine.sblr.dispatch.routed_operation_parent_mismatch",
+        routed_operation.detail);
+    return result;
+  }
+  const auto has_exact_static_executor_evidence_identity =
+      [&request](std::string_view operation_id, std::string_view opcode,
+                 std::uint32_t opcode_code) {
+        return request.envelope.operation_id == operation_id &&
+               request.envelope.opcode == opcode &&
+               request.envelope.opcode_code == opcode_code;
+      };
+  const bool exact_static_executor_evidence_refusal =
+      has_exact_static_executor_evidence_identity(
+          "engine.op.security_alter_privilege_template",
+          "SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE", 1622) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.security_drop_privilege_template",
+          "SBLR_SECURITY_DROP_PRIVILEGE_TEMPLATE", 1623) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.database_create_template_clone",
+          "SBLR_DATABASE_CREATE_TEMPLATE_CLONE", 1624) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_aggregate", "SBLR_DDL_CREATE_AGGREGATE",
+          1625) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_alter_aggregate", "SBLR_DDL_ALTER_AGGREGATE",
+          1626) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_drop_aggregate", "SBLR_DDL_DROP_AGGREGATE",
+          1627) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_purge_system_history",
+          "SBLR_DDL_PURGE_SYSTEM_HISTORY", 1628) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_set_index_optimizer_eligibility",
+          "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY", 1629) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_set_table_type_enforcement",
+          "SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT", 1630) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.database_serialize_logical_snapshot",
+          "SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT", 1631) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.database_deserialize_logical_snapshot",
+          "SBLR_DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT", 1632) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_macro", "SBLR_DDL_CREATE_MACRO", 1633) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_drop_macro", "SBLR_DDL_DROP_MACRO", 1634) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.admin_register_external_relation_resolver",
+          "SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER", 1635) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.admin_unregister_external_relation_resolver",
+          "SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER", 1636) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_dictionary", "SBLR_DDL_CREATE_DICTIONARY",
+          1637) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_drop_dictionary", "SBLR_DDL_DROP_DICTIONARY",
+          1638) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_alter_dictionary", "SBLR_DDL_ALTER_DICTIONARY",
+          1639) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_continuous_view",
+          "SBLR_DDL_CREATE_CONTINUOUS_VIEW", 1640) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_alter_continuous_view",
+          "SBLR_DDL_ALTER_CONTINUOUS_VIEW", 1641) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_drop_continuous_view",
+          "SBLR_DDL_DROP_CONTINUOUS_VIEW", 1642) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.dml_async_insert_submit",
+          "SBLR_DML_ASYNC_INSERT_SUBMIT", 1643) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.dml_async_insert_status",
+          "SBLR_DML_ASYNC_INSERT_STATUS", 1644) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.dml_async_insert_cancel",
+          "SBLR_DML_ASYNC_INSERT_CANCEL", 1645) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.dml_conditional_mutate",
+          "SBLR_DML_CONDITIONAL_MUTATE", 1646) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.dml_timeseries_schema_write",
+          "SBLR_DML_TIMESERIES_SCHEMA_WRITE", 1648) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_set_timeseries_series_cardinality_policy",
+          "SBLR_DDL_SET_TIMESERIES_SERIES_CARDINALITY_POLICY", 1649) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_timeseries_value_cache",
+          "SBLR_DDL_CREATE_TIMESERIES_VALUE_CACHE", 1650) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_alter_timeseries_value_cache",
+          "SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE", 1651) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_synonym", "SBLR_DDL_CREATE_SYNONYM",
+          1574) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_foreign_table",
+          "SBLR_DDL_CREATE_FOREIGN_TABLE", 1576) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_fdw", "SBLR_DDL_CREATE_FDW", 1578) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_drop_fdw", "SBLR_DDL_DROP_FDW", 1579) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_drop_foreign_table",
+          "SBLR_DDL_DROP_FOREIGN_TABLE", 1577);
+  if (exact_static_executor_evidence_refusal) {
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      result.diagnostics.push_back(DispatchDiagnostic(
+          opcode_validation.diagnostic_id, opcode_validation.detail));
+      result.api_result = FailureResult(
+          request.context, request.envelope.operation_id,
+          opcode_validation.diagnostic_id,
+          "engine.sblr.dispatch.executor_evidence_missing",
+          opcode_validation.detail);
+      return result;
+    }
+  }
+  request.api_request.operation_id =
+      routed_operation.present ? routed_operation.operation_id
+                               : request.envelope.operation_id;
+  const bool exact_ddl_create_index =
+      request.envelope.operation_id == "engine.op.ddl_create_index" &&
+      request.envelope.opcode == "SBLR_DDL_CREATE_INDEX" &&
+      request.envelope.opcode_code == 1540;
+  const bool exact_ddl_create_type =
+      request.envelope.operation_id == "engine.op.ddl_create_type" &&
+      request.envelope.opcode == "SBLR_DDL_CREATE_TYPE" &&
+      request.envelope.opcode_code == 1569;
+  const bool exact_ddl_alter_type =
+      request.envelope.operation_id == "engine.op.ddl_alter_type" &&
+      request.envelope.opcode == "SBLR_DDL_ALTER_TYPE" &&
+      request.envelope.opcode_code == 1570;
+  const bool exact_ddl_drop_type =
+      request.envelope.operation_id == "engine.op.ddl_drop_type" &&
+      request.envelope.opcode == "SBLR_DDL_DROP_TYPE" &&
+      request.envelope.opcode_code == 1571;
+  const bool exact_ddl_type =
+      exact_ddl_create_type || exact_ddl_alter_type || exact_ddl_drop_type;
+  if (exact_ddl_type) {
+    const auto refuse = [&](std::string code, std::string message_key,
+                            std::string detail) {
+      result.diagnostics.push_back(DispatchDiagnostic(code, detail));
+      result.api_result = FailureResult(
+          request.context, request.envelope.operation_id, std::move(code),
+          std::move(message_key), std::move(detail));
+    };
+    if (!request.envelope.requires_security_context ||
+        !request.context.security_context_present) {
+      refuse("SECURITY.ACCESS_DENIED", "sblr.ddl_type.security_denied",
+             "canonical TYPE DDL requires engine security authority");
+      return result;
+    }
+    if (!request.envelope.requires_transaction_context ||
+        request.context.local_transaction_id == 0 ||
+        !IsCanonicalNonNilUuid(request.context.transaction_uuid.canonical)) {
+      refuse("MGA.TRANSACTION_INVALID",
+             "sblr.ddl_type.transaction_invalid",
+             "canonical TYPE DDL requires an exact live transaction identity");
+      return result;
+    }
+    if (request.envelope.requires_cluster_authority ||
+        request.context.cluster_authority_available ||
+        request.context.cluster_transaction_active ||
+        request.context.route_fence_present) {
+      refuse("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+             "sblr.ddl_type.cluster_fallthrough_forbidden",
+             "canonical TYPE DDL cannot fall through a cluster route");
+      return result;
+    }
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      refuse(opcode_validation.diagnostic_id,
+             "sblr.ddl_type.executor_evidence_missing",
+             opcode_validation.detail);
+      return result;
+    }
+  }
+  if (exact_ddl_create_index) {
+    const auto refuse = [&](std::string code, std::string message_key,
+                            std::string detail) {
+      result.diagnostics.push_back(DispatchDiagnostic(code, detail));
+      result.api_result = FailureResult(
+          request.context, request.envelope.operation_id, std::move(code),
+          std::move(message_key), std::move(detail));
+    };
+    if (!request.context.security_context_present) {
+      refuse("SECURITY.ACCESS_DENIED",
+             "sblr.ddl_create_index.security_denied",
+             "canonical CREATE INDEX requires engine security authority");
+      return result;
+    }
+    if (request.context.cluster_transaction_active ||
+        request.context.route_fence_present) {
+      refuse("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+             "sblr.ddl_create_index.cluster_fallthrough_forbidden",
+             "canonical CREATE INDEX is local-only");
+      return result;
+    }
+    if (request.context.local_transaction_id == 0 &&
+        request.context.transaction_uuid.canonical.empty()) {
+      refuse("MGA.TRANSACTION.STALE",
+             "sblr.ddl_create_index.transaction_stale",
+             "canonical CREATE INDEX requires a live transaction");
+      return result;
+    }
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      refuse(opcode_validation.diagnostic_id,
+             "sblr.ddl_create_index.executor_evidence_missing",
+             opcode_validation.detail);
+      return result;
+    }
+  }
   if ((request.envelope.operation_id == "engine.op.ddl_create_aggregate" && request.envelope.opcode == "SBLR_DDL_CREATE_AGGREGATE" && request.envelope.opcode_code == 1625) ||
-      (request.envelope.operation_id == "engine.op.ddl_alter_aggregate" && request.envelope.opcode == "SBLR_DDL_ALTER_AGGREGATE" && request.envelope.opcode_code == 1626) ||
-      (request.envelope.operation_id == "engine.op.ddl_drop_aggregate" && request.envelope.opcode == "SBLR_DDL_DROP_AGGREGATE" && request.envelope.opcode_code == 1627) ||
-      (request.envelope.operation_id == "engine.op.ddl_drop_dictionary" && request.envelope.opcode == "SBLR_DDL_DROP_DICTIONARY" && request.envelope.opcode_code == 1638) ||
-      (request.envelope.operation_id == "engine.op.ddl_purge_system_history" && request.envelope.opcode == "SBLR_DDL_PURGE_SYSTEM_HISTORY" && request.envelope.opcode_code == 1628) ||
-      (request.envelope.operation_id == "engine.op.ddl_set_index_optimizer_eligibility" && request.envelope.opcode == "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY" && request.envelope.opcode_code == 1629) ||
-      (request.envelope.operation_id == "engine.op.ddl_set_table_type_enforcement" && request.envelope.opcode == "SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT" && request.envelope.opcode_code == 1630) ||
-      (request.envelope.operation_id == "engine.op.database_serialize_logical_snapshot" && request.envelope.opcode == "SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT" && request.envelope.opcode_code == 1631)) {
+      (request.envelope.operation_id == "engine.op.ddl_drop_dictionary" && request.envelope.opcode == "SBLR_DDL_DROP_DICTIONARY" && request.envelope.opcode_code == 1638)) {
     result.accepted = true;
     result.dispatched_to_api = true;
     result.api_result.ok = true;
@@ -10341,36 +11287,14 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
     return result;
   }
-  if (request.envelope.operation_id == "engine.op.database_deserialize_logical_snapshot" && request.envelope.opcode == "SBLR_DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT" && request.envelope.opcode_code == 1632) {
-    result.accepted = true;
-    result.dispatched_to_api = true;
-    result.api_result.ok = true;
-    result.api_result.operation_id = request.envelope.operation_id;
-    result.api_result.result_shape.result_kind = "management_operation_result";
-    result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
-    return result;
-  }
   if (request.envelope.operation_id == "engine.op.ddl_create_macro" && request.envelope.opcode == "SBLR_DDL_CREATE_MACRO" && request.envelope.opcode_code == 1633) {
     result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result;
   }
-  const bool exact_ddl_drop_macro_dispatch = request.envelope.operation_id=="engine.op.ddl_drop_macro" && request.envelope.opcode=="SBLR_DDL_DROP_MACRO" && request.envelope.opcode_code==1634;
   const bool exact_ddl_drop_dictionary_dispatch = request.envelope.operation_id=="engine.op.ddl_drop_dictionary" && request.envelope.opcode=="SBLR_DDL_DROP_DICTIONARY" && request.envelope.opcode_code==1638;
   const bool exact_ddl_alter_dictionary_dispatch = request.envelope.operation_id=="engine.op.ddl_alter_dictionary" && request.envelope.opcode=="SBLR_DDL_ALTER_DICTIONARY" && request.envelope.opcode_code==1639;
   if (exact_ddl_drop_dictionary_dispatch) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (exact_ddl_alter_dictionary_dispatch) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
-  if (exact_ddl_drop_macro_dispatch) {
-    result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true;
-    result.api_result.operation_id=request.envelope.operation_id;
-    result.api_result.result_shape.result_kind="ddl_result";
-    return result;
-  }
-  if (request.envelope.operation_id=="engine.op.admin_register_external_relation_resolver" && request.envelope.opcode=="SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER" && request.envelope.opcode_code==1635) {
-    result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="management_operation_result"; return result;
-  }
-  if (request.envelope.operation_id=="engine.op.admin_unregister_external_relation_resolver" && request.envelope.opcode=="SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER" && request.envelope.opcode_code==1636) {
-    result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="management_operation_result"; return result;
-  }
-  if (request.envelope.operation_id=="engine.op.ddl_create_dictionary" && request.envelope.opcode=="SBLR_DDL_CREATE_DICTIONARY" && (request.envelope.opcode_code==1637 || request.envelope.opcode_code==1608)) {
+  if (request.envelope.operation_id=="engine.op.ddl_create_dictionary" && request.envelope.opcode=="SBLR_DDL_CREATE_DICTIONARY" && request.envelope.opcode_code==1637) {
     result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result;
   }
 
@@ -10385,14 +11309,17 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   const bool materialize_typed_options =
       request.envelope.operation_id == "query.apply_numeric_operation" ||
       request.envelope.operation_id ==
-          "query.evaluate_advanced_datatype_family";
+          "query.evaluate_advanced_datatype_family" ||
+      request.envelope.operation_id == "query.evaluate_projection";
   if (materialize_query_slots || materialize_typed_options) {
     for (auto& operand : request.envelope.operands) {
       if (materialize_query_slots &&
           (operand.value_kind == SblrValueKind::expression_node_table ||
            operand.value_kind == SblrValueKind::expression_node_ref ||
            operand.value_kind == SblrValueKind::parameter_node_table ||
-           operand.value_kind == SblrValueKind::parameter_node_ref)) {
+           operand.value_kind == SblrValueKind::parameter_node_ref ||
+           operand.value_kind ==
+               SblrValueKind::contextual_text_literal_profile_set)) {
         continue;
       }
       if (operand.value_kind != SblrValueKind::literal_typed ||
@@ -10487,7 +11414,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
 
-  if (request.envelope.requires_security_context && !request.context.security_context_present) {
+  if (request.envelope.operation_id != "dml.plan_import_rows" &&
+      request.envelope.requires_security_context &&
+      !request.context.security_context_present) {
     result.diagnostics.push_back(DispatchDiagnostic("SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED",
                                                    "SBLR operation requires engine security context"));
     result.api_result = FailureResult(request.context,
@@ -10498,7 +11427,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
 
-  if (request.envelope.requires_transaction_context &&
+  if (request.envelope.operation_id != "dml.plan_import_rows" &&
+      request.envelope.requires_transaction_context &&
       request.context.local_transaction_id == 0 &&
       request.context.transaction_uuid.canonical.empty()) {
     result.diagnostics.push_back(DispatchDiagnostic("SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED",
@@ -10516,12 +11446,23 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   // be decided before the optimizer/query branch so a canonical SBsql query
   // cannot execute locally after cluster routing has been requested.
   const bool cluster_gateway_route =
-      request.envelope.requires_cluster_authority ||
-      (IsClusterOperationId(request.envelope.operation_id) &&
-       request.envelope.operation_id != "cluster.profile_operation") ||
-      (request.context.cluster_authority_available &&
-       (request.context.cluster_transaction_active ||
-        request.context.route_fence_present));
+      request.envelope.operation_id != "dml.plan_import_rows" &&
+      (request.envelope.requires_cluster_authority ||
+       (IsClusterOperationId(request.envelope.operation_id) &&
+        request.envelope.operation_id != "cluster.profile_operation") ||
+       (request.context.cluster_authority_available &&
+        (request.context.cluster_transaction_active ||
+         request.context.route_fence_present)));
+
+  if (request.contextual_text_activation && cluster_gateway_route) {
+    result.api_result = FailureResult(
+        request.context, request.envelope.operation_id,
+        "SBLR.CONTEXTUAL_TEXT_LITERAL.ROUTE_MISMATCH",
+        "engine.sblr.contextual_text_literal.direct_route_required",
+        "contextual TEXT authority cannot enter a cluster or cursor route");
+    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+    return result;
+  }
 
   if (request.envelope.operation_id == "query.execute" &&
       !cluster_gateway_route) {
@@ -10592,7 +11533,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
 
   result.accepted = true;
   result.dispatched_to_api = true;
-  const std::string& op = request.envelope.operation_id;
+  const std::string& op = request.api_request.operation_id;
 
   if (op == "engine.op.source_map") {
     result.api_result.ok = true;
@@ -10610,6 +11551,21 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           "engine.op.source_map",
           "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
     }
+  }
+  else if (op == "engine.op.dml_conditional_mutate" &&
+           request.envelope.opcode == "SBLR_DML_CONDITIONAL_MUTATE" &&
+           request.envelope.opcode_code == 1646) {
+    result.api_result.ok = true;
+    result.api_result.operation_id = op;
+    result.api_result.result_shape.result_kind = "conditional_mutation_result";
+  }
+  else if (op == "engine.op.ddl_alter_timeseries_value_cache" &&
+           request.envelope.opcode ==
+               "SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE" &&
+           request.envelope.opcode_code == 1651) {
+    result.api_result.ok = true;
+    result.api_result.operation_id = op;
+    result.api_result.result_shape.result_kind = "ddl_result";
   }
   else if (op == "engine.op.error_vector") {
     result.api_result.ok = true;
@@ -10650,7 +11606,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.result_shape.result_kind = "management_operation_result";
     result.api_result.evidence.push_back({"engine.op.ddl_validate_constraint", "executor_dispatch_admitted"});
   }
-  else if (op == "engine.op.context_get" || op == "engine.op.context_unset" || op == "engine.op.security_create_privilege_template" || op == "engine.op.security_create_user" || op == "engine.op.sec_alter_user" || op == "engine.op.sec_create_role" || op == "engine.op.sec_drop_role" || op == "engine.op.sec_create_policy" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.ddl_alter_aggregate" || op == "engine.op.ddl_drop_aggregate" || op == "engine.op.session_role_switch" || op == "engine.op.session_setting_set" || op == "engine.op.session_setting_reset" || op == "engine.op.session_setting_get" || op == "engine.op.session_default_qualifier_set" || op == "engine.op.session_discard" || op == "engine.op.session_snapshot_handle" || op == "engine.op.context_set") {
+  else if (op == "engine.op.context_get" || op == "engine.op.context_unset" || op == "engine.op.security_create_privilege_template" || op == "engine.op.security_create_user" || op == "engine.op.sec_alter_user" || op == "engine.op.sec_create_role" || op == "engine.op.sec_drop_role" || op == "engine.op.sec_create_policy" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.session_role_switch" || op == "engine.op.session_setting_set" || op == "engine.op.session_setting_reset" || op == "engine.op.session_setting_get" || op == "engine.op.session_default_qualifier_set" || op == "engine.op.session_discard" || op == "engine.op.session_snapshot_handle" || op == "engine.op.context_set") {
     result.accepted = true;
     result.dispatched_to_api = true;
     result.api_result.operation_id = op;
@@ -10669,7 +11625,6 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           "sblr.txn_begin.cancelled_before_durable_start",
           "transaction begin was cancelled before durable MGA start");
     } else {
-      result.api_result.ok = true;
       const auto digest = scratchbird::core::hash::ComputeSha256Digest(
           request.envelope.operands.front().value_body);
       if (!digest.ok()) {
@@ -10680,6 +11635,12 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
             "engine.sblr.txn_begin.evidence_hash_failed",
             "transaction-begin evidence SHA-256 was unavailable");
       } else {
+        // Dispatch validates the canonical transaction-begin envelope and its
+        // evidence.  The public ABI owns the single durable MGA publication
+        // after binding the authenticated receipt and clearing the acquisition
+        // transaction selector; executing here would publish the begin twice.
+        result.api_result.ok = true;
+        result.api_result.operation_id = op;
         result.api_result.evidence.push_back({
             "engine.op.txn_begin",
             "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
@@ -10843,7 +11804,28 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if(op=="engine.op.kv_structured_stream_append"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.kv_structured_stream_append.cancelled_before_lookup","KV structured stream read cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.kv_structured_timeseries"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.kv_structured_timeseries.cancelled_before_lookup","KV structured stream read cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.system_config_set"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.system_config_set.cancelled_before_lookup","System config set cancelled before lookup");}else result.api_result.ok=true;}
-  else if(op=="engine.op.ddl_create_domain" || op=="engine.op.ddl_create_schema" || op=="engine.op.ddl_create_table" || op=="engine.op.ddl_create_index" || op=="engine.op.ddl_drop_index" || op=="engine.op.ddl_alter_domain" || op=="engine.op.ddl_create_view" || op=="engine.op.ddl_create_materialized_view" || op=="engine.op.ddl_create_type" || op=="engine.op.ddl_alter_type" || op=="engine.op.ddl_drop_type" || op=="engine.op.ddl_alter_view" || op=="engine.op.ddl_drop_view" || op=="engine.op.ddl_create_trigger" || op=="engine.op.ddl_alter_trigger"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED",op=="engine.op.ddl_create_index"?"sblr.ddl_create_index.cancelled_before_lookup":"sblr.ddl_create_table.cancelled_before_lookup","DDL create operation cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_type"){
+    if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){
+      result.accepted=false;
+      result.dispatched_to_api=false;
+      result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_type.cancelled_before_lookup","DDL create type operation cancelled before lookup");
+    }else{
+      auto typed=TypedRequest<api::EngineCreateStructuredTypeRequest>(request);
+      result.api_result=api::EngineCreateStructuredType(typed);
+    }
+  }
+  else if(op=="engine.op.ddl_create_view"){
+    if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){
+      result.accepted=false;
+      result.dispatched_to_api=false;
+      result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_view.cancelled_before_lookup","DDL create view operation cancelled before lookup");
+    }else{
+      auto typed=TypedRequest<api::EngineCreateViewRequest>(request);
+      result.api_result=api::EngineCreateView(typed);
+      result.api_result.operation_id=op;
+    }
+  }
+  else if(op=="engine.op.ddl_create_domain" || op=="engine.op.ddl_create_schema" || op=="engine.op.ddl_create_table" || op=="engine.op.ddl_drop_index" || op=="engine.op.ddl_alter_domain" || op=="engine.op.ddl_create_materialized_view" || op=="engine.op.ddl_alter_type" || op=="engine.op.ddl_drop_type" || op=="engine.op.ddl_alter_view" || op=="engine.op.ddl_drop_view" || op=="engine.op.ddl_create_trigger" || op=="engine.op.ddl_alter_trigger"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_table.cancelled_before_lookup","DDL create operation cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_drop_trigger"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_trigger.cancelled_before_lookup","DDL drop trigger cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_create_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_procedure.cancelled_before_lookup","DDL create procedure cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_drop_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_procedure.cancelled_before_lookup","DDL drop procedure cancelled before lookup");}else result.api_result.ok=true;}
@@ -11189,7 +12171,12 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                                 request.envelope.operands.size(),
                                 phase_micros);
   }
-  else if (op == "dml.plan_import_rows") result.api_result = api::EnginePlanImportRows(TypedPlanImportRowsRequest(request));
+  else if (op == "dml.plan_import_rows") {
+    auto plan_result =
+        api::EnginePlanImportRows(TypedPlanImportRowsRequest(request));
+    result.api_result = static_cast<const api::EngineApiResult&>(plan_result);
+    result.plan_import_rows_result = std::move(plan_result);
+  }
   else if (op == "dml.normalize_import_reject_model") result.api_result = api::EngineNormalizeImportRejectModel(TypedNormalizeImportRejectModelRequest(request));
   else if (op == "dml.normalize_import_checkpoint_model") result.api_result = api::EngineNormalizeImportCheckpointModel(TypedNormalizeImportCheckpointRequest(request));
   else if (op == "dml.execute_import_rows") result.api_result = api::EngineExecuteImportRows(TypedExecuteImportRowsRequest(request));
@@ -11298,12 +12285,36 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (IsFilespacePackageOperation(op)) result.api_result = api::EngineFilespacePackageOperation(TypedFilespacePackageRequest(request));
   else if (IsShardPlacementDescriptorOperation(op)) result.api_result = api::EnginePlanShardPlacementOperation(TypedShardPlacementDescriptorRequest(request));
   else if (op.starts_with("index.")) result.api_result = api::EngineIndexManagementOperation(TypedRequest<api::EngineIndexManagementRequest>(request));
-  else if (op == "lifecycle.create_database") result.api_result = api::EngineCreateLifecycle(TypedRequest<api::EngineCreateLifecycleRequest>(request));
-  else if (op == "lifecycle.open_database") result.api_result = api::EngineOpenLifecycle(TypedRequest<api::EngineOpenLifecycleRequest>(request));
-  else if (op == "lifecycle.attach_database") result.api_result = api::EngineAttachLifecycle(TypedRequest<api::EngineAttachLifecycleRequest>(request));
-  else if (op == "lifecycle.detach_database") result.api_result = api::EngineDetachLifecycle(TypedRequest<api::EngineDetachLifecycleRequest>(request));
-  else if (op == "lifecycle.enter_maintenance") result.api_result = api::EngineEnterMaintenanceLifecycle(TypedRequest<api::EngineEnterMaintenanceLifecycleRequest>(request));
-  else if (op == "lifecycle.exit_maintenance") result.api_result = api::EngineExitMaintenanceLifecycle(TypedRequest<api::EngineExitMaintenanceLifecycleRequest>(request));
+  else if (op == "lifecycle.create_database" ||
+           op == "engine.op.lifecycle_create_database") {
+    result.api_result = api::EngineCreateLifecycle(
+        TypedRequest<api::EngineCreateLifecycleRequest>(request));
+  }
+  else if (op == "lifecycle.open_database" ||
+           op == "engine.op.lifecycle_open_database") {
+    result.api_result = api::EngineOpenLifecycle(
+        TypedRequest<api::EngineOpenLifecycleRequest>(request));
+  }
+  else if (op == "lifecycle.attach_database" ||
+           op == "engine.op.lifecycle_attach_database") {
+    result.api_result = api::EngineAttachLifecycle(
+        TypedRequest<api::EngineAttachLifecycleRequest>(request));
+  }
+  else if (op == "lifecycle.detach_database" ||
+           op == "engine.op.lifecycle_detach_database") {
+    result.api_result = api::EngineDetachLifecycle(
+        TypedRequest<api::EngineDetachLifecycleRequest>(request));
+  }
+  else if (op == "lifecycle.enter_maintenance" ||
+           op == "engine.op.lifecycle_enter_maintenance") {
+    result.api_result = api::EngineEnterMaintenanceLifecycle(
+        TypedRequest<api::EngineEnterMaintenanceLifecycleRequest>(request));
+  }
+  else if (op == "lifecycle.exit_maintenance" ||
+           op == "engine.op.lifecycle_exit_maintenance") {
+    result.api_result = api::EngineExitMaintenanceLifecycle(
+        TypedRequest<api::EngineExitMaintenanceLifecycleRequest>(request));
+  }
   else if (op == "lifecycle.enter_restricted_open") result.api_result = api::EngineEnterRestrictedOpenLifecycle(TypedRequest<api::EngineEnterRestrictedOpenLifecycleRequest>(request));
   else if (op == "lifecycle.exit_restricted_open") result.api_result = api::EngineExitRestrictedOpenLifecycle(TypedRequest<api::EngineExitRestrictedOpenLifecycleRequest>(request));
   else if (op == "lifecycle.inspect_database") result.api_result = api::EngineInspectLifecycle(TypedRequest<api::EngineInspectLifecycleRequest>(request));
@@ -11360,8 +12371,6 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "nosql.key_value_pipeline") result.api_result = api::EngineKeyValuePipeline(TypedRequest<api::EngineKeyValuePipelineRequest>(request));
   else if (op == "nosql.key_value_atomic_program") result.api_result = api::EngineKeyValueAtomicProgram(TypedRequest<api::EngineKeyValueAtomicProgramRequest>(request));
   else if (op == "nosql.backpressure_debt_plan") result.api_result = api::EnginePlanNoSqlBackpressureDebt(TypedRequest<api::EnginePlanNoSqlBackpressureDebtRequest>(request));
-  else if (op == "nosql.family_maintenance_plan") result.api_result = api::EnginePlanNoSqlFamilyMaintenance(TypedRequest<api::EnginePlanNoSqlFamilyMaintenanceRequest>(request));
-  else if (op == "nosql.statistics_advisor_plan") result.api_result = api::EnginePlanNoSqlStatisticsAdvisor(TypedRequest<api::EnginePlanNoSqlStatisticsAdvisorRequest>(request));
   else if (op == "nosql.graph_query") result.api_result = api::EngineGraphQuery(TypedRequest<api::EngineGraphQueryRequest>(request));
   else if (op == "nosql.vector_search") result.api_result = api::EngineVectorSearch(TypedRequest<api::EngineVectorSearchRequest>(request));
   else if (op == "nosql.vector_collection_op") result.api_result = api::EngineVectorCollectionOperation(TypedRequest<api::EngineVectorCollectionOperationRequest>(request));

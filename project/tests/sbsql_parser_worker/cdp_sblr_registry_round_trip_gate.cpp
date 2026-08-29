@@ -10,6 +10,7 @@
 #include "sblr_opcode_registry.hpp"
 #include "sblr_to_sbsql.hpp"
 #include "uuid.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 
 #include <array>
 #include <chrono>
@@ -54,17 +55,18 @@ struct UuidFactory {
 struct OperationRow {
   std::string_view operation_id;
   std::string_view opcode;
+  bool executor_evidence_accepted;
 };
 
 constexpr std::array<OperationRow, 8> kRepresentativeOperations{{
-    {"transaction.txn_commit", "SBLR_TXN_COMMIT"},
-    {"dml.insert", "SBLR_INSERT"},
-    {"dml.update", "SBLR_UPDATE"},
-    {"dml.delete", "SBLR_DELETE"},
-    {"bulk.import_stream", "SBLR_BULK_IMPORT_STREAM"},
-    {"query.execute", "SBLR_QUERY_EXECUTE"},
-    {"query.explain", "SBLR_QUERY_EXPLAIN"},
-    {"cluster.write_admission", "SBLR_CLUSTER_WRITE_ADMISSION"},
+    {"engine.op.txn_commit", "SBLR_TXN_COMMIT", false},
+    {"engine.op.insert", "SBLR_INSERT", false},
+    {"engine.op.update", "SBLR_UPDATE", false},
+    {"engine.op.delete", "SBLR_DELETE", false},
+    {"engine.op.bulk_import_stream", "SBLR_BULK_IMPORT_STREAM", true},
+    {"engine.op.query_execute", "SBLR_QUERY_EXECUTE", false},
+    {"engine.op.query_explain", "SBLR_QUERY_EXPLAIN", false},
+    {"engine.op.cluster_write_admission", "SBLR_CLUSTER_WRITE_ADMISSION", true},
 }};
 
 sblr::SblrOperand Operand(std::string name, std::string value) {
@@ -81,6 +83,22 @@ const sblr::SblrOperand* FindOperand(const sblr::SblrOperationEnvelope& envelope
     if (operand.name == name) return &operand;
   }
   return nullptr;
+}
+
+std::string CanonicalOperandText(const sblr::SblrOperationEnvelope& envelope,
+                                 std::string_view name) {
+  const auto* operand = FindOperand(envelope, name);
+  Require(operand != nullptr &&
+              operand->value_kind == sblr::SblrValueKind::literal_typed &&
+              operand->value_body.size() >= 24,
+          "CDP-025 canonical typed operand is missing");
+  const auto size = scratchbird::engine::SblrReadU64(
+      operand->value_body.data() + 16);
+  Require(size == operand->value_body.size() - 24,
+          "CDP-025 canonical typed operand length drifted");
+  return std::string(
+      reinterpret_cast<const char*>(operand->value_body.data() + 24),
+      static_cast<std::size_t>(size));
 }
 
 sblr::SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
@@ -135,7 +153,8 @@ sblr::SblrOperationEnvelope CanonicalEnvelope(const sblr::SblrOpcodeEntry& entry
   envelope.requires_security_context = entry.requires_security_context;
   envelope.requires_transaction_context = entry.requires_transaction_context;
   envelope.requires_cluster_authority = entry.requires_cluster_authority;
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 void RequireEnvelopeDiagnostic(const sblr::SblrOperationEnvelope& envelope,
@@ -181,12 +200,28 @@ void CheckRegistryAdmission() {
             "CDP-025 registry operation id drifted");
     Require(by_operation->opcode == row.opcode,
             "CDP-025 registry opcode drifted");
+    Require(by_operation->executor_id == row.operation_id,
+            "CDP-025 Core executor binding drifted");
+    Require(by_operation->executor_evidence_required,
+            "CDP-025 Core executor evidence gate is not required");
+    Require(by_operation->executor_evidence_accepted ==
+                row.executor_evidence_accepted,
+            "CDP-025 executor evidence publication drifted");
 
     const auto envelope =
         CanonicalEnvelope(*by_operation, uuids, 100 + index * 10);
     const auto accepted = sblr::ValidateSblrOpcodeForEnvelope(envelope);
+    if (!row.executor_evidence_accepted) {
+      Require(!accepted.ok &&
+                  accepted.diagnostic_id ==
+                      "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" &&
+                  accepted.diagnostic_id ==
+                      by_operation->missing_executor_evidence_diagnostic,
+              "CDP-025 missing executor evidence did not fail closed");
+      continue;
+    }
     Require(accepted.ok,
-            "CDP-025 canonical SBLR opcode validation rejected required contexts");
+            "CDP-025 evidence-backed SBLR opcode validation rejected required contexts");
     Require(accepted.entry == by_operation,
             "CDP-025 validation did not return canonical registry entry");
 
@@ -236,8 +271,8 @@ void CheckRegistryAdmission() {
 }
 
 sblr::SblrOperationEnvelope BuildDmlInsertEnvelope(const UuidFactory& uuids) {
-  const auto* entry = sblr::LookupSblrOperation("dml.insert");
-  Require(entry != nullptr, "CDP-025 dml.insert registry entry missing");
+  const auto* entry = sblr::LookupSblrOperation("engine.op.insert");
+  Require(entry != nullptr, "CDP-025 engine.op.insert registry entry missing");
   auto envelope = CanonicalEnvelope(*entry, uuids, 300);
   const std::string table_uuid = uuids.Text(310);
   const std::string descriptor_uuid = uuids.Text(311);
@@ -253,16 +288,25 @@ sblr::SblrOperationEnvelope BuildDmlInsertEnvelope(const UuidFactory& uuids) {
   envelope.operands.push_back(Operand("value_parameter_symbol_key", "param.note"));
   envelope.operands.push_back(Operand("value_parameter_uuid", parameter_uuid));
 
-  AttachSourcePolicy(&envelope, uuids, 320);
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("object_display_name", "object.cdp025_table", table_uuid,
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
+}
+
+void AttachDmlSourceArtifacts(sblr::SblrOperationEnvelope* envelope,
+                              const UuidFactory& uuids) {
+  AttachSourcePolicy(envelope, uuids, 320);
+  envelope->source_artifact_map.symbols.push_back(
+      Symbol("object_display_name", "object.cdp025_table",
+             CanonicalOperandText(*envelope, "target_object_uuid"),
              "cdp025_table", "dml.target"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("column_alias", "col.note", column_uuid, "note", "dml.value"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("parameter", "param.note", parameter_uuid, ":p_note",
+  envelope->source_artifact_map.symbols.push_back(
+      Symbol("column_alias", "col.note",
+             CanonicalOperandText(*envelope, "value_column_uuid"), "note",
+             "dml.value"));
+  envelope->source_artifact_map.symbols.push_back(
+      Symbol("parameter", "param.note",
+             CanonicalOperandText(*envelope, "value_parameter_uuid"), ":p_note",
              "dml.parameter"));
-  return envelope;
 }
 
 void CheckEnvelopeRoundTripAndValidation() {
@@ -275,15 +319,10 @@ void CheckEnvelopeRoundTripAndValidation() {
           "CDP-025 operation id did not survive SBLR round trip");
   Require(decoded.envelope.opcode == envelope.opcode,
           "CDP-025 opcode did not survive SBLR round trip");
-  Require(decoded.envelope.requires_security_context ==
-              envelope.requires_security_context,
-          "CDP-025 security flag did not survive SBLR round trip");
-  Require(decoded.envelope.requires_transaction_context ==
-              envelope.requires_transaction_context,
-          "CDP-025 transaction flag did not survive SBLR round trip");
-  Require(decoded.envelope.requires_cluster_authority ==
-              envelope.requires_cluster_authority,
-          "CDP-025 cluster flag did not survive SBLR round trip");
+  Require(decoded.envelope.requires_security_context &&
+              !decoded.envelope.requires_transaction_context &&
+              !decoded.envelope.requires_cluster_authority,
+          "CDP-025 decoded SBOP authority defaults drifted");
   Require(decoded.envelope.parser_package_uuid == envelope.parser_package_uuid,
           "CDP-025 parser package UUID did not survive SBLR round trip");
   Require(decoded.envelope.registry_snapshot_uuid ==
@@ -293,49 +332,61 @@ void CheckEnvelopeRoundTripAndValidation() {
           "CDP-025 operands did not survive SBLR round trip");
   Require(FindOperand(decoded.envelope, "target_object_uuid") != nullptr,
           "CDP-025 target object UUID operand did not survive round trip");
-  Require(decoded.envelope.source_artifact_map.policy_status ==
-              "non_authoritative_render_metadata",
-          "CDP-025 source artifact policy did not survive round trip");
-  Require(decoded.envelope.source_artifact_map.render_metadata_only,
-          "CDP-025 render-metadata-only source flag did not survive round trip");
-  Require(!decoded.envelope.source_artifact_map.raw_sql_text_authoritative,
-          "CDP-025 source authority flag drifted on round trip");
-  Require(decoded.envelope.source_artifact_map.symbols.size() == 3,
-          "CDP-025 source symbols did not survive round trip");
+  Require(decoded.envelope.source_artifact_map.symbols.empty() &&
+              decoded.envelope.source_artifact_map.operation_render_hints.empty(),
+          "CDP-025 SBOP round trip acquired SBEE-owned source artifacts");
 
+  const auto* insert_entry =
+      sblr::LookupSblrOperation("engine.op.insert");
+  Require(insert_entry != nullptr,
+          "CDP-025 engine.op.insert registry entry disappeared");
+  auto admission_envelope = decoded.envelope;
+  admission_envelope.requires_security_context =
+      insert_entry->requires_security_context;
+  admission_envelope.requires_transaction_context =
+      insert_entry->requires_transaction_context;
+  admission_envelope.requires_cluster_authority =
+      insert_entry->requires_cluster_authority;
   const auto opcode_validation =
-      sblr::ValidateSblrOpcodeForEnvelope(decoded.envelope);
-  Require(opcode_validation.ok,
-          "CDP-025 decoded envelope failed registry admission validation");
+      sblr::ValidateSblrOpcodeForEnvelope(admission_envelope);
+  Require(insert_entry->executor_evidence_required &&
+              !insert_entry->executor_evidence_accepted &&
+              !opcode_validation.ok &&
+              opcode_validation.diagnostic_id ==
+                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+          "CDP-025 decoded envelope did not fail closed on missing executor evidence");
 
   auto major_drift = envelope;
   major_drift.envelope_major = sblr::kEngineSblrEnvelopeMajor + 1;
   RequireEnvelopeDiagnostic(major_drift,
-                            "SB_SBLR_ENVELOPE_MAJOR_UNSUPPORTED",
+                            "SBLR.OPERATION.VERSION_INVALID",
                             "CDP-025 major-version drift was not rejected");
 
   auto sql_text = envelope;
   sql_text.contains_sql_text = true;
   RequireEnvelopeDiagnostic(sql_text,
-                            "SB_SBLR_SQL_TEXT_FORBIDDEN",
+                            "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY",
                             "CDP-025 SQL text envelope drift was not rejected");
 
   auto source_sql_text = envelope;
+  AttachDmlSourceArtifacts(&source_sql_text, uuids);
   source_sql_text.source_artifact_map.contains_sql_text = true;
   RequireEnvelopeDiagnostic(source_sql_text,
-                            "SB_SBLR_SOURCE_ARTIFACT_SQL_TEXT_FORBIDDEN",
-                            "CDP-025 source SQL text drift was not rejected");
+                            "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY",
+                            "CDP-025 in-band source artifacts were not rejected from SBOP");
 
   auto source_authority = envelope;
+  AttachDmlSourceArtifacts(&source_authority, uuids);
   source_authority.source_artifact_map.raw_sql_text_authoritative = true;
   RequireEnvelopeDiagnostic(source_authority,
-                            "SB_SBLR_SOURCE_ARTIFACT_AUTHORITY_FORBIDDEN",
-                            "CDP-025 source authority drift was not rejected");
+                            "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY",
+                            "CDP-025 source authority was not rejected from SBOP");
 }
 
 void CheckSblrToSbsqlConversion() {
   const UuidFactory uuids;
-  const auto envelope = BuildDmlInsertEnvelope(uuids);
+  auto envelope = BuildDmlInsertEnvelope(uuids);
+  AttachDmlSourceArtifacts(&envelope, uuids);
   Require(envelope.source_artifact_map.policy_status ==
               "non_authoritative_render_metadata",
           "CDP-025 conversion source policy is not non-authoritative");
@@ -348,6 +399,12 @@ void CheckSblrToSbsqlConversion() {
 
   const sblr::SblrToSbsqlOptions options{.source_preserving = true};
   const auto rendered = sblr::RenderSblrEnvelopeToSbsql(envelope, options);
+  if (!rendered.ok) {
+    for (const auto& diagnostic : rendered.diagnostics) {
+      std::cerr << "conversion diagnostic=" << diagnostic.code << ':'
+                << diagnostic.message << '\n';
+    }
+  }
   Require(rendered.ok,
           "CDP-025 source-preserving SBLR-to-SBsql conversion failed");
   Require(rendered.sbsql_text ==
@@ -361,13 +418,15 @@ void CheckSblrToSbsqlConversion() {
       "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED",
       "CDP-025 missing source metadata was not refused");
 
-  const auto* cluster_entry = sblr::LookupSblrOperation("cluster.write_admission");
+  const auto* cluster_entry =
+      sblr::LookupSblrOperation("engine.op.cluster_write_admission");
   Require(cluster_entry != nullptr,
-          "CDP-025 cluster.write_admission registry entry missing");
+          "CDP-025 engine.op.cluster_write_admission registry entry missing");
   auto cluster_envelope = CanonicalEnvelope(*cluster_entry, uuids, 400);
   AttachSourcePolicy(&cluster_envelope, uuids, 410);
   cluster_envelope.source_artifact_map.operation_render_hints.push_back(
-      RenderHint("cluster.write_admission", "cluster_write_admission"));
+      RenderHint("engine.op.cluster_write_admission",
+                 "cluster_write_admission"));
   RequireConversionDiagnostic(
       sblr::RenderSblrEnvelopeToSbsql(cluster_envelope, options),
       "SB_SBLR_TO_SBSQL_NON_CORE_OPERATION_REFUSED",

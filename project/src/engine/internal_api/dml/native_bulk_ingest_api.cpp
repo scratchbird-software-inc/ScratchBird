@@ -12,11 +12,15 @@
 #include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/insert_physical_integration.hpp"
+#include "hash_digest.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "observability/dml_summary_counters.hpp"
 #include "security/security_model.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <limits>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>
@@ -27,6 +31,38 @@ namespace {
 
 constexpr const char* kOperationId = "dml.execute_native_bulk_ingest";
 constexpr const char* kDisabledDiagnostic = "DML.NATIVE_BULK_INGEST.DISABLED";
+
+bool NativeBulkCancellationRequested(
+    const EngineExecuteNativeBulkIngestRequest& request) {
+  return request.context.query_cancellation_requested &&
+         request.context.query_cancellation_requested();
+}
+
+std::string NativeBulkStatementSavepointName(
+    const EngineExecuteNativeBulkIngestRequest& request,
+    std::size_t row_count) {
+  std::string material;
+  material.reserve(256);
+  material += "ScratchBird.NativeBulkLogicalStatement.V1\n";
+  material += request.context.database_uuid.canonical;
+  material.push_back('\n');
+  material += std::to_string(request.context.local_transaction_id);
+  material.push_back('\n');
+  material += request.context.transaction_uuid.canonical;
+  material.push_back('\n');
+  material += request.context.request_id;
+  material.push_back('\n');
+  material += request.target_table.uuid.canonical;
+  material.push_back('\n');
+  material += std::to_string(row_count);
+  const auto* bytes = reinterpret_cast<const scratchbird::core::platform::byte*>(
+      material.data());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      bytes, material.size());
+  if (!digest.ok()) return {};
+  return "__sblr_native_bulk_" +
+         scratchbird::core::hash::HexLower(digest.digest).substr(0, 32);
+}
 
 void AddNativeBulkIngestEvidence(EngineExecuteNativeBulkIngestResult* result,
                                  bool enabled) {
@@ -365,6 +401,16 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
         MakeInvalidRequestDiagnostic(kOperationId, "native_rowset_required"),
         true);
   }
+  if (NativeBulkCancellationRequested(request)) {
+    return NativeFailure(
+        request,
+        MakeEngineApiDiagnostic(
+            "PROCESS.CANCELLED",
+            "dml.native_bulk_ingest.cancelled_before_statement_savepoint",
+            "cancellation was observed before the logical bulk statement began",
+            true),
+        true);
+  }
   if (dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
           request.target_table.uuid.canonical)) {
@@ -380,13 +426,6 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
               true),
           true);
     }
-    const auto rows = std::span<const EngineRowValue>(
-        request.canonical_rows.data(),
-        request.canonical_rows.size());
-    return WrapTriggerAwareInsertResult(
-        request,
-        EngineInsertRows(MakeTriggerAwareInsertRequest(request, rows)),
-        rows.size());
   }
   if (request.canonical_rows.empty() && request.native_row_packet.present &&
       request.native_row_packet.row_count != row_count) {
@@ -396,17 +435,163 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
         true);
   }
 
+  const std::string savepoint_name =
+      NativeBulkStatementSavepointName(request, row_count);
+  if (savepoint_name.empty()) {
+    return NativeFailure(
+        request,
+        MakeInvalidRequestDiagnostic(kOperationId,
+                                     "logical_batch_identity_hash_failed"),
+        true);
+  }
+  const auto savepoint = CreateMgaSavepointMarker(request.context,
+                                                  savepoint_name);
+  if (savepoint.error) {
+    return NativeFailure(request, savepoint, true);
+  }
+  auto rollback_failure = [&](EngineExecuteNativeBulkIngestResult failure,
+                              std::string reason) {
+    const auto rolled_back = RollbackToMgaSavepointMarker(
+        request.context, savepoint_name);
+    failure.ok = false;
+    failure.evidence.push_back(
+        {"native_bulk_logical_batch", "rolled_back"});
+    failure.evidence.push_back(
+        {"native_bulk_logical_batch_rollback_reason", std::move(reason)});
+    failure.evidence.push_back(
+        {"native_bulk_statement_savepoint", savepoint_name});
+    if (rolled_back.error) {
+      failure.diagnostics.push_back(MakeEngineApiDiagnostic(
+          "MGA.TRANSACTION.ROLLBACK_FAILED",
+          "dml.native_bulk_ingest.statement_savepoint_rollback_failed",
+          rolled_back.detail.empty() ? rolled_back.message_key
+                                     : rolled_back.detail,
+          true));
+      failure.evidence.push_back(
+          {"native_bulk_logical_batch_atomicity", "recovery_required"});
+    } else {
+      failure.evidence.push_back(
+          {"native_bulk_logical_batch_atomicity", "no_partial_visibility"});
+    }
+    return failure;
+  };
+  auto publish_success = [&](EngineExecuteNativeBulkIngestResult success) {
+    if (NativeBulkCancellationRequested(request)) {
+      return rollback_failure(
+          NativeFailure(
+              request,
+              MakeEngineApiDiagnostic(
+                  "PROCESS.CANCELLED",
+                  "dml.native_bulk_ingest.cancelled_before_publication",
+                  "cancellation was observed before logical batch publication",
+                  true),
+              true),
+          "cancelled_before_publication");
+    }
+    const auto released = ReleaseMgaSavepointMarker(request.context,
+                                                    savepoint_name);
+    if (released.error) {
+      return rollback_failure(
+          NativeFailure(
+              request,
+              MakeEngineApiDiagnostic(
+                  "MGA.TRANSACTION.INVALID",
+                  "dml.native_bulk_ingest.statement_savepoint_release_failed",
+                  released.detail.empty() ? released.message_key
+                                          : released.detail,
+                  true),
+              true),
+          "statement_savepoint_release_failed");
+    }
+    success.evidence.push_back(
+        {"native_bulk_logical_batch", "published"});
+    success.evidence.push_back(
+        {"native_bulk_statement_savepoint", savepoint_name});
+    success.evidence.push_back(
+        {"native_bulk_logical_batch_atomicity", "one_statement_one_result"});
+    success.evidence.push_back(
+        {"native_bulk_logical_batch_row_count", std::to_string(row_count)});
+    return success;
+  };
+  auto execute_direct = [&](dml::DirectPhysicalBulkAppendRequest direct_request,
+                            dml::DirectPhysicalBulkAppendResult* direct_result,
+                            std::string* exception_reason) {
+    try {
+      *direct_result = dml::ExecuteDirectPhysicalBulkAppend(direct_request);
+      return true;
+    } catch (const std::bad_alloc&) {
+      *exception_reason = "direct_physical_allocation_failure";
+    } catch (const std::exception&) {
+      *exception_reason = "direct_physical_executor_exception";
+    } catch (...) {
+      *exception_reason = "direct_physical_executor_unknown_exception";
+    }
+    return false;
+  };
+  auto exception_failure = [&](std::string reason) {
+    const bool allocation_failure =
+        reason == "direct_physical_allocation_failure";
+    return rollback_failure(
+        NativeFailure(
+            request,
+            MakeEngineApiDiagnostic(
+                allocation_failure ? "RESOURCE.BUDGET_EXCEEDED"
+                                   : "DML.NATIVE_BULK_INGEST.EXECUTION_FAILED",
+                allocation_failure
+                    ? "dml.native_bulk_ingest.allocation_failed"
+                    : "dml.native_bulk_ingest.executor_exception",
+                reason,
+                true),
+            true),
+        std::move(reason));
+  };
+
+  if (dml_trigger_runtime::HasActiveTableTriggerDescriptors(
+          request.context,
+          request.target_table.uuid.canonical)) {
+    const auto rows = std::span<const EngineRowValue>(
+        request.canonical_rows.data(), request.canonical_rows.size());
+    auto trigger_result = WrapTriggerAwareInsertResult(
+        request,
+        EngineInsertRows(MakeTriggerAwareInsertRequest(request, rows)),
+        rows.size());
+    if (!trigger_result.ok) {
+      return rollback_failure(std::move(trigger_result),
+                              "trigger_aware_insert_refused");
+    }
+    return publish_success(std::move(trigger_result));
+  }
+
   const std::size_t window_rows = AdaptiveWindowRows(request);
   if (window_rows == 0 || window_rows >= row_count) {
-    auto result = WrapDirectPhysicalResult(
-        request,
-        scratchbird::engine::internal_api::dml::ExecuteDirectPhysicalBulkAppend(
-            MakeDirectPhysicalRequest(request)));
+    if (NativeBulkCancellationRequested(request)) {
+      return rollback_failure(
+          NativeFailure(
+              request,
+              MakeEngineApiDiagnostic(
+                  "PROCESS.CANCELLED",
+                  "dml.native_bulk_ingest.cancelled_before_mutation_window",
+                  "cancellation was observed before the native bulk window",
+                  true),
+              true),
+          "cancelled_before_first_window");
+    }
+    dml::DirectPhysicalBulkAppendResult direct;
+    std::string exception_reason;
+    if (!execute_direct(MakeDirectPhysicalRequest(request),
+                        &direct,
+                        &exception_reason)) {
+      return exception_failure(std::move(exception_reason));
+    }
+    auto result = WrapDirectPhysicalResult(request, std::move(direct));
     result.evidence.push_back({"native_bulk_adaptive_windowing", "single_window"});
     result.evidence.push_back({"native_bulk_adaptive_window_rows",
                                std::to_string(row_count)});
     result.evidence.push_back({"native_bulk_adaptive_window_count", "1"});
-    return result;
+    if (!result.ok) {
+      return rollback_failure(std::move(result), "single_window_refused");
+    }
+    return publish_success(std::move(result));
   }
 
   EngineExecuteNativeBulkIngestResult result;
@@ -429,10 +614,27 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
                                             window_rows)});
 
   for (std::size_t first = 0; first < row_count; first += window_rows) {
+    if (NativeBulkCancellationRequested(request)) {
+      return rollback_failure(
+          NativeFailure(
+              request,
+              MakeEngineApiDiagnostic(
+                  "PROCESS.CANCELLED",
+                  "dml.native_bulk_ingest.cancelled_before_mutation_window",
+                  "cancellation was observed before a native bulk window",
+                  true),
+              true),
+          "cancelled_before_window:" + std::to_string(first));
+    }
     const std::size_t count =
         std::min(window_rows, row_count - first);
-    auto direct = scratchbird::engine::internal_api::dml::ExecuteDirectPhysicalBulkAppend(
-        MakeDirectPhysicalRequest(request, first, count));
+    dml::DirectPhysicalBulkAppendResult direct;
+    std::string exception_reason;
+    if (!execute_direct(MakeDirectPhysicalRequest(request, first, count),
+                        &direct,
+                        &exception_reason)) {
+      return exception_failure(std::move(exception_reason));
+    }
     if (!direct.ok) {
       auto failure = WrapDirectPhysicalResult(request, std::move(direct));
       failure.evidence.push_back({"native_bulk_adaptive_windowing", "failed_window"});
@@ -440,7 +642,8 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
                                   std::to_string(first)});
       failure.evidence.push_back({"native_bulk_adaptive_window_row_count",
                                   std::to_string(count)});
-      return failure;
+      return rollback_failure(std::move(failure),
+                              "failed_window:" + std::to_string(first));
     }
     result.accepted_rows += direct.accepted_rows;
     result.inserted_rows += direct.inserted_rows;
@@ -468,7 +671,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
   AddDmlSummaryEvidence(&result);
   result.evidence.push_back({"orh_210_native_direct_bulk_ingest",
                              "runtime_consumed"});
-  return result;
+  return publish_success(std::move(result));
 }
 
 }  // namespace scratchbird::engine::internal_api

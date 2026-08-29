@@ -601,7 +601,7 @@ bool IsRetiredEnumLabel(const ApiBehaviorRecord& record, std::string_view label)
 
 EngineCreateStructuredTypeResult EngineCreateStructuredType(
     const EngineCreateStructuredTypeRequest& request) {
-  constexpr std::string_view kOperation = "catalog.mutation.create_type";
+  constexpr std::string_view kOperation = "engine.op.ddl_create_type";
   const std::string type_uuid = StructuredTypeUuid(request);
   const auto base = ValidateStructuredContext(request,
                                              kOperation,
@@ -633,7 +633,7 @@ EngineCreateStructuredTypeResult EngineCreateStructuredType(
   if (result.ok) {
     result.result_shape.result_kind = "rs.structured_type.descriptor.v1";
     AddStructuredEvidence(&result, "create_type", "EngineCreateStructuredType", family);
-    AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_CATALOG_MUTATION_CREATE_TYPE");
+    AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_DDL_CREATE_TYPE");
     AddApiBehaviorEvidence(&result, "audit_event", "catalog.structured_type.created");
   }
   return result;
@@ -641,7 +641,7 @@ EngineCreateStructuredTypeResult EngineCreateStructuredType(
 
 EngineAlterStructuredTypeResult EngineAlterStructuredType(
     const EngineAlterStructuredTypeRequest& request) {
-  constexpr std::string_view kOperation = "catalog.mutation.alter_type";
+  constexpr std::string_view kOperation = "engine.op.ddl_alter_type";
   const std::string type_uuid = StructuredTypeUuid(request);
   const auto base = ValidateStructuredContext(request,
                                              kOperation,
@@ -675,7 +675,7 @@ EngineAlterStructuredTypeResult EngineAlterStructuredType(
     const std::string family = PayloadField(existing.payload, "structured_family");
     result.result_shape.result_kind = "rs.structured_type.descriptor.v1";
     AddStructuredEvidence(&result, "alter_type", "EngineAlterStructuredType", family);
-    AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_CATALOG_MUTATION_ALTER_TYPE");
+    AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_DDL_ALTER_TYPE");
     AddApiBehaviorEvidence(&result, "audit_event", "catalog.structured_type.altered");
     if (!OptionValue(request, "drop_label:").empty()) {
       AddApiBehaviorEvidence(&result, "enum_tombstone", OptionValue(request, "drop_label:"));
@@ -689,7 +689,7 @@ EngineAlterStructuredTypeResult EngineAlterStructuredType(
 
 EngineDropStructuredTypeResult EngineDropStructuredType(
     const EngineDropStructuredTypeRequest& request) {
-  constexpr std::string_view kOperation = "catalog.mutation.drop_type";
+  constexpr std::string_view kOperation = "engine.op.ddl_drop_type";
   const std::string type_uuid = StructuredTypeUuid(request);
   const auto base = ValidateStructuredContext(request,
                                              kOperation,
@@ -726,7 +726,7 @@ EngineDropStructuredTypeResult EngineDropStructuredType(
                           "drop_type",
                           "EngineDropStructuredType",
                           PayloadField(existing->payload, "structured_family"));
-    AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_CATALOG_MUTATION_DROP_TYPE");
+    AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_DDL_DROP_TYPE");
     AddApiBehaviorEvidence(&result, "audit_event", "catalog.structured_type.dropped");
   }
   return result;
@@ -734,7 +734,7 @@ EngineDropStructuredTypeResult EngineDropStructuredType(
 
 EngineShowStructuredTypeResult EngineShowStructuredType(
     const EngineShowStructuredTypeRequest& request) {
-  constexpr std::string_view kOperation = "catalog.type.show";
+  constexpr std::string_view kOperation = "engine.op.catalog_introspect";
   ApiBehaviorRecord record;
   if (auto status = ValidateUsageRequest(request, kOperation, &record); status.error) {
     return DiagnosticResult<EngineShowStructuredTypeResult>(request,
@@ -747,7 +747,7 @@ EngineShowStructuredTypeResult EngineShowStructuredType(
                         "show_type",
                         "EngineShowStructuredType",
                         PayloadField(record.payload, "structured_family"));
-  AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_SHOW_TYPE");
+  AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_CATALOG_INTROSPECT");
   AddStructuredTypeRow(&result, record, request);
   result.result_shape.result_kind = "rs.structured_type.descriptor.v1";
   return result;
@@ -755,7 +755,7 @@ EngineShowStructuredTypeResult EngineShowStructuredType(
 
 EngineShowStructuredTypesResult EngineShowStructuredTypes(
     const EngineShowStructuredTypesRequest& request) {
-  constexpr std::string_view kOperation = "catalog.type.show_all";
+  constexpr std::string_view kOperation = "engine.op.catalog_introspect";
   const auto base = ValidateStructuredContext(request,
                                              kOperation,
                                              false,
@@ -769,7 +769,7 @@ EngineShowStructuredTypesResult EngineShowStructuredTypes(
   auto result = MakeApiBehaviorSuccess<EngineShowStructuredTypesResult>(
       request.context, std::string(kOperation));
   AddStructuredEvidence(&result, "show_types", "EngineShowStructuredTypes");
-  AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_SHOW_TYPES");
+  AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_CATALOG_INTROSPECT");
   const std::string family_filter =
       CanonicalFamily(OptionValue(request, "structured_family:")).value_or("");
   const auto records = VisibleApiBehaviorRecords(request.context,
@@ -788,7 +788,7 @@ EngineShowStructuredTypesResult EngineShowStructuredTypes(
 
 EngineEvaluateStructuredTypeConstructorResult EngineEvaluateStructuredTypeConstructor(
     const EngineEvaluateStructuredTypeConstructorRequest& request) {
-  constexpr std::string_view kOperation = "query.structured_type.constructor";
+  constexpr std::string_view kOperation = "engine.op.domain_operation";
   ApiBehaviorRecord record;
   if (auto status = ValidateUsageRequest(request, kOperation, &record); status.error) {
     return DiagnosticResult<EngineEvaluateStructuredTypeConstructorResult>(
@@ -825,7 +825,7 @@ EngineEvaluateStructuredTypeConstructorResult EngineEvaluateStructuredTypeConstr
 
 EngineEvaluateStructuredTypeCastResult EngineEvaluateStructuredTypeCast(
     const EngineEvaluateStructuredTypeCastRequest& request) {
-  constexpr std::string_view kOperation = "query.structured_type.cast";
+  constexpr std::string_view kOperation = "engine.op.cast";
   ApiBehaviorRecord record;
   if (auto status = ValidateUsageRequest(request, kOperation, &record); status.error) {
     return DiagnosticResult<EngineEvaluateStructuredTypeCastResult>(
@@ -848,7 +848,7 @@ EngineEvaluateStructuredTypeCastResult EngineEvaluateStructuredTypeCast(
 
 EngineCompareStructuredTypeValuesResult EngineCompareStructuredTypeValues(
     const EngineCompareStructuredTypeValuesRequest& request) {
-  constexpr std::string_view kOperation = "query.structured_type.compare";
+  constexpr std::string_view kOperation = "engine.op.compare";
   ApiBehaviorRecord record;
   if (auto status = ValidateUsageRequest(request, kOperation, &record); status.error) {
     return DiagnosticResult<EngineCompareStructuredTypeValuesResult>(
@@ -871,7 +871,7 @@ EngineCompareStructuredTypeValuesResult EngineCompareStructuredTypeValues(
 
 EngineSerializeStructuredTypeValueResult EngineSerializeStructuredTypeValue(
     const EngineSerializeStructuredTypeValueRequest& request) {
-  constexpr std::string_view kOperation = "query.structured_type.serialize";
+  constexpr std::string_view kOperation = "engine.op.domain_operation";
   ApiBehaviorRecord record;
   if (auto status = ValidateUsageRequest(request, kOperation, &record); status.error) {
     return DiagnosticResult<EngineSerializeStructuredTypeValueResult>(

@@ -22,7 +22,12 @@ trap cleanup EXIT
 
 mkdir -p "${WORK_ROOT}"
 
-FIXTURE="${BUILD_ROOT}/tests/database_lifecycle/database_lifecycle_admin_cli_conformance"
+TARGET_PLATFORM="${SB_PUBLIC_TARGET_PLATFORM:-}"
+if [[ -z "${TARGET_PLATFORM}" && -f "${BUILD_ROOT}/CMakeCache.txt" ]]; then
+  TARGET_PLATFORM="$(sed -n 's/^SB_PUBLIC_TARGET_PLATFORM:[^=]*=//p' "${BUILD_ROOT}/CMakeCache.txt" | head -n 1)"
+fi
+TARGET_PLATFORM="${TARGET_PLATFORM:-linux}"
+FIXTURE="${BUILD_ROOT}/output/${TARGET_PLATFORM}/bin/database_lifecycle_admin_cli_conformance"
 if [[ ! -x "${FIXTURE}" ]]; then
   echo "admin_lifecycle_smoke=missing_fixture:${FIXTURE}" >&2
   exit 2
