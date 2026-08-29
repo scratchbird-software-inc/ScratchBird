@@ -832,6 +832,7 @@ int main(int argc, char** argv) {
       operation == "database-deserialize-logical-snapshot" ?
           "CSC-TEST-002741" :
       operation == "ddl-create-macro" ? "CSC-TEST-002745" :
+      operation == "security-create-user" ? "CSC-TEST-002965" :
       operation == "ddl-drop-macro" ? "CSC-TEST-002749" :
       operation == "admin-register-external-relation-resolver" ?
           "CSC-TEST-002753" :
@@ -889,6 +890,7 @@ int main(int argc, char** argv) {
       operation == "database-deserialize-logical-snapshot" ?
           "DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT" :
       operation == "ddl-create-macro" ? "DDL_CREATE_MACRO" :
+      operation == "security-create-user" ? "SECURITY_CREATE_USER" :
       operation == "ddl-drop-macro" ? "DDL_DROP_MACRO" :
       operation == "admin-register-external-relation-resolver" ?
           "ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER" :

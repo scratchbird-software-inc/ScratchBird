@@ -63,6 +63,10 @@ STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
         "CSC-TEST-002745", "DDL_CREATE_MACRO",
         "engine.op.ddl_create_macro", "SBLR_DDL_CREATE_MACRO", 1633,
     ),
+    "security-create-user": (
+        "CSC-TEST-002965", "SECURITY_CREATE_USER",
+        "engine.op.sec_create_user", "SBLR_SEC_CREATE_USER", 1792,
+    ),
     "ddl-alter-aggregate": (
         "CSC-TEST-002717", "DDL_ALTER_AGGREGATE",
         "engine.op.ddl_alter_aggregate", "SBLR_DDL_ALTER_AGGREGATE", 1626,
@@ -394,6 +398,29 @@ def main() -> int:
                 raise ProofError(
                     "neutral authenticated executor-availability bootstrap "
                     f"failed: {bootstrap.stdout}{bootstrap.stderr}"
+                )
+            # A second neutral authenticated session settles any normal
+            # session-owned availability rows materialized asynchronously by
+            # the first attach.  Snapshot only after that baseline is stable;
+            # the target refusal itself must still leave every byte unchanged.
+            bootstrap = subprocess.run(
+                [
+                    args.client,
+                    f"unix:{endpoint}",
+                    str(database),
+                    "alice",
+                    evidence,
+                    "show-version",
+                    "sbsql-sblr-static-refusal-bootstrap-stable",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if bootstrap.returncode != 0 or bootstrap.stderr:
+                raise ProofError(
+                    "stable neutral authenticated executor-availability "
+                    f"bootstrap failed: {bootstrap.stdout}{bootstrap.stderr}"
                 )
             for trace_path in (server_trace, dispatch_trace):
                 if trace_path.exists():

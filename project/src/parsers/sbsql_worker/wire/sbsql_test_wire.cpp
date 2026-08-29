@@ -13256,7 +13256,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   if (lowered.operation_id == "engine.op.ddl_drop_rewrite_rule" && g_ddl_drop_rewrite_rule_operand != nullptr) admitted_ddl_drop_rewrite_rule_operand = g_ddl_drop_rewrite_rule_operand;
   if (lowered.operation_id == "engine.op.ddl_validate_constraint" && g_ddl_validate_constraint_operand != nullptr) admitted_ddl_validate_constraint_operand = g_ddl_validate_constraint_operand;
   if (lowered.operation_id == "engine.op.security_create_privilege_template" && g_security_create_privilege_template_operand != nullptr) admitted_security_create_privilege_template_operand = g_security_create_privilege_template_operand;
-  const std::vector<std::uint8_t>* admitted_security_create_user_operand = lowered.operation_id == "engine.op.security_create_user" ? g_security_create_user_operand : nullptr;
+  const std::vector<std::uint8_t>* admitted_security_create_user_operand = lowered.operation_id == "engine.op.sec_create_user" ? g_security_create_user_operand : nullptr;
   const std::vector<std::uint8_t>* admitted_security_create_role_operand = lowered.operation_id == "engine.op.sec_create_role" ? g_security_create_role_operand : nullptr;
   const std::vector<std::uint8_t>* admitted_security_drop_role_operand = lowered.operation_id == "engine.op.sec_drop_role" ? g_security_drop_role_operand : nullptr;
   const std::vector<std::uint8_t>* admitted_security_create_policy_operand = (lowered.operation_id == "engine.op.sec_create_policy" || lowered.operation_id == "engine.op.security_create_policy" || lowered.operation_id == "security.policy.create") ? g_security_create_policy_operand : nullptr;
@@ -13438,8 +13438,8 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
                 o.value_kind=af::SblrValueKind::psql_autonomous_frame_descriptor;o.value_body=*admitted_autonomous_descriptor;e.operands.push_back(std::move(o));
                 auto bytes=af::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());
           }()
-      : lowered.operation_id == "engine.op.security_create_user" && admitted_security_create_user_operand != nullptr
-      ? [&]() -> std::optional<CanonicalBytes> { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.security_create_user","SBLR_SEC_CREATE_USER","security.create.user.native"); e.opcode_code=1792; e.requires_transaction_context=true; e.requires_security_context=true; e.result_shape="ddl_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; c::SblrOperand o; o.ordinal=1; o.type="security_create_user_descriptor"; o.name="user"; o.value_kind=c::SblrValueKind::security_create_user_descriptor; o.value_body=*admitted_security_create_user_operand; e.operands.push_back(std::move(o)); auto bytes=c::EncodeSblrEnvelope(e); if(bytes.empty()) return std::nullopt; return CanonicalBytes(bytes.begin(),bytes.end()); }()
+      : lowered.operation_id == "engine.op.sec_create_user" && admitted_security_create_user_operand != nullptr
+      ? [&]() -> std::optional<CanonicalBytes> { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.sec_create_user","SBLR_SEC_CREATE_USER","security.create.user.native"); e.opcode_code=1792; e.requires_transaction_context=true; e.requires_security_context=true; e.result_shape="security_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; c::SblrOperand o; o.ordinal=1; o.type="create_user_descriptor"; o.name="user"; o.value_kind=c::SblrValueKind::create_user_descriptor; o.value_body=*admitted_security_create_user_operand; e.operands.push_back(std::move(o)); auto bytes=c::EncodeSblrEnvelope(e); if(bytes.empty()) return std::nullopt; return CanonicalBytes(bytes.begin(),bytes.end()); }()
       : lowered.operation_id == "engine.op.sec_drop_role" && admitted_security_drop_role_operand != nullptr
       ? [&]() -> std::optional<CanonicalBytes> { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.sec_drop_role","SBLR_SEC_DROP_ROLE","security.drop.role.native"); e.opcode_code=1801; e.requires_transaction_context=true; e.requires_security_context=true; e.result_shape="ddl_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; c::SblrOperand o; o.ordinal=1; o.type="drop_role_descriptor"; o.name="role"; o.value_kind=c::SblrValueKind::security_drop_role_descriptor; o.value_body=*admitted_security_drop_role_operand; e.operands.push_back(std::move(o)); auto bytes=c::EncodeSblrEnvelope(e); if(bytes.empty()) return std::nullopt; return CanonicalBytes(bytes.begin(),bytes.end()); }()
       : lowered.operation_id == "engine.op.transaction_reservation_release" && admitted_reservation_release_descriptor != nullptr
@@ -13869,10 +13869,10 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
   }
   // Security user submissions must remain a direct typed native operation;
   // never fall through to the generic query.execute literal path.
-  if (lowered.operation_id == "engine.op.security_create_user" &&
+  if (lowered.operation_id == "engine.op.sec_create_user" &&
       admitted_security_create_user_operand != nullptr) {
     namespace c = scratchbird::engine::sblr;
-    auto e = c::MakeSblrEnvelope("engine.op.security_create_user",
+    auto e = c::MakeSblrEnvelope("engine.op.sec_create_user",
                                   "SBLR_SEC_CREATE_USER",
                                   "security.create.user.native");
     e.opcode_code = 1792;
@@ -13888,9 +13888,9 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
     e.parser_resolved_names_to_uuids = true;
     c::SblrOperand o;
     o.ordinal = 1;
-    o.type = "security_create_user_descriptor";
+    o.type = "create_user_descriptor";
     o.name = "user";
-    o.value_kind = c::SblrValueKind::security_create_user_descriptor;
+    o.value_kind = c::SblrValueKind::create_user_descriptor;
     o.value_body = *admitted_security_create_user_operand;
     e.operands.push_back(std::move(o));
     const auto bytes = c::EncodeSblrEnvelope(e);
@@ -27175,7 +27175,7 @@ PipelineResult SbsqlTestWireSession::RunSecurityCreateUserForWire() {
   c::SblrSecurityCreateUserRequestV1 q; q.receipt=*receipt; q.occurrence=1; q.template_occurrence=1;
   auto coordinated=server_client_->CoordinateSecurityCreateUser(session_,c::EncodeSblrSecurityCreateUserRequestV1(q)); result.messages=coordinated.messages; if(!coordinated.accepted){if(result.messages.diagnostics.empty())result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.COORDINATE","ERROR","coordinate request refused without diagnostic","sbsql_sblr_alignment"));return result;}
   c::SblrSecurityCreateUserDescriptorV1 d; std::string detail; if(!c::DecodeSblrSecurityCreateUserDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false)){result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.DESCRIPTOR","ERROR",detail,"sbsql_sblr_alignment"));return result;}
-  auto operand=c::EncodeSblrSecurityCreateUserDescriptorV1(d,true); if(operand.empty()){result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.OPERAND","ERROR","operand encoding returned empty","sbsql_sblr_alignment"));return result;} BoundStatement bound; SblrEnvelope lowered; lowered.operation_id="engine.op.security_create_user"; g_security_create_user_operand=&operand;
+  auto operand=c::EncodeSblrSecurityCreateUserDescriptorV1(d,true); if(operand.empty()){result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.OPERAND","ERROR","operand encoding returned empty","sbsql_sblr_alignment"));return result;} BoundStatement bound; SblrEnvelope lowered; lowered.operation_id="engine.op.sec_create_user"; g_security_create_user_operand=&operand;
   auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr); g_security_create_user_operand=nullptr; if(!submission){result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.SUBMISSION","ERROR","canonical submission returned empty","sbsql_sblr_alignment"));return result;}
   auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false); result.accepted=executed.accepted; result.messages=std::move(executed.messages); if(!result.accepted&&result.messages.diagnostics.empty())result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.EXECUTE","ERROR","execute returned empty refusal","sbsql_sblr_alignment")); if(result.accepted){c::SblrSecurityCreateUserResultV1 rr;if(!c::DecodeSblrSecurityCreateUserResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail)){result.accepted=false;result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.RESULT","ERROR",detail,"sbsql_sblr_alignment"));}} return result;
 }

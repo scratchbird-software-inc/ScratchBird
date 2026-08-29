@@ -10437,7 +10437,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_drop_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_drop_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_DROP_REWRITE_RULE"&&request.envelope.opcode_code==1619;
   const bool exact_ddl_validate_constraint = request.envelope.operation_id=="engine.op.ddl_validate_constraint"&&request.envelope.opcode=="SBLR_DDL_VALIDATE_CONSTRAINT"&&request.envelope.opcode_code==1620;
   const bool exact_security_create_privilege_template = request.envelope.operation_id=="engine.op.security_create_privilege_template"&&request.envelope.opcode=="SBLR_SECURITY_CREATE_PRIVILEGE_TEMPLATE"&&request.envelope.opcode_code==1621;
-  const bool exact_security_create_user = request.envelope.operation_id=="engine.op.security_create_user"&&request.envelope.opcode=="SBLR_SEC_CREATE_USER"&&request.envelope.opcode_code==1792;
+  const bool exact_security_create_user = request.envelope.operation_id=="engine.op.sec_create_user"&&request.envelope.opcode=="SBLR_SEC_CREATE_USER"&&request.envelope.opcode_code==1792;
   const bool exact_security_alter_user = request.envelope.operation_id=="engine.op.sec_alter_user"&&request.envelope.opcode=="SBLR_SEC_ALTER_USER"&&request.envelope.opcode_code==1793;
   const bool exact_security_create_role = request.envelope.operation_id=="engine.op.sec_create_role"&&request.envelope.opcode=="SBLR_SEC_CREATE_ROLE"&&request.envelope.opcode_code==1794;
   const bool exact_security_drop_role = request.envelope.operation_id=="engine.op.sec_drop_role"&&request.envelope.opcode=="SBLR_SEC_DROP_ROLE"&&request.envelope.opcode_code==1801;
@@ -11081,6 +11081,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           "engine.op.security_alter_privilege_template",
           "SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE", 1622) ||
       has_exact_static_executor_evidence_identity(
+          "engine.op.sec_create_user", "SBLR_SEC_CREATE_USER", 1792) ||
+      has_exact_static_executor_evidence_identity(
           "engine.op.security_drop_privilege_template",
           "SBLR_SECURITY_DROP_PRIVILEGE_TEMPLATE", 1623) ||
       has_exact_static_executor_evidence_identity(
@@ -11624,7 +11626,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.result_shape.result_kind = "management_operation_result";
     result.api_result.evidence.push_back({"engine.op.ddl_validate_constraint", "executor_dispatch_admitted"});
   }
-  else if (op == "engine.op.context_get" || op == "engine.op.context_unset" || op == "engine.op.security_create_privilege_template" || op == "engine.op.security_create_user" || op == "engine.op.sec_alter_user" || op == "engine.op.sec_create_role" || op == "engine.op.sec_drop_role" || op == "engine.op.sec_create_policy" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.session_role_switch" || op == "engine.op.session_setting_set" || op == "engine.op.session_setting_reset" || op == "engine.op.session_setting_get" || op == "engine.op.session_default_qualifier_set" || op == "engine.op.session_discard" || op == "engine.op.session_snapshot_handle" || op == "engine.op.context_set") {
+  else if (op == "engine.op.context_get" || op == "engine.op.context_unset" || op == "engine.op.security_create_privilege_template" || op == "engine.op.sec_create_user" || op == "engine.op.sec_alter_user" || op == "engine.op.sec_create_role" || op == "engine.op.sec_drop_role" || op == "engine.op.sec_create_policy" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.session_role_switch" || op == "engine.op.session_setting_set" || op == "engine.op.session_setting_reset" || op == "engine.op.session_setting_get" || op == "engine.op.session_default_qualifier_set" || op == "engine.op.session_discard" || op == "engine.op.session_snapshot_handle" || op == "engine.op.context_set") {
     result.accepted = true;
     result.dispatched_to_api = true;
     result.api_result.operation_id = op;
