@@ -16,6 +16,11 @@ from ia01_package_process_e2e import ProofError, allocate_work, seed_database, s
 
 
 STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
+    "ddl-create-temporary-table": (
+        "CSC-TEST-002661", "DDL_CREATE_TEMPORARY_TABLE",
+        "engine.op.ddl_create_temporary_table",
+        "SBLR_DDL_CREATE_TEMPORARY_TABLE", 1612,
+    ),
     "show-wait-events": (
         "CSC-TEST-002702", "READ_METRICS", "engine.op.read_metrics",
         "SBLR_READ_METRICS", 3073,

@@ -10564,7 +10564,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_alter_package = request.envelope.operation_id=="engine.op.ddl_alter_package"&&request.envelope.opcode=="SBLR_DDL_ALTER_PACKAGE"&&request.envelope.opcode_code==1561;
   const bool exact_ddl_alter_sequence = request.envelope.operation_id=="engine.op.ddl_alter_sequence"&&request.envelope.opcode=="SBLR_DDL_ALTER_SEQUENCE"&&request.envelope.opcode_code==1564;
   const bool exact_ddl_drop_sequence = request.envelope.operation_id=="engine.op.ddl_drop_sequence"&&request.envelope.opcode=="SBLR_DDL_DROP_SEQUENCE"&&request.envelope.opcode_code==1565;
-  const bool exact_ddl_create_temporary_table = request.envelope.operation_id=="engine.op.ddl_create_temporary_table"&&request.envelope.opcode=="SBLR_DDL_CREATE_TEMPORARY_TABLE"&&request.envelope.opcode_code==1561;
+  const bool exact_ddl_create_temporary_table = request.envelope.operation_id=="engine.op.ddl_create_temporary_table"&&request.envelope.opcode=="SBLR_DDL_CREATE_TEMPORARY_TABLE"&&request.envelope.opcode_code==1612;
   const bool exact_ddl_drop_temporary_table = request.envelope.operation_id=="engine.op.ddl_drop_temporary_table"&&request.envelope.opcode=="SBLR_DDL_DROP_TEMPORARY_TABLE"&&request.envelope.opcode_code==1562;
   const bool exact_ddl_rename_object_vector = request.envelope.operation_id=="engine.op.ddl_rename_object_vector"&&request.envelope.opcode=="SBLR_DDL_RENAME_OBJECT_VECTOR"&&request.envelope.opcode_code==1563;
   const bool exact_ddl_rename_object = request.envelope.operation_id=="engine.op.ddl_rename_object"&&request.envelope.opcode=="SBLR_DDL_RENAME_OBJECT"&&request.envelope.opcode_code==1572;
@@ -10631,6 +10631,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       exact_security_drop_privilege_template ||
       exact_database_create_template_clone || exact_ddl_create_aggregate ||
       exact_ddl_create_macro || exact_ddl_drop_macro ||
+      exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table ||
       exact_ddl_create_dictionary ||
       exact_ddl_drop_dictionary || exact_ddl_alter_dictionary ||
       exact_ddl_create_continuous_view || exact_ddl_alter_continuous_view ||

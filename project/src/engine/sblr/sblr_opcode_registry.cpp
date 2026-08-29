@@ -24,7 +24,7 @@ struct CanonicalOpcodeCodeRow {
 // Generated from the manifest-authoritative sblr-opcodes.yaml assignment.
 // The runtime never derives a code from vector order, text hashing, aliases,
 // or an implementation-private sequence.
-constexpr std::array<CanonicalOpcodeCodeRow, 629> kCanonicalOpcodeCodes{{
+constexpr std::array<CanonicalOpcodeCodeRow, 631> kCanonicalOpcodeCodes{{
     {"SBLR_PACKAGE_BEGIN", 0x0001u},
     {"SBLR_PACKAGE_END", 0x0002u},
     {"SBLR_LITERAL", 0x0003u},
@@ -592,6 +592,8 @@ constexpr std::array<CanonicalOpcodeCodeRow, 629> kCanonicalOpcodeCodes{{
     {"SBLR_DATABASE_CREATE_TEMPLATE_CLONE", 0x0658u},
     {"SBLR_DDL_CREATE_AGGREGATE", 0x0659u},
     {"SBLR_DDL_ALTER_AGGREGATE", 0x065Au},
+    {"SBLR_DDL_CREATE_TEMPORARY_TABLE", 0x064Cu},
+    {"SBLR_DDL_DROP_TEMPORARY_TABLE", 0x064Du},
     {"SBLR_DDL_PURGE_SYSTEM_HISTORY", 0x065Cu},
     {"SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY", 0x065Du},
     {"SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT", 0x065Eu},
@@ -1830,6 +1832,13 @@ SblrOpcodeEntry CanonicalEntry(std::string operation_id,
   ApplyIa10CEventNotificationContract(&entry);
   ApplyIa11LocalBackupArchiveContract(&entry);
   ApplyFinalCleanupExactRegistryContract(&entry);
+  if (entry.opcode == "SBLR_DDL_CREATE_TEMPORARY_TABLE" ||
+      entry.opcode == "SBLR_DDL_DROP_TEMPORARY_TABLE") {
+    entry.executor_evidence_required = true;
+    entry.executor_evidence_accepted = false;
+    entry.missing_executor_evidence_diagnostic =
+        "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+  }
   if (entry.support == SblrOpcodeSupport::cluster_refusal &&
       entry.requires_cluster_authority &&
       entry.executor_evidence_required &&
