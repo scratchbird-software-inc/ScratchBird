@@ -724,6 +724,13 @@ bool SamePersistedRowDescriptor(
   bool width_seen = false;
   bool precision_seen = false;
   bool scale_seen = false;
+  bool persisted_authority = false;
+  bool descriptor_generation_seen = false;
+  bool type_generation_seen = false;
+  bool codec_id_seen = false;
+  bool codec_version_seen = false;
+  bool codec_generation_seen = false;
+  bool null_encoding_seen = false;
 
   const auto exact_string_optional = [](const std::string_view value,
                                         const std::optional<std::string>& bound_value,
@@ -815,6 +822,44 @@ bool SamePersistedRowDescriptor(
       }
     } else if (key == "scale") {
       if (!exact_u32_optional(value, bound.scale, &scale_seen)) return false;
+    } else if (key == "descriptor_generation" ||
+               key == "datatype_descriptor_generation") {
+      if (descriptor_generation_seen || value.empty()) return false;
+      std::uint64_t parsed = 0;
+      const auto [end_ptr, error] = std::from_chars(
+          value.data(), value.data() + value.size(), parsed);
+      if (error != std::errc{} || end_ptr != value.data() + value.size() ||
+          parsed == 0) return false;
+      descriptor_generation_seen = true;
+      persisted_authority = true;
+    } else if (key == "type_generation") {
+      if (type_generation_seen || value.empty()) return false;
+      std::uint64_t parsed = 0;
+      const auto [end_ptr, error] = std::from_chars(
+          value.data(), value.data() + value.size(), parsed);
+      if (error != std::errc{} || end_ptr != value.data() + value.size() ||
+          parsed == 0) return false;
+      type_generation_seen = true;
+      persisted_authority = true;
+    } else if (key == "codec_id") {
+      if (codec_id_seen || value.empty() ||
+          value.find('|') != std::string_view::npos) return false;
+      codec_id_seen = true;
+      persisted_authority = true;
+    } else if (key == "codec_version" || key == "codec_generation" ||
+               key == "null_encoding") {
+      bool* seen = key == "codec_version"
+                       ? &codec_version_seen
+                       : key == "codec_generation" ? &codec_generation_seen
+                                                      : &null_encoding_seen;
+      if (*seen || value.empty()) return false;
+      std::uint64_t parsed = 0;
+      const auto [end_ptr, error] = std::from_chars(
+          value.data(), value.data() + value.size(), parsed);
+      if (error != std::errc{} || end_ptr != value.data() + value.size() ||
+          parsed == 0) return false;
+      *seen = true;
+      persisted_authority = true;
     } else {
       return false;
     }
@@ -824,6 +869,10 @@ bool SamePersistedRowDescriptor(
     if (start == actual.encoded_descriptor.size()) return false;
   }
 
+  if (persisted_authority &&
+      (!descriptor_generation_seen || !type_generation_seen ||
+       !codec_id_seen || !codec_version_seen || !codec_generation_seen ||
+       !null_encoding_seen)) return false;
   return (canonical_seen || type_uuid_seen) &&
          collation_seen == bound.collation_uuid.has_value() &&
          timezone_seen == bound.timezone_profile_id.has_value() &&
