@@ -21,6 +21,11 @@ STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
         "engine.op.ddl_create_temporary_table",
         "SBLR_DDL_CREATE_TEMPORARY_TABLE", 1612,
     ),
+    "ddl-drop-temporary-table": (
+        "CSC-TEST-002665", "DDL_DROP_TEMPORARY_TABLE",
+        "engine.op.ddl_drop_temporary_table",
+        "SBLR_DDL_DROP_TEMPORARY_TABLE", 1613,
+    ),
     "show-wait-events": (
         "CSC-TEST-002702", "READ_METRICS", "engine.op.read_metrics",
         "SBLR_READ_METRICS", 3073,

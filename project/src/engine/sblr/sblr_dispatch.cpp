@@ -10559,13 +10559,13 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_drop_function = request.envelope.operation_id=="engine.op.ddl_drop_function"&&request.envelope.opcode=="SBLR_DDL_DROP_FUNCTION"&&request.envelope.opcode_code==1559;
   const bool exact_ddl_create_package = request.envelope.operation_id=="engine.op.ddl_create_package"&&request.envelope.opcode=="SBLR_DDL_CREATE_PACKAGE"&&request.envelope.opcode_code==1560;
   const bool exact_ddl_create_sequence = request.envelope.operation_id=="engine.op.ddl_create_sequence"&&request.envelope.opcode=="SBLR_DDL_CREATE_SEQUENCE"&&request.envelope.opcode_code==1671;
-  const bool exact_ddl_drop_package = request.envelope.operation_id=="engine.op.ddl_drop_package"&&request.envelope.opcode=="SBLR_DDL_DROP_PACKAGE"&&request.envelope.opcode_code==1562;
+  const bool exact_ddl_drop_package = request.envelope.operation_id=="engine.op.ddl_drop_package"&&request.envelope.opcode=="SBLR_DDL_DROP_PACKAGE"&&request.envelope.opcode_code==1613;
   const bool exact_ddl_drop_synonym = request.envelope.operation_id=="engine.op.ddl_drop_synonym"&&request.envelope.opcode=="SBLR_DDL_DROP_SYNONYM"&&request.envelope.opcode_code==1575;
   const bool exact_ddl_alter_package = request.envelope.operation_id=="engine.op.ddl_alter_package"&&request.envelope.opcode=="SBLR_DDL_ALTER_PACKAGE"&&request.envelope.opcode_code==1561;
   const bool exact_ddl_alter_sequence = request.envelope.operation_id=="engine.op.ddl_alter_sequence"&&request.envelope.opcode=="SBLR_DDL_ALTER_SEQUENCE"&&request.envelope.opcode_code==1564;
   const bool exact_ddl_drop_sequence = request.envelope.operation_id=="engine.op.ddl_drop_sequence"&&request.envelope.opcode=="SBLR_DDL_DROP_SEQUENCE"&&request.envelope.opcode_code==1565;
   const bool exact_ddl_create_temporary_table = request.envelope.operation_id=="engine.op.ddl_create_temporary_table"&&request.envelope.opcode=="SBLR_DDL_CREATE_TEMPORARY_TABLE"&&request.envelope.opcode_code==1612;
-  const bool exact_ddl_drop_temporary_table = request.envelope.operation_id=="engine.op.ddl_drop_temporary_table"&&request.envelope.opcode=="SBLR_DDL_DROP_TEMPORARY_TABLE"&&request.envelope.opcode_code==1562;
+  const bool exact_ddl_drop_temporary_table = request.envelope.operation_id=="engine.op.ddl_drop_temporary_table"&&request.envelope.opcode=="SBLR_DDL_DROP_TEMPORARY_TABLE"&&request.envelope.opcode_code==1613;
   const bool exact_ddl_rename_object_vector = request.envelope.operation_id=="engine.op.ddl_rename_object_vector"&&request.envelope.opcode=="SBLR_DDL_RENAME_OBJECT_VECTOR"&&request.envelope.opcode_code==1563;
   const bool exact_ddl_rename_object = request.envelope.operation_id=="engine.op.ddl_rename_object"&&request.envelope.opcode=="SBLR_DDL_RENAME_OBJECT"&&request.envelope.opcode_code==1572;
   const bool exact_ddl_create_synonym = request.envelope.operation_id=="engine.op.ddl_create_synonym"&&request.envelope.opcode=="SBLR_DDL_CREATE_SYNONYM"&&request.envelope.opcode_code==1574;
@@ -11162,6 +11162,12 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       has_exact_static_executor_evidence_identity(
           "engine.op.ddl_alter_timeseries_value_cache",
           "SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE", 1651) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_create_temporary_table",
+          "SBLR_DDL_CREATE_TEMPORARY_TABLE", 1612) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_drop_temporary_table",
+          "SBLR_DDL_DROP_TEMPORARY_TABLE", 1613) ||
       has_exact_static_executor_evidence_identity(
           "engine.op.ddl_create_synonym", "SBLR_DDL_CREATE_SYNONYM",
           1574) ||

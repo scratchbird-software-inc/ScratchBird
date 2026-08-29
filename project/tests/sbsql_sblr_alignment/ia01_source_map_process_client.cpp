@@ -810,6 +810,7 @@ int main(int argc, char** argv) {
   const char* static_refusal_test_id =
       operation == "show-wait-events" ? "CSC-TEST-002702" :
       operation == "ddl-create-temporary-table" ? "CSC-TEST-002661" :
+      operation == "ddl-drop-temporary-table" ? "CSC-TEST-002665" :
       operation == "ddl-create-or-replace-srs" ? "CSC-TEST-002673" :
       operation == "ddl-drop-srs" ? "CSC-TEST-002677" :
       operation == "ddl-create-rewrite-rule" ? "CSC-TEST-002681" :
@@ -861,6 +862,7 @@ int main(int argc, char** argv) {
   const char* static_refusal_operation_label =
       operation == "show-wait-events" ? "READ_METRICS" :
       operation == "ddl-create-temporary-table" ? "DDL_CREATE_TEMPORARY_TABLE" :
+      operation == "ddl-drop-temporary-table" ? "DDL_DROP_TEMPORARY_TABLE" :
       operation == "ddl-create-or-replace-srs" ? "DDL_CREATE_OR_REPLACE_SRS" :
       operation == "ddl-drop-srs" ? "DDL_DROP_SRS" :
       operation == "ddl-create-rewrite-rule" ? "DDL_CREATE_REWRITE_RULE" :
