@@ -104,6 +104,10 @@ STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
         "CSC-TEST-002749", "DDL_DROP_MACRO",
         "engine.op.ddl_drop_macro", "SBLR_DDL_DROP_MACRO", 1634,
     ),
+    "ddl-drop-package": (
+        "CSC-TEST-002893", "DDL_DROP_PACKAGE",
+        "engine.op.ddl_drop_package", "SBLR_DDL_DROP_PACKAGE", 1562,
+    ),
     "admin-register-external-relation-resolver": (
         "CSC-TEST-002753", "ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER",
         "engine.op.admin_register_external_relation_resolver",

@@ -514,7 +514,7 @@ int main(int argc, char** argv) {
                     : operation == "ddl-drop-foreign-table"
                           ? session.RunDdlDropForeignTableForWire()
                     : operation == "ddl-drop-package"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropPackageForWire():begun; }()
+                          ? session.RunDdlDropPackageForWire()
                     : operation == "ddl-alter-package"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterPackageForWire():begun; }()
                     : operation == "ddl-alter-sequence"
@@ -834,6 +834,7 @@ int main(int argc, char** argv) {
       operation == "ddl-create-macro" ? "CSC-TEST-002745" :
       operation == "security-create-user" ? "CSC-TEST-002965" :
       operation == "ddl-drop-macro" ? "CSC-TEST-002749" :
+      operation == "ddl-drop-package" ? "CSC-TEST-002893" :
       operation == "admin-register-external-relation-resolver" ?
           "CSC-TEST-002753" :
       operation == "admin-unregister-external-relation-resolver" ?
@@ -892,6 +893,7 @@ int main(int argc, char** argv) {
       operation == "ddl-create-macro" ? "DDL_CREATE_MACRO" :
       operation == "security-create-user" ? "SECURITY_CREATE_USER" :
       operation == "ddl-drop-macro" ? "DDL_DROP_MACRO" :
+      operation == "ddl-drop-package" ? "DDL_DROP_PACKAGE" :
       operation == "admin-register-external-relation-resolver" ?
           "ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER" :
       operation == "admin-unregister-external-relation-resolver" ?
