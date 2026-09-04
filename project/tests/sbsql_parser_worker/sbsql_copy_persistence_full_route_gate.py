@@ -19,7 +19,9 @@ required route proof rather than a manifest-only claim.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -70,6 +72,7 @@ PERSIST_TABLE_PLAIN = "copy_plain_persist"
 ROLLBACK_TABLE_PLAIN = "copy_plain_rollback"
 PERSIST_TABLE_TLS = "copy_tls_persist"
 ROLLBACK_TABLE_TLS = "copy_tls_rollback"
+DISCONNECT_TABLE_TLS = "copy_tls_disconnect"
 
 
 class CopyPersistenceError(RuntimeError):
@@ -84,6 +87,7 @@ class StartedRoute:
     server: subprocess.Popen[bytes]
     listener: subprocess.Popen[bytes]
     root: Path
+    traces: dict[str, Path]
 
 
 @dataclass
@@ -162,6 +166,23 @@ def start_route(
     endpoint = server_control / "s.sock"
     port = find_free_port()
     root.mkdir(parents=True, exist_ok=True)
+    trace_root = root / "trace"
+    trace_root.mkdir(parents=True, exist_ok=True)
+    traces = {
+        "sbps": trace_root / "sbps_client.tsv",
+        "dispatch": trace_root / "sblr_dispatch.tsv",
+        "server": trace_root / "server_execute.tsv",
+        "worker": trace_root / "sbsql_worker.jsonl",
+    }
+    route_env = os.environ.copy()
+    route_env.update(
+        {
+            "SCRATCHBIRD_SBPS_CLIENT_PHASE_TRACE_FILE": str(traces["sbps"]),
+            "SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE": str(traces["dispatch"]),
+            "SCRATCHBIRD_SERVER_EXECUTE_PHASE_TRACE_FILE": str(traces["server"]),
+            "SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE": str(traces["worker"]),
+        }
+    )
     if not database.exists():
         if not args.example_db_seeder:
             raise CopyPersistenceError("missing database and no approved example database seeder")
@@ -186,6 +207,7 @@ def start_route(
         ],
         stdout=(root / "server.out").open("wb"),
         stderr=(root / "server.err").open("wb"),
+        env=route_env,
     )
     try:
         wait_for_path(endpoint)
@@ -216,6 +238,7 @@ def start_route(
             listener_args,
             stdout=(root / "listener.out").open("wb"),
             stderr=(root / "listener.err").open("wb"),
+            env=route_env,
         )
         wait_for_tcp(port)
         return StartedRoute(
@@ -225,6 +248,7 @@ def start_route(
             server=server,
             listener=listener,
             root=root,
+            traces=traces,
         )
     except Exception:
         stop_process(server)
@@ -515,6 +539,8 @@ def copy_from_fixture(
     table: str,
     fixture: Path,
     expected_rows: int,
+    *,
+    split_chunks: bool = False,
 ) -> tuple[int, int]:
     send_frame(
         sock,
@@ -537,15 +563,25 @@ def copy_from_fixture(
             "COPY_IN_RESPONSE advertised an invalid opcode-775 chunk window: "
             f"{copy_window}"
         )
-    send_frame(
-        sock,
-        MSG_COPY_DATA,
-        sequence,
-        fixture.read_bytes(),
-        attachment=attachment,
-        txn_id=txn_id,
-    )
-    sequence += 1
+    payload = fixture.read_bytes()
+    chunks = [payload]
+    if split_chunks:
+        split = payload.find(b"\n") + 1
+        if split <= 0 or split >= len(payload):
+            raise RouteError("multi-chunk COPY fixture has no safe record boundary")
+        chunks = [payload[:split], payload[split:]]
+    for chunk in chunks:
+        if not chunk or len(chunk) > copy_window:
+            raise RouteError("COPY fixture chunk violates the advertised window")
+        send_frame(
+            sock,
+            MSG_COPY_DATA,
+            sequence,
+            chunk,
+            attachment=attachment,
+            txn_id=txn_id,
+        )
+        sequence += 1
     send_frame(sock, MSG_COPY_DONE, sequence, b"", attachment=attachment, txn_id=txn_id)
     sequence += 1
     ready_payload, frame_txn = expect_ready_after_bulk_import(sock, expected_rows)
@@ -555,6 +591,149 @@ def copy_from_fixture(
     if ready_txn != txn_id:
         raise RouteError(f"COPY completion changed explicit transaction from {txn_id} to {ready_txn}")
     return sequence, ready_txn
+
+
+def copy_data_then_disconnect(
+    sock: ssl.SSLSocket,
+    sequence: int,
+    attachment: bytes,
+    txn_id: int,
+    table: str,
+    payload: bytes,
+) -> None:
+    """Leave one durably ACKed chunk without seal or terminal execution."""
+
+    send_frame(
+        sock,
+        MSG_QUERY,
+        sequence,
+        query_payload(f"COPY {table} FROM STDIN"),
+        attachment=attachment,
+        txn_id=txn_id,
+    )
+    copy_in_payload, _, _ = expect_frame(sock, MSG_COPY_IN_RESPONSE)
+    if len(copy_in_payload) != 5 or copy_in_payload[0] != 2:
+        raise RouteError("disconnect COPY did not negotiate canonical_csv_default_v1")
+    copy_window = struct.unpack_from("<I", copy_in_payload, 1)[0]
+    if not payload or len(payload) > copy_window or copy_window > 8_388_608:
+        raise RouteError("disconnect COPY payload violates the opcode-775 window")
+    send_frame(
+        sock,
+        MSG_COPY_DATA,
+        sequence + 1,
+        payload,
+        attachment=attachment,
+        txn_id=txn_id,
+    )
+    time.sleep(0.2)
+    # Closing the authenticated channel before CopyDone is the public-route
+    # disconnect boundary. The server owns stream cleanup and transaction
+    # rollback; the parser cannot synthesize a seal or opcode-775 execution.
+    sock.shutdown(socket.SHUT_RDWR)
+
+
+def require_bulk_route_traces(route: StartedRoute) -> None:
+    for name, path in route.traces.items():
+        if not path.is_file() or path.stat().st_size == 0:
+            raise CopyPersistenceError(f"missing {name} bulk-route trace {path}")
+
+    sbps_rows: list[tuple[int, int]] = []
+    for line in route.traces["sbps"].read_text(
+        encoding="utf-8", errors="strict"
+    ).splitlines():
+        message = re.search(r"(?:^|\t)message_type=(\d+)(?:\t|$)", line)
+        schema = re.search(r"(?:^|\t)schema_id=(\d+)(?:\t|$)", line)
+        if message and schema:
+            sbps_rows.append((int(message.group(1)), int(schema.group(1))))
+
+    bulk_pairs = {
+        (706, 7719),  # immutable syntax bind
+        (106, 7101),  # BIRQ -> BIRD coordination
+        (702, 7715),  # opaque durable chunk append
+        (704, 7717),  # durable seal
+    }
+    observed_bulk = [pair for pair in sbps_rows if pair in bulk_pairs]
+    expected_bulk = [
+        (706, 7719),
+        (106, 7101),
+        (702, 7715),
+        (702, 7715),
+        (704, 7717),
+        (706, 7719),
+        (106, 7101),
+        (702, 7715),
+        (704, 7717),
+        (706, 7719),
+        (106, 7101),
+        (702, 7715),
+    ]
+    if observed_bulk != expected_bulk:
+        raise CopyPersistenceError(
+            "authenticated COPY did not preserve exact bind/coordinate/"
+            f"chunk/seal ordering: {observed_bulk!r}"
+        )
+
+    dispatch = route.traces["dispatch"].read_text(
+        encoding="utf-8", errors="strict"
+    )
+    exact_executor = (
+        "layer=bulk_import_stream_executor\t"
+        "executor_id=engine.op.bulk_import_stream\t"
+        "opcode=SBLR_BULK_IMPORT_STREAM\t"
+        "opcode_code=775\t"
+    )
+    if dispatch.count(exact_executor) != 2:
+        raise CopyPersistenceError(
+            "completed COPY routes did not execute opcode 775 exactly twice"
+        )
+    for forbidden in (
+        "opcode_code=789",
+        "opcode_code=793",
+        "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST",
+        "SBLR_DML_PLAN_IMPORT_ROWS",
+        "bulk.import",
+        "dml.plan_import_rows",
+    ):
+        if forbidden in dispatch:
+            raise CopyPersistenceError(
+                f"retired COPY execution identity reached dispatch: {forbidden}"
+            )
+
+    server_trace = route.traces["server"].read_text(
+        encoding="utf-8", errors="strict"
+    )
+    if server_trace.count("operation=engine.op.bulk_import_stream\t") != 2:
+        raise CopyPersistenceError(
+            "server execution trace did not observe exactly two terminal streams"
+        )
+
+    worker_events = [
+        json.loads(line)
+        for line in route.traces["worker"].read_text(
+            encoding="utf-8", errors="strict"
+        ).splitlines()
+        if line.strip()
+    ]
+    append_events = [
+        event
+        for event in worker_events
+        if event.get("event") == "copy_data"
+        and event.get("phase") == "durable_opcode775_append"
+        and event.get("detail") == "opaque_payload_acknowledged"
+    ]
+    terminal_events = [
+        event
+        for event in worker_events
+        if event.get("event") == "copy_done"
+        and event.get("phase") == "durable_opcode775_terminal"
+        and event.get("detail") == "exact_birs_published"
+    ]
+    if len(append_events) != 4 or len(terminal_events) != 2:
+        raise CopyPersistenceError(
+            "worker did not preserve four opaque chunk ACKs, two seals/results, "
+            f"and one unsealed disconnect: append={len(append_events)} "
+            f"terminal={len(terminal_events)}"
+        )
 
 
 def authenticate_tls(port: int) -> tuple[ssl.SSLSocket, bytes, int, int]:
@@ -617,6 +796,24 @@ def verify_tls_tables(port: int) -> None:
             require_rows=True,
         )
         assert_tls_rows(rows, [["0"]])
+        sequence, rows, txn_id = execute_query(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            f"SELECT COUNT(*) FROM {DISCONNECT_TABLE_TLS}",
+            require_rows=True,
+        )
+        assert_tls_rows(rows, [["1"]])
+        sequence, rows, txn_id = execute_query(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            f"SELECT id FROM {DISCONNECT_TABLE_TLS} ORDER BY id ASC",
+            require_rows=True,
+        )
+        assert_tls_rows(rows, [["900"]])
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
     finally:
         sock.close()
@@ -649,6 +846,7 @@ def run_tls_copy_lane(args: argparse.Namespace, work: Path, fixtures: Path) -> N
                 PERSIST_TABLE_TLS,
                 fixtures / "copy_persist.rows",
                 3,
+                split_chunks=True,
             )
             sequence, txn_id = commit_txn(sock, sequence, attachment, txn_id, "TLS COPY persist COMMIT")
             sequence, _, txn_id = execute_query(
@@ -670,11 +868,43 @@ def run_tls_copy_lane(args: argparse.Namespace, work: Path, fixtures: Path) -> N
                 2,
             )
             sequence, txn_id = rollback_txn(sock, sequence, attachment, txn_id, "TLS COPY rollback ROLLBACK")
-            send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+            sequence, _, txn_id = execute_query(
+                sock,
+                sequence,
+                attachment,
+                txn_id,
+                f"CREATE TABLE {DISCONNECT_TABLE_TLS} (id int)",
+                require_rows=False,
+            )
+            sequence, txn_id = commit_txn(
+                sock, sequence, attachment, txn_id,
+                "TLS CREATE disconnect COMMIT",
+            )
+            sequence, _, txn_id = execute_query(
+                sock,
+                sequence,
+                attachment,
+                txn_id,
+                f"INSERT INTO {DISCONNECT_TABLE_TLS} (id) VALUES (900)",
+                require_rows=False,
+            )
+            sequence, txn_id = commit_txn(
+                sock, sequence, attachment, txn_id,
+                "TLS seed disconnect oracle COMMIT",
+            )
+            copy_data_then_disconnect(
+                sock,
+                sequence,
+                attachment,
+                txn_id,
+                DISCONNECT_TABLE_TLS,
+                b"901\n",
+            )
         finally:
             sock.close()
 
         verify_tls_tables(route.port)
+        require_bulk_route_traces(route)
         stop_route(route)
         route = None
 
@@ -685,7 +915,13 @@ def run_tls_copy_lane(args: argparse.Namespace, work: Path, fixtures: Path) -> N
 
 
 def dump_logs(work: Path) -> None:
-    for path in sorted(work.rglob("*.out")) + sorted(work.rglob("*.err")) + sorted(work.rglob("*.log")):
+    for path in (
+        sorted(work.rglob("*.out"))
+        + sorted(work.rglob("*.err"))
+        + sorted(work.rglob("*.log"))
+        + sorted(work.rglob("*.tsv"))
+        + sorted(work.rglob("*.jsonl"))
+    ):
         if path.exists() and path.stat().st_size:
             print(f"--- {path.relative_to(work)} ---", file=sys.stderr)
             print(path.read_text(encoding="utf-8", errors="replace")[-12000:], file=sys.stderr)

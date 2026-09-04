@@ -12455,7 +12455,8 @@ std::optional<CanonicalBytes> EncodePreparedParameterTemplate(
     const std::array<std::uint8_t, 32>& sbpn_sha256) {
   if (coordination.mode != ipc::ParameterExecutionMode::kPrepared ||
       !coordination.present() || canonical_sbpa.size() != 192 ||
-      statement_context.preliminary_extension_version != 3 ||
+      statement_context.preliminary_extension_version < 3 ||
+      statement_context.preliminary_extension_version > 26 ||
       statement_context.preliminary_parameter_executor_availability_generation ==
           0 ||
       value_free_submission.parameter_finalized() ||
@@ -13268,6 +13269,7 @@ thread_local const std::vector<std::uint8_t>* g_ddl_refresh_materialized_view_op
 thread_local const std::vector<std::uint8_t>* g_ddl_drop_materialized_view_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_create_materialized_view_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_drop_table_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_diagnostic_descriptor_operand = nullptr;
 thread_local ContextualTextPrebindStateV2* g_contextual_text_prebind_v2 =
     nullptr;
 
@@ -13624,8 +13626,55 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
       ? [&]() -> std::optional<CanonicalBytes> { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.security_drop_privilege_template","SBLR_SECURITY_DROP_PRIVILEGE_TEMPLATE","security.create.privilege.template.drop.native"); e.opcode_code=1623; e.requires_transaction_context=true; e.requires_security_context=true; e.result_shape="ddl_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; c::SblrOperand o; o.ordinal=1; o.type="privilege_template_drop_descriptor"; o.name="privilege_template"; o.value_kind=c::SblrValueKind::privilege_template_drop_descriptor; o.value_body=*admitted_security_drop_privilege_template_operand; e.operands.push_back(std::move(o)); auto bytes=c::EncodeSblrEnvelope(e); if(bytes.empty()) return std::nullopt; return CanonicalBytes(bytes.begin(),bytes.end()); }()
       : lowered.operation_id == "engine.op.security_create_privilege_template" && admitted_security_create_privilege_template_operand != nullptr
       ? [&]() -> std::optional<CanonicalBytes> { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.security_create_privilege_template","SBLR_SECURITY_CREATE_PRIVILEGE_TEMPLATE","security.create.privilege.template.native"); e.opcode_code=1621; e.requires_transaction_context=true; e.requires_security_context=true; e.result_shape="ddl_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; c::SblrOperand o; o.ordinal=1; o.type="privilege_template_descriptor"; o.name="privilege_template"; o.value_kind=c::SblrValueKind::privilege_template_descriptor; o.value_body=*admitted_security_create_privilege_template_operand; e.operands.push_back(std::move(o)); auto bytes=c::EncodeSblrEnvelope(e); if(bytes.empty()) return std::nullopt; return CanonicalBytes(bytes.begin(),bytes.end()); }()
-      : lowered.operation_id == "engine.op.diagnostic_refusal"
-            ? [&]() -> std::optional<CanonicalBytes> { namespace dr=scratchbird::engine::sblr; auto e=dr::MakeSblrEnvelope("engine.op.diagnostic_refusal","SBLR_DIAGNOSTIC_REFUSAL","sblr.diagnostic.refusal.v3"); e.opcode_code=0x1900; e.result_shape="diagnostic_refusal_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; auto bytes=dr::EncodeSblrEnvelope(e); if(bytes.empty()) return std::nullopt; return CanonicalBytes(bytes.begin(),bytes.end()); }()
+      : (lowered.operation_id == "engine.op.diagnostic_refusal" ||
+         lowered.operation_id == "engine.op.diagnostic_reset" ||
+         lowered.operation_id == "engine.op.descriptor_transform") &&
+            g_diagnostic_descriptor_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes> {
+                namespace dr = scratchbird::engine::sblr;
+                const bool refusal =
+                    lowered.operation_id == "engine.op.diagnostic_refusal";
+                const bool reset =
+                    lowered.operation_id == "engine.op.diagnostic_reset";
+                auto e = dr::MakeSblrEnvelope(
+                    lowered.operation_id,
+                    refusal ? "SBLR_DIAGNOSTIC_REFUSAL"
+                            : (reset ? "SBLR_DIAGNOSTIC_RESET"
+                                     : "SBLR_DESCRIPTOR_TRANSFORM"),
+                    refusal ? "sblr.diagnostic.refusal.v3"
+                            : (reset ? "sblr.diagnostic.reset.v3"
+                                     : "sblr.descriptor.transform.v3"));
+                e.opcode_code = refusal ? 0x1900 : (reset ? 0x1901 : 0x1902);
+                e.requires_transaction_context = reset;
+                e.requires_security_context = true;
+                e.result_shape = refusal
+                                     ? "diagnostic_refusal_result"
+                                     : (reset ? "diagnostic_reset_result"
+                                              : "descriptor_transform_result");
+                e.diagnostic_shape = "diagnostic_vector";
+                e.parser_package_uuid = session.admitted_parser_package_uuid;
+                e.parser_package_version_major =
+                    session.admitted_parser_package_version_major;
+                e.parser_package_version_minor =
+                    session.admitted_parser_package_version_minor;
+                e.parser_package_version_patch =
+                    session.admitted_parser_package_version_patch;
+                e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+                e.parser_resolved_names_to_uuids = true;
+                dr::SblrOperand operand;
+                operand.ordinal = 1;
+                operand.type = refusal ? "diagnostic.refusal"
+                                       : (reset ? "diagnostic.reset"
+                                                : "descriptor.transform");
+                operand.name = refusal ? "refusal"
+                                       : (reset ? "reset" : "transform");
+                operand.value_kind = dr::SblrValueKind::descriptor_ref;
+                operand.value_body = *g_diagnostic_descriptor_operand;
+                e.operands.push_back(std::move(operand));
+                auto bytes = dr::EncodeSblrEnvelope(e);
+                if (bytes.empty()) return std::nullopt;
+                return CanonicalBytes(bytes.begin(), bytes.end());
+              }()
       : lowered.operation_id == "engine.op.txn_begin"
       ? EncodeNativeTxnBeginOperationBinary(statement_context, session)
       : lowered.operation_id == "engine.op.txn_commit" &&
@@ -25392,7 +25441,101 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                     "sbp_sbsql.wire"));
                 break;
               }
-              NativeDescriptorBindingInput parameter_descriptor;
+              const bool exact_catalog_comparison_parameter =
+                  exact_native_join_filter_operand_route ||
+                  exact_native_catalog_filter_operand_route;
+              const auto authoritative_descriptor =
+                  exact_catalog_comparison_parameter
+                      ? std::ranges::find_if(
+                            native_binding_context->descriptors,
+                            [&](const auto& candidate) {
+                              return candidate.type_uuid == type_uuid &&
+                                     candidate.descriptor_generation ==
+                                         mapping.datatype_descriptor_generation &&
+                                     candidate.type_generation != 0 &&
+                                     !candidate.canonical_type_name.empty() &&
+                                     !candidate.codec_id.empty() &&
+                                     candidate.codec_id.find('|') ==
+                                         std::string::npos &&
+                                     candidate.codec_version != 0 &&
+                                     candidate.codec_generation != 0 &&
+                                     CanonicalUuidBytes(
+                                         candidate.statement_receipt_uuid)
+                                         .has_value() &&
+                                     CanonicalUuidBytes(
+                                         candidate
+                                             .datatype_catalog_snapshot_uuid)
+                                         .has_value() &&
+                                     candidate.datatype_catalog_generation !=
+                                         0 &&
+                                     candidate.datatype_registry_generation !=
+                                         0;
+                            })
+                      : native_binding_context->descriptors.end();
+              const auto carries_same_immutable_authority =
+                  [&](const auto& candidate) {
+                    // A parameter slot owns its outer descriptor UUID.  Its
+                    // datatype authority must still be copied from the exact
+                    // engine-projected relation descriptor used by this
+                    // statement, rather than reconstructed from a type name.
+                    if (!exact_catalog_comparison_parameter ||
+                        candidate.type_uuid != type_uuid ||
+                        candidate.descriptor_generation !=
+                            mapping.datatype_descriptor_generation) {
+                      return true;
+                    }
+                    if (authoritative_descriptor ==
+                        native_binding_context->descriptors.end()) {
+                      return false;
+                    }
+                    return candidate.type_uuid ==
+                               authoritative_descriptor->type_uuid &&
+                           candidate.canonical_type_name ==
+                               authoritative_descriptor->canonical_type_name &&
+                           candidate.element_profile ==
+                               authoritative_descriptor->element_profile &&
+                           candidate.descriptor_generation ==
+                               authoritative_descriptor
+                                   ->descriptor_generation &&
+                           candidate.type_generation ==
+                               authoritative_descriptor->type_generation &&
+                           candidate.codec_id ==
+                               authoritative_descriptor->codec_id &&
+                           candidate.codec_version ==
+                               authoritative_descriptor->codec_version &&
+                           candidate.codec_generation ==
+                               authoritative_descriptor->codec_generation &&
+                           candidate.statement_receipt_uuid ==
+                               authoritative_descriptor
+                                   ->statement_receipt_uuid &&
+                           candidate.datatype_catalog_snapshot_uuid ==
+                               authoritative_descriptor
+                                   ->datatype_catalog_snapshot_uuid &&
+                           candidate.datatype_catalog_generation ==
+                               authoritative_descriptor
+                                   ->datatype_catalog_generation &&
+                           candidate.datatype_registry_generation ==
+                               authoritative_descriptor
+                                   ->datatype_registry_generation;
+                  };
+              if (exact_catalog_comparison_parameter &&
+                  (authoritative_descriptor ==
+                       native_binding_context->descriptors.end() ||
+                   !std::ranges::all_of(
+                       native_binding_context->descriptors,
+                       carries_same_immutable_authority))) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "The structural parameter mapping did not match one "
+                    "immutable engine-issued catalog datatype authority.",
+                    "sbp_sbsql.wire"));
+                break;
+              }
+              NativeDescriptorBindingInput parameter_descriptor =
+                  authoritative_descriptor ==
+                          native_binding_context->descriptors.end()
+                      ? NativeDescriptorBindingInput{}
+                      : *authoritative_descriptor;
               parameter_descriptor.descriptor_id = static_cast<std::uint32_t>(
                   native_binding_context->descriptors.size() + 1);
               parameter_descriptor.descriptor_uuid = descriptor_uuid;
@@ -25400,6 +25543,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               parameter_descriptor.nullability = mapping.nullable != 0
                                                      ? BoundNullability::kNullable
                                                      : BoundNullability::kNonNull;
+              parameter_descriptor.collation_uuid.reset();
+              parameter_descriptor.timezone_profile_id.reset();
+              parameter_descriptor.width_precision_scale = {};
               if (exact_native_join_limit_operand_route ||
                   exact_native_table_function_parameter_route ||
                   exact_native_match_recognize_parameter_route) {
@@ -29198,6 +29344,17 @@ PipelineResult SbsqlTestWireSession::RunGpuProfileDisableRefusalForWire() {
   ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
   auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
   if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt.has_value()) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.DIAGNOSTIC_REFUSAL.IDENTITY", "ERROR",
+        "Diagnostic refusal requires an engine-issued statement receipt.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  const std::vector<std::uint8_t> descriptor_ref(receipt->begin(),
+                                                  receipt->end());
   BoundStatement bound;
   SblrEnvelope lowered;
   lowered.operation_id = "engine.op.diagnostic_refusal";
@@ -29209,7 +29366,10 @@ PipelineResult SbsqlTestWireSession::RunGpuProfileDisableRefusalForWire() {
   lowered.engine_api_operation_id = "engine.op.diagnostic_refusal";
   lowered.result_shape_key = "diagnostic_refusal_result";
   lowered.diagnostic_shape_key = "diagnostic_vector";
-  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr);
+  g_diagnostic_descriptor_operand = &descriptor_ref;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr);
+  g_diagnostic_descriptor_operand = nullptr;
   if (!submission) {
     result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.DIAGNOSTIC_REFUSAL.CANONICAL_BUILD", "ERROR", "Canonical diagnostic refusal encoding failed", "sbp_sbsql.wire"));
     return result;
@@ -29355,10 +29515,74 @@ PipelineResult SbsqlTestWireSession::RunBridgeBeginTransactionForWire() { Pipeli
 PipelineResult SbsqlTestWireSession::RunBridgeCommitTransactionForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","BRIDGE COMMIT TRANSACTION requires an admitted provider route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunBridgeRollbackTransactionForWire() { PipelineResult result; result.messages.diagnostics.push_back(MakeDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","ERROR","BRIDGE ROLLBACK TRANSACTION requires an admitted provider route.","sbsql_sblr_alignment")); return result; }
 PipelineResult SbsqlTestWireSession::RunDiagnosticResetForWire() {
-  return RunGpuProfileDisableRefusalForWire();
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired =
+      server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt.has_value()) return result;
+  const std::vector<std::uint8_t> descriptor_ref(receipt->begin(),
+                                                  receipt->end());
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.diagnostic_reset";
+  g_diagnostic_descriptor_operand = &descriptor_ref;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr);
+  g_diagnostic_descriptor_operand = nullptr;
+  if (!submission.has_value()) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.DIAGNOSTIC_RESET.CANONICAL_BUILD", "ERROR",
+        "Canonical diagnostic reset encoding failed", "sbp_sbsql.wire"));
+    return result;
+  }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = std::move(executed.messages);
+  return result;
 }
 PipelineResult SbsqlTestWireSession::RunDescriptorTransformForWire() {
-  return RunShowObjectDetailForWire();
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired =
+      server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt.has_value()) return result;
+  const std::vector<std::uint8_t> descriptor_ref(receipt->begin(),
+                                                  receipt->end());
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.descriptor_transform";
+  g_diagnostic_descriptor_operand = &descriptor_ref;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr);
+  g_diagnostic_descriptor_operand = nullptr;
+  if (!submission.has_value()) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.DESCRIPTOR_TRANSFORM.CANONICAL_BUILD", "ERROR",
+        "Canonical descriptor transform encoding failed", "sbp_sbsql.wire"));
+    return result;
+  }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = std::move(executed.messages);
+  return result;
 }
 PipelineResult SbsqlTestWireSession::RunMigrationBeginDonorForWire() {
   return RunDiagnosticRefusalForWire();

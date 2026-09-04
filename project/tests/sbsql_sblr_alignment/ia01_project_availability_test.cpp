@@ -1,3 +1,11 @@
-#include "engine/internal_api/sblr_executor_availability_registry.hpp"
-#include <cassert>
-int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.database_path="/tmp/sb_project_2535";c.database_uuid.canonical="019d0000-0000-7000-8000-000000002535";c.security_context_present=true;c.trace_tags={"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};a::SblrExecutorAvailabilityRowIdentity r{a::kSblrProjectExecutorId,1280,"1.0",a::kSblrProjectOperandDescriptorId,a::kSblrProjectResultDescriptorId,1};auto s=a::LoadSblrExecutorAvailabilitySnapshot(c,r);assert(s.ok&&s.snapshot.installed);}
+#include "ia01_descriptor_operation_availability_test.hpp"
+
+int main() {
+  namespace api = scratchbird::engine::internal_api;
+  scratchbird::tests::ia01::RequireMissingExecutorEvidence(
+      "project", "019d0000-0000-7000-8000-000000002535", ".project",
+      {api::kSblrProjectExecutorId, api::kSblrProjectOpcodeCode,
+       api::kSblrProjectOpcodeVersion, api::kSblrProjectOperandDescriptorId,
+       api::kSblrProjectResultDescriptorId,
+       api::kSblrProjectResultDescriptorVersion});
+}

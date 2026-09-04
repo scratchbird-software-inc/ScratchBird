@@ -342,6 +342,11 @@ int main() {
   server_session.session_uuid = Bytes(Text(fixture->session));
   server_registry.sessions_by_uuid.emplace(Text(fixture->session),
                                             std::move(server_session));
+  const auto cross_session_uuid = NewUuid(platform::UuidKind::session);
+  server::ServerSessionRecord cross_session;
+  cross_session.session_uuid = Bytes(Text(cross_session_uuid));
+  server_registry.sessions_by_uuid.emplace(Text(cross_session_uuid),
+                                            std::move(cross_session));
   server::ServerStatementContextRecord statement_record;
   statement_record.session_uuid = Bytes(Text(fixture->session));
   statement_record.statement_uuid = view.statement_uuid;
@@ -376,6 +381,30 @@ int main() {
               malformed_response.diagnostics[0].code ==
                   "SBLR.OPERAND_INVALID",
           "malformed SBPS bind did not fail before receipt authority");
+
+  auto cross_session_frame = bind_frame;
+  cross_session_frame.header.session_uuid = Bytes(Text(cross_session_uuid));
+  const auto cross_session_response = server::HandleBindBulkImportStream(
+      &server_registry, server::HostedEngineState{}, cross_session_frame);
+  Require(!cross_session_response.accepted &&
+              cross_session_response.payload.empty() &&
+              cross_session_response.diagnostics.size() == 1 &&
+              cross_session_response.diagnostics[0].code ==
+                  "SECURITY.ACCESS_DENIED",
+          "cross-session bind disclosed receipt authority");
+
+  auto& registered_receipt =
+      server_registry.statement_contexts_by_statement_uuid.at(
+          view.statement_uuid);
+  registered_receipt.released = true;
+  const auto released_response = server::HandleBindBulkImportStream(
+      &server_registry, server::HostedEngineState{}, bind_frame);
+  registered_receipt.released = false;
+  Require(!released_response.accepted && released_response.payload.empty() &&
+              released_response.diagnostics.size() == 1 &&
+              released_response.diagnostics[0].code ==
+                  "MGA.TRANSACTION_INVALID",
+          "released receipt did not preserve transaction-invalid precedence");
 
   bridge::StatementBulkImportBindAckV1 acknowledgement;
   sb_engine_result_t result = nullptr;
@@ -462,6 +491,27 @@ int main() {
           "unauthorized bind leaked private authority");
   ReleaseResult(result);
 
+  auto cancelled_context = fixture->transaction;
+  cancelled_context.query_cancellation_requested = [] { return true; };
+  bridge::StatementContextReceiptView cancelled_view;
+  const auto cancelled_receipt =
+      Acquire(session, cancelled_context, &cancelled_view);
+  const auto cancelled_request =
+      Demand(cancelled_view, "bulk_import_authority_target", 22, 1);
+  result = nullptr;
+  Require(bridge::BindStatementBulkImportAuthorityV1(
+              cancelled_receipt, &cancelled_request, &replay, &result) ==
+              SB_ENGINE_STATUS_TIMEOUT &&
+              Diagnostic(result) == "PROCESS.CANCELLED",
+          "bind cancellation did not stop before authority publication");
+  ReleaseResult(result);
+  result = nullptr;
+  Require(bridge::CopyStatementBulkImportAuthorityV1(
+              cancelled_receipt, 22, 1, &authority, &result) ==
+              SB_ENGINE_STATUS_SECURITY_DENIED,
+          "cancelled bind published private authority");
+  ReleaseResult(result);
+
   bridge::StatementContextReceiptView unresolved_view;
   const auto unresolved_receipt =
       Acquire(session, fixture->transaction, &unresolved_view);
@@ -489,20 +539,42 @@ int main() {
           "cluster context fell back to a local route");
   ReleaseResult(result);
 
+  bridge::StatementContextReceiptView ended_view;
+  const auto ended_receipt = Acquire(session, fixture->transaction, &ended_view);
+  const auto ended_request =
+      Demand(ended_view, "bulk_import_authority_target", 51, 1);
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = fixture->transaction;
+  Require(api::EngineRollbackTransaction(rollback).ok,
+          "fixture transaction rollback failed");
+  result = nullptr;
+  Require(bridge::BindStatementBulkImportAuthorityV1(
+              ended_receipt, &ended_request, &replay, &result) ==
+              SB_ENGINE_STATUS_CONFLICT &&
+              Diagnostic(result) == "MGA.TRANSACTION_INVALID",
+          "ended transaction did not fail before authority publication");
+  ReleaseResult(result);
+  result = nullptr;
+  Require(bridge::CopyStatementBulkImportAuthorityV1(
+              ended_receipt, 51, 1, &authority, &result) ==
+              SB_ENGINE_STATUS_SECURITY_DENIED,
+          "ended transaction bind published private authority");
+  ReleaseResult(result);
+
   Require(bridge::ReleaseStatementContextReceipt(cluster_receipt) ==
                   SB_ENGINE_STATUS_OK &&
               bridge::ReleaseStatementContextReceipt(unresolved_receipt) ==
+                  SB_ENGINE_STATUS_OK &&
+              bridge::ReleaseStatementContextReceipt(cancelled_receipt) ==
                   SB_ENGINE_STATUS_OK &&
               bridge::ReleaseStatementContextReceipt(unauthorized_receipt) ==
                   SB_ENGINE_STATUS_OK &&
               bridge::ReleaseStatementContextReceipt(subform_receipt) ==
                   SB_ENGINE_STATUS_OK &&
+              bridge::ReleaseStatementContextReceipt(ended_receipt) ==
+                  SB_ENGINE_STATUS_OK &&
               bridge::ReleaseStatementContextReceipt(receipt) ==
                   SB_ENGINE_STATUS_OK,
           "receipt cleanup failed");
-  api::EngineRollbackTransactionRequest rollback;
-  rollback.context = fixture->transaction;
-  Require(api::EngineRollbackTransaction(rollback).ok,
-          "fixture transaction rollback failed");
   return EXIT_SUCCESS;
 }

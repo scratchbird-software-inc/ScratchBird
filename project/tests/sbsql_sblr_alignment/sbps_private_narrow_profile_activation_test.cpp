@@ -3,6 +3,7 @@
 
 #include "server/sbps_private_narrow_profile.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -84,6 +85,34 @@ void CoreRecordAndPendingEvidenceStayInactive() {
               core.candidate_activation_records.size() == 35 &&
               core.actual_active_pairs.empty(),
           "compiled Core pair projection drifted");
+  const auto contains = [](const auto& pairs, std::uint16_t message,
+                           std::uint32_t schema) {
+    return std::find(pairs.begin(), pairs.end(),
+                     profile::PairV1{message, schema}) != pairs.end();
+  };
+  for (const auto [message, schema] : {
+           profile::PairV1{702, 7715}, profile::PairV1{703, 7716},
+           profile::PairV1{704, 7717}, profile::PairV1{705, 7718},
+           profile::PairV1{706, 7719}, profile::PairV1{707, 7720}}) {
+    Require(contains(core.pair_universe, message, schema) &&
+                contains(core.required_pairs, message, schema) &&
+                !contains(core.forbidden_pairs, message, schema),
+            "one exact bulk-import message/schema pair is not in the "
+            "compiled SFPS1 required universe");
+  }
+  for (const auto [request_message, request_schema] : {
+           profile::PairV1{702, 7715}, profile::PairV1{704, 7717},
+           profile::PairV1{706, 7719}}) {
+    Require(!contains(core.success_only_pairs, request_message,
+                      request_schema),
+            "a parser-to-server bulk-import request was marked success-only");
+  }
+  for (const auto [ack_message, ack_schema] : {
+           profile::PairV1{703, 7716}, profile::PairV1{705, 7718},
+           profile::PairV1{707, 7720}}) {
+    Require(contains(core.success_only_pairs, ack_message, ack_schema),
+            "a server-to-parser bulk-import ACK lacks success-only role");
+  }
   for (const auto& record : core.candidate_activation_records) {
     Require(!record.exact_nul_serialization.empty() &&
                 record.exact_nul_serialization.back() == 0 &&

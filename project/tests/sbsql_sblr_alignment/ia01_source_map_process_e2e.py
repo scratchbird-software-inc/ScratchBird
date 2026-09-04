@@ -16,6 +16,18 @@ from ia01_package_process_e2e import ProofError, allocate_work, seed_database, s
 
 
 STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
+    "diagnostic-refusal": (
+        "CSC-TEST-003849", "DIAGNOSTIC_REFUSAL",
+        "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", 6400,
+    ),
+    "diagnostic-reset": (
+        "CSC-TEST-003853", "DIAGNOSTIC_RESET",
+        "engine.op.diagnostic_reset", "SBLR_DIAGNOSTIC_RESET", 6401,
+    ),
+    "descriptor-transform": (
+        "CSC-TEST-003857", "DESCRIPTOR_TRANSFORM",
+        "engine.op.descriptor_transform", "SBLR_DESCRIPTOR_TRANSFORM", 6402,
+    ),
     "ddl-create-temporary-table": (
         "CSC-TEST-002661", "DDL_CREATE_TEMPORARY_TABLE",
         "engine.op.ddl_create_temporary_table",

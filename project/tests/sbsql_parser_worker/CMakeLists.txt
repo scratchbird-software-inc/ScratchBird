@@ -6390,7 +6390,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --work-dir "${CMAKE_BINARY_DIR}/sbsql_copy_persistence_full_route"
     )
     set_tests_properties(sbsql_copy_persistence_full_route_gate PROPERTIES
-      LABELS "sbsql_copy_persistence_full_route_gate;copy_persistence;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;sb_isql;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;security_auth_gate;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
+      LABELS "sbsql_copy_persistence_full_route_gate;sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-002449;CSC-TEST-005736;copy_persistence;opcode775_exact_route;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;sb_isql;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;security_auth_gate;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
     )
     add_custom_target(cdp_native_bulk_ingest_cli_gate
       DEPENDS sb_isql sb_server sb_listener sbp_sbsql

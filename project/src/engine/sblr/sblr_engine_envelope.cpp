@@ -1354,6 +1354,21 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   const bool exact_ddl_create_executable =
       exact_ddl_create_trigger || exact_ddl_create_procedure ||
       exact_ddl_create_function;
+  const bool exact_diagnostic_refusal =
+      envelope.operation_id == "engine.op.diagnostic_refusal" &&
+      envelope.opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+      envelope.opcode_code == 0x1900u;
+  const bool exact_diagnostic_reset =
+      envelope.operation_id == "engine.op.diagnostic_reset" &&
+      envelope.opcode == "SBLR_DIAGNOSTIC_RESET" &&
+      envelope.opcode_code == 0x1901u;
+  const bool exact_descriptor_transform =
+      envelope.operation_id == "engine.op.descriptor_transform" &&
+      envelope.opcode == "SBLR_DESCRIPTOR_TRANSFORM" &&
+      envelope.opcode_code == 0x1902u;
+  const bool exact_diagnostic_descriptor_operation =
+      exact_diagnostic_refusal || exact_diagnostic_reset ||
+      exact_descriptor_transform;
   const auto fail = [&result, plan_import_rows_identity_claim](
                         std::string code, std::string message) {
     if (plan_import_rows_identity_claim && code != "SBLR.OPCODE_INVALID") {
@@ -1586,7 +1601,8 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
              << (IsCanonicalOperandName(operand) ? "true" : "false")
              << ";value_body_canonical="
              << (canonical_value_body ? "true" : "false");
-      fail((exact_ddl_create_index || exact_ddl_type || query_execute_v1_1)
+      fail((exact_ddl_create_index || exact_ddl_type || query_execute_v1_1 ||
+            exact_diagnostic_descriptor_operation)
                ? "SBLR.OPERAND_INVALID"
                : (limit_exceeded ? "SBLR.OPERATION.LIMIT_EXCEEDED"
                                  : "SBLR.OPERATION.OPERAND_INVALID"),
@@ -2075,6 +2091,35 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   } else if (!parameter_node_references.empty()) {
     fail("SBLR.OPERAND_INVALID",
          "relational parameter reference requires the exact SBPN table");
+  }
+  if (exact_diagnostic_descriptor_operation) {
+    const std::string_view expected_type =
+        exact_diagnostic_refusal
+            ? "diagnostic.refusal"
+            : (exact_diagnostic_reset ? "diagnostic.reset"
+                                      : "descriptor.transform");
+    const std::string_view expected_name =
+        exact_diagnostic_refusal
+            ? "refusal"
+            : (exact_diagnostic_reset ? "reset" : "transform");
+    const std::string_view expected_result =
+        exact_diagnostic_refusal
+            ? "diagnostic_refusal_result"
+            : (exact_diagnostic_reset ? "diagnostic_reset_result"
+                                      : "descriptor_transform_result");
+    const bool exact_operand =
+        envelope.operands.size() == 1 &&
+        envelope.operands.front().ordinal == 1 &&
+        envelope.operands.front().type == expected_type &&
+        envelope.operands.front().name == expected_name &&
+        envelope.operands.front().value_kind == SblrValueKind::descriptor_ref &&
+        envelope.operands.front().value_body.size() == 16 &&
+        IsNonzeroUuidBytes(envelope.operands.front().value_body.data());
+    if (!exact_operand || envelope.result_shape != expected_result ||
+        envelope.diagnostic_shape != "diagnostic_vector") {
+      fail("SBLR.OPERAND_INVALID",
+           "diagnostic operation requires its exact one-descriptor operand and result contract");
+    }
   }
   if (variable_node_table.has_value()) {
     if (!ValidateSblrVariableReferenceBijectionV1(

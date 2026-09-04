@@ -227,6 +227,10 @@ struct DecodedAuthority {
   BulkImportStreamEntry entry;
 };
 
+void ObserveCheckpoint(
+    const EngineExecuteBulkImportStreamRequestV1& request,
+    BulkImportStreamExecutionCheckpointV1 checkpoint) noexcept;
+
 bool ExactBody(const engine::sblr::SblrBulkImportStreamDescriptorV1& value,
                const BulkImportStreamAllocation& allocation) {
   const auto& body = value.canonical_body;
@@ -266,9 +270,9 @@ bool ExactBody(const engine::sblr::SblrBulkImportStreamDescriptorV1& value,
              allocation.executor_availability_generation;
 }
 
-bool DecodeAuthority(const EngineExecuteBulkImportStreamRequestV1& request,
-                     DecodedAuthority* output,
-                     EngineApiDiagnostic* diagnostic) {
+bool DecodeOperand(const EngineExecuteBulkImportStreamRequestV1& request,
+                   DecodedAuthority* output,
+                   EngineApiDiagnostic* diagnostic) {
   if (output == nullptr || diagnostic == nullptr || request.registry == nullptr ||
       request.canonical_biro.size() !=
           engine::sblr::BulkImportWireLayout::descriptor_size) {
@@ -293,23 +297,84 @@ bool DecodeAuthority(const EngineExecuteBulkImportStreamRequestV1& request,
   }
   BulkUuid stream{};
   std::copy_n(descriptor.canonical_body.begin() + 32, 16, stream.begin());
-  BulkImportStreamEntry entry;
-  const auto recovered = request.registry->Recover(stream, &entry);
+  output->descriptor = descriptor;
+  output->stream_uuid = stream;
+  return true;
+}
+
+bool RecoverAuthority(const EngineExecuteBulkImportStreamRequestV1& request,
+                      DecodedAuthority* authority,
+                      EngineApiDiagnostic* diagnostic) {
+  if (authority == nullptr || diagnostic == nullptr ||
+      request.registry == nullptr) {
+    return false;
+  }
+  const auto recovered =
+      request.registry->Recover(authority->stream_uuid, &authority->entry);
   if (!recovered.ok) {
     *diagnostic = Diagnostic("BULK.IMPORT.RECOVERY_CONFLICT",
                              "sblr.bulk_import_stream.registry_recovery_failed",
                              recovered.error);
     return false;
   }
-  if (!ExactBody(descriptor, entry.allocation)) {
-    *diagnostic = Diagnostic("MGA.AUTHORITY_MISMATCH",
-                             "sblr.bulk_import_stream.descriptor_authority_mismatch",
-                             "BIRO differs from the durable engine allocation");
+  if (!ExactBody(authority->descriptor, authority->entry.allocation)) {
+    *diagnostic = Diagnostic(
+        "MGA.AUTHORITY_MISMATCH",
+        "sblr.bulk_import_stream.descriptor_authority_mismatch",
+        "BIRO differs from the durable engine allocation");
     return false;
   }
-  output->descriptor = descriptor;
-  output->stream_uuid = stream;
-  output->entry = std::move(entry);
+  return true;
+}
+
+bool ExactDescriptorContext(
+    const EngineRequestContext& context,
+    const engine::sblr::SblrBulkImportStreamDescriptorV1& descriptor,
+    EngineApiDiagnostic* diagnostic) {
+  if (diagnostic == nullptr) return false;
+  if (!context.security_context_present ||
+      !context.authorization_context.present) {
+    *diagnostic = Diagnostic(
+        "SECURITY.ACCESS_DENIED",
+        "sblr.bulk_import_stream.execution_security_context_missing",
+        "authenticated security authority is required before stream lookup");
+    return false;
+  }
+  BulkUuid receipt{}, transaction{}, snapshot{}, catalog{}, security{}, resource{};
+  const bool parsed =
+      ParseUuidText(context.statement_receipt_uuid.canonical, &receipt) &&
+      ParseUuidText(context.transaction_uuid.canonical, &transaction) &&
+      ParseUuidText(context.statement_snapshot_uuid.canonical, &snapshot) &&
+      ParseUuidText(context.catalog_epoch_uuid.canonical, &catalog) &&
+      ParseUuidText(context.authorization_context.authority_uuid.canonical,
+                    &security) &&
+      ParseUuidText(context.resource_admission_uuid.canonical, &resource);
+  if (!parsed || context.local_transaction_id == 0) {
+    *diagnostic = Diagnostic(
+        "MGA.TRANSACTION_INVALID",
+        "sblr.bulk_import_stream.execution_context_invalid",
+        "live transaction and receipt authority are required");
+    return false;
+  }
+  const auto& body = descriptor.canonical_body;
+  const auto exact = [&](std::size_t offset, const BulkUuid& expected) {
+    return std::equal(expected.begin(), expected.end(), body.begin() + offset);
+  };
+  if (!exact(0, receipt) || !exact(80, transaction) ||
+      ReadU64(body.data() + 96) != context.local_transaction_id ||
+      !exact(104, snapshot) || !exact(120, catalog) ||
+      ReadU64(body.data() + 136) != context.catalog_generation_id ||
+      !exact(144, security) ||
+      ReadU64(body.data() + 160) !=
+          context.authorization_context.security_epoch ||
+      !exact(328, resource) ||
+      ReadU64(body.data() + 344) != context.resource_epoch) {
+    *diagnostic = Diagnostic(
+        "MGA.AUTHORITY_MISMATCH",
+        "sblr.bulk_import_stream.execution_context_stale",
+        "live receipt, MGA, catalog, security, or resource authority changed");
+    return false;
+  }
   return true;
 }
 
@@ -1209,6 +1274,10 @@ EngineExecuteBulkImportStreamResultV1 CompleteRegistryPublication(
                    "sblr.bulk_import_stream.executor_evidence_failed",
                    evidenced.error);
   }
+  ObserveCheckpoint(
+      request,
+      BulkImportStreamExecutionCheckpointV1::
+          after_executor_evidence_before_result);
   const auto birs = BuildBirs(entry, publication);
   if (birs.empty()) {
     return Failure("BULK.IMPORT.ABORTED",
@@ -1379,13 +1448,45 @@ bool CancellationRequested(const EngineRequestContext& context) {
   }
 }
 
+void ObserveCheckpoint(
+    const EngineExecuteBulkImportStreamRequestV1& request,
+    BulkImportStreamExecutionCheckpointV1 checkpoint) noexcept {
+  if (!request.conformance_checkpoint_observer) return;
+  try {
+    request.conformance_checkpoint_observer(checkpoint);
+  } catch (...) {
+    // The observer is not an authority or execution callback.  Production
+    // behavior cannot be changed by an accidental conformance observer throw.
+  }
+}
+
+bool CancelledAt(const EngineExecuteBulkImportStreamRequestV1& request,
+                 BulkImportStreamExecutionCheckpointV1 checkpoint) {
+  ObserveCheckpoint(request, checkpoint);
+  return CancellationRequested(request.context);
+}
+
 }  // namespace
 
 EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
     const EngineExecuteBulkImportStreamRequestV1& request) {
   DecodedAuthority authority;
   EngineApiDiagnostic diagnostic;
-  if (!DecodeAuthority(request, &authority, &diagnostic)) {
+  if (!DecodeOperand(request, &authority, &diagnostic)) {
+    return Failure(diagnostic.code, diagnostic.message_key, diagnostic.detail);
+  }
+  if (!ExactDescriptorContext(request.context, authority.descriptor,
+                              &diagnostic)) {
+    return Failure(diagnostic.code, diagnostic.message_key, diagnostic.detail);
+  }
+  if (CancelledAt(
+          request,
+          BulkImportStreamExecutionCheckpointV1::before_descriptor_lookup)) {
+    return Failure("PROCESS.CANCELLED",
+                   "sblr.bulk_import_stream.cancelled_before_descriptor_lookup",
+                   "cancellation was observed before descriptor lookup");
+  }
+  if (!RecoverAuthority(request, &authority, &diagnostic)) {
     return Failure(diagnostic.code, diagnostic.message_key, diagnostic.detail);
   }
   if (!ExactContext(request.context, authority.entry.allocation, &diagnostic)) {
@@ -1422,6 +1523,15 @@ EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
                    "sblr.bulk_import_stream.stream_not_sealed",
                    "terminal opcode 775 requires one exact durable seal");
   }
+  if (CancelledAt(
+          request,
+          BulkImportStreamExecutionCheckpointV1::
+              before_target_generation_revalidation)) {
+    return Failure(
+        "PROCESS.CANCELLED",
+        "sblr.bulk_import_stream.cancelled_before_target_revalidation",
+        "cancellation was observed before target generation revalidation");
+  }
   TargetAuthority target;
   if (!LoadTargetAuthority(request.context, authority.entry.allocation, &target,
                            &diagnostic)) {
@@ -1457,7 +1567,10 @@ EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
     return Failure(diagnostic.code, diagnostic.message_key,
                    diagnostic.detail);
   }
-  if (CancellationRequested(request.context)) {
+  if (CancelledAt(
+          request,
+          BulkImportStreamExecutionCheckpointV1::
+              before_stream_or_publication_lock)) {
     return Failure("PROCESS.CANCELLED",
                    "sblr.bulk_import_stream.cancelled_before_registry_lock",
                    "cancellation was observed before execution admission");
@@ -1642,6 +1755,15 @@ EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
               "sblr.bulk_import_stream.statement_publication_count_mismatch",
               "the native producer result differs from the prepared publication");
         }
+        if (CancelledAt(
+                request,
+                BulkImportStreamExecutionCheckpointV1::
+                    immediately_before_durable_publication)) {
+          return Diagnostic(
+              "PROCESS.CANCELLED",
+              "sblr.bulk_import_stream.cancelled_before_durable_publication",
+              "cancellation was observed immediately before durable publication");
+        }
         return SuccessDiagnostic();
       };
   native.after_statement_publication =
@@ -1659,6 +1781,13 @@ EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
         if (!published.ok) return published.diagnostic;
         state.record = published.record;
         state.published = true;
+        // Publication has crossed the native statement savepoint barrier and
+        // its MGA publication successor is durable.  Cancellation observed
+        // from this point is deliberately ignored; recovery must finish the
+        // evidence and byte-exact BIRS.
+        ObserveCheckpoint(
+            request,
+            BulkImportStreamExecutionCheckpointV1::after_durable_publication);
         return SuccessDiagnostic();
       };
   native.after_statement_rollback = [&]() {

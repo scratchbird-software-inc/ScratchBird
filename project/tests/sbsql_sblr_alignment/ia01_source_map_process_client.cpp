@@ -478,7 +478,7 @@ int main(int argc, char** argv) {
                     : operation == "diagnostic-reset"
                           ? session.RunDiagnosticResetForWire()
                     : operation == "descriptor-transform"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunDescriptorTransformForWire():begun; }()
+                          ? session.RunDescriptorTransformForWire()
                     : operation == "migration-begin-donor"
                           ? session.RunMigrationBeginDonorForWire()
                     : operation == "migration-alter"
@@ -808,6 +808,9 @@ int main(int argc, char** argv) {
     return 0;
   }
   const char* static_refusal_test_id =
+      operation == "diagnostic-refusal" ? "CSC-TEST-003849" :
+      operation == "diagnostic-reset" ? "CSC-TEST-003853" :
+      operation == "descriptor-transform" ? "CSC-TEST-003857" :
       operation == "show-wait-events" ? "CSC-TEST-002702" :
       operation == "ddl-create-temporary-table" ? "CSC-TEST-002661" :
       operation == "ddl-drop-temporary-table" ? "CSC-TEST-002665" :
@@ -862,6 +865,9 @@ int main(int argc, char** argv) {
       operation == "ddl-drop-fdw" ? "CSC-TEST-002961" :
       operation == "ddl-drop-foreign-table" ? "CSC-TEST-002953" : nullptr;
   const char* static_refusal_operation_label =
+      operation == "diagnostic-refusal" ? "DIAGNOSTIC_REFUSAL" :
+      operation == "diagnostic-reset" ? "DIAGNOSTIC_RESET" :
+      operation == "descriptor-transform" ? "DESCRIPTOR_TRANSFORM" :
       operation == "show-wait-events" ? "READ_METRICS" :
       operation == "ddl-create-temporary-table" ? "DDL_CREATE_TEMPORARY_TABLE" :
       operation == "ddl-drop-temporary-table" ? "DDL_DROP_TEMPORARY_TABLE" :

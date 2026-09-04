@@ -24,9 +24,17 @@
 #include <memory>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
+
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char** environ;
 
 namespace {
 
@@ -126,6 +134,41 @@ BulkSha Hash(std::span<const std::uint8_t> bytes) {
 BulkSha Hash(std::string_view text) {
   return Hash(std::span<const std::uint8_t>(
       reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
+}
+
+std::string Hex(std::span<const std::uint8_t> bytes) {
+  constexpr char digits[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(bytes.size() * 2);
+  for (const auto value : bytes) {
+    encoded.push_back(digits[value >> 4]);
+    encoded.push_back(digits[value & 0x0f]);
+  }
+  return encoded;
+}
+
+bool DecodeHex(std::string_view encoded, std::vector<std::uint8_t>* bytes) {
+  if (bytes == nullptr || encoded.empty() || encoded.size() % 2 != 0) {
+    return false;
+  }
+  const auto nibble = [](char value) -> int {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return 10 + value - 'a';
+    if (value >= 'A' && value <= 'F') return 10 + value - 'A';
+    return -1;
+  };
+  bytes->clear();
+  bytes->reserve(encoded.size() / 2);
+  for (std::size_t index = 0; index < encoded.size(); index += 2) {
+    const auto high = nibble(encoded[index]);
+    const auto low = nibble(encoded[index + 1]);
+    if (high < 0 || low < 0) {
+      bytes->clear();
+      return false;
+    }
+    bytes->push_back(static_cast<std::uint8_t>((high << 4) | low));
+  }
+  return true;
 }
 
 BulkSha EmptySetHash(std::string_view domain) {
@@ -464,15 +507,17 @@ BulkSha ContentHash(std::span<const std::uint8_t> payload) {
   return Hash(material);
 }
 
-struct SealedStream {
+struct PreparedStream {
   api::BulkImportStreamAllocation allocation;
   std::vector<std::uint8_t> biro;
+  api::BulkImportChunk chunk;
+  api::BulkImportSeal seal;
 };
 
-SealedStream CoordinateAndSeal(Fixture& fixture,
-                               api::SblrBulkImportStreamRegistry& registry,
-                               std::uint64_t structural,
-                               std::string_view csv) {
+PreparedStream CoordinateStream(Fixture& fixture,
+                                api::SblrBulkImportStreamRegistry& registry,
+                                std::uint64_t structural,
+                                std::string_view csv) {
   const auto coordinated = api::CoordinateDurableSblrBulkImportStreamDescriptorV1(
       fixture.context, registry, Authority(fixture, structural, 1));
   Require(coordinated.ok && !coordinated.replayed,
@@ -499,9 +544,6 @@ SealedStream CoordinateAndSeal(Fixture& fixture,
   chunk.chain_sha = wire::ChainStep(
       chunk.previous_chain_sha, chunk.sequence, chunk.byte_offset,
       chunk.payload_sha, static_cast<std::uint32_t>(chunk.payload.size()));
-  const auto appended = registry.Append(chunk);
-  Require(appended.ok && appended.state == api::BulkImportStreamState::receiving,
-          "durable chunk append failed");
   api::BulkImportSeal seal;
   seal.authenticated_receipt_uuid =
       coordinated.allocation.authenticated_receipt_uuid;
@@ -522,10 +564,256 @@ SealedStream CoordinateAndSeal(Fixture& fixture,
   wire_seal.final_chain_sha256 = seal.final_chain_sha;
   wire_seal.content_sha256 = seal.content_sha;
   seal.seal_request_evidence = wire::SealRequestEvidence(wire_seal);
-  const auto sealed = registry.Seal(seal);
+  return {coordinated.allocation, biro, std::move(chunk), std::move(seal)};
+}
+
+void AppendPreparedStream(api::SblrBulkImportStreamRegistry& registry,
+                          const PreparedStream& stream) {
+  const auto appended = registry.Append(stream.chunk);
+  Require(appended.ok && appended.state == api::BulkImportStreamState::receiving,
+          "durable chunk append failed");
+}
+
+void SealPreparedStream(api::SblrBulkImportStreamRegistry& registry,
+                        const PreparedStream& stream) {
+  const auto sealed = registry.Seal(stream.seal);
   Require(sealed.ok && sealed.state == api::BulkImportStreamState::sealed,
           "durable stream seal failed");
-  return {coordinated.allocation, biro};
+}
+
+PreparedStream CoordinateAndSeal(Fixture& fixture,
+                                 api::SblrBulkImportStreamRegistry& registry,
+                                 std::uint64_t structural,
+                                 std::string_view csv) {
+  auto stream = CoordinateStream(fixture, registry, structural, csv);
+  AppendPreparedStream(registry, stream);
+  SealPreparedStream(registry, stream);
+  return stream;
+}
+
+std::vector<std::uint8_t> EncodeChunkForWorker(
+    const api::BulkImportChunk& chunk) {
+  wire::Chunk encoded_chunk;
+  encoded_chunk.authenticated_receipt_uuid =
+      chunk.authenticated_receipt_uuid;
+  encoded_chunk.stream_uuid = chunk.stream_uuid;
+  encoded_chunk.stream_generation = chunk.stream_generation;
+  encoded_chunk.structural_occurrence = chunk.structural_occurrence;
+  encoded_chunk.import_occurrence = chunk.import_occurrence;
+  encoded_chunk.descriptor_evidence = chunk.descriptor_evidence;
+  encoded_chunk.chunk_sequence = chunk.sequence;
+  encoded_chunk.byte_offset = chunk.byte_offset;
+  encoded_chunk.previous_chain_sha256 = chunk.previous_chain_sha;
+  encoded_chunk.payload_sha256 = chunk.payload_sha;
+  encoded_chunk.chunk_payload = chunk.payload;
+  encoded_chunk.chunk_chain_sha256 = chunk.chain_sha;
+  std::vector<std::uint8_t> encoded;
+  Require(wire::EncodeChunk(encoded_chunk, &encoded),
+          "crash-worker chunk encoding failed");
+  return encoded;
+}
+
+std::vector<std::uint8_t> EncodeSealForWorker(
+    const api::BulkImportSeal& seal) {
+  wire::Seal encoded_seal;
+  encoded_seal.authenticated_receipt_uuid =
+      seal.authenticated_receipt_uuid;
+  encoded_seal.stream_uuid = seal.stream_uuid;
+  encoded_seal.stream_generation = seal.stream_generation;
+  encoded_seal.descriptor_evidence = seal.descriptor_evidence;
+  encoded_seal.final_chunk_count = seal.final_chunk_count;
+  encoded_seal.total_stream_bytes = seal.total_stream_bytes;
+  encoded_seal.final_chain_sha256 = seal.final_chain_sha;
+  encoded_seal.content_sha256 = seal.content_sha;
+  encoded_seal.seal_request_evidence_sha256 = seal.seal_request_evidence;
+  std::vector<std::uint8_t> encoded;
+  Require(wire::EncodeSeal(encoded_seal, &encoded),
+          "crash-worker seal encoding failed");
+  return encoded;
+}
+
+void SpawnWorker(std::vector<std::string> arguments, int expected_code,
+                 std::string_view detail) {
+  std::vector<char*> argv;
+  argv.reserve(arguments.size() + 1);
+  for (auto& argument : arguments) argv.push_back(argument.data());
+  argv.push_back(nullptr);
+  pid_t child = -1;
+  const auto spawned = ::posix_spawn(
+      &child, "/proc/self/exe", nullptr, nullptr, argv.data(), environ);
+  Require(spawned == 0 && child > 0, "crash worker spawn failed");
+  int status = 0;
+  Require(::waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+              WEXITSTATUS(status) == expected_code,
+          detail);
+}
+
+void SpawnAppendWorker(const Fixture& fixture, const PreparedStream& stream,
+                       int exit_code, std::string_view detail) {
+  const auto encoded = EncodeChunkForWorker(stream.chunk);
+  SpawnWorker({"bulk_import_stream_crash_worker", "--crash-append",
+               fixture.stream_root.string(), std::to_string(exit_code),
+               Hex(encoded)},
+              exit_code, detail);
+}
+
+void SpawnSealWorker(const Fixture& fixture, const PreparedStream& stream,
+                     int exit_code, std::string_view detail) {
+  const auto encoded = EncodeSealForWorker(stream.seal);
+  SpawnWorker({"bulk_import_stream_crash_worker", "--crash-seal",
+               fixture.stream_root.string(), std::to_string(exit_code),
+               Hex(encoded)},
+              exit_code, detail);
+}
+
+void SpawnExecutionWorker(
+    const Fixture& fixture, const PreparedStream& stream,
+    api::BulkImportStreamExecutionCheckpointV1 checkpoint, int exit_code,
+    std::string_view detail) {
+  const auto& context = fixture.context;
+  SpawnWorker(
+      {"bulk_import_stream_crash_worker",
+       "--crash-execute",
+       fixture.stream_root.string(),
+       context.database_path,
+       context.database_uuid.canonical,
+       context.default_root_uuid.canonical,
+       context.current_schema_uuid.canonical,
+       context.principal_uuid.canonical,
+       context.session_uuid.canonical,
+       context.request_id,
+       std::to_string(context.local_transaction_id),
+       context.transaction_uuid.canonical,
+       std::to_string(
+           context.snapshot_visible_through_local_transaction_id),
+       context.transaction_isolation_level,
+       context.statement_uuid.canonical,
+       context.statement_receipt_uuid.canonical,
+       context.statement_snapshot_uuid.canonical,
+       context.catalog_epoch_uuid.canonical,
+       context.resource_admission_uuid.canonical,
+       context.authorization_context.authority_uuid.canonical,
+       std::to_string(context.catalog_generation_id),
+       std::to_string(context.authorization_context.security_epoch),
+       std::to_string(context.resource_epoch),
+       std::to_string(context.name_resolution_epoch),
+       std::to_string(static_cast<unsigned>(checkpoint)),
+       std::to_string(exit_code),
+       Hex(stream.biro)},
+      exit_code, detail);
+}
+
+int RunCrashWorker(int argc, char** argv) {
+  try {
+    if (argc == 5 && std::string_view(argv[1]) == "--crash-append") {
+      std::vector<std::uint8_t> encoded;
+      wire::Chunk decoded;
+      if (!DecodeHex(argv[4], &encoded) ||
+          !wire::DecodeChunk(encoded.data(), encoded.size(), &decoded)) {
+        return 99;
+      }
+      api::BulkImportChunk chunk;
+      chunk.authenticated_receipt_uuid = decoded.authenticated_receipt_uuid;
+      chunk.stream_uuid = decoded.stream_uuid;
+      chunk.stream_generation = decoded.stream_generation;
+      chunk.structural_occurrence = decoded.structural_occurrence;
+      chunk.import_occurrence = decoded.import_occurrence;
+      chunk.descriptor_evidence = decoded.descriptor_evidence;
+      chunk.sequence = decoded.chunk_sequence;
+      chunk.byte_offset = decoded.byte_offset;
+      chunk.previous_chain_sha = decoded.previous_chain_sha256;
+      chunk.payload_sha = decoded.payload_sha256;
+      chunk.payload = std::move(decoded.chunk_payload);
+      chunk.chain_sha = decoded.chunk_chain_sha256;
+      api::SblrBulkImportStreamRegistry registry(argv[2]);
+      const auto result = registry.Append(chunk);
+      if (!registry.healthy() || !result.ok) return 98;
+      ::_exit(static_cast<int>(std::stoul(argv[3])));
+    }
+    if (argc == 5 && std::string_view(argv[1]) == "--crash-seal") {
+      std::vector<std::uint8_t> encoded;
+      wire::Seal decoded;
+      if (!DecodeHex(argv[4], &encoded) ||
+          !wire::DecodeSeal(encoded.data(), encoded.size(), &decoded)) {
+        return 99;
+      }
+      api::BulkImportSeal seal;
+      seal.authenticated_receipt_uuid = decoded.authenticated_receipt_uuid;
+      seal.stream_uuid = decoded.stream_uuid;
+      seal.stream_generation = decoded.stream_generation;
+      seal.descriptor_evidence = decoded.descriptor_evidence;
+      seal.final_chunk_count = decoded.final_chunk_count;
+      seal.total_stream_bytes = decoded.total_stream_bytes;
+      seal.final_chain_sha = decoded.final_chain_sha256;
+      seal.content_sha = decoded.content_sha256;
+      seal.seal_request_evidence = decoded.seal_request_evidence_sha256;
+      api::SblrBulkImportStreamRegistry registry(argv[2]);
+      const auto result = registry.Seal(seal);
+      if (!registry.healthy() || !result.ok) return 98;
+      ::_exit(static_cast<int>(std::stoul(argv[3])));
+    }
+    if (argc == 27 && std::string_view(argv[1]) == "--crash-execute") {
+      api::EngineRequestContext context;
+      context.trust_mode = api::EngineTrustMode::server_isolated;
+      context.database_path = argv[3];
+      context.database_uuid.canonical = argv[4];
+      context.default_root_uuid.canonical = argv[5];
+      context.current_schema_uuid.canonical = argv[6];
+      context.principal_uuid.canonical = argv[7];
+      context.session_uuid.canonical = argv[8];
+      context.request_id = argv[9];
+      context.local_transaction_id = std::stoull(argv[10]);
+      context.transaction_uuid.canonical = argv[11];
+      context.snapshot_visible_through_local_transaction_id =
+          std::stoull(argv[12]);
+      context.transaction_isolation_level = argv[13];
+      context.statement_uuid.canonical = argv[14];
+      context.statement_receipt_uuid.canonical = argv[15];
+      context.statement_snapshot_uuid.canonical = argv[16];
+      context.catalog_epoch_uuid.canonical = argv[17];
+      context.resource_admission_uuid.canonical = argv[18];
+      context.authorization_context.authority_uuid.canonical = argv[19];
+      context.catalog_generation_id = std::stoull(argv[20]);
+      context.security_epoch = std::stoull(argv[21]);
+      context.authorization_context.security_epoch = context.security_epoch;
+      context.resource_epoch = std::stoull(argv[22]);
+      context.name_resolution_epoch = std::stoull(argv[23]);
+      context.database_page_size_bytes = 16384;
+      context.identifier_profile_uuid = "sbsql_v3";
+      context.language_context.language_tag = "en";
+      context.language_context.default_language_tag = "en";
+      context.security_context_present = true;
+      context.authorization_context.present = true;
+      context.authorization_context.security_context_generation = 1;
+      context.authorization_context.principal_uuid = context.principal_uuid;
+      context.authorization_context.policy_epoch = 1;
+      context.authorization_context.catalog_generation_id =
+          context.catalog_generation_id;
+      context.statement_metadata_snapshot_engine_owned = true;
+      context.trace_tags.push_back("private_bulk_import_stream_compiler");
+      const auto checkpoint =
+          static_cast<api::BulkImportStreamExecutionCheckpointV1>(
+              std::stoul(argv[24]));
+      const auto exit_code = static_cast<int>(std::stoul(argv[25]));
+      std::vector<std::uint8_t> biro;
+      if (!DecodeHex(argv[26], &biro)) return 99;
+      api::SblrBulkImportStreamRegistry registry(argv[2]);
+      if (!registry.healthy()) return 98;
+      api::EngineExecuteBulkImportStreamRequestV1 request;
+      request.context = std::move(context);
+      request.registry = &registry;
+      request.canonical_biro = std::move(biro);
+      request.conformance_checkpoint_observer =
+          [checkpoint, exit_code](auto observed) {
+            if (observed == checkpoint) ::_exit(exit_code);
+          };
+      (void)api::ExecuteBulkImportStreamV1(request);
+      return 97;
+    }
+  } catch (...) {
+    return 96;
+  }
+  return 95;
 }
 
 std::vector<api::CrudRowVersionRecord> VisibleRows(const Fixture& fixture) {
@@ -552,7 +840,8 @@ std::map<std::string, std::string> Values(
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1) return RunCrashWorker(argc, argv);
   auto fixture = MakeFixture();
   auto registry = std::make_unique<api::SblrBulkImportStreamRegistry>(
       fixture.stream_root);
@@ -605,6 +894,54 @@ int main() {
               malformed_entry.state == api::BulkImportStreamState::aborted,
           "malformed stream did not reach durable aborted state");
 
+  const auto authority_refusal_rows = VisibleRows(fixture).size();
+  const auto require_prelookup_refusal =
+      [&](const PreparedStream& stream,
+          const api::EngineRequestContext& context,
+          std::string_view expected_code,
+          std::string_view failure_detail) {
+        execute.context = context;
+        execute.registry = registry.get();
+        execute.canonical_biro = stream.biro;
+        execute.conformance_checkpoint_observer = {};
+        const auto refused_by_authority =
+            api::ExecuteBulkImportStreamV1(execute);
+        api::BulkImportStreamEntry entry;
+        Require(!refused_by_authority.ok &&
+                    refused_by_authority.diagnostic.code == expected_code &&
+                    refused_by_authority.canonical_birs.empty() &&
+                    registry->Recover(stream.allocation.stream_uuid, &entry)
+                        .ok &&
+                    entry.state == api::BulkImportStreamState::sealed &&
+                    VisibleRows(fixture).size() == authority_refusal_rows,
+                failure_detail);
+      };
+
+  const auto security_refusal = CoordinateAndSeal(
+      fixture, *registry, 13, "13,security_refused\n");
+  auto invalid_context = fixture.context;
+  invalid_context.security_context_present = false;
+  require_prelookup_refusal(security_refusal, invalid_context,
+                            "SECURITY.ACCESS_DENIED",
+                            "security refusal disclosed or mutated stream state");
+
+  const auto transaction_refusal = CoordinateAndSeal(
+      fixture, *registry, 14, "14,transaction_refused\n");
+  invalid_context = fixture.context;
+  invalid_context.local_transaction_id = 0;
+  require_prelookup_refusal(transaction_refusal, invalid_context,
+                            "MGA.TRANSACTION_INVALID",
+                            "invalid MGA identity crossed the stream lookup boundary");
+
+  const auto authority_mismatch = CoordinateAndSeal(
+      fixture, *registry, 15, "15,authority_mismatch\n");
+  invalid_context = fixture.context;
+  ++invalid_context.catalog_generation_id;
+  require_prelookup_refusal(authority_mismatch, invalid_context,
+                            "MGA.AUTHORITY_MISMATCH",
+                            "stale catalog authority crossed the stream lookup boundary");
+  execute.context = fixture.context;
+
   const auto first_birs = executed.canonical_birs;
   registry.reset();
   registry = std::make_unique<api::SblrBulkImportStreamRegistry>(
@@ -624,6 +961,168 @@ int main() {
               decoded.availability_generation ==
                   success.allocation.executor_availability_generation,
           "recorded BIRS failed canonical decoding");
+
+  using Checkpoint = api::BulkImportStreamExecutionCheckpointV1;
+  const auto prepublication_rows = VisibleRows(fixture).size();
+  for (const auto [checkpoint, structural, row_id] : {
+           std::tuple{Checkpoint::before_descriptor_lookup, 21ULL, 21},
+           std::tuple{Checkpoint::before_target_generation_revalidation,
+                      22ULL, 22},
+           std::tuple{Checkpoint::before_stream_or_publication_lock, 23ULL,
+                      23},
+           std::tuple{Checkpoint::immediately_before_durable_publication,
+                      24ULL, 24}}) {
+    const auto stream = CoordinateAndSeal(
+        fixture, *registry, structural,
+        std::to_string(row_id) + ",cancelled\n");
+    bool cancellation_requested = false;
+    bool checkpoint_observed = false;
+    execute.context = fixture.context;
+    execute.context.query_cancellation_requested =
+        [&] { return cancellation_requested; };
+    execute.registry = registry.get();
+    execute.canonical_biro = stream.biro;
+    execute.conformance_checkpoint_observer = [&](Checkpoint observed) {
+      if (observed == checkpoint) {
+        checkpoint_observed = true;
+        cancellation_requested = true;
+      }
+    };
+    const auto cancelled = api::ExecuteBulkImportStreamV1(execute);
+    Require(checkpoint_observed && !cancelled.ok &&
+                cancelled.diagnostic.code == "PROCESS.CANCELLED" &&
+                cancelled.canonical_birs.empty() &&
+                VisibleRows(fixture).size() == prepublication_rows,
+            "one pre-publication cancellation checkpoint was not atomic");
+    api::BulkImportStreamEntry cancelled_entry;
+    Require(registry->Recover(stream.allocation.stream_uuid,
+                              &cancelled_entry)
+                .ok &&
+                cancelled_entry.state !=
+                    api::BulkImportStreamState::published &&
+                cancelled_entry.state !=
+                    api::BulkImportStreamState::evidenced &&
+                cancelled_entry.state !=
+                    api::BulkImportStreamState::result_recorded,
+            "pre-publication cancellation crossed the durable barrier");
+  }
+
+  const auto postpublication = CoordinateAndSeal(
+      fixture, *registry, 25, "25,published_despite_late_cancel\n");
+  bool late_cancellation = false;
+  bool postpublication_observed = false;
+  execute.context = fixture.context;
+  execute.context.query_cancellation_requested =
+      [&] { return late_cancellation; };
+  execute.canonical_biro = postpublication.biro;
+  execute.conformance_checkpoint_observer = [&](Checkpoint observed) {
+    if (observed == Checkpoint::after_durable_publication) {
+      postpublication_observed = true;
+      late_cancellation = true;
+    }
+  };
+  const auto completed_after_late_cancel =
+      api::ExecuteBulkImportStreamV1(execute);
+  Require(postpublication_observed && completed_after_late_cancel.ok &&
+              !completed_after_late_cancel.canonical_birs.empty() &&
+              VisibleRows(fixture).size() == prepublication_rows + 1,
+          "post-publication cancellation did not complete exact finality");
+
+  execute.conformance_checkpoint_observer = {};
+  execute.context = fixture.context;
+
+  const auto reopen_registry = [&] {
+    registry.reset();
+    registry = std::make_unique<api::SblrBulkImportStreamRegistry>(
+        fixture.stream_root);
+    Require(registry->healthy(), "durable registry crash reopen failed");
+    execute.registry = registry.get();
+  };
+  const auto recover_execute = [&](const PreparedStream& stream,
+                                   std::size_t expected_rows,
+                                   std::string_view detail) {
+    execute.context = fixture.context;
+    execute.registry = registry.get();
+    execute.canonical_biro = stream.biro;
+    execute.conformance_checkpoint_observer = {};
+    const auto recovered = api::ExecuteBulkImportStreamV1(execute);
+    Require(recovered.ok && !recovered.canonical_birs.empty() &&
+                VisibleRows(fixture).size() == expected_rows,
+            detail);
+    return recovered.canonical_birs;
+  };
+
+  std::size_t durable_rows = prepublication_rows + 1;
+  auto crash_after_chunk = CoordinateStream(
+      fixture, *registry, 31, "31,recovered_after_chunk\n");
+  registry.reset();
+  SpawnAppendWorker(fixture, crash_after_chunk, 81,
+                    "worker did not crash after durable chunk");
+  reopen_registry();
+  api::BulkImportStreamEntry crash_entry;
+  Require(registry->Recover(crash_after_chunk.allocation.stream_uuid,
+                            &crash_entry)
+              .ok &&
+              crash_entry.state == api::BulkImportStreamState::receiving,
+          "durable chunk was not recoverable after process loss");
+  SealPreparedStream(*registry, crash_after_chunk);
+  recover_execute(crash_after_chunk, ++durable_rows,
+                  "execution did not recover after durable-chunk crash");
+
+  auto crash_after_seal = CoordinateStream(
+      fixture, *registry, 32, "32,recovered_after_seal\n");
+  AppendPreparedStream(*registry, crash_after_seal);
+  registry.reset();
+  SpawnSealWorker(fixture, crash_after_seal, 82,
+                  "worker did not crash after durable seal");
+  reopen_registry();
+  Require(registry->Recover(crash_after_seal.allocation.stream_uuid,
+                            &crash_entry)
+              .ok &&
+              crash_entry.state == api::BulkImportStreamState::sealed,
+          "durable seal was not recoverable after process loss");
+  recover_execute(crash_after_seal, ++durable_rows,
+                  "execution did not recover after durable-seal crash");
+
+  const auto crash_execute = [&](std::uint64_t structural,
+                                 std::string_view csv,
+                                 Checkpoint checkpoint, int exit_code,
+                                 std::string_view crash_detail,
+                                 std::string_view recovery_detail) {
+    auto stream = CoordinateAndSeal(fixture, *registry, structural, csv);
+    registry.reset();
+    SpawnExecutionWorker(fixture, stream, checkpoint, exit_code,
+                         crash_detail);
+    reopen_registry();
+    recover_execute(stream, ++durable_rows, recovery_detail);
+  };
+
+  crash_execute(33, "33,recovered_prepublication\n",
+                Checkpoint::immediately_before_durable_publication, 83,
+                "child did not stop immediately before publication",
+                "pre-publication execution crash did not recover exactly once");
+  crash_execute(34, "34,recovered_postpublication\n",
+                Checkpoint::after_durable_publication, 84,
+                "child did not stop immediately after publication",
+                "post-publication crash did not recover without duplicate rows");
+  crash_execute(35, "35,recovered_after_evidence\n",
+                Checkpoint::after_executor_evidence_before_result, 85,
+                "child did not stop after executor evidence",
+                "evidenced stream did not recover its exact terminal result");
+
+  const auto fresh_descriptor = CoordinateAndSeal(
+      fixture, *registry, 36, "35,recovered_after_evidence\n");
+  execute.context = fixture.context;
+  execute.registry = registry.get();
+  execute.canonical_biro = fresh_descriptor.biro;
+  execute.conformance_checkpoint_observer = {};
+  const auto fresh_result = api::ExecuteBulkImportStreamV1(execute);
+  Require(fresh_result.ok && !fresh_result.replayed &&
+              fresh_descriptor.allocation.stream_uuid !=
+                  success.allocation.stream_uuid &&
+              fresh_result.canonical_birs != first_birs &&
+              VisibleRows(fixture).size() == durable_rows + 1,
+          "a fresh descriptor incorrectly recovered an earlier operation");
 
   Rollback(fixture.context);
   return EXIT_SUCCESS;

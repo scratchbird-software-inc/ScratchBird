@@ -3083,7 +3083,6 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.result_shape.result_kind = "ddl_result";
     return result;
   }
-  if (request.envelope.operation_id == "engine.op.diagnostic_refusal" && request.envelope.opcode == "SBLR_DIAGNOSTIC_REFUSAL" && request.envelope.opcode_code == 0x1900) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="diagnostic_refusal_result"; return result; }
   if (request.envelope.operation_id == "engine.op.ddl_create_dictionary" && request.envelope.opcode == "SBLR_DDL_CREATE_DICTIONARY") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (request.envelope.operation_id == "engine.op.ddl_alter_dictionary" && request.envelope.opcode == "SBLR_DDL_ALTER_DICTIONARY" && request.envelope.opcode_code == 1639) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (request.envelope.operation_id == "engine.op.ddl_create_continuous_view" && request.envelope.opcode == "SBLR_DDL_CREATE_CONTINUOUS_VIEW" && request.envelope.opcode_code == 1640) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
@@ -10690,6 +10689,8 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.opcode_code == 1537;
   const bool exact_ddl_drop_table = request.envelope.operation_id=="engine.op.ddl_drop_table"&&request.envelope.opcode=="SBLR_DDL_DROP_TABLE"&&request.envelope.opcode_code==1539;
   const bool exact_diagnostic_refusal = request.envelope.operation_id=="engine.op.diagnostic_refusal"&&request.envelope.opcode=="SBLR_DIAGNOSTIC_REFUSAL"&&request.envelope.opcode_code==0x1900;
+  const bool exact_diagnostic_reset = request.envelope.operation_id=="engine.op.diagnostic_reset"&&request.envelope.opcode=="SBLR_DIAGNOSTIC_RESET"&&request.envelope.opcode_code==0x1901;
+  const bool exact_descriptor_transform = request.envelope.operation_id=="engine.op.descriptor_transform"&&request.envelope.opcode=="SBLR_DESCRIPTOR_TRANSFORM"&&request.envelope.opcode_code==0x1902;
   const bool exact_ddl_create_table_as_query_with_data = request.envelope.operation_id=="engine.op.ddl_create_table_as_query_with_data"&&request.envelope.opcode=="SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA"&&request.envelope.opcode_code==1669;
   const bool exact_ddl_create_table_as_query_with_no_data = request.envelope.operation_id=="engine.op.ddl_create_table_as_query_with_no_data"&&request.envelope.opcode=="SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA"&&request.envelope.opcode_code==1670;
   const bool exact_ddl_create_index = request.envelope.operation_id=="engine.op.ddl_create_index"&&request.envelope.opcode=="SBLR_DDL_CREATE_INDEX"&&request.envelope.opcode_code==1540;
@@ -10754,7 +10755,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_create_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_create_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_CREATE_REWRITE_RULE"&&request.envelope.opcode_code==1617;
   const bool exact_ddl_alter_procedure = request.envelope.operation_id=="engine.op.ddl_alter_procedure"&&request.envelope.opcode=="SBLR_DDL_ALTER_PROCEDURE"&&request.envelope.opcode_code==1555;
   const bool exact_ddl_create_trigger = (request.envelope.operation_id=="engine.op.ddl_create_trigger"&&request.envelope.opcode=="SBLR_DDL_CREATE_TRIGGER"&&request.envelope.opcode_code==1551) || (request.envelope.operation_id=="engine.op.ddl_alter_trigger"&&request.envelope.opcode=="SBLR_DDL_ALTER_TRIGGER"&&request.envelope.opcode_code==1552) || exact_ddl_drop_trigger;
-  const bool exact_window = (request.envelope.operation_id=="engine.op.window"&&request.envelope.opcode=="SBLR_WINDOW"&&request.envelope.opcode_code==1285) || exact_context_set || exact_diagnostic_refusal || exact_return_result_set || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_drop_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_refresh_materialized_view || exact_ddl_drop_materialized_view || exact_ddl_create_type || exact_ddl_alter_type || exact_ddl_drop_type || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_alter_package || exact_ddl_alter_sequence || exact_ddl_drop_package || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_ddl_create_foreign_table || exact_ddl_create_fdw || exact_ddl_drop_fdw || exact_ddl_drop_foreign_table;
+  const bool exact_window = (request.envelope.operation_id=="engine.op.window"&&request.envelope.opcode=="SBLR_WINDOW"&&request.envelope.opcode_code==1285) || exact_context_set || exact_diagnostic_refusal || exact_diagnostic_reset || exact_descriptor_transform || exact_return_result_set || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_drop_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_refresh_materialized_view || exact_ddl_drop_materialized_view || exact_ddl_create_type || exact_ddl_alter_type || exact_ddl_drop_type || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_alter_package || exact_ddl_alter_sequence || exact_ddl_drop_package || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_ddl_create_foreign_table || exact_ddl_create_fdw || exact_ddl_drop_fdw || exact_ddl_drop_foreign_table;
   const bool exact_management_envelope =
       (request.envelope.operation_id == "engine.op.mgmt_operation" &&
        request.envelope.opcode == "SBLR_MGMT_OPERATION" &&
@@ -10811,7 +10812,8 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.opcode_code >= 0x0A00 && request.envelope.opcode_code <= 0x0A04;
   if (exact_ddl_drop_sequence) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   const bool exact_static_executor_evidence_refusal =
-      exact_security_alter_privilege_template ||
+      exact_diagnostic_refusal || exact_diagnostic_reset ||
+      exact_descriptor_transform || exact_security_alter_privilege_template ||
       exact_security_drop_privilege_template ||
       exact_database_create_template_clone || exact_ddl_create_aggregate ||
       exact_ddl_create_macro || exact_ddl_drop_macro ||
@@ -10825,6 +10827,19 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       exact_ddl_timeseries_series_cardinality_policy ||
       exact_ddl_create_timeseries_value_cache ||
       exact_ddl_alter_timeseries_value_cache;
+  if (exact_diagnostic_refusal || exact_diagnostic_reset ||
+      exact_descriptor_transform) {
+    const auto envelope_validation = ValidateSblrEnvelope(request.envelope);
+    if (!envelope_validation.ok) {
+      result.diagnostic_id = envelope_validation.diagnostics.empty()
+                                 ? "SBLR.OPERAND_INVALID"
+                                 : envelope_validation.diagnostics.front().code;
+      result.detail = envelope_validation.diagnostics.empty()
+                          ? "diagnostic descriptor envelope validation failed"
+                          : envelope_validation.diagnostics.front().message;
+      return result;
+    }
+  }
   if (exact_static_executor_evidence_refusal) {
     const auto opcode_validation =
         ValidateSblrOpcodeForEnvelope(request.envelope);
@@ -11256,7 +11271,6 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
 
-  if (request.envelope.operation_id == "engine.op.diagnostic_refusal" && request.envelope.opcode == "SBLR_DIAGNOSTIC_REFUSAL" && request.envelope.opcode_code == 0x1900) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="diagnostic_refusal_result"; return result; }
   const auto validation = ValidateSblrEnvelope(request.envelope);
   result.envelope_validated = validation.ok;
   if (!validation.ok) {
@@ -11397,6 +11411,12 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           "engine.op.ddl_create_fdw", "SBLR_DDL_CREATE_FDW", 1578) ||
       has_exact_static_executor_evidence_identity(
           "engine.op.ddl_drop_fdw", "SBLR_DDL_DROP_FDW", 1579) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", 6400) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.diagnostic_reset", "SBLR_DIAGNOSTIC_RESET", 6401) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.descriptor_transform", "SBLR_DESCRIPTOR_TRANSFORM", 6402) ||
       has_exact_static_executor_evidence_identity(
           "diagnostic.control", "SBLR_DIAGNOSTIC_CONTROL", 6403) ||
       has_exact_static_executor_evidence_identity(

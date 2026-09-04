@@ -7356,8 +7356,15 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
                                SblrParameterDirection::in,
                            demand.nullable_demand == 1});
   }
+  auto parameter_registry_context = receipt->engine_context;
+  // The parameter descriptor set is bound to the preliminary datatype
+  // catalog projected in schema 7032 and echoed by SBPR/SBPT.  The general
+  // statement catalog generation is a different authority family and must
+  // not be substituted for that immutable datatype generation.
+  parameter_registry_context.catalog_generation_id =
+      receipt->view.literal_catalog_generation;
   const auto issued_set = scratchbird::engine::internal_api::
-      IssueSblrParameterSet(receipt->engine_context, issue);
+      IssueSblrParameterSet(parameter_registry_context, issue);
   if (!issued_set.ok) {
     return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4082,
                        issued_set.diagnostic.code,
@@ -7565,9 +7572,12 @@ sb_engine_status_t FinalizeStatementParameterBindingV1(
     }
   }
   scratchbird::engine::internal_api::SblrParameterSetSnapshot current;
+  auto parameter_registry_context = receipt->engine_context;
+  parameter_registry_context.catalog_generation_id =
+      receipt->view.literal_catalog_generation;
   const auto revalidated = scratchbird::engine::internal_api::
       RevalidateSblrParameterSet(
-          receipt->engine_context, snapshot, receipt->view.receipt_uuid,
+          parameter_registry_context, snapshot, receipt->view.receipt_uuid,
           snapshot.execution_uuid, snapshot.prepared_statement_uuid,
           snapshot.prepared_generation, snapshot.batch_uuid,
           snapshot.batch_generation, snapshot.dynamic_package_uuid,
@@ -9944,9 +9954,12 @@ sb_engine_status_t DispatchStatementContextReceipt(
     }
     scratchbird::engine::internal_api::SblrParameterSetSnapshot current;
     const auto& admitted = receipt->parameter_set_snapshot;
+    auto parameter_registry_context = receipt->engine_context;
+    parameter_registry_context.catalog_generation_id =
+        receipt->view.literal_catalog_generation;
     const auto revalidated = scratchbird::engine::internal_api::
         RevalidateSblrParameterSet(
-            receipt->engine_context, admitted, receipt->view.receipt_uuid,
+            parameter_registry_context, admitted, receipt->view.receipt_uuid,
             admitted.execution_uuid, admitted.prepared_statement_uuid,
             admitted.prepared_generation, admitted.batch_uuid,
             admitted.batch_generation, admitted.dynamic_package_uuid,

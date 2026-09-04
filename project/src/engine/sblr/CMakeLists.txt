@@ -38,6 +38,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
     sblr_merge_runtime.cpp
     sblr_table_truncate_runtime.cpp
   sblr_table_analyze_runtime.cpp
+  sblr_diagnostic_control_runtime.cpp
   sblr_bulk_import_stream_runtime.cpp
   sblr_plan_import_rows_codec.cpp
   sblr_bulk_export_stream_runtime.cpp
@@ -479,5 +480,5 @@ if(BUILD_TESTING)
   add_test(NAME sbsql_sblr_alignment_ia01_opcode_contract
     COMMAND sbsql_sblr_alignment_ia01_opcode_contract)
   set_tests_properties(sbsql_sblr_alignment_ia01_opcode_contract PROPERTIES
-    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_PACKAGE_BEGIN_END;contract")
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_PACKAGE_BEGIN_END;CSC-TEST-002318;CSC-TEST-002322;malformed_operand;contract")
 endif()

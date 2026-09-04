@@ -20,6 +20,12 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace scratchbird::core::uuid {
 namespace {
 
@@ -98,9 +104,20 @@ Uuid MakeV1Layout(u8 version, u64 gregorian_100ns_timestamp, u16 clock_sequence,
   return uuid;
 }
 
-std::array<byte, 16> RandomBytes16() {
-  std::array<byte, 16> bytes{};
-  thread_local std::mt19937_64 rng = [] {
+std::uint64_t CurrentProcessIdentity() {
+#if defined(_WIN32)
+  return static_cast<std::uint64_t>(::GetCurrentProcessId());
+#else
+  return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+
+struct ProcessRandomState {
+  std::uint64_t process_identity = 0;
+  std::mt19937_64 generator;
+};
+
+ProcessRandomState MakeProcessRandomState(std::uint64_t process_identity) {
     std::random_device random;
     const auto now = static_cast<u64>(
         std::chrono::high_resolution_clock::now().time_since_epoch().count());
@@ -114,11 +131,25 @@ std::array<byte, 16> RandomBytes16() {
         static_cast<unsigned int>(now & 0xffffffffull),
         static_cast<unsigned int>((now >> 32) & 0xffffffffull),
         static_cast<unsigned int>(thread_hash & 0xffffffffull),
-        static_cast<unsigned int>((thread_hash >> 32) & 0xffffffffull)};
-    return std::mt19937_64(seed);
-  }();
+        static_cast<unsigned int>((thread_hash >> 32) & 0xffffffffull),
+        static_cast<unsigned int>(process_identity & 0xffffffffull),
+        static_cast<unsigned int>((process_identity >> 32) & 0xffffffffull)};
+  return {process_identity, std::mt19937_64(seed)};
+}
+
+std::array<byte, 16> RandomBytes16() {
+  std::array<byte, 16> bytes{};
+  const auto process_identity = CurrentProcessIdentity();
+  thread_local ProcessRandomState state =
+      MakeProcessRandomState(process_identity);
+  if (state.process_identity != process_identity) {
+    // A fork clones thread-local PRNG state.  Reseed before producing any
+    // durable identity in the child so a crashed child and its recovering
+    // parent cannot publish the same UUIDv7 random suffix.
+    state = MakeProcessRandomState(process_identity);
+  }
   for (std::size_t i = 0; i < bytes.size(); i += 8) {
-    const auto value = rng();
+    const auto value = state.generator();
     bytes[i] = static_cast<byte>((value >> 56) & 0xffu);
     bytes[i + 1] = static_cast<byte>((value >> 48) & 0xffu);
     bytes[i + 2] = static_cast<byte>((value >> 40) & 0xffu);

@@ -6803,7 +6803,8 @@ ServerStatementContextResult SbpsClient::AcquireParameterStatementContext(
   }
   if (!DecodeAcquireStatementContextPayloadV11(response.payload,
                                                &result.context) ||
-      result.context.preliminary_extension_version != 3 ||
+      result.context.preliminary_extension_version < 3 ||
+      result.context.preliminary_extension_version > 26 ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||
       result.context.transaction.transaction_uuid !=
@@ -7355,7 +7356,8 @@ SbpsClient::FinalizePreparedParameterSubmission(
       !coordination.present() || !UuidPresent(session_uuid) ||
       !UuidPresent(connection_uuid) || !UuidPresent(coordination_uuid) ||
       !UuidPresent(operation_uuid) ||
-      preliminary_context.preliminary_extension_version != 3 ||
+      preliminary_context.preliminary_extension_version < 3 ||
+      preliminary_context.preliminary_extension_version > 26 ||
       !UuidPresent(provisional_prepared) ||
       preliminary_context.preliminary_prepared_generation == 0 ||
       canonical_sbpt.size() < 280 + 192 ||

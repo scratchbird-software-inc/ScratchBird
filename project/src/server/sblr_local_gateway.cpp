@@ -611,10 +611,38 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
   const bool exact_diagnostic_refusal = request.root_opcode_code == 0x1900u &&
       request.root_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
       request.root_operation_id == "engine.op.diagnostic_refusal";
-  bool exact_local_diagnostic_refusal = stream.ok && stream.stream.operations.size() == 3 &&
-      exact_diagnostic_refusal && !request.cluster_context_active &&
-      !request.cluster_transaction_active && !request.route_fence_present &&
-      stream.stream.operations[1].operands.empty();
+  const bool exact_diagnostic_reset = request.root_opcode_code == 0x1901u &&
+      request.root_opcode == "SBLR_DIAGNOSTIC_RESET" &&
+      request.root_operation_id == "engine.op.diagnostic_reset";
+  const bool exact_descriptor_transform = request.root_opcode_code == 0x1902u &&
+      request.root_opcode == "SBLR_DESCRIPTOR_TRANSFORM" &&
+      request.root_operation_id == "engine.op.descriptor_transform";
+  const auto exact_local_diagnostic_descriptor =
+      [&](std::string_view type, std::string_view name) {
+        if (!stream.ok || stream.stream.operations.size() != 3 ||
+            request.cluster_context_active ||
+            request.cluster_transaction_active || request.route_fence_present) {
+          return false;
+        }
+        const auto& operands = stream.stream.operations[1].operands;
+        return operands.size() == 1 && operands.front().ordinal == 1 &&
+               operands.front().type == type && operands.front().name == name &&
+               operands.front().value_kind ==
+                   scratchbird::engine::sblr::SblrValueKind::descriptor_ref &&
+               operands.front().value_body.size() == 16 &&
+               std::any_of(operands.front().value_body.begin(),
+                           operands.front().value_body.end(),
+                           [](std::uint8_t byte) { return byte != 0; });
+      };
+  const bool exact_local_diagnostic_refusal =
+      exact_diagnostic_refusal &&
+      exact_local_diagnostic_descriptor("diagnostic.refusal", "refusal");
+  const bool exact_local_diagnostic_reset =
+      exact_diagnostic_reset &&
+      exact_local_diagnostic_descriptor("diagnostic.reset", "reset");
+  const bool exact_local_descriptor_transform =
+      exact_descriptor_transform &&
+      exact_local_diagnostic_descriptor("descriptor.transform", "transform");
   const bool exact_window = request.root_opcode_code == 1285 && request.root_opcode == "SBLR_WINDOW" && request.root_operation_id == "engine.op.window";
   const bool exact_show_version = request.root_opcode_code == 3334 &&
       request.root_opcode == "SBLR_OBSERVABILITY_SHOW_VERSION" &&
@@ -1570,7 +1598,20 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_ddl_rename_object_vector && !exact_local_ddl_rename_object_vector) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_rename_object && !exact_local_ddl_rename_object) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_ddl_create_schema && !exact_local_ddl_create_schema) return Refuse(request,"SBLR.OPERAND.INVALID");
-  if (exact_local_diagnostic_refusal) exact_local_ddl_create_schema = true;
+  if ((exact_diagnostic_refusal && !exact_local_diagnostic_refusal) ||
+      (exact_diagnostic_reset && !exact_local_diagnostic_reset) ||
+      (exact_descriptor_transform && !exact_local_descriptor_transform)) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND.INVALID");
+  }
+  if (exact_local_diagnostic_refusal || exact_local_diagnostic_reset ||
+      exact_local_descriptor_transform) {
+    exact_local_ddl_create_schema = true;
+  }
   if (exact_ddl_create_table && !exact_local_ddl_create_table) return Refuse(request,"SBLR.OPERAND.INVALID");
   const bool exact_ddl_drop_table = request.root_opcode_code == 1539 && request.root_opcode == "SBLR_DDL_DROP_TABLE" && request.root_operation_id == "engine.op.ddl_drop_table";
   bool exact_local_ddl_drop_table = false;
