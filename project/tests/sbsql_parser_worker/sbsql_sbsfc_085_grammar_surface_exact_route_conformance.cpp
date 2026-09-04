@@ -147,6 +147,42 @@ void RequireRegistryEvidence(const CaseRow& row) {
           "SBSFC-085 generated registry canonical family drifted");
 }
 
+bool IsStandaloneProcedureIrRow(const CaseRow& row) {
+  return row.surface_id == "SBSQL-F178404D32D6" ||
+         row.surface_id == "SBSQL-F5E78906D903" ||
+         row.surface_id == "SBSQL-FEE85792235D";
+}
+
+void RequireStandaloneProcedureIrRefusal(const CaseRow& row,
+                                         const PipelineArtifacts& artifacts) {
+  Require(!artifacts.verifier.admitted,
+          "SBSFC-085 standalone procedure IR reached SBLR admission");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1" &&
+              artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty(),
+          "SBSFC-085 standalone procedure IR refusal tuple drifted");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "SBSFC-085 standalone procedure IR diagnostic count drifted");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  const auto field = [&diagnostic](std::string_view name) {
+    const auto found = std::find_if(
+        diagnostic.fields.begin(), diagnostic.fields.end(),
+        [name](const auto& candidate) { return candidate.name == name; });
+    return found == diagnostic.fields.end() ? std::string_view{}
+                                             : std::string_view(found->value);
+  };
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              field("surface_id") == row.surface_id &&
+              field("canonical_name") == row.canonical_name &&
+              field("executable_sblr_emitted") == "false",
+          "SBSFC-085 standalone procedure IR diagnostic drifted");
+}
+
 void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
@@ -163,6 +199,10 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
   Require(artifacts.ast.operation_family == "sblr.general.operation.v3",
           "SBSFC-085 AST canonical operation family mismatch");
   Require(artifacts.bound.bound, "SBSFC-085 bind failed");
+  if (IsStandaloneProcedureIrRow(row)) {
+    RequireStandaloneProcedureIrRefusal(row, artifacts);
+    return;
+  }
   Require(artifacts.verifier.admitted, "SBSFC-085 verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
           "SBSFC-085 route operation family mismatch");

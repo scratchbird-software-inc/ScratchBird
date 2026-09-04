@@ -118,9 +118,9 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "post_event_stmt",
      "SBSQL-SURFACE-B5BC5EEFE5D4",
      "POST EVENT CHANNEL audit_channel PAYLOAD 'post-001'",
-     "engine.op.event_channel_notify",
-     "SBLR_EVENT_CHANNEL_NOTIFY",
-     "sblr.event.channel.v3",
+     "engine.psql.ir.post_event_stmt",
+     "sblr.psql.node.post_event_stmt.v1",
+     "sblr.general.operation.v3",
      "general",
      "parser.grammar_ast",
      "lowering.sblr_family.sblr_general_operation_v3",
@@ -439,6 +439,33 @@ void RequireExactLowering(const EventRowEvidence& row) {
   Require(!artifacts.cst.messages.has_errors(), "event notification CST failed");
   Require(!artifacts.ast.messages.has_errors(), "event notification AST failed");
   Require(artifacts.bound.bound, "event notification bind failed");
+  if (row.surface_id == "SBSQL-33A1149AB350") {
+    Require(!artifacts.verifier.admitted,
+            "standalone POST EVENT reached executable SBLR admission");
+    Require(artifacts.envelope.operation_id ==
+                "engine.op.diagnostic_refusal" &&
+                artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+                artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+                artifacts.envelope.payload.empty() &&
+                artifacts.envelope.operands.empty(),
+            "standalone POST EVENT refusal tuple drifted");
+    Require(artifacts.envelope.messages.diagnostics.size() == 1,
+            "standalone POST EVENT refusal cardinality drifted");
+    const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+    const auto field = [&diagnostic](std::string_view name) {
+      const auto found = std::find_if(
+          diagnostic.fields.begin(), diagnostic.fields.end(),
+          [name](const auto& candidate) { return candidate.name == name; });
+      return found == diagnostic.fields.end() ? std::string_view{}
+                                               : std::string_view(found->value);
+    };
+    Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+                field("surface_id") == row.surface_id &&
+                field("canonical_name") == row.canonical_name &&
+                field("executable_sblr_emitted") == "false",
+            "standalone POST EVENT refusal identity drifted");
+    return;
+  }
   if (!artifacts.verifier.admitted) {
     for (const auto& diagnostic : artifacts.verifier.messages.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
@@ -637,6 +664,7 @@ void RequireDispatchAccepted(const sblr::SblrDispatchResult& result,
 
 void RequireEngineDispatch() {
   for (const auto& row : kEventRows) {
+    if (row.surface_id == "SBSQL-33A1149AB350") continue;
     api::EngineRequestContext context;
     context.security_context_present = true;
     context.local_transaction_id = 1;

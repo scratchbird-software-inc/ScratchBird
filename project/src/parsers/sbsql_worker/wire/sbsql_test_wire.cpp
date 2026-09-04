@@ -23788,7 +23788,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.messages = ast.messages;
         result.messages.diagnostics.push_back(MakeDiagnostic(
             std::string(route.diagnostic_id), "ERROR",
-            "The recognized SBsql import surface is not admitted for execution.",
+            "The recognized SBsql surface is not admitted for standalone execution.",
             "sbp_sbsql.wire",
             {{"surface_id", std::string(route.surface_id)},
              {"canonical_name", std::string(route.canonical_name)},
@@ -23840,6 +23840,40 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   }
   if (submit && session_.authenticated && HasExecutionRoute()) {
     const auto uppercase_sql = ToUpperAscii(sql);
+    const auto starts_with_command = [&uppercase_sql](std::string_view prefix) {
+      if (uppercase_sql.size() < prefix.size() ||
+          uppercase_sql.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+      }
+      return uppercase_sql.size() == prefix.size() ||
+             uppercase_sql[prefix.size()] == ' ' ||
+             uppercase_sql[prefix.size()] == '\t' ||
+             uppercase_sql[prefix.size()] == '\r' ||
+             uppercase_sql[prefix.size()] == '\n' ||
+             uppercase_sql[prefix.size()] == ';';
+    };
+    if (starts_with_command("POST EVENT") ||
+        starts_with_command("OPEN") ||
+        starts_with_command("FETCH") ||
+        starts_with_command("CLOSE") ||
+        starts_with_command("PSQL") ||
+        starts_with_command("RESIGNAL")) {
+      const auto procedural_cst = BuildCst(sql);
+      const auto procedural_ast = BuildAst(procedural_cst);
+      const auto procedural_route = AnalyzeStandaloneProceduralCommandRoute(
+          procedural_cst, procedural_ast.statement_surface_id,
+          procedural_ast.statement_surface_name);
+      if (!procedural_cst.messages.has_errors() &&
+          !procedural_ast.messages.has_errors() &&
+          procedural_route.disposition ==
+              CentralImportCommandDisposition::kExactRefusal) {
+        auto result = central_import_refusal_result(
+            procedural_cst, procedural_ast, procedural_route);
+        mark_phase("procedural_standalone_exact_refusal");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+    }
     if (uppercase_sql.find("PREPARE") != std::string::npos) {
       const auto prepare_cst = BuildCst(sql);
       const auto prepare_ast = BuildAst(prepare_cst);
@@ -24173,6 +24207,16 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           CentralImportCommandDisposition::kExactRefusal) {
     result = central_import_refusal_result(cst, ast, central_import_route);
     mark_phase("central_import_exact_refusal");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
+  const auto procedural_route = AnalyzeStandaloneProceduralCommandRoute(
+      cst, ast.statement_surface_id, ast.statement_surface_name);
+  if (!result.messages.has_errors() &&
+      procedural_route.disposition ==
+          CentralImportCommandDisposition::kExactRefusal) {
+    result = central_import_refusal_result(cst, ast, procedural_route);
+    mark_phase("procedural_standalone_exact_refusal");
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }

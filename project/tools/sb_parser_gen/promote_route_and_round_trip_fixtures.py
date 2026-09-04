@@ -34,7 +34,7 @@ from core_root_refusal_generated_evidence import (
     CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS,
 )
 from sbsfc078_procedural_refusal_generated_evidence import (
-    SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS,
+    PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS,
 )
 
 
@@ -63,7 +63,7 @@ PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = (
     CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
     | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
     | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
-    | SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+    | PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
 )
 
 
@@ -445,7 +445,7 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
                 if (
                     surface_id in CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
                     or surface_id
-                    in SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+                    in PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
                 )
                 else (
                     "not_admitted_parent_engine.op.ddl_create_schema"

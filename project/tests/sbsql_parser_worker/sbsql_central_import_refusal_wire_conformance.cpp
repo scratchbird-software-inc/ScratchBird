@@ -182,6 +182,26 @@ constexpr std::array<RefusalCase, 50> kProceduralRefusalCases{{
     {"EXCEPTION SECTION WHEN ANY;", "SBSQL-BA6B29FD2668", "exception_section"},
 }};
 
+constexpr std::array<RefusalCase, 11> kProcedureIrRefusalCases{{
+    {"POST EVENT CHANNEL audit_channel PAYLOAD 'post-001'",
+     "SBSQL-33A1149AB350", "post_event_stmt"},
+    {"OPEN route_cur FOR SELECT 7 AS value;",
+     "SBSQL-4A41A00C4F5C", "psql_open_cursor_stmt"},
+    {"PSQL EXECUTE STATEMENT stmt;",
+     "SBSQL-65DE8F82E1EB", "psql_execute_statement"},
+    {"FETCH NEXT FROM route_cur;", "SBSQL-930016752278", "psql_fetch_stmt"},
+    {"CLOSE route_cur;", "SBSQL-A4F34F00C071", "psql_close_cursor_stmt"},
+    {"PSQL IF STMT branch;", "SBSQL-CD6D9CB540EC", "psql_if_stmt"},
+    {"RESIGNAL condition;", "SBSQL-D22F75D62CC7", "resignal"},
+    {"PSQL SUSPEND STMT yield;",
+     "SBSQL-EBFDBD3C1F98", "psql_suspend_stmt"},
+    {"PSQL PIPE ROW STMT result;",
+     "SBSQL-F178404D32D6", "psql_pipe_row_stmt"},
+    {"PSQL EXIT STMT loop;", "SBSQL-F5E78906D903", "psql_exit_stmt"},
+    {"PSQL CONTINUE STMT loop;",
+     "SBSQL-FEE85792235D", "psql_continue_stmt"},
+}};
+
 }  // namespace
 
 int main() {
@@ -216,7 +236,10 @@ int main() {
                       row.canonical_name &&
                   DiagnosticField(diagnostic, "executable_sblr_emitted") ==
                       "false",
-              "central-import wire diagnostic identity or fields drifted");
+              std::string("central-import wire diagnostic identity or fields drifted for ") +
+                  std::string(row.surface_id) + " observed=" + diagnostic.code +
+                  " surface=" + DiagnosticField(diagnostic, "surface_id") +
+                  " name=" + DiagnosticField(diagnostic, "canonical_name"));
       Require(result.sblr_payload.empty() &&
                   result.server_operation_id.empty() &&
                   result.server_result_payload.empty() &&
@@ -235,6 +258,9 @@ int main() {
       require_refusal(row);
     }
     for (const auto& row : kProceduralRefusalCases) {
+      require_refusal(row);
+    }
+    for (const auto& row : kProcedureIrRefusalCases) {
       require_refusal(row);
     }
   }

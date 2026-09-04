@@ -110,6 +110,11 @@ CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(
 CentralImportCommandRoute AnalyzeCentralImportCommandRoute(
     const CstDocument& cst);
 
+CentralImportCommandRoute AnalyzeStandaloneProceduralCommandRoute(
+    const CstDocument& cst,
+    std::string_view statement_surface_id,
+    std::string_view statement_surface_name);
+
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session);
 SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope);
 

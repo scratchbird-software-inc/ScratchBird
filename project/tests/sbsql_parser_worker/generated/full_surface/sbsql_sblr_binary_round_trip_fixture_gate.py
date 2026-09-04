@@ -120,7 +120,7 @@ def main() -> int:
         validate_authoritative_runtime_inputs as validate_core_root_refusals,
     )
     from sbsfc078_procedural_refusal_generated_evidence import (  # pylint: disable=import-outside-toplevel
-        SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS,
+        PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS,
         is_sbsfc078_procedural_standalone_refusal,
         validate_authoritative_runtime_inputs as validate_sbsfc078_refusals,
     )
@@ -187,7 +187,7 @@ def main() -> int:
             CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
             | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
             | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
-            | SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+            | PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
         ):
             for token in (
                 "parser_syntax_only",

@@ -42455,8 +42455,8 @@ ExactRootRefusalRoute AnalyzeExactRootRefusalRoute(const CstDocument& cst) {
   return {};
 }
 
-bool Sbsfc078StandaloneRefusalSurface(const std::string_view surface_id) {
-  constexpr std::array<std::string_view, 50> kSurfaceIds{
+bool IsStandaloneProceduralRefusalSurface(const std::string_view surface_id) {
+  constexpr std::array<std::string_view, 61> kSurfaceIds{
       "SBSQL-026A4D4C039B", "SBSQL-02734A0F9F81",
       "SBSQL-036A5CE9F957", "SBSQL-07486BB23A2F",
       "SBSQL-0E3954A70810", "SBSQL-11A04416EEDE",
@@ -42481,8 +42481,29 @@ bool Sbsfc078StandaloneRefusalSurface(const std::string_view surface_id) {
       "SBSQL-A5AA36E99CDB", "SBSQL-A61AE21E1DFC",
       "SBSQL-A61F84867DF2", "SBSQL-A67B68A9BB52",
       "SBSQL-AE02AD3F3CF7", "SBSQL-AFAE77165146",
-      "SBSQL-AFF3B4857945", "SBSQL-BA6B29FD2668"};
+      "SBSQL-AFF3B4857945", "SBSQL-BA6B29FD2668",
+      // Exact Core procedure-IR rows are executable only inside an
+      // authenticated procedure descriptor and its current MGA transaction.
+      // Historical standalone cursor/event/query-plan carriers are not
+      // execution authority.
+      "SBSQL-33A1149AB350", "SBSQL-4A41A00C4F5C",
+      "SBSQL-65DE8F82E1EB", "SBSQL-930016752278",
+      "SBSQL-A4F34F00C071", "SBSQL-CD6D9CB540EC",
+      "SBSQL-D22F75D62CC7", "SBSQL-EBFDBD3C1F98",
+      "SBSQL-F178404D32D6", "SBSQL-F5E78906D903",
+      "SBSQL-FEE85792235D"};
   return std::ranges::find(kSurfaceIds, surface_id) != kSurfaceIds.end();
+}
+
+ExactRootRefusalRoute AnalyzeStandaloneProceduralRefusalRoute(
+    const BoundStatement& bound, const CstDocument& cst) {
+  const auto route = AnalyzeStandaloneProceduralCommandRoute(
+      cst, bound.statement_surface_id, bound.statement_surface_name);
+  if (route.disposition != CentralImportCommandDisposition::kExactRefusal) {
+    return {};
+  }
+  return {route.surface_id, route.canonical_name, bound.operation_family,
+          bound.command_family};
 }
 
 SblrEnvelope LowerExactDiagnosticRefusal(
@@ -42599,6 +42620,58 @@ CentralImportCommandRoute AnalyzeCentralImportCommandRoute(
           {}};
 }
 
+CentralImportCommandRoute AnalyzeStandaloneProceduralCommandRoute(
+    const CstDocument& cst,
+    const std::string_view statement_surface_id,
+    const std::string_view statement_surface_name) {
+  if (cst.messages.has_errors()) return {};
+  const auto refuse = [](const std::string_view surface_id,
+                         const std::string_view canonical_name) {
+    return CentralImportCommandRoute{
+        CentralImportCommandDisposition::kExactRefusal,
+        surface_id,
+        canonical_name,
+        "SBSQL.IMPL.NOT_AVAILABLE"};
+  };
+  if (LifecycleCommandStartsWith(cst.source, "POST EVENT")) {
+    return refuse("SBSQL-33A1149AB350", "post_event_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "OPEN")) {
+    return refuse("SBSQL-4A41A00C4F5C", "psql_open_cursor_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "FETCH")) {
+    return refuse("SBSQL-930016752278", "psql_fetch_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "CLOSE")) {
+    return refuse("SBSQL-A4F34F00C071", "psql_close_cursor_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "PSQL EXECUTE STATEMENT")) {
+    return refuse("SBSQL-65DE8F82E1EB", "psql_execute_statement");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "PSQL IF STMT")) {
+    return refuse("SBSQL-CD6D9CB540EC", "psql_if_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "RESIGNAL")) {
+    return refuse("SBSQL-D22F75D62CC7", "resignal");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "PSQL SUSPEND STMT")) {
+    return refuse("SBSQL-EBFDBD3C1F98", "psql_suspend_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "PSQL PIPE ROW STMT")) {
+    return refuse("SBSQL-F178404D32D6", "psql_pipe_row_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "PSQL EXIT STMT")) {
+    return refuse("SBSQL-F5E78906D903", "psql_exit_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "PSQL CONTINUE STMT")) {
+    return refuse("SBSQL-FEE85792235D", "psql_continue_stmt");
+  }
+  if (IsStandaloneProceduralRefusalSurface(statement_surface_id)) {
+    return refuse(statement_surface_id, statement_surface_name);
+  }
+  return {};
+}
+
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session) {
   const auto exact_root_refusal = AnalyzeExactRootRefusalRoute(cst);
   if (exact_root_refusal.active()) {
@@ -42619,12 +42692,15 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         "trace.sbsql.central_import_exact_refusal",
         "The recognized SBsql import surface is not admitted for execution.");
   }
-  if (Sbsfc078StandaloneRefusalSurface(bound.statement_surface_id)) {
+  const auto procedural_refusal =
+      AnalyzeStandaloneProceduralRefusalRoute(bound, cst);
+  if (procedural_refusal.active()) {
     return LowerExactDiagnosticRefusal(
-        bound, session, bound.statement_surface_id,
-        bound.statement_surface_name, bound.operation_family,
-        bound.command_family,
-        "trace.sbsql.sbsfc078_standalone_refusal",
+        bound, session, procedural_refusal.surface_id,
+        procedural_refusal.canonical_name,
+        procedural_refusal.operation_family,
+        procedural_refusal.command_family,
+        "trace.sbsql.procedural_standalone_refusal",
         "A procedure-body fragment is not executable as a standalone SBsql "
         "statement.");
   }

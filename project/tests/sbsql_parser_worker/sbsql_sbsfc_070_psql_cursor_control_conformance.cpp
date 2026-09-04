@@ -208,6 +208,43 @@ void RequireCleanPipeline(const PipelineArtifacts& artifacts, std::string_view l
           std::string(label) + " embedded SELECT source SQL text");
 }
 
+void RequireStandaloneProcedureIrRefusal(const PipelineArtifacts& artifacts,
+                                         std::string_view surface_id,
+                                         std::string_view canonical_name,
+                                         std::string_view label) {
+  Require(!artifacts.cst.messages.has_errors(), std::string(label) + " CST failed");
+  Require(!artifacts.ast.messages.has_errors(), std::string(label) + " AST failed");
+  Require(artifacts.bound.bound, std::string(label) + " bind failed");
+  Require(!artifacts.verifier.admitted,
+          std::string(label) + " standalone procedure IR reached admission as " +
+              artifacts.envelope.operation_id + "/" +
+              artifacts.envelope.sblr_opcode);
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1" &&
+              artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty(),
+          std::string(label) + " standalone procedure IR refusal tuple drifted");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          std::string(label) + " standalone procedure IR diagnostic count drifted");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  const auto field = [&diagnostic](std::string_view name) {
+    const auto found = std::find_if(
+        diagnostic.fields.begin(), diagnostic.fields.end(),
+        [name](const auto& candidate) { return candidate.name == name; });
+    return found == diagnostic.fields.end() ? std::string_view{}
+                                             : std::string_view(found->value);
+  };
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              field("surface_id") == surface_id &&
+              field("canonical_name") == canonical_name &&
+              field("executable_sblr_emitted") == "false",
+          std::string(label) + " standalone procedure IR diagnostic drifted");
+}
+
 void RequireRegistryEvidence() {
   struct Row {
     std::string_view surface_id;
@@ -290,32 +327,15 @@ void RequireRetiredServerCarrierRefusal() {
   auto registry = MakeRegistry(&session_uuid);
   const auto engine_state = MakeEngineState();
 
-  const auto open = RunPipeline("OPEN route_cur FOR SELECT 7 AS value;");
-  const auto fetch = RunPipeline("FETCH NEXT FROM route_cur;");
-  const auto close = RunPipeline("CLOSE route_cur;");
-
-  const auto open_result = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, open.envelope.payload));
-  Require(!open_result.accepted,
-          "SBSFC-070 retired textual OPEN carrier was accepted");
-  Require(HasServerDiagnostic(open_result, "SBLR.OPERATION.NONCANONICAL"),
-          "SBSFC-070 retired textual OPEN refusal diagnostic drifted");
-  Require(registry.cursors_by_uuid.empty(),
-          "SBSFC-070 retired textual OPEN published cursor state");
-
-  const auto fetch_result = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, fetch.envelope.payload));
-  Require(!fetch_result.accepted,
-          "SBSFC-070 retired textual FETCH carrier was accepted");
-  Require(HasServerDiagnostic(fetch_result, "SBLR.OPERATION.NONCANONICAL"),
-          "SBSFC-070 retired textual FETCH refusal diagnostic drifted");
-
-  const auto close_result = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, close.envelope.payload));
-  Require(!close_result.accepted,
-          "SBSFC-070 retired textual CLOSE carrier was accepted");
-  Require(HasServerDiagnostic(close_result, "SBLR.OPERATION.NONCANONICAL"),
-          "SBSFC-070 retired textual CLOSE refusal diagnostic drifted");
+  const auto declare =
+      RunPipeline("DECLARE decl_cur CURSOR FOR SELECT 8 AS value;");
+  const auto result = scratchbird::server::HandleExecuteSblr(
+      &registry, engine_state,
+      ExecuteFrame(session_uuid, declare.envelope.payload));
+  Require(!result.accepted,
+          "SBSFC-070 retired textual DECLARE CURSOR carrier was accepted");
+  Require(HasServerDiagnostic(result, "SBLR.OPERATION.NONCANONICAL"),
+          "SBSFC-070 retired textual cursor refusal diagnostic drifted");
   Require(registry.cursors_by_uuid.empty(),
           "SBSFC-070 retired cursor carriers mutated server state");
 }
@@ -326,39 +346,16 @@ int main() {
   RequireRegistryEvidence();
 
   const auto open = RunPipeline("OPEN route_cur FOR SELECT 7 AS value;");
-  RequireCleanPipeline(open, "OPEN");
-  Require(open.envelope.operation_id == "session.cursor_open",
-          "SBSFC-070 OPEN operation id mismatch");
-  Require(open.envelope.sblr_opcode == "SBLR_SESSION_CURSOR_OPEN",
-          "SBSFC-070 OPEN opcode mismatch");
-  Require(Contains(open.envelope.payload, "SBSQL-4A41A00C4F5C"),
-          "SBSFC-070 OPEN payload missing row id");
-  Require(Contains(open.envelope.payload, "SBSQL-D6BD1FBB84A3"),
-          "SBSFC-070 OPEN payload missing cursor name row id");
-  Require(Contains(open.envelope.payload, "\"stream_row_count\":1"),
-          "SBSFC-070 OPEN payload missing bounded row count");
+  RequireStandaloneProcedureIrRefusal(
+      open, "SBSQL-4A41A00C4F5C", "psql_open_cursor_stmt", "OPEN");
 
   const auto fetch = RunPipeline("FETCH NEXT FROM route_cur;");
-  RequireCleanPipeline(fetch, "FETCH");
-  Require(fetch.envelope.operation_id == "session.cursor_fetch",
-          "SBSFC-070 FETCH operation id mismatch");
-  Require(fetch.envelope.sblr_opcode == "SBLR_SESSION_CURSOR_FETCH",
-          "SBSFC-070 FETCH opcode mismatch");
-  Require(Contains(fetch.envelope.payload, "SBSQL-930016752278"),
-          "SBSFC-070 FETCH payload missing row id");
-  Require(Contains(fetch.envelope.payload, "SBSQL-C78D9C182EC7"),
-          "SBSFC-070 FETCH payload missing direction row id");
-  Require(Contains(fetch.envelope.payload, "\"cursor_fetch_direction\":\"next\""),
-          "SBSFC-070 FETCH payload missing NEXT direction");
+  RequireStandaloneProcedureIrRefusal(
+      fetch, "SBSQL-930016752278", "psql_fetch_stmt", "FETCH");
 
   const auto close = RunPipeline("CLOSE route_cur;");
-  RequireCleanPipeline(close, "CLOSE");
-  Require(close.envelope.operation_id == "session.cursor_close",
-          "SBSFC-070 CLOSE operation id mismatch");
-  Require(close.envelope.sblr_opcode == "SBLR_SESSION_CURSOR_CLOSE",
-          "SBSFC-070 CLOSE opcode mismatch");
-  Require(Contains(close.envelope.payload, "SBSQL-A4F34F00C071"),
-          "SBSFC-070 CLOSE payload missing row id");
+  RequireStandaloneProcedureIrRefusal(
+      close, "SBSQL-A4F34F00C071", "psql_close_cursor_stmt", "CLOSE");
 
   const auto declare = RunPipeline("DECLARE decl_cur CURSOR FOR SELECT 8 AS value;");
   RequireCleanPipeline(declare, "DECLARE CURSOR");

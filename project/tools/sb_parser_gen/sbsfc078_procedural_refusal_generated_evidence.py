@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Exact public refusal evidence for the SBSFC-078 procedural fragments.
+"""Exact public refusal evidence for standalone procedural fragments.
 
 The SBSFC-078 fixture consists of procedure-body grammar fragments presented
 as standalone SBsql statements.  The parser may recognize and bind those
@@ -80,6 +80,69 @@ SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS = frozenset(
     }
 )
 
+PROCEDURE_IR_STANDALONE_REFUSAL_COMPONENTS = {
+    "SBSQL-33A1149AB350": (
+        "sbsql_event_notification_exact_route_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_event_notification_exact_route_conformance.cpp",
+    ),
+    "SBSQL-4A41A00C4F5C": (
+        "sbsql_sbsfc_070_psql_cursor_control_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_070_psql_cursor_control_conformance.cpp",
+    ),
+    "SBSQL-65DE8F82E1EB": (
+        "sbsql_sbsfc_077_non_general_residual_exact_route_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_077_non_general_residual_exact_route_conformance.cpp",
+    ),
+    "SBSQL-930016752278": (
+        "sbsql_sbsfc_070_psql_cursor_control_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_070_psql_cursor_control_conformance.cpp",
+    ),
+    "SBSQL-A4F34F00C071": (
+        "sbsql_sbsfc_070_psql_cursor_control_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_070_psql_cursor_control_conformance.cpp",
+    ),
+    "SBSQL-CD6D9CB540EC": (
+        "sbsql_sbsfc_083_grammar_surface_exact_route_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_083_grammar_surface_exact_route_conformance.cpp",
+    ),
+    "SBSQL-D22F75D62CC7": (
+        "sbsql_sbsfc_084_grammar_surface_exact_route_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_084_grammar_surface_exact_route_conformance.cpp",
+    ),
+    "SBSQL-EBFDBD3C1F98": (
+        "sbsql_sbsfc_084_grammar_surface_exact_route_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_084_grammar_surface_exact_route_conformance.cpp",
+    ),
+    "SBSQL-F178404D32D6": (
+        "sbsql_sbsfc_085_grammar_surface_exact_route_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_085_grammar_surface_exact_route_conformance.cpp",
+    ),
+    "SBSQL-F5E78906D903": (
+        "sbsql_sbsfc_085_grammar_surface_exact_route_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_085_grammar_surface_exact_route_conformance.cpp",
+    ),
+    "SBSQL-FEE85792235D": (
+        "sbsql_sbsfc_085_grammar_surface_exact_route_conformance",
+        "project/tests/sbsql_parser_worker/"
+        "sbsql_sbsfc_085_grammar_surface_exact_route_conformance.cpp",
+    ),
+}
+
+PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS = (
+    SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+    | frozenset(PROCEDURE_IR_STANDALONE_REFUSAL_COMPONENTS)
+)
+
 SBSFC078_COMPONENT_CTEST = (
     "sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance"
 )
@@ -137,7 +200,29 @@ _PROMOTION_REGISTRY = (
 
 
 def is_sbsfc078_procedural_standalone_refusal(surface_id: str) -> bool:
-    return surface_id in SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+    return surface_id in PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+
+
+def _component_evidence(surface_id: str) -> tuple[str, str]:
+    return PROCEDURE_IR_STANDALONE_REFUSAL_COMPONENTS.get(
+        surface_id, (SBSFC078_COMPONENT_CTEST, SBSFC078_COMPONENT_SOURCE)
+    )
+
+
+def _refusal_ctest_label(surface_id: str) -> str:
+    component_ctest, _ = _component_evidence(surface_id)
+    return ";".join(
+        (
+            component_ctest,
+            PUBLIC_REFUSAL_CTEST,
+            "procedure_ir_standalone_refusal",
+            "central_command_authority",
+            "exact_refusal",
+            "no_execution",
+            "parser_lowering_component",
+            "sbsql_parser_worker",
+        )
+    )
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
@@ -187,28 +272,43 @@ def _future_authority(root: Path, surface_id: str) -> str:
 
 
 def validate_authoritative_runtime_inputs(root: Path) -> None:
-    source = root / SBSFC078_COMPONENT_SOURCE
     public_source = root / PUBLIC_REFUSAL_SOURCE
-    if not source.is_file() or not public_source.is_file():
-        raise ValueError("SBSFC-078 exact-refusal sources are missing")
-    source_text = source.read_text(encoding="utf-8")
+    component_sources = {
+        source for _, source in (
+            _component_evidence(surface_id)
+            for surface_id in PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+        )
+    }
+    missing_sources = sorted(
+        source for source in component_sources if not (root / source).is_file()
+    )
+    if missing_sources or not public_source.is_file():
+        raise ValueError(
+            "procedural exact-refusal sources are missing: "
+            f"component={missing_sources} public={not public_source.is_file()}"
+        )
+    source_text_by_path = {
+        source: (root / source).read_text(encoding="utf-8")
+        for source in component_sources
+    }
     public_text = public_source.read_text(encoding="utf-8")
     missing_component = sorted(
         surface_id
-        for surface_id in SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
-        if surface_id not in source_text
+        for surface_id in PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+        if surface_id
+        not in source_text_by_path[_component_evidence(surface_id)[1]]
     )
     missing_public = sorted(
         surface_id
-        for surface_id in SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+        for surface_id in PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
         if surface_id not in public_text
     )
     if missing_component or missing_public:
         raise ValueError(
-            "SBSFC-078 refusal source drift: "
+            "procedural refusal source drift: "
             f"component_missing={missing_component} public_missing={missing_public}"
         )
-    for surface_id in SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS:
+    for surface_id in PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS:
         _future_authority(root, surface_id)
 
 
@@ -219,16 +319,17 @@ def strict_ledger_override(
     if not is_sbsfc078_procedural_standalone_refusal(surface_id):
         return None
     future = _future_authority(root, surface_id)
+    component_ctest, component_source = _component_evidence(surface_id)
     return {
         "current_state": "exact_refusal_passed",
         "parser_evidence": existing.get("parser_evidence", ""),
         "binder_evidence": (
-            f"{SBSFC078_COMPONENT_SOURCE};BindAst.bound=true;"
+            f"{component_source};BindAst.bound=true;"
             "authority.parser.syntax_evidence_only;no_engine_execution_authority"
         ),
         "lowering_evidence": (
             "project/src/parsers/sbsql_worker/lowering/lowering.cpp::"
-            f"Sbsfc078StandaloneRefusalSurface;{_IDENTITY_VECTOR};{future}"
+            f"AnalyzeStandaloneProceduralRefusalRoute;{_IDENTITY_VECTOR};{future}"
         ),
         "server_admission_evidence": (
             "not_reached_no_executable_sblr_emitted;"
@@ -246,12 +347,12 @@ def strict_ledger_override(
             "no_result;no_authority_publication;no_mutation"
         ),
         "fixture_evidence": (
-            f"ctest:{SBSFC078_COMPONENT_CTEST};parser_component_refusal;"
+            f"ctest:{component_ctest};parser_component_refusal;"
             f"ctest:{PUBLIC_REFUSAL_CTEST};independent_database_state_before_equals_after"
         ),
         "evidence_complete": "yes",
         "notes": (
-            "SBSFC-078 procedure-body grammar remains parser-visible, but its public "
+            "Procedure-body grammar remains parser-visible, but its public "
             "standalone presentation exact-refuses before executable SBLR. The cited "
             "future Core node/parent identity is retained without promoting the old "
             "unallocated general.procedural_operation carrier."
@@ -266,12 +367,13 @@ def per_row_manifest_override(
     if not is_sbsfc078_procedural_standalone_refusal(surface_id):
         return None
     if ledger_row is None or ledger_row.get("current_state") != "exact_refusal_passed":
-        raise ValueError(f"{surface_id} SBSFC-078 strict refusal row is missing")
+        raise ValueError(f"{surface_id} procedural strict refusal row is missing")
     future = _future_authority(root, surface_id)
+    component_ctest, component_source = _component_evidence(surface_id)
     return {
         "final_state": "exact_refusal_passed",
-        "ctest_label": SBSFC078_REFUSAL_CTEST_LABEL,
-        "fixture_path": f"{SBSFC078_COMPONENT_SOURCE};{PUBLIC_REFUSAL_SOURCE}",
+        "ctest_label": _refusal_ctest_label(surface_id),
+        "fixture_path": f"{component_source};{PUBLIC_REFUSAL_SOURCE}",
         "implementation_refs": ";".join(
             (
                 _IDENTITY_VECTOR,
@@ -289,10 +391,10 @@ def per_row_manifest_override(
         ),
         "result_proof": (
             f"ctest:{PUBLIC_REFUSAL_CTEST};{_RESULT_VECTOR};"
-            f"ctest:{SBSFC078_COMPONENT_CTEST};parser_component_refusal"
+            f"ctest:{component_ctest};parser_component_refusal"
         ),
         "evidence_collected_utc": "2026-09-04T00:00:00Z",
-        "promoter_slice": "SBSFC-078-STANDALONE-PRE-SBLR-REFUSAL-V1",
+        "promoter_slice": "PROCEDURAL-STANDALONE-PRE-SBLR-REFUSAL-V1",
         "notes": (
             "Final exact public refusal for a procedure-body fragment presented as a "
             "standalone statement. Parser grammar evidence remains positive; no "
@@ -336,7 +438,7 @@ def authenticated_route_override(
             ),
             "fixture_status": "exact_refusal_passed",
             "notes": (
-                "Standalone SBSFC-078 procedure-body fragment exact-refuses before "
+                "Standalone procedure-body fragment exact-refuses before "
                 "SBPS; executable procedure IR remains available only through a future "
                 "authenticated procedure descriptor."
             ),

@@ -445,6 +445,10 @@ bool HasExecutableCanonicalOpcode(const CaseRow& row) {
          (!opcode->executor_evidence_required || opcode->executor_evidence_accepted);
 }
 
+bool IsStandaloneProcedureIrRow(const CaseRow& row) {
+  return row.surface_id == "SBSQL-65DE8F82E1EB";
+}
+
 void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
@@ -456,9 +460,17 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
   if (artifacts.envelope.operation_id == "engine.op.diagnostic_refusal") {
     Require(!artifacts.verifier.admitted,
             "SBSFC-077 parser-only route bypassed engine descriptor authority");
-    Require(artifacts.envelope.operation_family == row.family &&
-                artifacts.envelope.sblr_operation_key == row.family,
-            "SBSFC-077 refusal family drifted");
+    const auto expected_refusal_family =
+        IsStandaloneProcedureIrRow(row)
+            ? std::string_view(artifacts.bound.operation_family)
+            : row.family;
+    Require(artifacts.envelope.operation_family == expected_refusal_family &&
+                artifacts.envelope.sblr_operation_key ==
+                    expected_refusal_family,
+            std::string("SBSFC-077 refusal family drifted: envelope=") +
+                artifacts.envelope.operation_family + " bound=" +
+                artifacts.bound.operation_family + " row=" +
+                std::string(row.family));
     Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
                 artifacts.envelope.engine_api_operation_id == "not_admitted" &&
                 artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
@@ -501,11 +513,18 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
     };
     Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
                 diagnostic.severity == "ERROR" &&
-                !field("canonical_parent_operation_id").empty() &&
-                !field("canonical_parent_sblr_opcode").empty() &&
-                !field("recognized_surface_ids").empty() &&
                 field("executable_sblr_emitted") == "false",
             "SBSFC-077 refusal identity drifted");
+    if (IsStandaloneProcedureIrRow(row)) {
+      Require(field("surface_id") == row.surface_id &&
+                  field("canonical_name") == row.canonical_name,
+              "SBSFC-077 standalone procedure IR refusal identity drifted");
+    } else {
+      Require(!field("canonical_parent_operation_id").empty() &&
+                  !field("canonical_parent_sblr_opcode").empty() &&
+                  !field("recognized_surface_ids").empty(),
+              "SBSFC-077 parent refusal identity drifted");
+    }
     if (row.surface_id == "SBSQL-1DFEDF33C807") {
       Require(field("canonical_parent_operation_id") == row.operation_id &&
                   field("canonical_parent_sblr_opcode") == row.opcode &&
