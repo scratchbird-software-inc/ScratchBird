@@ -42672,6 +42672,34 @@ CentralImportCommandRoute AnalyzeStandaloneProceduralCommandRoute(
   return {};
 }
 
+CentralImportCommandRoute AnalyzeUnavailablePreparedStatementCommandRoute(
+    const CstDocument& cst) {
+  if (cst.messages.has_errors()) return {};
+  const auto refuse = [](const std::string_view surface_id,
+                         const std::string_view canonical_name) {
+    return CentralImportCommandRoute{
+        CentralImportCommandDisposition::kExactRefusal,
+        surface_id,
+        canonical_name,
+        "SBSQL.IMPL.NOT_AVAILABLE"};
+  };
+  if (LifecycleCommandStartsWith(cst.source, "PREPARE")) {
+    return refuse("SBSQL-5535E9A48BE4", "prepare_stmt");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "DEALLOCATE")) {
+    return refuse("SBSQL-FB03794952FB", "deallocate_stmt");
+  }
+  if (!LifecycleCommandStartsWith(cst.source, "EXECUTE")) return {};
+  const auto uppercase_source = ToUpperAscii(cst.source);
+  if (uppercase_source.find(" WITH CURSOR") != std::string::npos) {
+    return refuse("SBSQL-3F4B1406188A", "execute_stmt_option");
+  }
+  if (LifecycleCommandStartsWith(cst.source, "EXECUTE IMMEDIATE")) {
+    return refuse("SBSQL-6677B188A72E", "execute_stmt");
+  }
+  return refuse("SBSQL-414E9A624B34", "execute_prepared_stmt");
+}
+
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session) {
   const auto exact_root_refusal = AnalyzeExactRootRefusalRoute(cst);
   if (exact_root_refusal.active()) {

@@ -36,6 +36,9 @@ from core_root_refusal_generated_evidence import (
 from sbsfc078_procedural_refusal_generated_evidence import (
     PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS,
 )
+from core_unavailable_command_refusal_generated_evidence import (
+    CORE_UNAVAILABLE_COMMAND_REFUSAL_SURFACE_IDS,
+)
 
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
@@ -64,6 +67,7 @@ PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = (
     | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
     | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
     | PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+    | CORE_UNAVAILABLE_COMMAND_REFUSAL_SURFACE_IDS
 )
 
 
@@ -446,6 +450,8 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
                     surface_id in CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
                     or surface_id
                     in PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
+                    or surface_id
+                    in CORE_UNAVAILABLE_COMMAND_REFUSAL_SURFACE_IDS
                 )
                 else (
                     "not_admitted_parent_engine.op.ddl_create_schema"

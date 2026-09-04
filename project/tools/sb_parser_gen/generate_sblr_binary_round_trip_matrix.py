@@ -90,6 +90,11 @@ from sbsfc078_procedural_refusal_generated_evidence import (
     normalize_fixture_status as normalize_sbsfc078_refusal_fixture_status,
     validate_authoritative_runtime_inputs as validate_sbsfc078_refusal_inputs,
 )
+from core_unavailable_command_refusal_generated_evidence import (
+    binary_round_trip_override as unavailable_command_binary_round_trip_override,
+    normalize_fixture_status as normalize_unavailable_command_fixture_status,
+    validate_authoritative_runtime_inputs as validate_unavailable_command_inputs,
+)
 
 
 REGISTRY_CSV = (
@@ -394,6 +399,7 @@ def main() -> int:
     validate_authoritative_runtime_inputs(root)
     validate_core_root_refusal_inputs(root)
     validate_sbsfc078_refusal_inputs(root)
+    validate_unavailable_command_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     oracle = read_csv(artifact_root / ORACLE_MATRIX_NAME)
@@ -485,6 +491,7 @@ def main() -> int:
         ledger_row = binary_round_trip_override(ledger_row)
         ledger_row = core_root_refusal_binary_round_trip_override(ledger_row)
         ledger_row = sbsfc078_refusal_binary_round_trip_override(ledger_row)
+        ledger_row = unavailable_command_binary_round_trip_override(ledger_row)
         ledger_row["fixture_status"] = normalize_fixture_status(
             surface_id,
             fixture_status_for(root, ledger_row["fixture_path"], surface_id),
@@ -493,6 +500,9 @@ def main() -> int:
             surface_id, ledger_row["fixture_status"]
         )
         ledger_row["fixture_status"] = normalize_sbsfc078_refusal_fixture_status(
+            surface_id, ledger_row["fixture_status"]
+        )
+        ledger_row["fixture_status"] = normalize_unavailable_command_fixture_status(
             surface_id, ledger_row["fixture_status"]
         )
         output_rows.append(ledger_row)

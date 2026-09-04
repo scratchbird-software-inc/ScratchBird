@@ -202,6 +202,19 @@ constexpr std::array<RefusalCase, 11> kProcedureIrRefusalCases{{
      "SBSQL-FEE85792235D", "psql_continue_stmt"},
 }};
 
+constexpr std::array<RefusalCase, 5> kPreparedRefusalCases{{
+    {"PREPARE prep_one AS SELECT 7 AS value",
+     "SBSQL-5535E9A48BE4", "prepare_stmt"},
+    {"EXECUTE prep_one",
+     "SBSQL-414E9A624B34", "execute_prepared_stmt"},
+    {"EXECUTE IMMEDIATE 'SELECT 7'",
+     "SBSQL-6677B188A72E", "execute_stmt"},
+    {"EXECUTE prep_one WITH CURSOR",
+     "SBSQL-3F4B1406188A", "execute_stmt_option"},
+    {"DEALLOCATE PREPARE prep_one",
+     "SBSQL-FB03794952FB", "deallocate_stmt"},
+}};
+
 }  // namespace
 
 int main() {
@@ -261,6 +274,9 @@ int main() {
       require_refusal(row);
     }
     for (const auto& row : kProcedureIrRefusalCases) {
+      require_refusal(row);
+    }
+    for (const auto& row : kPreparedRefusalCases) {
       require_refusal(row);
     }
   }

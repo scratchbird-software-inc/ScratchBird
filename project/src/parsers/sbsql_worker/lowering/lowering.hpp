@@ -115,6 +115,9 @@ CentralImportCommandRoute AnalyzeStandaloneProceduralCommandRoute(
     std::string_view statement_surface_id,
     std::string_view statement_surface_name);
 
+CentralImportCommandRoute AnalyzeUnavailablePreparedStatementCommandRoute(
+    const CstDocument& cst);
+
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session);
 SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope);
 

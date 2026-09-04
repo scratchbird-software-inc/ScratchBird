@@ -23874,25 +23874,21 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         return result;
       }
     }
-    if (uppercase_sql.find("PREPARE") != std::string::npos) {
-      const auto prepare_cst = BuildCst(sql);
-      const auto prepare_ast = BuildAst(prepare_cst);
-      if (!prepare_cst.messages.has_errors() &&
-          !prepare_ast.messages.has_errors() &&
-          IsPrepareStatementCommandForWire(prepare_cst)) {
-        PipelineResult result;
-        result.accepted = false;
-        result.statement_family = StatementFamilyName(prepare_ast.family);
-        result.statement_hash = Fnv1a64(prepare_cst.source);
-        result.parser_executes_sql = false;
-        result.cached_storage_authority = false;
-        result.cached_authorization_authority = false;
-        result.cached_finality_authority = false;
-        result.messages.diagnostics.push_back(MakeDiagnostic(
-            "SBSQL.IMPL.NOT_AVAILABLE", "ERROR",
-            "PREPARE canonical execution is unavailable until the exact "
-            "SBLR_STMT_PREPARE descriptor and executor evidence are accepted.",
-            "sbp_sbsql.wire"));
+    if (starts_with_command("PREPARE") ||
+        starts_with_command("EXECUTE") ||
+        starts_with_command("DEALLOCATE")) {
+      const auto prepared_cst = BuildCst(sql);
+      const auto prepared_ast = BuildAst(prepared_cst);
+      const auto prepared_route =
+          AnalyzeUnavailablePreparedStatementCommandRoute(prepared_cst);
+      if (!prepared_cst.messages.has_errors() &&
+          !prepared_ast.messages.has_errors() &&
+          prepared_route.disposition ==
+              CentralImportCommandDisposition::kExactRefusal) {
+        auto result = central_import_refusal_result(
+            prepared_cst, prepared_ast, prepared_route);
+        mark_phase("prepared_statement_exact_refusal");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
         return result;
       }
     }

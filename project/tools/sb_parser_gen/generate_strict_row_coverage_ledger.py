@@ -55,6 +55,10 @@ from sbsfc078_procedural_refusal_generated_evidence import (
     strict_ledger_override as sbsfc078_refusal_strict_ledger_override,
     validate_authoritative_runtime_inputs as validate_sbsfc078_refusal_inputs,
 )
+from core_unavailable_command_refusal_generated_evidence import (
+    strict_ledger_override as unavailable_command_strict_ledger_override,
+    validate_authoritative_runtime_inputs as validate_unavailable_command_inputs,
+)
 
 
 PUBLIC_SURFACE_INPUT = (
@@ -21745,6 +21749,7 @@ def main() -> int:
     validate_core_root_refusal_inputs(root)
     validate_core_route_reconciliation_inputs(root)
     validate_sbsfc078_refusal_inputs(root)
+    validate_unavailable_command_inputs(root)
 
     surfaces = read_csv(root / REGISTRY)
     statuses = read_csv(root / STATUS_MATRIX)
@@ -22141,6 +22146,11 @@ def main() -> int:
         )
         if sbsfc078_refusal_override is not None:
             classification = sbsfc078_refusal_override
+        unavailable_command_override = unavailable_command_strict_ledger_override(
+            root, surface, classification
+        )
+        if unavailable_command_override is not None:
+            classification = unavailable_command_override
         classification = augment_strict_ledger_row(root, surface, classification)
         if classification["current_state"] not in valid_states:
             fail(f"{surface_id} produced unknown state {classification['current_state']}")

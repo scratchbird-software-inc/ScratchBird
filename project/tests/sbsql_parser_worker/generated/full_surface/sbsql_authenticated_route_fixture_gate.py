@@ -120,10 +120,15 @@ def main() -> int:
         is_sbsfc078_procedural_standalone_refusal,
         validate_authoritative_runtime_inputs as validate_sbsfc078_refusals,
     )
+    from core_unavailable_command_refusal_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        is_core_unavailable_command_refusal,
+        validate_authoritative_runtime_inputs as validate_unavailable_commands,
+    )
 
     try:
         validate_core_root_refusals(root)
         validate_sbsfc078_refusals(root)
+        validate_unavailable_commands(root)
     except ValueError as exc:
         fail(f"Core root exact-refusal authority validation failed: {exc}")
 
@@ -224,6 +229,36 @@ def main() -> int:
                     "result_published=true",
                     "catalog_mutation=true",
                     "row_mutation=true",
+                )
+            elif is_core_unavailable_command_refusal(surface_id):
+                required = (
+                    "cluster_scope=noncluster_or_profile_scoped",
+                    "not_applicable_exact_refusal_before_executable_sblr",
+                    "sbsql_input_to_parser_worker_refusal_before_sbps_submission",
+                    "operation_id=not_admitted",
+                    "sblr_operation=SBLR_DIAGNOSTIC_REFUSAL",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "pre_sblr_refusal=true",
+                    "accepted=false",
+                    "executable_sblr_emitted=false",
+                    "server_admission_reached=false",
+                    "engine_dispatch_reached=false",
+                    "result_published=false",
+                    "descriptor_authority_published=false",
+                    "transaction_state_transition=false",
+                    "catalog_mutation=false",
+                    "row_mutation=false",
+                    "durable_state_byte_identical=true",
+                    "fixture_status=exact_refusal_passed",
+                )
+                forbidden = (
+                    "session.prepare_statement",
+                    "session.execute_prepared_statement",
+                    "session.deallocate_prepared_statement",
+                    "server_admission_reached=true",
+                    "engine_dispatch_reached=true",
+                    "result_published=true",
+                    "prepared_statement_uuid_assigned_by_server=true",
                 )
             elif is_sbsfc078_procedural_standalone_refusal(surface_id):
                 required = (

@@ -68,6 +68,11 @@ from sbsfc078_procedural_refusal_generated_evidence import (
     per_row_manifest_override as sbsfc078_refusal_per_row_manifest_override,
     validate_authoritative_runtime_inputs as validate_sbsfc078_refusal_inputs,
 )
+from core_unavailable_command_refusal_generated_evidence import (
+    is_core_unavailable_command_refusal,
+    per_row_manifest_override as unavailable_command_per_row_manifest_override,
+    validate_authoritative_runtime_inputs as validate_unavailable_command_inputs,
+)
 
 
 PUBLIC_SURFACE_INPUT = (
@@ -25569,6 +25574,7 @@ def main() -> int:
     validate_core_root_refusal_inputs(root)
     validate_core_route_reconciliation_inputs(root)
     validate_sbsfc078_refusal_inputs(root)
+    validate_unavailable_command_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     ledger_by_id = index_by_surface(read_csv(artifact_root / STRICT_LEDGER_NAME))
@@ -25698,7 +25704,16 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         surface_id = surface["surface_id"]
-        if is_sbsfc078_procedural_standalone_refusal(surface_id):
+        if is_core_unavailable_command_refusal(surface_id):
+            classification = unavailable_command_per_row_manifest_override(
+                root, surface, ledger_by_id.get(surface_id)
+            )
+            if classification is None:
+                fail(
+                    f"{surface_id} unavailable-command refusal manifest override "
+                    "unexpectedly missing"
+                )
+        elif is_sbsfc078_procedural_standalone_refusal(surface_id):
             classification = sbsfc078_refusal_per_row_manifest_override(
                 root, surface, ledger_by_id.get(surface_id)
             )
