@@ -119,9 +119,15 @@ def main() -> int:
         is_core_root_exact_refusal,
         validate_authoritative_runtime_inputs as validate_core_root_refusals,
     )
+    from sbsfc078_procedural_refusal_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS,
+        is_sbsfc078_procedural_standalone_refusal,
+        validate_authoritative_runtime_inputs as validate_sbsfc078_refusals,
+    )
 
     try:
         validate_core_root_refusals(root)
+        validate_sbsfc078_refusals(root)
     except ValueError as exc:
         fail(f"Core root exact-refusal authority validation failed: {exc}")
 
@@ -181,6 +187,7 @@ def main() -> int:
             CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
             | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
             | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
+            | SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
         ):
             for token in (
                 "parser_syntax_only",
@@ -246,6 +253,35 @@ def main() -> int:
                     "result_published=true",
                     "catalog_mutation=true",
                     "row_mutation=true",
+                )
+            elif is_sbsfc078_procedural_standalone_refusal(surface_id):
+                required = (
+                    "oracle_authority_status=Core_procedure_body_standalone_refusal",
+                    "not_admitted_diagnostic_refusal",
+                    "operation_id=not_admitted",
+                    "sblr_operation=SBLR_DIAGNOSTIC_REFUSAL",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "pre_sblr_refusal=true",
+                    "accepted=false",
+                    "executable_sblr_emitted=false",
+                    "no_server_or_engine_dispatch",
+                    "result_published=false",
+                    "transaction_state_transition=false",
+                    "catalog_mutation=false",
+                    "row_mutation=false",
+                    "durable_state_byte_identical=true",
+                    "not_applicable_pre_sblr_exact_refusal",
+                    "fixture_status=exact_refusal_passed",
+                )
+                forbidden = (
+                    "general.procedural_operation",
+                    "SBLR_GENERAL_PROCEDURAL_OPERATION",
+                    "server_admission_reached=true",
+                    "engine_dispatch_reached=true",
+                    "result_published=true",
+                    "catalog_mutation=true",
+                    "row_mutation=true",
+                    "byte_identical_round_trip_required=yes",
                 )
             elif is_core_root_exact_refusal(surface_id):
                 required = (

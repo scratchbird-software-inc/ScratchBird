@@ -4465,7 +4465,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance;SBSFC-078;SBSFC-030;sbsql_parser_worker;noncanonical_and_executor_evidence_refusal;parser_lowering_component"
+    LABELS "sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance;SBSFC-078;sbsql_parser_worker;noncanonical_and_executor_evidence_refusal;parser_lowering_component;exact_refusal;no_execution"
   )
 
   add_executable(

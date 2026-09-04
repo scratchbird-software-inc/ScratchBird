@@ -130,6 +130,15 @@ bool HasEvidence(const api::EngineApiResult& result,
   return false;
 }
 
+std::string DiagnosticField(
+    const scratchbird::parser::ipc::Diagnostic& diagnostic,
+    std::string_view name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == name) return field.value;
+  }
+  return {};
+}
+
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
@@ -191,18 +200,10 @@ void RequireRegistryEvidence(const CaseRow& row) {
           "SBSFC-078 generated registry SBLR family drifted");
 }
 
-bool HasExecutableCanonicalOpcode(const CaseRow& row) {
-  const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
-  return opcode != nullptr && opcode->code != 0 &&
-         opcode->support == sblr::SblrOpcodeSupport::implemented &&
-         (!opcode->executor_evidence_required || opcode->executor_evidence_accepted);
-}
-
 void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
-  if (!artifacts.verifier.admitted) std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-078 CST failed");
   Require(!artifacts.ast.messages.has_errors(), "SBSFC-078 AST failed");
   Require(artifacts.ast.statement_surface_id == row.surface_id,
@@ -217,71 +218,54 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
   Require(artifacts.ast.operation_family == "sblr.management.control.v3",
           "SBSFC-078 AST operation family mismatch");
   Require(artifacts.bound.bound, "SBSFC-078 bind failed");
-  Require(artifacts.verifier.admitted, "SBSFC-078 verifier rejected exact route");
+  Require(!artifacts.verifier.admitted,
+          "SBSFC-078 standalone fragment reached executable SBLR admission");
+  Require(artifacts.verifier.messages.diagnostics.size() == 1,
+          "SBSFC-078 verifier did not preserve one exact refusal");
   Require(artifacts.envelope.operation_family == "sblr.management.control.v3",
           std::string("SBSFC-078 operation family mismatch for ") +
               std::string(row.canonical_name) + ": got " +
               artifacts.envelope.operation_family);
   Require(artifacts.envelope.sblr_operation_key == "sblr.management.control.v3",
           "SBSFC-078 operation key mismatch");
-  Require(artifacts.envelope.operation_id == row.operation_id,
-          "SBSFC-078 operation id mismatch");
-  Require(artifacts.envelope.engine_api_operation_id == row.operation_id,
-          "SBSFC-078 engine API operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == row.opcode, "SBSFC-078 opcode mismatch");
-  Require(artifacts.envelope.engine_api_function == row.engine_api_function,
-          "SBSFC-078 engine API function mismatch");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+          "SBSFC-078 standalone fragment did not use the exact refusal tuple");
+  Require(artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.diagnostic_shape_key ==
+                  "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1",
+          "SBSFC-078 refusal contract metadata drifted");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "SBSFC-078 parser no-SQL-execution authority missing");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
           "SBSFC-078 parser no-finality authority missing");
-  if (row.requires_transaction_context) {
-    Require(HasValue(artifacts.envelope.required_authority_steps,
-                     "authority.server.transaction_context_required"),
-            "SBSFC-078 transaction context authority missing");
-  }
-  Require(Contains(artifacts.envelope.payload, row.surface_id),
-          "SBSFC-078 payload missing row surface id");
-  Require(Contains(artifacts.envelope.payload, row.runtime_evidence_kind),
-          "SBSFC-078 payload missing runtime evidence kind");
-  Require(Contains(artifacts.envelope.payload, row.runtime_evidence_id),
-          "SBSFC-078 payload missing runtime evidence id");
-  Require(!artifacts.envelope.parser_executes_sql,
-          "SBSFC-078 lowering allowed parser SQL execution");
-  Require(!Contains(artifacts.envelope.payload, row.sql),
-          "SBSFC-078 payload embedded source SQL text");
-  Require(!Contains(artifacts.envelope.payload, "SBSQL_SURFACE_REPLAY") &&
-              !Contains(artifacts.envelope.payload, "exact_refusal") &&
-              !Contains(artifacts.envelope.payload, "cluster_support_not_enabled"),
-          "SBSFC-078 payload used replay, refusal, or cluster-provider evidence");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal_recovery_authority\":true") &&
-              !Contains(artifacts.envelope.payload, "recovery_authority\":true"),
-          "SBSFC-078 payload carried WAL/recovery authority");
-
-  // These grammar children retain parser-component coverage, but deprecated,
-  // unallocated and evidence-gated operation rows are not executable roots.
-  if (!HasExecutableCanonicalOpcode(row)) {
-    return;
-  }
-
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted, "SBSFC-078 server admission rejected exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "SBSFC-078 server admission did not require public ABI dispatch");
-  Require(admission.operation_id == row.operation_id,
-          "SBSFC-078 server admission operation id mismatch");
-  Require(admission.operation_family == "sblr.management.control.v3",
-          "SBSFC-078 server admission operation family mismatch");
-
-  const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
-  Require(opcode != nullptr, "SBSFC-078 opcode registry row missing");
-  Require(opcode->opcode == row.opcode, "SBSFC-078 opcode registry drifted");
-  Require(opcode->requires_cluster_authority == false,
-          "SBSFC-078 opcode claimed cluster authority");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.parser.syntax_evidence_only") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_executable_sblr"),
+          "SBSFC-078 refusal omitted parser non-authority evidence");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              !artifacts.envelope.parser_executes_sql &&
+              !artifacts.envelope.real_file_effects,
+          "SBSFC-078 refusal emitted executable or storage authority");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "SBSFC-078 lowering did not emit one exact diagnostic");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              diagnostic.severity == "ERROR" &&
+              DiagnosticField(diagnostic, "surface_id") == row.surface_id &&
+              DiagnosticField(diagnostic, "canonical_name") ==
+                  row.canonical_name &&
+              DiagnosticField(diagnostic, "executable_sblr_emitted") ==
+                  "false",
+          "SBSFC-078 refusal diagnostic identity or fields drifted");
 }
 
 std::uint64_t CurrentUnixMillis() {

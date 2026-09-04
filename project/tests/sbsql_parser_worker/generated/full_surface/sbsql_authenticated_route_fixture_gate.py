@@ -115,9 +115,15 @@ def main() -> int:
         is_core_root_exact_refusal,
         validate_authoritative_runtime_inputs as validate_core_root_refusals,
     )
+    from sbsfc078_procedural_refusal_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        SBSFC078_PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS,
+        is_sbsfc078_procedural_standalone_refusal,
+        validate_authoritative_runtime_inputs as validate_sbsfc078_refusals,
+    )
 
     try:
         validate_core_root_refusals(root)
+        validate_sbsfc078_refusals(root)
     except ValueError as exc:
         fail(f"Core root exact-refusal authority validation failed: {exc}")
 
@@ -215,6 +221,35 @@ def main() -> int:
                     "SBLR_DML_PLAN_IMPORT_ROWS",
                     "engine.op.bulk_import_stream",
                     "SBLR_BULK_IMPORT_STREAM",
+                    "result_published=true",
+                    "catalog_mutation=true",
+                    "row_mutation=true",
+                )
+            elif is_sbsfc078_procedural_standalone_refusal(surface_id):
+                required = (
+                    "cluster_scope=noncluster_or_profile_scoped",
+                    "not_applicable_exact_refusal_before_executable_sblr",
+                    "sbsql_input_to_parser_worker_refusal_before_sbps_submission",
+                    "operation_id=not_admitted",
+                    "sblr_operation=SBLR_DIAGNOSTIC_REFUSAL",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "pre_sblr_refusal=true",
+                    "accepted=false",
+                    "executable_sblr_emitted=false",
+                    "server_admission_reached=false",
+                    "engine_dispatch_reached=false",
+                    "result_published=false",
+                    "transaction_state_transition=false",
+                    "catalog_mutation=false",
+                    "row_mutation=false",
+                    "durable_state_byte_identical=true",
+                    "fixture_status=exact_refusal_passed",
+                )
+                forbidden = (
+                    "general.procedural_operation",
+                    "SBLR_GENERAL_PROCEDURAL_OPERATION",
+                    "server_admission_reached=true",
+                    "engine_dispatch_reached=true",
                     "result_published=true",
                     "catalog_mutation=true",
                     "row_mutation=true",

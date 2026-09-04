@@ -129,6 +129,59 @@ constexpr std::array<RefusalCase, 14> kRefusalCases{{
     {"SET SESSION work_mem", "SBSQL-F6C4E9705A12", "set_session"},
 }};
 
+constexpr std::array<RefusalCase, 50> kProceduralRefusalCases{{
+    {"PSQL REPEAT LOOP;", "SBSQL-026A4D4C039B", "psql_repeat_stmt"},
+    {"FORALL DML EXECUTE;", "SBSQL-02734A0F9F81", "forall_dml_or_execute"},
+    {"PSQL FOR item IN range;", "SBSQL-036A5CE9F957", "psql_for_stmt"},
+    {"DECLARE SUBROUTINE helper;", "SBSQL-07486BB23A2F", "declare_subroutine"},
+    {"ROUTINE ATTRIBUTE DETERMINISTIC;", "SBSQL-0E3954A70810", "routine_attribute"},
+    {"PSQL CALL helper();", "SBSQL-11A04416EEDE", "psql_call_stmt"},
+    {"FORALL RANGE 1 TO 10;", "SBSQL-198EC86EF3E6", "forall_range"},
+    {"PSQL FORALL item IN range;", "SBSQL-24F101012F9C", "psql_forall_stmt"},
+    {"PSQL LEAVE loop_label;", "SBSQL-28A5C4933A91", "psql_leave_stmt"},
+    {"SIGNAL INFO FIELD MESSAGE_TEXT;", "SBSQL-2B96962FC600", "signal_info_field"},
+    {"COLON VARIABLE :v;", "SBSQL-2E73B3E7CB0A", "colon_variable"},
+    {"DECLARE VARIABLE v INT;", "SBSQL-2E7EF3FB699A", "declare_variable"},
+    {"EXCEPTION HANDLER WHEN ANY;", "SBSQL-375E2A7771C0", "exception_handler"},
+    {"CALL TARGET LIST helper;", "SBSQL-3EDACF124EA2", "call_target_list"},
+    {"PSQL OPEN CHANNEL events;", "SBSQL-3FE17C7E606A", "psql_open_channel_stmt"},
+    {"RAISE SEVERITY WARNING;", "SBSQL-451E4A81B23D", "raise_severity"},
+    {"LVALUE local_var;", "SBSQL-47E79B4B23EF", "lvalue"},
+    {"DECLARE EXCEPTION ex;", "SBSQL-499A72248451", "declare_exception"},
+    {"SIGNAL SQLSTATE '45000';", "SBSQL-4A737A655174", "signal"},
+    {"VARIABLE DECL FORM v INT;", "SBSQL-4B4DAC62299D", "variable_decl_form"},
+    {"SINGLE VAR FORM v;", "SBSQL-5AD1F33585EA", "single_var_form"},
+    {"PSQL NULL;", "SBSQL-5AFD1BFCCEC8", "psql_null_stmt"},
+    {"CALL ARG LIST a b;", "SBSQL-62256BEF9F1B", "call_arg_list"},
+    {"ARG LIST a b;", "SBSQL-66B35A56EFF8", "arg_list"},
+    {"PARAM MODE INOUT;", "SBSQL-6D4DE2A31C56", "param_mode"},
+    {"EXCEPTION CONDITION LIST any;", "SBSQL-6EF52D5CB31E", "exception_condition_list"},
+    {"ROUTINE BODY BEGIN END;", "SBSQL-6FABEBB2C400", "routine_body"},
+    {"FOR RANGE FORM 1 TO 10;", "SBSQL-7177C130C2B7", "for_range_form"},
+    {"PSQL RESIGNAL;", "SBSQL-7359F2775921", "psql_resignal_stmt"},
+    {"PSQL DECLARE SECTION;", "SBSQL-74BE46D58008", "psql_declare_section"},
+    {"PACKAGE BODY ITEM proc;", "SBSQL-769B003AF4F3", "package_body_item"},
+    {"SIGNAL INFO ASSIGNMENT MESSAGE_TEXT;", "SBSQL-802635EDBB3A", "signal_info_assignment"},
+    {"PACKAGE NAME pkg;", "SBSQL-81BCBF791042", "package_name"},
+    {"PSQL WHILE cond LOOP;", "SBSQL-832C2821017E", "psql_while_stmt"},
+    {"PSQL EMIT CHANNEL events;", "SBSQL-85A5F7E16A21", "psql_emit_channel_stmt"},
+    {"PSQL ASSIGN var VALUE;", "SBSQL-8628143A198B", "psql_assignment"},
+    {"PSQL GET DIAGNOSTICS;", "SBSQL-908F3A07EC23", "psql_get_diagnostics"},
+    {"INTO TARGET LIST var;", "SBSQL-9164E0190F24", "into_target_list"},
+    {"SIGNAL TARGET condition;", "SBSQL-91D6ECC8969F", "signal_target"},
+    {"RAISE EXCEPTION;", "SBSQL-931C105F4478", "raise"},
+    {"EXCEPTION DECLARATION ex;", "SBSQL-96CFEF2C7728", "exception_declaration"},
+    {"RAISE OPTION MESSAGE_TEXT;", "SBSQL-A5437DC15591", "raise_option"},
+    {"PSQL RETURN value;", "SBSQL-A5AA36E99CDB", "psql_return_stmt"},
+    {"PSQL SIGNAL SQLSTATE;", "SBSQL-A61AE21E1DFC", "psql_signal_stmt"},
+    {"DIAGNOSTIC FILTER condition;", "SBSQL-A61F84867DF2", "diagnostic_filter"},
+    {"DIAGNOSTIC FAMILY exception;", "SBSQL-A67B68A9BB52", "diagnostic_family"},
+    {"PSQL LOOP;", "SBSQL-AE02AD3F3CF7", "psql_loop_stmt"},
+    {"PSQL RAISE WARNING;", "SBSQL-AFAE77165146", "psql_raise_stmt"},
+    {"RETURN SHAPE scalar;", "SBSQL-AFF3B4857945", "return_shape"},
+    {"EXCEPTION SECTION WHEN ANY;", "SBSQL-BA6B29FD2668", "exception_section"},
+}};
+
 }  // namespace
 
 int main() {
@@ -151,7 +204,7 @@ int main() {
             "central-import wire fixture did not authenticate");
     const auto baseline = CaptureFixtureBytes(fixture_database.parent_path());
 
-    for (const auto& row : kRefusalCases) {
+    const auto require_refusal = [&](const RefusalCase& row) {
       const auto result = session.RunPipeline(row.sql, true);
       Require(!result.accepted && result.messages.diagnostics.size() == 1,
               "central-import wire route did not produce one exact refusal");
@@ -177,6 +230,12 @@ int main() {
               "central-import refusal crossed an execution or authority boundary");
       Require(CaptureFixtureBytes(fixture_database.parent_path()) == baseline,
               "central-import refusal changed durable fixture bytes");
+    };
+    for (const auto& row : kRefusalCases) {
+      require_refusal(row);
+    }
+    for (const auto& row : kProceduralRefusalCases) {
+      require_refusal(row);
     }
   }
 

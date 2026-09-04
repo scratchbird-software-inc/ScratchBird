@@ -42455,6 +42455,36 @@ ExactRootRefusalRoute AnalyzeExactRootRefusalRoute(const CstDocument& cst) {
   return {};
 }
 
+bool Sbsfc078StandaloneRefusalSurface(const std::string_view surface_id) {
+  constexpr std::array<std::string_view, 50> kSurfaceIds{
+      "SBSQL-026A4D4C039B", "SBSQL-02734A0F9F81",
+      "SBSQL-036A5CE9F957", "SBSQL-07486BB23A2F",
+      "SBSQL-0E3954A70810", "SBSQL-11A04416EEDE",
+      "SBSQL-198EC86EF3E6", "SBSQL-24F101012F9C",
+      "SBSQL-28A5C4933A91", "SBSQL-2B96962FC600",
+      "SBSQL-2E73B3E7CB0A", "SBSQL-2E7EF3FB699A",
+      "SBSQL-375E2A7771C0", "SBSQL-3EDACF124EA2",
+      "SBSQL-3FE17C7E606A", "SBSQL-451E4A81B23D",
+      "SBSQL-47E79B4B23EF", "SBSQL-499A72248451",
+      "SBSQL-4A737A655174", "SBSQL-4B4DAC62299D",
+      "SBSQL-5AD1F33585EA", "SBSQL-5AFD1BFCCEC8",
+      "SBSQL-62256BEF9F1B", "SBSQL-66B35A56EFF8",
+      "SBSQL-6D4DE2A31C56", "SBSQL-6EF52D5CB31E",
+      "SBSQL-6FABEBB2C400", "SBSQL-7177C130C2B7",
+      "SBSQL-7359F2775921", "SBSQL-74BE46D58008",
+      "SBSQL-769B003AF4F3", "SBSQL-802635EDBB3A",
+      "SBSQL-81BCBF791042", "SBSQL-832C2821017E",
+      "SBSQL-85A5F7E16A21", "SBSQL-8628143A198B",
+      "SBSQL-908F3A07EC23", "SBSQL-9164E0190F24",
+      "SBSQL-91D6ECC8969F", "SBSQL-931C105F4478",
+      "SBSQL-96CFEF2C7728", "SBSQL-A5437DC15591",
+      "SBSQL-A5AA36E99CDB", "SBSQL-A61AE21E1DFC",
+      "SBSQL-A61F84867DF2", "SBSQL-A67B68A9BB52",
+      "SBSQL-AE02AD3F3CF7", "SBSQL-AFAE77165146",
+      "SBSQL-AFF3B4857945", "SBSQL-BA6B29FD2668"};
+  return std::ranges::find(kSurfaceIds, surface_id) != kSurfaceIds.end();
+}
+
 SblrEnvelope LowerExactDiagnosticRefusal(
     const BoundStatement& bound, const SessionContext& session,
     std::string_view surface_id, std::string_view canonical_name,
@@ -42588,6 +42618,15 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         central_import_route.canonical_name, "sblr.dml.operation.v3", "dml",
         "trace.sbsql.central_import_exact_refusal",
         "The recognized SBsql import surface is not admitted for execution.");
+  }
+  if (Sbsfc078StandaloneRefusalSurface(bound.statement_surface_id)) {
+    return LowerExactDiagnosticRefusal(
+        bound, session, bound.statement_surface_id,
+        bound.statement_surface_name, bound.operation_family,
+        bound.command_family,
+        "trace.sbsql.sbsfc078_standalone_refusal",
+        "A procedure-body fragment is not executable as a standalone SBsql "
+        "statement.");
   }
   if (bound.native_relational_recognized || bound.native_relational.bound ||
       bound.registry_family == "sbsql.query.values.v3") {

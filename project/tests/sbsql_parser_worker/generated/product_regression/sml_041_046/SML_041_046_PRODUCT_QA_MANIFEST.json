@@ -21,8 +21,8 @@
     },
     "release_final_status_counts": {
       "cluster_provider_route_passed": 56,
-      "e2e_passed": 2540,
-      "exact_refusal_passed": 21
+      "e2e_passed": 2490,
+      "exact_refusal_passed": 71
     },
     "sblr_operation_family_counts": {
       "sblr.acceleration.llvm.v3": 1,
@@ -62,11 +62,11 @@
   "hardening_oracle_link": {
     "edge_case_count": 11,
     "fuzz_evidence_count": 4,
-    "manifest_sha256": "33ce4ed3ac9f03ca9f1061f331a2bc41be4cd61cd632ca10da51af602c974554",
+    "manifest_sha256": "4b016bfceae8d1fc000ebc1b43f34e8bdf32c600e8d8d0a05134793e28cd6af0",
     "path": "project/tests/sbsql_parser_worker/generated/hardening/sml_041_046/SML_044_046_HARDENING_ORACLE.json",
     "schema_version": "sbsql.sml_044_046.hardening_oracle.v1"
   },
-  "manifest_sha256": "3c89074d9330c39eceaab01d1c47a1038bda200e340388c56f40d83a64964c7e",
+  "manifest_sha256": "c30770cb37fc49141c99ca414d00bd10bfdb56418af8d43f37f3df7b7d9f6169",
   "network_dependency": false,
   "product_qa_script_corpus": [
     {
@@ -418,7 +418,7 @@
         },
         {
           "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv",
-          "sha256": "4ea25357e5d5a6614e86b3c6f55a4d7d7b613e620fbedcefdd0affb5500bb48d"
+          "sha256": "639c5230aeac797bf39f66c508b8159fe48d786c2c94f0a4543d74b7380ed215"
         }
       ],
       "evidence_paths": [
@@ -426,7 +426,7 @@
         "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv"
       ],
       "network_dependency": false,
-      "row_sha256": "856316e6fd27a96738f5c4a688f353fc34993396c1112f26fe8facb507318e7a",
+      "row_sha256": "63596d4311872ffdcc6ded82c2f543c5c8b9a76f73161ac95aa4f8a0dcfd861b",
       "script_hash": "ba9d3854ea2c790ac35ba4ff11b8deeb0746d8dfab001c0b585b3d8d620e10f0",
       "sml_id": "SML-042",
       "suite_class": "release",
@@ -487,11 +487,11 @@
         },
         "final_status": {
           "cluster_provider_route_passed": 56,
-          "e2e_passed": 2540,
-          "exact_refusal_passed": 21
+          "e2e_passed": 2490,
+          "exact_refusal_passed": 71
         }
       },
-      "row_sha256": "215d6b7bad7c54367a9a8ad37a10773e5b8db80ee89b4f076775c82464d708da",
+      "row_sha256": "c755f4ab3c21a2dfdb5ca7c0a64374e51e5930158fa25c5351a91a5a3a8433ba",
       "sml_id": "SML-041",
       "surface_count": 2617,
       "variation_class": "semantic",
@@ -501,11 +501,11 @@
       "coverage_source": "AUTHENTICATED_FULL_ROUTE_MATRIX.csv",
       "covered_values": {
         "fixture_status": {
-          "e2e_passed": 2596,
-          "exact_refusal_passed": 21
+          "e2e_passed": 2546,
+          "exact_refusal_passed": 71
         }
       },
-      "row_sha256": "d9fedfec680fa01edce54f8cb7594c17127234e1664416a4e2bee222a2d46b25",
+      "row_sha256": "e0613617c9e37fa34d72bc8f4ec0b160eb10bb82ba9bd5ba7e5efd20b6146f17",
       "sml_id": "SML-041",
       "surface_count": 2617,
       "variation_class": "route",
@@ -548,12 +548,13 @@
       "coverage_source": "AUTHENTICATED_FULL_ROUTE_MATRIX.csv",
       "covered_values": {
         "accepted_outcome": {
-          "accepted_e2e_passes_with_ExecutionResultEnvelope_v3_and_message_vector_set": 2537,
+          "accepted_e2e_passes_with_ExecutionResultEnvelope_v3_and_message_vector_set": 2487,
           "database_created_with_engine_assigned_database_and_filespace_uuid_and_durable_tx1_evidence": 1,
           "not_applicable_Core_root_is_exact_refusal_only": 7,
           "not_applicable_bridge_cluster_route_is_exact_refusal_only": 1,
           "not_applicable_cluster_private_public_build_acceptance_evidence_lives_in_private_profile_only": 56,
           "not_applicable_exact_refusal_surface": 7,
+          "not_applicable_standalone_fragment_is_refusal_only": 50,
           "not_applicable_until_authenticated_engine_binder_publishes_exact_CSDX_CSDO_carrier": 2,
           "not_applicable_until_authenticated_engine_binder_publishes_exact_CTDX_CTDO_constraint_vector": 4,
           "operation_id=engine.op.bulk_import_stream;opcode=SBLR_BULK_IMPORT_STREAM;opcode_code=775;opcode_version=1.0;command_descriptor_contract=bulk_import_stream_descriptor.v1;operand_descriptor_id=bulk_import_stream_descriptor;result_descriptor_id=bulk_mutation_result;coordination=BIRQ_106_to_BIRD_107;operand=BIRO_v1_424_bytes;result=BIRS_v1_192_bytes;transport=bind_706_707_chunk_702_703_seal_704_705;accepted=true;terminal_result=bulk_mutation_result;BIRS_exact=true;durable_publication=true;affected_rows_from_BIRS=true;command_completion=COPY_N;rowset_frames=false;commit_visibility_proved=true;rollback_invisibility_proved=true;independent_session_post_state=true;restart_post_state=true;duplicate_publication=false": 2
@@ -561,15 +562,16 @@
         "refused_outcome": {
           "accepted=false;diagnostic=SBSQL.IMPL.NOT_AVAILABLE;executable_sblr_emitted=false;result_published=false;descriptor_authority_published=false;transaction_state_transition=false;catalog_mutation=false;row_mutation=false;durable_state_byte_identical=true": 7,
           "accepted=false;diagnostic=SBSQL.IMPL.NOT_AVAILABLE;executable_sblr_emitted=false;server_admission_reached=false;engine_dispatch_reached=false;result_published=false;descriptor_authority_published=false;transaction_state_transition=false;catalog_mutation=false;row_mutation=false;durable_state_byte_identical=true": 7,
+          "accepted=false;diagnostic=SBSQL.IMPL.NOT_AVAILABLE;server_admission_reached=false;engine_dispatch_reached=false;result_published=false;transaction_state_transition=false;catalog_mutation=false;row_mutation=false;durable_state_byte_identical=true": 50,
           "canonical_sblr_admission_then_trusted_udr_dispatch_refuses_with_UDR_BRIDGE_UNSUPPORTED": 1,
           "one_ordered_canonical_diagnostic;no_BIRS;no_durable_publication;no_mutation": 2,
           "refused_before_storage_mutation_when_security_or_management_transaction_context_is_missing": 1,
           "refused_with_SBSQL_IMPL_NOT_AVAILABLE_before_executable_sblr_or_server_dispatch": 6,
           "refused_with_SBSQL_SURFACE_NOT_ADMITTED_at_parser_or_lowering_admission_no_cluster_execution_path_in_public_build": 56,
-          "refused_with_security_diagnostic_SECURITY_AUTHORIZATION_FORBIDDEN_evidence_before_success": 2537
+          "refused_with_security_diagnostic_SECURITY_AUTHORIZATION_FORBIDDEN_evidence_before_success": 2487
         }
       },
-      "row_sha256": "540e3b92505ba177eba3af432de01962e13190d03da773161744f46fa297707f",
+      "row_sha256": "700ea59baba09f06a74de0d28235e55d794a5c6002d2ea266d890ee454d93353",
       "sml_id": "SML-041",
       "surface_count": 2617,
       "variation_class": "security",
@@ -580,15 +582,15 @@
       "covered_values": {
         "final_state": {
           "cluster_provider_route_passed": 56,
-          "e2e_passed": 2540,
-          "exact_refusal_passed": 21
+          "e2e_passed": 2490,
+          "exact_refusal_passed": 71
         },
         "status": {
           "cluster_private": 37,
           "native_now": 2580
         }
       },
-      "row_sha256": "a2bd2f060782525b36a08d881aa81c72af6ee28373746eed79178c44e9df2c05",
+      "row_sha256": "747d417aea0a07e02aa06ac278b0cc8d0b16beb5fec1e1e3745d2a02b1af4fd6",
       "sml_id": "SML-041",
       "surface_count": 2617,
       "variation_class": "transaction",
@@ -662,8 +664,8 @@
     }
   ],
   "round_trip_fixture_status_counts": {
-    "e2e_passed": 2596,
-    "exact_refusal_passed": 21
+    "e2e_passed": 2546,
+    "exact_refusal_passed": 71
   },
   "route_page_language_security_matrix": {
     "combination_count": 240,
@@ -4540,22 +4542,22 @@
       "classification_status": "closed_executable",
       "final_status": "e2e_passed",
       "lower_level_only": false,
-      "result_evidence_sha256": "e3966d0bdb0b22465c1fc089365465cc1854e51fc5328b0955832ede3c427db5",
+      "result_evidence_sha256": "8c67cc2612a76b61ff80bb7bd0b20c624da1f0ce72535df9f99efa84b99ef5da",
       "result_evidence_source": "SBSQL_SURFACE_RELEASE_DECLARATION.csv/result_refs",
-      "row_sha256": "73e0f504610d68962e05f52f61b2f0eae60e41cc4c4eb65303b41a606569d6b8",
+      "row_sha256": "ddd39794fa98be065a0f1cbe2858b455fe389beeb16ed36a8a49cb40c0d86109",
       "sml_id": "SML-043",
-      "surface_count": 2540
+      "surface_count": 2490
     },
     {
       "classification": "exact_refusal_route_result",
       "classification_status": "closed_exact_refusal",
       "final_status": "exact_refusal_passed",
       "lower_level_only": false,
-      "result_evidence_sha256": "b7c75e852e5f9ebec0b0b864aac3d4508c667adffce92854a4c6b5fa95c63c4e",
+      "result_evidence_sha256": "8333d97183dad489ecb30f303f6e9660d44e674cfc145fb20d7072a713f9703f",
       "result_evidence_source": "SBSQL_SURFACE_RELEASE_DECLARATION.csv/exact_refusal_result_refs",
-      "row_sha256": "29f4dfbbed26475b73e111cc83fbdcbf2470ed4eef78608157ca5b799bbc0e1f",
+      "row_sha256": "ae81a12e0fcb9fafb14e88b55635ebbf25f6a0c08b65604c61166c08c1078d57",
       "sml_id": "SML-043",
-      "surface_count": 21
+      "surface_count": 71
     },
     {
       "classification": "explicit_lower_level_only",
@@ -4580,41 +4582,41 @@
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_LANGUAGE_ELEMENT_MANIFEST.csv",
       "row_count": 2617,
-      "row_sha256": "85b5ff57c272bff084d310c4d9d6898f01e8dc604ac009e0f43e6a3e4e92eed9",
-      "sha256": "eb06527f0b80439a9bc6e1a19a5980ce1a243d1e59105a233fb9997a808afc11",
-      "size_bytes": 1662351,
+      "row_sha256": "4d8139d9fe64c4861bd0883d1518b08a578a97bf8f07f14b74dd4b8d04c2a848",
+      "sha256": "23e3db8c47b248b1a52fa33313e8dab400757531128b9b0770841e2fe22a3aee",
+      "size_bytes": 1662101,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv",
       "row_count": 2617,
-      "row_sha256": "cf8c52b87b93962b45ffcd482d1daafb61ecd4ddbd86560167089ddeed4359d5",
-      "sha256": "4ea25357e5d5a6614e86b3c6f55a4d7d7b613e620fbedcefdd0affb5500bb48d",
-      "size_bytes": 5056973,
+      "row_sha256": "e4e9d07048522b8fff15920bb5ccf6518908ba4c8040275a777f1a19471e2a86",
+      "sha256": "639c5230aeac797bf39f66c508b8159fe48d786c2c94f0a4543d74b7380ed215",
+      "size_bytes": 5047331,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/PER_ROW_EVIDENCE_MANIFEST.csv",
       "row_count": 2617,
-      "row_sha256": "2561a35935cf4572f649f376610f9e1a096d5a76a53320e457654a94de95482c",
-      "sha256": "cfb60b0c19a1c88eda7885c510ac8b5659fa715a15efe1032c031c35510af0bc",
-      "size_bytes": 6482303,
+      "row_sha256": "c56714a93d69b2ed1311633762cb80c317bf9394d87c17a8738debcb64daf641",
+      "sha256": "79ea335efd587d7b5282f6a863443b263057267567121a8466de4b71806e3305",
+      "size_bytes": 6443160,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/AUTHENTICATED_FULL_ROUTE_MATRIX.csv",
       "row_count": 2617,
-      "row_sha256": "d9fbcf4f182fc99652f99f6bd144ff7d63f0ba69ff7393d2d83d2ad6259f1a84",
-      "sha256": "88d3f5272078dc062f6cc6c01df94d5794a2ef3cff5ab8adb7522664b382b481",
-      "size_bytes": 5409441,
+      "row_sha256": "e9707b6586cfaabd6d140e4bc31517f04a1d17c754290ada3d3183d32381efea",
+      "sha256": "9a332655b72a3cd29528f513c99c9e902817311f46d80340f954ad02f3fd7620",
+      "size_bytes": 5375291,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBLR_BINARY_ROUND_TRIP_MATRIX.csv",
       "row_count": 2617,
-      "row_sha256": "f946bebd4fba40bbb92a99f72cb3370553cd05f39557814e70b0cfd1332a937c",
-      "sha256": "3a019336d3904fe865889752f43af9a993e2df87c3e68ce6b8d702c592069046",
-      "size_bytes": 4296712,
+      "row_sha256": "b56f956b125029e97fd0ed3a8aecb64dd8c64c7d87dc5b014e867d742949c20d",
+      "sha256": "3401b332c2f83379084451321c2a70b0c60d7c03b0d6e5d807663a3d562714fc",
+      "size_bytes": 4294144,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     }
   ]

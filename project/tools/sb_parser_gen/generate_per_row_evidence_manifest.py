@@ -63,6 +63,11 @@ from core_route_reconciliation_generated_evidence import (
     augment_per_row_manifest_row,
     validate_authoritative_runtime_inputs as validate_core_route_reconciliation_inputs,
 )
+from sbsfc078_procedural_refusal_generated_evidence import (
+    is_sbsfc078_procedural_standalone_refusal,
+    per_row_manifest_override as sbsfc078_refusal_per_row_manifest_override,
+    validate_authoritative_runtime_inputs as validate_sbsfc078_refusal_inputs,
+)
 
 
 PUBLIC_SURFACE_INPUT = (
@@ -25563,6 +25568,7 @@ def main() -> int:
     validate_authoritative_runtime_inputs(root)
     validate_core_root_refusal_inputs(root)
     validate_core_route_reconciliation_inputs(root)
+    validate_sbsfc078_refusal_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     ledger_by_id = index_by_surface(read_csv(artifact_root / STRICT_LEDGER_NAME))
@@ -25692,7 +25698,16 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         surface_id = surface["surface_id"]
-        if is_core_root_exact_refusal(surface_id):
+        if is_sbsfc078_procedural_standalone_refusal(surface_id):
+            classification = sbsfc078_refusal_per_row_manifest_override(
+                root, surface, ledger_by_id.get(surface_id)
+            )
+            if classification is None:
+                fail(
+                    f"{surface_id} SBSFC-078 refusal manifest override "
+                    "unexpectedly missing"
+                )
+        elif is_core_root_exact_refusal(surface_id):
             classification = core_root_refusal_per_row_manifest_override(surface)
             if classification is None:
                 fail(f"{surface_id} Core root refusal manifest override unexpectedly missing")
