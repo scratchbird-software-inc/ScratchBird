@@ -30,6 +30,9 @@ from plan_import_rows_generated_evidence import (
     is_bulk_import_stream_surface,
     is_central_import_refusal_surface,
 )
+from core_root_refusal_generated_evidence import (
+    CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS,
+)
 
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
@@ -56,6 +59,7 @@ CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
 PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = (
     CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
     | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+    | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
 )
 
 
@@ -433,9 +437,13 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
             fail(f"{surface_id} noncluster round-trip fixture has an unsupported final state")
         if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
             expected_parent_operation = (
-                "not_admitted_parent_engine.op.ddl_create_schema"
-                if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
-                else "not_admitted_parent_engine.op.ddl_create_table"
+                "not_admitted_diagnostic_refusal"
+                if surface_id in CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
+                else (
+                    "not_admitted_parent_engine.op.ddl_create_schema"
+                    if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+                    else "not_admitted_parent_engine.op.ddl_create_table"
+                )
             )
             if (
                 manifest["final_state"] != "exact_refusal_passed"

@@ -111,6 +111,14 @@ bool HasValue(const std::vector<std::string>& values, std::string_view expected)
   return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view expected_name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == expected_name) return field.value;
+  }
+  return {};
+}
+
 bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
@@ -194,6 +202,37 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
   Require(artifacts.ast.operation_family == "sblr.general.operation.v3",
           "SBSFC-082 AST canonical operation family mismatch");
   Require(artifacts.bound.bound, "SBSFC-082 bind failed");
+  if (row.surface_id == "SBSQL-5E6DC360F377") {
+    Require(!artifacts.verifier.admitted,
+            "SBSFC-082 exact-refusal root was verifier-admitted");
+    Require(artifacts.envelope.operation_id ==
+                    "engine.op.diagnostic_refusal" &&
+                artifacts.envelope.sblr_opcode ==
+                    "SBLR_DIAGNOSTIC_REFUSAL" &&
+                artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+                artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+                artifacts.envelope.resource_contract_key ==
+                    "sbsql.command.no_execution.v1" &&
+                artifacts.envelope.payload.empty() &&
+                !artifacts.envelope.parser_executes_sql,
+            "SBSFC-082 exact-refusal carrier drifted");
+    Require(artifacts.envelope.messages.diagnostics.size() == 1,
+            "SBSFC-082 exact-refusal diagnostic cardinality drifted");
+    const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+    Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+                DiagnosticField(diagnostic, "surface_id") == row.surface_id &&
+                DiagnosticField(diagnostic, "canonical_name") ==
+                    row.canonical_name &&
+                DiagnosticField(diagnostic, "executable_sblr_emitted") ==
+                    "false",
+            "SBSFC-082 exact-refusal diagnostic drifted");
+    Require(HasValue(artifacts.envelope.required_authority_steps,
+                     "authority.parser.no_executable_sblr") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_storage_or_finality"),
+            "SBSFC-082 exact-refusal authority guard drifted");
+    return;
+  }
   Require(artifacts.verifier.admitted, "SBSFC-082 verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
           "SBSFC-082 route operation family mismatch");

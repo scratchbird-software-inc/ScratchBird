@@ -112,7 +112,7 @@ struct RefusalCase {
   std::string_view canonical_name;
 };
 
-constexpr std::array<RefusalCase, 7> kRefusalCases{{
+constexpr std::array<RefusalCase, 14> kRefusalCases{{
     {"COPY customer TO STDOUT", "SBSQL-BDC2B64DA2A9", "copy_endpoint"},
     {"COPY customer FROM STDIN JSONL", "SBSQL-2DDA6BFD9B65", "copy_format"},
     {"COPY customer FROM STDIN WITH HEADER", "SBSQL-4369855D2FC4", "copy_options"},
@@ -120,6 +120,13 @@ constexpr std::array<RefusalCase, 7> kRefusalCases{{
     {"CYPHER LOAD CSV FROM source INTO social", "SBSQL-B7DCE9CB07B6", "cypher_load_csv"},
     {"GPU WORKLOAD APPLY batches", "SBSQL-7254347122CB", "gpu_workload_action"},
     {"LOAD DATA INTO customer FROM source CSV", "SBSQL-DB993AE8EDBB", "load_data_clause"},
+    {"UUID TO NAME target", "SBSQL-2B7126C58E41", "uuid_to_name"},
+    {"USE qa_lifecycle", "SBSQL-5B1C5630A433", "use_database_alias"},
+    {"RESOLVE NAME PUBLIC target", "SBSQL-5E6DC360F377", "resolve_name_public"},
+    {"DISCONNECT SESSION 1", "SBSQL-71D1C5165313", "disconnect_session"},
+    {"CREATE OBJECT target", "SBSQL-A8E627E27375", "create_object"},
+    {"CONNECT SESSION user", "SBSQL-DC0192B217F7", "connect_session"},
+    {"SET SESSION work_mem", "SBSQL-F6C4E9705A12", "set_session"},
 }};
 
 }  // namespace

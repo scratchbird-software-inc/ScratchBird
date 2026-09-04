@@ -2316,11 +2316,37 @@ SBSFC038_SPATIAL_TAIL_SCALAR_ROW_EVIDENCE = {
     "SBSQL-FF57FEDF9747": {"function_id": "sb.scalar.st_asmvtgeom", "proof": "SBSFC038-st-asmvtgeom-signature"},
 }
 
-SBSFC038_SPATIAL_TAIL_SCALAR_ORACLE_OVERRIDES = {
-    surface_id: _sbsfc036_oracle_record(
+SBSFC038_SPATIAL_TAIL_CANONICAL_BUILTIN_IDS = {
+    "SBSQL-9689873CEFCA": "sb.scalar.st_setsrid",
+    "SBSQL-A8D99D74565F": "sb.scalar.st_area",
+    "SBSQL-B26EC3DF7AFB": "sb.scalar.geom_union",
+    "SBSQL-BA4115A6DBA5": "sb.scalar.st_equals",
+    "SBSQL-C44E7F61A475": "sb.scalar.st_geometrytype",
+    "SBSQL-C557FC25C1DF": "sb.scalar.st_geomfromgeojson",
+    "SBSQL-CBD9B6358B34": "sb.scalar.geom_extent",
+    "SBSQL-CF31B52FAA1F": "sb.scalar.st_asgeojson",
+    "SBSQL-D3C5EA9765BE": "sb.scalar.st_touches",
+    "SBSQL-D5BEA7309046": "sb.scalar.st_transform",
+    "SBSQL-E211ACCD957F": "sb.scalar.st_srid",
+    "SBSQL-F21F901FC2AF": "sb.scalar.st_makepolygon",
+    "SBSQL-F4AE1FA62237": "sb.scalar.st_within",
+}
+
+
+def _sbsfc038_oracle_record(surface_id: str, evidence: dict[str, str]) -> dict:
+    record = _sbsfc036_oracle_record(
         evidence["function_id"],
         [evidence["proof"], "SBSFC038-st-geomfromtext-invalid"],
     )
+    canonical_builtin_id = SBSFC038_SPATIAL_TAIL_CANONICAL_BUILTIN_IDS.get(
+        surface_id, evidence["function_id"]
+    )
+    record["builtin_id"] = canonical_builtin_id
+    record["canonical_name"] = canonical_builtin_id
+    return record
+
+SBSFC038_SPATIAL_TAIL_SCALAR_ORACLE_OVERRIDES = {
+    surface_id: _sbsfc038_oracle_record(surface_id, evidence)
     for surface_id, evidence in SBSFC038_SPATIAL_TAIL_SCALAR_ROW_EVIDENCE.items()
 }
 
@@ -3087,7 +3113,17 @@ def main() -> int:
 
     for surface in sorted(expression_runtime_surfaces, key=lambda r: r["surface_id"]):
         snapshot_row = public_oracle_snapshot.get(surface["surface_id"])
-        if snapshot_row is not None:
+        spatial_tail_override = SBSFC038_SPATIAL_TAIL_SCALAR_ORACLE_OVERRIDES.get(
+            surface["surface_id"]
+        )
+        if spatial_tail_override is not None:
+            classification = _full_oracle_row(
+                surface,
+                normalize_name(surface["canonical_name"]),
+                spatial_tail_override,
+                "SBSFC-038 Core canonical builtin plus resolved overload evidence",
+            )
+        elif snapshot_row is not None:
             classification = public_snapshot_classification(surface, snapshot_row)
         else:
             classification = classify(

@@ -114,6 +114,16 @@ def main() -> int:
     from plan_import_rows_generated_evidence import (  # pylint: disable=import-outside-toplevel
         is_central_import_refusal_surface,
     )
+    from core_root_refusal_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS,
+        is_core_root_exact_refusal,
+        validate_authoritative_runtime_inputs as validate_core_root_refusals,
+    )
+
+    try:
+        validate_core_root_refusals(root)
+    except ValueError as exc:
+        fail(f"Core root exact-refusal authority validation failed: {exc}")
 
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
@@ -170,6 +180,7 @@ def main() -> int:
         if surface_id in (
             CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
             | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+            | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
         ):
             for token in (
                 "parser_syntax_only",
@@ -235,6 +246,35 @@ def main() -> int:
                     "result_published=true",
                     "catalog_mutation=true",
                     "row_mutation=true",
+                )
+            elif is_core_root_exact_refusal(surface_id):
+                required = (
+                    "oracle_authority_status=Core_exact_diagnostic_refusal_command_root",
+                    "not_admitted_diagnostic_refusal",
+                    "operation_id=not_admitted",
+                    "root_route=diagnostic_refusal",
+                    "sblr_operation=SBLR_DIAGNOSTIC_REFUSAL",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "accepted=false",
+                    "executable_sblr_emitted=false",
+                    "no_server_or_engine_dispatch",
+                    "result_published=false",
+                    "descriptor_authority_published=false",
+                    "transaction_state_transition=false",
+                    "catalog_mutation=false",
+                    "row_mutation=false",
+                    "durable_state_byte_identical=true",
+                    "not_applicable_pre_sblr_exact_refusal",
+                    "fixture_status=exact_refusal_passed",
+                )
+                forbidden = (
+                    "result_published=true",
+                    "descriptor_authority_published=true",
+                    "server_admission_reached=true",
+                    "engine_dispatch_reached=true",
+                    "catalog_mutation=true",
+                    "row_mutation=true",
+                    "byte_identical_round_trip_required=yes",
                 )
             elif surface_id in CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS:
                 required = (

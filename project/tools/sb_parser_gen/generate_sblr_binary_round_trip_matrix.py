@@ -80,6 +80,11 @@ from plan_import_rows_generated_evidence import (
     normalize_fixture_status,
     validate_authoritative_runtime_inputs,
 )
+from core_root_refusal_generated_evidence import (
+    binary_round_trip_override as core_root_refusal_binary_round_trip_override,
+    normalize_fixture_status as normalize_core_root_refusal_fixture_status,
+    validate_authoritative_runtime_inputs as validate_core_root_refusal_inputs,
+)
 
 
 REGISTRY_CSV = (
@@ -382,6 +387,7 @@ def main() -> int:
         artifact_root = root / artifact_root
 
     validate_authoritative_runtime_inputs(root)
+    validate_core_root_refusal_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     oracle = read_csv(artifact_root / ORACLE_MATRIX_NAME)
@@ -471,9 +477,13 @@ def main() -> int:
         }
         ledger_row.update(phases)
         ledger_row = binary_round_trip_override(ledger_row)
+        ledger_row = core_root_refusal_binary_round_trip_override(ledger_row)
         ledger_row["fixture_status"] = normalize_fixture_status(
             surface_id,
             fixture_status_for(root, ledger_row["fixture_path"], surface_id),
+        )
+        ledger_row["fixture_status"] = normalize_core_root_refusal_fixture_status(
+            surface_id, ledger_row["fixture_status"]
         )
         output_rows.append(ledger_row)
 

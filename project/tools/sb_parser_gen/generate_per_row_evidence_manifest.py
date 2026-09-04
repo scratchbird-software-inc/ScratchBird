@@ -54,6 +54,15 @@ from plan_import_rows_generated_evidence import (
     per_row_manifest_override,
     validate_authoritative_runtime_inputs,
 )
+from core_root_refusal_generated_evidence import (
+    is_core_root_exact_refusal,
+    per_row_manifest_override as core_root_refusal_per_row_manifest_override,
+    validate_authoritative_runtime_inputs as validate_core_root_refusal_inputs,
+)
+from core_route_reconciliation_generated_evidence import (
+    augment_per_row_manifest_row,
+    validate_authoritative_runtime_inputs as validate_core_route_reconciliation_inputs,
+)
 
 
 PUBLIC_SURFACE_INPUT = (
@@ -11443,6 +11452,22 @@ SBSFC038_SPATIAL_TAIL_SCALAR_ROW_EVIDENCE = {
     "SBSQL-FF57FEDF9747": _sbsfc038_evidence("sb.scalar.st_asmvtgeom", "SBSFC038-st-asmvtgeom-signature"),
 }
 
+SBSFC038_SPATIAL_TAIL_CANONICAL_BUILTIN_IDS = {
+    "SBSQL-9689873CEFCA": "sb.scalar.st_setsrid",
+    "SBSQL-A8D99D74565F": "sb.scalar.st_area",
+    "SBSQL-B26EC3DF7AFB": "sb.scalar.geom_union",
+    "SBSQL-BA4115A6DBA5": "sb.scalar.st_equals",
+    "SBSQL-C44E7F61A475": "sb.scalar.st_geometrytype",
+    "SBSQL-C557FC25C1DF": "sb.scalar.st_geomfromgeojson",
+    "SBSQL-CBD9B6358B34": "sb.scalar.geom_extent",
+    "SBSQL-CF31B52FAA1F": "sb.scalar.st_asgeojson",
+    "SBSQL-D3C5EA9765BE": "sb.scalar.st_touches",
+    "SBSQL-D5BEA7309046": "sb.scalar.st_transform",
+    "SBSQL-E211ACCD957F": "sb.scalar.st_srid",
+    "SBSQL-F21F901FC2AF": "sb.scalar.st_makepolygon",
+    "SBSQL-F4AE1FA62237": "sb.scalar.st_within",
+}
+
 SBSFC039_XML_DOCUMENT_QUERY_SCALAR_FIXTURE_CSV = (
     "project/tests/sbsql_parser_worker/generated/full_surface/"
     "SBSFC_039_XML_DOCUMENT_QUERY_SCALAR_HELPER_FIXTURES.csv"
@@ -19564,7 +19589,10 @@ def classify(
             fail(f"{surface_id} SBSFC-038 spatial tail scalar helper manifest override requires oracle matrix row")
         if oracle_row.get("oracle_authority_status") != "full_oracle":
             fail(f"{surface_id} SBSFC-038 spatial tail scalar helper manifest override requires full_oracle status")
-        if oracle_row.get("matched_builtin_id") != spatial_tail_scalar_evidence["function_id"]:
+        canonical_builtin_id = SBSFC038_SPATIAL_TAIL_CANONICAL_BUILTIN_IDS.get(
+            surface_id, spatial_tail_scalar_evidence["function_id"]
+        )
+        if oracle_row.get("matched_builtin_id") != canonical_builtin_id:
             fail(f"{surface_id} SBSFC-038 spatial tail scalar helper manifest oracle builtin drift")
         if oracle_row.get("sblr_binding") != spatial_tail_scalar_evidence["sblr_binding"]:
             fail(f"{surface_id} SBSFC-038 spatial tail scalar helper manifest SBLR binding drift")
@@ -19580,7 +19608,7 @@ def classify(
             "ctest_label": SBSFC038_SPATIAL_TAIL_SCALAR_CTEST_LABEL,
             "fixture_path": f"{SBSFC038_SPATIAL_TAIL_SCALAR_FIXTURE_CSV};{SBSFC038_SPATIAL_TAIL_SCALAR_RUNTIME_SOURCE};{SBSFC038_SPATIAL_TAIL_SCALAR_PROJECTION_SOURCE}",
             "implementation_refs": (
-                f"function_id={function_id};surface_id={surface_id};"
+                f"function_id={canonical_builtin_id};resolved_overload_id={function_id};surface_id={surface_id};"
                 f"sblr_binding={sblr_binding};engine_entrypoint={engine_entrypoint};"
                 "parser_generated_projection_payload=true;server_public_abi_admission=true;"
                 "engine_native_function_dispatch=true;spatial_tail_text_geojson_bbox_route=true;"
@@ -25533,6 +25561,8 @@ def main() -> int:
         artifact_root = root / artifact_root
 
     validate_authoritative_runtime_inputs(root)
+    validate_core_root_refusal_inputs(root)
+    validate_core_route_reconciliation_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     ledger_by_id = index_by_surface(read_csv(artifact_root / STRICT_LEDGER_NAME))
@@ -25662,7 +25692,11 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         surface_id = surface["surface_id"]
-        if is_plan_import_rows_surface(surface_id):
+        if is_core_root_exact_refusal(surface_id):
+            classification = core_root_refusal_per_row_manifest_override(surface)
+            if classification is None:
+                fail(f"{surface_id} Core root refusal manifest override unexpectedly missing")
+        elif is_plan_import_rows_surface(surface_id):
             classification = per_row_manifest_override(surface)
             if classification is None:
                 fail(f"{surface_id} plan-import manifest override unexpectedly missing")
@@ -25704,6 +25738,7 @@ def main() -> int:
                 sbsfc015_window_function_fixture_by_id.get(surface_id),
                 sbsfc015_ordered_distribution_statistical_aggregate_fixture_by_id.get(surface_id),
             )
+        classification = augment_per_row_manifest_row(root, surface, classification)
         ledger_row = {
             "surface_id": surface_id,
             "canonical_name": surface["canonical_name"],

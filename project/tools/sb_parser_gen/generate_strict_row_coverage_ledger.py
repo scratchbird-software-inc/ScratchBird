@@ -43,6 +43,14 @@ from plan_import_rows_generated_evidence import (
     strict_ledger_override,
     validate_authoritative_runtime_inputs,
 )
+from core_root_refusal_generated_evidence import (
+    strict_ledger_override as core_root_refusal_strict_ledger_override,
+    validate_authoritative_runtime_inputs as validate_core_root_refusal_inputs,
+)
+from core_route_reconciliation_generated_evidence import (
+    augment_strict_ledger_row,
+    validate_authoritative_runtime_inputs as validate_core_route_reconciliation_inputs,
+)
 
 
 PUBLIC_SURFACE_INPUT = (
@@ -6980,9 +6988,9 @@ SBSFC016_REFERENCE_VARIABLE_CONTEXT_ALIAS_ROW_EVIDENCE = {
         "surface_kind": "function",
         "family": "expression_runtime",
         "sblr_operation_family": "sblr.expression.runtime.v3",
-        "function_id": "sb.scalar.ifnull",
-        "sblr_binding": "sblr.expr.scalar_ifnull.v3",
-        "engine_entrypoint": "scalar_ifnull",
+        "function_id": "sb.scalar.nvl",
+        "sblr_binding": "sblr.expr.native_surface.nvl.v3",
+        "engine_entrypoint": "nvl",
         "fixture_id": "SBSFC016-reference-alias-nvl",
         "expected_proof": "projection_name=nvl_value;expected_result=fallback;descriptor=text",
     },
@@ -10815,6 +10823,22 @@ SBSFC038_SPATIAL_TAIL_SCALAR_ROW_EVIDENCE = {
     "SBSQL-FF57FEDF9747": _sbsfc038_evidence("sb.scalar.st_asmvtgeom", "SBSFC038-st-asmvtgeom-signature"),
 }
 
+SBSFC038_SPATIAL_TAIL_CANONICAL_BUILTIN_IDS = {
+    "SBSQL-9689873CEFCA": "sb.scalar.st_setsrid",
+    "SBSQL-A8D99D74565F": "sb.scalar.st_area",
+    "SBSQL-B26EC3DF7AFB": "sb.scalar.geom_union",
+    "SBSQL-BA4115A6DBA5": "sb.scalar.st_equals",
+    "SBSQL-C44E7F61A475": "sb.scalar.st_geometrytype",
+    "SBSQL-C557FC25C1DF": "sb.scalar.st_geomfromgeojson",
+    "SBSQL-CBD9B6358B34": "sb.scalar.geom_extent",
+    "SBSQL-CF31B52FAA1F": "sb.scalar.st_asgeojson",
+    "SBSQL-D3C5EA9765BE": "sb.scalar.st_touches",
+    "SBSQL-D5BEA7309046": "sb.scalar.st_transform",
+    "SBSQL-E211ACCD957F": "sb.scalar.st_srid",
+    "SBSQL-F21F901FC2AF": "sb.scalar.st_makepolygon",
+    "SBSQL-F4AE1FA62237": "sb.scalar.st_within",
+}
+
 SBSFC039_XML_DOCUMENT_QUERY_SCALAR_FIXTURE_CSV = (
     "project/tests/sbsql_parser_worker/generated/full_surface/"
     "SBSFC_039_XML_DOCUMENT_QUERY_SCALAR_HELPER_FIXTURES.csv"
@@ -13156,7 +13180,10 @@ def sbsfc038_spatial_tail_scalar_classification(
         fail(f"{surface['surface_id']} SBSFC-038 spatial tail scalar helper override requires oracle matrix row")
     if oracle_row.get("oracle_authority_status") != "full_oracle":
         fail(f"{surface['surface_id']} SBSFC-038 spatial tail scalar helper override requires full_oracle status")
-    if oracle_row.get("matched_builtin_id") != evidence["function_id"]:
+    canonical_builtin_id = SBSFC038_SPATIAL_TAIL_CANONICAL_BUILTIN_IDS.get(
+        surface["surface_id"], evidence["function_id"]
+    )
+    if oracle_row.get("matched_builtin_id") != canonical_builtin_id:
         fail(f"{surface['surface_id']} SBSFC-038 spatial tail scalar helper builtin id drift")
     if oracle_row.get("sblr_binding") != evidence["sblr_binding"]:
         fail(f"{surface['surface_id']} SBSFC-038 spatial tail scalar helper SBLR binding drift")
@@ -13174,7 +13201,7 @@ def sbsfc038_spatial_tail_scalar_classification(
         "lowering_evidence": f"{SBSFC038_SPATIAL_TAIL_SCALAR_PROJECTION_SOURCE};SBLR_QUERY_EVALUATE_PROJECTION;sblr_binding={sblr_binding};no_source_sql_text",
         "server_admission_evidence": f"ctest:{SBSFC038_SPATIAL_TAIL_SCALAR_PROJECTION_CTEST};server_admission_admitted;operation_id=query.evaluate_projection;engine_dispatch_required",
         "engine_runtime_evidence": f"ctest:{SBSFC038_SPATIAL_TAIL_SCALAR_RUNTIME_CTEST};internal_engine_spatial_tail_scalar_function={engine_entrypoint};{expected_proof};SBLR_internal_engine_route;non_mutating_scalar_behavior",
-        "function_or_api_operation_id": f"{function_id};sblr_binding={sblr_binding};engine_entrypoint={engine_entrypoint}",
+        "function_or_api_operation_id": f"{canonical_builtin_id};resolved_overload_id={function_id};sblr_binding={sblr_binding};engine_entrypoint={engine_entrypoint}",
         "diagnostic_evidence": f"canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;{expected_proof};SBSFC038-st-geomfromtext-invalid;SB_DIAG_FUNCTION_INVALID_INPUT_for_invalid_arity_malformed_geometry_or_bounded_spatial_argument",
         "fixture_evidence": f"{SBSFC038_SPATIAL_TAIL_SCALAR_FIXTURE_CSV};ctest:{SBSFC038_SPATIAL_TAIL_SCALAR_RUNTIME_CTEST};ctest:{SBSFC038_SPATIAL_TAIL_SCALAR_PROJECTION_CTEST};source={SBSFC038_SPATIAL_TAIL_SCALAR_RUNTIME_SOURCE};projection_source={SBSFC038_SPATIAL_TAIL_SCALAR_PROJECTION_SOURCE}",
         "evidence_complete": "yes",
@@ -21711,6 +21738,8 @@ def main() -> int:
         artifact_root = root / artifact_root
 
     validate_authoritative_runtime_inputs(root)
+    validate_core_root_refusal_inputs(root)
+    validate_core_route_reconciliation_inputs(root)
 
     surfaces = read_csv(root / REGISTRY)
     statuses = read_csv(root / STATUS_MATRIX)
@@ -22099,6 +22128,10 @@ def main() -> int:
         plan_import_override = strict_ledger_override(surface)
         if plan_import_override is not None:
             classification = plan_import_override
+        core_root_refusal_override = core_root_refusal_strict_ledger_override(surface)
+        if core_root_refusal_override is not None:
+            classification = core_root_refusal_override
+        classification = augment_strict_ledger_row(root, surface, classification)
         if classification["current_state"] not in valid_states:
             fail(f"{surface_id} produced unknown state {classification['current_state']}")
 

@@ -69,6 +69,25 @@ TARGETS = {
     "SBSQL-FF57FEDF9747": "sb.scalar.st_asmvtgeom",
 }
 
+# Core owns the canonical builtin identity.  A fixture may select a narrower,
+# registered overload for execution, but it must keep that overload distinct
+# from the surface's canonical builtin.
+CANONICAL_TARGETS = {
+    "SBSQL-9689873CEFCA": "sb.scalar.st_setsrid",
+    "SBSQL-A8D99D74565F": "sb.scalar.st_area",
+    "SBSQL-B26EC3DF7AFB": "sb.scalar.geom_union",
+    "SBSQL-BA4115A6DBA5": "sb.scalar.st_equals",
+    "SBSQL-C44E7F61A475": "sb.scalar.st_geometrytype",
+    "SBSQL-C557FC25C1DF": "sb.scalar.st_geomfromgeojson",
+    "SBSQL-CBD9B6358B34": "sb.scalar.geom_extent",
+    "SBSQL-CF31B52FAA1F": "sb.scalar.st_asgeojson",
+    "SBSQL-D3C5EA9765BE": "sb.scalar.st_touches",
+    "SBSQL-D5BEA7309046": "sb.scalar.st_transform",
+    "SBSQL-E211ACCD957F": "sb.scalar.st_srid",
+    "SBSQL-F21F901FC2AF": "sb.scalar.st_makepolygon",
+    "SBSQL-F4AE1FA62237": "sb.scalar.st_within",
+}
+
 
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
@@ -116,7 +135,10 @@ def main() -> int:
         if surface_id not in TARGETS:
             errors.append(f"{fixture_id}: unexpected surface_id {surface_id}")
             continue
-        if function_id != TARGETS[surface_id] or canonical != TARGETS[surface_id]:
+        if (
+            function_id != TARGETS[surface_id]
+            or canonical != CANONICAL_TARGETS.get(surface_id, TARGETS[surface_id])
+        ):
             errors.append(f"{fixture_id}: function/canonical id mismatch for {surface_id}")
         if function_id not in registered_ids:
             errors.append(f"{fixture_id}: {function_id} not registered in function_seed_registry")

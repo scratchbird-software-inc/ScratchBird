@@ -28,6 +28,9 @@ from plan_import_rows_generated_evidence import (
     CENTRAL_IMPORT_REFUSAL_SURFACE_IDS,
     PLAN_IMPORT_ROWS_SURFACE_IDS,
 )
+from core_root_refusal_generated_evidence import (
+    CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -241,13 +244,17 @@ def validate_inputs(
         if backlog_row["validation_fixture_id"] != oracle_row["fixture_id"]:
             fail(f"{surface_id} fixture identifier disagreement between public artifacts")
         status_pair = (backlog_row["status"], release_row["final_status"])
-        central_import_exact_refusal = (
-            surface_id in CENTRAL_IMPORT_REFUSAL_SURFACE_IDS
+        approved_exact_refusal_correction = (
+            surface_id
+            in (
+                CENTRAL_IMPORT_REFUSAL_SURFACE_IDS
+                | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
+            )
             and status_pair == ("e2e_passed", "exact_refusal_passed")
         )
         if (
             status_pair not in ALLOWED_CLOSURE_STATUS_PAIRS
-            and not central_import_exact_refusal
+            and not approved_exact_refusal_correction
         ):
             fail(
                 f"{surface_id} unsupported public closure-status pair: "

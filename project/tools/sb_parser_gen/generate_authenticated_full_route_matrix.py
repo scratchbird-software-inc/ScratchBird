@@ -58,6 +58,11 @@ from plan_import_rows_generated_evidence import (
     normalize_fixture_status,
     validate_authoritative_runtime_inputs,
 )
+from core_root_refusal_generated_evidence import (
+    authenticated_route_override as core_root_refusal_authenticated_route_override,
+    normalize_fixture_status as normalize_core_root_refusal_fixture_status,
+    validate_authoritative_runtime_inputs as validate_core_root_refusal_inputs,
+)
 
 
 REGISTRY_CSV = (
@@ -339,6 +344,7 @@ def main() -> int:
         artifact_root = root / artifact_root
 
     validate_authoritative_runtime_inputs(root)
+    validate_core_root_refusal_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     if not surfaces:
@@ -350,6 +356,9 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         classification = authenticated_route_override(surface, classify(surface))
+        classification = core_root_refusal_authenticated_route_override(
+            surface, classification
+        )
         ledger_row = {
         "surface_id": surface["surface_id"],
         "canonical_name": surface["canonical_name"],
@@ -362,6 +371,9 @@ def main() -> int:
         ledger_row["fixture_status"] = normalize_fixture_status(
             surface["surface_id"],
             fixture_status_for(root, ledger_row["fixture_path"], surface["surface_id"]),
+        )
+        ledger_row["fixture_status"] = normalize_core_root_refusal_fixture_status(
+            surface["surface_id"], ledger_row["fixture_status"]
         )
         output_rows.append(ledger_row)
 

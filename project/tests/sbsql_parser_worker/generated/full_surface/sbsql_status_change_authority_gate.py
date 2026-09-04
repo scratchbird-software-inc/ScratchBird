@@ -149,6 +149,10 @@ def main() -> int:
         is_central_import_refusal_surface,
         load_central_import_command_rows,
     )
+    from core_root_refusal_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        is_core_root_exact_refusal,
+        validate_authoritative_runtime_inputs as validate_core_root_refusals,
+    )
 
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
@@ -165,8 +169,9 @@ def main() -> int:
     manifest_counts = parse_manifest(root / GENERATED_MANIFEST)
     try:
         load_central_import_command_rows(root.parent / "Specifications/Core")
+        validate_core_root_refusals(root)
     except ValueError as exc:
-        fail(f"central-import Core authority validation failed: {exc}")
+        fail(f"Core exact-refusal authority validation failed: {exc}")
 
     canonical_by_id = {
         r["surface_id"]: (r.get("source_status") or r["status"])
@@ -221,6 +226,36 @@ def main() -> int:
                 allowed = set()
                 errors.append(
                     f"STRICT_ROW_COVERAGE_LEDGER row {sid} central-import "
+                    f"refusal authority drift: canonical={canonical} "
+                    f"cluster_scope={cluster_scope}"
+                )
+        elif is_core_root_exact_refusal(sid):
+            if (
+                canonical == "native_now"
+                and cluster_scope == "noncluster_or_profile_scoped"
+            ):
+                allowed = {"exact_refusal_passed"}
+                evidence = ";".join(row.values())
+                for token in (
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "operation_id=not_admitted",
+                    "root_route=diagnostic_refusal",
+                    "sblr_operation=SBLR_DIAGNOSTIC_REFUSAL",
+                    "executable_sblr_emitted=false",
+                    "engine_dispatch_reached=false",
+                    "catalog_mutation=false",
+                    "row_mutation=false",
+                    "durable_state_byte_identical=true",
+                ):
+                    if token not in evidence:
+                        errors.append(
+                            f"STRICT_ROW_COVERAGE_LEDGER row {sid} Core root "
+                            f"exact refusal missing proof token {token}"
+                        )
+            else:
+                allowed = set()
+                errors.append(
+                    f"STRICT_ROW_COVERAGE_LEDGER row {sid} Core root exact "
                     f"refusal authority drift: canonical={canonical} "
                     f"cluster_scope={cluster_scope}"
                 )

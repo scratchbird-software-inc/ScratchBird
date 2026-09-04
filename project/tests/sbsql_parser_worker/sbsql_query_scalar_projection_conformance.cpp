@@ -6656,7 +6656,7 @@ void RequireSbsfc016ReferenceAliasFunctionProjectionLowering() {
           "SBSFC-016 reference alias function projection count missing");
   for (const auto* function_id : {
            "sb.scalar.ceil",
-           "sb.scalar.ifnull",
+           "sb.scalar.nvl",
            "sb.scalar.iif",
            "sb.temporal.current_timestamp",
            "sb.session.transaction_id",

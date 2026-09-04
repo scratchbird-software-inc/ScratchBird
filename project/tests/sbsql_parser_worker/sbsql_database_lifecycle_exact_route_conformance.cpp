@@ -1085,7 +1085,23 @@ void RequireEngineDispatch() {
 }
 
 void RequireRoutes() {
-  const std::array<LifecycleRouteCase, 15> routes{{
+  const auto use_alias = RunPipeline("USE qa_lifecycle");
+  DumpMessages("lower", "USE qa_lifecycle", use_alias.envelope.messages);
+  Require(!use_alias.cst.messages.has_errors() &&
+              !use_alias.ast.messages.has_errors() && use_alias.bound.bound,
+          "USE alias did not preserve parser component evidence");
+  Require(!use_alias.verifier.admitted &&
+              use_alias.envelope.operation_id ==
+                  "engine.op.diagnostic_refusal" &&
+              use_alias.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              use_alias.envelope.engine_api_operation_id == "not_admitted" &&
+              use_alias.envelope.payload.empty() &&
+              use_alias.envelope.messages.diagnostics.size() == 1 &&
+              use_alias.envelope.messages.diagnostics.front().code ==
+                  "SBSQL.IMPL.NOT_AVAILABLE",
+          "USE alias did not produce its exact pre-SBLR refusal");
+
+  const std::array<LifecycleRouteCase, 14> routes{{
       {"CREATE DATABASE qa_lifecycle",
        "SBSQL-EB95D772BD63",
        "create_database_stmt",
@@ -1119,17 +1135,6 @@ void RequireRoutes() {
        true,
        false,
        {"SBSQL-80C5BA542433", "SBSQL-A3F3AF6910F9"}},
-      {"USE qa_lifecycle",
-       "SBSQL-5B1C5630A433",
-       "use_database_alias",
-       "sbsql.lifecycle.use_database_alias",
-       kAttachOperation,
-       kAttachOpcode,
-       "EngineAttachLifecycle",
-       "right.lifecycle_attach",
-       true,
-       false,
-       {"SBSQL-5B1C5630A433", "SBSQL-A3F3AF6910F9"}},
       {"INSPECT DATABASE qa_lifecycle",
        "",
        "",

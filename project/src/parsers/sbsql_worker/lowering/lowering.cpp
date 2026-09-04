@@ -11814,7 +11814,7 @@ std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProj
     return ScalarFunctionProjectionDescriptor{"sb.scalar.ifnull", "character", "ifnull(a,b)"};
   }
   if (lowered == "nvl") {
-    return ScalarFunctionProjectionDescriptor{"sb.scalar.ifnull", "character", "NVL"};
+    return ScalarFunctionProjectionDescriptor{"sb.scalar.nvl", "character", "NVL"};
   }
   if (lowered == "iif") {
     return ScalarFunctionProjectionDescriptor{"sb.scalar.iif", "character", "IIF"};
@@ -42407,6 +42407,99 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
   return {};
 }
 
+struct ExactRootRefusalRoute {
+  std::string_view surface_id;
+  std::string_view canonical_name;
+  std::string_view operation_family;
+  std::string_view command_family;
+
+  [[nodiscard]] bool active() const { return !surface_id.empty(); }
+};
+
+ExactRootRefusalRoute AnalyzeExactRootRefusalRoute(const CstDocument& cst) {
+  if (cst.messages.has_errors()) return {};
+  const auto words = MeaningfulUpperTokens(cst);
+  if (words.empty()) return {};
+  if (words.size() >= 3 && words[0] == "UUID" && words[1] == "TO" &&
+      words[2] == "NAME") {
+    return {"SBSQL-2B7126C58E41", "uuid_to_name",
+            "sblr.general.operation.v3", "general"};
+  }
+  if (words[0] == "USE") {
+    return {"SBSQL-5B1C5630A433", "use_database_alias",
+            "sblr.general.operation.v3", "general"};
+  }
+  if (words.size() >= 3 && words[0] == "RESOLVE" && words[1] == "NAME" &&
+      words[2] == "PUBLIC") {
+    return {"SBSQL-5E6DC360F377", "resolve_name_public",
+            "sblr.general.operation.v3", "general"};
+  }
+  if (words.size() >= 2 && words[0] == "DISCONNECT" &&
+      words[1] == "SESSION") {
+    return {"SBSQL-71D1C5165313", "disconnect_session",
+            "sblr.general.operation.v3", "general"};
+  }
+  if (words.size() >= 2 && words[0] == "CREATE" && words[1] == "OBJECT") {
+    return {"SBSQL-A8E627E27375", "create_object",
+            "sblr.catalog.mutation.v3", "ddl_catalog"};
+  }
+  if (words.size() >= 2 && words[0] == "CONNECT" &&
+      words[1] == "SESSION") {
+    return {"SBSQL-DC0192B217F7", "connect_session",
+            "sblr.general.operation.v3", "general"};
+  }
+  if (words.size() >= 2 && words[0] == "SET" && words[1] == "SESSION") {
+    return {"SBSQL-F6C4E9705A12", "set_session",
+            "sblr.general.operation.v3", "general"};
+  }
+  return {};
+}
+
+SblrEnvelope LowerExactDiagnosticRefusal(
+    const BoundStatement& bound, const SessionContext& session,
+    std::string_view surface_id, std::string_view canonical_name,
+    std::string_view operation_family, std::string_view command_family,
+    std::string_view trace_key, std::string_view message) {
+  SblrEnvelope refusal;
+  refusal.operation_family = std::string(operation_family);
+  refusal.statement_hash = bound.statement_hash;
+  refusal.surface_key = std::string(canonical_name);
+  refusal.command_family = std::string(command_family);
+  refusal.operation_id = "engine.op.diagnostic_refusal";
+  refusal.sblr_operation_key = std::string(operation_family);
+  refusal.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+  refusal.engine_api_operation_id = "not_admitted";
+  refusal.result_shape_key = "diagnostic_vector.v1";
+  refusal.diagnostic_shape_key = "diagnostic_vector.v1";
+  refusal.resource_contract_key = "sbsql.command.no_execution.v1";
+  refusal.trace_key = std::string(trace_key);
+  refusal.catalog_epoch =
+      bound.catalog_epoch != 0 ? bound.catalog_epoch : session.catalog_epoch;
+  refusal.security_policy_epoch = bound.security_policy_epoch != 0
+                                      ? bound.security_policy_epoch
+                                      : session.security_policy_epoch;
+  refusal.descriptor_epoch = bound.descriptor_epoch != 0
+                                 ? bound.descriptor_epoch
+                                 : session.descriptor_epoch;
+  refusal.required_authority_steps = {
+      "authority.parser.syntax_evidence_only",
+      "authority.parser.no_executable_sblr",
+      "authority.parser.no_sql_text_execution",
+      "authority.parser.no_storage_or_finality"};
+  refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+  refusal.exact_emulated_diagnostic = true;
+  refusal.messages = bound.messages;
+  if (!refusal.messages.has_errors()) {
+    refusal.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.IMPL.NOT_AVAILABLE", "ERROR", std::string(message),
+        "sbp_sbsql.lowering",
+        {{"surface_id", std::string(surface_id)},
+         {"canonical_name", std::string(canonical_name)},
+         {"executable_sblr_emitted", "false"}}));
+  }
+  return refusal;
+}
+
 } // namespace
 
 CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(
@@ -42477,48 +42570,24 @@ CentralImportCommandRoute AnalyzeCentralImportCommandRoute(
 }
 
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session) {
+  const auto exact_root_refusal = AnalyzeExactRootRefusalRoute(cst);
+  if (exact_root_refusal.active()) {
+    return LowerExactDiagnosticRefusal(
+        bound, session, exact_root_refusal.surface_id,
+        exact_root_refusal.canonical_name,
+        exact_root_refusal.operation_family,
+        exact_root_refusal.command_family,
+        "trace.sbsql.core_root_exact_refusal",
+        "The recognized SBsql root is not admitted for execution.");
+  }
   const auto central_import_route = AnalyzeCentralImportCommandRoute(cst);
   if (central_import_route.disposition ==
       CentralImportCommandDisposition::kExactRefusal) {
-    SblrEnvelope refusal;
-    refusal.operation_family = "sblr.dml.operation.v3";
-    refusal.statement_hash = bound.statement_hash;
-    refusal.surface_key = std::string(central_import_route.canonical_name);
-    refusal.command_family = "dml";
-    refusal.operation_id = "engine.op.diagnostic_refusal";
-    refusal.sblr_operation_key = "sblr.dml.operation.v3";
-    refusal.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
-    refusal.engine_api_operation_id = "not_admitted";
-    refusal.result_shape_key = "diagnostic_vector.v1";
-    refusal.diagnostic_shape_key = "diagnostic_vector.v1";
-    refusal.resource_contract_key = "sbsql.command.no_execution.v1";
-    refusal.trace_key = "trace.sbsql.central_import_exact_refusal";
-    refusal.catalog_epoch = bound.catalog_epoch != 0 ? bound.catalog_epoch
-                                                     : session.catalog_epoch;
-    refusal.security_policy_epoch =
-        bound.security_policy_epoch != 0 ? bound.security_policy_epoch
-                                         : session.security_policy_epoch;
-    refusal.descriptor_epoch = bound.descriptor_epoch != 0
-                                   ? bound.descriptor_epoch
-                                   : session.descriptor_epoch;
-    refusal.required_authority_steps = {
-        "authority.parser.syntax_evidence_only",
-        "authority.parser.no_executable_sblr",
-        "authority.parser.no_sql_text_execution",
-        "authority.parser.no_storage_or_finality"};
-    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
-    refusal.exact_emulated_diagnostic = true;
-    refusal.messages = bound.messages;
-    if (!refusal.messages.has_errors()) {
-      refusal.messages.diagnostics.push_back(MakeDiagnostic(
-          std::string(central_import_route.diagnostic_id), "ERROR",
-          "The recognized SBsql import surface is not admitted for execution.",
-          "sbp_sbsql.lowering",
-          {{"surface_id", std::string(central_import_route.surface_id)},
-           {"canonical_name",
-            std::string(central_import_route.canonical_name)}}));
-    }
-    return refusal;
+    return LowerExactDiagnosticRefusal(
+        bound, session, central_import_route.surface_id,
+        central_import_route.canonical_name, "sblr.dml.operation.v3", "dml",
+        "trace.sbsql.central_import_exact_refusal",
+        "The recognized SBsql import surface is not admitted for execution.");
   }
   if (bound.native_relational_recognized || bound.native_relational.bound ||
       bound.registry_family == "sbsql.query.values.v3") {
