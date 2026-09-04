@@ -149,6 +149,12 @@ bool IsCanonicalBuiltinRoutinePath(const std::vector<std::string>& parts) {
       parts[2] == "REGEXP_LIKE") {
     return true;
   }
+  if ((parts.size() == 2 && parts[0] == "TIMESERIES" &&
+       parts[1] == "AGGREGATE") ||
+      (parts.size() == 4 && parts[0] == "SB" && parts[1] == "FN" &&
+       parts[2] == "TIMESERIES" && parts[3] == "AGGREGATE")) {
+    return true;
+  }
   if (parts.front() != "SB") return false;
   const std::string& family = parts[1];
   return family == "SCALAR" ||
@@ -1584,7 +1590,23 @@ AstDocument BuildAst(const CstDocument& cst) {
     }
     return ast;
   }
-  ast.native_relational = ParseNativeRelationalAst(cst);
+  const bool non_native_relational_child_surface = std::ranges::any_of(
+      cst.tokens, [](const Token& token) {
+        if (IsTriviaToken(token)) return false;
+        const auto word = CanonicalWordForToken(token);
+        return word == "TABLESAMPLE" || word == "PIVOT" ||
+               word == "UNPIVOT";
+      });
+  // EXPLAIN is an observability command root whose nested statement is an
+  // input to the explain descriptor. TABLESAMPLE, PIVOT, and UNPIVOT are
+  // likewise recognized query children whose current profiles must be
+  // handled by the SBsql lowering boundary until engine-bound query.execute
+  // child descriptors exist. Do not let bounded native SELECT recognition
+  // misclassify these surfaces as inner-query syntax errors.
+  if (CanonicalWordForToken(*first) != "EXPLAIN" &&
+      !non_native_relational_child_surface) {
+    ast.native_relational = ParseNativeRelationalAst(cst);
+  }
   if (ast.native_relational.recognized()) {
     ast.messages.diagnostics.insert(
         ast.messages.diagnostics.end(),
@@ -2364,11 +2386,17 @@ AstDocument BuildAst(const CstDocument& cst) {
   }
   const auto words = MeaningfulTokenWords(cst);
   const auto raw_words = RawMeaningfulTokenWords(cst);
-  const auto keyword = words.empty() ? CanonicalWordForToken(*first) : words[0];
+  const auto raw_keyword =
+      raw_words.empty() ? CanonicalWordForToken(*first) : raw_words[0];
+  const auto canonical_keyword =
+      words.empty() ? CanonicalWordForToken(*first) : words[0];
+  // The EXPLAIN canonical element stream carries the nested relational root
+  // before its wrapper marker. Statement-family selection must retain the
+  // raw outer command as the authoritative root.
+  const auto keyword = raw_keyword == "EXPLAIN" ? raw_keyword : canonical_keyword;
   const auto second = words.size() > 1 ? std::string_view(words[1]) : std::string_view();
   const auto third = words.size() > 2 ? std::string_view(words[2]) : std::string_view();
   const auto fourth = words.size() > 3 ? std::string_view(words[3]) : std::string_view();
-  const auto raw_keyword = raw_words.empty() ? CanonicalWordForToken(*first) : raw_words[0];
   const auto raw_second =
       raw_words.size() > 1 ? std::string_view(raw_words[1]) : std::string_view();
   const bool filespace_lifecycle_target_surface =

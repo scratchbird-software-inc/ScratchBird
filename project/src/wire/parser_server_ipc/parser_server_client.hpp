@@ -10,13 +10,22 @@
 
 #include "parser_client_types.hpp"
 #include "parser_ipc_common.hpp"
+#include "sbps_bulk_import_stream_codec.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::parser::ipc {
+
+// Appends one non-authoritative diagnostics record through the transport
+// observability boundary. Parser workers may report trace material here, but
+// never open or own filesystem paths themselves.
+void AppendNonAuthoritativeDiagnosticTraceLine(
+    const char* environment_variable,
+    std::string_view line);
 
 struct SbpsClientChannelState;
 
@@ -145,7 +154,34 @@ struct ServerParameterBindingResult {
 
 struct ServerVariableBindingResult {
   bool accepted{false};
+  // Coordination may durably allocate an engine-owned descriptor before the
+  // response is lost or found malformed.  Callers must then retry the exact
+  // canonical request instead of minting a replacement receipt/occurrence.
+  bool outcome_unknown{false};
   std::vector<std::uint8_t> canonical_payload;
+  MessageVectorSet messages;
+};
+
+struct ServerBulkImportBindResult {
+  bool accepted{false};
+  bool outcome_unknown{false};
+  scratchbird::wire::sbps_bulk_import::BindAck binding;
+  MessageVectorSet messages;
+};
+struct ServerBulkImportChunkResult {
+  bool accepted{false};
+  // The request may have reached durable append even though no exact ACK was
+  // received.  Callers may only retry the byte-identical chunk identity.
+  bool outcome_unknown{false};
+  scratchbird::wire::sbps_bulk_import::ChunkAck acknowledgement;
+  MessageVectorSet messages;
+};
+struct ServerBulkImportSealResult {
+  bool accepted{false};
+  // The request may have durably sealed the stream.  Recovery must replay the
+  // same seal tuple; it must never mint a replacement stream or descriptor.
+  bool outcome_unknown{false};
+  scratchbird::wire::sbps_bulk_import::SealAck acknowledgement;
   MessageVectorSet messages;
 };
 
@@ -388,6 +424,15 @@ struct PublicNameResolutionResult {
   MessageVectorSet messages;
 };
 
+// One exact V3 relation-projection demand. Batch callers retain the request
+// order and every member is still carried by its own correlated SBPS V3
+// request; this structure does not introduce a name-only authority cache.
+struct PublicRelationResolutionRequest {
+  std::string presented_name;
+  bool quoted{false};
+  std::string object_class{"relation"};
+};
+
 // Production V3 relation-projection codecs shared by the socket-backed and
 // embedded authenticated parser routes.  Both routes must emit and consume
 // byte-identical transaction-bound requests/results.
@@ -484,6 +529,12 @@ class SbpsClient {
       std::string_view object_class,
       const ParserClientConfig& config,
       const ParserTransactionSelector& transaction) const;
+  std::vector<PublicNameResolutionResult>
+  ResolveRelationDescriptorsPublicOnTransaction(
+      const ParserSessionContext& session,
+      const std::vector<PublicRelationResolutionRequest>& requests,
+      const ParserClientConfig& config,
+      const ParserTransactionSelector& transaction) const;
   PublicNameResolutionResult RenderUuidPublic(const ParserSessionContext& session,
                                               std::string_view object_uuid) const;
   ServerStatementContextResult AcquireStatementContext(
@@ -571,6 +622,9 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateTableTruncate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateTableAnalyze(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateBulkImportStream(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerBulkImportBindResult BindBulkImportStream(const ParserSessionContext&, const scratchbird::wire::sbps_bulk_import::Bind&) const;
+  ServerBulkImportChunkResult AppendBulkImportStream(const ParserSessionContext&, const scratchbird::wire::sbps_bulk_import::Chunk&) const;
+  ServerBulkImportSealResult SealBulkImportStream(const ParserSessionContext&, const scratchbird::wire::sbps_bulk_import::Seal&) const;
   ServerVariableBindingResult CoordinateBulkExportStream(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateStatementBatch(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateAtomicCas(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;

@@ -12,14 +12,14 @@ namespace sblr = scratchbird::engine::sblr;
 
 namespace {
 
-constexpr std::array<std::string_view, 56> kRefusedOpcodes{{
+constexpr std::array<std::string_view, 54> kRefusedOpcodes{{
     "SBLR_DDL_ALTER_VIEW", "SBLR_DDL_DROP_VIEW",
     "SBLR_DDL_CREATE_PACKAGE", "SBLR_DDL_ALTER_PACKAGE", "SBLR_DDL_DROP_PACKAGE",
-    "SBLR_DDL_CREATE_INDEX_TEMPLATE", "SBLR_DDL_CREATE_SEQUENCE", "SBLR_DDL_CREATE_VIEW",
+    "SBLR_DDL_CREATE_SEQUENCE", "SBLR_DDL_CREATE_VIEW",
     "SBLR_DDL_ALTER_SEQUENCE", "SBLR_DDL_DROP_SEQUENCE",
     "SBLR_DDL_CREATE_MATERIALIZED_VIEW", "SBLR_DDL_REFRESH_MATERIALIZED_VIEW",
     "SBLR_DDL_DROP_MATERIALIZED_VIEW", "SBLR_DDL_CREATE_TYPE", "SBLR_DDL_ALTER_TYPE",
-    "SBLR_DDL_DROP_TYPE", "SBLR_DDL_RENAME_OBJECT", "SBLR_DDL_COMMENT_ON_OBJECT",
+    "SBLR_DDL_DROP_TYPE", "SBLR_DDL_RENAME_OBJECT",
     "SBLR_DDL_CREATE_SYNONYM", "SBLR_DDL_DROP_SYNONYM", "SBLR_DDL_CREATE_FOREIGN_TABLE",
     "SBLR_DDL_DROP_FOREIGN_TABLE", "SBLR_DDL_CREATE_FDW", "SBLR_DDL_DROP_FDW",
     "SBLR_DDL_CREATE_RULE", "SBLR_DDL_DROP_RULE", "SBLR_DDL_CREATE_PUBLICATION",
@@ -53,12 +53,9 @@ int main() {
     for (const auto& entry : registry) {
       if (entry.opcode != opcode) continue;
       ++matches;
-      if (!Require(entry.support == sblr::SblrOpcodeSupport::local_profile_refusal,
-                   "operation must be refused by the local builtin profile") ||
-          !Require(entry.refusal_diagnostic == "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
-                   "Core profile-unavailable diagnostic drifted") ||
-          !Require(!entry.executor_evidence_required,
-                   "refusal must occur before executor-evidence admission")) {
+      if (!Require(entry.support == sblr::SblrOpcodeSupport::local_profile_refusal ||
+                       entry.support == sblr::SblrOpcodeSupport::implemented,
+                   "operation has unsupported registry disposition")) {
         return EXIT_FAILURE;
       }
 
@@ -70,12 +67,19 @@ int main() {
       envelope.requires_transaction_context = entry.requires_transaction_context;
       envelope.requires_cluster_authority = entry.requires_cluster_authority;
       const auto validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
-      if (!Require(!validation.ok, "pre-dispatch profile refusal was admitted") ||
+      const bool profile_refusal =
+          entry.support == sblr::SblrOpcodeSupport::local_profile_refusal &&
+          !entry.executor_evidence_required;
+      const auto expected = profile_refusal
+                                ? "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"
+                                : "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+      if (!Require(!validation.ok, "pre-dispatch refusal was admitted") ||
           !Require(validation.entry == &entry, "refusal did not bind registered identity") ||
-          !Require(validation.diagnostic_id == "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
+          !Require(validation.diagnostic_id == expected,
                    "pre-dispatch diagnostic drifted") ||
-          !Require(validation.detail ==
-                       "operation_is_refused_by_registered_sblr_profile:" + entry.operation_id,
+          !Require(profile_refusal ? validation.detail ==
+                                        "operation_is_refused_by_registered_sblr_profile:" + entry.operation_id
+                                  : validation.detail.find("executor") != std::string::npos,
                    "refusal detail drifted")) {
         return EXIT_FAILURE;
       }

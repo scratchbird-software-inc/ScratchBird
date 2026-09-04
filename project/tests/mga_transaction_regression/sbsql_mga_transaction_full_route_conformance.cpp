@@ -15,9 +15,11 @@
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 
 #include <arpa/inet.h>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fcntl.h>
@@ -94,6 +96,246 @@ void RequireContains(const std::vector<std::string>& lines,
   std::cerr << "missing response fragment: " << needle << '\n';
   for (const auto& line : lines) std::cerr << line << '\n';
   Fail(message);
+}
+
+int HexNibble(char ch) {
+  if (ch >= '0' && ch <= '9') return ch - '0';
+  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+  if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+  return -1;
+}
+
+std::uint16_t ReadLe16(const std::vector<std::uint8_t>& bytes,
+                       std::size_t offset) {
+  return static_cast<std::uint16_t>(bytes[offset]) |
+         (static_cast<std::uint16_t>(bytes[offset + 1]) << 8);
+}
+
+std::uint32_t ReadLe32(const std::vector<std::uint8_t>& bytes,
+                       std::size_t offset) {
+  std::uint32_t value = 0;
+  for (std::size_t i = 0; i < 4; ++i) {
+    value |= static_cast<std::uint32_t>(bytes[offset + i]) << (i * 8);
+  }
+  return value;
+}
+
+std::uint64_t ReadLe64(const std::vector<std::uint8_t>& bytes,
+                       std::size_t offset) {
+  std::uint64_t value = 0;
+  for (std::size_t i = 0; i < 8; ++i) {
+    value |= static_cast<std::uint64_t>(bytes[offset + i]) << (i * 8);
+  }
+  return value;
+}
+
+bool AnyNonZero(const std::vector<std::uint8_t>& bytes,
+                std::size_t offset,
+                std::size_t count) {
+  for (std::size_t i = 0; i < count; ++i) {
+    if (bytes[offset + i] != 0) return true;
+  }
+  return false;
+}
+
+struct TransactionIdentity {
+  std::array<std::uint8_t, 16> uuid{};
+  std::uint64_t local_id = 0;
+};
+
+struct SavepointIdentity {
+  std::array<std::uint8_t, 16> uuid{};
+  std::uint64_t generation = 0;
+  std::uint64_t ordinal = 0;
+  TransactionIdentity transaction;
+};
+
+std::vector<std::uint8_t> RequireCanonicalBinaryResult(
+    const std::vector<std::string>& lines,
+    std::string_view operation_id,
+    std::size_t expected_size,
+    std::string_view context) {
+  constexpr std::string_view kPayloadPrefix =
+      "canonical_binary_payload_hex=";
+  const std::string result_prefix =
+      "RESULT " + std::string(operation_id) + " 0 ";
+  const std::string* result_line = nullptr;
+  for (const auto& line : lines) {
+    if (line.starts_with(result_prefix)) {
+      result_line = &line;
+      break;
+    }
+  }
+  if (result_line == nullptr) {
+    std::cerr << context << ": missing canonical binary result\n";
+    for (const auto& line : lines) std::cerr << line << '\n';
+    Fail("transaction control did not execute through its canonical operation");
+  }
+  const auto payload_pos = result_line->find(kPayloadPrefix);
+  Require(payload_pos != std::string::npos,
+          "transaction control did not publish its canonical binary result");
+  const std::string_view hex(*result_line);
+  const auto encoded = hex.substr(payload_pos + kPayloadPrefix.size());
+  Require(encoded.size() == expected_size * 2,
+          "transaction control result did not have its exact carrier extent");
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(expected_size);
+  for (std::size_t i = 0; i < encoded.size(); i += 2) {
+    const int high = HexNibble(encoded[i]);
+    const int low = HexNibble(encoded[i + 1]);
+    Require(high >= 0 && low >= 0,
+            "transaction control result was not canonical hexadecimal");
+    bytes.push_back(static_cast<std::uint8_t>((high << 4) | low));
+  }
+  return bytes;
+}
+
+TransactionIdentity RequireCanonicalBeginResult(
+    const std::vector<std::string>& lines,
+    std::string_view context) {
+  const auto bytes = RequireCanonicalBinaryResult(
+      lines, "engine.op.txn_begin", 152, context);
+  Require(bytes[0] == 'T' && bytes[1] == 'X' && bytes[2] == 'B' &&
+              bytes[3] == 'H' && ReadLe16(bytes, 4) == 1 &&
+              ReadLe16(bytes, 6) == 152 && ReadLe32(bytes, 8) == 152 &&
+              ReadLe32(bytes, 12) == 0,
+          "BEGIN result was not an exact TXBH v1 carrier");
+  Require(AnyNonZero(bytes, 16, 16) && ReadLe64(bytes, 32) != 0 &&
+              AnyNonZero(bytes, 40, 16) && AnyNonZero(bytes, 56, 16) &&
+              ReadLe64(bytes, 72) != 0 && AnyNonZero(bytes, 80, 16) &&
+              ReadLe64(bytes, 96) != 0,
+          "BEGIN TXBH omitted transaction, snapshot, or policy authority");
+  Require((bytes[104] == 1 || bytes[104] == 2) && bytes[105] == 1 &&
+              (bytes[106] == 1 || bytes[106] == 2),
+          "BEGIN TXBH lifecycle or authority scope was invalid");
+  Require(!AnyNonZero(bytes, 107, 5) && AnyNonZero(bytes, 112, 32) &&
+              ReadLe64(bytes, 144) != 0,
+          "BEGIN TXBH reserved bytes, evidence, or executor generation was invalid");
+  TransactionIdentity identity;
+  for (std::size_t i = 0; i < identity.uuid.size(); ++i) {
+    identity.uuid[i] = bytes[16 + i];
+  }
+  identity.local_id = ReadLe64(bytes, 32);
+  return identity;
+}
+
+TransactionIdentity RequireCanonicalTransactionFinalityResult(
+    const std::vector<std::string>& lines,
+    bool committed,
+    std::string_view context,
+    const TransactionIdentity* expected = nullptr) {
+  const std::string_view operation_id =
+      committed ? "engine.op.txn_commit" : "engine.op.txn_rollback";
+  const auto bytes =
+      RequireCanonicalBinaryResult(lines, operation_id, 120, context);
+  Require(bytes[0] == 'T' && bytes[1] == 'X' &&
+              bytes[2] == (committed ? 'C' : 'R') && bytes[3] == 'R' &&
+              ReadLe16(bytes, 4) == 1 && ReadLe16(bytes, 6) == 120 &&
+              ReadLe32(bytes, 8) == 120 && ReadLe32(bytes, 12) == 0,
+          "transaction finality result was not an exact TXCR/TXRR v1 carrier");
+  Require(AnyNonZero(bytes, 16, 16) && ReadLe64(bytes, 32) != 0 &&
+              ReadLe64(bytes, 40) != 0 && AnyNonZero(bytes, 48, 16) &&
+              ReadLe64(bytes, 64) != 0,
+          "transaction finality result omitted identity, sequence, or policy authority");
+  Require(bytes[72] == (committed ? 2 : 3) &&
+              (bytes[73] == 1 || bytes[73] == 2) &&
+              !AnyNonZero(bytes, 74, 6) && AnyNonZero(bytes, 80, 32) &&
+              ReadLe64(bytes, 112) != 0,
+          "transaction finality lifecycle, evidence, or availability was invalid");
+  TransactionIdentity identity;
+  for (std::size_t i = 0; i < identity.uuid.size(); ++i) {
+    identity.uuid[i] = bytes[16 + i];
+  }
+  identity.local_id = ReadLe64(bytes, 32);
+  if (expected != nullptr) {
+    Require(identity.uuid == expected->uuid &&
+                identity.local_id == expected->local_id,
+            "transaction finality result finalized a different transaction identity");
+  }
+  return identity;
+}
+
+SavepointIdentity RequireCanonicalSavepointResult(
+    const std::vector<std::string>& lines,
+    std::string_view context,
+    const TransactionIdentity& expected_transaction) {
+  const auto bytes = RequireCanonicalBinaryResult(
+      lines, "engine.op.txn_savepoint", 144, context);
+  Require(bytes[0] == 'S' && bytes[1] == 'P' && bytes[2] == 'H' &&
+              bytes[3] == 'D' && ReadLe16(bytes, 4) == 1 &&
+              ReadLe16(bytes, 6) == 144 && ReadLe32(bytes, 8) == 144 &&
+              ReadLe32(bytes, 12) == 0,
+          "SAVEPOINT result was not an exact SPHD v1 carrier");
+  Require(AnyNonZero(bytes, 16, 16) && ReadLe64(bytes, 32) != 0 &&
+              AnyNonZero(bytes, 40, 16) && ReadLe64(bytes, 56) != 0 &&
+              ReadLe64(bytes, 64) != 0 && ReadLe64(bytes, 72) != 0 &&
+              bytes[80] == 1,
+          "SAVEPOINT result omitted its bound transaction or stack identity");
+  Require(!AnyNonZero(bytes, 81, 7) && AnyNonZero(bytes, 88, 32) &&
+              ReadLe64(bytes, 120) != 0 && !AnyNonZero(bytes, 128, 16),
+          "SAVEPOINT result reserved bytes, evidence, or availability was invalid");
+  SavepointIdentity identity;
+  for (std::size_t i = 0; i < identity.uuid.size(); ++i) {
+    identity.uuid[i] = bytes[16 + i];
+    identity.transaction.uuid[i] = bytes[40 + i];
+  }
+  identity.generation = ReadLe64(bytes, 32);
+  identity.transaction.local_id = ReadLe64(bytes, 56);
+  identity.ordinal = ReadLe64(bytes, 64);
+  Require(identity.transaction.uuid == expected_transaction.uuid &&
+              identity.transaction.local_id == expected_transaction.local_id,
+          "SAVEPOINT result belonged to a different transaction identity");
+  return identity;
+}
+
+void RequireCanonicalSavepointRollbackResult(
+    const std::vector<std::string>& lines,
+    const SavepointIdentity& expected) {
+  const auto bytes = RequireCanonicalBinaryResult(
+      lines, "engine.op.txn_rollback_to_savepoint", 168,
+      "ROLLBACK TO SAVEPOINT");
+  Require(bytes[0] == 'S' && bytes[1] == 'P' && bytes[2] == 'R' &&
+              bytes[3] == 'B' && ReadLe16(bytes, 4) == 1 &&
+              ReadLe16(bytes, 6) == 168 && ReadLe32(bytes, 8) == 168 &&
+              ReadLe32(bytes, 12) == 0,
+          "ROLLBACK TO SAVEPOINT result was not an exact SPRB v1 carrier");
+  for (std::size_t i = 0; i < expected.uuid.size(); ++i) {
+    Require(bytes[16 + i] == expected.transaction.uuid[i] &&
+                bytes[40 + i] == expected.uuid[i],
+            "ROLLBACK TO SAVEPOINT result changed transaction or savepoint identity");
+  }
+  Require(ReadLe64(bytes, 32) == expected.transaction.local_id &&
+              ReadLe64(bytes, 56) == expected.generation &&
+              ReadLe64(bytes, 64) == expected.ordinal &&
+              ReadLe64(bytes, 72) != 0 && ReadLe64(bytes, 80) != 0 &&
+              bytes[88] == 1 && !AnyNonZero(bytes, 89, 7) &&
+              AnyNonZero(bytes, 96, 32) && AnyNonZero(bytes, 128, 32) &&
+              ReadLe64(bytes, 160) != 0,
+          "ROLLBACK TO SAVEPOINT result omitted stack, rollback, or evidence authority");
+}
+
+void RequireCanonicalSavepointReleaseResult(
+    const std::vector<std::string>& lines,
+    const SavepointIdentity& expected) {
+  const auto bytes = RequireCanonicalBinaryResult(
+      lines, "engine.op.txn_release_savepoint", 120,
+      "RELEASE SAVEPOINT");
+  Require(bytes[0] == 'S' && bytes[1] == 'P' && bytes[2] == 'R' &&
+              bytes[3] == 'R' && ReadLe16(bytes, 4) == 1 &&
+              ReadLe16(bytes, 6) == 120 && ReadLe32(bytes, 8) == 120 &&
+              ReadLe32(bytes, 12) == 0,
+          "RELEASE SAVEPOINT result was not an exact SPRR v1 carrier");
+  for (std::size_t i = 0; i < expected.uuid.size(); ++i) {
+    Require(bytes[16 + i] == expected.transaction.uuid[i] &&
+                bytes[40 + i] == expected.uuid[i],
+            "RELEASE SAVEPOINT result changed transaction or savepoint identity");
+  }
+  Require(ReadLe64(bytes, 32) == expected.transaction.local_id &&
+              ReadLe64(bytes, 56) == expected.generation &&
+              ReadLe64(bytes, 64) == expected.ordinal &&
+              ReadLe64(bytes, 72) != 0 && AnyNonZero(bytes, 80, 32) &&
+              ReadLe64(bytes, 112) != 0,
+          "RELEASE SAVEPOINT result omitted stack, evidence, or availability authority");
 }
 
 void RequireTransactionControlRegistryRow(std::string_view surface_id,
@@ -265,23 +507,33 @@ void CreateDatabase(const std::filesystem::path& path) {
   create.creation_unix_epoch_millis = 1779000001002;
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
+  create.bootstrap_principal_name = "fixture_sysarch";
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=0358b60b6875c81e17d3e0ab67f8b785f49d4146547c79da401f21dc641c2c16";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ":" << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "database creation for SBsql MGA route test failed");
-  std::ofstream auth_store(path.string() + ".sb.local_password_auth", std::ios::trunc);
-  auth_store << "alice\tlocal_password\t" << kAliceVerifier << '\n';
-  Require(static_cast<bool>(auth_store), "database-local password verifier store creation failed");
+  const auto bootstrap =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          path, "sbsql_mga_transaction_full_route_conformance");
+  const auto bootstrap_transaction_uuid = bootstrap.transaction_uuid.canonical;
+  const auto bootstrap_local_transaction_id = bootstrap.local_transaction_id;
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       path,
       uuid::UuidToString(database_uuid.value.value),
       kAlicePrincipalUuid,
       "alice",
       kAliceVerifier,
-      11,
-      "sbsql_mga_transaction_full_route_conformance");
+      bootstrap_local_transaction_id,
+      "sbsql_mga_transaction_full_route_conformance",
+      bootstrap_transaction_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       path,
       uuid::UuidToString(database_uuid.value.value),
@@ -289,8 +541,11 @@ void CreateDatabase(const std::filesystem::path& path) {
       uuid::UuidToString(database_uuid.value.value),
       "database",
       "CONNECT",
-      12,
-      "sbsql_mga_transaction_full_route_conformance:connect");
+      bootstrap_local_transaction_id,
+      "sbsql_mga_transaction_full_route_conformance:connect",
+      bootstrap_transaction_uuid);
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
+      bootstrap);
 }
 
 pid_t LaunchServer(const std::filesystem::path& server,
@@ -386,7 +641,11 @@ std::vector<std::string> ReadCommandResponse(int fd,
   std::vector<std::string> lines;
   std::string line;
   for (int i = 0; i < max_lines; ++i) {
-    Require(ReadLine(fd, &line), "failed to read SBsql command response");
+    if (!ReadLine(fd, &line)) {
+      std::cerr << "failed to read response for command: " << command << '\n';
+      for (const auto& item : lines) std::cerr << item << '\n';
+      Fail("failed to read SBsql command response");
+    }
     lines.push_back(line);
     if (line.starts_with(stop_prefix)) return lines;
     if (line.starts_with("MESSAGE ERROR")) return lines;
@@ -482,21 +741,18 @@ int main(int argc, char** argv) {
   Require(ReadLine(fd, &line) && line == "ScratchBird SBSQL parser ready",
           "unexpected SBsql parser greeting");
   const std::string auth_command =
-      "AUTH alice scheme=local_password_v1;principal=alice;principal_uuid=" +
-      std::string(kAlicePrincipalUuid) +
-      ";storage_authority=mga_security_principal_lifecycle;"
-      "authorization_tags=right:CONNECT;verifier=" +
-      std::string(kAliceVerifier);
+      "AUTH alice " + std::string(kAliceVerifier);
   const auto auth = ReadCommandResponse(fd, auth_command, "OK AUTHENTICATED", 6);
-  Require(Contains(auth, "OK AUTHENTICATED"), "SBsql authentication failed");
+  RequireContains(auth, "OK AUTHENTICATED", "SBsql authentication failed");
 
   const auto set_transaction = ReadCommandResponse(fd,
                                                    "EXECUTE SET TRANSACTION READ WRITE",
                                                    "evidence=parser_finality:false",
                                                    24);
   RequireSetTransactionRegistryRows();
-  Require(Contains(set_transaction, "PREPARED sblr.transaction.control.v3"),
-          "SET TRANSACTION did not prepare as SBsql transaction SBLR");
+  RequireContains(set_transaction,
+                  "PREPARED sblr.transaction.control.v3",
+                  "SET TRANSACTION did not prepare as SBsql transaction SBLR");
   RequireContains(set_transaction,
                   "\"surface_key\":\"SBSQL-2072BB4C308D\"",
                   "SET TRANSACTION did not bind the set_transaction_stmt surface row");
@@ -531,90 +787,72 @@ int main(int argc, char** argv) {
   Require(!Contains(set_transaction, "WAL") && !Contains(set_transaction, "wal_required=true"),
           "SET TRANSACTION route unexpectedly exposed WAL authority evidence");
 
-  const auto begin_commit = ReadCommandResponse(fd, "EXECUTE BEGIN TRANSACTION", "transaction_timestamp=", 40);
+  const auto begin_commit = ReadCommandResponse(fd, "EXECUTE BEGIN TRANSACTION", "RESULT engine.op.txn_begin", 40);
   Require(Contains(begin_commit, "PREPARED sblr.transaction.control.v3"),
           "BEGIN did not prepare as SBsql transaction SBLR");
   RequireContains(begin_commit,
                   "\"surface_key\":\"SBSQL-41AABA342C25\"",
                   "BEGIN TRANSACTION did not bind the begin_transaction surface row");
   RequireContains(begin_commit,
-                  "\"sblr_operation\":\"SBLR_TRANSACTION_BEGIN\"",
-                  "BEGIN TRANSACTION did not lower to exact SBLR_TRANSACTION_BEGIN");
-  Require(Contains(begin_commit, "RESULT transaction.begin"),
-          "BEGIN did not execute through server transaction operation");
-  Require(Contains(begin_commit, "local_transaction_id="),
-          "BEGIN did not return MGA local transaction evidence");
-  Require(Contains(begin_commit, "evidence=transaction_state:active"),
-          "BEGIN did not return active MGA state evidence");
+                  "\"sblr_operation\":\"SBLR_TXN_BEGIN\"",
+                  "BEGIN TRANSACTION did not lower to exact SBLR_TXN_BEGIN");
+  const auto begin_commit_identity =
+      RequireCanonicalBeginResult(begin_commit, "BEGIN TRANSACTION");
 
-  const auto commit = ReadCommandResponse(fd, "EXECUTE COMMIT", "evidence=always_active_transaction_replacement:", 64);
+  const auto commit = ReadCommandResponse(fd, "EXECUTE COMMIT", "RESULT engine.op.txn_commit", 64);
   RequireContains(commit, "\"surface_key\":\"SBSQL-37B92A5842F6\"",
                   "COMMIT did not bind the commit surface row");
-  RequireContains(commit, "\"sblr_operation\":\"SBLR_TRANSACTION_COMMIT\"",
-                  "COMMIT did not lower to exact SBLR_TRANSACTION_COMMIT");
-  Require(Contains(commit, "RESULT transaction.commit"),
-          "COMMIT did not execute through engine transaction operation");
-  Require(Contains(commit, "evidence=transaction_state:committed"),
-          "COMMIT did not return committed MGA state evidence");
+  RequireContains(commit, "\"sblr_operation\":\"SBLR_TXN_COMMIT\"",
+                  "COMMIT did not lower to exact SBLR_TXN_COMMIT");
+  RequireCanonicalTransactionFinalityResult(
+      commit, true, "COMMIT", &begin_commit_identity);
 
-  const auto replacement_commit = ReadCommandResponse(fd, "EXECUTE COMMIT", "evidence=always_active_transaction_replacement:", 64);
-  Require(Contains(replacement_commit, "RESULT transaction.commit"),
-          "COMMIT after replacement did not execute through engine transaction operation");
-  Require(Contains(replacement_commit, "evidence=transaction_state:committed"),
-          "COMMIT after replacement did not return committed MGA state evidence");
+  const auto replacement_commit = ReadCommandResponse(fd, "EXECUTE COMMIT", "RESULT engine.op.txn_commit", 64);
+  RequireCanonicalTransactionFinalityResult(
+      replacement_commit, true, "COMMIT after replacement");
 
-  const auto begin_stmt = ReadCommandResponse(fd, "EXECUTE BEGIN", "transaction_timestamp=", 40);
+  const auto begin_stmt = ReadCommandResponse(fd, "EXECUTE BEGIN", "RESULT engine.op.txn_begin", 40);
   RequireContains(begin_stmt, "\"surface_key\":\"SBSQL-1B59D6E97591\"",
                   "BEGIN did not bind the begin_stmt grammar row");
-  RequireContains(begin_stmt, "\"sblr_operation\":\"SBLR_TRANSACTION_BEGIN\"",
-                  "BEGIN statement did not lower to exact SBLR_TRANSACTION_BEGIN");
-  Require(Contains(begin_stmt, "RESULT transaction.begin"),
-          "BEGIN statement did not execute through engine transaction operation");
-  Require(Contains(begin_stmt, "local_transaction_id="),
-          "BEGIN statement did not return MGA local transaction evidence");
-  Require(Contains(begin_stmt, "evidence=transaction_state:active"),
-          "BEGIN statement did not return active MGA state evidence");
+  RequireContains(begin_stmt, "\"sblr_operation\":\"SBLR_TXN_BEGIN\"",
+                  "BEGIN statement did not lower to exact SBLR_TXN_BEGIN");
+  const auto begin_stmt_identity =
+      RequireCanonicalBeginResult(begin_stmt, "BEGIN statement");
 
-  const auto commit_stmt = ReadCommandResponse(fd, "EXECUTE COMMIT WORK", "evidence=always_active_transaction_replacement:", 64);
+  const auto commit_stmt = ReadCommandResponse(fd, "EXECUTE COMMIT WORK", "RESULT engine.op.txn_commit", 64);
   RequireContains(commit_stmt, "\"surface_key\":\"SBSQL-7A09CE443D7A\"",
                   "COMMIT WORK did not bind the commit_stmt grammar row");
-  RequireContains(commit_stmt, "\"sblr_operation\":\"SBLR_TRANSACTION_COMMIT\"",
-                  "COMMIT WORK did not lower to exact SBLR_TRANSACTION_COMMIT");
-  Require(Contains(commit_stmt, "RESULT transaction.commit"),
-          "COMMIT WORK did not execute through engine transaction operation");
-  Require(Contains(commit_stmt, "evidence=transaction_state:committed"),
-          "COMMIT WORK did not return committed MGA state evidence");
+  RequireContains(commit_stmt, "\"sblr_operation\":\"SBLR_TXN_COMMIT\"",
+                  "COMMIT WORK did not lower to exact SBLR_TXN_COMMIT");
+  RequireCanonicalTransactionFinalityResult(
+      commit_stmt, true, "COMMIT WORK", &begin_stmt_identity);
 
-  const auto begin_rollback = ReadCommandResponse(fd, "EXECUTE BEGIN", "transaction_timestamp=", 40);
-  Require(Contains(begin_rollback, "RESULT transaction.begin"),
-          "second BEGIN did not execute through engine transaction operation");
-  const auto rollback = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 64);
+  const auto begin_rollback = ReadCommandResponse(fd, "EXECUTE BEGIN", "RESULT engine.op.txn_begin", 40);
+  const auto begin_rollback_identity =
+      RequireCanonicalBeginResult(begin_rollback, "second BEGIN");
+  const auto rollback = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "RESULT engine.op.txn_rollback", 64);
   RequireContains(rollback, "\"surface_key\":\"SBSQL-EACF8DB1CB02\"",
                   "ROLLBACK did not bind the rollback surface row");
-  RequireContains(rollback, "\"sblr_operation\":\"SBLR_TRANSACTION_ROLLBACK\"",
-                  "ROLLBACK did not lower to exact SBLR_TRANSACTION_ROLLBACK");
-  Require(Contains(rollback, "RESULT transaction.rollback"),
-          "ROLLBACK did not execute through engine transaction operation");
-  Require(Contains(rollback, "evidence=transaction_state:rolled_back"),
-          "ROLLBACK did not return rolled-back MGA state evidence");
+  RequireContains(rollback, "\"sblr_operation\":\"SBLR_TXN_ROLLBACK\"",
+                  "ROLLBACK did not lower to exact SBLR_TXN_ROLLBACK");
+  RequireCanonicalTransactionFinalityResult(
+      rollback, false, "ROLLBACK", &begin_rollback_identity);
 
-  const auto begin_rollback_stmt = ReadCommandResponse(fd, "EXECUTE BEGIN", "transaction_timestamp=", 40);
-  Require(Contains(begin_rollback_stmt, "RESULT transaction.begin"),
-          "third BEGIN did not execute through engine transaction operation");
-  const auto rollback_stmt = ReadCommandResponse(fd, "EXECUTE ROLLBACK WORK", "evidence=always_active_transaction_replacement:", 64);
+  const auto begin_rollback_stmt = ReadCommandResponse(fd, "EXECUTE BEGIN", "RESULT engine.op.txn_begin", 40);
+  const auto begin_rollback_stmt_identity =
+      RequireCanonicalBeginResult(begin_rollback_stmt, "third BEGIN");
+  const auto rollback_stmt = ReadCommandResponse(fd, "EXECUTE ROLLBACK WORK", "RESULT engine.op.txn_rollback", 64);
   RequireContains(rollback_stmt, "\"surface_key\":\"SBSQL-129ADA0B6225\"",
                   "ROLLBACK WORK did not bind the rollback_stmt grammar row");
-  RequireContains(rollback_stmt, "\"sblr_operation\":\"SBLR_TRANSACTION_ROLLBACK\"",
-                  "ROLLBACK WORK did not lower to exact SBLR_TRANSACTION_ROLLBACK");
-  Require(Contains(rollback_stmt, "RESULT transaction.rollback"),
-          "ROLLBACK WORK did not execute through engine transaction operation");
-  Require(Contains(rollback_stmt, "evidence=transaction_state:rolled_back"),
-          "ROLLBACK WORK did not return rolled-back MGA state evidence");
+  RequireContains(rollback_stmt, "\"sblr_operation\":\"SBLR_TXN_ROLLBACK\"",
+                  "ROLLBACK WORK did not lower to exact SBLR_TXN_ROLLBACK");
+  RequireCanonicalTransactionFinalityResult(
+      rollback_stmt, false, "ROLLBACK WORK", &begin_rollback_stmt_identity);
 
-  const auto begin_savepoint = ReadCommandResponse(fd, "EXECUTE BEGIN", "transaction_timestamp=", 40);
-  Require(Contains(begin_savepoint, "RESULT transaction.begin"),
-          "savepoint BEGIN did not execute through engine transaction operation");
-  const auto savepoint = ReadCommandResponse(fd, "EXECUTE SAVEPOINT route_sp", "evidence=savepoint_name_bound", 24);
+  const auto begin_savepoint = ReadCommandResponse(fd, "EXECUTE BEGIN", "RESULT engine.op.txn_begin", 40);
+  const auto begin_savepoint_identity =
+      RequireCanonicalBeginResult(begin_savepoint, "savepoint BEGIN");
+  const auto savepoint = ReadCommandResponse(fd, "EXECUTE SAVEPOINT route_sp", "RESULT engine.op.txn_savepoint", 24);
   RequireContains(savepoint, "\"surface_key\":\"SBSQL-9EC31122A564\"",
                   "SAVEPOINT did not bind the savepoint surface row");
   RequireContains(savepoint, "\"statement_surface_name\":\"savepoint\"",
@@ -623,79 +861,63 @@ int main(int argc, char** argv) {
   RequireSavepointNameRegistryRow();
   Require(Contains(savepoint, "PREPARED sblr.transaction.control.v3"),
           "SAVEPOINT did not prepare through server transaction-control admission");
-  RequireContains(savepoint, "\"savepoint_name\":\"route_sp\"",
-                  "SAVEPOINT did not lower the bound savepoint name into the SBLR envelope");
-  RequireContains(savepoint, "\"sblr_operation\":\"SBLR_TRANSACTION_CREATE_SAVEPOINT\"",
-                  "SAVEPOINT did not lower to exact SBLR_TRANSACTION_CREATE_SAVEPOINT");
-  Require(Contains(savepoint, "RESULT transaction.create_savepoint"),
-          "SAVEPOINT did not execute through engine savepoint API");
-  Require(Contains(savepoint, "evidence=mga_savepoint:savepoint_create"),
-          "SAVEPOINT did not return MGA savepoint create evidence");
-  Require(Contains(savepoint, "evidence=savepoint_name_bound"),
-          "SAVEPOINT did not return bound savepoint-name evidence");
+  RequireContains(savepoint, "\"sblr_operation\":\"SBLR_TXN_SAVEPOINT\"",
+                  "SAVEPOINT did not lower to exact SBLR_TXN_SAVEPOINT");
+  const auto savepoint_identity = RequireCanonicalSavepointResult(
+      savepoint, "SAVEPOINT", begin_savepoint_identity);
   Require(!Contains(savepoint, "WAL") && !Contains(savepoint, "wal_required=true"),
           "SAVEPOINT route unexpectedly exposed WAL authority evidence");
 
   const auto rollback_to = ReadCommandResponse(fd,
                                                "EXECUTE ROLLBACK TO SAVEPOINT route_sp",
-                                               "evidence=savepoint_name_bound",
+                                               "RESULT engine.op.txn_rollback_to_savepoint",
                                                24);
   RequireContains(rollback_to, "\"surface_key\":\"SBSQL-3BF8303CFB36\"",
                   "ROLLBACK TO SAVEPOINT did not bind the rollback_to_savepoint_stmt grammar row");
-  RequireContains(rollback_to, "\"sblr_operation\":\"SBLR_TRANSACTION_ROLLBACK_TO_SAVEPOINT\"",
-                  "ROLLBACK TO SAVEPOINT did not lower to exact SBLR_TRANSACTION_ROLLBACK_TO_SAVEPOINT");
-  Require(Contains(rollback_to, "RESULT transaction.rollback_to_savepoint"),
-          "ROLLBACK TO SAVEPOINT did not execute through engine savepoint API");
-  Require(Contains(rollback_to, "evidence=mga_savepoint:savepoint_rollback"),
-          "ROLLBACK TO SAVEPOINT did not return MGA savepoint rollback evidence");
+  RequireContains(rollback_to, "\"sblr_operation\":\"SBLR_TXN_ROLLBACK_TO_SAVEPOINT\"",
+                  "ROLLBACK TO SAVEPOINT did not lower to exact SBLR_TXN_ROLLBACK_TO_SAVEPOINT");
+  RequireCanonicalSavepointRollbackResult(rollback_to, savepoint_identity);
 
-  const auto release = ReadCommandResponse(fd, "EXECUTE RELEASE SAVEPOINT route_sp", "evidence=savepoint_name_bound", 24);
+  const auto release = ReadCommandResponse(fd, "EXECUTE RELEASE SAVEPOINT route_sp", "RESULT engine.op.txn_release_savepoint", 24);
   RequireContains(release, "\"surface_key\":\"SBSQL-9E33ED8C3B3D\"",
                   "RELEASE SAVEPOINT did not bind the release_savepoint_stmt grammar row");
-  RequireContains(release, "\"sblr_operation\":\"SBLR_TRANSACTION_RELEASE_SAVEPOINT\"",
-                  "RELEASE SAVEPOINT did not lower to exact SBLR_TRANSACTION_RELEASE_SAVEPOINT");
-  Require(Contains(release, "RESULT transaction.release_savepoint"),
-          "RELEASE SAVEPOINT did not execute through engine savepoint API");
-  Require(Contains(release, "evidence=mga_savepoint:savepoint_release"),
-          "RELEASE SAVEPOINT did not return MGA savepoint release evidence");
+  RequireContains(release, "\"sblr_operation\":\"SBLR_TXN_RELEASE_SAVEPOINT\"",
+                  "RELEASE SAVEPOINT did not lower to exact SBLR_TXN_RELEASE_SAVEPOINT");
+  RequireCanonicalSavepointReleaseResult(release, savepoint_identity);
 
   const auto savepoint_stmt_invalid = ReadCommandResponse(fd, "EXECUTE SAVEPOINT", "MESSAGE ERROR", 12);
-  RequireContains(savepoint_stmt_invalid, "\"surface_key\":\"SBSQL-35C5F6EA0613\"",
-                  "invalid SAVEPOINT did not bind the savepoint_stmt grammar row");
-  RequireContains(savepoint_stmt_invalid, "\"sblr_operation\":\"SBLR_TRANSACTION_CREATE_SAVEPOINT\"",
-                  "invalid SAVEPOINT did not lower to exact SBLR_TRANSACTION_CREATE_SAVEPOINT before refusal");
-  Require(Contains(savepoint_stmt_invalid, "SB_ENGINE_API_INVALID_REQUEST"),
-          "SAVEPOINT without a name did not return the exact engine invalid-request refusal");
-  Require(Contains(savepoint_stmt_invalid, "savepoint_name_required"),
-          "SAVEPOINT without a name did not return savepoint_name_required detail");
+  Require(Contains(savepoint_stmt_invalid, "SBLR.OPERAND_INVALID"),
+          "SAVEPOINT without a name did not refuse the incomplete canonical operand");
+  Require(Contains(savepoint_stmt_invalid,
+                   "savepoint structural symbol or transaction handle was unavailable"),
+          "SAVEPOINT without a name did not identify the missing structural symbol");
 
   const auto missing_rollback_to = ReadCommandResponse(fd,
                                                        "EXECUTE ROLLBACK TO SAVEPOINT missing_sp",
                                                        "MESSAGE ERROR",
                                                        12);
-  Require(Contains(missing_rollback_to, "SB_ENGINE_API_INVALID_REQUEST"),
-          "ROLLBACK TO missing savepoint did not return engine invalid-request refusal");
-  Require(Contains(missing_rollback_to, "savepoint_not_found"),
-          "ROLLBACK TO missing savepoint did not return savepoint_not_found detail");
+  RequireContains(missing_rollback_to, "SBLR.OPERAND_INVALID",
+                  "ROLLBACK TO missing savepoint did not refuse its absent canonical handle");
+  Require(Contains(missing_rollback_to, "savepoint handle"),
+          "ROLLBACK TO missing savepoint did not identify the unavailable handle");
 
   const auto missing_release = ReadCommandResponse(fd,
                                                    "EXECUTE RELEASE SAVEPOINT missing_sp",
                                                    "MESSAGE ERROR",
                                                    12);
-  Require(Contains(missing_release, "SB_ENGINE_API_INVALID_REQUEST"),
-          "RELEASE missing savepoint did not return engine invalid-request refusal");
-  Require(Contains(missing_release, "savepoint_not_found"),
-          "RELEASE missing savepoint did not return savepoint_not_found detail");
+  RequireContains(missing_release, "SBLR.OPERAND_INVALID",
+                  "RELEASE missing savepoint did not refuse its absent canonical handle");
+  Require(Contains(missing_release, "savepoint handle"),
+          "RELEASE missing savepoint did not identify the unavailable handle");
 
-  const auto rollback_savepoint_tx = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 64);
-  Require(Contains(rollback_savepoint_tx, "RESULT transaction.rollback"),
-          "savepoint transaction cleanup rollback did not execute");
+  const auto rollback_savepoint_tx = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "RESULT engine.op.txn_rollback", 64);
+  RequireCanonicalTransactionFinalityResult(
+      rollback_savepoint_tx, false, "savepoint transaction cleanup rollback",
+      &begin_savepoint_identity);
 
-  const auto replacement_rollback = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 64);
-  Require(Contains(replacement_rollback, "RESULT transaction.rollback"),
-          "ROLLBACK after replacement did not execute through engine transaction operation");
-  Require(Contains(replacement_rollback, "evidence=transaction_state:rolled_back"),
-          "ROLLBACK after replacement did not return rolled-back MGA state evidence");
+  const auto replacement_rollback = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "RESULT engine.op.txn_rollback", 64);
+  RequireCanonicalTransactionFinalityResult(
+      replacement_rollback, false, "ROLLBACK after replacement");
 
   ::close(fd);
   StopProcess(listener_pid);

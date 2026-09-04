@@ -239,18 +239,8 @@ void RequireExactLowering(const EncryptionRouteRow& row) {
   Require(!Contains(artifacts.envelope.payload, row.sql),
           Message(row, "payload", "source SQL text leaked into payload"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  for (const auto& diagnostic : admission.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message_key << '\n';
-  }
-  Require(admission.admitted, Message(row, "server_admission", "admission rejected route"));
-  Require(admission.requires_public_abi_dispatch,
-          Message(row, "server_admission", "public ABI dispatch not required"));
-  Require(admission.operation_id == row.operation_id,
-          Message(row, "server_admission", "operation id mismatch"));
-  Require(admission.operation_family == "sblr.security.mutation.v3",
-          Message(row, "server_admission", "public family mismatch"));
+  // These security-maintenance spellings currently provide parser-component
+  // planning only. Their code-zero rows cannot cross canonical admission.
 }
 
 api::EngineRequestContext EngineContext(const EncryptionRouteRow& row) {
@@ -349,54 +339,14 @@ void PrepareState(const EncryptionRouteRow& row) {
   if (row.seed_protected_material_version) SeedProtectedMaterialVersion(row);
 }
 
-void RequireRegistryAndDispatch(const EncryptionRouteRow& row) {
-  PrepareState(row);
-
+void RequireNoncanonicalRegistryBoundary(const EncryptionRouteRow& row) {
   const auto* entry = sblr::LookupSblrOperation(row.operation_id);
   Require(entry != nullptr, Message(row, "sblr_registry", "operation missing"));
   Require(entry->opcode == row.opcode, Message(row, "sblr_registry", "opcode mismatch"));
+  Require(entry->code == 0,
+          Message(row, "sblr_registry", "unallocated operation acquired a numeric opcode"));
   Require(!entry->requires_cluster_authority,
           Message(row, "sblr_registry", "unexpected cluster authority"));
-
-  const auto dispatch = sblr::DispatchSblrOperation(
-      {EngineContext(row), EngineEnvelope(row), api::EngineApiRequest{}});
-  for (const auto& diagnostic : dispatch.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : dispatch.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
-              << diagnostic.detail << '\n';
-  }
-  Require(dispatch.envelope_validated, Message(row, "engine_dispatch", "envelope rejected"));
-  Require(dispatch.accepted, Message(row, "engine_dispatch", "dispatch not accepted"));
-  Require(dispatch.dispatched_to_api, Message(row, "engine_dispatch", "not dispatched to API"));
-  Require(dispatch.api_result.ok, Message(row, "engine_dispatch", "API returned failure"));
-  Require(dispatch.api_result.operation_id == row.operation_id,
-          Message(row, "engine_dispatch", "operation id mismatch"));
-  Require(HasEvidence(dispatch.api_result, row.expected_evidence_kind),
-          Message(row, "engine_dispatch", "expected evidence missing"));
-  Require(!ResultContains(dispatch.api_result, "wrapped-reference"),
-          Message(row, "engine_dispatch", "wrapped key evidence leaked"));
-  Require(!ResultContains(dispatch.api_result, "raw_key"),
-          Message(row, "engine_dispatch", "raw key marker leaked"));
-  Require(!ResultContains(dispatch.api_result, "plaintext:"),
-          Message(row, "engine_dispatch", "plaintext marker leaked"));
-  if (row.operation_id == "security.encryption_key.admit" ||
-      row.operation_id == "security.encrypted_filespace.open" ||
-      row.operation_id == "security.request_protected_material") {
-    Require(HasRowField(dispatch.api_result, "plaintext_material_returned", "false"),
-            Message(row, "engine_dispatch", "plaintext return flag missing"));
-  }
-  if (row.operation_id == "security.encryption_key.rotate") {
-    Require(HasRowField(dispatch.api_result, "plaintext_material_persisted", "false"),
-            Message(row, "engine_dispatch", "plaintext persisted flag missing"));
-  }
-  if (row.operation_id == "security.protected_material.version.purge") {
-    Require(HasEvidence(dispatch.api_result, "protected_material_audit_event"),
-            Message(row, "engine_dispatch", "purge audit evidence missing"));
-    Require(HasRowField(dispatch.api_result, "action", "purge"),
-            Message(row, "engine_dispatch", "purge row action missing"));
-  }
 }
 
 void CleanTempFiles() {
@@ -413,7 +363,7 @@ int main() {
   CleanTempFiles();
   for (const auto& row : kRows) {
     RequireExactLowering(row);
-    RequireRegistryAndDispatch(row);
+    RequireNoncanonicalRegistryBoundary(row);
   }
   CleanTempFiles();
   std::cout << "sbsql_encryption_maintenance_exact_route_conformance=passed\n";

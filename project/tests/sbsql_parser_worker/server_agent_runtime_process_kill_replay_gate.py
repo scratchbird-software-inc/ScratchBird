@@ -82,6 +82,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
     parser.add_argument("--ipc-tester", required=True)
+    parser.add_argument("--database-seeder", required=True)
     parser.add_argument("--work-dir", required=True)
     parsed = parser.parse_args()
     parsed.work = live.make_work_dir(Path(parsed.work_dir))
@@ -90,12 +91,19 @@ def main() -> int:
     server2: subprocess.Popen[bytes] | None = None
     try:
         database = parsed.work / "agent-runtime-kill-replay.sbdb"
-        live.write_live_auth_fixture(database)
+        seeded = subprocess.run(
+            [parsed.database_seeder, str(database), "alice", live.PASSWORD],
+            stdout=(parsed.work / "database_seed.out").open("wb"),
+            stderr=(parsed.work / "database_seed.err").open("wb"),
+            check=False,
+        )
+        require(seeded.returncode == 0 and database.is_file(),
+                f"approved_database_seed_failed:{seeded.returncode}")
 
         endpoint1 = parsed.work / "sc1" / "s.sock"
         server1 = live.start_server(
             parsed, database, parsed.work / "sc1", parsed.work / "sr1",
-            endpoint1, "first", True
+            endpoint1, "first", False
         )
         status1_path = parsed.work / "sc1" / "sb_server.agent_runtime.json"
         first = wait_for_status(status1_path, worker_leases_ready,

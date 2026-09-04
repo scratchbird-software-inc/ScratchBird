@@ -59,6 +59,9 @@ class AgentRuntimeService {
   AgentRuntimeServiceResult Shutdown(const std::string& evidence_uuid, u64 now_microseconds);
   AgentRuntimeServiceResult Recover(const std::string& evidence_uuid, u64 now_microseconds);
   AgentRuntimeServiceResult AcquireLease(DurableLeaseRequest request);
+  AgentRuntimeServiceResult AcquireLeaseBatch(
+      std::vector<DurableLeaseRequest> requests,
+      const std::string& evidence_uuid);
   AgentRuntimeServiceResult HeartbeatLease(DurableLeaseRequest request);
   AgentRuntimeServiceResult CancelLease(DurableLeaseRequest request,
                                         DurableAgentLeaseState terminal_state);

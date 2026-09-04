@@ -47,6 +47,26 @@ std::string RenderIdentifier(std::string_view value) {
   return rendered;
 }
 
+std::string RenderColumnType(std::string_view encoded_descriptor) {
+  if (encoded_descriptor.empty()) return "text";
+  for (const std::string_view field : {"canonical", "type"}) {
+    const std::string prefix = std::string(field) + '=';
+    std::size_t begin = 0;
+    while (begin <= encoded_descriptor.size()) {
+      const std::size_t end = encoded_descriptor.find(';', begin);
+      const std::string_view part = encoded_descriptor.substr(
+          begin, end == std::string_view::npos ? std::string_view::npos
+                                                : end - begin);
+      if (part.starts_with(prefix) && part.size() > prefix.size()) {
+        return std::string(part.substr(prefix.size()));
+      }
+      if (end == std::string_view::npos) break;
+      begin = end + 1;
+    }
+  }
+  return std::string(encoded_descriptor);
+}
+
 std::string RenderCreateTableStatement(const CrudTableRecord& table) {
   std::ostringstream out;
   out << "CREATE TABLE " << RenderIdentifier(table.default_name.empty()
@@ -57,7 +77,7 @@ std::string RenderCreateTableStatement(const CrudTableRecord& table) {
     if (index != 0) out << ", ";
     const auto& column = table.columns[index];
     out << RenderIdentifier(column.first) << ' '
-        << (column.second.empty() ? "text" : column.second);
+        << RenderColumnType(column.second);
   }
   out << ')';
   return out.str();

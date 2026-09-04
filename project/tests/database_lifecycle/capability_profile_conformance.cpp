@@ -292,15 +292,15 @@ void TestSblrAndManifestBoundary() {
       "requires_cluster_authority=true\n";
   const auto cluster_result = server::AdmitServerSblrEnvelope(cluster);
   Require(!cluster_result.admitted &&
-              HasDiagnostic(cluster_result.diagnostics, "SBLR.CAPABILITY.FORBIDDEN"),
-          "cluster-only SBLR did not fail closed");
+              HasDiagnostic(cluster_result.diagnostics, "SBLR.OPERATION.NONCANONICAL"),
+          "retired cluster text envelope did not fail closed before capability admission");
 
   server::ServerSblrAdmissionRequest raw_sql;
   raw_sql.encoded_sblr_envelope = "select * from users.public.example";
   const auto raw_sql_result = server::AdmitServerSblrEnvelope(raw_sql);
   Require(!raw_sql_result.admitted &&
-              HasDiagnostic(raw_sql_result.diagnostics, "SBLR.SQL_TEXT_FORBIDDEN"),
-          "raw SQL text was not refused before server SBLR admission");
+              HasDiagnostic(raw_sql_result.diagnostics, "SBLR.OPERATION.NONCANONICAL"),
+          "raw SQL in the retired SBLR field was not refused at canonical ingress");
 
   std::ifstream manifest(SB_SPEC_MANIFEST);
   Require(static_cast<bool>(manifest), "contract manifest was not available to DBLC-013AJ test");
@@ -310,10 +310,10 @@ void TestSblrAndManifestBoundary() {
     manifest_text += line;
     manifest_text.push_back('\n');
   }
-  Require(Contains(manifest_text, "registries/reference-parser-feature-gates.yaml"),
-          "reference parser feature-gate registry is not manifest-authoritative");
-  Require(Contains(manifest_text, "registries/builtin-library-feature-gates.yaml"),
-          "built-in library feature-gate registry is not manifest-authoritative");
+  Require(Contains(manifest_text, "SBSQL public route contract snapshot."),
+          "public SBSQL route contract snapshot is unavailable");
+  Require(Contains(manifest_text, "SBLR public execution contract snapshot."),
+          "public SBLR execution contract snapshot is unavailable");
 }
 
 }  // namespace

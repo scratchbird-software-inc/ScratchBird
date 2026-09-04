@@ -14,6 +14,7 @@
 #include "query/plan_api.hpp"
 #include "sblr_aggregate_window_runtime.hpp"
 #include "sblr_dispatch.hpp"
+#include "sblr_opcode_registry.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -376,26 +377,20 @@ void RequireHavingPredicates() {
           "missing aggregate function selected SUM as a substitute");
 }
 
-void AddOptionOperand(sblr::SblrOperationEnvelope* envelope,
-                      std::string name,
-                      std::string value) {
-  envelope->operands.push_back({"option", std::move(name), std::move(value)});
-}
-
-void AddRowFieldOperand(sblr::SblrOperationEnvelope* envelope,
-                        std::string row_uuid,
-                        std::string field_name,
-                        std::string type,
-                        std::string value) {
-  envelope->operands.push_back({"row_field:" + std::move(type),
-                                std::move(row_uuid) + "|" + std::move(field_name),
-                                std::move(value)});
-}
-
 sblr::SblrOperationEnvelope QueryPlanEnvelope() {
+  const auto* registry_entry =
+      sblr::LookupSblrOperation("query.plan_operation");
+  Require(registry_entry != nullptr && registry_entry->code == 0 &&
+              registry_entry->support ==
+                  sblr::SblrOpcodeSupport::deprecated_refusal,
+          "retired query.plan_operation registry boundary drifted");
   auto envelope = sblr::MakeSblrEnvelope("query.plan_operation",
                                          "SBLR_QUERY_PLAN_OPERATION",
                                          "trace.cbq009.query.plan_operation");
+  envelope.parser_package_uuid =
+      "019f0000-0000-7000-8000-000000090941";
+  envelope.registry_snapshot_uuid =
+      "019f0000-0000-7000-8000-000000090942";
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
@@ -413,34 +408,32 @@ void PrintDispatchDiagnostics(const sblr::SblrDispatchResult& result) {
   }
 }
 
-void RequireSblrQueryPlanDispatch() {
+void RequireRetiredSblrQueryPlanRefusal() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   auto envelope = QueryPlanEnvelope();
-  AddOptionOperand(&envelope, "execute", "true");
-  AddOptionOperand(&envelope, "query_operation", "aggregate");
-  AddOptionOperand(&envelope, "group_key_column", "0");
-  AddOptionOperand(&envelope, "aggregate_value_column", "1");
-  AddOptionOperand(&envelope, "aggregate_function", "sum");
-  AddOptionOperand(&envelope, "having_predicate", "aggregate_gte");
-  AddOptionOperand(&envelope, "having_threshold", "7");
-  AddRowFieldOperand(&envelope, "relation-0-row-a", "grp", "int64", "1");
-  AddRowFieldOperand(&envelope, "relation-0-row-a", "amount", "int64", "3");
-  AddRowFieldOperand(&envelope, "relation-0-row-b", "grp", "int64", "1");
-  AddRowFieldOperand(&envelope, "relation-0-row-b", "amount", "int64", "4");
-  AddRowFieldOperand(&envelope, "relation-0-row-c", "grp", "int64", "2");
-  AddRowFieldOperand(&envelope, "relation-0-row-c", "amount", "int64", "10");
   const auto dispatched = sblr::DispatchSblrOperation({context, envelope, api::EngineApiRequest{}});
-  if (!dispatched.api_result.ok) { PrintDispatchDiagnostics(dispatched); }
-  Require(dispatched.envelope_validated && dispatched.accepted && dispatched.dispatched_to_api,
-          "SBLR query.plan_operation dispatch did not reach engine API");
-  Require(dispatched.api_result.ok, "SBLR query.plan_operation aggregate/HAVING route failed");
-  Require(HasEvidence(dispatched.api_result, "query_aggregate_having_predicate", "aggregate_gte"),
-          "SBLR query.plan_operation HAVING evidence drifted");
+  Require(!dispatched.envelope_validated && !dispatched.accepted &&
+              !dispatched.dispatched_to_api &&
+              !dispatched.diagnostics.empty() &&
+              dispatched.diagnostics.front().code ==
+                  "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
+          "retired query.plan_operation bypassed canonical admission");
 }
 
 api::EngineLocalizedName Name(std::string text) {
   return {"en", "primary", "", std::move(text), true};
+}
+
+void CreateSchema(const api::EngineRequestContext& context) {
+  api::EngineCreateSchemaRequest request;
+  request.context = context;
+  request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  request.target_object.object_kind = "schema";
+  request.localized_names.push_back(Name("cbq009_schema"));
+  const auto result = api::EngineCreateSchema(request);
+  if (!result.ok) { std::cerr << FirstDetail(result) << '\n'; }
+  Require(result.ok, "CBQ-009 create schema failed");
 }
 
 api::EngineColumnDefinition Column(std::string name, std::string type, std::uint32_t ordinal) {
@@ -703,21 +696,21 @@ sblr::SblrValue SblrText(std::string value) {
 }
 
 std::vector<sblr::SblrValue> AggregateInputs(std::string_view function_id) {
-  if (function_id == "every" || function_id == "bool_or") {
+  if (function_id == "every" || function_id == "bool_and" ||
+      function_id == "bool_or") {
     return {SblrBool(true)};
   }
-  if (function_id.starts_with("bit_")) {
-    return {SblrInt(7)};
-  }
   if (function_id == "string_agg" || function_id == "array_agg" ||
-      function_id == "binary_agg" || function_id == "json_agg" ||
-      function_id == "approx_count_distinct" || function_id == "top_k") {
+      function_id == "listagg" || function_id == "json_agg" ||
+      function_id == "approx_count_distinct" ||
+      function_id == "approx_top_k") {
     return {SblrText("alpha"), SblrInt(3)};
   }
   if (function_id == "json_object_agg") {
     return {SblrText("k"), SblrText("v")};
   }
-  if (function_id == "approx_quantile") {
+  if (function_id == "approx_percentile_cont" ||
+      function_id == "approx_percentile_disc") {
     return {SblrReal(10.0), SblrReal(0.5)};
   }
   if (function_id == "corr" || function_id == "covar_pop" ||
@@ -730,23 +723,35 @@ std::vector<sblr::SblrValue> AggregateInputs(std::string_view function_id) {
 void RequireSblrAggregateWindowRuntime() {
   const auto context = SblrContext();
   const std::vector<std::string> aggregate_ids = {
-      "count", "sum", "avg", "min", "max", "every", "bool_or",
-      "variance", "variance_pop", "stddev", "stddev_pop", "corr",
+      "count", "sum", "avg", "min", "max", "every", "bool_and",
+      "bool_or", "variance", "variance_samp", "variance_pop", "stddev",
+      "stddev_samp", "stddev_pop", "corr",
       "covar_pop", "covar_samp", "regr_avgx", "regr_avgy",
       "regr_count", "regr_intercept", "regr_r2", "regr_slope",
-      "regr_sxx", "regr_sxy", "regr_syy", "bit_and", "bit_or",
-      "bit_xor", "string_agg", "array_agg", "binary_agg",
-      "json_agg", "json_object_agg", "approx_count_distinct",
-      "approx_quantile", "top_k"};
+      "regr_sxx", "regr_sxy", "regr_syy", "string_agg", "listagg",
+      "array_agg", "json_agg", "json_object_agg",
+      "approx_count_distinct", "approx_median",
+      "approx_percentile_cont", "approx_percentile_disc", "approx_top_k",
+      "mode"};
   for (const auto& function_id : aggregate_ids) {
     Require(sblr::IsSblrAggregateFunctionSupported(function_id),
             "registered aggregate id did not resolve as supported");
+    const auto function_uuid =
+        sblr::ResolveSblrCanonicalAggregateFunctionUuid(function_id);
+    Require(!function_uuid.empty(),
+            "registered aggregate UUID did not resolve");
     sblr::SblrAggregateWindowState state;
     auto result = sblr::InitializeSblrAggregateState(function_id,
-                                                     "019f0000-0000-7000-8000-000000090c01",
+                                                     std::string(function_uuid),
                                                      "result_descriptor",
                                                      context,
                                                      &state);
+    if (!result.ok()) {
+      for (const auto& diagnostic : result.diagnostics) {
+        std::cerr << function_id << ':' << diagnostic.diagnostic_id << ':'
+                  << diagnostic.detail << '\n';
+      }
+    }
     Require(result.ok(), "registered aggregate initialize failed");
     sblr::SblrAggregateUpdateRequest update;
     update.context = context;
@@ -794,16 +799,15 @@ void RequireSblrAggregateWindowRuntime() {
     request.ntile_bucket_count = 2;
     request.nth = 2;
     request.aggregate_function_id = "sum";
-    request.aggregate_function_uuid = "019f0000-0000-7000-8000-000000090c04";
+    request.aggregate_function_uuid = std::string(
+        sblr::ResolveSblrCanonicalAggregateFunctionUuid("sum"));
     request.aggregate_result_descriptor_id = "int64";
     const auto result = sblr::EvaluateLegacySblrWindowFunction(request);
-    if (!result.ok()) {
-      for (const auto& diagnostic : result.diagnostics) {
-        std::cerr << function_id << ':' << diagnostic.diagnostic_id << ':' << diagnostic.detail << '\n';
-      }
-    }
-    Require(result.ok() && result.scalar_values.size() == 1,
-            "registered window function failed");
+    Require(!result.ok() && !result.diagnostics.empty() &&
+                result.diagnostics.front().diagnostic_id ==
+                    "QOW-DIAG-WINDOW-LEGACY-RUNTIME-REFUSED-V1" &&
+                result.scalar_values.empty(),
+            "legacy window evaluator did not stay retired");
   }
 
   sblr::LegacySblrWindowFunctionRequest bad_window;
@@ -812,8 +816,9 @@ void RequireSblrAggregateWindowRuntime() {
   bad_window.function_uuid = "019f0000-0000-7000-8000-000000090c05";
   const auto bad = sblr::EvaluateLegacySblrWindowFunction(bad_window);
   Require(!bad.ok() && !bad.diagnostics.empty() &&
-              bad.diagnostics.front().diagnostic_id == "SB_DIAG_WINDOW_FUNCTION_UNSUPPORTED",
-          "unknown window diagnostic drifted");
+              bad.diagnostics.front().diagnostic_id ==
+                  "QOW-DIAG-WINDOW-LEGACY-RUNTIME-REFUSED-V1",
+          "unknown legacy window escaped the retired runtime boundary");
 }
 
 }  // namespace
@@ -821,7 +826,7 @@ void RequireSblrAggregateWindowRuntime() {
 int main() {
   RequirePivotAggregates();
   RequireHavingPredicates();
-  RequireSblrQueryPlanDispatch();
+  RequireRetiredSblrQueryPlanRefusal();
   RequireDescriptorQueryRuntime();
   RequireSblrAggregateWindowRuntime();
 
@@ -829,6 +834,7 @@ int main() {
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   const auto context = BeginTransaction(EngineContext(path, database_uuid));
+  CreateSchema(context);
   CreateDmlTable(context);
   RequireDmlRowScanAndConflict(context);
   std::cout << "sbsql_query_pivot_having_closure_conformance=passed\n";

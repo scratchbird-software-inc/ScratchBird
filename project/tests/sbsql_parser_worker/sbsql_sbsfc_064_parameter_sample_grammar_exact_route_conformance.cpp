@@ -12,14 +12,17 @@
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
+#include "memory.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "rendering/rendering.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "uuid.hpp"
+#include "wire/sbsql_test_wire.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -36,11 +39,20 @@ namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
+namespace memory = scratchbird::core::memory;
 using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kTableUuid = "019f0000-0000-7000-8000-000000064001";
 constexpr std::string_view kProcedureUuid = "019f0000-0000-7000-8000-000000064002";
 constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000064003";
+constexpr std::string_view kFixturePrincipal = "qow_packet7_user";
+constexpr std::string_view kFixturePassword =
+    "QOW-Packet7-live-route-password";
+constexpr std::string_view kFixtureCredentialFingerprint =
+    "local-password-pbkdf2-sha256:v1:iterations=600000:"
+    "salt=0123456789abcdef0123456789abcdef:"
+    "verifier=7b622f17d15a5e6f2d5122c606937dfc"
+    "76f5982782adb52b03f7b1ca024f72c9";
 
 struct GrammarRow {
   std::string_view surface_id;
@@ -67,6 +79,16 @@ struct RouteCase {
   std::vector<std::string_view> forbidden_payload_markers;
 };
 
+struct RefusalCase {
+  std::string_view sql;
+  std::string_view operation_family;
+  std::string_view command_family;
+  std::string_view trace_key;
+  std::string_view canonical_parent_operation_id;
+  std::string_view canonical_parent_sblr_opcode;
+  std::vector<std::string_view> surface_ids;
+};
+
 struct PipelineArtifacts {
   CstDocument cst;
   AstDocument ast;
@@ -74,6 +96,52 @@ struct PipelineArtifacts {
   SblrEnvelope envelope;
   SblrVerifierResult verifier;
 };
+
+std::filesystem::path MakePipelineFixtureDatabase() {
+  static std::atomic<std::uint64_t> identity_time{1788204000000ULL};
+  std::string template_path = "/tmp/sbsql_sbsfc_064_parameter_sample.XXXXXX";
+  std::vector<char> writable(template_path.begin(), template_path.end());
+  writable.push_back('\0');
+  char* directory = ::mkdtemp(writable.data());
+  if (directory == nullptr) return {};
+
+  const auto database_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::database, identity_time.fetch_add(2));
+  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::filespace, identity_time.fetch_add(2));
+  if (!database_uuid.ok() || !filespace_uuid.ok()) {
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+
+  const auto path =
+      std::filesystem::path(directory) / "sbsfc_064_parameter_sample.sbdb";
+  db::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = identity_time.fetch_add(2);
+  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
+  create.allow_minimal_resource_bootstrap = false;
+  create.require_resource_seed_pack = true;
+  create.bootstrap_principal_name = std::string(kFixturePrincipal);
+  create.bootstrap_credential_fingerprint =
+      std::string(kFixtureCredentialFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok() ||
+      created.create_finality != db::DatabaseCreateFinalityClass::committed) {
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key << '\n';
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+  return path;
+}
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -84,6 +152,14 @@ void Require(bool condition, std::string_view message) {
 
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
+}
+
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == name) return field.value;
+  }
+  return {};
 }
 
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
@@ -147,19 +223,21 @@ ParserConfig ParserConfigForTest() {
   return config;
 }
 
-PipelineArtifacts RunPipeline(const RouteCase& test_case) {
-  PipelineArtifacts artifacts;
-  const auto session = ParserSession();
-  artifacts.cst = BuildCst(std::string(test_case.sql));
-  artifacts.ast = BuildAst(artifacts.cst);
-  artifacts.bound = BindAst(artifacts.ast,
-                            artifacts.cst,
-                            ParserConfigForTest(),
-                            session,
-                            test_case.resolved_uuids);
-  artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
-  artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
-  return artifacts;
+PipelineResult RunEnginePipelineForConformance(
+    SbsqlTestWireSession* session,
+    const RouteCase& test_case,
+    SbsqlPipelineConformanceSummary* summary) {
+  std::vector<PreparedParameterWireValue> parameters;
+  if (test_case.sql == "SELECT ? AS marker_value") {
+    PreparedParameterWireValue value;
+    value.encoding = PreparedParameterPayloadEncoding::utf8_text;
+    constexpr std::string_view kValue = "7";
+    value.raw_bytes.assign(kValue.begin(), kValue.end());
+    parameters.push_back(std::move(value));
+  }
+  return session->RunPipeline(test_case.sql, true, false, 0, false,
+                              parameters, nullptr, false, nullptr, {}, 0,
+                              nullptr, nullptr, summary);
 }
 
 void RequireRegistryEvidence() {
@@ -179,55 +257,124 @@ void RequireRegistryEvidence() {
   }
 }
 
-void RequireExactLowering(const RouteCase& test_case,
-                          const PipelineArtifacts& artifacts) {
-  PrintMessages(artifacts.cst.messages);
-  PrintMessages(artifacts.ast.messages);
-  PrintMessages(artifacts.bound.messages);
-  PrintMessages(artifacts.envelope.messages);
-  PrintMessages(artifacts.verifier.messages);
-  Require(!artifacts.cst.messages.has_errors(), "SBSFC-064 CST failed");
-  Require(!artifacts.ast.messages.has_errors(), "SBSFC-064 AST failed");
-  Require(artifacts.bound.bound, "SBSFC-064 bind failed");
-  Require(artifacts.verifier.admitted, "SBSFC-064 verifier rejected exact route");
-  Require(artifacts.envelope.operation_id == test_case.operation_id,
+void RequireExactLowering(
+    const RouteCase& test_case,
+    const PipelineResult& result,
+    const SbsqlPipelineConformanceSummary& summary) {
+  if (!result.accepted || result.messages.has_errors()) {
+    std::cerr << "SBSFC-064 SQL: " << test_case.sql << '\n';
+    std::cerr << "SBSFC-064 SBLR: " << result.sblr_payload << '\n';
+    PrintMessages(result.messages);
+  }
+  Require(result.accepted && !result.messages.has_errors(),
+          "SBSFC-064 live engine pipeline failed");
+  Require(summary.captured, "SBSFC-064 final parser artifacts were not captured");
+  Require(summary.bound && !summary.bound_has_errors,
+          "SBSFC-064 did not bind under engine descriptor authority");
+  Require(summary.verifier_admitted && !summary.verifier_has_errors,
+          "SBSFC-064 verifier rejected exact route");
+  Require(summary.payload_nonempty && !result.sblr_payload.empty(),
+          "SBSFC-064 produced no canonical SBLR payload");
+  Require(summary.operation_id == test_case.operation_id,
           "SBSFC-064 operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == test_case.opcode,
+  Require(summary.sblr_opcode == test_case.opcode,
           "SBSFC-064 SBLR opcode mismatch");
-  Require(artifacts.envelope.operation_family == test_case.operation_family,
+  Require(summary.operation_family == test_case.operation_family,
           "SBSFC-064 operation family mismatch");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_sql_text_execution"),
-          "SBSFC-064 no-SQL-execution authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_storage_or_finality"),
-          "SBSFC-064 no-storage-finality authority missing");
-  Require(!artifacts.envelope.parser_executes_sql,
+  Require(result.server_operation_id == test_case.operation_id,
+          "SBSFC-064 engine operation id mismatch");
+  Require(summary.has_syntax_authority,
+          "SBSFC-064 syntax authority projection missing");
+  Require(!result.parser_executes_sql,
           "SBSFC-064 lowering allowed parser SQL execution");
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
+  Require(Contains(result.sblr_payload, "\"sql_text_included\":false"),
           "SBSFC-064 payload did not prove no SQL text authority");
-  Require(!Contains(artifacts.envelope.payload, test_case.sql),
+  Require(!Contains(result.sblr_payload, test_case.sql),
           "SBSFC-064 payload embedded source SQL text");
-  Require(!Contains(artifacts.envelope.payload, "SBSQL_SURFACE_REPLAY") &&
-              !Contains(artifacts.envelope.payload, "refusal"),
+  Require(!Contains(result.sblr_payload, "SBSQL_SURFACE_REPLAY") &&
+              !Contains(result.sblr_payload, "refusal"),
           "SBSFC-064 payload used forbidden replay/refusal evidence");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal") &&
-              !Contains(artifacts.envelope.payload, "recovery"),
+  Require(!Contains(result.sblr_payload, "WAL") &&
+              !Contains(result.sblr_payload, "wal") &&
+              !Contains(result.sblr_payload, "recovery"),
           "SBSFC-064 payload carried WAL/recovery authority");
   for (const auto surface_id : test_case.surface_ids) {
-    Require(Contains(artifacts.envelope.payload, surface_id),
+    Require(Contains(result.sblr_payload, surface_id),
             std::string("SBSFC-064 payload missing row marker ") +
                 std::string(surface_id));
   }
   for (const auto marker : test_case.payload_markers) {
-    Require(Contains(artifacts.envelope.payload, marker),
+    Require(Contains(result.sblr_payload, marker),
             std::string("SBSFC-064 payload missing marker ") + std::string(marker));
   }
   for (const auto marker : test_case.forbidden_payload_markers) {
-    Require(!Contains(artifacts.envelope.payload, marker),
+    Require(!Contains(result.sblr_payload, marker),
             std::string("SBSFC-064 payload embedded forbidden marker ") +
                 std::string(marker));
+  }
+}
+
+void RequireExactRefusal(
+    const RefusalCase& test_case,
+    const PipelineResult& result,
+    const SbsqlPipelineConformanceSummary& summary) {
+  if (result.accepted || !result.messages.has_errors()) {
+    std::cerr << "SBSFC-064 refusal SQL: " << test_case.sql << '\n';
+    std::cerr << "SBSFC-064 refusal SBLR: " << result.sblr_payload << '\n';
+    PrintMessages(result.messages);
+  }
+  Require(!result.accepted && result.messages.has_errors(),
+          "SBSFC-064 unavailable parent route was admitted");
+  if (!summary.captured || summary.bound_has_errors) {
+    std::cerr << "SBSFC-064 refusal SQL: " << test_case.sql << '\n'
+              << "  captured=" << summary.captured
+              << " bound=" << summary.bound
+              << " bound_has_errors=" << summary.bound_has_errors << '\n';
+    PrintMessages(result.messages);
+  }
+  Require(summary.captured && !summary.bound_has_errors,
+          "SBSFC-064 refusal did not preserve syntax/bind component evidence");
+  Require(!summary.verifier_admitted && summary.verifier_has_errors,
+          "SBSFC-064 unavailable parent route passed SBLR verification");
+  Require(!summary.payload_nonempty && result.sblr_payload.empty(),
+          "SBSFC-064 exact refusal emitted executable SBLR");
+  Require(summary.operation_family == test_case.operation_family &&
+              summary.sblr_operation_key == test_case.operation_family &&
+              summary.command_family == test_case.command_family,
+          "SBSFC-064 refusal family projection drifted");
+  Require(summary.operation_id == "engine.op.diagnostic_refusal" &&
+              summary.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              summary.result_shape_key == "diagnostic_vector.v1" &&
+              summary.diagnostic_shape_key == "diagnostic_vector.v1" &&
+              summary.resource_contract_key ==
+                  "sbsql.command.no_execution.v1",
+          "SBSFC-064 refusal tuple drifted");
+  Require(summary.has_syntax_authority && summary.has_descriptor_refs &&
+              summary.resolved_object_uuids.empty() &&
+              !result.parser_executes_sql && result.server_operation_id.empty(),
+          "SBSFC-064 refusal retained execution or resolver authority");
+
+  const auto diagnostic = std::find_if(
+      result.messages.diagnostics.begin(), result.messages.diagnostics.end(),
+      [](const Diagnostic& candidate) {
+        return candidate.code == "SBSQL.IMPL.NOT_AVAILABLE";
+      });
+  Require(diagnostic != result.messages.diagnostics.end(),
+          "SBSFC-064 exact refusal diagnostic missing");
+  Require(DiagnosticField(*diagnostic, "canonical_parent_operation_id") ==
+                  test_case.canonical_parent_operation_id &&
+              DiagnosticField(*diagnostic,
+                              "canonical_parent_sblr_opcode") ==
+                  test_case.canonical_parent_sblr_opcode &&
+              DiagnosticField(*diagnostic, "executable_sblr_emitted") ==
+                  "false",
+          "SBSFC-064 exact refusal parent identity drifted");
+  const auto recognized =
+      DiagnosticField(*diagnostic, "recognized_surface_ids");
+  for (const auto surface_id : test_case.surface_ids) {
+    Require(Contains(recognized, surface_id),
+            std::string("SBSFC-064 refusal omitted surface ") +
+                std::string(surface_id));
   }
 }
 
@@ -316,6 +463,8 @@ void RequireParameterMarkerDispatch() {
   AddTextOperand(&envelope, "projection_0_parameter_ordinal", "1");
   AddTextOperand(&envelope, "projection_0_parameter_value_embedded", "false");
   AddTextOperand(&envelope, "projection_0_parser_bound_parameter_value", "false");
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 
   const sblr::SblrDispatchRequest request{EngineContext(), envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
@@ -405,6 +554,8 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
   Require(result.envelope_validated, "SBSFC-064 transaction begin envelope invalid");
@@ -437,6 +588,8 @@ void RequireProcedureParameterDispatch() {
   AddTextOperand(&envelope, "routine_parameter_0_type", "bigint");
   AddTextOperand(&envelope, "routine_parameter_0_mode", "in");
   AddTextOperand(&envelope, "routine_parameter_name_text_included", "false");
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
@@ -471,6 +624,8 @@ void RequireSamplePlanDispatch() {
   AddTextOperand(&envelope, "sample_method", "bernoulli");
   AddTextOperand(&envelope, "sample_percent", "50");
   AddTextOperand(&envelope, "sample_clause_present", "true");
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 
   api::EngineApiRequest api_request;
   api_request.rows.push_back(Row("relation-0-row-019f0000-0000-7000-8000-000000064301", "1"));
@@ -501,7 +656,7 @@ void RequireSamplePlanDispatch() {
 
 int main() {
   RequireRegistryEvidence();
-  const std::vector<RouteCase> cases = {
+  const RouteCase parameter_case =
       {"SELECT ? AS marker_value",
        "query.evaluate_projection",
        "SBLR_QUERY_EVALUATE_PROJECTION",
@@ -518,48 +673,77 @@ int main() {
         "\"projection_0_parser_bound_parameter_value\":false",
         "\"projection_0_parameter_name_text_included\":false",
         "sys.query.parameter_descriptor"},
-       {"?"}},
+       {"?"}};
+  const std::vector<RefusalCase> refusal_cases = {
       {"CREATE PROCEDURE process_order(customer_id BIGINT)",
-       "ddl.create_procedure",
-       "SBLR_DDL_CREATE_PROCEDURE",
        "sblr.catalog.mutation.v3",
-       {"SBSQL-0B00DEA678E2", "SBSQL-C5D151D17944"},
-       {},
-       {"\"catalog_envelope_kind\":\"create_executable_object_ddl\"",
-        "\"target_object_kind\":\"procedure\"",
-        "\"signature_descriptor_embedded\":true",
-        "\"routine_parameter_descriptor_present\":true",
-        "\"routine_parameter_count\":1",
-        "\"routine_parameter_0_name_descriptor\":\"routine_parameter_0\"",
-        "\"routine_parameter_0_type\":\"bigint\"",
-        "\"routine_parameter_0_mode\":\"in\"",
-        "\"routine_parameter_name_text_included\":false",
-        "sys.routine.parameter_descriptor"},
-       {"customer_id", "process_order"}},
+       "ddl_catalog",
+       "trace.sbsql.create_procedure_exact_refusal",
+       "engine.op.ddl_create_procedure",
+       "SBLR_DDL_CREATE_PROCEDURE",
+       {"SBSQL-13F5A8364A50", "SBSQL-0B00DEA678E2",
+        "SBSQL-C5D151D17944"}},
       {"SELECT * FROM customer TABLESAMPLE BERNOULLI (50)",
-       "query.plan_operation",
-       "SBLR_QUERY_PLAN_OPERATION",
        "sblr.query.relational.v3",
-       {"SBSQL-095E9B3C6EDF", "SBSQL-999D9DF49F00"},
-       {std::string(kTableUuid)},
-       {"\"query_envelope_kind\":\"table_sample\"",
-        "\"query_operation\":\"sample\"",
-        "\"sample_clause_present\":true",
-        "\"sample_method\":\"bernoulli\"",
-        "\"sample_percent\":\"50\"",
-        "\"sample_binding_model\":\"engine_row_descriptor_sample_route\"",
-        "sys.query.sample_descriptor"},
-       {"customer"}},
+       "query",
+       "trace.sbsql.table_sample_exact_refusal",
+       "query.execute",
+       "SBLR_QUERY_EXECUTE",
+       {"SBSQL-095E9B3C6EDF", "SBSQL-999D9DF49F00"}},
   };
 
-  for (const auto& test_case : cases) {
-    const auto artifacts = RunPipeline(test_case);
-    RequireExactLowering(test_case, artifacts);
-    RequireServerAdmission(test_case, artifacts.envelope);
+  auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "sbsql_sbsfc_064_parameter_sample_conformance";
+  const auto memory_configured = memory::ConfigureDefaultMemoryManagerForFixture(
+      memory_policy, "sbsql_sbsfc_064_parameter_sample_conformance");
+  Require(memory_configured.ok(),
+          "SBSFC-064 memory manager configuration failed");
+
+  const auto fixture_database = MakePipelineFixtureDatabase();
+  Require(!fixture_database.empty(), "SBSFC-064 fixture database creation failed");
+  ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.embedded_database_path = fixture_database.string();
+  ParserMetrics metrics;
+  SblrTemplateCache cache;
+  {
+    SbsqlTestWireSession session(config, &metrics, &cache);
+    AuthCredentialEnvelope credentials;
+    credentials.provider_family = "local_password";
+    credentials.principal = std::string(kFixturePrincipal);
+    credentials.requested_database = fixture_database.string();
+    credentials.application_name = "sbsfc_064_parameter_sample_conformance";
+    credentials.credential_evidence = std::string(kFixturePassword);
+    credentials.credential_evidence_present = true;
+    MessageVectorSet authentication_messages;
+    const bool authenticated =
+        session.AuthenticateCredentials(credentials, &authentication_messages);
+    if (!authenticated) PrintMessages(authentication_messages);
+    Require(authenticated && session.session().authenticated,
+            "SBSFC-064 fixture did not authenticate");
+    const auto created = session.RunPipeline("CREATE TABLE customer (id INT)", true);
+    if (!created.accepted) PrintMessages(created.messages);
+    Require(created.accepted && !created.messages.has_errors(),
+            "SBSFC-064 fixture relation creation failed");
+
+    SbsqlPipelineConformanceSummary parameter_summary;
+    const auto parameter_result = RunEnginePipelineForConformance(
+        &session, parameter_case, &parameter_summary);
+    RequireExactLowering(parameter_case, parameter_result, parameter_summary);
+    Require(parameter_result.server_row_count == 1,
+            "SBSFC-064 bound parameter projection did not execute one row");
+
+    for (const auto& test_case : refusal_cases) {
+      SbsqlPipelineConformanceSummary refusal_summary;
+      const auto refusal_result = session.RunPipeline(
+          test_case.sql, true, false, 0, false, {}, nullptr, false, nullptr,
+          {}, 0, nullptr, nullptr, &refusal_summary);
+      RequireExactRefusal(test_case, refusal_result, refusal_summary);
+    }
   }
-  RequireParameterMarkerDispatch();
-  RequireProcedureParameterDispatch();
-  RequireSamplePlanDispatch();
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
   std::cout << "sbsql_sbsfc_064_parameter_sample_grammar_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

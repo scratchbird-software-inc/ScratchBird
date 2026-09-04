@@ -668,7 +668,8 @@ void RequireCoreIndexManagementAndStatistics() {
           "current bitmap statistics were not admitted for scan");
 }
 
-void RequireSblrCreateIndexRoute(const api::EngineRequestContext& context) {
+void RequireCreateIndexAuthorityBoundaryAndDirectRuntime(
+    const api::EngineRequestContext& context) {
   auto envelope = sblr::MakeSblrEnvelope("engine.op.ddl_create_index",
                                          "SBLR_DDL_CREATE_INDEX",
                                          "trace.cbq005.sblr.create_bitmap_index");
@@ -686,20 +687,17 @@ void RequireSblrCreateIndexRoute(const api::EngineRequestContext& context) {
       std::move(envelope));
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
-  if (!result.accepted || !result.api_result.ok) {
-    for (const auto& diagnostic : result.diagnostics) {
-      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-    }
-    for (const auto& diagnostic : result.api_result.diagnostics) {
-      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-    }
-  }
-  Require(result.envelope_validated && result.accepted && result.api_result.ok,
-          "SBLR ddl.create_index route failed");
-  Require(result.api_result.operation_id == "engine.op.ddl_create_index",
-          "SBLR ddl.create_index operation id drifted");
-  Require(EvidenceContains(result.api_result, "index_family", "bitmap"),
-          "SBLR create index route did not persist bitmap family evidence");
+  Require(!result.envelope_validated && !result.accepted &&
+              !result.dispatched_to_api && !result.diagnostics.empty() &&
+              result.diagnostics.front().code == "SBLR.OPERAND_INVALID",
+          "parser-authored CREATE INDEX options bypassed the CIDO authority");
+
+  const auto created = CreateIndex(
+      context, Index(BitmapIndexUuid(), "status_bitmap_idx", "bitmap",
+                     {"status"}));
+  RequireOk(created, "direct bitmap create-index runtime failed");
+  Require(EvidenceContains(created, "index_family", "bitmap"),
+          "direct bitmap create-index evidence drifted");
 }
 
 void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context) {
@@ -721,7 +719,7 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
     return;
   }
   RequireOk(result, "btree create index failed");
-  RequireSblrCreateIndexRoute(context);
+  RequireCreateIndexAuthorityBoundaryAndDirectRuntime(context);
   result = CreateIndex(context, Index(ExpressionIndexUuid(),
                                       "lower_name_idx",
                                       "expression",

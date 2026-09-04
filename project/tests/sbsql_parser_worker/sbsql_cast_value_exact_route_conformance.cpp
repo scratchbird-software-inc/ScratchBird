@@ -33,8 +33,9 @@ namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
 
 constexpr std::string_view kSql = "SELECT CAST('42' AS int64) AS cast_value;";
-constexpr std::string_view kOperationId = "query.cast_value";
-constexpr std::string_view kOpcode = "SBLR_QUERY_CAST_VALUE";
+constexpr std::string_view kOperationId = "engine.op.cast";
+constexpr std::string_view kApiOperationId = "query.cast_value";
+constexpr std::string_view kOpcode = "SBLR_CAST";
 constexpr std::string_view kFamily = "sblr.expression.runtime.v3";
 
 struct CastRowEvidence {
@@ -96,6 +97,14 @@ bool HasEvidence(const api::EngineApiResult& result,
     if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
   }
   return false;
+}
+
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == name) return field.value;
+  }
+  return {};
 }
 
 SessionContext ParserSession() {
@@ -171,85 +180,73 @@ void RequireRegistryEvidence() {
   }
 }
 
-void RequireExactLowering(const PipelineArtifacts& artifacts) {
+void RequireExactRefusal(const PipelineArtifacts& artifacts) {
   Require(!artifacts.cst.messages.has_errors(), "CAST CST failed");
   Require(!artifacts.ast.messages.has_errors(), "CAST AST failed");
   Require(artifacts.bound.bound, "CAST bind failed");
-  Require(artifacts.verifier.admitted, "CAST verifier rejected exact route");
+  Require(!artifacts.verifier.admitted,
+          "CAST was admitted without the exact engine-bound CSDO carrier");
   Require(artifacts.envelope.operation_family == kFamily,
           "CAST operation family mismatch");
   Require(artifacts.envelope.sblr_operation_key == kFamily,
           "CAST SBLR operation key mismatch");
-  Require(artifacts.envelope.operation_id == kOperationId,
-          "CAST operation id mismatch");
-  Require(artifacts.envelope.engine_api_operation_id == kOperationId,
-          "CAST engine API operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == kOpcode,
-          "CAST SBLR opcode mismatch");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "CAST did not use the exact non-executable refusal tuple");
+  Require(artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.diagnostic_shape_key ==
+                  "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1",
+          "CAST refusal contract metadata drifted");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              !artifacts.envelope.parser_executes_sql &&
+              !artifacts.envelope.real_file_effects,
+          "CAST refusal emitted executable or parser-owned authority");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.datatype_cast_api_required"),
-          "CAST datatype API authority step missing");
-  Require(!HasValue(artifacts.envelope.required_authority_steps,
-                    "authority.server.transaction_context_required"),
-          "CAST route incorrectly required transaction context");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_sql_text_execution"),
-          "CAST parser no-SQL-execution authority step missing");
-  Require(!artifacts.envelope.parser_executes_sql,
-          "CAST lowering allowed parser SQL execution");
-  Require(!artifacts.envelope.real_file_effects,
-          "CAST lowering allowed reference/file effects");
-  Require(Contains(artifacts.envelope.payload, "\"operation_id\":\"query.cast_value\""),
-          "CAST payload missing exact operation id");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"sblr_operation\":\"SBLR_QUERY_CAST_VALUE\""),
-          "CAST payload missing exact SBLR opcode");
-  Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"cast_value\""),
-          "CAST payload missing cast envelope kind");
-  Require(Contains(artifacts.envelope.payload, "\"source_descriptor_type\":\"character\""),
-          "CAST payload missing source descriptor type");
-  Require(Contains(artifacts.envelope.payload, "\"target_descriptor_type\":\"int64\""),
-          "CAST payload missing target descriptor type");
-  Require(Contains(artifacts.envelope.payload, "\"requires_transaction_context\":false"),
-          "CAST payload did not prove no transaction context requirement");
-  for (const auto& row : kCastRows) {
-    Require(Contains(artifacts.envelope.payload, row.surface_id),
-            "CAST payload missing row-identifiable surface evidence");
-  }
-  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":false"),
-          "CAST payload did not prove no name text authority");
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-          "CAST payload did not prove no SQL text authority");
-  Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
-          "CAST payload did not prove parser_executes_sql=false");
-  Require(!Contains(artifacts.envelope.payload, "SELECT") &&
-              !Contains(artifacts.envelope.payload, "CAST("),
-          "CAST payload embedded source SQL text as authority");
-  Require(!Contains(artifacts.envelope.payload, "reference"),
-          "CAST payload carried reference authority");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal") &&
-              !Contains(artifacts.envelope.payload, "recovery"),
-          "CAST payload carried WAL/recovery authority");
+                   "authority.parser.syntax_evidence_only") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_executable_sblr") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_sql_text_execution") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_storage_or_finality"),
+          "CAST refusal omitted parser non-authority evidence");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "CAST did not emit one exact refusal diagnostic");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              diagnostic.severity == "ERROR" &&
+              DiagnosticField(diagnostic, "canonical_parent_operation_id") ==
+                  kOperationId &&
+              DiagnosticField(diagnostic, "canonical_parent_sblr_opcode") ==
+                  kOpcode &&
+              DiagnosticField(diagnostic, "executable_sblr_emitted") ==
+                  "false",
+          "CAST refusal identity or parent mapping drifted");
 }
 
-void RequireServerAdmission(const SblrEnvelope& envelope) {
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
-  Require(admission.admitted, "server admission rejected CAST exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI dispatch for CAST");
-  Require(admission.operation_id == kOperationId,
-          "server admission CAST operation id mismatch");
-  Require(admission.operation_family == kFamily,
-          "server admission CAST operation family mismatch");
+void RequireOpcodeRegistryContract() {
   const auto* opcode_entry = sblr::LookupSblrOperation(kOperationId);
   Require(opcode_entry != nullptr, "CAST opcode registry row missing");
-  Require(opcode_entry->opcode == kOpcode, "CAST opcode registry opcode drifted");
+  Require(opcode_entry->opcode == kOpcode && opcode_entry->code == 1026 &&
+              opcode_entry->operand_contract == "cast_descriptor" &&
+              opcode_entry->result_contract == "typed_value" &&
+              opcode_entry->executor_id == kOperationId,
+          "CAST exact registry tuple drifted");
   Require(opcode_entry->requires_security_context,
           "CAST opcode registry security context drifted");
-  Require(!opcode_entry->requires_transaction_context,
+  Require(opcode_entry->requires_transaction_context,
           "CAST opcode registry transaction context drifted");
+  Require(opcode_entry->executor_evidence_required &&
+              opcode_entry->executor_evidence_accepted,
+          "CAST opcode registry executor evidence drifted");
+  const auto* stale_alias = sblr::LookupSblrOperation("query.cast_value");
+  Require(stale_alias == nullptr || stale_alias->code == 0,
+          "unallocated CAST alias became canonical executable authority");
 }
 
 void RequireBooleanCastExactRoutes() {
@@ -272,39 +269,7 @@ void RequireBooleanCastExactRoutes() {
     artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
     artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
 
-    Require(!artifacts.cst.messages.has_errors(), "boolean CAST CST failed");
-    Require(!artifacts.ast.messages.has_errors(), "boolean CAST AST failed");
-    Require(artifacts.bound.bound, "boolean CAST bind failed");
-    Require(artifacts.verifier.admitted, "boolean CAST verifier rejected exact route");
-    Require(artifacts.envelope.operation_family == kFamily,
-            "boolean CAST operation family mismatch");
-    Require(artifacts.envelope.operation_id == kOperationId,
-            "boolean CAST operation id mismatch");
-    Require(artifacts.envelope.sblr_opcode == kOpcode,
-            "boolean CAST SBLR opcode mismatch");
-    Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"cast_value\""),
-            "boolean CAST payload missing cast route marker");
-    Require(Contains(artifacts.envelope.payload,
-                     std::string("\"source_descriptor_type\":\"") +
-                         std::string(fixture.source_descriptor_type) + "\""),
-            "boolean CAST payload missing source descriptor proof");
-    Require(Contains(artifacts.envelope.payload, "\"target_descriptor_type\":\"boolean\""),
-            "boolean CAST payload missing boolean target descriptor proof");
-    Require(Contains(artifacts.envelope.payload, fixture.surface_id),
-            "boolean CAST payload missing row-identifiable semantic surface id");
-    Require(Contains(artifacts.envelope.payload, "\"cast_semantic_surface_ids\""),
-            "boolean CAST payload missing semantic surface id list");
-    Require(Contains(artifacts.envelope.payload, "\"requires_transaction_context\":false"),
-            "boolean CAST payload claimed transaction context");
-    Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-            "boolean CAST payload did not prove no SQL text authority");
-    Require(!Contains(artifacts.envelope.payload, fixture.sql),
-            "boolean CAST payload embedded source SQL text");
-    Require(!Contains(artifacts.envelope.payload, "WAL") &&
-                !Contains(artifacts.envelope.payload, "wal"),
-            "boolean CAST payload carried WAL authority");
-
-    RequireServerAdmission(artifacts.envelope);
+    RequireExactRefusal(artifacts);
   }
 }
 
@@ -332,43 +297,7 @@ void RequireSafeTryCastExactRoutes() {
     artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
     artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
 
-    Require(!artifacts.cst.messages.has_errors(), "SAFE/TRY CAST CST failed");
-    Require(!artifacts.ast.messages.has_errors(), "SAFE/TRY CAST AST failed");
-    Require(artifacts.bound.bound, "SAFE/TRY CAST bind failed");
-    Require(artifacts.verifier.admitted, "SAFE/TRY CAST verifier rejected exact route");
-    Require(artifacts.envelope.operation_family == kFamily,
-            "SAFE/TRY CAST operation family mismatch");
-    Require(artifacts.envelope.operation_id == kOperationId,
-            "SAFE/TRY CAST operation id mismatch");
-    Require(artifacts.envelope.sblr_opcode == kOpcode,
-            "SAFE/TRY CAST SBLR opcode mismatch");
-    Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"cast_value\""),
-            "SAFE/TRY CAST payload missing cast route marker");
-    Require(Contains(artifacts.envelope.payload,
-                     std::string("\"cast_function_id\":\"") +
-                         std::string(fixture.function_id) + "\""),
-            "SAFE/TRY CAST payload missing canonical function id");
-    Require(Contains(artifacts.envelope.payload,
-                     std::string("\"target_descriptor_type\":\"") +
-                         std::string(fixture.target_descriptor_type) + "\""),
-            "SAFE/TRY CAST payload missing target descriptor proof");
-    Require(Contains(artifacts.envelope.payload, fixture.bare_surface_id),
-            "SAFE/TRY CAST payload missing bare surface id");
-    Require(Contains(artifacts.envelope.payload, fixture.argument_surface_id),
-            "SAFE/TRY CAST payload missing argument surface id");
-    Require(Contains(artifacts.envelope.payload, "\"cast_semantic_surface_ids\""),
-            "SAFE/TRY CAST payload missing semantic surface id list");
-    Require(Contains(artifacts.envelope.payload, "\"requires_transaction_context\":false"),
-            "SAFE/TRY CAST payload claimed transaction context");
-    Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-            "SAFE/TRY CAST payload did not prove no SQL text authority");
-    Require(!Contains(artifacts.envelope.payload, fixture.sql),
-            "SAFE/TRY CAST payload embedded source SQL text");
-    Require(!Contains(artifacts.envelope.payload, "WAL") &&
-                !Contains(artifacts.envelope.payload, "wal"),
-            "SAFE/TRY CAST payload carried WAL authority");
-
-    RequireServerAdmission(artifacts.envelope);
+    RequireExactRefusal(artifacts);
   }
 }
 
@@ -403,55 +332,6 @@ api::EngineTypedValue Value(std::string_view type, std::string_view encoded) {
   return value;
 }
 
-api::EngineApiRequest GenericCastApiRequest(const CastRuntimeCase& item) {
-  api::EngineApiRequest request;
-  api::EngineRowValue row;
-  row.fields.push_back({"cast_input", Value(item.source_type, item.source_value)});
-  request.rows.push_back(std::move(row));
-  request.descriptors.push_back(Descriptor(item.target_type));
-  return request;
-}
-
-sblr::SblrOperationEnvelope EngineEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope(std::string(kOperationId),
-                                         std::string(kOpcode),
-                                         "trace.cast_value.exact_route.SBSQL-6F701227513B");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = false;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  return envelope;
-}
-
-void RequireSblrDispatch(const CastRuntimeCase& item) {
-  const sblr::SblrDispatchRequest request{
-      EngineContext(),
-      EngineEnvelope(),
-      GenericCastApiRequest(item)};
-  const auto result = sblr::DispatchSblrOperation(request);
-  for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-  }
-  Require(result.envelope_validated, "engine SBLR envelope did not validate");
-  Require(result.accepted, "engine SBLR dispatch did not accept CAST");
-  Require(result.dispatched_to_api, "engine SBLR dispatch did not route CAST to internal API");
-  Require(result.api_result.ok, "EngineCastValue dispatch did not return success");
-  Require(result.api_result.operation_id == kOperationId,
-          "EngineCastValue dispatch returned wrong operation id");
-  Require(HasEvidence(result.api_result, "datatype_cast", "lossless_explicit") ||
-              HasEvidence(result.api_result, "datatype_cast", "lossless_implicit"),
-          "EngineCastValue dispatch missing datatype cast evidence");
-  Require(!result.api_result.result_shape.columns.empty(),
-          "EngineCastValue dispatch returned no result descriptor");
-  Require(result.api_result.result_shape.columns.front().canonical_type_name ==
-              item.target_type,
-          "EngineCastValue dispatch result descriptor mismatch");
-}
-
 void RequireDirectRuntimeValues() {
   for (const auto& item : kRuntimeCases) {
     api::EngineCastValueRequest request;
@@ -464,7 +344,8 @@ void RequireDirectRuntimeValues() {
       std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     }
     Require(result.ok, "direct EngineCastValue returned failure");
-    Require(result.operation_id == kOperationId, "direct EngineCastValue operation id mismatch");
+    Require(result.operation_id == kApiOperationId,
+            "direct EngineCastValue operation id mismatch");
     Require(result.value.descriptor.canonical_type_name == item.target_type,
             "direct EngineCastValue target descriptor mismatch");
     Require(result.value.encoded_value == item.expected_value,
@@ -479,11 +360,10 @@ void RequireDirectRuntimeValues() {
 int main() {
   RequireRegistryEvidence();
   const auto artifacts = RunPipeline();
-  RequireExactLowering(artifacts);
-  RequireServerAdmission(artifacts.envelope);
+  RequireExactRefusal(artifacts);
+  RequireOpcodeRegistryContract();
   RequireBooleanCastExactRoutes();
   RequireSafeTryCastExactRoutes();
-  RequireSblrDispatch(kRuntimeCases.front());
   RequireDirectRuntimeValues();
   std::cout << "sbsql_cast_value_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

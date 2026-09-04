@@ -309,6 +309,10 @@ TemporaryNameCandidateClassification ClassifyTemporaryNameCandidate(
   TemporaryNameCandidateClassification classified;
   if (!visibility.table_visible) {
     classified.ok = true;
+    if (!visibility.known_temporary &&
+        !visibility.hidden_by_temporary_visibility) {
+      classified.kind = TemporaryNameCandidateKind::kCatalog;
+    }
     return classified;
   }
   if (!visibility.table.temporary) {

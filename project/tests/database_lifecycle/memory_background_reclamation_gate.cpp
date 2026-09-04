@@ -101,8 +101,12 @@ void IdleArenaDiagnosticsAndQueryStateAreReclaimed() {
   tag.context_id = "mmch019_arena";
   auto arena = manager.CreateArena(tag);
   Require(arena.Allocate(32768, 16).ok(), "MMCH-019 arena allocation failed");
-  Require(manager.Snapshot().current_bytes == 32768,
-          "MMCH-019 arena setup did not charge memory");
+  const auto arena_snapshot = manager.Snapshot();
+  Require(arena_snapshot.current_bytes >= 32768 &&
+              arena_snapshot.current_bytes <= 32768 + 15 &&
+              arena_snapshot.arena_current_bytes == arena_snapshot.current_bytes &&
+              arena_snapshot.active_allocation_count == 1,
+          "MMCH-019 arena setup did not charge one bounded aligned chunk");
 
   std::uint64_t diagnostics = 2;
   std::uint64_t completed_query_states = 1;

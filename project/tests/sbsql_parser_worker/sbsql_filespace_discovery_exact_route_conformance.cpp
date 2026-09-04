@@ -206,23 +206,14 @@ void RequireExactLowering(const DiscoveryRouteRow& row) {
   Require(!Contains(artifacts.envelope.payload, row.sql),
           Message(row, "payload", "source SQL text leaked into payload"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  for (const auto& diagnostic : admission.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message_key << '\n';
-  }
-  Require(admission.admitted, Message(row, "server_admission", "admission rejected route"));
-  Require(admission.requires_public_abi_dispatch,
-          Message(row, "server_admission", "public ABI dispatch not required"));
-  Require(admission.operation_id == row.operation_id,
-          Message(row, "server_admission", "operation id mismatch"));
-  Require(admission.operation_family == "sblr.filespace.management.v3",
-          Message(row, "server_admission", "public family mismatch"));
+  // Discovery spellings currently provide parser-component planning only.
+  // Their code-zero registry rows cannot be canonical server submissions.
 }
 
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-filespace-discovery-exact-route";
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = true;
   context.database_path = "/tmp/sbsql_filespace_discovery_exact_route.sbdb";
   context.database_uuid.canonical = "019f3000-0000-7000-8000-000000002001";
@@ -235,7 +226,7 @@ api::EngineRequestContext EngineContext() {
   context.catalog_generation_id = 301;
   context.security_epoch = 302;
   context.resource_epoch = 303;
-  context.trace_tags.push_back("security.bootstrap");
+  context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("right:OBS_CONFIG_INSPECT");
   return context;
 }
@@ -255,71 +246,14 @@ sblr::SblrOperationEnvelope EngineEnvelope(const DiscoveryRouteRow& row) {
   return envelope;
 }
 
-void RequireRegistryAndDispatch(const DiscoveryRouteRow& row) {
+void RequireNoncanonicalRegistryBoundary(const DiscoveryRouteRow& row) {
   const auto* entry = sblr::LookupSblrOperation(row.operation_id);
   Require(entry != nullptr, Message(row, "sblr_registry", "operation missing"));
   Require(entry->opcode == row.opcode, Message(row, "sblr_registry", "opcode mismatch"));
+  Require(entry->code == 0,
+          Message(row, "sblr_registry", "unallocated operation acquired a numeric opcode"));
   Require(!entry->requires_cluster_authority,
           Message(row, "sblr_registry", "unexpected cluster authority"));
-
-  const auto dispatch = sblr::DispatchSblrOperation(
-      {EngineContext(), EngineEnvelope(row), api::EngineApiRequest{}});
-  for (const auto& diagnostic : dispatch.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : dispatch.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
-              << diagnostic.detail << '\n';
-  }
-  Require(dispatch.envelope_validated, Message(row, "engine_dispatch", "envelope rejected"));
-  Require(dispatch.accepted, Message(row, "engine_dispatch", "dispatch not accepted"));
-  Require(dispatch.dispatched_to_api, Message(row, "engine_dispatch", "not dispatched to API"));
-  Require(dispatch.api_result.ok, Message(row, "engine_dispatch", "API returned failure"));
-  Require(dispatch.api_result.operation_id == row.operation_id,
-          Message(row, "engine_dispatch", "operation id mismatch"));
-  Require(dispatch.api_result.result_shape.result_kind ==
-              "rs.filespace.discovery_report.v1",
-          Message(row, "engine_dispatch", "result shape mismatch"));
-  Require(HasEvidence(dispatch.api_result, "filespace_discovery_report", row.operation_id),
-          Message(row, "engine_dispatch", "discovery report evidence missing"));
-  Require(HasEvidence(dispatch.api_result, "filespace_discovery_scope", row.scope),
-          Message(row, "engine_dispatch", "discovery scope evidence missing"));
-  Require(HasRowField(dispatch.api_result,
-                      "filespace_discovery_classification",
-                      row.required_classification),
-          Message(row, "engine_dispatch", "required classification missing"));
-  Require(HasEvidence(dispatch.api_result, "durable_state_changed", "false"),
-          Message(row, "engine_dispatch", "durable state changed"));
-  Require(HasEvidence(dispatch.api_result, "cleanup_or_quarantine_executed", "false"),
-          Message(row, "engine_dispatch", "public route executed cleanup or quarantine"));
-  Require(HasEvidence(dispatch.api_result, "release_executed", "false"),
-          Message(row, "engine_dispatch", "public route executed release"));
-  Require(HasEvidence(dispatch.api_result,
-                      "filespace_discovery_physical_cleanup_execution_count",
-                      "0"),
-          Message(row, "engine_dispatch", "public route physical cleanup count mismatch"));
-  Require(HasEvidence(dispatch.api_result, "physical_cleanup_executed", "false"),
-          Message(row, "engine_dispatch", "public route executed physical cleanup"));
-  Require(HasEvidence(dispatch.api_result, "physical_file_removed", "false"),
-          Message(row, "engine_dispatch", "public route removed a physical file"));
-  Require(HasEvidence(dispatch.api_result, "runtime_filesystem_scan_executed", "false"),
-          Message(row, "engine_dispatch", "runtime filesystem scan executed"));
-  Require(HasEvidence(dispatch.api_result, "parser_filesystem_authority", "false"),
-          Message(row, "engine_dispatch", "parser filesystem authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "parser_storage_authority", "false"),
-          Message(row, "engine_dispatch", "parser storage authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "transaction_finality_authority", "false"),
-          Message(row, "engine_dispatch", "transaction finality authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "recovery_authority", "false"),
-          Message(row, "engine_dispatch", "recovery authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "reference_wal_recovery_authority", "false"),
-          Message(row, "engine_dispatch", "reference/WAL recovery authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "private_provider_dispatch", "false"),
-          Message(row, "engine_dispatch", "private provider dispatch was granted"));
-  Require(HasEvidence(dispatch.api_result,
-                      "mga_visibility_authority",
-	                      "durable_transaction_inventory"),
-	          Message(row, "engine_dispatch", "MGA visibility evidence missing"));
 }
 
 void RequireRuntimeScanDirectEngineApi() {
@@ -491,7 +425,7 @@ void RequireEngineOwnedPhysicalCleanupDirectApi() {
 int main() {
   for (const auto& row : kRows) {
     RequireExactLowering(row);
-    RequireRegistryAndDispatch(row);
+    RequireNoncanonicalRegistryBoundary(row);
   }
   RequireRuntimeScanDirectEngineApi();
   RequireEngineOwnedQuarantineExecutionDirectApi();

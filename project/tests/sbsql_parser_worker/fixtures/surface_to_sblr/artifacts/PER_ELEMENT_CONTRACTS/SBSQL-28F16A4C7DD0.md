@@ -27,9 +27,9 @@ Generated public per-element contract snapshot.
 
 | Field | Value |
 | --- | --- |
-| Backlog closure status | e2e_passed |
-| Release final status | e2e_passed |
-| Release claim | public_sbsql_e2e_implemented |
+| Backlog closure status | exact_refusal_passed |
+| Release final status | exact_refusal_passed |
+| Release claim | public_exact_refusal_implemented |
 | Release status | row_evidence_complete |
 | Remaining risk | none |
 
@@ -46,5 +46,6 @@ Generated public per-element contract snapshot.
 ## Boundary
 
 - This snapshot is derived only from tracked public release artifacts.
-- SQL text remains parser-side input; engine behavior is reached through the published SBLR/internal-API contract.
+- SQL text remains parser-side input; this exact refusal stops before executable SBLR, server admission, engine execution, or catalog mutation.
+- The canonical parent is CREATE TABLE; its authenticated CTDX/CTDO constraint carrier remains unavailable in this implementation profile.
 - This snapshot carries no implementation, source-tree, absolute, or private canonicalization path.

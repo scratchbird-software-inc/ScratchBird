@@ -510,6 +510,14 @@ constexpr std::uint32_t kSchemaContextualTextLiteralProfileIssueRequestV2 =
     7711;
 constexpr std::uint32_t kSchemaContextualTextLiteralProfileIssueResultV2 =
     7712;
+// Private bulk-import stream transport. These are independent SBPS messages;
+// they are not PAYLOAD_CHUNK fragments.
+constexpr std::uint32_t kSchemaBulkImportStreamChunkV1 = 7715;
+constexpr std::uint32_t kSchemaBulkImportStreamChunkAckV1 = 7716;
+constexpr std::uint32_t kSchemaBulkImportStreamSealV1 = 7717;
+constexpr std::uint32_t kSchemaBulkImportStreamSealAckV1 = 7718;
+constexpr std::uint32_t kSchemaBulkImportStreamBindV1 = 7719;
+constexpr std::uint32_t kSchemaBulkImportStreamBindAckV1 = 7720;
 constexpr std::uint32_t kSchemaCoordinateSortRequestV1 = 7149;
 constexpr std::uint32_t kSchemaCoordinateSortResultV1 = 7150;
 constexpr std::uint32_t kSchemaCoordinateLimitRequestV1 = 7151;
@@ -973,6 +981,12 @@ enum class MessageType : std::uint16_t {
   kQueryNarrowBindingIssueResult = 695,
   kContextualTextLiteralProfileIssueRequest = 698,
   kContextualTextLiteralProfileIssueResult = 699,
+  kBulkImportStreamChunk = 702,
+  kBulkImportStreamChunkAck = 703,
+  kBulkImportStreamSeal = 704,
+  kBulkImportStreamSealAck = 705,
+  kBulkImportStreamBind = 706,
+  kBulkImportStreamBindAck = 707,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,
   kCoordinateLimitRequest = 156,

@@ -86,6 +86,27 @@ REQUIRED_CTESTS = {
     "sbsql_warning_partial_result_conformance",
 }
 
+CLOSED_SURFACE_STATES = {
+    "e2e_passed",
+    "cluster_provider_route_passed",
+    "exact_refusal_passed",
+}
+EXACT_REFUSAL_EXECUTION_MARKERS = (
+    "executable_sblr_emitted=false",
+    "private_cluster_execution=false",
+)
+EXACT_REFUSAL_RESULT_MARKERS = (
+    "result_published=false",
+    "engine_dispatch_not_reached=true",
+    "engine_result_retained=false",
+)
+EXACT_REFUSAL_MUTATION_MARKERS = (
+    "catalog_mutation=false",
+    "row_mutation=false",
+    "no_mutation",
+    "private_cluster_execution=false",
+)
+
 
 def read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
@@ -97,6 +118,34 @@ def read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def validate_exact_refusal(
+    row: dict[str, str],
+    index: int,
+    row_kind: str,
+    diagnostic_column: str,
+    result_column: str,
+) -> list[str]:
+    errors: list[str] = []
+    diagnostic_proof = row.get(diagnostic_column, "")
+    joined = ";".join(row.values())
+    diagnostic_tokens = (token.strip() for token in diagnostic_proof.split(";"))
+    if not any(
+        token
+        and "=" not in token
+        and "." in token
+        and token == token.upper()
+        for token in diagnostic_tokens
+    ):
+        errors.append(f"{row_kind} row {index}: exact refusal lacks a concrete diagnostic")
+    if not any(marker in joined for marker in EXACT_REFUSAL_EXECUTION_MARKERS):
+        errors.append(f"{row_kind} row {index}: exact refusal lacks no-execution proof")
+    if not any(marker in row.get(result_column, "") for marker in EXACT_REFUSAL_RESULT_MARKERS):
+        errors.append(f"{row_kind} row {index}: exact refusal lacks no-result proof")
+    if not any(marker in joined for marker in EXACT_REFUSAL_MUTATION_MARKERS):
+        errors.append(f"{row_kind} row {index}: exact refusal lacks no-mutation proof")
+    return errors
 
 
 def validate_message_vectors(repo: Path) -> list[str]:
@@ -163,10 +212,19 @@ def validate_row_evidence(repo: Path) -> list[str]:
             f"missing_release={len(evidence_ids - release_ids)} missing_evidence={len(release_ids - evidence_ids)}"
         )
 
-    allowed_states = {"e2e_passed", "cluster_provider_route_passed"}
     for index, row in enumerate(evidence_rows, start=2):
-        if row["final_state"] not in allowed_states:
+        if row["final_state"] not in CLOSED_SURFACE_STATES:
             errors.append(f"evidence row {index}: final_state not closed: {row['final_state']}")
+        elif row["final_state"] == "exact_refusal_passed":
+            errors.extend(
+                validate_exact_refusal(
+                    row,
+                    index,
+                    "evidence",
+                    "diagnostic_proof",
+                    "result_proof",
+                )
+            )
         if "canonical_message_vector_set" not in row["diagnostic_proof"]:
             errors.append(f"evidence row {index}: missing canonical message vector proof")
         for column in ("result_proof", "ctest_label", "fixture_path", "implementation_refs"):
@@ -174,8 +232,22 @@ def validate_row_evidence(repo: Path) -> list[str]:
                 errors.append(f"evidence row {index}: empty {column}")
 
     for index, row in enumerate(release_rows, start=2):
-        if row["final_status"] not in allowed_states:
+        if row["final_status"] not in CLOSED_SURFACE_STATES:
             errors.append(f"release row {index}: final_status not closed: {row['final_status']}")
+        elif row["final_status"] == "exact_refusal_passed":
+            errors.extend(
+                validate_exact_refusal(
+                    row,
+                    index,
+                    "release",
+                    "diagnostic_refs",
+                    "result_refs",
+                )
+            )
+            if not row["auth_route_ref"].endswith("#exact_refusal_passed"):
+                errors.append(f"release row {index}: authenticated route is not refusal-scoped")
+            if not row["sblr_round_trip_ref"].endswith("#exact_refusal_passed"):
+                errors.append(f"release row {index}: round-trip evidence is not refusal-scoped")
         if row["release_status"] != "row_evidence_complete":
             errors.append(f"release row {index}: release_status not complete: {row['release_status']}")
         if row["remaining_risk"] != "none":

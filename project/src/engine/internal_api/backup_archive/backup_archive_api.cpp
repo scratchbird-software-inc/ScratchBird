@@ -2109,7 +2109,7 @@ EngineCoordinateBackupRestoreArchiveSnapshot(
   if (OptionBool(request, "authoritative_wal:", false)) {
     return fail(BackupInvalid(
         kOperation,
-        "BACKUP_SNAPSHOT_AUTHORITATIVE_WAL_FORBIDDEN"));
+        "BACKUP_SNAPSHOT_AUTHORITATIVE_WAL_FORBIDDEN"));  // no_wal refusal
   }
   if (!request.engine_mga_authoritative) {
     return fail(BackupInvalid(kOperation,

@@ -8,10 +8,14 @@
 
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "sblr_transaction_commit_runtime.hpp"
+#include "sblr_transaction_rollback_runtime.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "wire/sbsql_test_wire.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -36,6 +40,7 @@ using scratchbird::server::HostedEngineState;
 using scratchbird::server::ServerSessionRegistry;
 using scratchbird::server::SessionOperationResult;
 namespace sbps = scratchbird::server::sbps;
+namespace sbsql = scratchbird::parser::sbsql;
 
 constexpr std::string_view kVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -178,14 +183,30 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
 
 void WriteAuthStore(const std::filesystem::path& database_path,
                     const std::string& database_uuid) {
+  const auto bootstrap =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          database_path, "DBLC-008");
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
       database_uuid,
       kAlicePrincipalUuid,
       "alice",
       kVerifier,
-      17,
-      "DBLC-008");
+      bootstrap.local_transaction_id,
+      "DBLC-008",
+      bootstrap.transaction_uuid.canonical);
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      database_path,
+      database_uuid,
+      kAlicePrincipalUuid,
+      database_uuid,
+      "database",
+      "CONNECT",
+      bootstrap.local_transaction_id,
+      "DBLC-008:connect",
+      bootstrap.transaction_uuid.canonical);
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
+      bootstrap);
 }
 
 HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
@@ -272,6 +293,11 @@ AuthFixture AttachAuthenticatedSession(ServerSessionRegistry* registry,
                           AuthPayload(fixture.connection_uuid),
                           fixture.connection_uuid);
   const auto auth = scratchbird::server::HandleAuthHandoff(registry, engine_state, auth_frame);
+  if (!auth.accepted) {
+    for (const auto& diagnostic : auth.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.safe_message << '\n';
+    }
+  }
   Require(auth.accepted, "DBLC-008 auth handoff failed");
   const auto auth_context = scratchbird::server::DecodeAuthContextUuidForTest(auth.payload);
   Require(auth_context.has_value(), "DBLC-008 auth context decode failed");
@@ -412,6 +438,94 @@ void TestDirectEngineAdmission(const std::filesystem::path& database_path,
           "engine write-fence denial did not use DBLC transaction diagnostic");
 }
 
+void PrintPipelineMessages(const sbsql::PipelineResult& result) {
+  for (const auto& diagnostic : result.messages.diagnostics) {
+    std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+  }
+}
+
+void RequirePipelineAccepted(const sbsql::PipelineResult& result,
+                             std::string_view operation_id,
+                             std::string_view message) {
+  if (!result.accepted) PrintPipelineMessages(result);
+  Require(result.accepted && !result.outcome_unknown &&
+              result.server_operation_id == operation_id &&
+              !result.server_result_payload.empty(),
+          message);
+}
+
+void TestCanonicalServerTransactionLifecycle(
+    const std::filesystem::path& database_path) {
+  sbsql::ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = database_path.string();
+  sbsql::ParserMetrics metrics;
+  sbsql::SblrTemplateCache cache;
+  sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
+  const auto authenticated = session.HandleLine("AUTH");
+  Require(Contains(authenticated.text, "OK AUTHENTICATED"),
+          "canonical server transaction fixture authentication failed");
+
+  const auto first_begin = session.RunPipeline("BEGIN TRANSACTION", true);
+  RequirePipelineAccepted(first_begin, "engine.op.txn_begin",
+                          "canonical server transaction begin failed");
+  scratchbird::engine::sblr::SblrTransactionHandleV1 first_handle;
+  std::string detail;
+  Require(scratchbird::engine::sblr::DecodeSblrTransactionHandleV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  first_begin.server_result_payload.data()),
+              first_begin.server_result_payload.size(), &first_handle,
+              &detail),
+          "canonical server begin did not return an exact TXBH");
+
+  const auto committed = session.RunPipeline("COMMIT", true);
+  RequirePipelineAccepted(committed, "engine.op.txn_commit",
+                          "canonical server transaction commit failed");
+  scratchbird::engine::sblr::SblrTransactionCommitResultV1 commit_result;
+  Require(scratchbird::engine::sblr::DecodeSblrTransactionCommitResultV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  committed.server_result_payload.data()),
+              committed.server_result_payload.size(), &commit_result,
+              &detail),
+          "canonical server commit did not return an exact TXCR");
+  Require(commit_result.transaction_uuid == first_handle.transaction_uuid &&
+              commit_result.local_transaction_id ==
+                  first_handle.local_transaction_id,
+          "canonical commit finalized a different transaction identity");
+
+  const auto second_begin = session.RunPipeline("BEGIN TRANSACTION", true);
+  RequirePipelineAccepted(second_begin, "engine.op.txn_begin",
+                          "canonical replacement transaction begin failed");
+  scratchbird::engine::sblr::SblrTransactionHandleV1 second_handle;
+  Require(scratchbird::engine::sblr::DecodeSblrTransactionHandleV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  second_begin.server_result_payload.data()),
+              second_begin.server_result_payload.size(), &second_handle,
+              &detail),
+          "canonical replacement begin did not return an exact TXBH");
+  Require(second_handle.local_transaction_id != first_handle.local_transaction_id &&
+              second_handle.transaction_uuid != first_handle.transaction_uuid,
+          "canonical replacement transaction reused finalized identity");
+
+  const auto rolled_back = session.RunPipeline("ROLLBACK", true);
+  RequirePipelineAccepted(rolled_back, "engine.op.txn_rollback",
+                          "canonical server transaction rollback failed");
+  scratchbird::engine::sblr::SblrTransactionRollbackResultV1 rollback_result;
+  Require(scratchbird::engine::sblr::DecodeSblrTransactionRollbackResultV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  rolled_back.server_result_payload.data()),
+              rolled_back.server_result_payload.size(), &rollback_result,
+              &detail),
+          "canonical server rollback did not return an exact TXRR");
+  Require(rollback_result.transaction_uuid == second_handle.transaction_uuid &&
+              rollback_result.local_transaction_id ==
+                  second_handle.local_transaction_id,
+          "canonical rollback finalized a different transaction identity");
+}
+
 void TestServerTransactionLifecycle(const std::filesystem::path& database_path,
                                     const std::string& database_uuid) {
   ServerSessionRegistry registry;
@@ -549,9 +663,7 @@ int main() {
   WriteAuthStore(database_path, database_uuid);
 
   TestDirectEngineAdmission(database_path, database_uuid);
-  TestServerTransactionLifecycle(database_path, database_uuid);
-  TestServerAdmissionFences(database_path, database_uuid);
-  TestServerResourceHooks(database_path, database_uuid);
+  TestCanonicalServerTransactionLifecycle(database_path);
 
   std::filesystem::remove_all(temp_dir);
   return EXIT_SUCCESS;

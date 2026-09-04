@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Close SBSQL-MISS-017 long-soak/security/package/support/audit evidence."""
+"""Audit SBSQL-MISS-017 long-soak/security/package/support evidence state."""
 
 from __future__ import annotations
 
@@ -65,7 +65,8 @@ SOURCE_TOKENS = {
         "CDP-047 standalone soak leak and stability CTest gate",
         "GROWTH_BUDGETS",
         "ROUTE_NAMES = (\"embedded\", \"local-ipc\", \"inet\")",
-        "write_local_password_auth_fixture",
+        "PUBLIC_TEST_PASSWORD, seed_database",
+        "seed_database(",
         "parser_finality_authority",
         "reference_finality_authority",
         "mga_relation_metadata=",
@@ -74,7 +75,8 @@ SOURCE_TOKENS = {
         "CDP-049 config defaults and rollback policy evidence gate",
         "candidate_manifest",
         "DML.NATIVE_BULK_INGEST.DISABLED",
-        "write_local_password_auth_fixture",
+        "PUBLIC_TEST_PASSWORD, seed_database",
+        "seed_database(",
         "parser_finality_authority",
         "reference_finality_authority",
     ),
@@ -164,12 +166,19 @@ def validate_release_fixture(repo: Path, errors: list[str]) -> tuple[int, int]:
         return 0, 0
     payload = json.loads(read_text(fixture))
     require(
-        payload.get("schema_version") == "sbsql.release_certification.sml_067_081.v1",
+        payload.get("schema_version") == "sbsql.release_certification_state.sml_067_081.v2",
         "release fixture schema drift",
         errors,
     )
     require(payload.get("row_count") == 45, "release fixture row_count drift", errors)
-    require(payload.get("rows_not_closed") == 0, "release fixture has non-closed rows", errors)
+    require(payload.get("rows_not_closed") == 45, "release fixture open-row count drift", errors)
+    require(payload.get("release_certified") is False, "release fixture false finality drift", errors)
+    require(payload.get("workplan_status") == "in_progress", "release workplan status drift", errors)
+    require(
+        payload.get("open_acceptance_phases") == ["IA-14", "IA-15"],
+        "release open-acceptance phases drift",
+        errors,
+    )
     require(payload.get("network_required") is False, "release fixture network dependency drift", errors)
     require(
         payload.get("docs_documentation_draft_created") is False,
@@ -194,10 +203,15 @@ def validate_release_fixture(repo: Path, errors: list[str]) -> tuple[int, int]:
             for row in rows:
                 rows_checked += 1
                 row_id = str(row.get("row_id", ""))
-                require(row.get("status") == "closed", f"{row_id} is not closed", errors)
+                require(row.get("status") == "acceptance_open", f"{row_id} acceptance state drift", errors)
                 require(
-                    row.get("evidence_state") == "implemented_and_proven",
+                    row.get("evidence_state") == "structural_and_declarative_evidence_retained",
                     f"{row_id} evidence state drift",
+                    errors,
+                )
+                require(
+                    row.get("closed_by") == "not_applicable_release_acceptance_open",
+                    f"{row_id} false closure identity drift",
                     errors,
                 )
                 require(row.get("parser_executes_sql") is False, f"{row_id} parser authority drift", errors)
@@ -213,7 +227,7 @@ def validate_release_fixture(repo: Path, errors: list[str]) -> tuple[int, int]:
                     errors,
                 )
                 require(row.get("exception_count") == 0, f"{row_id} exception count drift", errors)
-                require(row.get("open_row_count") == 0, f"{row_id} open row count drift", errors)
+                require(row.get("open_row_count") == 1, f"{row_id} open row count drift", errors)
                 for output in row.get("generated_outputs", []):
                     require(safe_public_path(Path(str(output))), f"{row_id} unsafe output path {output}", errors)
     return len(matrices), rows_checked
@@ -245,7 +259,9 @@ def main() -> int:
     print(f"required_ctests={len(REQUIRED_CTESTS)}")
     print(f"release_matrices={matrix_count}")
     print(f"sbsql_miss_017_rows_checked={rows_checked}")
-    print("long_soak_security_packaging_support_audit=implemented_and_proven")
+    print("long_soak_security_packaging_support_audit=evidence_retained_acceptance_open")
+    print("release_certified=false")
+    print("open_acceptance_phases=IA-14,IA-15")
     print("engine_authority=SBLR_UUID_MGA_only")
     return 0
 

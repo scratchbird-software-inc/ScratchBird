@@ -235,6 +235,8 @@ plan::CanonicalMgaStatementContext CanonicalMgaContextFromResolvedSnapshot(
 CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     const CanonicalHeapOptimizerAdmissionRequest& request,
     const plan::CanonicalMgaStatementContext& canonical_mga,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor&
+        resolved_statement_snapshot,
     const std::uint64_t admitted_at_monotonic_ns) {
   const auto& context = request.context;
   const auto& relational = request.relational_dag;
@@ -1395,26 +1397,42 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   }
 
   std::vector<std::string> relation_uuids;
+  relation_uuids.reserve(scans.size());
+  for (const auto* scan : scans) {
+    const auto& relation_uuid = scan->required_object_uuids.front();
+    if (std::ranges::find(relation_uuids, relation_uuid) ==
+        relation_uuids.end()) {
+      relation_uuids.push_back(relation_uuid);
+    }
+  }
+  std::ranges::sort(relation_uuids);
+  auto authority_cohort = request.authority_cohort;
+  if (authority_cohort == nullptr) {
+    auto prepared = PrepareMgaHeapReadAuthorities(
+        context, relation_uuids, resolved_statement_snapshot);
+    if (!prepared.ok || prepared.cohort == nullptr) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-DESCRIPTOR-V1",
+                    prepared.diagnostic.detail.empty()
+                        ? "current_statement_relation_authority_cohort"
+                        : prepared.diagnostic.detail);
+    }
+    authority_cohort = std::move(prepared.cohort);
+  }
+  if (authority_cohort->relations.size() != relation_uuids.size()) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-DESCRIPTOR-V1",
+                  "exact_statement_relation_authority_cohort");
+  }
   std::vector<std::string> projection_type_names;
   std::vector<EngineDescriptor> projection_descriptors;
   for (const auto* scan : scans) {
     const auto& relation_uuid = scan->required_object_uuids.front();
-    relation_uuids.push_back(relation_uuid);
-    const auto temporary = CheckMgaTemporaryTableVisibility(context,
-                                                              relation_uuid);
-    if (!temporary.ok || !temporary.table_visible || temporary.known_temporary ||
-        temporary.table.temporary) {
-      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-RELATION-V1",
-                    temporary.ok ? "current_non_temporary_relation"
-                                 : temporary.diagnostic.detail);
-    }
-    const auto loaded = LoadMgaRelationStorageDescriptor(context,
-                                                          relation_uuid);
-    if (!loaded.ok) {
+    const auto prepared = authority_cohort->relations.find(relation_uuid);
+    if (prepared == authority_cohort->relations.end() ||
+        prepared->second == nullptr) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-DESCRIPTOR-V1",
-                    loaded.diagnostic.detail);
+                    "relation_absent_from_statement_authority_cohort");
     }
-    const auto& persisted = loaded.descriptor;
+    const auto& persisted = prepared->second->descriptor;
     const auto width = scan->output_descriptor_ids.size();
     if (persisted.relation_uuid.canonical != relation_uuid ||
         persisted.database_uuid.canonical != context.database_uuid.canonical ||
@@ -1512,22 +1530,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       projection_descriptor.descriptor_kind = "scalar";
       projection_descriptors.push_back(std::move(projection_descriptor));
     }
-    const auto authorization = EvaluateMaterializedAuthorization(
-        context, context.authorization_context, "SELECT", relation_uuid);
-    if (!authorization.authorized || authorization.denied ||
-        authorization.policy_recheck_required ||
-        !authorization.diagnostics.empty()) {
-      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-SECURITY-V1",
-                    authorization.diagnostics.empty()
-                        ? "select_authorization"
-                        : authorization.diagnostics.front().detail);
-    }
   }
-
-  std::ranges::sort(relation_uuids);
-  relation_uuids.erase(
-      std::unique(relation_uuids.begin(), relation_uuids.end()),
-      relation_uuids.end());
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
   admission_context.statement_uuid = context.statement_uuid.canonical;
@@ -1594,6 +1597,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       std::move(projection_type_names);
   result.current_relation_projection_descriptors =
       std::move(projection_descriptors);
+  result.authority_cohort = std::move(authority_cohort);
   return result;
 }
 
@@ -2014,7 +2018,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         return node.node_kind == RelationalDagNodeKind::kScan;
       }) >= 2) {
     return BuildCanonicalCrossJoinHeapAdmission(
-        request, canonical_mga, admitted_at_monotonic_ns);
+        request, canonical_mga, snapshot.snapshot_vector,
+        admitted_at_monotonic_ns);
   }
   const RelationalDagNode* scan_node = nullptr;
   const RelationalDagNode* filter_node = nullptr;
@@ -3155,20 +3160,27 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   logical.property_catalog.mga_statement_context = canonical_mga;
 
   const std::string& relation_uuid = node.required_object_uuids.front();
-  const auto temporary =
-      CheckMgaTemporaryTableVisibility(context, relation_uuid);
-  if (!temporary.ok || !temporary.table_visible ||
-      temporary.known_temporary || temporary.table.temporary) {
-    return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-RELATION-V1",
-                  temporary.ok ? "current_non_temporary_relation"
-                               : temporary.diagnostic.detail);
+  auto authority_cohort = request.authority_cohort;
+  if (authority_cohort == nullptr) {
+    const std::array<std::string, 1> relation_uuids{relation_uuid};
+    auto prepared = PrepareMgaHeapReadAuthorities(
+        context, relation_uuids, snapshot.snapshot_vector);
+    if (!prepared.ok || prepared.cohort == nullptr) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-DESCRIPTOR-V1",
+                    prepared.diagnostic.detail.empty()
+                        ? "current_statement_relation_authority_cohort"
+                        : prepared.diagnostic.detail);
+    }
+    authority_cohort = std::move(prepared.cohort);
   }
-  const auto loaded = LoadMgaRelationStorageDescriptor(context, relation_uuid);
-  if (!loaded.ok) {
+  const auto prepared = authority_cohort->relations.find(relation_uuid);
+  if (authority_cohort->relations.size() != 1 ||
+      prepared == authority_cohort->relations.end() ||
+      prepared->second == nullptr) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-DESCRIPTOR-V1",
-                  loaded.diagnostic.detail);
+                  "exact_statement_relation_authority_cohort");
   }
-  const auto& persisted = loaded.descriptor;
+  const auto& persisted = prepared->second->descriptor;
   if (persisted.relation_uuid.canonical != relation_uuid ||
       persisted.database_uuid.canonical != context.database_uuid.canonical ||
       persisted.relation_kind != "table" ||
@@ -3297,17 +3309,6 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     projection_descriptors.push_back(std::move(projection_descriptor));
   }
 
-  const auto authorization = EvaluateMaterializedAuthorization(
-      context, context.authorization_context, "SELECT", relation_uuid);
-  if (!authorization.authorized || authorization.denied ||
-      authorization.policy_recheck_required ||
-      !authorization.diagnostics.empty()) {
-    return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-SECURITY-V1",
-                  authorization.diagnostics.empty()
-                      ? "select_authorization"
-                      : authorization.diagnostics.front().detail);
-  }
-
   opt::CanonicalNativeObjectAdmissionContext admission_context;
   admission_context.statement_uuid = context.statement_uuid.canonical;
   admission_context.catalog_snapshot_uuid =
@@ -3383,6 +3384,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       std::move(projection_type_names);
   result.current_relation_projection_descriptors =
       std::move(projection_descriptors);
+  result.authority_cohort = std::move(authority_cohort);
   return result;
 }
 

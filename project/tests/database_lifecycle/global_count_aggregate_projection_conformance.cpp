@@ -7,7 +7,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
-#include "scratchbird/engine/sblr_envelope.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -18,7 +17,6 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
-#include "sblr_dispatch_server.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -40,7 +38,6 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace platform = scratchbird::core::platform;
-namespace server = scratchbird::server;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 
@@ -427,216 +424,12 @@ api::EngineSelectRowsRequest AvgRequest(
   return request;
 }
 
-std::string Hex(std::string_view value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(value.size() * 2u);
-  for (const unsigned char byte : value) {
-    out.push_back(kHex[(byte >> 4u) & 0x0fu]);
-    out.push_back(kHex[byte & 0x0fu]);
-  }
-  return out;
-}
-
-std::string PackedAggregateProjection(
-    api::EngineGlobalAggregateOperation operation,
-    std::string_view alias,
-    std::string_view function_uuid,
-    const api::MgaRelationStorageDescriptor& relation,
-    const api::MgaRelationColumnStorageDescriptor* column,
-    std::string operation_encoding = {},
-    std::string descriptor_generation_encoding = {}) {
-  api::EngineDescriptor result =
-      api::EngineGlobalAggregateCountResultDescriptor();
-  if (function_uuid == api::EngineGlobalAggregateAvgFunctionUuid() &&
-      column != nullptr) {
-    const std::string& type =
-        column->value_descriptor.canonical_type_name;
-    result = (type == "int32" || type == "int64" ||
-              type == "integer" || type == "bigint")
-                 ? api::EngineGlobalAggregateAvgIntegerResultDescriptor()
-                 : api::EngineGlobalAggregateAvgRealResultDescriptor();
-  }
-  if (operation_encoding.empty()) {
-    operation_encoding =
-        std::to_string(static_cast<unsigned>(operation));
-  }
-  if (descriptor_generation_encoding.empty()) {
-    descriptor_generation_encoding =
-        std::to_string(relation.descriptor_generation);
-  }
-  return "gag1|" + Hex(function_uuid) + "|" +
-         operation_encoding + "|" +
-         Hex(alias) + "|" + Hex(relation.relation_uuid.canonical) + "|" +
-         Hex(relation.descriptor_uuid.canonical) + "|" +
-         descriptor_generation_encoding + "|" +
-         Hex(column == nullptr ? std::string_view{}
-                               : std::string_view(column->column_uuid.canonical)) +
-         "|" +
-         Hex(column == nullptr
-                 ? std::string_view{}
-                 : std::string_view(
-                       column->value_descriptor.descriptor_uuid.canonical)) +
-         "|" +
-         Hex(column == nullptr
-                 ? std::string_view{}
-                 : std::string_view(column->value_descriptor.descriptor_kind)) +
-         "|" +
-         Hex(column == nullptr
-                 ? std::string_view{}
-                 : std::string_view(
-                       column->value_descriptor.canonical_type_name)) +
-         "|" +
-         Hex(column == nullptr
-                 ? std::string_view{}
-                 : std::string_view(
-                       column->value_descriptor.encoded_descriptor)) +
-         "|" + Hex(result.descriptor_kind) + "|" +
-         Hex(result.canonical_type_name) + "|" +
-         Hex(result.encoded_descriptor);
-}
-
-sblr::SblrDispatchResult DispatchAggregateRequest(
-    const api::EngineRequestContext& context,
-    const std::string& table_uuid,
-    std::string function_uuid =
-        std::string(api::EngineGlobalAggregateCountFunctionUuid()),
-    std::string result_projection_marker =
-        "sblr.global_aggregate_projection.v1",
-    std::vector<std::string> additional_result_projections = {},
-    std::string projection_count = "3",
-    std::vector<std::pair<std::string, std::string>>
-        additional_transport_operands = {}) {
-  const auto loaded = api::LoadMgaRelationStorageDescriptor(context, table_uuid);
-  Require(loaded.ok && loaded.descriptor.columns.size() == 1,
-          "SBLR global aggregate descriptor load failed");
-  const auto& descriptor = loaded.descriptor;
-  const auto& column = descriptor.columns.front();
-
-  auto envelope = sblr::MakeSblrEnvelope(
-      "dml.select_rows", "SBLR_DML_SELECT_ROWS",
-      "SBLR-GLOBAL-COUNT-AGGREGATE-CONFORMANCE");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back(
-      {"text", "target_object_uuid", table_uuid});
-  envelope.operands.push_back({"text", "target_object_kind", "table"});
-  envelope.operands.push_back({"text", "source_uuid", table_uuid});
-  envelope.operands.push_back({"text", "source_kind", "table"});
-  envelope.operands.push_back(
-      {"text", "result_projection",
-       std::move(result_projection_marker)});
-  for (auto& projection : additional_result_projections) {
-    envelope.operands.push_back(
-        {"text", "result_projection", std::move(projection)});
-  }
-  envelope.operands.push_back(
-      {"text", "aggregate_function", function_uuid});
-  envelope.operands.push_back(
-      {"text", "projection_count", std::move(projection_count)});
-  envelope.operands.push_back(
-      {"text", "projection_0",
-       PackedAggregateProjection(
-           api::EngineGlobalAggregateOperation::count_star, "count_all",
-           function_uuid, descriptor, nullptr)});
-  envelope.operands.push_back(
-      {"text", "projection_1",
-       PackedAggregateProjection(
-           api::EngineGlobalAggregateOperation::count_non_null_field,
-           "count_value", function_uuid, descriptor, &column)});
-  envelope.operands.push_back(
-      {"text", "projection_2",
-       PackedAggregateProjection(
-           api::EngineGlobalAggregateOperation::count_distinct_field,
-           "count_distinct_value", function_uuid, descriptor, &column)});
-  for (auto& [name, value] : additional_transport_operands) {
-    envelope.operands.push_back(
-        {"text", std::move(name), std::move(value)});
-  }
-
-  sblr::SblrDispatchRequest request;
-  request.context = context;
-  request.envelope = std::move(envelope);
-  return sblr::DispatchSblrOperation(std::move(request));
-}
-
-sblr::SblrDispatchResult DispatchAvgRequest(
-    const api::EngineRequestContext& context,
-    const std::string& table_uuid,
-    std::string aggregate_function =
-        std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-    std::string packed_function = {},
-    api::EngineGlobalAggregateOperation operation =
-        api::EngineGlobalAggregateOperation::avg_field,
-    std::string projection_count = "1",
-    std::string projection_index = "0",
-    std::string operation_encoding = {},
-    std::string descriptor_generation_encoding = {}) {
-  const auto loaded = api::LoadMgaRelationStorageDescriptor(context,
-                                                             table_uuid);
-  Require(loaded.ok && loaded.descriptor.columns.size() == 1,
-          "SBLR global AVG descriptor load failed");
-  const auto& descriptor = loaded.descriptor;
-  const auto& column = descriptor.columns.front();
-  if (packed_function.empty()) packed_function = aggregate_function;
-
-  auto envelope = sblr::MakeSblrEnvelope(
-      "dml.select_rows", "SBLR_DML_SELECT_ROWS",
-      "SBLR-GLOBAL-AVG-AGGREGATE-CONFORMANCE");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back(
-      {"text", "target_object_uuid", table_uuid});
-  envelope.operands.push_back({"text", "target_object_kind", "table"});
-  envelope.operands.push_back({"text", "source_uuid", table_uuid});
-  envelope.operands.push_back({"text", "source_kind", "table"});
-  envelope.operands.push_back(
-      {"text", "result_projection",
-       "sblr.global_aggregate_projection.v1"});
-  envelope.operands.push_back(
-      {"text", "aggregate_function", aggregate_function});
-  envelope.operands.push_back(
-      {"text", "projection_count", std::move(projection_count)});
-  envelope.operands.push_back(
-      {"text", "projection_" + projection_index,
-       PackedAggregateProjection(operation,
-                                 "avg_value",
-                                 packed_function,
-                                 descriptor,
-                                 &column,
-                                 std::move(operation_encoding),
-                                 std::move(descriptor_generation_encoding))});
-
-  sblr::SblrDispatchRequest request;
-  request.context = context;
-  request.envelope = std::move(envelope);
-  return sblr::DispatchSblrOperation(std::move(request));
-}
-
 std::string EvidenceValue(const api::EngineApiResult& result,
                           std::string_view kind) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind) return evidence.evidence_id;
   }
   return {};
-}
-
-void RequireDispatchRejectedBeforeScan(
-    const sblr::SblrDispatchResult& result,
-    std::string_view message) {
-  Require(result.envelope_validated && result.accepted &&
-              result.dispatched_to_api && !result.api_result.ok &&
-              result.api_result.result_shape.rows.empty(),
-          message);
-  Require(EvidenceValue(result.api_result,
-                        "global_aggregate_relation_scan").empty(),
-          "refused global aggregate packet reached the MGA relation scan");
 }
 
 void RequireCounts(const api::EngineSelectRowsResult& result,
@@ -778,6 +571,14 @@ bool HasDiagnosticDetail(const api::EngineApiResult& result,
   return false;
 }
 
+bool HasDispatchDiagnostic(const sblr::SblrDispatchResult& result,
+                           std::string_view code) {
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
 api::EngineCreateViewRequest GlobalAggregateViewRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
@@ -866,187 +667,6 @@ api::EngineSelectRowsRequest GlobalAggregateViewSelectRequest(
   request.descriptors.push_back(
       resolved.semantic_projection.projection_descriptor);
   return request;
-}
-
-std::string PackedGlobalAggregateViewCreate(
-    const api::MgaRelationStorageDescriptor& relation,
-    std::int32_t literal,
-    std::string_view alias = "AVG_RESULT") {
-  Require(relation.columns.size() == 1,
-          "gavc1 source descriptor width drifted");
-  const auto& column = relation.columns.front();
-  const auto literal_descriptor =
-      api::EngineGlobalAggregateExpressionInt32LiteralDescriptor();
-  const auto expression_descriptor =
-      api::EngineGlobalAggregateExpressionInt64ResultDescriptor();
-  const auto result_descriptor =
-      api::EngineGlobalAggregateAvgIntegerResultDescriptor();
-  return "gavc1|0|" + Hex(relation.relation_uuid.canonical) + "|" +
-         Hex(relation.descriptor_uuid.canonical) + "|" +
-         std::to_string(relation.descriptor_generation) + "|" +
-         Hex(column.column_uuid.canonical) + "|" +
-         Hex(column.value_descriptor.descriptor_uuid.canonical) + "|" +
-         Hex(column.value_descriptor.descriptor_kind) + "|" +
-         Hex(column.value_descriptor.canonical_type_name) + "|" +
-         Hex(column.value_descriptor.encoded_descriptor) + "|" +
-         Hex(api::kEngineGlobalAggregateViewInt32MultiplyV1) + "|" +
-         Hex(literal_descriptor.descriptor_kind) + "|" +
-         Hex(literal_descriptor.canonical_type_name) + "|" +
-         Hex(literal_descriptor.encoded_descriptor) + "|" +
-         Hex(std::to_string(literal)) + "|" +
-         Hex(expression_descriptor.descriptor_kind) + "|" +
-         Hex(expression_descriptor.canonical_type_name) + "|" +
-         Hex(expression_descriptor.encoded_descriptor) + "|" +
-         Hex(api::EngineGlobalAggregateAvgFunctionUuid()) + "|" +
-         Hex(alias) + "|" + Hex(result_descriptor.descriptor_kind) + "|" +
-         Hex(result_descriptor.canonical_type_name) + "|" +
-         Hex(result_descriptor.encoded_descriptor);
-}
-
-std::string ServerGlobalAggregateViewCreateEnvelope(
-    const Fixture& fixture,
-    const api::MgaRelationStorageDescriptor& relation,
-    std::string_view view_name,
-    std::string_view projection_count,
-    std::string_view packed_projection) {
-  return "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
-         "\"operation_id\":\"ddl.create_view\","
-         "\"opcode\":\"SBLR_DDL_CREATE_VIEW\","
-         "\"operation_family\":\"sblr.catalog.mutation.v3\","
-         "\"contains_sql_text\":false,"
-         "\"parser_resolved_names_to_uuids\":true,"
-         "\"identifier_profile_uuid\":\"firebird_v5\","
-         "\"target_schema_uuid\":\"" + fixture.schema_uuid +
-         "\",\"view_name\":\"" + std::string(view_name) +
-         "\",\"view_query_shape\":\"" +
-         api::kEngineGlobalAggregateViewMarkerV1 +
-         "\",\"view_source_uuid\":\"" + relation.relation_uuid.canonical +
-         "\",\"view_projection_count\":\"" +
-         std::string(projection_count) +
-         "\",\"view_projection_0\":\"" +
-         std::string(packed_projection) + "\"}";
-}
-
-std::string CanonicalServerOperationEnvelope(
-    std::string_view binary_envelope) {
-  const auto decoded = scratchbird::engine::DecodeSblrEnvelopeBytes(
-      reinterpret_cast<const std::uint8_t*>(binary_envelope.data()),
-      static_cast<std::uint64_t>(binary_envelope.size()));
-  Require(decoded.status == scratchbird::engine::SblrCodecStatus::ok &&
-              decoded.envelope.payload_kind ==
-                  scratchbird::engine::SblrPayloadKind::operation_envelope &&
-              !decoded.envelope.canonical_bytes.empty(),
-          "generic server CREATE VIEW bridge did not produce a canonical "
-          "public operation envelope");
-  return std::string(decoded.envelope.canonical_bytes.begin(),
-                     decoded.envelope.canonical_bytes.end());
-}
-
-std::string PackedGlobalAggregateViewSelect(
-    const api::EngineResolveNameResult& resolved,
-    std::uint64_t generation_override = 0,
-    std::string_view alias_override = {}) {
-  Require(resolved.ok && resolved.semantic_projection.present,
-          "gavs1 semantic projection required");
-  const auto& projection = resolved.semantic_projection;
-  const auto generation = generation_override == 0
-                              ? projection.descriptor_generation
-                              : generation_override;
-  const std::string_view alias = alias_override.empty()
-                                     ? std::string_view(projection.result_alias)
-                                     : alias_override;
-  return "gavs1|" + Hex(projection.marker) + "|" +
-         Hex(projection.projection_descriptor.descriptor_uuid.canonical) +
-         "|" + std::to_string(generation) + "|" +
-         Hex(projection.projection_descriptor.descriptor_kind) + "|" +
-         Hex(projection.projection_descriptor.canonical_type_name) + "|" +
-         Hex(projection.projection_descriptor.encoded_descriptor) + "|" +
-         Hex(alias) + "|" +
-         Hex(projection.result_descriptor.descriptor_kind) + "|" +
-         Hex(projection.result_descriptor.canonical_type_name) + "|" +
-         Hex(projection.result_descriptor.encoded_descriptor);
-}
-
-sblr::SblrDispatchResult DispatchGlobalAggregateViewCreate(
-    const Fixture& fixture,
-    const api::EngineRequestContext& context,
-    const api::MgaRelationStorageDescriptor& relation,
-    std::string view_name,
-    std::string packed,
-    std::string marker = api::kEngineGlobalAggregateViewMarkerV1,
-    std::string projection_count = "1",
-    std::vector<sblr::SblrOperand> extra_operands = {},
-    api::EngineApiRequest preseeded_request = {}) {
-  auto envelope = sblr::MakeSblrEnvelope(
-      "ddl.create_view", "SBLR_DDL_CREATE_VIEW",
-      "SBLR-GLOBAL-AGGREGATE-VIEW-CREATE-CONFORMANCE");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands = {
-      {"text", "target_object_kind", "view"},
-      {"text", "view_name", view_name},
-      {"text", "name", std::move(view_name)},
-      {"text", "target_schema_uuid", fixture.schema_uuid},
-      {"text", "view_projection_count", std::move(projection_count)},
-      {"text", "view_query_shape", std::move(marker)},
-      {"text", "view_source_uuid", relation.relation_uuid.canonical},
-      {"text", "view_projection_0", std::move(packed)}};
-  for (auto& operand : extra_operands) {
-    envelope.operands.push_back(std::move(operand));
-  }
-  sblr::SblrDispatchRequest request;
-  request.context = context;
-  request.envelope = std::move(envelope);
-  request.api_request = std::move(preseeded_request);
-  return sblr::DispatchSblrOperation(std::move(request));
-}
-
-sblr::SblrDispatchResult DispatchGlobalAggregateViewSelect(
-    const api::EngineRequestContext& context,
-    std::string view_uuid,
-    std::string packed,
-    std::string marker = api::kEngineGlobalAggregateViewMarkerV1,
-    std::string projection_count = "1",
-    std::vector<sblr::SblrOperand> extra_operands = {},
-    api::EngineApiRequest preseeded_request = {}) {
-  auto envelope = sblr::MakeSblrEnvelope(
-      "dml.select_rows", "SBLR_DML_SELECT_ROWS",
-      "SBLR-GLOBAL-AGGREGATE-VIEW-SELECT-CONFORMANCE");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands = {
-      {"text", "target_object_uuid", view_uuid},
-      {"text", "target_object_kind", "view"},
-      {"text", "source_uuid", std::move(view_uuid)},
-      {"text", "source_kind", "view"},
-      {"text", "result_projection", std::move(marker)},
-      {"text", "projection_count", std::move(projection_count)},
-      {"text", "projection_0", std::move(packed)}};
-  for (auto& operand : extra_operands) {
-    envelope.operands.push_back(std::move(operand));
-  }
-  sblr::SblrDispatchRequest request;
-  request.context = context;
-  request.envelope = std::move(envelope);
-  request.api_request = std::move(preseeded_request);
-  return sblr::DispatchSblrOperation(std::move(request));
-}
-
-void RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-    const sblr::SblrDispatchResult& result,
-    std::string_view message) {
-  Require(result.envelope_validated && result.accepted &&
-              result.dispatched_to_api && !result.api_result.ok &&
-              result.api_result.result_shape.rows.empty() &&
-              EvidenceValue(result.api_result,
-                            "global_aggregate_relation_scan").empty(),
-          message);
 }
 
 void RequireGlobalAggregateViewValue(
@@ -1467,113 +1087,6 @@ void TestAvgTypedFinalizationAndRefusals(
                   "global_aggregate_function_uuid_mixed",
                   "engine accepted mixed COUNT/AVG output identities");
 
-  const auto dispatched = DispatchAvgRequest(context, table_uuid);
-  Require(dispatched.envelope_validated && dispatched.accepted &&
-              dispatched.dispatched_to_api && dispatched.api_result.ok &&
-              dispatched.api_result.result_shape.rows.size() == 1 &&
-              EvidenceValue(dispatched.api_result,
-                            "global_aggregate_relation_scan") ==
-                  "one_mga_visible_scan" &&
-              EvidenceValue(dispatched.api_result,
-                            "global_aggregate_function_uuid") ==
-                  api::EngineGlobalAggregateAvgFunctionUuid(),
-          "homogeneous gag1 AVG transport failed");
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(
-          context,
-          table_uuid,
-          std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-          std::string(api::EngineGlobalAggregateCountFunctionUuid())),
-      "gag1 transport accepted a mixed function identity");
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(
-          context,
-          table_uuid,
-          std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-          {},
-          api::EngineGlobalAggregateOperation::count_non_null_field),
-      "gag1 transport accepted a mixed operation family");
-
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(context,
-                         table_uuid,
-                         std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-                         {},
-                         api::EngineGlobalAggregateOperation::avg_field,
-                         "01"),
-      "gag1 transport accepted leading-zero projection_count");
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(context,
-                         table_uuid,
-                         std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-                         {},
-                         api::EngineGlobalAggregateOperation::avg_field,
-                         "1",
-                         "00"),
-      "gag1 transport accepted leading-zero projection index");
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(context,
-                         table_uuid,
-                         std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-                         {},
-                         api::EngineGlobalAggregateOperation::avg_field,
-                         "1",
-                         "0",
-                         "04"),
-      "gag1 transport accepted leading-zero operation");
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(
-          context,
-          table_uuid,
-          std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-          {},
-          api::EngineGlobalAggregateOperation::avg_field,
-          "1",
-          "0",
-          {},
-          "0" +
-              std::to_string(loaded.descriptor.descriptor_generation)),
-      "gag1 transport accepted leading-zero descriptor generation");
-
-  constexpr std::string_view kU64Overflow = "18446744073709551616";
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(context,
-                         table_uuid,
-                         std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-                         {},
-                         api::EngineGlobalAggregateOperation::avg_field,
-                         std::string(kU64Overflow)),
-      "gag1 transport accepted overflowing projection_count");
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(context,
-                         table_uuid,
-                         std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-                         {},
-                         api::EngineGlobalAggregateOperation::avg_field,
-                         "1",
-                         std::string(kU64Overflow)),
-      "gag1 transport accepted overflowing projection index");
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(context,
-                         table_uuid,
-                         std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-                         {},
-                         api::EngineGlobalAggregateOperation::avg_field,
-                         "1",
-                         "0",
-                         std::string(kU64Overflow)),
-      "gag1 transport accepted overflowing operation");
-  RequireDispatchRejectedBeforeScan(
-      DispatchAvgRequest(context,
-                         table_uuid,
-                         std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
-                         {},
-                         api::EngineGlobalAggregateOperation::avg_field,
-                         "1",
-                         "0",
-                         {},
-                         std::string(kU64Overflow)),
-      "gag1 transport accepted overflowing descriptor generation");
 }
 
 void TestInvalidBindingsFailClosed(
@@ -1677,134 +1190,29 @@ void TestLegacyCountProjectionPreserved(
 }
 
 void TestNeutralSblrTransport(
-    const api::EngineRequestContext& context,
-    const std::string& table_uuid,
-    std::int64_t expected_star,
-    std::int64_t expected_non_null,
-    std::int64_t expected_distinct) {
-  const auto dispatched = DispatchAggregateRequest(context, table_uuid);
-  for (const auto& diagnostic : dispatched.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-  }
-  Require(dispatched.envelope_validated && dispatched.accepted &&
-              dispatched.dispatched_to_api && dispatched.api_result.ok,
-          "neutral SBLR global aggregate transport was not executed");
-  const auto& shape = dispatched.api_result.result_shape;
-  Require(shape.result_kind == "global_aggregate_projection_rowset" &&
-              shape.rows.size() == 1 && shape.rows[0].fields.size() == 3,
-          "neutral SBLR global aggregate result shape drifted");
-  const std::vector<std::int64_t> expected{
-      expected_star, expected_non_null, expected_distinct};
-  for (std::size_t index = 0; index < expected.size(); ++index) {
-    Require(!shape.rows[0].fields[index].second.isSqlNull() &&
-                shape.rows[0].fields[index].second.encoded_value ==
-                    std::to_string(expected[index]),
-            "neutral SBLR global aggregate value drifted");
-  }
-  Require(EvidenceValue(dispatched.api_result,
-                        "global_aggregate_relation_scan") ==
-              "one_mga_visible_scan",
-          "neutral SBLR aggregate one-scan evidence missing");
+    const api::EngineRequestContext& context) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "dml.select_rows", "SBLR_DML_SELECT_ROWS",
+      "SBLR-RETIRED-GLOBAL-AGGREGATE-ROOT-REFUSAL");
+  envelope.opcode_code = 0;
+  envelope.parser_package_uuid = context.session_uuid.canonical;
+  envelope.registry_snapshot_uuid = context.database_uuid.canonical;
+  envelope.requires_transaction_context = true;
 
-  const std::string canonical_function_uuid(
-      api::EngineGlobalAggregateCountFunctionUuid());
-  const auto duplicate_marker = DispatchAggregateRequest(
-      context,
-      table_uuid,
-      canonical_function_uuid,
-      "sblr.global_aggregate_projection.v1",
-      {"sblr.global_aggregate_projection.v1"});
-  RequireDispatchRejectedBeforeScan(
-      duplicate_marker,
-      "neutral SBLR transport accepted duplicate aggregate markers");
-
-  const auto mixed_projection = DispatchAggregateRequest(
-      context,
-      table_uuid,
-      canonical_function_uuid,
-      "sblr.global_aggregate_projection.v1",
-      {"count"});
-  RequireDispatchRejectedBeforeScan(
-      mixed_projection,
-      "neutral SBLR transport accepted a mixed legacy projection");
-
-  const auto malformed_marker = DispatchAggregateRequest(
-      context,
-      table_uuid,
-      canonical_function_uuid,
-      "sblr.global_aggregate_projection.v2");
-  RequireDispatchRejectedBeforeScan(
-      malformed_marker,
-      "neutral SBLR transport accepted a malformed aggregate marker");
-
-  const auto malformed_count = DispatchAggregateRequest(
-      context,
-      table_uuid,
-      canonical_function_uuid,
-      "sblr.global_aggregate_projection.v1",
-      {},
-      "three");
-  RequireDispatchRejectedBeforeScan(
-      malformed_count,
-      "neutral SBLR transport accepted a malformed aggregate packet");
-
-  const auto duplicate_function = DispatchAggregateRequest(
-      context,
-      table_uuid,
-      canonical_function_uuid,
-      "sblr.global_aggregate_projection.v1",
-      {},
-      "3",
-      {{"aggregate_function", canonical_function_uuid}});
-  RequireDispatchRejectedBeforeScan(
-      duplicate_function,
-      "neutral SBLR transport accepted duplicate aggregate functions");
-
-  const auto duplicate_count = DispatchAggregateRequest(
-      context,
-      table_uuid,
-      canonical_function_uuid,
-      "sblr.global_aggregate_projection.v1",
-      {},
-      "3",
-      {{"projection_count", "3"}});
-  RequireDispatchRejectedBeforeScan(
-      duplicate_count,
-      "neutral SBLR transport accepted duplicate projection counts");
-
-  const auto duplicate_slot = DispatchAggregateRequest(
-      context,
-      table_uuid,
-      canonical_function_uuid,
-      "sblr.global_aggregate_projection.v1",
-      {},
-      "3",
-      {{"projection_0", "duplicate"}});
-  RequireDispatchRejectedBeforeScan(
-      duplicate_slot,
-      "neutral SBLR transport accepted a duplicate projection slot");
-
-  const auto undeclared_slot = DispatchAggregateRequest(
-      context,
-      table_uuid,
-      canonical_function_uuid,
-      "sblr.global_aggregate_projection.v1",
-      {},
-      "3",
-      {{"projection_3", "undeclared"}});
-  RequireDispatchRejectedBeforeScan(
-      undeclared_slot,
-      "neutral SBLR transport accepted an undeclared projection slot");
-
-  for (const auto legacy_uuid : {
-           std::string("019dffbb-f000-7613-a71e-84b03ef18e1d"),
-           std::string("019dffbb-f000-7293-b215-aa84d8693576")}) {
-    const auto refused =
-        DispatchAggregateRequest(context, table_uuid, legacy_uuid);
-    RequireDispatchRejectedBeforeScan(
-        refused,
-        "neutral SBLR transport accepted a non-canonical COUNT UUID");
-  }
+  sblr::SblrDispatchRequest request;
+  request.context = context;
+  request.envelope = std::move(envelope);
+  const auto refused = sblr::DispatchSblrOperation(std::move(request));
+  Require(!refused.envelope_validated && !refused.accepted &&
+              !refused.dispatched_to_api && !refused.api_result.ok &&
+              refused.api_result.result_shape.rows.empty() &&
+              HasDispatchDiagnostic(
+                  refused,
+                  "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+          "retired code-zero SBLR_DML_SELECT_ROWS root was not refused before dispatch");
+  Require(EvidenceValue(refused.api_result,
+                        "global_aggregate_relation_scan").empty(),
+          "retired aggregate root reached the MGA relation scan");
 }
 
 void TestPersistedGlobalAggregateView(Fixture& fixture) {
@@ -1858,6 +1266,25 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
           "global aggregate view create authority evidence drifted");
   const auto own_descriptor =
       api::DescribeEngineGlobalAggregateView(create, view_uuid);
+  if (own_descriptor.diagnostic.error || !own_descriptor.present ||
+      own_descriptor.view_descriptor_generation != 1) {
+    std::cerr << "own descriptor: error="
+              << own_descriptor.diagnostic.error
+              << " present=" << own_descriptor.present
+              << " generation="
+              << own_descriptor.view_descriptor_generation
+              << " code=" << own_descriptor.diagnostic.code
+              << " detail=" << own_descriptor.diagnostic.detail << '\n';
+    const auto visible = api::FindVisibleApiBehaviorRecord(
+        create, view_uuid, create.local_transaction_id);
+    if (visible.has_value()) {
+      std::cerr << "own descriptor record: operation="
+                << visible->operation_id << " kind=" << visible->object_kind
+                << " state=" << visible->state
+                << " name=" << visible->default_name
+                << " payload=" << visible->payload << '\n';
+    }
+  }
   Require(!own_descriptor.diagnostic.error && own_descriptor.present &&
               own_descriptor.view_descriptor_generation == 1,
           "creating transaction cannot see its own global aggregate view");
@@ -2086,359 +1513,6 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
                             "global_aggregate_relation_scan").empty(),
           "fresh reader accepted stale semantic descriptor generation one");
 
-  const std::string create_packet = PackedGlobalAggregateViewCreate(
-      source_descriptor, 2100000000);
-  auto firebird_fresh_reader = fresh_reader;
-  firebird_fresh_reader.identifier_profile_uuid = "firebird_v5";
-  const std::string valid_parser_envelope =
-      ServerGlobalAggregateViewCreateEnvelope(
-          fixture, source_descriptor, "V_BRIDGE_VALID", "1",
-          create_packet);
-  const std::string valid_neutral_envelope =
-      CanonicalServerOperationEnvelope(
-          server::EncodeCreateViewPublicAbiEnvelopeForTest(
-              valid_parser_envelope));
-  const auto valid_bridge_create = sblr::DecodeAndDispatchSblrOperation(
-      valid_neutral_envelope, firebird_fresh_reader);
-  if (!valid_bridge_create.envelope_validated ||
-      !valid_bridge_create.accepted ||
-      !valid_bridge_create.dispatched_to_api ||
-      !valid_bridge_create.api_result.ok) {
-    std::cerr << sblr::SerializeSblrDispatchResultToJson(
-                     valid_bridge_create)
-              << '\n';
-  }
-  Require(valid_bridge_create.envelope_validated &&
-              valid_bridge_create.accepted &&
-              valid_bridge_create.dispatched_to_api &&
-              valid_bridge_create.api_result.ok &&
-              !valid_bridge_create.api_result.primary_object.uuid.canonical
-                   .empty(),
-          "valid generic server CREATE VIEW bridge rejected gavc1");
-  const auto valid_bridge_resolved = api::EngineResolveName(
-      ResolveViewRequest(
-          fixture, firebird_fresh_reader, "V_BRIDGE_VALID"));
-  RequireOk(valid_bridge_resolved,
-            "generic server CREATE VIEW bridge did not publish its view");
-  Require(valid_bridge_resolved.semantic_projection.present &&
-              valid_bridge_resolved.semantic_projection.result_alias ==
-                  "AVG_RESULT",
-          "generic server CREATE VIEW bridge changed the semantic "
-          "projection descriptor");
-  for (const auto& [projection_count, view_name] :
-       std::vector<std::pair<std::string, std::string>>{
-           {"17", "V_BRIDGE_COUNT_17"},
-           {"0001", "V_BRIDGE_COUNT_LEADING_ZERO"},
-           {"1844674407370955161600000000000000000000",
-            "V_BRIDGE_COUNT_OVERFLOW"}}) {
-    const std::string parser_envelope =
-        ServerGlobalAggregateViewCreateEnvelope(
-            fixture, source_descriptor, view_name, projection_count,
-            create_packet);
-    const std::string neutral_envelope =
-        CanonicalServerOperationEnvelope(
-            server::EncodeCreateViewPublicAbiEnvelopeForTest(
-                parser_envelope));
-    Require(neutral_envelope.find(
-                "operand=text\tview_projection_count\t" +
-                projection_count + "\n") != std::string::npos &&
-                neutral_envelope.find(
-                    "operand=text\tview_projection_0\t") ==
-                    std::string::npos,
-            "server CREATE VIEW bridge did not preserve an invalid count "
-            "while omitting its attacker-indexed projection");
-    const auto visible_before = api::VisibleApiBehaviorRecords(
-        firebird_fresh_reader, "view",
-        firebird_fresh_reader.local_transaction_id);
-    const auto rejected = sblr::DecodeAndDispatchSblrOperation(
-        neutral_envelope, firebird_fresh_reader);
-    const bool fail_closed =
-        !rejected.envelope_validated || !rejected.accepted ||
-        (rejected.dispatched_to_api && !rejected.api_result.ok);
-    Require(fail_closed && !rejected.api_result.ok &&
-                rejected.api_result.result_shape.rows.empty() &&
-                EvidenceValue(rejected.api_result,
-                              "global_aggregate_relation_scan").empty(),
-            "server CREATE VIEW bridge did not fail closed before scan for " +
-                projection_count);
-    const auto visible_after = api::VisibleApiBehaviorRecords(
-        firebird_fresh_reader, "view",
-        firebird_fresh_reader.local_transaction_id);
-    Require(visible_after.size() == visible_before.size() &&
-                rejected.api_result.primary_object.uuid.canonical.empty(),
-            "server CREATE VIEW bridge invalid count mutated engine view "
-            "state for " + projection_count);
-  }
-  const auto sblr_created = DispatchGlobalAggregateViewCreate(
-      fixture, fresh_reader, source_descriptor, "V_SBLR_AVG", create_packet);
-  Require(sblr_created.envelope_validated && sblr_created.accepted &&
-              sblr_created.dispatched_to_api && sblr_created.api_result.ok &&
-              !sblr_created.api_result.primary_object.uuid.canonical.empty(),
-          "gavc1 did not create the bounded aggregate view");
-  const auto sblr_resolved = api::EngineResolveName(
-      ResolveViewRequest(fixture, fresh_reader, "V_SBLR_AVG"));
-  RequireOk(sblr_resolved, "gavc1-created view did not resolve");
-  const std::string select_packet =
-      PackedGlobalAggregateViewSelect(sblr_resolved);
-  Require(select_packet.find(Hex(fixture.expression_table_uuid)) ==
-              std::string::npos &&
-              select_packet.find(Hex(source_descriptor.columns.front()
-                                         .column_uuid.canonical)) ==
-                  std::string::npos &&
-              select_packet.find(Hex(source_descriptor.columns.front()
-                                         .value_descriptor.descriptor_uuid
-                                         .canonical)) ==
-                  std::string::npos &&
-              select_packet.find(Hex("2100000000")) == std::string::npos,
-          "gavs1 exposed source identity or expression literal");
-  const auto sblr_selected = DispatchGlobalAggregateViewSelect(
-      fresh_reader,
-      sblr_resolved.bound_object_identity.object_uuid.canonical,
-      select_packet);
-  Require(sblr_selected.envelope_validated && sblr_selected.accepted &&
-              sblr_selected.dispatched_to_api && sblr_selected.api_result.ok &&
-              sblr_selected.api_result.result_shape.rows.size() == 1 &&
-              sblr_selected.api_result.result_shape.rows.front().fields.size() ==
-                  1 &&
-              sblr_selected.api_result.result_shape.rows.front()
-                      .fields.front()
-                      .second.encoded_value == "4410000000000000000" &&
-              EvidenceValue(sblr_selected.api_result,
-                            "global_aggregate_relation_scan") ==
-                  "one_mga_visible_scan",
-          "gavs1 did not execute the exact one-scan AVG result");
-
-  const auto packet_last = create_packet.rfind('|');
-  Require(packet_last != std::string::npos,
-          "gavc1 malformed-count fixture drifted");
-  const std::string create_22 = create_packet.substr(0, packet_last);
-  const std::string create_24 = create_packet + "|00";
-  for (const auto& [packet, label] :
-       std::vector<std::pair<std::string, std::string_view>>{
-           {create_22, "22-field gavc1 was accepted"},
-           {create_24, "24-field gavc1 was accepted"}}) {
-    RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-        DispatchGlobalAggregateViewCreate(
-            fixture, fresh_reader, source_descriptor, "V_BAD_GAVC", packet),
-        label);
-  }
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewCreate(
-          fixture,
-          fresh_reader,
-          source_descriptor,
-          "V_BAD_VERSION",
-          create_packet,
-          "engine.global_aggregate_view.v2"),
-      "unknown gavc1 marker version was accepted");
-  for (const std::string_view reserved_marker : {
-           "engine.global_aggregate_view",
-           "engine.global_aggregate_viewevil"}) {
-    RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-        DispatchGlobalAggregateViewCreate(
-            fixture,
-            fresh_reader,
-            source_descriptor,
-            "V_BAD_RESERVED_PREFIX",
-            create_packet,
-            std::string(reserved_marker)),
-        "reserved gavc1 marker prefix fell through to generic CREATE VIEW");
-  }
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewCreate(
-          fixture,
-          fresh_reader,
-          source_descriptor,
-          "V_DUP_MARKER",
-          create_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {{"text", "view_query_shape",
-            api::kEngineGlobalAggregateViewMarkerV1}}),
-      "duplicate gavc1 marker was accepted");
-  for (const std::string_view option : {
-           "unexpected_option", "raw_sql", "parser_overlay",
-           "dialect_override"}) {
-    RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-        DispatchGlobalAggregateViewCreate(
-            fixture,
-            fresh_reader,
-            source_descriptor,
-            "V_EXTRA_OPTION",
-            create_packet,
-            api::kEngineGlobalAggregateViewMarkerV1,
-            "1",
-            {{"text", std::string(option), "not-authoritative"}}),
-        "gavc1 normalized away an unknown/SQL/parser/dialect operand");
-  }
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewCreate(
-          fixture,
-          fresh_reader,
-          source_descriptor,
-          "V_EXTRA_ROW",
-          create_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {{"row_field:int32", "row-1|ID", "1"}}),
-      "gavc1 normalized away an injected row");
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewCreate(
-          fixture,
-          fresh_reader,
-          source_descriptor,
-          "V_EXTRA_ASSIGNMENT",
-          create_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {{"assignment", "injected", "1"}}),
-      "gavc1 normalized away an injected assignment");
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewCreate(
-          fixture,
-          fresh_reader,
-          source_descriptor,
-          "V_COUNT_MISMATCH",
-          create_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "2",
-          {{"text", "view_projection_1", create_packet}}),
-      "gavc1 accepted an extra projection/count mismatch");
-  api::EngineApiRequest preseeded_create_identity;
-  preseeded_create_identity.target_object.uuid.canonical =
-      NewUuid(platform::UuidKind::object, NowMillis());
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewCreate(
-          fixture,
-          fresh_reader,
-          source_descriptor,
-          "V_PRESEEDED_IDENTITY",
-          create_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {},
-          std::move(preseeded_create_identity)),
-      "gavc1 accepted a preseeded target identity");
-  api::EngineApiRequest preseeded_create_sql_reference;
-  preseeded_create_sql_reference.sql_object_reference.object_name.raw_text =
-      "hidden-channel";
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewCreate(
-          fixture,
-          fresh_reader,
-          source_descriptor,
-          "V_PRESEEDED_SQL_REFERENCE",
-          create_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {},
-          std::move(preseeded_create_sql_reference)),
-      "gavc1 accepted a preseeded SQL object reference");
-
-  const auto select_last = select_packet.rfind('|');
-  Require(select_last != std::string::npos,
-          "gavs1 malformed-count fixture drifted");
-  for (const auto& [packet, label] :
-       std::vector<std::pair<std::string, std::string_view>>{
-           {select_packet.substr(0, select_last),
-            "10-field gavs1 was accepted"},
-           {select_packet + "|00", "12-field gavs1 was accepted"},
-           {PackedGlobalAggregateViewSelect(
-                sblr_resolved,
-                sblr_resolved.semantic_projection.descriptor_generation + 1),
-            "stale gavs1 generation was accepted"},
-           {PackedGlobalAggregateViewSelect(
-                sblr_resolved, 0, "TAMPERED_ALIAS"),
-            "tampered gavs1 alias was accepted"}}) {
-    RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-        DispatchGlobalAggregateViewSelect(
-            fresh_reader,
-            sblr_resolved.bound_object_identity.object_uuid.canonical,
-            packet),
-        label);
-  }
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewSelect(
-          fresh_reader,
-          sblr_resolved.bound_object_identity.object_uuid.canonical,
-          select_packet,
-          "engine.global_aggregate_view.v2"),
-      "unknown gavs1 marker version was accepted");
-  for (const std::string_view reserved_marker : {
-           "engine.global_aggregate_view",
-           "engine.global_aggregate_viewevil"}) {
-    RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-        DispatchGlobalAggregateViewSelect(
-            fresh_reader,
-            sblr_resolved.bound_object_identity.object_uuid.canonical,
-            select_packet,
-            std::string(reserved_marker)),
-        "reserved gavs1 marker prefix fell through to generic SELECT");
-  }
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewSelect(
-          fresh_reader,
-          sblr_resolved.bound_object_identity.object_uuid.canonical,
-          select_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {{"text", "result_projection",
-            api::kEngineGlobalAggregateViewMarkerV1}}),
-      "duplicate gavs1 marker was accepted");
-  for (const std::string_view option : {
-           "unexpected_option", "sql_text", "parser_overlay",
-           "dialect_override"}) {
-    RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-        DispatchGlobalAggregateViewSelect(
-            fresh_reader,
-            sblr_resolved.bound_object_identity.object_uuid.canonical,
-            select_packet,
-            api::kEngineGlobalAggregateViewMarkerV1,
-            "1",
-            {{"text", std::string(option), "not-authoritative"}}),
-        "gavs1 normalized away an unknown/SQL/parser/dialect operand");
-  }
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewSelect(
-          fresh_reader,
-          sblr_resolved.bound_object_identity.object_uuid.canonical,
-          select_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {{"row_field:int32", "row-1|ID", "1"}}),
-      "gavs1 normalized away an injected row");
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewSelect(
-          fresh_reader,
-          sblr_resolved.bound_object_identity.object_uuid.canonical,
-          select_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {{"assignment", "injected", "1"}}),
-      "gavs1 normalized away an injected assignment");
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewSelect(
-          fresh_reader,
-          sblr_resolved.bound_object_identity.object_uuid.canonical,
-          select_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "2",
-          {{"text", "projection_1", select_packet}}),
-      "gavs1 accepted an extra projection/count mismatch");
-  api::EngineApiRequest preseeded_select_identity;
-  preseeded_select_identity.bound_object_identity.object_uuid.canonical =
-      NewUuid(platform::UuidKind::object, NowMillis());
-  RequireGlobalAggregateViewDispatchRejectedBeforeScan(
-      DispatchGlobalAggregateViewSelect(
-          fresh_reader,
-          sblr_resolved.bound_object_identity.object_uuid.canonical,
-          select_packet,
-          api::kEngineGlobalAggregateViewMarkerV1,
-          "1",
-          {},
-          std::move(preseeded_select_identity)),
-      "gavs1 accepted a preseeded bound identity");
-
   const std::string malformed_view_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
   api::ApiBehaviorRecord malformed_record;
@@ -2620,7 +1694,7 @@ int main() {
               0,
               9,
               "writer global AVG projection failed");
-  TestNeutralSblrTransport(writer, fixture.values_table_uuid, 9, 6, 2);
+  TestNeutralSblrTransport(writer);
   const auto nulls_column =
       ValueColumn(writer, fixture.nulls_table_uuid);
   RequireCounts(api::EngineSelectRows(AggregateRequest(

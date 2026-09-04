@@ -411,6 +411,7 @@ add_library(sb_engine_internal_api
   dml/import_execution_api.cpp
   dml/import_reject_model.cpp
   dml/import_resume_checkpoint.cpp
+  dml/bulk_import_stream_execution_api.cpp
   dml/native_bulk_ingest_api.cpp
   dml/write_result_policy.cpp
   dml/merge_api.cpp
@@ -541,6 +542,7 @@ add_library(sb_engine_internal_api
     sblr_table_truncate_coordinator.cpp
   sblr_table_analyze_coordinator.cpp
   sblr_bulk_import_stream_coordinator.cpp
+  sblr_bulk_import_stream_registry.cpp
   sblr_bulk_export_stream_coordinator.cpp
   sblr_statement_batch_coordinator.cpp
   sblr_atomic_cas_coordinator.cpp
@@ -792,6 +794,10 @@ target_link_libraries(sb_engine_internal_api PUBLIC
   sb_engine_optimizer_contract_only
   sb_udr_runtime
   OpenSSL::Crypto
+)
+
+target_link_libraries(sb_engine_internal_api PRIVATE
+  sb_wire_bulk_import_stream_codec
 )
 
 if(TARGET sb_cluster_provider)

@@ -124,7 +124,10 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   context.security_context_present = true;
   context.principal_uuid.canonical =
       "019f0900-0000-7000-8000-000000002901";
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.trace_tags.push_back("security.bootstrap");
+  context.trace_tags.push_back("security.fixture_trace_authority");
+  context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
   return context;
 }
 

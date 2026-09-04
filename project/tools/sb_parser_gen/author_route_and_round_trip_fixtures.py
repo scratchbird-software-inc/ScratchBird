@@ -23,13 +23,31 @@ import json
 import sys
 from pathlib import Path
 
-from plan_import_rows_generated_evidence import is_plan_import_rows_surface
+from plan_import_rows_generated_evidence import (
+    is_bulk_import_stream_surface,
+    is_central_import_refusal_surface,
+    is_plan_import_rows_surface,
+)
 
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 AUTH_MATRIX_NAME = "AUTHENTICATED_FULL_ROUTE_MATRIX.csv"
 ROUND_MATRIX_NAME = "SBLR_BINARY_ROUND_TRIP_MATRIX.csv"
 PER_ROW_MANIFEST_NAME = "PER_ROW_EVIDENCE_MANIFEST.csv"
+CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
+    "SBSQL-A57CFDE0BBA9",
+    "SBSQL-28F16A4C7DD0",
+    "SBSQL-B1816929AD45",
+    "SBSQL-5CC9FDFFE6F7",
+}
+CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
+    "SBSQL-DE4B8AAF6326",
+    "SBSQL-7BA0B928798B",
+}
+PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = (
+    CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
+    | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+)
 
 
 def fail(message: str) -> None:
@@ -149,20 +167,47 @@ def selectable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict[
 
     round_trip_required = round_trip.get("byte_identical_round_trip_required", "")
     operation_id = round_trip.get("expected_canonical_function_or_api_operation_id", "")
+    surface_id = auth.get("surface_id", "")
     if auth.get("cluster_scope") == "cluster_private":
         return (
             manifest.get("final_state") in {"exact_refusal_passed", "cluster_provider_route_passed"}
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
         )
 
-    if is_plan_import_rows_surface(auth.get("surface_id", "")):
+    if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
+        expected_parent = (
+            "not_admitted_parent_engine.op.ddl_create_schema"
+            if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+            else "not_admitted_parent_engine.op.ddl_create_table"
+        )
         return (
             auth.get("status") == "native_now"
             and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
-            and manifest.get("final_state") == "pending"
-            and round_trip_required == "yes"
-            and operation_id == "dml.plan_import_rows"
+            and manifest.get("final_state") == "exact_refusal_passed"
+            and round_trip_required == "not_applicable_pre_sblr_exact_refusal"
+            and operation_id == expected_parent
         )
+
+    if is_plan_import_rows_surface(surface_id):
+        common = (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+        )
+        if is_bulk_import_stream_surface(surface_id):
+            return (
+                common
+                and manifest.get("final_state") == "e2e_passed"
+                and round_trip_required == "yes"
+                and operation_id == "engine.op.bulk_import_stream"
+            )
+        if is_central_import_refusal_surface(surface_id):
+            return (
+                common
+                and manifest.get("final_state") == "exact_refusal_passed"
+                and round_trip_required == "not_applicable_no_executable_sblr"
+                and operation_id == "not_admitted_diagnostic_refusal"
+            )
+        return False
 
     return (
         auth.get("status") == "native_now"
@@ -178,19 +223,45 @@ def selectable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict[
 def refreshable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict[str, str]) -> bool:
     round_trip_required = round_trip.get("byte_identical_round_trip_required", "")
     operation_id = round_trip.get("expected_canonical_function_or_api_operation_id", "")
+    surface_id = auth.get("surface_id", "")
     if auth.get("cluster_scope") == "cluster_private":
         return (
             manifest.get("final_state") in {"exact_refusal_passed", "cluster_provider_route_passed"}
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
         )
-    if is_plan_import_rows_surface(auth.get("surface_id", "")):
+    if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
+        expected_parent = (
+            "not_admitted_parent_engine.op.ddl_create_schema"
+            if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+            else "not_admitted_parent_engine.op.ddl_create_table"
+        )
         return (
             auth.get("status") == "native_now"
             and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
-            and manifest.get("final_state") == "pending"
-            and round_trip_required == "yes"
-            and operation_id == "dml.plan_import_rows"
+            and manifest.get("final_state") == "exact_refusal_passed"
+            and round_trip_required == "not_applicable_pre_sblr_exact_refusal"
+            and operation_id == expected_parent
         )
+    if is_plan_import_rows_surface(surface_id):
+        common = (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+        )
+        if is_bulk_import_stream_surface(surface_id):
+            return (
+                common
+                and manifest.get("final_state") == "e2e_passed"
+                and round_trip_required == "yes"
+                and operation_id == "engine.op.bulk_import_stream"
+            )
+        if is_central_import_refusal_surface(surface_id):
+            return (
+                common
+                and manifest.get("final_state") == "exact_refusal_passed"
+                and round_trip_required == "not_applicable_no_executable_sblr"
+                and operation_id == "not_admitted_diagnostic_refusal"
+            )
+        return False
     return (
         auth.get("status") == "native_now"
         and auth.get("cluster_scope") == "noncluster_or_profile_scoped"

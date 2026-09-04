@@ -52,7 +52,7 @@ constexpr std::array<FamilyRule, 61> kServerSblrFamilies{{
     {"sblr.backup.operation.v3", "backup.operation", false},
     {"sblr.bridge.operation.v3", "bridge.describe_capabilities", false},
     {"sblr.bulk.export.v3", "bulk.export", false},
-    {"sblr.bulk.import.v3", "bulk.import", false},
+    {"sblr.bulk.import.v3", "engine.op.bulk_import_stream", false},
     {"sblr.catalog.introspect.v3", "catalog.get_descriptor", false},
     {"sblr.catalog.create_table_as.v1", "engine.op.ddl_create_table_as_query_with_data", false},
     {"sblr.catalog.mutation.v3", "catalog.mutation", false},
@@ -68,10 +68,10 @@ constexpr std::array<FamilyRule, 61> kServerSblrFamilies{{
     {"sblr.dml.truncate.v1", "engine.op.table_truncate", false},
     {"sblr.dml.update.v3", "dml.update_rows", false},
     {"sblr.donor.cluster.v1", "engine.op.donor_cluster_route_discover", true},
-    {"sblr.event.channel.v3", "event.channel.notify", false},
-    {"sblr.event.delivery.v3", "event.delivery.poll", false},
+    {"sblr.event.channel.v3", "engine.op.event_channel_notify", false},
+    {"sblr.event.delivery.v3", "engine.op.event_delivery_poll", false},
     {"sblr.event.publication.v3", "event.publication.operation", false},
-    {"sblr.event.subscription.v3", "event.subscription.list", false},
+    {"sblr.event.subscription.v3", "engine.op.event_subscription_list", false},
     {"sblr.filespace.management.v3", "storage.manage_operation", false},
     {"sblr.fulltext.execution.v3", "fulltext.score", false},
     {"sblr.graph.execution.v3", "graph.traverse", false},
@@ -98,7 +98,7 @@ constexpr std::array<FamilyRule, 61> kServerSblrFamilies{{
     {"sblr.replication.consumer.v3", "cluster.inspect_replication", true},
     {"sblr.replication.operation.v3", "replication.operation", false},
     {"sblr.routine.define.v3", "routine.define", false},
-    {"sblr.routine.execute.v3", "routine.procedure_invoke", false},
+    {"sblr.routine.execute.v3", "engine.op.procedure_invoke", false},
     {"sblr.security.mutation.v3", "security.grant_right", false},
     {"sblr.session.management.v3", "connection.open", false},
     {"sblr.statement.management.v3", "statement.prepare", false},
@@ -516,6 +516,7 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "engine.op.verifiable_history_prove" ||
          operation_id == "engine.op.ddl_create_view" ||
          operation_id == "engine.op.ddl_create_materialized_view" ||
+         operation_id == "engine.op.ddl_create_schema" ||
          operation_id == "engine.op.ddl_create_type" ||
          operation_id == "engine.op.ddl_alter_type" ||
          operation_id == "engine.op.ddl_drop_type" ||
@@ -529,6 +530,15 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "engine.op.bitemporal_for_versions_between" ||
          operation_id == "engine.op.kv_structured_read" ||
          operation_id == "engine.op.kv_structured_mutate" ||
+         operation_id == "engine.op.bulk_import_stream" ||
+         operation_id == "engine.op.event_channel_create" ||
+         operation_id == "engine.op.event_channel_listen" ||
+         operation_id == "engine.op.event_channel_unlisten" ||
+         operation_id == "engine.op.event_channel_notify" ||
+         operation_id == "engine.op.event_delivery_poll" ||
+         operation_id == "engine.op.event_subscription_list" ||
+         operation_id == "engine.op.procedure_invoke" ||
+         operation_id == "bulk.export" ||
          operation_id == "engine.op.ddl_drop_rewrite_rule" ||
          operation_id == "ddl.comment_on_object" ||
          operation_id == "engine.op.ddl_validate_constraint" ||
@@ -1190,7 +1200,8 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   if (operation_id == "engine.op.kv_structured_mutate") {
     return "sblr.kv.structured.mutate.v3";
   }
-  if (operation_id == "engine.op.ddl_create_view" ||
+  if (operation_id == "engine.op.ddl_create_schema" ||
+      operation_id == "engine.op.ddl_create_view" ||
       operation_id == "engine.op.ddl_create_materialized_view" ||
       operation_id == "engine.op.ddl_create_type" ||
       operation_id == "engine.op.ddl_alter_type" ||
@@ -1228,7 +1239,28 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   if (operation_id.starts_with("backup.")) {
     return "sblr.backup.operation.v3";
   }
-  if (operation_id == "bulk.import") return "sblr.bulk.import.v3";
+  if (operation_id == "engine.op.bulk_import_stream") {
+    return "sblr.bulk.import.v3";
+  }
+  if (operation_id == "engine.op.event_channel_create") {
+    return "sblr.catalog.mutation.v3";
+  }
+  if (operation_id == "engine.op.event_channel_listen" ||
+      operation_id == "engine.op.event_channel_unlisten") {
+    return "sblr.event.channel.v3";
+  }
+  if (operation_id == "engine.op.event_channel_notify") {
+    return "sblr.event.channel.v3";
+  }
+  if (operation_id == "engine.op.event_delivery_poll") {
+    return "sblr.event.delivery.v3";
+  }
+  if (operation_id == "engine.op.event_subscription_list") {
+    return "sblr.event.subscription.v3";
+  }
+  if (operation_id == "engine.op.procedure_invoke") {
+    return "sblr.routine.execute.v3";
+  }
   if (operation_id == "bulk.export") return "sblr.bulk.export.v3";
   if (operation_id.starts_with("replication.")) {
     return "sblr.replication.operation.v3";

@@ -24,6 +24,12 @@ add_library(sb_core_datatypes
   reference_compatibility_metadata.cpp
 )
 
+if(DEFINED SB_PROJECT_SOURCE_DIR)
+  set(_sb_datatypes_project_source_dir "${SB_PROJECT_SOURCE_DIR}")
+else()
+  set(_sb_datatypes_project_source_dir "${CMAKE_SOURCE_DIR}")
+endif()
+
 if(NOT TARGET sb_core_hash)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../hash ${CMAKE_CURRENT_BINARY_DIR}/core_hash)
 endif()
@@ -33,12 +39,17 @@ if(NOT TARGET sb_core_metrics)
 endif()
 
 if(NOT TARGET sbl_numeric)
-  add_subdirectory(${CMAKE_SOURCE_DIR}/libraries/sbl_numeric ${CMAKE_BINARY_DIR}/libraries/sbl_numeric)
+  add_subdirectory(
+    "${_sb_datatypes_project_source_dir}/libraries/sbl_numeric"
+    "${CMAKE_BINARY_DIR}/libraries/sbl_numeric"
+  )
 endif()
 
 target_compile_features(sb_core_datatypes PUBLIC cxx_std_17)
 target_include_directories(sb_core_datatypes PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
-  ${PROJECT_SOURCE_DIR}/include
+  ${_sb_datatypes_project_source_dir}/include
 )
 target_link_libraries(sb_core_datatypes PUBLIC sb_core_platform sb_core_hash sb_core_metrics sbl_numeric)
+
+unset(_sb_datatypes_project_source_dir)

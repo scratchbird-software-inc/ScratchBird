@@ -45,6 +45,7 @@ int main() {
   entry.precedence_ordinal = 1;
   entry.severity_code = 1;
   entry.redaction_class = 1;
+  entry.safe_fields_sha256.fill(0xa5);
 
   const auto receipt = Identity(scratchbird::core::platform::UuidKind::object);
   const auto registry = Identity(scratchbird::core::platform::UuidKind::object);

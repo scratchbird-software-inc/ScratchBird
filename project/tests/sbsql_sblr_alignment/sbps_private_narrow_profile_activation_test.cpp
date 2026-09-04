@@ -12,10 +12,10 @@ namespace {
 namespace profile = scratchbird::server::sbps::private_narrow;
 using scratchbird::core::platform::byte;
 
-static_assert(profile::kPairUniverseCountV1 == 47);
-static_assert(profile::kRequiredPairCountV1 == 29);
+static_assert(profile::kPairUniverseCountV1 == 53);
+static_assert(profile::kRequiredPairCountV1 == 35);
 static_assert(profile::kForbiddenPairCountV1 == 18);
-static_assert(profile::kSuccessOnlyPairCountV1 == 10);
+static_assert(profile::kSuccessOnlyPairCountV1 == 13);
 
 void Require(bool condition, const std::string& detail) {
   if (!condition) throw std::runtime_error(detail);
@@ -78,10 +78,10 @@ void CoreRecordAndPendingEvidenceStayInactive() {
   const auto core = profile::CorePrivateNarrowProfileRecordV1();
   Require(profile::ValidateCorePrivateNarrowProfileRecordV1(core).ok(),
           "compiled Core private profile record failed validation");
-  Require(core.pair_universe.size() == 47 &&
-              core.required_pairs.size() == 29 &&
+  Require(core.pair_universe.size() == 53 &&
+              core.required_pairs.size() == 35 &&
               core.forbidden_pairs.size() == 18 &&
-              core.candidate_activation_records.size() == 29 &&
+              core.candidate_activation_records.size() == 35 &&
               core.actual_active_pairs.empty(),
           "compiled Core pair projection drifted");
   for (const auto& record : core.candidate_activation_records) {
@@ -186,6 +186,18 @@ void SyntheticUsableFixtureProvesExactDispatchOnly() {
   Require(refusal.admitted && !refusal.success_only &&
               refusal.semantic_refusal,
           "60/2001 refusal identity failed");
+  const auto chunk = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(702, 7715));
+  Require(chunk.admitted && !chunk.success_only,
+          "702/7715 chunk dispatch failed");
+  const auto seal_ack = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(705, 7718));
+  Require(seal_ack.admitted && seal_ack.success_only,
+          "705/7718 seal ACK dispatch failed");
+  const auto bind_ack = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(707, 7720));
+  Require(bind_ack.admitted && bind_ack.success_only,
+          "707/7720 bind ACK dispatch failed");
 
   const auto mixed_pair = profile::AdmitPrivateNarrowDispatchV1(
       core, activation.state, key(42, 1043));

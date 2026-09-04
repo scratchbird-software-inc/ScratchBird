@@ -257,7 +257,10 @@ std::vector<SysInformationProjectionColumn> PacketColumns(std::string_view key_c
 
 bool ColumnNameExposesUuidByConvention(std::string_view column_name) {
   static constexpr std::string_view kToken = "_uuid";
-  if (column_name == "uuid") { return true; }
+  if (column_name == "uuid" || column_name == "schema_id" ||
+      column_name == "parent_schema_id" || column_name == "table_id") {
+    return true;
+  }
   if (column_name.size() >= kToken.size() &&
       column_name.substr(column_name.size() - kToken.size()) == kToken) {
     return true;
@@ -2694,13 +2697,7 @@ bool SysInformationPathIsClusterScoped(std::string_view view_path) {
 }
 
 bool SysInformationProjectionColumnNameExposesUuid(std::string_view column_name) {
-  const std::string token = "_uuid";
-  if (column_name == "uuid") { return true; }
-  if (column_name.size() >= token.size() &&
-      column_name.substr(column_name.size() - token.size()) == token) {
-    return true;
-  }
-  return column_name.find("uuid_") != std::string_view::npos;
+  return ColumnNameExposesUuidByConvention(column_name);
 }
 
 SysInformationProjectionValidationResult ValidateSysInformationProjectionDefinition(

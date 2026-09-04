@@ -232,7 +232,7 @@
       "sml_id": "SML-046"
     }
   ],
-  "manifest_sha256": "67950a95bf696a2d1ae651c0459ab548df3a8e6ee9dbd7979d8573fbc06bd3e3",
+  "manifest_sha256": "26fe7a4fa4be4ba69276bcf8760c567ca4bd78bfae830316e10fc8f991bb6f3b",
   "network_dependency": false,
   "schema_version": "sbsql.sml_044_046.hardening_oracle.v1",
   "sml_ids": [
@@ -243,22 +243,22 @@
     {
       "path": "project/tests/sbsql_parser_worker/generated/hardening/MALICIOUS_INPUT_FIXTURES.csv",
       "row_count": 24,
-      "row_sha256": "e713a78d3812138fd3f5d4a8c770a44d5bb7e50278c8b84caa939cb7fbafc23c",
-      "sha256": "642e19301418c1cf061f4a43fdd7a55e1b29aceca23148219c32b93f0735a151",
-      "size_bytes": 2369
+      "row_sha256": "e667ba65f8a326b5ef73b159cc2fd52d7c19d7343e025ac09c376493cced775d",
+      "sha256": "024b56a4ea516e2b9d395df5681c745d37f688f33746f3f54aab029107e23260",
+      "size_bytes": 2358
     },
     {
       "path": "project/tests/sbsql_parser_worker/generated/hardening/sbsql_fuzz_malicious_input_gate.cpp",
-      "row_sha256": "af5d9db0794db295f14fb597bd214b4234d11ea7e54c42b61ceba520ff1f7344",
-      "sha256": "bb55c432a68358a2941b11b9b3c0715acef20c88426595717f5a3f1621bd66ef",
-      "size_bytes": 20367
+      "row_sha256": "95467e7e02d66d51829036df074e036b04c113fb097842f032b4cccb5e5f14d1",
+      "sha256": "34e6026ffbbf811fc986b8d2eb7f928d9657d29a4a6453d588733dba83dc5274",
+      "size_bytes": 20447
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBLR_BINARY_ROUND_TRIP_MATRIX.csv",
       "row_count": 2617,
-      "row_sha256": "21275cbc96c01dce9565f08048660d5f55d13052d22bbc8e5f323d9a08303ef0",
-      "sha256": "362619d8f21657b47b5e2ee4a855b32c2d724ed91c416dbff1e424824bc85706",
-      "size_bytes": 4297829,
+      "row_sha256": "2347ca5328edeca4ee15242fb2d0688df75f197f6e6146708e1cd53a8be6d519",
+      "sha256": "b484af60a3552a5ac0cbde9989f62c1653ecedb632ed209e38de149b57c5455d",
+      "size_bytes": 4296441,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     }
   ]

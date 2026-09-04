@@ -294,7 +294,9 @@ sblr::SblrDispatchResult DispatchWithContext(api::EngineRequestContext context,
                                              bool requires_transaction = true) {
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "pfar-013");
   const auto* registry = sblr::LookupSblrOperation(envelope.operation_id);
-  Require(registry != nullptr, "SBLR agent route canonical registry row missing");
+  Require(registry != nullptr,
+          "SBLR agent route canonical registry row missing: " +
+              envelope.operation_id);
   Require(registry->opcode == envelope.opcode,
           "SBLR agent route canonical opcode mismatch");
   envelope.opcode_code = registry->code;
@@ -495,7 +497,7 @@ void TestSblrFilespacePreallocateStorageMutation() {
   const auto fixture = MakeFixture("sblr_preallocate", 4600);
   SeedFilespaceCatalogDescriptor(fixture);
   const auto result = Dispatch(fixture,
-                               "filespace.preallocate",
+                               "engine.op.filespace_preallocate",
                                "SBLR_FILESPACE_PREALLOCATE",
                                FilespacePreallocateSblrApiRequest(fixture),
                                "sblr-filespace-preallocate-live");
@@ -524,7 +526,7 @@ void TestSblrFilespacePreallocateNegativeCasesDoNotMutate() {
   missing_security_context.security_context_present = false;
   const auto missing_security = DispatchWithContext(
       missing_security_context,
-      "filespace.preallocate",
+      "engine.op.filespace_preallocate",
       "SBLR_FILESPACE_PREALLOCATE",
       FilespacePreallocateSblrApiRequest(fixture),
       false,
@@ -541,7 +543,7 @@ void TestSblrFilespacePreallocateNegativeCasesDoNotMutate() {
   missing_transaction_context.local_transaction_id = 0;
   const auto missing_transaction = DispatchWithContext(
       missing_transaction_context,
-      "filespace.preallocate",
+      "engine.op.filespace_preallocate",
       "SBLR_FILESPACE_PREALLOCATE",
       FilespacePreallocateSblrApiRequest(fixture),
       true,
@@ -562,7 +564,7 @@ void TestSblrFilespacePreallocateNegativeCasesDoNotMutate() {
   insufficient_capacity.option_envelopes.push_back("filespace.maximum_pages:70");
   insufficient_capacity.option_envelopes.push_back("evidence_sink_available:true");
   const auto capacity = Dispatch(fixture,
-                                 "filespace.preallocate",
+                                 "engine.op.filespace_preallocate",
                                  "SBLR_FILESPACE_PREALLOCATE",
                                  insufficient_capacity,
                                  "preallocate-insufficient-capacity");
@@ -574,7 +576,7 @@ void TestSblrFilespacePreallocateNegativeCasesDoNotMutate() {
           "insufficient capacity diagnostic mismatch");
 
   const auto live = Dispatch(fixture,
-                             "filespace.preallocate",
+                             "engine.op.filespace_preallocate",
                              "SBLR_FILESPACE_PREALLOCATE",
                              FilespacePreallocateSblrApiRequest(fixture),
                              "preallocate-live-after-negative");

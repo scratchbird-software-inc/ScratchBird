@@ -810,6 +810,30 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   result.state.security_context_generation = generation;
+  result.state.bootstrap_authority.authenticated = true;
+  result.state.bootstrap_authority.principal_present =
+      bootstrap.state.present;
+  if (bootstrap.state.principal_uuid.valid()) {
+    result.state.bootstrap_authority.principal_uuid =
+        core_uuid::UuidToString(bootstrap.state.principal_uuid.value);
+  }
+  result.state.bootstrap_authority.principal_name =
+      bootstrap.state.principal_name;
+  result.state.bootstrap_authority.credential_fingerprint =
+      bootstrap.state.credential_fingerprint;
+  if (bootstrap.state.sysarch_role_uuid.valid()) {
+    result.state.bootstrap_authority.sysarch_role_uuid =
+        core_uuid::UuidToString(bootstrap.state.sysarch_role_uuid.value);
+  }
+  if (bootstrap.state.membership_uuid.valid()) {
+    result.state.bootstrap_authority.membership_uuid =
+        core_uuid::UuidToString(bootstrap.state.membership_uuid.value);
+  }
+  result.state.bootstrap_authority.creator_tx = bootstrap.state.creator_tx;
+  result.state.bootstrap_authority.policy_generation =
+      bootstrap.state.policy_generation;
+  result.state.bootstrap_authority.security_context_generation =
+      bootstrap.state.security_context_generation;
   result.state.page_numbers = reverse_page_numbers;
   result.state.database_identity_authenticated = true;
   result.state.page_identity_authenticated = true;

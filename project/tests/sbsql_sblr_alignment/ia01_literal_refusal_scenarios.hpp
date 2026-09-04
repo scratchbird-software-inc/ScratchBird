@@ -25,6 +25,37 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
     context.trace_tags.push_back(
         "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
   }
+  // The literal binding phase is intentionally allowed to complete before
+  // this scenario revokes the executor.  Bootstrap the exact literal row
+  // through the durable availability registry; the later revoke remains the
+  // missing-evidence condition under test.
+  const api::SblrExecutorAvailabilityRowIdentity literal_identity{
+      api::kSblrLiteralExecutorId,
+      api::kSblrLiteralOpcodeCode,
+      api::kSblrLiteralOpcodeVersion,
+      api::kSblrLiteralOperandDescriptorId,
+      api::kSblrLiteralResultDescriptorId,
+      api::kSblrLiteralResultDescriptorVersion};
+  const auto literal_bootstrap =
+      api::LoadSblrExecutorAvailabilitySnapshot(context, literal_identity);
+  Require(literal_bootstrap.ok && literal_bootstrap.snapshot.installed,
+          "literal executor availability bootstrap failed");
+  auto literal_admin_context = context;
+  literal_admin_context.trace_tags.push_back(
+      "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
+  api::SblrExecutorAvailabilitySetRequest literal_install;
+  literal_install.database_uuid = context.database_uuid.canonical;
+  literal_install.expected_snapshot_uuid =
+      literal_bootstrap.snapshot.snapshot_uuid;
+  literal_install.expected_generation = literal_bootstrap.snapshot.generation;
+  literal_install.exact_row_identity = literal_identity;
+  literal_install.requested_state =
+      api::SblrExecutorAvailabilityState::installed;
+  literal_install.reason_code = "test.literal_binding_bootstrap";
+  const auto installed = api::SetSblrExecutorAvailability(
+      literal_admin_context, literal_install);
+  Require(installed.ok && installed.snapshot.installed,
+          "literal executor availability install failed");
   context.query_cancellation_requested = [&probes, cancel_after_admission] {
     probes.fetch_add(1, std::memory_order_relaxed);
     return cancel_after_admission;

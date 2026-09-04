@@ -26,7 +26,10 @@ import json
 import sys
 from pathlib import Path
 
-from plan_import_rows_generated_evidence import is_plan_import_rows_surface
+from plan_import_rows_generated_evidence import (
+    is_bulk_import_stream_surface,
+    is_central_import_refusal_surface,
+)
 
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
@@ -36,8 +39,24 @@ PER_ROW_MANIFEST_NAME = "PER_ROW_EVIDENCE_MANIFEST.csv"
 
 AUTH_NOTE = "executable_route_evidence_promoted_by_sbsql_full_surface_fixture_promotion_gate"
 ROUND_NOTE = "binary_round_trip_evidence_promoted_by_sbsql_full_surface_fixture_promotion_gate"
+PRE_SBLR_REFUSAL_AUTH_NOTE = "pre_sblr_exact_refusal_evidence_promoted_by_sbsql_full_surface_fixture_promotion_gate"
+PRE_SBLR_REFUSAL_ROUND_NOTE = "no_binary_round_trip_pre_sblr_exact_refusal_evidence_promoted_by_sbsql_full_surface_fixture_promotion_gate"
 FINAL_STATES = {"e2e_passed", "exact_refusal_passed", "cluster_provider_route_passed"}
 CLUSTER_FINAL_STATES = {"exact_refusal_passed", "cluster_provider_route_passed"}
+CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
+    "SBSQL-A57CFDE0BBA9",
+    "SBSQL-28F16A4C7DD0",
+    "SBSQL-B1816929AD45",
+    "SBSQL-5CC9FDFFE6F7",
+}
+CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
+    "SBSQL-DE4B8AAF6326",
+    "SBSQL-7BA0B928798B",
+}
+PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = (
+    CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
+    | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+)
 
 
 def fail(message: str) -> None:
@@ -255,6 +274,7 @@ def require_common(surface_id: str, fields: dict[str, str], manifest: dict[str, 
             "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
             "SBLR.CAPABILITY.FORBIDDEN",
             "SBSQL.SURFACE.NOT_ADMITTED",
+            "SBSQL.IMPL.NOT_AVAILABLE",
             "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
             "UDR.BRIDGE.UNSUPPORTED",
         )
@@ -300,7 +320,14 @@ def validate_auth(surface_id: str, fields: dict[str, str], manifest: dict[str, s
     for key, expected in required_pairs.items():
         if fields.get(key, "") != expected:
             fail(f"{surface_id} authenticated fixture {key} drift")
-    if "sbwp_1.1_over_tls" not in fields.get("transport_route", ""):
+    if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
+        if fields.get("transport_route", "") != "sbsql_input_to_parser_worker_refusal_before_sbps_submission":
+            fail(f"{surface_id} pre-SBLR refusal transport boundary drifted")
+        if fields.get("listener_path", "") != "not_reached_exact_pre_sblr_refusal":
+            fail(f"{surface_id} pre-SBLR refusal incorrectly claims listener execution")
+        if fields.get("ipc_admission_path", "") != "not_reached_no_executable_sblr_emitted":
+            fail(f"{surface_id} pre-SBLR refusal incorrectly claims SBPS admission")
+    elif "sbwp_1.1_over_tls" not in fields.get("transport_route", ""):
         fail(f"{surface_id} authenticated fixture lost SBWP/TLS route")
     if "no_wal_authority" not in fields.get("mga_execution_authority", ""):
         fail(f"{surface_id} authenticated fixture lost no-WAL MGA authority")
@@ -323,8 +350,19 @@ def validate_auth(surface_id: str, fields: dict[str, str], manifest: dict[str, s
     elif manifest["final_state"] not in {"e2e_passed", "exact_refusal_passed"}:
         fail(f"{surface_id} noncluster authenticated fixture has an unsupported final state")
     elif manifest["final_state"] == "exact_refusal_passed":
-        if "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED" not in fields.get("expected_diagnostic_codes", ""):
-            fail(f"{surface_id} exact-refusal authenticated fixture lacks bootstrap refusal diagnostic")
+        expected_refusal = (
+            "SBSQL.IMPL.NOT_AVAILABLE"
+            if (
+                is_central_import_refusal_surface(surface_id)
+                or surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS
+            )
+            else "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED"
+        )
+        if expected_refusal not in fields.get("expected_diagnostic_codes", ""):
+            fail(
+                f"{surface_id} exact-refusal authenticated fixture lacks "
+                f"{expected_refusal} diagnostic"
+            )
 
 
 def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, str], matrix: dict[str, str]) -> None:
@@ -360,7 +398,19 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
     if "sql_text" not in forbidden or "operation_family_only_routing" not in forbidden:
         fail(f"{surface_id} round-trip fixture lost forbidden authority sources")
     authority = fields.get("execution_authority_model", "")
-    if "no_wal_authority" not in authority or "sblr_envelope_with_uuid_and_descriptor_authority_only" not in authority:
+    if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
+        if not all(
+            token in authority
+            for token in (
+                "parser_syntax_only",
+                "no_executable_sblr",
+                "no_engine_execution",
+                "no_catalog_mutation",
+                "no_wal_authority",
+            )
+        ):
+            fail(f"{surface_id} pre-SBLR refusal authority model drifted")
+    elif "no_wal_authority" not in authority or "sblr_envelope_with_uuid_and_descriptor_authority_only" not in authority:
         fail(f"{surface_id} round-trip fixture lost SBLR/MGA authority model")
     op_id = fields.get("expected_canonical_function_or_api_operation_id", "")
     if matrix["cluster_scope"] == "cluster_private":
@@ -381,10 +431,53 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
     else:
         if manifest["final_state"] not in {"e2e_passed", "exact_refusal_passed"}:
             fail(f"{surface_id} noncluster round-trip fixture has an unsupported final state")
-        if fields.get("byte_identical_round_trip_required", "") != "yes":
-            fail(f"{surface_id} noncluster round-trip fixture must require byte-identical round-trip")
-        if not op_id or op_id.startswith("not_applicable_") or op_id == "pending_canonical_authority_entry":
-            fail(f"{surface_id} noncluster round-trip fixture lacks canonical operation id")
+        if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
+            expected_parent_operation = (
+                "not_admitted_parent_engine.op.ddl_create_schema"
+                if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+                else "not_admitted_parent_engine.op.ddl_create_table"
+            )
+            if (
+                manifest["final_state"] != "exact_refusal_passed"
+                or fields.get("byte_identical_round_trip_required", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or fields.get("canonical_container_magic", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or fields.get("canonical_container_header_size_bytes", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or fields.get("crc32c_check_required", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or fields.get("engine_anchored_uuids_required", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or op_id != expected_parent_operation
+                or "no_executable_sblr" not in fields.get("lower_phase_expectation", "")
+                or "no_server_or_engine_dispatch" not in fields.get("dispatch_phase_expectation", "")
+            ):
+                fail(f"{surface_id} pre-SBLR parent refusal proof drifted")
+        elif is_central_import_refusal_surface(surface_id):
+            if (
+                manifest["final_state"] != "exact_refusal_passed"
+                or fields.get("byte_identical_round_trip_required", "")
+                != "not_applicable_no_executable_sblr"
+                or op_id != "not_admitted_diagnostic_refusal"
+                or "no_server_or_engine_dispatch"
+                not in fields.get("dispatch_phase_expectation", "")
+            ):
+                fail(f"{surface_id} central-import no-execution refusal proof drifted")
+        else:
+            if fields.get("byte_identical_round_trip_required", "") != "yes":
+                fail(
+                    f"{surface_id} noncluster round-trip fixture must require "
+                    "byte-identical round-trip"
+                )
+            if (
+                not op_id
+                or op_id.startswith("not_applicable_")
+                or op_id == "pending_canonical_authority_entry"
+            ):
+                fail(f"{surface_id} noncluster round-trip fixture lacks canonical operation id")
+            if is_bulk_import_stream_surface(surface_id) and op_id != "engine.op.bulk_import_stream":
+                fail(f"{surface_id} bulk-import round-trip operation identity drifted")
 
 
 def main() -> int:
@@ -446,17 +539,6 @@ def main() -> int:
         round_fields = parse_fixture(round_path)
         expected_auth = expected_auth_fields(auth_row, manifest)
         expected_round = expected_round_fields(round_row, manifest)
-        if is_plan_import_rows_surface(surface_id):
-            if manifest.get("final_state") != "pending":
-                fail(f"{surface_id} plan-import fixture may not promote without independent final evidence")
-            validate_nonfinal_plan_import_fixture(
-                surface_id, auth_fields, expected_auth, "authenticated_route"
-            )
-            validate_nonfinal_plan_import_fixture(
-                surface_id, round_fields, expected_round, "sblr_binary_round_trip"
-            )
-            retained_nonfinal += 1
-            continue
         auth_validation_fields = dict(auth_fields)
         round_validation_fields = dict(round_fields)
         if not args.dry_run:
@@ -466,8 +548,13 @@ def main() -> int:
         validate_round(surface_id, round_validation_fields, manifest, round_row)
 
         target_status = fixture_status_for_manifest(manifest)
+        pre_sblr_refusal = surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS
         if not args.dry_run and write_fixture(
-                auth_path, auth_fields, AUTH_NOTE, expected_auth, target_status):
+                auth_path,
+                auth_fields,
+                PRE_SBLR_REFUSAL_AUTH_NOTE if pre_sblr_refusal else AUTH_NOTE,
+                expected_auth,
+                target_status):
             promoted_auth += 1
         elif auth_fields.get("fixture_status") == target_status:
             already_auth += 1
@@ -475,7 +562,11 @@ def main() -> int:
             promoted_auth += 1
 
         if not args.dry_run and write_fixture(
-                round_path, round_fields, ROUND_NOTE, expected_round, target_status):
+                round_path,
+                round_fields,
+                PRE_SBLR_REFUSAL_ROUND_NOTE if pre_sblr_refusal else ROUND_NOTE,
+                expected_round,
+                target_status):
             promoted_round += 1
         elif round_fields.get("fixture_status") == target_status:
             already_round += 1

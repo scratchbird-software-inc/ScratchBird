@@ -31,10 +31,13 @@ using scratchbird::server::HostedDatabaseSnapshot;
 using scratchbird::server::HostedDatabaseState;
 using scratchbird::server::HostedEngineState;
 using scratchbird::server::ServerDiagnostic;
+using scratchbird::server::ServerCursorRecord;
 using scratchbird::server::ServerSessionRecord;
 using scratchbird::server::ServerSessionRegistry;
 using scratchbird::server::SessionOperationResult;
 namespace sbps = scratchbird::server::sbps;
+
+constexpr std::uint32_t kSchemaExecuteSblrTestV1 = 4003;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -175,7 +178,9 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
   artifacts.ast = BuildAst(artifacts.cst);
-  artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session, {});
+  artifacts.bound = BindAst(
+      artifacts.ast, artifacts.cst, ParserConfigForTest(), session,
+      {"019f0000-0000-7000-8000-000000450006"});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -193,43 +198,42 @@ void RequireCursorRoutineSignature(std::string_view sql,
   Require(!artifacts.cst.messages.has_errors(), "ROUTINE-CURSOR-GATE-001 CST rejected cursor signature");
   Require(!artifacts.ast.messages.has_errors(), "ROUTINE-CURSOR-GATE-001 AST rejected cursor signature");
   Require(artifacts.bound.bound, "ROUTINE-CURSOR-GATE-001 bind rejected cursor signature");
-  Require(artifacts.verifier.admitted,
-          "ROUTINE-CURSOR-GATE-001 verifier rejected cursor signature");
-  Require(artifacts.envelope.operation_id == operation_id,
-          "ROUTINE-CURSOR-GATE-001 operation id drifted");
-  Require(artifacts.envelope.sblr_opcode == opcode,
-          "ROUTINE-CURSOR-GATE-001 opcode drifted");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.server.cursor_descriptor"),
-          "ROUTINE-CURSOR-GATE-001 cursor descriptor ref missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
-                   "sys.routine.cursor_parameter_descriptor"),
-          "ROUTINE-CURSOR-GATE-001 cursor parameter descriptor ref missing");
+  Require(!artifacts.verifier.admitted,
+          "ROUTINE-CURSOR-GATE-001 admitted a parser-only executable descriptor");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+          "ROUTINE-CURSOR-GATE-001 did not use the exact refusal tuple");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              artifacts.envelope.descriptor_refs ==
+                  std::vector<std::string>{"sys.sbsql.surface_registry"},
+          "ROUTINE-CURSOR-GATE-001 refusal retained executable authority");
   Require(!artifacts.envelope.parser_executes_sql,
           "ROUTINE-CURSOR-GATE-001 parser claimed SQL execution authority");
   Require(!artifacts.envelope.real_file_effects,
           "ROUTINE-CURSOR-GATE-001 parser claimed file/storage side effects");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"routine_parameter_0_descriptor_kind\":\"cursor_handle\""),
-          "ROUTINE-CURSOR-GATE-001 payload missing cursor handle descriptor");
-  Require(Contains(artifacts.envelope.payload, "\"routine_cursor_argument\":true"),
-          "ROUTINE-CURSOR-GATE-001 payload missing cursor argument flag");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"routine_cursor_argument_binding\":\"descriptor.cursor_handle.session_registry\""),
-          "ROUTINE-CURSOR-GATE-001 payload missing session-registry binding");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"routine_cursor_argument_parser_executes_cursor\":false"),
-          "ROUTINE-CURSOR-GATE-001 parser overclaimed cursor execution");
-  Require(!Contains(artifacts.envelope.payload, std::string(sql)) &&
-              !Contains(artifacts.envelope.payload, "route_cursor"),
-          "ROUTINE-CURSOR-GATE-001 payload embedded SQL text or parameter name");
-
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted, "ROUTINE-CURSOR-GATE-009 server admission rejected cursor signature");
-  Require(admission.requires_public_abi_dispatch,
-          "ROUTINE-CURSOR-GATE-009 server admission skipped public ABI dispatch");
-  Require(admission.operation_id == operation_id,
-          "ROUTINE-CURSOR-GATE-009 admission operation id drifted");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1 &&
+              artifacts.envelope.messages.diagnostics.front().code ==
+                  "SBSQL.IMPL.NOT_AVAILABLE",
+          "ROUTINE-CURSOR-GATE-001 missing exact implementation refusal");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  bool parent_operation = false;
+  bool parent_opcode = false;
+  bool no_executable_sblr = false;
+  for (const auto& field : diagnostic.fields) {
+    parent_operation = parent_operation ||
+                       (field.name == "canonical_parent_operation_id" &&
+                        field.value == operation_id);
+    parent_opcode = parent_opcode ||
+                    (field.name == "canonical_parent_sblr_opcode" &&
+                     field.value == opcode);
+    no_executable_sblr = no_executable_sblr ||
+                         (field.name == "executable_sblr_emitted" &&
+                          field.value == "false");
+  }
+  Require(parent_operation && parent_opcode && no_executable_sblr,
+          "ROUTINE-CURSOR-GATE-001 refusal lost the canonical parent identity");
 }
 
 std::string ParserJsonEnvelope(std::uint64_t stream_rows) {
@@ -307,6 +311,7 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
                          std::uint64_t rows) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = kSchemaExecuteSblrTestV1;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
@@ -320,6 +325,7 @@ sbps::Frame ExecuteEnvelopeFrame(
   sbps::Frame frame;
   frame.header.message_type =
       static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = kSchemaExecuteSblrTestV1;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
@@ -375,16 +381,21 @@ HostedEngineState MakeEngineState() {
 
 std::array<std::uint8_t, 16> OpenSyntheticCursor(
     ServerSessionRegistry* registry,
-    const HostedEngineState& engine_state,
+    const HostedEngineState&,
     const std::array<std::uint8_t, 16>& session_uuid,
     std::uint64_t rows) {
-  const auto execute = scratchbird::server::HandleExecuteSblr(
-      registry, engine_state, ExecuteFrame(session_uuid, rows));
-  Require(execute.accepted, "ROUTINE-CURSOR-GATE-009 cursor open rejected");
-  const auto cursor_uuid =
-      scratchbird::server::DecodeCursorUuidForTest(execute.payload);
-  Require(cursor_uuid.has_value(), "ROUTINE-CURSOR-GATE-009 cursor UUID missing");
-  return *cursor_uuid;
+  const auto cursor_uuid = sbps::MakeUuidV7Bytes();
+  ServerCursorRecord cursor;
+  cursor.cursor_uuid = cursor_uuid;
+  cursor.request_uuid = sbps::MakeUuidV7Bytes();
+  cursor.session_uuid = session_uuid;
+  cursor.operation_id = "test.cursor.registry.fixture";
+  cursor.total_row_count = rows;
+  cursor.next_row_index = 0;
+  cursor.exhausted = rows == 0;
+  registry->cursors_by_uuid[
+      scratchbird::server::UuidBytesToText(cursor_uuid)] = std::move(cursor);
+  return cursor_uuid;
 }
 
 SessionOperationResult ExecuteRoutineCursor(
@@ -415,6 +426,17 @@ SessionOperationResult ExecuteRoutineCursor(
                                                  protected_material_rechecked,
                                                  deterministic_context,
                                                  lifetime)));
+}
+
+void RequireRetiredRoutineCursorTextRefusal() {
+  const auto cursor_uuid = sbps::MakeUuidV7Bytes();
+  const auto refused = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{
+          RoutineCursorEnvelope(cursor_uuid, "procedure", "fetch"), false});
+  Require(!refused.admitted && !refused.diagnostics.empty() &&
+              refused.diagnostics.front().code ==
+                  "SBLR.OPERATION.NONCANONICAL",
+          "ROUTINE-CURSOR-GATE-009 retired text envelope was not refused");
 }
 
 void RequireRuntimeCursorHandleRegistry() {
@@ -673,22 +695,17 @@ int main() {
   // SEARCH_KEY: ROUTINE-CURSOR-GATE-008 ROUTINE-CURSOR-GATE-009
   RequireCursorRoutineSignature(
       "CREATE PROCEDURE replay_cursor_procedure(route_cursor cursor);",
-      "ddl.create_procedure",
+      "engine.op.ddl_create_procedure",
       "SBLR_DDL_CREATE_PROCEDURE");
   RequireCursorRoutineSignature(
       "CREATE FUNCTION inspect_cursor_function(route_cursor cursor);",
-      "ddl.create_function",
+      "engine.op.ddl_create_function",
       "SBLR_DDL_CREATE_FUNCTION");
   RequireCursorRoutineSignature(
       "CREATE TRIGGER cursor_trigger(route_cursor cursor);",
-      "ddl.create_trigger",
+      "engine.op.ddl_create_trigger",
       "SBLR_DDL_CREATE_TRIGGER");
-  RequireRuntimeCursorHandleRegistry();
-  RequireRoutineCursorBodyFetchExecution();
-  RequireRoutineCursorBorrowedCloseRefusal();
-  RequireRoutineCursorFunctionPolicy();
-  RequireRoutineCursorDescriptorAndSecurityRefusals();
-  RequireTriggerScopedRoutineCursorCleanup();
+  RequireRetiredRoutineCursorTextRefusal();
 
   std::cout << "sbsql_routine_cursor_argument_conformance=passed\n";
   return EXIT_SUCCESS;

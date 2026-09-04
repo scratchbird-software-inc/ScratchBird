@@ -383,6 +383,52 @@ void RequireExactLowering(const B001Row& row) {
   Require(artifacts.bound.bound, EvidenceMessage(row, "parser_bind_lower", "row did not bind"));
   Require(!artifacts.bound.requires_name_resolution,
           EvidenceMessage(row, "parser_bind_lower", "row required parser-side name resolution"));
+  if (row.operation_id == "op.gpu.cache_clear" ||
+      row.operation_id == "op.native_compile.cache_invalidate") {
+    Require(!artifacts.verifier.admitted,
+            EvidenceMessage(row, "parser_bind_lower",
+                            "control route bypassed engine descriptor authority"));
+    Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+                artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+                artifacts.envelope.engine_api_operation_id == "not_admitted",
+            EvidenceMessage(row, "parser_bind_lower",
+                            "control refusal tuple drifted"));
+    Require(artifacts.envelope.operation_family == row.family &&
+                artifacts.envelope.sblr_operation_key == row.family,
+            EvidenceMessage(row, "parser_bind_lower",
+                            "control refusal family drifted"));
+    Require(artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+                artifacts.envelope.diagnostic_shape_key ==
+                    "diagnostic_vector.v1" &&
+                artifacts.envelope.resource_contract_key ==
+                    "sbsql.command.no_execution.v1",
+            EvidenceMessage(row, "parser_bind_lower",
+                            "control refusal metadata drifted"));
+    Require(artifacts.envelope.payload.empty() &&
+                artifacts.envelope.operands.empty() &&
+                artifacts.envelope.resolved_object_uuids.empty() &&
+                artifacts.envelope.required_rights.empty() &&
+                !artifacts.envelope.parser_executes_sql &&
+                !artifacts.envelope.real_file_effects,
+            EvidenceMessage(row, "parser_bind_lower",
+                            "control refusal retained executable authority"));
+    Require(HasValue(artifacts.envelope.required_authority_steps,
+                     "authority.parser.syntax_evidence_only") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_executable_sblr") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_sql_text_execution") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_storage_or_finality"),
+            EvidenceMessage(row, "parser_bind_lower",
+                            "control refusal omitted parser non-authority"));
+    Require(artifacts.envelope.messages.diagnostics.size() == 1 &&
+                HasDiagnosticCode(artifacts.envelope.messages,
+                                  "SBSQL.IMPL.NOT_AVAILABLE"),
+            EvidenceMessage(row, "parser_bind_lower",
+                            "control refusal diagnostic drifted"));
+    return;
+  }
   Require(artifacts.verifier.admitted,
           EvidenceMessage(row, "parser_bind_lower", "SBLR verifier rejected row"));
   Require(artifacts.envelope.operation_id == row.operation_id,

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "cluster_provider/cluster_provider.hpp"
+#include "engine/sblr/sblr_bulk_import_stream_runtime.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -46,7 +47,7 @@ constexpr std::array<FamilyRow, 47> kFamilies{{
     {"sblr.archive.operation.v3", "archive.operation", false},
     {"sblr.backup.operation.v3", "backup.operation", false},
     {"sblr.bulk.export.v3", "bulk.export", false},
-    {"sblr.bulk.import.v3", "bulk.import", false},
+    {"sblr.bulk.import.v3", "engine.op.bulk_import_stream", false},
     {"sblr.catalog.introspect.v3", "catalog.get_descriptor", false},
     {"sblr.cluster.control.v3", "cluster.control_cluster", true},
     {"sblr.cluster.report.v3", "cluster.inspect_state", true},
@@ -58,10 +59,10 @@ constexpr std::array<FamilyRow, 47> kFamilies{{
     {"sblr.dml.insert.v3", "dml.insert_rows", false},
     {"sblr.dml.merge.v3", "dml.merge_rows", false},
     {"sblr.dml.update.v3", "dml.update_rows", false},
-    {"sblr.event.channel.v3", "event.channel.notify", false},
-    {"sblr.event.delivery.v3", "event.delivery.poll", false},
+    {"sblr.event.channel.v3", "engine.op.event_channel_notify", false},
+    {"sblr.event.delivery.v3", "engine.op.event_delivery_poll", false},
     {"sblr.event.publication.v3", "event.publication.operation", false},
-    {"sblr.event.subscription.v3", "event.subscription.list", false},
+    {"sblr.event.subscription.v3", "engine.op.event_subscription_list", false},
     {"sblr.filespace.management.v3", "storage.manage_operation", false},
     {"sblr.fulltext.execution.v3", "fulltext.score", false},
     {"sblr.graph.execution.v3", "graph.traverse", false},
@@ -83,7 +84,7 @@ constexpr std::array<FamilyRow, 47> kFamilies{{
     {"sblr.replication.consumer.v3", "cluster.inspect_replication", true},
     {"sblr.replication.operation.v3", "replication.operation", false},
     {"sblr.routine.define.v3", "routine.define", false},
-    {"sblr.routine.execute.v3", "routine.procedure_invoke", false},
+    {"sblr.routine.execute.v3", "engine.op.procedure_invoke", false},
     {"sblr.security.mutation.v3", "security.grant_right", false},
     {"sblr.session.management.v3", "connection.open", false},
     {"sblr.statement.management.v3", "statement.prepare", false},
@@ -134,6 +135,41 @@ std::string EvidenceMessage(const FamilyRow& row,
   return out;
 }
 
+sblr::SblrOperationEnvelope BuildFamilyAdmissionOperation(
+    const FamilyRow& row, const sblr::SblrOpcodeEntry& registry_entry) {
+  auto operation = sblr::MakeSblrEnvelope(
+      std::string(row.operation_id), registry_entry.opcode,
+      "final-cleanup-b007-family-admission");
+  if (row.operation_id != "engine.op.bulk_import_stream") {
+    return operation;
+  }
+
+  // Opcode 775 is never descriptor-less.  This family-classification fixture
+  // supplies one codec-valid BIRO carrier solely to reach server admission;
+  // durable receipt/spool authority and execution are covered by IA-07.
+  sblr::SblrBulkImportStreamDescriptorV1 descriptor;
+  descriptor.canonical_body.fill(1);
+  std::fill(descriptor.canonical_body.begin() + 28,
+            descriptor.canonical_body.begin() + 32, 0);
+  std::fill(descriptor.canonical_body.begin() + 352,
+            descriptor.canonical_body.end(), 0);
+  descriptor.availability_generation = 1;
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "bulk_import_stream_descriptor";
+  operand.name = "bulk_import";
+  operand.value_kind = sblr::SblrValueKind::bulk_import_stream_descriptor;
+  operand.value_body =
+      sblr::EncodeSblrBulkImportStreamDescriptorV1(descriptor, true);
+  Require(!operand.value_body.empty(),
+          EvidenceMessage(row, "canonical", "BIRO fixture did not encode"));
+  operation.result_shape = "bulk_mutation_result";
+  operation.diagnostic_shape = "diagnostic_vector";
+  operation.operands.push_back(std::move(operand));
+  return operation;
+}
+
 scratchbird::server::ServerSblrAdmissionResult Admit(std::string payload,
                                                      bool cluster_authority = false) {
   return scratchbird::server::AdmitServerSblrEnvelope(
@@ -149,7 +185,7 @@ void RequireFamilyAdmission(const FamilyRow& row) {
           EvidenceMessage(row, "canonical", "exact operation has no numeric opcode"));
   const auto canonical_admission = scratchbird::server::AdmitServerSblrEnvelope(
       scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
-          row.operation_id, registry_entry->opcode));
+          BuildFamilyAdmissionOperation(row, *registry_entry)));
 
   if (row.cluster_private) {
     Require(canonical_admission.admitted,

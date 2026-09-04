@@ -219,6 +219,7 @@ void RequireNoUnsafeResultPayload(const api::EngineApiResult& result) {
 api::EngineRequestContext Context(const std::filesystem::path& temp_dir) {
   api::EngineRequestContext context;
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_path = (temp_dir / "runtime.sbdb").string();
   context.database_uuid.canonical = Id(platform::UuidKind::database, 1);
   context.node_uuid.canonical = Id(platform::UuidKind::object, 2);
@@ -229,7 +230,8 @@ api::EngineRequestContext Context(const std::filesystem::path& temp_dir) {
       "right:OBS_METRICS_READ_FAMILY",
       "right:OBS_AGENT_EVIDENCE_READ",
       "right:OBS_AGENT_STATE_READ",
-      "right:OBS_CONFIG_INSPECT"};
+      "right:OBS_CONFIG_INSPECT",
+      "security.fixture_trace_authority"};
   return context;
 }
 
@@ -237,6 +239,7 @@ api::EngineRequestContext DurableContext(const TestDatabase& database) {
   api::EngineRequestContext context;
   context.request_id = "pfar016-support-bundle-durable-agent-catalog";
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_path = database.path.string();
   context.database_uuid.canonical = database.database_uuid;
   context.transaction_uuid.canonical = database.transaction_uuid;
@@ -250,7 +253,8 @@ api::EngineRequestContext DurableContext(const TestDatabase& database) {
       "right:OBS_METRICS_READ_FAMILY",
       "right:OBS_AGENT_EVIDENCE_READ",
       "right:OBS_AGENT_STATE_READ",
-      "right:OBS_CONFIG_INSPECT"};
+      "right:OBS_CONFIG_INSPECT",
+      "security.fixture_trace_authority"};
   return context;
 }
 

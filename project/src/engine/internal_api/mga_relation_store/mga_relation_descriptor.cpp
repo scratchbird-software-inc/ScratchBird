@@ -9,7 +9,6 @@
 #include "mga_relation_store/mga_relation_descriptor.hpp"
 
 #include "api_diagnostics.hpp"
-
 #include <cctype>
 #include <cstdlib>
 #include <limits>
@@ -187,6 +186,76 @@ std::string EncodedDescriptorTypeName(const std::string& descriptor) {
     if (!value.empty()) return value;
   }
   return descriptor;
+}
+
+constexpr std::string_view kCanonicalTextDescriptorUuid =
+    "019d0000-0000-7000-8000-00000000d718";
+constexpr std::string_view kCanonicalTextTypeUuid =
+    "019d0000-0000-7000-8000-00000000d719";
+constexpr std::string_view kCanonicalTextCodecUuid =
+    "019d0000-0000-7000-8000-00000000d71a";
+constexpr std::string_view kCanonicalTextCodecId =
+    "datatype.text.utf8.v1";
+
+bool BindFreshMinimalTextDescriptor(
+    const std::string& presented,
+    const std::string_view column_uuid,
+    std::string* bound) {
+  if (bound == nullptr || column_uuid.empty()) return false;
+  std::map<std::string, std::string> fields;
+  std::size_t offset = 0;
+  while (offset <= presented.size()) {
+    const auto delimiter = presented.find(';', offset);
+    const auto length = delimiter == std::string::npos
+                            ? presented.size() - offset
+                            : delimiter - offset;
+    const auto part = TrimDescriptorText(presented.substr(offset, length));
+    const auto equals = part.find('=');
+    if (part.empty() || equals == std::string::npos || equals == 0 ||
+        equals + 1 == part.size()) {
+      return false;
+    }
+    auto key = LowerDescriptorText(
+        TrimDescriptorText(part.substr(0, equals)));
+    auto value = TrimDescriptorText(part.substr(equals + 1));
+    if (key.empty() || value.empty() ||
+        !fields.emplace(std::move(key), std::move(value)).second) {
+      return false;
+    }
+    if (delimiter == std::string::npos) break;
+    offset = delimiter + 1;
+  }
+  if (fields.size() != 3 || fields.find("canonical") == fields.end() ||
+      fields.find("type_uuid") == fields.end() ||
+      fields.find("nullable") == fields.end() ||
+      LowerDescriptorText(fields.at("canonical")) != "text" ||
+      (fields.at("type_uuid") != kCanonicalTextDescriptorUuid &&
+       fields.at("type_uuid") != kCanonicalTextTypeUuid) ||
+      (fields.at("nullable") != "true" &&
+       fields.at("nullable") != "false")) {
+    return false;
+  }
+
+  // Some early internal callers projected the current datatype descriptor
+  // UUID as though it were the type UUID.  This is a fresh engine-owned bind,
+  // so resolve that exact current descriptor to its distinct type/codec
+  // cohort once and persist the complete authority.  Existing rich or
+  // partially specified descriptors are never inferred or repaired here.
+  *bound = "canonical=text;type_uuid=";
+  bound->append(kCanonicalTextTypeUuid);
+  bound->append(";nullable=");
+  bound->append(fields.at("nullable"));
+  bound->append(";column_uuid=");
+  bound->append(column_uuid);
+  bound->append(";datatype_descriptor_uuid=");
+  bound->append(kCanonicalTextDescriptorUuid);
+  bound->append(";datatype_descriptor_generation=1;type_generation=1;");
+  bound->append("codec_uuid=");
+  bound->append(kCanonicalTextCodecUuid);
+  bound->append(";codec_id=");
+  bound->append(kCanonicalTextCodecId);
+  bound->append(";codec_version=1;codec_generation=1;null_encoding=1");
+  return true;
 }
 
 std::string EncodedDescriptorBaseType(const std::string& descriptor) {
@@ -473,20 +542,37 @@ std::vector<std::pair<std::string, std::string>> BuildPersistedMgaRelationDescri
     column.column_generation = descriptor.relation_generation;
     column.ordinal = static_cast<std::uint32_t>(i);
     column.canonical_name_key = table.columns[i].first;
-    column.value_descriptor.descriptor_uuid.canonical =
-        EncodedDescriptorField(table.columns[i].second,
-                               "datatype_descriptor_uuid");
-    if (column.value_descriptor.descriptor_uuid.canonical.empty()) {
-      // Legacy descriptors predate the exact datatype identity carrier. They
-      // remain non-authoritative until the catalog migration rewrites them;
-      // never infer an executable datatype identity from a name or width.
-      column.value_descriptor.descriptor_uuid.canonical =
-          GeneratedIdentity("object");
-    }
-    column.value_descriptor.descriptor_kind = "canonical_type_descriptor";
     column.value_descriptor.canonical_type_name =
         EncodedDescriptorTypeName(table.columns[i].second);
     column.value_descriptor.encoded_descriptor = table.columns[i].second;
+    if (column.value_descriptor.canonical_type_name == "text") {
+      std::string bound_text_descriptor;
+      if (BindFreshMinimalTextDescriptor(
+              column.value_descriptor.encoded_descriptor,
+              column.column_uuid.canonical, &bound_text_descriptor)) {
+        column.value_descriptor.encoded_descriptor =
+            std::move(bound_text_descriptor);
+      } else if (column.value_descriptor.encoded_descriptor.find(
+                     "column_uuid=") == std::string::npos) {
+        if (!column.value_descriptor.encoded_descriptor.empty())
+          column.value_descriptor.encoded_descriptor.push_back(';');
+        column.value_descriptor.encoded_descriptor +=
+            "column_uuid=" + column.column_uuid.canonical;
+      }
+    }
+    // A rich datatype-bound column already has an exact column occurrence and
+    // carries the distinct datatype-registry identity in its encoded
+    // descriptor.  Keep the value descriptor anchored to that occurrence.
+    // Legacy/minimal columns have no such datatype binding, so they still need
+    // a separate engine-issued descriptor identity; reusing a shared type UUID
+    // (or the column UUID) would collapse catalog identities.
+    column.value_descriptor.descriptor_uuid.canonical =
+        EncodedDescriptorField(column.value_descriptor.encoded_descriptor,
+                               "datatype_descriptor_uuid")
+                .empty()
+            ? GeneratedIdentity("object")
+            : column.column_uuid.canonical;
+    column.value_descriptor.descriptor_kind = "canonical_type_descriptor";
     column.nullable =
         EncodedDescriptorBool(table.columns[i].second, "nullable", true);
     column.generated =

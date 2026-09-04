@@ -4,6 +4,7 @@
 #include "../../src/engine/executor/model_family_executor.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
@@ -687,6 +688,16 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
+std::filesystem::path UniqueTempRoot(const std::string_view label) {
+  static std::atomic_uint64_t ordinal{0};
+  const auto tick = std::chrono::steady_clock::now()
+                        .time_since_epoch()
+                        .count();
+  return std::filesystem::temp_directory_path() /
+         (std::string(label) + "_" + std::to_string(tick) + "_" +
+          std::to_string(ordinal.fetch_add(1, std::memory_order_relaxed)));
+}
+
 }  // namespace
 
 #ifndef SB_RCP080_RUNTIME_FIXTURE_ONLY
@@ -696,9 +707,7 @@ int main() {
                             plan.parallel_waves[0] ==
                                 std::vector<std::uint16_t>({2, 1, 0}),
                         "stable UUID schedule did not permute lexical order");
-  const auto root = std::filesystem::temp_directory_path() /
-                    "sb_rcp080_qow_opt_007_dependency";
-  std::filesystem::remove_all(root);
+  const auto root = UniqueTempRoot("sb_rcp080_qow_opt_007_dependency");
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "rcp080_qow_opt_007_dependency";
   policy.root_path = root;

@@ -21,6 +21,7 @@
 #include <map>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <set>
 #include <tuple>
 #include <type_traits>
@@ -89,6 +90,31 @@ std::string UuidText(const sblr::ContextualTextUuidV2& value) {
     }
     result.push_back(kHex[value[index] >> 4]);
     result.push_back(kHex[value[index] & 0x0f]);
+  }
+  return result;
+}
+
+std::optional<std::string> ExactEncodedDescriptorField(
+    const std::string_view descriptor,
+    const std::string_view requested_key) {
+  std::optional<std::string> result;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string_view::npos ? std::string_view::npos
+                                             : end - start);
+    const auto equals = field.find('=');
+    if (field.empty() || equals == std::string_view::npos || equals == 0 ||
+        equals + 1 == field.size()) {
+      return std::nullopt;
+    }
+    if (field.substr(0, equals) == requested_key) {
+      if (result.has_value()) return std::nullopt;
+      result = std::string(field.substr(equals + 1));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
   }
   return result;
 }
@@ -535,12 +561,19 @@ bool ResolveProjectedTargetDescriptor(
                 profile.target_character_limit <=
                     std::numeric_limits<std::uint32_t>::max() &&
                 selected->character_length == profile.target_character_limit;
+  const auto embedded_datatype_descriptor_uuid =
+      selected == nullptr
+          ? std::optional<std::string>{}
+          : ExactEncodedDescriptorField(
+                selected->encoded_type_descriptor,
+                "datatype_descriptor_uuid");
   if (selected == nullptr || !selected->identity_present ||
       (exact_target_descriptor_fields[7] != "0" &&
        exact_target_descriptor_fields[7] != "1") ||
       (((selected->attributes & 0x01u) != 0) !=
        (exact_target_descriptor_fields[7] == "1")) ||
-      selected->descriptor_uuid != profile.descriptor_uuid ||
+      !embedded_datatype_descriptor_uuid.has_value() ||
+      *embedded_datatype_descriptor_uuid != UuidText(profile.descriptor_uuid) ||
       selected->descriptor_generation != profile.descriptor_generation ||
       selected->type_uuid != profile.type_uuid ||
       selected->type_generation != profile.type_generation ||

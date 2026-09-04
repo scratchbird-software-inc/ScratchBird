@@ -17,7 +17,12 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace scratchbird::engine::internal_api {
+class SblrBulkImportStreamRegistry;
+}
 
 namespace scratchbird::server {
 
@@ -71,10 +76,23 @@ struct HostedDatabaseSnapshot {
   std::string diagnostic_message_key;
 };
 
+// Process-lifetime resources for one opened database.  This object is kept
+// separate from the copyable public/server snapshot so session records and
+// copied snapshots cannot acquire ownership of durable engine registries.
+struct HostedDatabaseRuntime {
+  std::string canonical_database_path;
+  std::string database_uuid;
+  std::shared_ptr<engine::internal_api::SblrBulkImportStreamRegistry>
+      bulk_import_stream_registry;
+};
+
 struct HostedEngineState {
   bool engine_context_active = false;
   std::vector<HostedDatabaseSnapshot> databases;
   std::vector<std::shared_ptr<DatabaseOwnershipLock>> database_ownership_locks;
+  // Declared after the ownership locks so runtime resources are destroyed
+  // first, while database ownership is still held.
+  std::vector<std::shared_ptr<HostedDatabaseRuntime>> database_runtimes;
 };
 
 struct HostedEngineResult {
@@ -87,5 +105,9 @@ struct HostedEngineResult {
 const char* HostedDatabaseStateName(HostedDatabaseState state);
 HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config);
 std::string HostedEngineStatusJson(const HostedEngineState& state);
+std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
+    const HostedEngineState& state,
+    std::string_view database_uuid,
+    std::string_view canonical_database_path = {});
 
 }  // namespace scratchbird::server

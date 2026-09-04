@@ -44,9 +44,7 @@ int main() {
     const auto profile_plan =
         optimizer::CoordinateModelFamilyDependencyDagV1(
             AdmissionForProfile(profile));
-    const auto profile_root = std::filesystem::temp_directory_path() /
-                              ("sb_rcp080_" + profile);
-    std::filesystem::remove_all(profile_root);
+    const auto profile_root = UniqueTempRoot("sb_rcp080_" + profile);
     memory::TempWorkspaceLifecycleManager profile_workspace(
         WorkspacePolicy(profile_root, "rcp080_" + profile));
     RuntimeCounters profile_counters;
@@ -66,9 +64,7 @@ int main() {
   }
   const auto shared_plan = optimizer::CoordinateModelFamilyDependencyDagV1(
       AdmissionForProfile("COMP-3-SHARED-LEG-V1"));
-  const auto shared_root = std::filesystem::temp_directory_path() /
-                           "sb_rcp080_qow_opt_018_shared";
-  std::filesystem::remove_all(shared_root);
+  const auto shared_root = UniqueTempRoot("sb_rcp080_qow_opt_018_shared");
   memory::TempWorkspaceLifecycleManager shared_workspace(
       WorkspacePolicy(shared_root, "rcp080_qow_opt_018_shared"));
   RuntimeCounters shared_counters;
@@ -101,9 +97,7 @@ int main() {
   mixed_admission.spill_required = false;
   const auto mixed_plan =
       optimizer::CoordinateModelFamilyDependencyDagV1(mixed_admission);
-  const auto mixed_root = std::filesystem::temp_directory_path() /
-                          "sb_rcp080_qow_opt_018_mixed";
-  std::filesystem::remove_all(mixed_root);
+  const auto mixed_root = UniqueTempRoot("sb_rcp080_qow_opt_018_mixed");
   memory::TempWorkspaceLifecycleManager mixed_workspace(
       WorkspacePolicy(mixed_root, "rcp080_qow_opt_018_mixed"));
   RuntimeCounters mixed_counters;
@@ -151,9 +145,7 @@ int main() {
   short_admission.spill_required = false;
   const auto short_plan =
       optimizer::CoordinateModelFamilyDependencyDagV1(short_admission);
-  const auto short_root = std::filesystem::temp_directory_path() /
-                          "sb_rcp080_qow_opt_018_short";
-  std::filesystem::remove_all(short_root);
+  const auto short_root = UniqueTempRoot("sb_rcp080_qow_opt_018_short");
   memory::TempWorkspaceLifecycleManager short_workspace(
       WorkspacePolicy(short_root, "rcp080_qow_opt_018_short"));
   RuntimeCounters short_counters;
@@ -193,9 +185,7 @@ int main() {
   lateral_admission.edges[0].edge_kind = "correlation";
   const auto lateral_plan =
       optimizer::CoordinateModelFamilyDependencyDagV1(lateral_admission);
-  const auto lateral_root = std::filesystem::temp_directory_path() /
-                            "sb_rcp080_qow_opt_018_lateral";
-  std::filesystem::remove_all(lateral_root);
+  const auto lateral_root = UniqueTempRoot("sb_rcp080_qow_opt_018_lateral");
   memory::TempWorkspaceLifecycleManager lateral_workspace(
       WorkspacePolicy(lateral_root, "rcp080_qow_opt_018_lateral"));
   RuntimeCounters lateral_counters;
@@ -316,9 +306,7 @@ int main() {
                     "ineligible independent leg was admitted in parallel");
   const auto plan =
       optimizer::CoordinateModelFamilyDependencyDagV1(Admission(349));
-  const auto root = std::filesystem::temp_directory_path() /
-                    "sb_rcp080_qow_opt_018_parallel";
-  std::filesystem::remove_all(root);
+  const auto root = UniqueTempRoot("sb_rcp080_qow_opt_018_parallel");
   memory::TempWorkspaceLifecycleManager workspace(
       WorkspacePolicy(root, "rcp080_qow_opt_018_parallel"));
   RuntimeCounters counters;
@@ -351,9 +339,7 @@ int main() {
                         workspace.Snapshot().active_bytes == 0,
                     "independent wave did not execute three providers concurrently");
 
-  const auto guarded_root = std::filesystem::temp_directory_path() /
-                            "sb_rcp080_qow_opt_018_guarded_mga";
-  std::filesystem::remove_all(guarded_root);
+  const auto guarded_root = UniqueTempRoot("sb_rcp080_qow_opt_018_guarded_mga");
   memory::TempWorkspaceLifecycleManager guarded_workspace(
       WorkspacePolicy(guarded_root, "rcp080_qow_opt_018_guarded_mga"));
   RuntimeCounters guarded_counters;

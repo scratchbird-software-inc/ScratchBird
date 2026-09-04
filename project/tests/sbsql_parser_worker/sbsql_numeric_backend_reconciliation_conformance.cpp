@@ -11,6 +11,7 @@
 #include "runtime_capabilities.hpp"
 #include "sbl_numeric.hpp"
 #include "sblr_dispatch.hpp"
+#include "sblr_opcode_registry.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -87,20 +88,23 @@ std::string DiagnosticDetail(const platform::DiagnosticRecord& diagnostic) {
   return {};
 }
 
-void AddOptionOperand(sblr::SblrOperationEnvelope* envelope,
-                      std::string name,
-                      std::string value) {
-  sblr::SblrOperand operand;
-  operand.type = "option";
-  operand.name = std::move(name);
-  operand.value = std::move(value);
-  envelope->operands.push_back(std::move(operand));
-}
-
 sblr::SblrOperationEnvelope NumericEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope("query.apply_numeric_operation",
-                                         "SBLR_QUERY_APPLY_NUMERIC_OPERATION",
-                                         "trace.cbq017.numeric_backend.query.apply_numeric_operation");
+  constexpr std::string_view operation_id =
+      "engine.op.query_apply_numeric_operation";
+  const auto* registry_entry = sblr::LookupSblrOperation(operation_id);
+  Require(registry_entry != nullptr && registry_entry->code == 1036 &&
+              registry_entry->opcode == "SBLR_QUERY_APPLY_NUMERIC_OPERATION",
+          "canonical numeric SBLR identity did not resolve");
+  auto envelope = sblr::MakeSblrEnvelope(
+      std::string(operation_id), registry_entry->opcode,
+      "trace.cbq017.numeric_backend.query.apply_numeric_operation");
+  envelope.opcode_code = registry_entry->code;
+  envelope.parser_package_uuid =
+      "019f0000-0000-7000-8000-000000170011";
+  envelope.registry_snapshot_uuid =
+      "019f0000-0000-7000-8000-000000170012";
+  envelope.result_shape = "typed_value";
+  envelope.diagnostic_shape = "diagnostic_vector";
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.requires_cluster_authority = false;
@@ -393,24 +397,12 @@ void TestEngineApiAndSblrRoutes() {
           "engine API int128 overflow diagnostic drifted");
 
   auto envelope = NumericEnvelope();
-  AddOptionOperand(&envelope, "numeric_operation", "add");
-  AddOptionOperand(&envelope, "left_type", "int128");
-  AddOptionOperand(&envelope, "left_value", "170141183460469231731687303715884105726");
-  AddOptionOperand(&envelope, "right_type", "int128");
-  AddOptionOperand(&envelope, "right_value", "1");
   const auto dispatched = sblr::DispatchSblrOperation({EngineContext(), envelope, api::EngineApiRequest{}});
-  for (const auto& diagnostic : dispatched.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : dispatched.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-  }
-  Require(dispatched.envelope_validated && dispatched.accepted && dispatched.dispatched_to_api,
-          "SBLR int128 numeric route did not dispatch");
-  Require(dispatched.api_result.ok &&
-              dispatched.api_result.operation_id == "query.apply_numeric_operation" &&
-              HasEvidence(dispatched.api_result, "datatype_numeric_operation", "add"),
-          "SBLR int128 numeric route failed");
+  Require(!dispatched.envelope_validated && !dispatched.accepted &&
+              !dispatched.dispatched_to_api &&
+              !dispatched.diagnostics.empty() &&
+              dispatched.diagnostics.front().code == "SBLR.OPERAND_INVALID",
+          "descriptor-less numeric SBLR bypassed engine-bound authority");
 }
 
 }  // namespace

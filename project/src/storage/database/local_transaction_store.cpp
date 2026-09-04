@@ -91,9 +91,7 @@ struct TransactionInventoryCacheSignature {
 };
 
 struct CachedTransactionInventory {
-  TransactionInventoryCacheSignature signature;
-  LocalTransactionInventory inventory;
-  scratchbird::transaction::mga::LocalTransactionHorizons horizons;
+  std::shared_ptr<const LocalTransactionInventorySnapshot> snapshot;
 };
 
 std::mutex& TransactionInventoryCacheMutex() {
@@ -152,7 +150,8 @@ std::string ReadTransactionInventoryRootBodyHash(const std::string& path) {
   return Sha256BytesHex(body.data(), body.size());
 }
 
-std::optional<TransactionInventoryCacheSignature> ReadTransactionInventoryCacheSignature(
+std::optional<TransactionInventoryCacheSignature>
+ReadTransactionInventoryQuickSignature(
     const std::string& path) {
   if (path.empty()) {
     return std::nullopt;
@@ -180,42 +179,94 @@ std::optional<TransactionInventoryCacheSignature> ReadTransactionInventoryCacheS
       signature.publish_journal_size = journal_size;
       signature.publish_journal_write_time_count =
           static_cast<std::int64_t>(journal_write_time.time_since_epoch().count());
-      signature.publish_journal_hash = ReadWholeFileHash(publish_journal_path);
     }
   }
-  signature.inventory_root_body_hash = ReadTransactionInventoryRootBodyHash(path);
+  return signature;
+}
+
+std::optional<TransactionInventoryCacheSignature>
+ReadTransactionInventoryCacheSignature(const std::string& path) {
+  auto signature = ReadTransactionInventoryQuickSignature(path);
+  if (!signature.has_value()) return std::nullopt;
+  if (signature->publish_journal_present) {
+    signature->publish_journal_hash =
+        ReadWholeFileHash(std::filesystem::path(path + ".sb.txn_publish"));
+  }
+  signature->inventory_root_body_hash =
+      ReadTransactionInventoryRootBodyHash(path);
   return signature;
 }
 
 bool SameTransactionInventoryCacheSignature(
     const TransactionInventoryCacheSignature& lhs,
     const TransactionInventoryCacheSignature& rhs) {
-  return lhs.file_size == rhs.file_size &&
-         lhs.write_time_count == rhs.write_time_count &&
-         lhs.publish_journal_present == rhs.publish_journal_present &&
+  // The database file contains every catalog and relation page.  Its global
+  // size/mtime therefore changes for ordinary statement work that does not
+  // change transaction inventory authority.  The transaction publish journal
+  // is the durable file-identity fence for that authority; the root-body hash
+  // below authenticates the exact inventory bytes at statement attachment.
+  return lhs.publish_journal_present == rhs.publish_journal_present &&
          lhs.publish_journal_size == rhs.publish_journal_size &&
          lhs.publish_journal_write_time_count == rhs.publish_journal_write_time_count &&
          lhs.publish_journal_hash == rhs.publish_journal_hash &&
          lhs.inventory_root_body_hash == rhs.inventory_root_body_hash;
 }
 
-std::optional<LocalTransactionStoreResult> TryLoadCachedTransactionInventory(
+bool SameTransactionInventoryQuickFence(
+    const TransactionInventoryCacheSignature& lhs,
+    const TransactionInventoryCacheSignature& rhs) {
+  // Every supported inventory publication replaces the durable journal.  A
+  // cheap execution/cache fence therefore compares only that inventory-owned
+  // file identity.  Database-wide size/mtime is intentionally excluded: MGA
+  // row/catalog writes share the database file but do not supersede this
+  // statement's immutable transaction-inventory authority.
+  return lhs.publish_journal_present == rhs.publish_journal_present &&
+         lhs.publish_journal_size == rhs.publish_journal_size &&
+         lhs.publish_journal_write_time_count ==
+             rhs.publish_journal_write_time_count;
+}
+
+TransactionInventoryCacheSignature SnapshotSignature(
+    const LocalTransactionInventorySnapshot& snapshot) {
+  TransactionInventoryCacheSignature signature;
+  signature.file_size = snapshot.database_file_size;
+  signature.write_time_count = snapshot.database_write_time_count;
+  signature.publish_journal_present = snapshot.publish_journal_present;
+  signature.publish_journal_size = snapshot.publish_journal_size;
+  signature.publish_journal_write_time_count =
+      snapshot.publish_journal_write_time_count;
+  signature.publish_journal_hash = snapshot.publish_journal_sha256;
+  signature.inventory_root_body_hash = snapshot.inventory_root_body_sha256;
+  return signature;
+}
+
+std::shared_ptr<const LocalTransactionInventorySnapshot>
+TryLoadCachedTransactionInventory(
     const std::string& path) {
-  const auto signature = ReadTransactionInventoryCacheSignature(path);
+  std::shared_ptr<const LocalTransactionInventorySnapshot> cached;
+  {
+    std::lock_guard<std::mutex> guard(TransactionInventoryCacheMutex());
+    const auto found = TransactionInventoryCache().find(path);
+    if (found == TransactionInventoryCache().end() ||
+        found->second.snapshot == nullptr) {
+      return {};
+    }
+    cached = found->second.snapshot;
+  }
+  // A cold attachment verifies and hashes the durable journal/root bytes.
+  // Once that immutable authority is cached, a statement attaches through
+  // the cheap file-identity fence.  Rehashing resident bytes here would make
+  // every descriptor/name-resolution consumer pay the full integrity cost.
+  const auto signature = ReadTransactionInventoryQuickSignature(path);
   if (!signature.has_value()) {
-    return std::nullopt;
+    return {};
   }
-  std::lock_guard<std::mutex> guard(TransactionInventoryCacheMutex());
-  const auto found = TransactionInventoryCache().find(path);
-  if (found == TransactionInventoryCache().end() ||
-      !SameTransactionInventoryCacheSignature(found->second.signature, *signature)) {
-    return std::nullopt;
+  const auto expected = SnapshotSignature(*cached);
+  if (cached == nullptr ||
+      !SameTransactionInventoryQuickFence(*signature, expected)) {
+    return {};
   }
-  LocalTransactionStoreResult result;
-  result.status = StoreOkStatus();
-  result.inventory = found->second.inventory;
-  result.horizons = found->second.horizons;
-  return result;
+  return cached;
 }
 
 void InvalidateTransactionInventoryCache(const std::string& path) {
@@ -235,10 +286,21 @@ void RefreshTransactionInventoryCache(
     InvalidateTransactionInventoryCache(path);
     return;
   }
+  auto snapshot = std::make_shared<LocalTransactionInventorySnapshot>();
+  snapshot->database_path = path;
+  snapshot->database_file_size = signature->file_size;
+  snapshot->database_write_time_count = signature->write_time_count;
+  snapshot->publish_journal_present = signature->publish_journal_present;
+  snapshot->publish_journal_size = signature->publish_journal_size;
+  snapshot->publish_journal_write_time_count =
+      signature->publish_journal_write_time_count;
+  snapshot->publish_journal_sha256 = signature->publish_journal_hash;
+  snapshot->inventory_root_body_sha256 =
+      signature->inventory_root_body_hash;
+  snapshot->inventory = inventory;
+  snapshot->horizons = horizons;
   CachedTransactionInventory cached;
-  cached.signature = *signature;
-  cached.inventory = inventory;
-  cached.horizons = horizons;
+  cached.snapshot = std::move(snapshot);
   std::lock_guard<std::mutex> guard(TransactionInventoryCacheMutex());
   TransactionInventoryCache()[path] = std::move(cached);
 }
@@ -907,24 +969,153 @@ u64 NextAppendPageNumber(FileDevice* device, u32 page_size) {
 
 }  // namespace
 
-LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(std::string path) {
-  if (auto cached = TryLoadCachedTransactionInventory(path)) {
-    return *cached;
+LocalTransactionInventorySnapshotResult
+AcquireStrongLocalTransactionInventorySnapshot(std::string path) {
+  LocalTransactionInventorySnapshotResult result;
+  std::shared_ptr<const LocalTransactionInventorySnapshot> cached;
+  {
+    std::lock_guard<std::mutex> guard(TransactionInventoryCacheMutex());
+    const auto found = TransactionInventoryCache().find(path);
+    if (found != TransactionInventoryCache().end()) {
+      cached = found->second.snapshot;
+    }
   }
-  FileDevice device;
-  const auto open = device.Open(path, FileOpenMode::open_existing);
-  if (!open.ok()) { return StoreError(open.status, open.diagnostic); }
-  SerializedDatabaseHeader header_bytes{};
-  const auto read_header = device.ReadAt(0, header_bytes.data(), header_bytes.size());
-  if (!read_header.ok()) { return StoreError(read_header.status, read_header.diagnostic); }
-  const auto parsed_header = ParseDatabaseHeader(header_bytes);
-  if (!parsed_header.ok()) { return StoreError(parsed_header.status, parsed_header.diagnostic); }
-  auto result = LoadLocalTransactionInventoryFromOpenDevice(&device, parsed_header.header.page_size);
-  if (result.ok()) {
-    RefreshTransactionInventoryCache(path, result.inventory, result.horizons);
-  } else {
+  // A statement attachment performs one full integrity check. Every consumer
+  // of that statement then borrows this immutable snapshot and pays only the
+  // cheap execution fence; the process cache does not weaken the attachment
+  // boundary into a size/mtime-only admission.
+  if (cached != nullptr) {
+    const auto signature = ReadTransactionInventoryCacheSignature(path);
+    if (signature.has_value() && SameTransactionInventoryCacheSignature(
+                                     SnapshotSignature(*cached), *signature)) {
+      result.status = StoreOkStatus();
+      result.snapshot = std::move(cached);
+      return result;
+    }
     InvalidateTransactionInventoryCache(path);
   }
+
+  FileDevice device;
+  const auto open = device.Open(path, FileOpenMode::open_existing);
+  if (!open.ok()) {
+    result.status = open.status;
+    result.diagnostic = open.diagnostic;
+    return result;
+  }
+  SerializedDatabaseHeader header_bytes{};
+  const auto read_header =
+      device.ReadAt(0, header_bytes.data(), header_bytes.size());
+  if (!read_header.ok()) {
+    result.status = read_header.status;
+    result.diagnostic = read_header.diagnostic;
+    return result;
+  }
+  const auto parsed_header = ParseDatabaseHeader(header_bytes);
+  if (!parsed_header.ok()) {
+    result.status = parsed_header.status;
+    result.diagnostic = parsed_header.diagnostic;
+    return result;
+  }
+  auto loaded = LoadLocalTransactionInventoryFromOpenDevice(
+      &device, parsed_header.header.page_size);
+  if (!loaded.ok()) {
+    InvalidateTransactionInventoryCache(path);
+    result.status = loaded.status;
+    result.diagnostic = std::move(loaded.diagnostic);
+    return result;
+  }
+  const auto signature = ReadTransactionInventoryCacheSignature(path);
+  if (!signature.has_value() ||
+      signature->inventory_root_body_hash.empty() ||
+      (signature->publish_journal_present &&
+       signature->publish_journal_hash.empty())) {
+    InvalidateTransactionInventoryCache(path);
+    result.status = StorePageErrorStatus();
+    result.diagnostic =
+        scratchbird::storage::page::MakeTransactionInventoryPageDiagnostic(
+            result.status, "SB-TXN-INVENTORY-SNAPSHOT-IDENTITY-INVALID",
+            "transaction_inventory_snapshot.identity_invalid",
+            "strong inventory authority could not be materialized");
+    return result;
+  }
+
+  auto snapshot = std::make_shared<LocalTransactionInventorySnapshot>();
+  snapshot->database_path = path;
+  snapshot->database_file_size = signature->file_size;
+  snapshot->database_write_time_count = signature->write_time_count;
+  snapshot->publish_journal_present = signature->publish_journal_present;
+  snapshot->publish_journal_size = signature->publish_journal_size;
+  snapshot->publish_journal_write_time_count =
+      signature->publish_journal_write_time_count;
+  snapshot->publish_journal_sha256 = signature->publish_journal_hash;
+  snapshot->inventory_root_body_sha256 =
+      signature->inventory_root_body_hash;
+  snapshot->inventory = std::move(loaded.inventory);
+  snapshot->horizons = std::move(loaded.horizons);
+  {
+    std::lock_guard<std::mutex> guard(TransactionInventoryCacheMutex());
+    TransactionInventoryCache()[path].snapshot = snapshot;
+  }
+  result.status = StoreOkStatus();
+  result.snapshot = std::move(snapshot);
+  return result;
+}
+
+LocalTransactionInventorySnapshotResult
+AcquireLocalTransactionInventorySnapshot(std::string path) {
+  LocalTransactionInventorySnapshotResult result;
+  if (auto cached = TryLoadCachedTransactionInventory(path)) {
+    result.status = StoreOkStatus();
+    result.snapshot = std::move(cached);
+    return result;
+  }
+  return AcquireStrongLocalTransactionInventorySnapshot(std::move(path));
+}
+
+LocalTransactionInventoryFenceResult RevalidateLocalTransactionInventorySnapshot(
+    const LocalTransactionInventorySnapshot& snapshot) {
+  LocalTransactionInventoryFenceResult result;
+  const auto current =
+      ReadTransactionInventoryQuickSignature(snapshot.database_path);
+  if (!current.has_value()) {
+    result.status = StorePageErrorStatus();
+    result.diagnostic =
+        scratchbird::storage::page::MakeTransactionInventoryPageDiagnostic(
+            result.status, "SB-TXN-INVENTORY-SNAPSHOT-FENCE-UNAVAILABLE",
+            "transaction_inventory_snapshot.fence_unavailable");
+    return result;
+  }
+  const auto expected = SnapshotSignature(snapshot);
+  result.unchanged =
+      SameTransactionInventoryQuickFence(*current, expected);
+  if (!result.unchanged) {
+    result.status = StorePageErrorStatus();
+    result.diagnostic =
+        scratchbird::storage::page::MakeTransactionInventoryPageDiagnostic(
+            result.status, "SB-TXN-INVENTORY-SNAPSHOT-STALE",
+            "transaction_inventory_snapshot.stale");
+    return result;
+  }
+  result.status = StoreOkStatus();
+  return result;
+}
+
+LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(std::string path) {
+  if (auto cached = TryLoadCachedTransactionInventory(path)) {
+    LocalTransactionStoreResult result;
+    result.status = StoreOkStatus();
+    result.inventory = cached->inventory;
+    result.horizons = cached->horizons;
+    return result;
+  }
+  const auto acquired = AcquireLocalTransactionInventorySnapshot(std::move(path));
+  if (!acquired.ok()) {
+    return StoreError(acquired.status, acquired.diagnostic);
+  }
+  LocalTransactionStoreResult result;
+  result.status = StoreOkStatus();
+  result.inventory = acquired.snapshot->inventory;
+  result.horizons = acquired.snapshot->horizons;
   return result;
 }
 

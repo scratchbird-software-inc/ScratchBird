@@ -13,6 +13,7 @@
 #include "ipc_server.hpp"
 #include "lifecycle.hpp"
 #include "local_transaction_store.hpp"
+#include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/spatial_api.hpp"
 #include "parser_server_client.hpp"
@@ -72,6 +73,7 @@ namespace bridge = scratchbird::server_engine_bridge;
 namespace db = scratchbird::storage::database;
 namespace dt = scratchbird::core::datatypes;
 namespace ipc = scratchbird::parser::ipc;
+namespace memory = scratchbird::core::memory;
 namespace nosql = scratchbird::engine::internal_api::nosql;
 namespace platform = scratchbird::core::platform;
 namespace resources = scratchbird::core::resources;
@@ -101,11 +103,25 @@ void Require(bool condition, std::string_view message) {
   if (!condition) Fail(message);
 }
 
+void ConfigureMemoryFixture() {
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "qow_live_server_statement_context";
+  const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
+      policy, "qow_live_server_statement_context");
+  Require(configured.ok() && configured.fixture_mode,
+          "statement-context memory fixture configuration failed");
+}
+
 template <typename TResult>
 void RequireEngineOk(const TResult& result, std::string_view message) {
   if (!result.ok) {
     for (const auto& diagnostic : result.diagnostics) {
-      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail;
+      for (const auto& field : diagnostic.fields) {
+        std::cerr << ':' << field.key << '=' << field.value;
+      }
+      std::cerr << '\n';
     }
     Fail(message);
   }
@@ -216,6 +232,14 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
   }
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key;
+    for (const auto& argument : created.diagnostic.arguments) {
+      std::cerr << ':' << argument.key << '=' << argument.value;
+    }
+    std::cerr << '\n';
+  }
   Require(created.ok(), "statement-context database creation failed");
 
   fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
@@ -972,20 +996,40 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
       receipt_context.datatype_catalog_generation,
       receipt_context.datatype_registry_generation, descriptor_uuid,
       int64_row.manifest.descriptor_rows.front().descriptor_epoch);
-  Require(identity.ok && identity.row.codec_uuid.empty() &&
-              persisted.value_descriptor.canonical_type_name == "int64" &&
-              DescriptorFieldValue(
-                  persisted.value_descriptor.encoded_descriptor,
-                  "type_uuid") == identity.row.type_uuid &&
-              persisted.value_descriptor.descriptor_uuid.canonical !=
-                  identity.row.descriptor_uuid &&
-              sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
-                                                           persisted),
+  const bool exact_suffix_absent =
+      identity.ok && identity.row.codec_uuid.empty() &&
+      persisted.value_descriptor.canonical_type_name == "int64" &&
+      DescriptorFieldValue(persisted.value_descriptor.encoded_descriptor,
+                           "type_uuid") == identity.row.type_uuid &&
+      persisted.value_descriptor.descriptor_uuid.canonical !=
+          identity.row.descriptor_uuid &&
+      sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
+                                                   persisted);
+  if (!exact_suffix_absent) {
+    std::cerr << "qow_int64_suffix_authority=" << (identity.ok ? 1 : 0)
+              << ':' << (identity.row.codec_uuid.empty() ? 1 : 0) << ':'
+              << persisted.value_descriptor.canonical_type_name << ':'
+              << DescriptorFieldValue(
+                     persisted.value_descriptor.encoded_descriptor,
+                     "type_uuid")
+              << ':' << identity.row.type_uuid << ':'
+              << persisted.value_descriptor.descriptor_uuid.canonical << ':'
+              << identity.row.descriptor_uuid << ':'
+              << (sblr::Rcp079ExactPersistedColumnDescriptorV1(
+                      receipt_context, persisted)
+                      ? 1
+                      : 0)
+              << '\n';
+  }
+  Require(exact_suffix_absent,
           "suffix-absent non-TEXT descriptor handle was not preserved");
 
   auto complete = persisted;
   const auto append = [&](const std::string_view key,
                           const std::string& value) {
+    if (DescriptorFieldValue(complete.value_descriptor.encoded_descriptor,
+                             key) != "")
+      return;
     complete.value_descriptor.encoded_descriptor +=
         ";" + std::string(key) + "=" + value;
   };
@@ -1454,15 +1498,6 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     }
     Require(loaded.ok, "object-backed join descriptor inspection failed");
     for (const auto& persisted : loaded.descriptor.columns) {
-      std::cerr << "qow_join_datatype_tuple="
-                << persisted.canonical_name_key << ':'
-                << persisted.value_descriptor.descriptor_uuid.canonical << ':'
-                << DescriptorFieldValue(
-                       persisted.value_descriptor.encoded_descriptor,
-                       "type_uuid")
-                << ':' << (persisted.nullable ? 1 : 0)
-                << ":encoded="
-                << persisted.value_descriptor.encoded_descriptor << '\n';
       if (persisted.canonical_name_key == "text_value") {
         VerifyCanonicalTextPersistedRowAuthority(ddl_receipt_context,
                                                  persisted);
@@ -1780,7 +1815,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                                  const bool join_tail_proof_only,
                                  const bool table_function_proof_only = false,
                                  const bool match_recognize_proof_only = false,
-                                 const bool spatial_columnar_proof_only = false) {
+                                 const bool spatial_columnar_proof_only = false,
+                                 const bool filtered_count_proof_only = false) {
   constexpr std::string_view kSourceFreeNativeSelect =
       "SELECT key_a,COUNT(*),SUM(amount) FROM (VALUES (1,5), (1,7)) "
       "AS input(key_a,amount) GROUP BY key_a;";
@@ -2002,9 +2038,49 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           "contextual TEXT authority entered a retained cursor result route");
     };
     if (spatial_columnar_proof_only) verify_mixed_spatial_columnar();
+    if (filtered_count_proof_only) {
+      auto filtered_count = parser.RunPipeline(
+          "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation WHERE "
+          "integer_value >= 2;",
+          true);
+      if (!filtered_count.accepted) PrintMessages(filtered_count.messages);
+      Require(filtered_count.accepted &&
+                  filtered_count.server_operation_id == "query.execute" &&
+                  filtered_count.server_cursor_uuid.empty() &&
+                  filtered_count.server_row_count == 1 &&
+                  filtered_count.server_result_payload.find("row_count=2") !=
+                      std::string::npos,
+              "object-backed WHERE/global COUNT(*) composition did not "
+              "preserve the filtered MGA heap input");
+      auto sum = parser.RunPipeline(
+          "SELECT SUM(integer_value) FROM "
+          "qow_packet7.qow_packet7_relation;",
+          true);
+      if (!sum.accepted) PrintMessages(sum.messages);
+      Require(sum.accepted && sum.server_operation_id == "query.execute" &&
+                  sum.server_cursor_uuid.empty() && sum.server_row_count == 1 &&
+                  sum.server_result_payload.find("total_amount=6") !=
+                      std::string::npos,
+              "object-backed SUM(expression) did not execute through the "
+              "canonical aggregate registry");
+      auto average = parser.RunPipeline(
+          "SELECT AVG(integer_value) FROM "
+          "qow_packet7.qow_packet7_relation;",
+          true);
+      if (!average.accepted) PrintMessages(average.messages);
+      Require(average.accepted &&
+                  average.server_operation_id == "query.execute" &&
+                  average.server_cursor_uuid.empty() &&
+                  average.server_row_count == 1 &&
+                  average.server_result_payload.find("average_value=2") !=
+                      std::string::npos,
+              "object-backed AVG(expression) did not execute through the "
+              "engine-issued canonical aggregate registry");
+    }
 
     if (!join_tail_proof_only && !table_function_proof_only &&
-        !match_recognize_proof_only && !spatial_columnar_proof_only) {
+        !match_recognize_proof_only && !spatial_columnar_proof_only &&
+        !filtered_count_proof_only) {
       auto source_free = parser.RunPipeline(kSourceFreeNativeSelect, true);
       if (!source_free.accepted) PrintMessages(source_free.messages);
       Require(source_free.accepted &&
@@ -2055,7 +2131,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         };
 
     if (!join_tail_proof_only && !match_recognize_proof_only &&
-        !spatial_columnar_proof_only) {
+        !spatial_columnar_proof_only && !filtered_count_proof_only) {
       auto generate_series = run_direct_parameterized(
           "SELECT * FROM generate_series(?, ?, ?);",
           {text_parameter("1"), text_parameter("5"), text_parameter("2")});
@@ -2129,7 +2205,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
 
     if (!join_tail_proof_only && !table_function_proof_only &&
-        !spatial_columnar_proof_only) {
+        !spatial_columnar_proof_only && !filtered_count_proof_only) {
       constexpr std::string_view kMatchRecognizeQuery =
           "SELECT * FROM generate_series(?, ?, ?) MATCH_RECOGNIZE ("
           "PARTITION BY generate_series ORDER BY generate_series ASC "
@@ -2170,7 +2246,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
 
     if (!table_function_proof_only && !match_recognize_proof_only &&
-        !spatial_columnar_proof_only) {
+        !spatial_columnar_proof_only && !filtered_count_proof_only) {
 
     auto joined_literal_parameter_tail = run_direct_parameterized(
         "SELECT l.integer_value FROM "
@@ -2247,7 +2323,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
 
     if (!join_tail_proof_only && !table_function_proof_only &&
-        !match_recognize_proof_only && !spatial_columnar_proof_only) {
+        !match_recognize_proof_only && !spatial_columnar_proof_only &&
+        !filtered_count_proof_only) {
     auto three_way_join_limit = parser.RunPipeline(
         "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS JOIN "
         "qow_packet7.qow_packet7_join_relation AS r CROSS JOIN "
@@ -4426,6 +4503,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
 }  // namespace
 
 int main(int argc, char** argv) {
+  ConfigureMemoryFixture();
   const bool join_tail_proof_only =
       argc == 2 &&
       std::string_view(argv[1]) == "--join-tail-proof-only";
@@ -4438,18 +4516,23 @@ int main(int argc, char** argv) {
   const bool spatial_columnar_proof_only =
       argc == 2 &&
       std::string_view(argv[1]) == "--spatial-columnar-proof-only";
+  const bool filtered_count_proof_only =
+      argc == 2 &&
+      std::string_view(argv[1]) == "--filtered-count-proof-only";
   Require(argc == 1 || join_tail_proof_only || table_function_proof_only ||
-              match_recognize_proof_only || spatial_columnar_proof_only,
+              match_recognize_proof_only || spatial_columnar_proof_only ||
+              filtered_count_proof_only,
           "unsupported qow live statement-context regression argument");
   if (join_tail_proof_only || table_function_proof_only ||
-      match_recognize_proof_only || spatial_columnar_proof_only) {
-    auto bootstrap_fixture = CreateFixture();
+      match_recognize_proof_only || spatial_columnar_proof_only ||
+      filtered_count_proof_only) {
     auto full_route_fixture = CreateFixture(true);
     CreateObjectBackedRelation(&full_route_fixture);
     VerifyFullParserServerRoute(full_route_fixture, join_tail_proof_only,
                                 table_function_proof_only,
                                 match_recognize_proof_only,
-                                spatial_columnar_proof_only);
+                                spatial_columnar_proof_only,
+                                filtered_count_proof_only);
     std::cout
         << (join_tail_proof_only
                 ? "qow_join_tail_literal_filter_parameter_limit=passed\n"
@@ -4457,7 +4540,9 @@ int main(int argc, char** argv) {
                        ? "qow_table_function_generate_series=passed\n"
                        : (match_recognize_proof_only
                               ? "qow_match_recognize_generate_series=passed\n"
-                              : "qow_spatial_columnar_join=passed\n")));
+                              : (spatial_columnar_proof_only
+                                     ? "qow_spatial_columnar_join=passed\n"
+                                     : "qow_filtered_count_sum_avg=passed\n"))));
     return EXIT_SUCCESS;
   }
 

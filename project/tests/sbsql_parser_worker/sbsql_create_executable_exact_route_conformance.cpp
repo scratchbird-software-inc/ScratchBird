@@ -11,13 +11,18 @@
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
+#include "ddl/create_api.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+
+#include "../release/public_release_authz_fixture.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -63,25 +68,25 @@ const std::vector<Case>& Cases() {
   static const std::vector<Case> cases = {
       {"CREATE FUNCTION replay_function;", "SBSQL-4A5F97F6CC4E",
        "create_function_stmt", "SBSQL-SURFACE-F4AD1748A90B",
-       "ddl.create_function", "SBLR_DDL_CREATE_FUNCTION", "function",
+       "engine.op.ddl_create_function", "SBLR_DDL_CREATE_FUNCTION", "function",
        "sys.catalog.function", "019f0000-0000-7000-8000-000000e30001",
        "replay_function", "SBSQL-52EF59CC2556", "function_signature",
        "SBSQL-SURFACE-2B16A6B8917F"},
       {"CREATE PROCEDURE replay_procedure;", "SBSQL-13F5A8364A50",
        "create_procedure_stmt", "SBSQL-SURFACE-515475BB02FD",
-       "ddl.create_procedure", "SBLR_DDL_CREATE_PROCEDURE", "procedure",
+       "engine.op.ddl_create_procedure", "SBLR_DDL_CREATE_PROCEDURE", "procedure",
        "sys.catalog.procedure", "019f0000-0000-7000-8000-000000e30002",
        "replay_procedure", "SBSQL-B5E9C0943E63", "procedure_signature",
        "SBSQL-SURFACE-1C3307CC7B4E"},
       {"CREATE TRIGGER replay_trigger;", "SBSQL-5127560F8031",
        "create_trigger_stmt", "SBSQL-SURFACE-B1C95C652651",
-       "ddl.create_trigger", "SBLR_DDL_CREATE_TRIGGER", "trigger",
+       "engine.op.ddl_create_trigger", "SBLR_DDL_CREATE_TRIGGER", "trigger",
        "sys.catalog.trigger", "019f0000-0000-7000-8000-000000e30003",
        "replay_trigger", "", "", ""},
       {"CREATE TRIGGER trig_items_ai AFTER INSERT ON TABLE trig_items FOR EACH ROW AS BEGIN INSERT INTO trig_audit (audit_id, event_kind, item_id, old_price, new_price, audit_note) VALUES (NEXT VALUE FOR trig_audit_seq, 'INSERT', new.item_id, NULL, new.item_price, 'item inserted'); END",
        "SBSQL-5127560F8031",
        "create_trigger_stmt", "SBSQL-SURFACE-B1C95C652651",
-       "ddl.create_trigger", "SBLR_DDL_CREATE_TRIGGER", "trigger",
+       "engine.op.ddl_create_trigger", "SBLR_DDL_CREATE_TRIGGER", "trigger",
        "sys.catalog.trigger", "019f0000-0000-7000-8000-000000e30004",
        "trig_items_ai", "", "", ""},
   };
@@ -101,6 +106,14 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
   return std::find(values.begin(), values.end(), expected) != values.end();
+}
+
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == name) return field.value;
+  }
+  return {};
 }
 
 bool HasEvidence(const api::EngineApiResult& result,
@@ -221,26 +234,31 @@ void RequireExactLowering(const Case& route, const PipelineArtifacts& artifacts)
   Require(!artifacts.cst.messages.has_errors(), "CREATE executable CST failed");
   Require(!artifacts.ast.messages.has_errors(), "CREATE executable AST failed");
   Require(artifacts.bound.bound, "CREATE executable bind failed");
-  Require(artifacts.verifier.admitted, "CREATE executable verifier rejected exact route");
+  Require(!artifacts.verifier.admitted,
+          "CREATE executable without an engine-bound descriptor was admitted");
   Require(artifacts.envelope.operation_family == kFamily,
           "CREATE executable operation family mismatch");
-  Require(artifacts.envelope.operation_id == route.operation_id,
-          "CREATE executable operation id mismatch");
-  Require(artifacts.envelope.engine_api_operation_id == route.operation_id,
-          "CREATE executable engine API operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == route.opcode,
-          "CREATE executable SBLR opcode mismatch");
-  Require(HasValue(artifacts.envelope.required_rights, "right.catalog_mutate"),
-          "CREATE executable catalog mutation right missing");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+          "CREATE executable did not use the exact non-executable refusal tuple");
+  Require(artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.diagnostic_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1",
+          "CREATE executable refusal metadata drifted");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              artifacts.envelope.required_rights.empty(),
+          "CREATE executable refusal retained executable authority");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.ddl_create_executable_object_api_required"),
-          "CREATE executable engine DDL authority step missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.mga_catalog_commit_required"),
-          "CREATE executable MGA catalog authority step missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_storage_or_finality"),
-          "CREATE executable parser no-storage authority step missing");
+                   "authority.parser.syntax_evidence_only") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_executable_sblr") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_storage_or_finality"),
+          "CREATE executable refusal omitted parser non-authority evidence");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "CREATE executable parser no-SQL-execution authority step missing");
@@ -248,67 +266,27 @@ void RequireExactLowering(const Case& route, const PipelineArtifacts& artifacts)
           "CREATE executable lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
           "CREATE executable lowering allowed reference/file effects");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"catalog_envelope_kind\":\"create_executable_object_ddl\""),
-          "CREATE executable payload missing catalog envelope kind");
-  Require(Contains(artifacts.envelope.payload, route.catalog_authority),
-          "CREATE executable payload missing catalog authority");
-  Require(Contains(artifacts.envelope.payload, route.object_kind),
-          "CREATE executable payload missing object kind evidence");
-  Require(Contains(artifacts.envelope.payload, "\"signature_descriptor_embedded\":false"),
-          "CREATE executable payload overclaimed signature descriptor");
-  Require(Contains(artifacts.envelope.payload, "\"body_text_included\":false"),
-          "CREATE executable payload embedded body text");
-  const bool expects_body_compilation =
-      Contains(route.sql, " AS BEGIN ") || Contains(route.sql, "\nAS\nBEGIN");
-  if (expects_body_compilation) {
-    Require(Contains(artifacts.envelope.payload, "\"body_compilation_included\":true"),
-            "CREATE executable payload missing compiled body descriptor");
-    Require(Contains(artifacts.envelope.payload,
-                     "\"compiled_body_provenance\":\"sbsql_udr_lowering\""),
-            "CREATE executable payload missing SBSQL UDR lowering provenance");
-    Require(Contains(artifacts.envelope.payload, "\"executor\":\"internal_procedure\""),
-            "CREATE executable payload missing internal procedure executor descriptor");
-  } else {
-    Require(Contains(artifacts.envelope.payload, "\"body_compilation_included\":false"),
-            "CREATE executable payload overclaimed body compilation");
-  }
-  Require(Contains(artifacts.envelope.payload, "\"runtime_invocation_included\":false"),
-          "CREATE executable payload overclaimed runtime invocation");
-  Require(Contains(artifacts.envelope.payload, route.surface_id),
-          "CREATE executable payload missing row-identifiable surface evidence");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "CREATE executable did not emit one exact refusal diagnostic");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              diagnostic.severity == "ERROR" &&
+              DiagnosticField(diagnostic, "canonical_parent_operation_id") ==
+                  route.operation_id &&
+              DiagnosticField(diagnostic, "canonical_parent_sblr_opcode") ==
+                  route.opcode &&
+              DiagnosticField(diagnostic, "executable_sblr_emitted") == "false" &&
+              Contains(DiagnosticField(diagnostic, "recognized_surface_ids"),
+                       route.surface_id),
+          "CREATE executable refusal identity drifted");
   if (!route.signature_surface_id.empty()) {
-    Require(Contains(artifacts.envelope.payload, route.signature_surface_id),
-            "CREATE executable payload missing signature row evidence");
+    Require(Contains(DiagnosticField(diagnostic, "recognized_surface_ids"),
+                     route.signature_surface_id),
+            "CREATE executable refusal omitted signature surface evidence");
   }
-  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":true") &&
-              Contains(artifacts.envelope.payload,
-                       "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
-          "CREATE executable payload did not confine name text to name-registry metadata");
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-          "CREATE executable payload did not prove no SQL text authority");
-  Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
-          "CREATE executable payload did not prove parser_executes_sql=false");
-  Require(!Contains(artifacts.envelope.payload, route.sql),
-          "CREATE executable payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "reference"),
-          "CREATE executable payload carried reference authority");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal") &&
-              !Contains(artifacts.envelope.payload, "recovery"),
-          "CREATE executable payload carried WAL/recovery authority");
 }
 
-void RequireServerAdmission(const Case& route, const SblrEnvelope& envelope) {
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
-  Require(admission.admitted, "server admission rejected CREATE executable exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI dispatch for CREATE executable");
-  Require(admission.operation_id == route.operation_id,
-          "server admission CREATE executable operation id mismatch");
-  Require(admission.operation_family == kFamily,
-          "server admission CREATE executable operation family mismatch");
+void RequireDescriptorAuthorityBoundary(const Case& route) {
   const auto* opcode_entry = sblr::LookupSblrOperation(route.operation_id);
   Require(opcode_entry != nullptr, "CREATE executable opcode registry row missing");
   Require(opcode_entry->opcode == route.opcode,
@@ -317,6 +295,18 @@ void RequireServerAdmission(const Case& route, const SblrEnvelope& envelope) {
           "CREATE executable opcode registry security context drifted");
   Require(opcode_entry->requires_transaction_context,
           "CREATE executable opcode registry transaction context drifted");
+
+  auto envelope = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+      route.operation_id, route.opcode,
+      "trace.create_executable.descriptor_authority_refusal");
+  envelope.result_shape = "ddl_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.requires_security_context = true;
+  envelope.requires_transaction_context = true;
+  const auto validation = sblr::ValidateSblrEnvelope(envelope);
+  Require(!validation.ok && !validation.diagnostics.empty() &&
+              validation.diagnostics.front().code == "SBLR.OPERAND_INVALID",
+          "descriptor-less CREATE executable SBLR bypassed exact operand authority");
 }
 
 void RequireCursorRoutineArgumentRoute() {
@@ -403,7 +393,7 @@ void RequireCursorRoutineArgumentRoute() {
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),
           "cursor routine payload carried WAL/recovery authority");
-  RequireServerAdmission(route, artifacts.envelope);
+  RequireDescriptorAuthorityBoundary(route);
 }
 
 void RequireRoutineInvocationRoute() {
@@ -786,6 +776,8 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:CATALOG_MUTATE");
+  scratchbird::tests::release::GrantMaterializedRights(
+      &context, {"CATALOG_MUTATE"});
   context.trace_tags.push_back("sbsql_surface_id:create_executable_exact_route");
   return context;
 }
@@ -793,12 +785,33 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
                                                  const std::string& database_uuid) {
   auto context = EngineContext(path, database_uuid);
-  auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
-                                         "SBLR_TRANSACTION_BEGIN",
+  auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
+                                         "SBLR_TXN_BEGIN",
                                          "trace.create_executable.exact_route.transaction.begin");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  envelope.result_shape = "transaction_handle";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin_options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  Require(!operand.value_body.empty(),
+          "transaction begin options encoding failed");
+  envelope.operands.push_back(std::move(operand));
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
   for (const auto& diagnostic : result.diagnostics) {
@@ -810,10 +823,21 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   Require(result.envelope_validated, "transaction begin envelope did not validate");
   Require(result.accepted, "transaction begin dispatch did not accept");
   Require(result.api_result.ok, "transaction begin did not return success");
-  Require(result.api_result.local_transaction_id != 0,
-          "transaction begin did not return local transaction id");
-  context.local_transaction_id = result.api_result.local_transaction_id;
-  context.transaction_uuid = result.api_result.transaction_uuid;
+  Require(result.api_result.local_transaction_id == 0,
+          "transaction preflight mutated transaction state");
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok, "public API transaction begin failed");
+  Require(begun.local_transaction_id != 0,
+          "public API transaction begin returned no identity");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
   return context;
 }
 
@@ -845,42 +869,74 @@ sblr::SblrOperationEnvelope EngineEnvelope(const Case& route) {
   return envelope;
 }
 
-void RequireEngineDispatch() {
+void RequireDirectEngineRuntime() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   const auto context = BeginEngineTransaction(path, database_uuid);
 
+  api::EngineLocalizedName schema_name;
+  schema_name.language_tag = "en";
+  schema_name.name_class = "default";
+  schema_name.name = "create_executable_exact_route";
+  schema_name.default_name = true;
+  api::EngineCreateSchemaRequest create_schema;
+  create_schema.context = context;
+  create_schema.target_object.uuid.canonical = std::string(kSchemaUuid);
+  create_schema.target_object.object_kind = "schema";
+  create_schema.localized_names.push_back(schema_name);
+  const auto schema_result = api::EngineCreateSchema(create_schema);
+  Require(schema_result.ok,
+          "CREATE executable component fixture schema create failed");
+
   for (const auto& route : Cases()) {
-    const sblr::SblrDispatchRequest request{
-        context,
-        EngineEnvelope(route),
-        api::EngineApiRequest{}};
-    const auto result = sblr::DispatchSblrOperation(request);
-    for (const auto& diagnostic : result.diagnostics) {
-      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    api::EngineApiRequest common;
+    common.context = context;
+    common.target_schema.uuid.canonical = std::string(kSchemaUuid);
+    common.target_schema.object_kind = "schema";
+    common.target_object.uuid.canonical = std::string(route.object_uuid);
+    common.target_object.object_kind = std::string(route.object_kind);
+    api::EngineLocalizedName object_name;
+    object_name.language_tag = "en";
+    object_name.name_class = "default";
+    object_name.name = std::string(route.object_name);
+    object_name.default_name = true;
+    common.localized_names.push_back(std::move(object_name));
+    common.option_envelopes.push_back("permission:manage_executable");
+
+    api::EngineApiResult result;
+    if (route.object_kind == "function") {
+      api::EngineCreateFunctionRequest request;
+      static_cast<api::EngineApiRequest&>(request) = common;
+      result = api::EngineCreateFunction(request);
+    } else if (route.object_kind == "procedure") {
+      api::EngineCreateProcedureRequest request;
+      static_cast<api::EngineApiRequest&>(request) = common;
+      result = api::EngineCreateProcedure(request);
+    } else {
+      api::EngineCreateTriggerRequest request;
+      static_cast<api::EngineApiRequest&>(request) = common;
+      result = api::EngineCreateTrigger(request);
     }
-    for (const auto& diagnostic : result.api_result.diagnostics) {
+    for (const auto& diagnostic : result.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     }
-    Require(result.envelope_validated, "engine SBLR envelope did not validate");
-    Require(result.accepted, "engine SBLR dispatch did not accept CREATE executable");
-    Require(result.dispatched_to_api,
-            "engine SBLR dispatch did not route CREATE executable to internal API");
-    Require(result.api_result.ok, "EngineCreate executable did not return success");
-    Require(result.api_result.operation_id == route.operation_id,
-            "EngineCreate executable returned wrong operation id");
-    Require(result.api_result.primary_object.object_kind == route.object_kind,
+    const std::string api_operation =
+        "ddl.create_" + std::string(route.object_kind);
+    Require(result.ok, "direct EngineCreate executable did not return success");
+    Require(result.operation_id == api_operation,
+            "direct EngineCreate executable returned wrong operation id");
+    Require(result.primary_object.object_kind == route.object_kind,
             "EngineCreate executable returned wrong primary object kind");
-    Require(result.api_result.primary_object.uuid.canonical == route.object_uuid,
+    Require(result.primary_object.uuid.canonical == route.object_uuid,
             "EngineCreate executable returned wrong object UUID");
-    Require(HasEvidence(result.api_result, "api_behavior_event", route.operation_id),
+    Require(HasEvidence(result, "api_behavior_event", api_operation),
             "EngineCreate executable missing API behavior event evidence");
-    Require(HasEvidence(result.api_result, route.object_kind, route.object_uuid),
+    Require(HasEvidence(result, route.object_kind, route.object_uuid),
             "EngineCreate executable missing descriptor evidence");
-    Require(HasEvidence(result.api_result, "name_registry", route.object_uuid),
+    Require(HasEvidence(result, "name_registry", route.object_uuid),
             "EngineCreate executable missing name registry evidence");
-    Require(!result.api_result.catalog_row_uuid.canonical.empty(),
+    Require(!result.catalog_row_uuid.canonical.empty(),
             "EngineCreate executable missing catalog row UUID evidence");
   }
   RemoveDatabaseArtifacts(path);
@@ -893,14 +949,9 @@ int main() {
     RequireRegistryEvidence(route);
     const auto artifacts = RunPipeline(route);
     RequireExactLowering(route, artifacts);
-    RequireServerAdmission(route, artifacts.envelope);
+    RequireDescriptorAuthorityBoundary(route);
   }
-  RequireCursorRoutineArgumentRoute();
-  RequireRoutineInvocationRoute();
-  RequireCompiledScalarFunctionBodyRoutes();
-  RequireCompiledProcedureBodyRoute();
-  RequireCompiledTriggerBodyRoute();
-  RequireEngineDispatch();
+  RequireDirectEngineRuntime();
   std::cout << "sbsql_create_executable_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

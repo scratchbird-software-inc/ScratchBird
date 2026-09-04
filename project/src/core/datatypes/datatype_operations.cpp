@@ -2385,6 +2385,9 @@ CanonicalTypeId CanonicalTypeIdFromStableName(const std::string& stable_name) {
   if (lower == "float") { return CanonicalTypeId::real32; }
   if (lower == "numeric") { return CanonicalTypeId::decimal; }
   if (lower == "set") { return CanonicalTypeId::set_value; }
+  // SQL/XML exposes the public descriptor spelling `xml`; the storage/runtime
+  // authority remains the canonical xml_document type identity.
+  if (lower == "xml") { return CanonicalTypeId::xml_document; }
   // CDSSV-VECTOR: normalized builtin descriptor profile names retain their
   // exact public spelling while binding to an existing canonical vector type
   // identity.  They are not new storage type codes or donor aliases.

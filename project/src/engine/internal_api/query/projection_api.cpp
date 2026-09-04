@@ -62,6 +62,24 @@ bool QowProjectionResourceLimitReasonV1(const std::string& reason) {
          reason == "maximum_fanout" || reason == "maximum_depth";
 }
 
+scratchbird::core::datatypes::CanonicalTypeId
+QowProjectionCanonicalTypeIdV1(const std::string& type_name) {
+  using scratchbird::core::datatypes::CanonicalTypeId;
+  const auto direct =
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type_name);
+  if (direct != CanonicalTypeId::unknown) return direct;
+  // These are closed projection descriptor profiles already emitted and
+  // consumed by the neutral scalar runtime. They retain their profile spelling
+  // at execution, but their storage/type authority is the exact Core base
+  // descriptor below.
+  if (type_name == "numeric.fixed") return CanonicalTypeId::decimal;
+  if (type_name == "character.none" || type_name == "character.utf8") {
+    return CanonicalTypeId::character;
+  }
+  if (type_name == "blob.binary") return CanonicalTypeId::blob;
+  return CanonicalTypeId::unknown;
+}
+
 }  // namespace
 
 // QOW-SOURCE-QRY-027-V1
@@ -279,8 +297,7 @@ bool QowReadProjectionExpressionV1(
     return refuse("descriptor_missing",
                   "projection expression requires a resolved type descriptor");
   }
-  if (scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
-          expression->type_name) ==
+  if (QowProjectionCanonicalTypeIdV1(expression->type_name) ==
           scratchbird::core::datatypes::CanonicalTypeId::unknown) {
     return refuse("descriptor_unsupported",
                   "projection expression type descriptor is unsupported");

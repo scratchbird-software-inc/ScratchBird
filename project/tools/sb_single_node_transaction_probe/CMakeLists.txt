@@ -26,5 +26,5 @@ add_test(NAME sb_single_node_transaction_probe
     --path ${CMAKE_CURRENT_BINARY_DIR}/sb_single_node_transaction_probe.sbdb
     --seed-pack-root ${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack
     --creation-ms 1770000000000
-    --overwrite
+    --isolated-run
 )

@@ -114,6 +114,10 @@ struct SessionContext : ipc::ParserSessionContext {
 
 struct PipelineResult {
   bool accepted{false};
+  // A non-idempotent or durable request may have reached the engine without
+  // returning an exact terminal acknowledgement.  Callers must retain the
+  // original identity and may only replay the byte-identical operation.
+  bool outcome_unknown{false};
   bool frontdoor_cache_hit{false};
   bool parser_executes_sql{false};
   bool cached_storage_authority{false};
@@ -128,6 +132,7 @@ struct PipelineResult {
   std::uint64_t server_row_count{0};
   std::uint64_t server_affected_rows{0};
   bool server_affected_rows_present{false};
+  std::uint64_t server_request_payload_bytes{0};
   std::string server_result_payload;
   MessageVectorSet messages;
 };

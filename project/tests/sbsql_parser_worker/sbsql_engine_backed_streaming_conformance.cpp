@@ -6,182 +6,189 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "scratchbird/engine/sblr/lowering.hpp"
+#include "database_lifecycle.hpp"
+#include "memory.hpp"
+#include "uuid.hpp"
+#include "wire/sbsql_test_wire.hpp"
 
-#include "sblr_dispatch_server.hpp"
-#include "session_registry.hpp"
-
-#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
-using scratchbird::server::HostedDatabaseSnapshot;
-using scratchbird::server::HostedDatabaseState;
-using scratchbird::server::HostedEngineState;
-using scratchbird::server::ServerSessionRecord;
-using scratchbird::server::ServerSessionRegistry;
-namespace sbps = scratchbird::server::sbps;
+namespace database = scratchbird::storage::database;
+namespace memory = scratchbird::core::memory;
+namespace sbsql = scratchbird::parser::sbsql;
+namespace uuid = scratchbird::core::uuid;
+using scratchbird::core::platform::UuidKind;
+
+[[noreturn]] void Fail(std::string_view message) {
+  std::cerr << message << '\n';
+  std::exit(EXIT_FAILURE);
+}
 
 void Require(bool condition, std::string_view message) {
-  if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
-  }
+  if (!condition) Fail(message);
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
 
-std::string TextOperationEnvelope(std::string_view operation_id, std::string_view opcode) {
-  std::string out;
-  out += "operation_id=";
-  out += operation_id;
-  out += "\n";
-  out += "opcode=";
-  out += opcode;
-  out += "\n";
-  out += "sblr_operation_family=sblr.observability.inspect.v3\n";
-  out += "result_shape=engine.api.result.v1\n";
-  out += "diagnostic_shape=engine.diagnostic.v1\n";
-  out += "trace_key=FSPE-010B1\n";
-  out += "contains_sql_text=false\n";
-  out += "parser_resolved_names_to_uuids=true\n";
-  out += "requires_security_context=true\n";
-  out += "requires_transaction_context=false\n";
-  out += "requires_cluster_authority=false\n";
-  return out;
+void PrintMessages(const sbsql::MessageVectorSet& messages) {
+  for (const auto& diagnostic : messages.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message;
+    for (const auto& field : diagnostic.fields) {
+      std::cerr << ' ' << field.name << '=' << field.value;
+    }
+    std::cerr << '\n';
+  }
 }
 
-std::string BinaryOperationEnvelope(std::string_view operation_id, std::string_view opcode) {
-  const auto text = TextOperationEnvelope(operation_id, opcode);
-  const auto binary = scratchbird::engine::sblr::EnvelopeBuilder()
-                          .operation(scratchbird::engine::SblrOperationFamily::management_inspect, 1)
-                          .append_bytes(reinterpret_cast<const std::uint8_t*>(text.data()), text.size())
-                          .encode();
-  return std::string(reinterpret_cast<const char*>(binary.data()), binary.size());
+struct FixtureDatabase {
+  std::filesystem::path directory;
+  std::filesystem::path path;
+
+  FixtureDatabase() = default;
+  FixtureDatabase(const FixtureDatabase&) = delete;
+  FixtureDatabase& operator=(const FixtureDatabase&) = delete;
+  FixtureDatabase(FixtureDatabase&& other) noexcept
+      : directory(std::move(other.directory)), path(std::move(other.path)) {
+    other.directory.clear();
+  }
+
+  ~FixtureDatabase() {
+    std::error_code ignored;
+    if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
+  }
+};
+
+FixtureDatabase CreateFixtureDatabase() {
+  static std::atomic<std::uint64_t> identity_time{1784202000000ULL};
+  FixtureDatabase fixture;
+  const auto nonce = static_cast<std::uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  fixture.directory = std::filesystem::temp_directory_path() /
+                      ("sb_engine_backed_streaming_" + std::to_string(nonce));
+  std::filesystem::create_directories(fixture.directory);
+  fixture.path = fixture.directory / "streaming.sbdb";
+
+  const auto database_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::database, identity_time.fetch_add(2));
+  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::filespace, identity_time.fetch_add(2));
+  Require(database_uuid.ok() && filespace_uuid.ok(),
+          "engine-backed fixture UUID generation failed");
+
+  database::DatabaseCreateConfig create;
+  create.path = fixture.path.string();
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = identity_time.fetch_add(2);
+  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
+  create.allow_minimal_resource_bootstrap = false;
+  create.require_resource_seed_pack = true;
+  const auto created = database::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key << '\n';
+  }
+  Require(created.ok() &&
+              created.create_finality ==
+                  database::DatabaseCreateFinalityClass::committed,
+          "engine-backed fixture database was not durably published");
+  return fixture;
 }
 
-sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                         const std::string& encoded,
-                         bool cursor_requested) {
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(session_uuid, {}, encoded, cursor_requested);
-  return frame;
-}
-
-sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                       const std::array<std::uint8_t, 16>& cursor_uuid,
-                       std::uint64_t max_rows) {
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kFetch);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeFetchPayloadForTest(session_uuid, cursor_uuid, max_rows);
-  return frame;
-}
-
-sbps::Frame CloseFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                       const std::array<std::uint8_t, 16>& cursor_uuid) {
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kCloseCursor);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeCloseCursorPayloadForTest(session_uuid, cursor_uuid);
-  return frame;
-}
-
-ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
-  ServerSessionRegistry registry;
-  ServerSessionRecord session;
-  session.session_uuid = sbps::MakeUuidV7Bytes();
-  session.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  session.principal_uuid = sbps::MakeUuidV7Bytes();
-  session.effective_user_uuid = session.principal_uuid;
-  session.database_path = "/tmp/sb_engine_backed_streaming_conformance.sbdb";
-  session.database_uuid = "019e05df-f010-7000-8000-0000000000b1";
-  *session_uuid = session.session_uuid;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
-  return registry;
-}
-
-HostedEngineState MakeEngineState() {
-  HostedEngineState state;
-  state.engine_context_active = true;
-  HostedDatabaseSnapshot database;
-  database.state = HostedDatabaseState::kOpen;
-  database.database_open = true;
-  database.database_path = "/tmp/sb_engine_backed_streaming_conformance.sbdb";
-  database.database_uuid = "019e05df-f010-7000-8000-0000000000b1";
-  state.databases.push_back(database);
-  return state;
+void Authenticate(sbsql::SbsqlTestWireSession* parser,
+                  const std::filesystem::path& database_path) {
+  sbsql::AuthCredentialEnvelope credentials;
+  credentials.requested_database = database_path.string();
+  sbsql::MessageVectorSet messages;
+  const bool authenticated = parser->AuthenticateCredentials(credentials, &messages);
+  if (!authenticated) PrintMessages(messages);
+  Require(authenticated && parser->session().authenticated,
+          "embedded engine-backed streaming authentication failed");
 }
 
 struct EngineBackedFixture {
+  std::string_view sql;
   std::string_view operation_id;
-  std::string_view opcode;
   std::string_view expected_field;
 };
 
-void VerifyEngineBackedCursor(ServerSessionRegistry* registry,
-                              const HostedEngineState& engine_state,
-                              const std::array<std::uint8_t, 16>& session_uuid,
+void VerifyEngineBackedResult(sbsql::SbsqlTestWireSession* parser,
                               const EngineBackedFixture& fixture) {
-  const auto execute = scratchbird::server::HandleExecuteSblr(
-      registry, engine_state, ExecuteFrame(session_uuid, BinaryOperationEnvelope(fixture.operation_id,
-                                                                                 fixture.opcode), true));
-  Require(execute.accepted, "engine-backed cursor execute was rejected");
-  const auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(execute.payload);
-  Require(cursor_uuid.has_value(), "engine-backed execute did not return a cursor UUID");
+  auto execute = parser->RunPipeline(fixture.sql, true, false);
+  if (!execute.accepted) PrintMessages(execute.messages);
+  Require(execute.accepted && execute.server_operation_id == fixture.operation_id,
+          "engine-backed canonical result execute was rejected");
+  Require(execute.server_cursor_uuid.empty(),
+          "non-streaming engine result unexpectedly returned a cursor UUID");
+  Require(Contains(execute.server_result_payload, fixture.expected_field),
+          "engine-backed result did not expose the engine payload");
+}
 
-  const auto fetch = scratchbird::server::HandleFetch(registry, FetchFrame(session_uuid, *cursor_uuid, 1));
-  Require(fetch.accepted, "engine-backed fetch was rejected");
-  const auto fetch_payload = scratchbird::server::DecodeFetchResultForTest(fetch.payload);
-  Require(fetch_payload.has_value(), "engine-backed fetch payload malformed");
-  Require(fetch_payload->row_count == 1 && fetch_payload->end_of_cursor,
-          "engine-backed fetch did not return the row batch");
-  Require(Contains(fetch_payload->row_packet, std::string("operation_id=") +
-                                                std::string(fixture.operation_id)) &&
-              Contains(fetch_payload->row_packet, fixture.expected_field) &&
-              !Contains(fetch_payload->row_packet, "\"row_index\""),
-          "engine-backed fetch did not expose the engine batch payload");
+void VerifyEngineBackedCursor(sbsql::SbsqlTestWireSession* parser) {
+  constexpr std::string_view kCanonicalSourceFreeCursorQuery =
+      "SELECT key_a,COUNT(*),SUM(amount) FROM (VALUES (1,5), (1,7)) "
+      "AS input(key_a,amount) GROUP BY key_a;";
+  auto execute =
+      parser->RunPipeline(kCanonicalSourceFreeCursorQuery, true, true);
+  if (!execute.accepted) PrintMessages(execute.messages);
+  Require(execute.accepted && execute.server_operation_id == "query.execute",
+          "engine-backed canonical query cursor execute was rejected");
+  Require(!execute.server_cursor_uuid.empty(),
+          "engine-backed query did not return a cursor UUID");
 
-  const auto eos = scratchbird::server::HandleFetch(registry, FetchFrame(session_uuid, *cursor_uuid, 1));
-  Require(eos.accepted, "engine-backed EOS fetch was rejected");
-  const auto eos_payload = scratchbird::server::DecodeFetchResultForTest(eos.payload);
-  Require(eos_payload.has_value() && eos_payload->row_count == 0 && eos_payload->end_of_cursor,
-          "engine-backed cursor did not remain at EOS after final batch");
-
-  const auto close = scratchbird::server::HandleCloseCursor(registry, CloseFrame(session_uuid, *cursor_uuid));
-  Require(close.accepted, "engine-backed cursor close was rejected");
+  const auto fetch = parser->FetchCursorOnRoute(execute.server_cursor_uuid, 1);
+  if (!fetch.accepted) PrintMessages(fetch.messages);
+  Require(fetch.accepted && fetch.row_count == 1 && fetch.end_of_cursor &&
+              !fetch.row_packet.empty(),
+          "engine-backed fetch did not return its terminal row batch");
+  Require(!parser->CloseCursorOnRoute(execute.server_cursor_uuid).accepted,
+          "end-of-stream engine cursor retained live close authority");
 }
 
 }  // namespace
 
 int main() {
-  std::array<std::uint8_t, 16> session_uuid{};
-  auto registry = MakeRegistry(&session_uuid);
-  const auto engine_state = MakeEngineState();
+  auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "sb_engine_backed_streaming_conformance";
+  const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
+      memory_policy, "sb_engine_backed_streaming_conformance");
+  Require(configured.ok(), "engine-backed memory manager configuration failed");
 
-  constexpr std::array<EngineBackedFixture, 2> kFixtures{{
-      {"observability.show_version",
-       "SBLR_OBSERVABILITY_SHOW_VERSION",
-       "product=ScratchBird"},
-      {"observability.show_database",
-       "SBLR_OBSERVABILITY_SHOW_DATABASE",
-       "database_uuid="},
-  }};
-  for (const auto& fixture : kFixtures) {
-    VerifyEngineBackedCursor(&registry, engine_state, session_uuid, fixture);
+  auto fixture = CreateFixtureDatabase();
+  sbsql::ParserConfig config;
+  config.parser_uuid = "019f08a0-5200-7000-8000-000000000001";
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = fixture.path.string();
+
+  sbsql::ParserMetrics metrics;
+  sbsql::SblrTemplateCache cache;
+  sbsql::SbsqlTestWireSession parser(config, &metrics, &cache);
+  Authenticate(&parser, fixture.path);
+
+  constexpr EngineBackedFixture kFixtures[] = {
+      {"SHOW VERSION;", "observability.show_version", "product=ScratchBird"},
+      {"SHOW DATABASE;", "observability.show_database", "database_uuid="},
+  };
+  for (const auto& fixture_case : kFixtures) {
+    VerifyEngineBackedResult(&parser, fixture_case);
   }
+  VerifyEngineBackedCursor(&parser);
 
   std::cout << "sb_engine_backed_streaming_conformance=passed\n";
   return EXIT_SUCCESS;

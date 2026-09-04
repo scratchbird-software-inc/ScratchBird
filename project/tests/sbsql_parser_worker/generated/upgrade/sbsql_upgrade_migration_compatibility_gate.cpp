@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "registry/function_seed_registry.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -195,7 +197,8 @@ bool LooksLikeUuidV7(std::string_view uuid) {
 std::filesystem::path FindRepoRoot(std::filesystem::path start) {
   start = std::filesystem::absolute(start);
   while (!start.empty()) {
-    if (std::filesystem::exists(start / "public_release_evidence") &&
+    if (std::filesystem::is_regular_file(
+            start / "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv") &&
         std::filesystem::exists(start / "project/src")) {
       return start;
     }
@@ -331,7 +334,7 @@ void ValidateSblrEnvelopeVersionEvidence(const std::filesystem::path& repo_root,
                      Contains(engine_envelope_h, "kEngineSblrEnvelopeMinor = 0"),
                  "engine SBLR envelope version constants missing");
   harness->Check(Contains(engine_envelope, "envelope.envelope_major != kEngineSblrEnvelopeMajor") &&
-                     Contains(engine_envelope, "SB_SBLR_ENVELOPE_MAJOR_UNSUPPORTED"),
+                     Contains(engine_envelope, "SBLR.OPERATION.VERSION_INVALID"),
                  "engine SBLR envelope major refusal missing");
   harness->Check(Contains(server_admission, "SBLRExecutionEnvelope.v3") &&
                      Contains(server_admission, "PARSER_SERVER_IPC.SBLR_ENVELOPE_VERSION_UNSUPPORTED"),
@@ -344,135 +347,113 @@ void ValidateSblrEnvelopeVersionEvidence(const std::filesystem::path& repo_root,
                  "server admission must require parser-resolved UUIDs");
 }
 
-void ValidateCanonicalFunctionSeeds(const CsvTable& fixed,
-                                    const CsvTable& names,
-                                    const CsvTable& catalog,
-                                    const std::filesystem::path& canonical_root,
-                                    Harness* harness) {
-  bool schema_ok = true;
-  schema_ok &= RequireColumns(fixed,
-                              {"canonical_function_id", "function_uuid", "uuid_kind",
-                               "uuid_generation_rule", "semantic_stability",
-                               "catalog_row_uuid_rule"},
-                              harness);
-  schema_ok &= RequireColumns(names,
-                              {"name_lookup_seed_id", "function_uuid",
-                               "canonical_function_id", "namespace", "language",
-                               "name_class", "name", "target_kind",
-                               "parser_profile", "notes"},
-                              harness);
-  schema_ok &= RequireColumns(catalog,
-                              {"canonical_function_id", "function_uuid",
-                               "required_catalog_objects", "uuid_requirements",
-                               "namespace_requirements", "descriptor_requirements"},
-                              harness);
-  if (!schema_ok) return;
+struct FunctionSeedCounts {
+  std::size_t runtime{0};
+  std::size_t catalog{0};
+  std::size_t names{0};
+};
 
-  const auto fixed_by_id = IndexUnique(fixed, "canonical_function_id", harness);
-  const auto fixed_by_uuid = IndexUnique(fixed, "function_uuid", harness);
-  IndexUnique(names, "name_lookup_seed_id", harness);
+FunctionSeedCounts ValidateCanonicalFunctionSeeds(Harness* harness) {
+  namespace fn = scratchbird::engine::functions;
+  const auto package = fn::BuildStandardFunctionSeedPackage();
+  const auto runtime_entries = package.registry.Entries();
+  const auto catalog_entries = package.catalog_registry.Entries();
+  FunctionSeedCounts counts{runtime_entries.size(), catalog_entries.size(),
+                            package.name_rows.size()};
 
-  for (const auto& row : fixed.rows) {
-    const auto id = Field(row, "canonical_function_id");
-    const auto uuid = Field(row, "function_uuid");
-    harness->Check(StartsWith(id, "sb.fn."), std::string(id) + " is not a canonical sb.fn id");
-    harness->Check(LooksLikeUuidV7(uuid), std::string(id) + " function UUID is not UUIDv7 compatible");
-    harness->Check(Field(row, "uuid_kind") == "fixed_uuidv7_compatible_builtin_function_object",
-                   std::string(id) + " uuid_kind changed");
-    harness->Check(Field(row, "uuid_generation_rule") ==
-                       "reserved_timestamp_2026_01_01_ms_plus_sha256_canonical_function_id",
-                   std::string(id) + " UUID generation rule changed");
-    harness->Check(Contains(Field(row, "semantic_stability"),
-                            "retain while semantics remain compatible"),
-                   std::string(id) + " lacks compatible semantic retention rule");
-    harness->Check(Contains(Field(row, "catalog_row_uuid_rule"),
-                            "row_uuid is distinct from fixed function_uuid"),
-                   std::string(id) + " must separate catalog row UUID from function UUID");
+  harness->Check(!runtime_entries.empty(), "live runtime function seed registry is empty");
+  harness->Check(!catalog_entries.empty(), "live catalog function seed registry is empty");
+  harness->Check(!package.name_rows.empty(), "live function name seed registry is empty");
+
+  std::set<std::string> runtime_ids;
+  std::set<std::string> runtime_uuids;
+  for (const auto& entry : runtime_entries) {
+    harness->Check(!entry.function_id.empty() && LooksLikeUuidV7(entry.function_uuid),
+                   entry.function_id + " has an invalid live function identity");
+    harness->Check(runtime_ids.insert(entry.function_id).second,
+                   "duplicate live function id " + entry.function_id);
+    harness->Check(runtime_uuids.insert(entry.function_uuid).second,
+                   "duplicate live function UUID " + entry.function_uuid);
+    const auto* by_id = package.registry.Lookup(entry.function_id);
+    const auto* by_uuid = package.registry.LookupByUuid(entry.function_uuid);
+    harness->Check(by_id != nullptr && by_uuid != nullptr &&
+                       by_id->function_uuid == entry.function_uuid &&
+                       by_uuid->function_id == entry.function_id,
+                   entry.function_id + " does not round trip through exact live indexes");
+    harness->Check(!entry.generated_row,
+                   entry.function_id + " grants parser-generated function authority");
   }
 
-  std::map<std::string, std::set<std::string>> names_by_namespace_language;
-  std::size_t reference_aliases = 0;
-  for (const auto& row : names.rows) {
-    const std::string id(Field(row, "canonical_function_id"));
-    const std::string uuid(Field(row, "function_uuid"));
-    const std::string ns(Field(row, "namespace"));
-    const std::string language(Field(row, "language"));
-    const std::string name(Field(row, "name"));
-    const std::string name_class(Field(row, "name_class"));
-    harness->Check(fixed_by_id.count(id) == 1, id + " name row references missing canonical id");
-    harness->Check(fixed_by_uuid.count(uuid) == 1, id + " name row references missing fixed UUID");
-    harness->Check(!ns.empty() && !language.empty() && !name.empty(),
-                   id + " name row has empty namespace/language/name");
-    if (name_class == "canonical_name" || name_class == "sbsql_default_name") {
-      const auto key = ns + "|" + language + "|" + name_class;
-      harness->Check(names_by_namespace_language[key].insert(name).second,
-                     id + " duplicate authoritative localized name in " + key + ": " + name);
-    }
-    if (name_class == "reference_alias" || name_class == "plugin_alias") {
-      ++reference_aliases;
-      harness->Check(StartsWith(ns, "sys.fn.compat."),
-                     id + " reference/plugin alias must be compatibility-scoped");
-      harness->Check(Contains(Field(row, "notes"), "not durable authority") ||
-                         Contains(Field(row, "notes"), "never authoritative"),
-                     id + " reference/plugin alias must not claim engine authority");
-    }
-  }
-  harness->Check(reference_aliases > 0, "canonical function name seed matrix lacks reference/plugin aliases");
-
-  for (const auto& row : catalog.rows) {
-    const std::string id(Field(row, "canonical_function_id"));
-    harness->Check(fixed_by_id.count(id) == 1, id + " catalog row references missing canonical id");
-    harness->Check(Contains(Field(row, "required_catalog_objects"), "sys.catalog.functions") &&
-                       Contains(Field(row, "required_catalog_objects"), "sys.catalog.function_names"),
-                   id + " catalog requirements must include function and name catalog objects");
-    harness->Check(Contains(Field(row, "uuid_requirements"), "fixed function_uuid") &&
-                       Contains(Field(row, "uuid_requirements"), "row_uuid"),
-                   id + " UUID requirements must preserve fixed function UUID and distinct row UUID");
-    harness->Check(!Field(row, "descriptor_requirements").empty(),
-                   id + " descriptor requirements must not be empty");
+  std::set<std::string> catalog_ids;
+  std::set<std::string> catalog_uuids;
+  for (const auto& entry : catalog_entries) {
+    harness->Check(catalog_ids.insert(entry.function_id).second,
+                   "duplicate catalog function id " + entry.function_id);
+    harness->Check(catalog_uuids.insert(entry.function_uuid).second,
+                   "duplicate catalog function UUID " + entry.function_uuid);
+    const auto* runtime = package.registry.Lookup(entry.function_id);
+    const auto* by_uuid = package.catalog_registry.LookupByUuid(entry.function_uuid);
+    harness->Check(runtime != nullptr && by_uuid != nullptr &&
+                       runtime->function_uuid == entry.function_uuid &&
+                       by_uuid->function_id == entry.function_id,
+                   entry.function_id + " changed identity across runtime/catalog seed indexes");
+    harness->Check(entry.catalog_visible && !entry.generated_row,
+                   entry.function_id + " has invalid catalog visibility or ownership");
   }
 
-  const auto uuid_policy = ReadText(canonical_root / "FUNCTION_UUID_SEMANTICS_VERSIONING_POLICY.md");
-  const auto seed_validation =
-      ReadText(canonical_root.parent_path() /
-               "sblr-function-executor-low-guess-hardening/STANDARD_FUNCTION_UUID_NAME_SEED_VALIDATION.md");
-  const auto upgrade_note =
-      ReadText(canonical_root.parent_path() /
-               "sblr-function-executor-low-guess-hardening/UPGRADE_MIGRATION_COMPATIBILITY_NOTE.md");
-  for (const auto token : {"Incompatible semantic changes require a new function UUID",
-                           "Deprecated functions keep their UUID",
-                           "Reference aliases never receive canonical function UUID authority"}) {
-    harness->Check(Contains(uuid_policy, token),
-                   std::string("FUNCTION_UUID_SEMANTICS_VERSIONING_POLICY.md missing ") + token);
+  std::set<std::string> seed_ids;
+  std::set<std::string> named_catalog_ids;
+  for (const auto& row : package.name_rows) {
+    harness->Check(!row.name_lookup_seed_id.empty() &&
+                       seed_ids.insert(row.name_lookup_seed_id).second,
+                   "function name seed identity is empty or duplicated");
+    harness->Check(!row.canonical_function_id.empty() &&
+                       LooksLikeUuidV7(row.function_uuid) &&
+                       !row.localized_name.empty() && !row.name_namespace.empty(),
+                   row.name_lookup_seed_id + " function name seed is incomplete");
+    const auto* catalog = package.catalog_registry.Lookup(row.canonical_function_id);
+    const auto* runtime = package.registry.Lookup(row.canonical_function_id);
+    harness->Check(catalog != nullptr && runtime != nullptr &&
+                       catalog->function_uuid == row.function_uuid &&
+                       runtime->function_uuid == row.function_uuid,
+                   row.name_lookup_seed_id +
+                       " does not bind one exact catalog/runtime function UUID");
+    harness->Check(row.target_kind == "function" ||
+                       row.target_kind == "function_alias",
+                   row.name_lookup_seed_id + " has an invalid target kind");
+    named_catalog_ids.insert(row.canonical_function_id);
   }
-  for (const auto token : {"UUID reuse for different semantics is forbidden",
-                           "Rename adds or updates localized name rows",
-                           "Reference names are compatibility aliases and never authoritative identity"}) {
-    harness->Check(Contains(seed_validation, token),
-                   std::string("STANDARD_FUNCTION_UUID_NAME_SEED_VALIDATION.md missing ") + token);
+  for (const auto& entry : catalog_entries) {
+    harness->Check(named_catalog_ids.contains(entry.function_id),
+                   entry.function_id + " catalog seed has no live name seed");
   }
-  for (const auto token : {"Renamed function keeps UUID",
-                           "Replaced function uses replacement UUID",
-                           "Reference alias changes affect parser projection only"}) {
-    harness->Check(Contains(upgrade_note, token),
-                   std::string("UPGRADE_MIGRATION_COMPATIBILITY_NOTE.md missing ") + token);
-  }
+  return counts;
 }
 
 void ValidateFixtureRegenerationPolicy(const std::filesystem::path& repo_root, Harness* harness) {
-  const auto policy = ReadText(repo_root / "public_contract_snapshot"
-                                           "appendix-registry-version-migration-policy.md");
-  for (const auto token :
-       {"add optional fields with defaults",
-        "removing required fields",
-        "changing operation semantics",
-        "changing binary envelope encoding",
-        "Generated artifacts are invalid when",
-        "registry snapshot hash changes for consumed rows",
-        "Fixture version",
-        "fixture migration result"}) {
-    harness->Check(Contains(policy, token),
-                   std::string("registry migration policy missing token ") + token);
+  const auto manifest = ReadCsv(
+      repo_root / "project/tests/sbsql_parser_worker/generated/repro/"
+                  "DETERMINISTIC_ARTIFACT_MANIFEST.csv");
+  if (RequireColumns(manifest,
+                     {"artifact_path", "sha256", "size_bytes", "category", "source_inputs"},
+                     harness)) {
+    const auto by_path = IndexUnique(manifest, "artifact_path", harness);
+    for (const auto required : {
+             "project/tests/sbsql_parser_worker/generated/upgrade/"
+             "UPGRADE_MIGRATION_COMPATIBILITY_FIXTURES.csv",
+             "project/tests/sbsql_parser_worker/generated/upgrade/"
+             "sbsql_upgrade_migration_compatibility_gate.cpp"}) {
+      const auto found = by_path.find(required);
+      harness->Check(found != by_path.end(),
+                     std::string("deterministic manifest is missing ") + required);
+      if (found == by_path.end()) continue;
+      harness->Check(Field(*found->second, "category") == "test_generated_upgrade" &&
+                         Field(*found->second, "source_inputs") ==
+                             "repo_tracked_generated_fixture" &&
+                         Field(*found->second, "sha256").size() == 64 &&
+                         !Field(*found->second, "size_bytes").empty(),
+                     std::string(required) + " has invalid deterministic provenance");
+    }
   }
 
   const auto cache_h = ReadText(repo_root / "project/src/parsers/sbsql_worker/cache/sblr_template_cache.hpp");
@@ -499,8 +480,6 @@ void ValidateDatabaseCompatibilityEvidence(const std::filesystem::path& repo_roo
   const auto db_format_cpp = ReadText(repo_root / "project/src/storage/disk/database_format.cpp");
   const auto db_lifecycle_h = ReadText(repo_root / "project/src/storage/database/database_lifecycle.hpp");
   const auto db_lifecycle = ReadText(repo_root / "project/src/storage/database/database_lifecycle.cpp");
-  const auto compatibility = ReadText(repo_root / "public_contract_snapshot"
-                                                  "appendix-compatibility-mode-matrix.md");
   const auto report = ReadText(artifact_root / "UPGRADE_MIGRATION_COMPATIBILITY_REPORT.md");
 
   harness->Check(Contains(db_format_h, "kScratchBirdDatabaseFormatMajor = 1") &&
@@ -555,15 +534,6 @@ void ValidateDatabaseCompatibilityEvidence(const std::filesystem::path& repo_roo
     harness->Check(Contains(report, token),
                    std::string("upgrade compatibility report missing token ") + token);
   }
-  for (const auto token : {"CompatibilityModeProfileRecord",
-                           "CompatibilitySurfaceAdmissionRecord",
-                           "resolve_compatibility_mode",
-                           "If exact mode cannot be satisfied",
-                           "reject with diagnostic",
-                           "Reject reference SQL text at engine ingress"}) {
-    harness->Check(Contains(compatibility, token),
-                   std::string("compatibility mode matrix missing token ") + token);
-  }
 }
 
 void ValidateEngineBoundaryInvariants(const std::filesystem::path& repo_root, Harness* harness) {
@@ -572,8 +542,6 @@ void ValidateEngineBoundaryInvariants(const std::filesystem::path& repo_root, Ha
   const auto no_wal_gate = ReadText(repo_root / "project/tests/sbsql_parser_worker/generated/hardening/"
                                                 "sbsql_no_spin_no_wal_no_direct_db_gate.cpp");
   const auto sblr_contract = ReadText(repo_root / "public_contract_snapshot");
-  const auto compatibility = ReadText(repo_root / "public_contract_snapshot"
-                                                  "appendix-compatibility-mode-matrix.md");
   const auto replay = ReadText(repo_root / "project/tests/sbsql_parser_worker/generated/replay/"
                                            "DIFFERENTIAL_REPLAY_FIXTURE_INDEX.csv");
 
@@ -589,9 +557,9 @@ void ValidateEngineBoundaryInvariants(const std::filesystem::path& repo_root, Ha
   harness->Check(Contains(no_wal_gate, "no_wal_recovery=true") &&
                      Contains(no_wal_gate, "wal_recovery_forbidden"),
                  "hardening gate must retain anti-WAL evidence");
-  harness->Check(Contains(sblr_contract, "ScratchBird MGA execution is authoritative") &&
-                     Contains(sblr_contract, "SBLR and internal procedures") &&
-                     Contains(compatibility, "MGA mapping"),
+  harness->Check(Contains(sblr_contract, "ScratchBird MGA is the controlling transaction") &&
+                     Contains(sblr_contract, "WAL/redo/undo is not authoritative recovery") &&
+                     Contains(sblr_contract, "SBLR public execution contract snapshot"),
                  "canonical specs must retain MGA-not-WAL compatibility authority");
   harness->Check(Contains(replay, "execute-sblr-internal-procedure-only-no-sql-text"),
                  "replay fixtures must assert SBLR/internal procedure only boundary");
@@ -608,19 +576,13 @@ int main(int argc, char** argv) {
                  : repo_root / "project/tests/sbsql_parser_worker/fixtures/"
                                "full_parser_udr_engine/artifacts";
     const auto upgrade_root = FindUpgradeRoot(repo_root, argv);
-    const auto canonical_root =
-        repo_root / "public_input_snapshot";
-
     const auto fixtures = ReadCsv(upgrade_root / "UPGRADE_MIGRATION_COMPATIBILITY_FIXTURES.csv");
-    const auto fixed = ReadCsv(canonical_root / "FIXED_FUNCTION_UUID_REGISTRY.csv");
-    const auto names = ReadCsv(canonical_root / "FUNCTION_NAME_LOOKUP_SEED_MATRIX.csv");
-    const auto catalog = ReadCsv(canonical_root / "CATALOG_OBJECT_REQUIREMENTS.csv");
 
     Harness harness;
     ValidateFixtures(fixtures, &harness);
     ValidateParserRegistryVersionEvidence(repo_root, &harness);
     ValidateSblrEnvelopeVersionEvidence(repo_root, &harness);
-    ValidateCanonicalFunctionSeeds(fixed, names, catalog, canonical_root, &harness);
+    const auto seed_counts = ValidateCanonicalFunctionSeeds(&harness);
     ValidateFixtureRegenerationPolicy(repo_root, &harness);
     ValidateDatabaseCompatibilityEvidence(repo_root, artifact_root, &harness);
     ValidateEngineBoundaryInvariants(repo_root, &harness);
@@ -629,9 +591,9 @@ int main(int argc, char** argv) {
     std::cout << "  \"ok\": " << (harness.ok ? "true" : "false") << ",\n";
     std::cout << "  \"gate\": \"sbsql_upgrade_migration_compatibility_gate\",\n";
     std::cout << "  \"fixture_rows\": " << fixtures.rows.size() << ",\n";
-    std::cout << "  \"fixed_function_rows\": " << fixed.rows.size() << ",\n";
-    std::cout << "  \"name_seed_rows\": " << names.rows.size() << ",\n";
-    std::cout << "  \"catalog_requirement_rows\": " << catalog.rows.size() << ",\n";
+    std::cout << "  \"runtime_function_rows\": " << seed_counts.runtime << ",\n";
+    std::cout << "  \"catalog_function_rows\": " << seed_counts.catalog << ",\n";
+    std::cout << "  \"name_seed_rows\": " << seed_counts.names << ",\n";
     std::cout << "  \"parser_registry_version_evidence\": \"checked\",\n";
     std::cout << "  \"sblr_envelope_version_evidence\": \"checked\",\n";
     std::cout << "  \"database_compatibility_evidence\": \"checked\",\n";

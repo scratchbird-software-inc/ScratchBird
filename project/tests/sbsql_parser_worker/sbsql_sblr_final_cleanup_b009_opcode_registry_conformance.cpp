@@ -7,6 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_sblr_admission_test_helper.hpp"
+#include "engine/sblr/sblr_ddl_alter_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_materialized_view_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_synonym_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_type_runtime.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 
@@ -118,6 +123,71 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  if (row.operation_id == "engine.op.ddl_create_materialized_view") {
+    sblr::SblrDdlCreateMaterializedViewDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    envelope.result_shape = "ddl_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "create_materialized_view_descriptor";
+    operand.name = "view";
+    operand.value_kind =
+        sblr::SblrValueKind::create_materialized_view_descriptor;
+    operand.value_body =
+        sblr::EncodeSblrDdlCreateMaterializedViewDescriptorV1(descriptor, true);
+  } else if (row.operation_id == "engine.op.ddl_create_type") {
+    sblr::SblrDdlCreateTypeDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    envelope.result_shape = "ddl_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "create_type_descriptor";
+    operand.name = "type";
+    operand.value_kind = sblr::SblrValueKind::create_type_descriptor;
+    operand.value_body =
+        sblr::EncodeSblrDdlCreateTypeDescriptorV1(descriptor, true);
+  } else if (row.operation_id == "engine.op.ddl_alter_type") {
+    sblr::SblrDdlAlterTypeDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    envelope.result_shape = "ddl_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "alter_type_descriptor";
+    operand.name = "type";
+    operand.value_kind = sblr::SblrValueKind::alter_type_descriptor;
+    operand.value_body =
+        sblr::EncodeSblrDdlAlterTypeDescriptorV1(descriptor, true);
+  } else if (row.operation_id == "engine.op.ddl_drop_type") {
+    sblr::SblrDdlDropTypeDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    envelope.result_shape = "ddl_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "drop_type_descriptor";
+    operand.name = "type";
+    operand.value_kind = sblr::SblrValueKind::drop_type_descriptor;
+    operand.value_body =
+        sblr::EncodeSblrDdlDropTypeDescriptorV1(descriptor, true);
+  } else if (row.operation_id == "engine.op.ddl_drop_synonym") {
+    sblr::SblrDdlDropSynonymDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    envelope.result_shape = "ddl_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "drop_synonym_descriptor";
+    operand.name = "synonym";
+    operand.value_kind = sblr::SblrValueKind::drop_synonym_descriptor;
+    operand.value_body =
+        sblr::EncodeSblrDdlDropSynonymDescriptorV1(descriptor, true);
+  }
+  if (!operand.type.empty()) {
+    Require(!operand.value_body.empty(),
+            EvidenceMessage(row, "envelope", "typed carrier did not encode"));
+    envelope.operands.push_back(std::move(operand));
+  }
   return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
       envelope);
 }

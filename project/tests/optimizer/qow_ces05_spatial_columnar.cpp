@@ -13,6 +13,7 @@
 #include "memory.hpp"
 #include "engine/optimizer/model_family_coordinator.hpp"
 #include "nosql/search_api.hpp"
+#include "resource_seed_pack.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "transaction/transaction_api.hpp"
@@ -20,6 +21,7 @@
 #endif
 
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -44,6 +46,7 @@ namespace dt = scratchbird::core::datatypes;
 namespace memory = scratchbird::core::memory;
 namespace opt = scratchbird::engine::optimizer;
 namespace platform = scratchbird::core::platform;
+namespace resources = scratchbird::core::resources;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 #endif
@@ -539,14 +542,40 @@ std::string ProductionUuid(const platform::UuidKind kind,
 }
 
 std::string ProductionCoreTypeUuid(const std::string_view stable_name) {
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
-  const auto found = std::ranges::find_if(
+  const auto count = std::ranges::count_if(
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
-  return found == manifest.manifest.descriptor_rows.end()
-             ? std::string{}
-             : uuid::UuidToString(found->descriptor_uuid.value);
+  const auto descriptor = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (count != 1 || descriptor == manifest.manifest.descriptor_rows.end() ||
+      !descriptor->descriptor_uuid.valid()) {
+    return {};
+  }
+  const auto descriptor_uuid =
+      uuid::UuidToString(descriptor->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      descriptor->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+}
+
+std::string ProductionCoreDescriptorUuid(const std::string_view stable_name) {
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto descriptor = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return count == 1 && descriptor != manifest.manifest.descriptor_rows.end() &&
+                 descriptor->descriptor_uuid.valid()
+             ? uuid::UuidToString(descriptor->descriptor_uuid.value)
+             : std::string{};
 }
 
 void AppendProductionLittleEndianU64(std::vector<std::uint8_t>* output,
@@ -1004,6 +1033,11 @@ struct ProductionFixture {
   std::string principal_uuid;
   std::string session_uuid;
   std::string relation_uuid;
+  std::string utf8_charset_uuid;
+  std::string utf8_default_collation_uuid;
+  std::uint64_t resource_epoch{0};
+  std::uint64_t charset_generation{0};
+  std::uint64_t collation_generation{0};
   std::uint64_t salt{0};
 
   ~ProductionFixture() {
@@ -1011,6 +1045,58 @@ struct ProductionFixture {
     if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
   }
 };
+
+bool ProductionBindResourceAuthority(
+    const resources::ResourceSeedCatalogImage& catalog,
+    ProductionFixture* fixture) {
+  if (fixture == nullptr || catalog.resource_epoch == 0) return false;
+  const auto* charset = resources::FindResourceSeedCharset(catalog, "UTF8");
+  if (charset == nullptr || charset->resource_uuid.empty() ||
+      charset->default_collation_uuid.empty() || charset->family_epoch == 0) {
+    return false;
+  }
+  const auto* collation = resources::FindResourceSeedCollation(
+      catalog, charset->default_collation_name);
+  if (collation == nullptr ||
+      collation->resource_uuid != charset->default_collation_uuid ||
+      collation->charset_uuid != charset->resource_uuid ||
+      collation->family_epoch == 0) {
+    return false;
+  }
+  fixture->utf8_charset_uuid = charset->resource_uuid;
+  fixture->utf8_default_collation_uuid = collation->resource_uuid;
+  fixture->resource_epoch = catalog.resource_epoch;
+  fixture->charset_generation = charset->family_epoch;
+  fixture->collation_generation = collation->family_epoch;
+  return true;
+}
+
+std::string ProductionCanonicalTextDescriptor(
+    const ProductionFixture& fixture, const std::string_view type_uuid,
+    const bool nullable) {
+  if (fixture.utf8_charset_uuid.empty() ||
+      fixture.utf8_default_collation_uuid.empty() ||
+      fixture.resource_epoch == 0 || fixture.charset_generation == 0 ||
+      fixture.collation_generation == 0 || type_uuid.empty()) {
+    return {};
+  }
+  return "type=text;character_length=256;charset_uuid=" +
+         fixture.utf8_charset_uuid + ";collation_uuid=" +
+         fixture.utf8_default_collation_uuid + ";nullable=" +
+         (nullable ? "true" : "false") + ";charset_generation=" +
+         std::to_string(fixture.charset_generation) +
+         ";collation_generation=" +
+         std::to_string(fixture.collation_generation) +
+         ";resource_epoch=" + std::to_string(fixture.resource_epoch) +
+         ";datatype_descriptor_uuid="
+         "019d0000-0000-7000-8000-00000000d718;"
+         "datatype_descriptor_generation=1;type_uuid=" +
+         std::string(type_uuid) +
+         ";type_generation=1;codec_uuid="
+         "019d0000-0000-7000-8000-00000000d71a;"
+         "codec_id=datatype.text.utf8.v1;codec_version=1;"
+         "codec_generation=1;null_encoding=1";
+}
 
 api::EngineRequestContext ProductionBaseContext(
     const ProductionFixture& fixture, std::string request_id) {
@@ -1026,8 +1112,12 @@ api::EngineRequestContext ProductionBaseContext(
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
-  context.resource_epoch = 1;
+  context.resource_epoch = fixture.resource_epoch;
   context.name_resolution_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
@@ -1068,6 +1158,8 @@ bool ProductionPublishSnapshot(api::EngineRequestContext* context,
   if (context == nullptr) return false;
   context->statement_uuid.canonical =
       ProductionUuid(platform::UuidKind::object, salt);
+  context->statement_receipt_uuid.canonical =
+      ProductionUuid(platform::UuidKind::object, salt + 1);
   api::EnginePublishStatementSnapshotRequest request;
   request.context = *context;
   const auto published = api::EnginePublishStatementSnapshot(request);
@@ -1113,7 +1205,39 @@ std::string DescriptorTypeUuid(const api::EngineDescriptor& descriptor) {
                                             : end - value_begin);
 }
 
+std::string ProductionDescriptorField(
+    const api::EngineDescriptor& descriptor, const std::string_view key) {
+  const std::string prefix = std::string(key) + "=";
+  const auto begin = descriptor.encoded_descriptor.find(prefix);
+  if (begin == std::string::npos ||
+      (begin != 0 && descriptor.encoded_descriptor[begin - 1] != ';')) {
+    return {};
+  }
+  const auto value_begin = begin + prefix.size();
+  const auto end = descriptor.encoded_descriptor.find(';', value_begin);
+  if (descriptor.encoded_descriptor.find(prefix, value_begin) !=
+      std::string::npos) {
+    return {};
+  }
+  return descriptor.encoded_descriptor.substr(
+      value_begin, end == std::string::npos ? std::string::npos
+                                            : end - value_begin);
+}
+
+std::uint64_t ProductionDescriptorU64(
+    const api::EngineDescriptor& descriptor, const std::string_view key) {
+  const auto encoded = ProductionDescriptorField(descriptor, key);
+  std::uint64_t value = 0;
+  const auto parsed =
+      std::from_chars(encoded.data(), encoded.data() + encoded.size(), value);
+  return !encoded.empty() && parsed.ec == std::errc{} &&
+                 parsed.ptr == encoded.data() + encoded.size() && value != 0
+             ? value
+             : 0;
+}
+
 api::RelationalTypeDescriptor ProductionDescriptor(
+    const api::EngineRequestContext& context,
     const std::uint32_t descriptor_id,
     const api::MgaRelationColumnStorageDescriptor& column) {
   api::RelationalTypeDescriptor descriptor;
@@ -1129,6 +1253,28 @@ api::RelationalTypeDescriptor ProductionDescriptor(
   }
   if (column.character_length != 0) {
     descriptor.width = column.character_length;
+  }
+  if (ProductionDescriptorU64(column.value_descriptor,
+                              "datatype_descriptor_generation") != 0) {
+    descriptor.datatype_identity_authoritative = true;
+    descriptor.descriptor_generation = ProductionDescriptorU64(
+        column.value_descriptor, "datatype_descriptor_generation");
+    descriptor.type_generation =
+        ProductionDescriptorU64(column.value_descriptor, "type_generation");
+    descriptor.codec_id =
+        ProductionDescriptorField(column.value_descriptor, "codec_id");
+    descriptor.codec_version = static_cast<std::uint16_t>(
+        ProductionDescriptorU64(column.value_descriptor, "codec_version"));
+    descriptor.codec_generation =
+        ProductionDescriptorU64(column.value_descriptor, "codec_generation");
+    descriptor.statement_receipt_uuid =
+        context.statement_receipt_uuid.canonical;
+    descriptor.datatype_catalog_snapshot_uuid =
+        context.datatype_catalog_snapshot_uuid.canonical;
+    descriptor.datatype_catalog_generation =
+        context.datatype_catalog_generation;
+    descriptor.datatype_registry_generation =
+        context.datatype_registry_generation;
   }
   return descriptor;
 }
@@ -1157,7 +1303,7 @@ api::TypedRelationalDag ProductionColumnarDag(
     const auto descriptor_id = static_cast<std::uint32_t>(101 + ordinal);
     const auto expression_id = static_cast<std::uint32_t>(1 + ordinal);
     dag.descriptors.push_back(
-        ProductionDescriptor(descriptor_id, storage.columns[ordinal]));
+        ProductionDescriptor(context, descriptor_id, storage.columns[ordinal]));
     api::RelationalExpressionRecord expression;
     expression.expression_id = expression_id;
     expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
@@ -1236,7 +1382,7 @@ api::TypedRelationalDag ProductionColumnarJoinDag(
       const auto expression_id =
           expression_base + static_cast<std::uint32_t>(ordinal);
       dag.descriptors.push_back(
-          ProductionDescriptor(descriptor_id, storage.columns[ordinal]));
+          ProductionDescriptor(context, descriptor_id, storage.columns[ordinal]));
       api::RelationalExpressionRecord expression;
       expression.expression_id = expression_id;
       expression.expression_kind =
@@ -1380,7 +1526,7 @@ api::TypedRelationalDag ProductionSpatialDag(
   const auto boolean_type = ProductionCoreTypeUuid("boolean");
   const auto real64_type = ProductionCoreTypeUuid("real64");
   const auto uint64_type = ProductionCoreTypeUuid("uint64");
-  const auto text_type = ProductionCoreTypeUuid("character");
+  const auto text_type = ProductionCoreDescriptorUuid("character");
   api::TypedRelationalDag dag;
   dag.wire_version = 2;
   dag.bound_sblr_tree_uuid =
@@ -1400,7 +1546,8 @@ api::TypedRelationalDag ProductionSpatialDag(
   dag.root_node_id = 1;
   for (std::size_t ordinal = 0; ordinal < storage.columns.size(); ++ordinal) {
     dag.descriptors.push_back(ProductionDescriptor(
-        static_cast<std::uint32_t>(101 + ordinal), storage.columns[ordinal]));
+        context, static_cast<std::uint32_t>(101 + ordinal),
+        storage.columns[ordinal]));
   }
   dag.descriptors.push_back(
       ProductionDerivedDescriptor(104, boolean_type, salt + 2));
@@ -1668,8 +1815,10 @@ api::TypedRelationalDag ProductionSearchDag(
     descriptor.nullability = api::RelationalNullability::kNonNull;
     dag.descriptors.push_back(std::move(descriptor));
   }
-  dag.descriptors.push_back(ProductionDescriptor(106, storage.columns[0]));
-  dag.descriptors.push_back(ProductionDescriptor(107, storage.columns[1]));
+  dag.descriptors.push_back(
+      ProductionDescriptor(context, 106, storage.columns[0]));
+  dag.descriptors.push_back(
+      ProductionDescriptor(context, 107, storage.columns[1]));
 
   static constexpr std::array<std::string_view, 5> kNames{
       "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
@@ -1883,6 +2032,11 @@ bool ProductionSpatialRoute() {
   }
   fixture.database_uuid = uuid::UuidToString(database_uuid.value.value);
   fixture.filespace_uuid = uuid::UuidToString(filespace_uuid.value.value);
+  if (!Require(ProductionBindResourceAuthority(
+                   created.state.resource_seed_catalog, &fixture),
+               "production spatial UTF8 resource authority is unavailable")) {
+    return false;
+  }
   fixture.schema_uuid =
       ProductionUuid(platform::UuidKind::object, fixture.salt + 10);
   fixture.principal_uuid =
@@ -1901,7 +2055,7 @@ bool ProductionSpatialRoute() {
       ProductionUuid(platform::UuidKind::object, fixture.salt + 17);
   const auto uuid_type = ProductionCoreTypeUuid("uuid");
   const auto geometry_type = ProductionCoreTypeUuid("geometry");
-  const auto text_type = ProductionCoreTypeUuid("character");
+  const auto text_type = ProductionCoreDescriptorUuid("character");
   if (!Require(!uuid_type.empty() && !geometry_type.empty() &&
                    !text_type.empty(),
                "production spatial core type UUIDs are unavailable")) {
@@ -2491,6 +2645,11 @@ bool ProductionColumnarRoute() {
   }
   fixture.database_uuid = uuid::UuidToString(database_uuid.value.value);
   fixture.filespace_uuid = uuid::UuidToString(filespace_uuid.value.value);
+  if (!Require(ProductionBindResourceAuthority(
+                   created.state.resource_seed_catalog, &fixture),
+               "production columnar UTF8 resource authority is unavailable")) {
+    return false;
+  }
   fixture.schema_uuid =
       ProductionUuid(platform::UuidKind::object, fixture.salt + 10);
   fixture.principal_uuid =
@@ -2524,8 +2683,7 @@ bool ProductionColumnarRoute() {
                        ";nullable=false"},
       {"join_key", "canonical=int64;type_uuid=" + int64_type +
                        ";nullable=false"},
-      {"payload", "canonical=character;type_uuid=" + text_type +
-                      ";nullable=true"},
+      {"payload", ProductionCanonicalTextDescriptor(fixture, text_type, true)},
   };
   api::MgaRelationStorageDescriptor storage;
   auto right_table = table;
@@ -2539,13 +2697,13 @@ bool ProductionColumnarRoute() {
     }
   }
   api::MgaRelationStorageDescriptor right_storage;
-  if (!Require(!api::AppendMgaTableMetadata(metadata, table).error &&
-                   !api::EnsureMgaRelationStorageDescriptor(metadata, table, {},
-                                                            &storage)
+  if (!Require(
+                   !api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+                        metadata, table, {}, &storage)
                         .error &&
-                   !api::AppendMgaTableMetadata(metadata, right_table).error &&
-                   !api::EnsureMgaRelationStorageDescriptor(
-                        metadata, right_table, {}, &right_storage).error &&
+                   !api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+                        metadata, right_table, {}, &right_storage)
+                        .error &&
                    ProductionCommit(metadata),
                "production columnar storage descriptor persistence failed")) {
     return false;

@@ -195,6 +195,34 @@ int main(){
                   decoded_stale.profile,9,10)!=
                   decoded_stale.profile.profile_binding_sha256,
           "SBLP stale generation did not invalidate binding");
+  sblr::SblrLiteralStatementDescriptorProfileV2 profile_v2;
+  profile_v2.profile_uuid[0]=1; profile_v2.statement_receipt_uuid[0]=2;
+  profile_v2.catalog_snapshot_uuid[0]=3; profile_v2.catalog_generation=4;
+  profile_v2.descriptor_uuid[0]=5; profile_v2.descriptor_generation=6;
+  profile_v2.type_uuid[0]=7; profile_v2.persisted_descriptor_uuid[0]=8;
+  profile_v2.persisted_descriptor_generation=9;
+  profile_v2.codec_id="datatype.int64.le.v1"; profile_v2.codec_version=1;
+  profile_v2.codec_generation=10;
+  profile_v2.profile_binding_sha256 =
+      sblr::ComputeSblrLiteralDescriptorProfileBindingV2(profile_v2,11,12);
+  const auto encoded_profile_v2 =
+      sblr::EncodeSblrLiteralDescriptorProfileV2(profile_v2);
+  Require(encoded_profile_v2.size()==208,
+          "SBLP v2 bigint record is not 208 bytes");
+  const auto decoded_profile_v2 =
+      sblr::DecodeSblrLiteralDescriptorProfileV2(
+          encoded_profile_v2.data(),encoded_profile_v2.size());
+  Require(decoded_profile_v2.ok &&
+              decoded_profile_v2.canonical_bytes == encoded_profile_v2,
+          "SBLP v2 canonical round trip failed");
+  Require(sblr::ComputeSblrLiteralDescriptorProfileBindingV2(
+              decoded_profile_v2.profile,11,12) ==
+              profile_v2.profile_binding_sha256,
+          "SBLP v2 binding revalidation failed");
+  auto non_distinct_v2 = profile_v2;
+  non_distinct_v2.persisted_descriptor_uuid = non_distinct_v2.type_uuid;
+  Require(sblr::EncodeSblrLiteralDescriptorProfileV2(non_distinct_v2).empty(),
+          "SBLP v2 accepted a persisted handle aliased to type authority");
   sblr::SblrLiteralPrebindRequestV1 prebind;
   prebind.preliminary_receipt_uuid[0]=1;prebind.catalog_snapshot_uuid[0]=2;
   prebind.catalog_generation=1;prebind.security_epoch=0;prebind.resource_epoch=0;

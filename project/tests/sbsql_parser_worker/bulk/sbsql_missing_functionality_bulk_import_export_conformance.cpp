@@ -740,9 +740,8 @@ void VerifyCatalogArtifactExportImport(const api::EngineRequestContext& context)
 
 struct ParserCase {
   std::string_view sql;
-  std::string_view surface_variant;
-  std::string_view source_kind;
-  std::string_view format_family;
+  std::string_view surface_id;
+  std::string_view canonical_name;
 };
 
 parser::SessionContext ParserSession() {
@@ -782,73 +781,55 @@ void VerifyBulkParserRoute(const ParserCase& test_case) {
   if (cst.messages.has_errors()) std::cerr << parser::RenderMessageVectorSet(cst.messages);
   if (ast.messages.has_errors()) std::cerr << parser::RenderMessageVectorSet(ast.messages);
   if (!bound.bound) std::cerr << parser::RenderMessageVectorSet(bound.messages);
-  if (!verifier.admitted) std::cerr << parser::RenderMessageVectorSet(verifier.messages);
   Require(!cst.messages.has_errors(), "MISS-009 bulk CST failed");
   Require(!ast.messages.has_errors(), "MISS-009 bulk AST failed");
   Require(bound.bound, "MISS-009 bulk bind failed");
-  Require(verifier.admitted, "MISS-009 bulk SBLR verifier rejected envelope");
-  Require(envelope.operation_id == "dml.plan_import_rows",
-          "MISS-009 bulk route operation mismatch");
-  Require(envelope.engine_api_operation_id == "dml.plan_import_rows",
-          "MISS-009 bulk route engine API mismatch");
-  Require(envelope.sblr_opcode == "SBLR_DML_PLAN_IMPORT_ROWS",
-          "MISS-009 bulk route opcode mismatch");
+  Require(!verifier.admitted && verifier.messages.has_errors(),
+          "MISS-009 gated import route did not fail closed");
+  Require(envelope.operation_id == "engine.op.diagnostic_refusal",
+          "MISS-009 refusal route operation mismatch");
+  Require(envelope.engine_api_operation_id == "not_admitted",
+          "MISS-009 refusal route engine API mismatch");
+  Require(envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+          "MISS-009 refusal route opcode mismatch");
   Require(envelope.operation_family == "sblr.dml.operation.v3",
-          "MISS-009 bulk route parser family mismatch");
-  Require(envelope.payload.find(std::string("\"dml_surface_variant\":\"") +
-                                std::string(test_case.surface_variant) + "\"") !=
-              std::string::npos,
-          "MISS-009 bulk surface variant missing");
-  Require(envelope.payload.find(std::string("\"source_kind\":\"") +
-                                std::string(test_case.source_kind) + "\"") !=
-              std::string::npos,
-          "MISS-009 bulk source kind missing");
-  Require(envelope.payload.find(std::string("\"format_family\":\"") +
-                                std::string(test_case.format_family) + "\"") !=
-              std::string::npos,
-          "MISS-009 bulk format family missing");
-  Require(envelope.payload.find("\"import_execution_deferred\":true") !=
-              std::string::npos,
-          "MISS-009 bulk route did not defer execution");
-  Require(envelope.payload.find("\"parser_decodes_bytes\":false") !=
-              std::string::npos,
-          "MISS-009 bulk route claimed parser byte decoding");
-  Require(envelope.payload.find("\"row_persistence_claimed\":false") !=
-              std::string::npos,
-          "MISS-009 bulk route claimed row persistence");
-  Require(envelope.payload.find(test_case.sql) == std::string::npos,
-          "MISS-009 bulk route embedded source SQL text");
-  Require(envelope.payload.find("customer") == std::string::npos &&
-              envelope.payload.find("\"source_handle\"") ==
-                  std::string::npos &&
-              envelope.payload.find("\"source_object_name\"") ==
-                  std::string::npos &&
-              envelope.payload.find("\"sql\":") == std::string::npos,
-          "MISS-009 bulk route leaked a name, handle, or SQL field");
-
-  // The legacy generic-v3 admission helper cannot carry the mandatory exact
-  // descriptor reference. Pin the parser handoff to the registered numeric
-  // identity here; the live descriptor-ref typed dispatch is exercised below.
-  const auto* operation = sblr::LookupSblrOperation("dml.plan_import_rows");
-  Require(operation != nullptr && operation->code == 793 &&
-              operation->operation_id == "dml.plan_import_rows" &&
-              operation->opcode == "SBLR_DML_PLAN_IMPORT_ROWS" &&
-              operation->operand_contract == "import_rows_plan_descriptor" &&
-              operation->result_contract == "import_plan_result" &&
-              operation->executor_evidence_required &&
-              operation->executor_evidence_accepted,
-          "MISS-009 parser handoff lost exact 793/v1 registry identity");
-  Require(kPlanImportPublicAbiProofTarget ==
-              "sbsql_sblr_alignment_plan_import_rows_sbps_coordination",
-          "MISS-009 public-ABI proof provenance drifted");
+          "MISS-009 refusal route parser family mismatch");
+  Require(envelope.surface_key == test_case.canonical_name &&
+              envelope.result_shape_key == "diagnostic_vector.v1" &&
+              envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1" &&
+              envelope.payload.empty(),
+          "MISS-009 refusal route emitted an executable carrier");
+  Require(envelope.messages.diagnostics.size() == 1,
+          "MISS-009 refusal route did not emit one canonical diagnostic");
+  const auto& diagnostic = envelope.messages.diagnostics.front();
+  const auto field = [&diagnostic](const std::string_view name) {
+    const auto found = std::find_if(
+        diagnostic.fields.begin(), diagnostic.fields.end(),
+        [name](const auto& item) { return item.name == name; });
+    return found == diagnostic.fields.end() ? std::string{} : found->value;
+  };
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              field("surface_id") == test_case.surface_id &&
+              field("canonical_name") == test_case.canonical_name,
+          "MISS-009 refusal diagnostic identity drifted");
+  Require(std::find(envelope.required_authority_steps.begin(),
+                    envelope.required_authority_steps.end(),
+                    "authority.parser.no_executable_sblr") !=
+              envelope.required_authority_steps.end() &&
+              std::find(envelope.required_authority_steps.begin(),
+                        envelope.required_authority_steps.end(),
+                        "authority.parser.no_storage_or_finality") !=
+                  envelope.required_authority_steps.end(),
+          "MISS-009 refusal route lost no-execution authority proof");
 }
 
 void VerifyBulkParserRoutes() {
   const ParserCase cases[] = {
-      {"LOAD CSV INTO customer FROM source;", "load_csv", "csv_stream", "csv"},
-      {"LOAD XML INTO customer FROM source;", "load_xml", "xml_stream", "xml"},
-      {"BULK IMPORT JOB customer FROM source;", "bulk_import_job", "bulk_import_job", "bulk_job"},
-      {"INGEST LINE_PROTOCOL INTO customer FROM source;", "ingest_line_protocol", "line_protocol_stream", "line_protocol"},
+      {"LOAD CSV INTO customer FROM source;", "SBSQL-DB993AE8EDBB", "load_data_clause"},
+      {"LOAD XML INTO customer FROM source;", "SBSQL-DB993AE8EDBB", "load_data_clause"},
+      {"BULK IMPORT JOB customer FROM source;", "SBSQL-DB993AE8EDBB", "load_data_clause"},
+      {"INGEST LINE_PROTOCOL INTO customer FROM source;", "SBSQL-DB993AE8EDBB", "load_data_clause"},
   };
   for (const auto& test_case : cases) {
     VerifyBulkParserRoute(test_case);

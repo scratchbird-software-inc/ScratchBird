@@ -41,6 +41,7 @@ agents::AgentRuntimeContext Context(std::vector<std::string> rights = {},
                                     bool security_context_present = true,
                                     bool cluster_authority_available = false) {
   agents::AgentRuntimeContext context;
+  context.fixture_authorization_authority = true;
   context.security_context_present = security_context_present;
   context.private_features_available = true;
   context.standalone_edition = true;

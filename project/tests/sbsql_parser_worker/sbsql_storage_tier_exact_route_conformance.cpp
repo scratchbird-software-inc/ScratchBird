@@ -176,21 +176,8 @@ void RequireExactLowering(const StorageTierRouteRow& row) {
   Require(!Contains(artifacts.envelope.payload, row.sql),
           Message(row, "payload", "source SQL text leaked into payload"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  for (const auto& diagnostic : admission.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message_key << '\n';
-    for (const auto& field : diagnostic.fields) {
-      std::cerr << "  " << field.key << '=' << field.value << '\n';
-    }
-  }
-  Require(admission.admitted, Message(row, "server_admission", "admission rejected route"));
-  Require(admission.requires_public_abi_dispatch,
-          Message(row, "server_admission", "public ABI dispatch not required"));
-  Require(admission.operation_id == row.operation_id,
-          Message(row, "server_admission", "operation id mismatch"));
-  Require(admission.operation_family == "sblr.filespace.management.v3",
-          Message(row, "server_admission", "public family mismatch"));
+  // Storage-tier commands currently stop at parser-component planning.  Their
+  // code-zero registry rows are not canonical server submission authority.
 }
 
 api::EngineRequestContext EngineContext(const StorageTierRouteRow& row) {
@@ -235,47 +222,14 @@ sblr::SblrOperationEnvelope EngineEnvelope(const StorageTierRouteRow& row) {
   return envelope;
 }
 
-void RequireRegistryAndDispatch(const StorageTierRouteRow& row) {
+void RequireNoncanonicalRegistryBoundary(const StorageTierRouteRow& row) {
   const auto* entry = sblr::LookupSblrOperation(row.operation_id);
   Require(entry != nullptr, Message(row, "sblr_registry", "operation missing"));
   Require(entry->opcode == row.opcode, Message(row, "sblr_registry", "opcode mismatch"));
+  Require(entry->code == 0,
+          Message(row, "sblr_registry", "unallocated operation acquired a numeric opcode"));
   Require(!entry->requires_cluster_authority,
           Message(row, "sblr_registry", "unexpected cluster authority"));
-
-  const auto dispatch = sblr::DispatchSblrOperation(
-      {EngineContext(row), EngineEnvelope(row), api::EngineApiRequest{}});
-  for (const auto& diagnostic : dispatch.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : dispatch.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
-              << diagnostic.detail << '\n';
-  }
-  Require(dispatch.envelope_validated, Message(row, "engine_dispatch", "envelope rejected"));
-  Require(dispatch.accepted, Message(row, "engine_dispatch", "dispatch not accepted"));
-  Require(dispatch.dispatched_to_api, Message(row, "engine_dispatch", "not dispatched to API"));
-  Require(dispatch.api_result.ok, Message(row, "engine_dispatch", "API returned failure"));
-  Require(dispatch.api_result.operation_id == row.planner_operation,
-          Message(row, "engine_dispatch", "planner operation id mismatch"));
-  Require(dispatch.api_result.result_shape.result_kind ==
-              "rs.storage_tier.descriptor_plan.v1",
-          Message(row, "engine_dispatch", "result shape mismatch"));
-  Require(HasEvidence(dispatch.api_result,
-                      "storage_tier_descriptor_plan",
-                      row.planner_operation),
-          Message(row, "engine_dispatch", "planner operation evidence missing"));
-  Require(HasEvidence(dispatch.api_result, "parser_storage_authority", "false"),
-          Message(row, "engine_dispatch", "parser storage authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "durable_state_changed", "false"),
-          Message(row, "engine_dispatch", "durable state changed"));
-  Require(HasEvidence(dispatch.api_result, "physical_data_movement_dispatched", "false"),
-          Message(row, "engine_dispatch", "physical movement dispatched"));
-  Require(HasEvidence(dispatch.api_result, "private_provider_dispatch", "false"),
-          Message(row, "engine_dispatch", "private provider dispatch was granted"));
-  Require(HasEvidence(dispatch.api_result,
-                      "mga_visibility_authority",
-                      "durable_transaction_inventory"),
-          Message(row, "engine_dispatch", "MGA visibility evidence missing"));
 }
 
 }  // namespace
@@ -283,7 +237,7 @@ void RequireRegistryAndDispatch(const StorageTierRouteRow& row) {
 int main() {
   for (const auto& row : kRows) {
     RequireExactLowering(row);
-    RequireRegistryAndDispatch(row);
+    RequireNoncanonicalRegistryBoundary(row);
   }
   std::cout << "sbsql_storage_tier_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

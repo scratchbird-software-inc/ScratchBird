@@ -3785,3 +3785,10 @@ Latest verified machine baseline after `SBSFC-020R-QY`: strict ledger `rows=2577
 - Validation passed: fixture CTest sweep, execution_plan controls, MGA policy gate, and diff check.
 - Non-claims: no executable route e2e promotion, binary execution promotion, cluster behavior change, parser-side execution, reference authority, WAL/recovery authority, transaction-finality change, final closure, or move readiness is claimed.
 - Next recommended selector: reconcile the remaining pending-authoring inventory categories before any further fixture-authoring tranche, or separately promote selected authored fixtures only with executable route and binary evidence.
+
+## Core Supersession - 2026-09-01T06:20:19Z
+
+- Historical entries for `SBSFC-021R-X` and `SBSFC-021R-Y` are retained for audit history but are superseded by `SBSFC-021R-XY-CORRECTION`.
+- `SBSQL-A57CFDE0BBA9`, `SBSQL-28F16A4C7DD0`, `SBSQL-B1816929AD45`, and `SBSQL-5CC9FDFFE6F7` are structural children of CREATE TABLE and never own a standalone executor.
+- Current evidence is `exact_refusal_passed`: lowering returns `SBSQL.IMPL.NOT_AVAILABLE` before executable SBLR because the authenticated parent CTDX/CTDO constraint vector is unavailable.
+- The canonical parent remains `engine.op.ddl_create_table` / `SBLR_DDL_CREATE_TABLE`; no server admission, engine dispatch, or catalog mutation is claimed. Direct `EngineCreateConstraint` checks are component coverage only.

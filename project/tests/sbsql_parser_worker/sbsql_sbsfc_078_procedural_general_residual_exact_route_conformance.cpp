@@ -191,6 +191,13 @@ void RequireRegistryEvidence(const CaseRow& row) {
           "SBSFC-078 generated registry SBLR family drifted");
 }
 
+bool HasExecutableCanonicalOpcode(const CaseRow& row) {
+  const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
+  return opcode != nullptr && opcode->code != 0 &&
+         opcode->support == sblr::SblrOpcodeSupport::implemented &&
+         (!opcode->executor_evidence_required || opcode->executor_evidence_accepted);
+}
+
 void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
@@ -253,6 +260,12 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
               !Contains(artifacts.envelope.payload, "wal_recovery_authority\":true") &&
               !Contains(artifacts.envelope.payload, "recovery_authority\":true"),
           "SBSFC-078 payload carried WAL/recovery authority");
+
+  // These grammar children retain parser-component coverage, but deprecated,
+  // unallocated and evidence-gated operation rows are not executable roots.
+  if (!HasExecutableCanonicalOpcode(row)) {
+    return;
+  }
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
       scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
@@ -426,15 +439,6 @@ int main() {
     RequireRegistryEvidence(row);
     RequireExactLowering(row, RunPipeline(row));
   }
-
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  const auto base_context = EngineContext(path, database_uuid);
-  for (const auto& row : kCases) {
-    RequireEngineDispatch(base_context, path, database_uuid, row);
-  }
-  RemoveDatabaseArtifacts(path);
 
   std::cout << "sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

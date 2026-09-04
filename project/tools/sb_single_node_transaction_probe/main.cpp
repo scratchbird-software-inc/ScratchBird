@@ -21,9 +21,12 @@
 #include "transaction_inventory_page.hpp"
 #include "uuid.hpp"
 
+#include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
+#include <system_error>
 
 namespace {
 
@@ -36,6 +39,7 @@ using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::u32;
 using scratchbird::core::platform::u64;
 using scratchbird::core::uuid::GenerateEngineIdentityV7;
+using scratchbird::core::uuid::UuidToString;
 using scratchbird::core::memory::ConfigureDefaultMemoryManager;
 using scratchbird::core::memory::DefaultLocalEngineMemoryPolicy;
 using scratchbird::storage::database::CreateDatabaseFile;
@@ -53,6 +57,7 @@ struct Args {
   u64 creation_millis = 0;
   u32 page_size = 16384;
   bool overwrite = false;
+  bool isolated_run = false;
 };
 
 bool ParseU64(const std::string& text, u64* value) {
@@ -74,6 +79,7 @@ bool ParseArgs(int argc, char** argv, Args* args) {
   for (int i = 1; i < argc; ++i) {
     const std::string key = argv[i];
     if (key == "--overwrite") { args->overwrite = true; continue; }
+    if (key == "--isolated-run") { args->isolated_run = true; continue; }
     if (i + 1 >= argc) { return false; }
     const std::string value = argv[++i];
     if (key == "--path") { args->path = value; }
@@ -114,14 +120,45 @@ class ProbeUndoExecutor final : public SavepointPhysicalUndoExecutor {
   }
 };
 
+class ProbeDatabaseCleanup final {
+ public:
+  explicit ProbeDatabaseCleanup(std::string path) : path_(std::move(path)) {}
+
+  ~ProbeDatabaseCleanup() {
+    std::error_code ignored;
+    std::filesystem::remove(path_ + ".sb.txn_publish", ignored);
+    ignored.clear();
+    std::filesystem::remove(path_ + ".sb.owner.lock", ignored);
+    ignored.clear();
+    std::filesystem::remove(path_, ignored);
+  }
+
+ private:
+  std::string path_;
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
   Args args;
   if (!ParseArgs(argc, argv, &args)) {
-    std::cerr << "usage: sb_single_node_transaction_probe --path PATH --seed-pack-root PATH --creation-ms MILLIS [--page-size BYTES] [--overwrite]\n";
+    std::cerr << "usage: sb_single_node_transaction_probe --path PATH --seed-pack-root PATH --creation-ms MILLIS [--page-size BYTES] [--overwrite] [--isolated-run]\n";
     return 2;
   }
+
+  if (args.isolated_run) {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+    const auto run_identity = GenerateEngineIdentityV7(
+        UuidKind::database, static_cast<u64>(now));
+    if (!run_identity.ok()) {
+      PrintDiagnostic(run_identity.diagnostic);
+      return 1;
+    }
+    args.path += "." + UuidToString(run_identity.value.value) + ".isolated";
+  }
+  ProbeDatabaseCleanup cleanup_files(args.path);
 
   auto memory_policy = DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "sb_single_node_transaction_probe";
@@ -145,7 +182,7 @@ int main(int argc, char** argv) {
   create.page_size = args.page_size;
   create.creation_unix_epoch_millis = args.creation_millis;
   create.resource_seed_pack_root = args.seed_pack_root;
-  create.allow_overwrite = args.overwrite;
+  create.allow_overwrite = args.overwrite && !args.isolated_run;
   const auto created = CreateDatabaseFile(create);
   if (!created.ok()) { PrintDiagnostic(created.diagnostic); return 1; }
 

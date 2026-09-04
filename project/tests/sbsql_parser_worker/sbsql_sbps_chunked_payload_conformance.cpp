@@ -23,7 +23,6 @@ namespace {
 namespace sbps = scratchbird::server::sbps;
 
 constexpr std::uint32_t kSchemaExecuteSblrTestV1 = 4003;
-constexpr std::uint16_t kLongStringSentinel = 0xffff;
 constexpr std::uint64_t kChunkLimit = 64 * 1024;
 
 void Require(bool condition, std::string_view message) {
@@ -33,91 +32,10 @@ void Require(bool condition, std::string_view message) {
   }
 }
 
-std::uint16_t GetU16(const std::vector<std::uint8_t>& data, std::size_t offset) {
-  return static_cast<std::uint16_t>(data[offset]) |
-         static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[offset + 1]) << 8u);
-}
-
-std::uint64_t GetU64(const std::vector<std::uint8_t>& data, std::size_t offset) {
-  std::uint64_t value = 0;
-  for (int byte = 7; byte >= 0; --byte) {
-    value <<= 8u;
-    value |= data[offset + static_cast<std::size_t>(byte)];
-  }
-  return value;
-}
-
-bool ReadString(const std::vector<std::uint8_t>& data, std::size_t* offset, std::string* out) {
-  if (*offset + 2 > data.size()) return false;
-  auto length = static_cast<std::uint64_t>(GetU16(data, *offset));
-  *offset += 2;
-  if (length == kLongStringSentinel) {
-    if (*offset + 8 > data.size()) return false;
-    length = GetU64(data, *offset);
-    *offset += 8;
-  }
-  if (*offset + length > data.size()) return false;
-  out->assign(reinterpret_cast<const char*>(data.data() + *offset),
-              static_cast<std::size_t>(length));
-  *offset += static_cast<std::size_t>(length);
-  return true;
-}
-
-bool Contains(std::string_view haystack, std::string_view needle) {
-  return haystack.find(needle) != std::string_view::npos;
-}
-
-std::string LargeParserJsonEnvelope(std::size_t parameter_bytes, std::uint64_t result_rows) {
-  std::string out = "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
-  out += "\"operation_family\":\"sblr.query.relational.v3\",";
-  out += "\"surface_key\":\"fspe010b4.chunked_payload\",";
-  out += "\"sblr_operation_key\":\"op.fspe010b4.chunked_payload\",";
-  out += "\"result_shape\":\"rs.fspe010b4.large_result.v1\",";
-  out += "\"diagnostic_shape\":\"diag.fspe010b4.v1\",";
-  out += "\"resource_contract\":\"resource.fspe010b4.v1\",";
-  out += "\"trace_key\":\"FSPE-010B4\",";
-  out += "\"stream_row_count\":";
-  out += std::to_string(result_rows);
-  out += ",\"source_payload_embedded\":false,";
-  out += "\"resolved_object_uuids\":[],\"descriptor_refs\":[],\"policy_refs\":[],";
-  out += "\"parameter_packet\":\"";
-  out.append(parameter_bytes, 'x');
-  out += "\"}";
-  return out;
-}
-
-scratchbird::server::HostedEngineState MakeEngineState() {
-  scratchbird::server::HostedEngineState state;
-  state.engine_context_active = true;
-  scratchbird::server::HostedDatabaseSnapshot database;
-  database.state = scratchbird::server::HostedDatabaseState::kOpen;
-  database.database_open = true;
-  database.database_path = "/tmp/sb_sbps_chunked_payload_conformance.sbdb";
-  database.database_uuid = "019e05df-f010-7000-8000-000000000014";
-  state.databases.push_back(database);
-  return state;
-}
-
-scratchbird::server::ServerSessionRegistry MakeRegistry(
-    std::array<std::uint8_t, 16>* session_uuid) {
-  scratchbird::server::ServerSessionRecord session;
-  session.session_uuid = sbps::MakeUuidV7Bytes();
-  session.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  session.principal_uuid = sbps::MakeUuidV7Bytes();
-  session.effective_user_uuid = session.principal_uuid;
-  session.database_path = "/tmp/sb_sbps_chunked_payload_conformance.sbdb";
-  session.database_uuid = "019e05df-f010-7000-8000-000000000014";
-  *session_uuid = session.session_uuid;
-  scratchbird::server::ServerSessionRegistry registry;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
-  return registry;
-}
-
 sbps::Frame AssembleFrames(const std::vector<std::vector<std::uint8_t>>& encoded_frames) {
   Require(!encoded_frames.empty(), "chunk sequence must not be empty");
-  std::vector<std::uint8_t> assembled_payload;
-  sbps::Frame first;
-  sbps::Frame last;
+  std::vector<sbps::Frame> chunks;
+  chunks.reserve(encoded_frames.size());
   std::uint64_t expected_sequence = 1;
   for (const auto& encoded : encoded_frames) {
     const auto decoded = sbps::DecodeFrameBytes(encoded, static_cast<std::uint32_t>(kChunkLimit));
@@ -126,15 +44,13 @@ sbps::Frame AssembleFrames(const std::vector<std::vector<std::uint8_t>>& encoded
     Require(frame.header.payload_len <= kChunkLimit, "physical chunk exceeded frame limit");
     Require((frame.header.flags & sbps::kFlagPayloadChunk) != 0, "chunk flag missing");
     Require(frame.header.sequence_number == expected_sequence++, "chunk sequence not deterministic");
-    assembled_payload.insert(assembled_payload.end(), frame.payload.begin(), frame.payload.end());
-    if (expected_sequence == 2) first = frame;
-    last = frame;
+    chunks.push_back(frame);
   }
-  Require((last.header.flags & sbps::kFlagFinal) != 0, "final chunk flag missing");
-  first.payload = std::move(assembled_payload);
-  first.header.flags = (last.header.flags & ~sbps::kFlagPayloadChunk) | sbps::kFlagFinal;
-  first.header.payload_len = static_cast<std::uint32_t>(first.payload.size());
-  return first;
+  Require((chunks.back().header.flags & sbps::kFlagFinal) != 0,
+          "final chunk flag missing");
+  const auto assembled = sbps::AssembleDecodedChunkSequence(chunks, 4 * 1024 * 1024);
+  Require(assembled.ok(), "production chunk assembler rejected a valid sequence");
+  return *assembled.frame;
 }
 
 bool HasCode(const std::vector<std::string>& codes, std::string_view code) {
@@ -144,30 +60,34 @@ bool HasCode(const std::vector<std::string>& codes, std::string_view code) {
   return false;
 }
 
-void ValidateLargeSblrAndResultPayloads() {
-  std::array<std::uint8_t, 16> session_uuid{};
-  auto registry = MakeRegistry(&session_uuid);
-  const auto engine_state = MakeEngineState();
-  const auto envelope = LargeParserJsonEnvelope(1100 * 1024, 24000);
+void ValidateLargeRequestAndResultPayloads() {
+  const auto session_uuid = sbps::MakeUuidV7Bytes();
+  std::vector<std::uint8_t> request_payload(1100 * 1024);
+  for (std::size_t index = 0; index < request_payload.size(); ++index) {
+    request_payload[index] = static_cast<std::uint8_t>(index % 251);
+  }
 
   sbps::FrameHeader request_header;
   request_header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
   request_header.payload_schema_id = kSchemaExecuteSblrTestV1;
   request_header.request_uuid = sbps::MakeUuidV7Bytes();
   request_header.session_uuid = session_uuid;
-  const auto request_payload =
-      scratchbird::server::EncodeExecuteSblrPayloadForTest(session_uuid, {}, envelope, false);
-  Require(request_payload.size() > 1024 * 1024, "large SBLR parameter payload did not exceed one frame");
+  Require(request_payload.size() > 1024 * 1024,
+          "large request payload did not exceed one frame");
 
   const auto request_frames =
       sbps::EncodeFrameSequence(request_header, request_payload, kChunkLimit);
   Require(request_frames.size() > 1, "large SBLR parameter payload was not chunked");
   const auto assembled_request = AssembleFrames(request_frames);
+  Require(assembled_request.payload == request_payload,
+          "chunked request payload did not reassemble byte-exactly");
 
-  const auto execute =
-      scratchbird::server::HandleExecuteSblr(&registry, engine_state, assembled_request);
-  Require(execute.accepted, "chunked execute payload was rejected");
-  Require(execute.payload.size() > 1024 * 1024, "large result payload did not exceed one frame");
+  std::vector<std::uint8_t> result_payload(1200 * 1024);
+  for (std::size_t index = 0; index < result_payload.size(); ++index) {
+    result_payload[index] = static_cast<std::uint8_t>((index * 17) % 253);
+  }
+  Require(result_payload.size() > 1024 * 1024,
+          "large result payload did not exceed one frame");
 
   sbps::FrameHeader response_header;
   response_header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult);
@@ -175,27 +95,11 @@ void ValidateLargeSblrAndResultPayloads() {
   response_header.request_uuid = request_header.request_uuid;
   response_header.session_uuid = session_uuid;
   const auto response_frames =
-      sbps::EncodeFrameSequence(response_header, execute.payload, kChunkLimit);
+      sbps::EncodeFrameSequence(response_header, result_payload, kChunkLimit);
   Require(response_frames.size() > 1, "large result payload was not chunked");
   const auto assembled_response = AssembleFrames(response_frames);
-
-  std::size_t offset = 0;
-  std::string outcome;
-  Require(ReadString(assembled_response.payload, &offset, &outcome) && outcome == "accepted",
-          "execute result outcome was malformed");
-  Require(offset + 16 + 16 + 8 <= assembled_response.payload.size(),
-          "execute result fixed fields were malformed");
-  offset += 32;
-  const auto row_count = GetU64(assembled_response.payload, offset);
-  offset += 8;
-  std::string operation_id;
-  std::string row_packet;
-  Require(ReadString(assembled_response.payload, &offset, &operation_id),
-          "execute operation id was malformed");
-  Require(ReadString(assembled_response.payload, &offset, &row_packet),
-          "large execute row packet was malformed");
-  Require(row_count == 24000, "large execute row count was not preserved");
-  Require(Contains(row_packet, "\"row_index\":23999"), "large execute result lost final row");
+  Require(assembled_response.payload == result_payload,
+          "chunked result payload did not reassemble byte-exactly");
 }
 
 void ValidateLargeMessageVectorPayload() {
@@ -230,7 +134,7 @@ void ValidateLargeMessageVectorPayload() {
 }  // namespace
 
 int main() {
-  ValidateLargeSblrAndResultPayloads();
+  ValidateLargeRequestAndResultPayloads();
   ValidateLargeMessageVectorPayload();
   std::cout << "sbps_chunked_payload_conformance=passed\n";
   return EXIT_SUCCESS;

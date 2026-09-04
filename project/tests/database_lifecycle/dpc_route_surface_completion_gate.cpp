@@ -12,6 +12,8 @@
 #include "sblr_opcode_registry.hpp"
 #include "uuid.hpp"
 
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
+
 #include "scratchbird/engine/engine.h"
 #include "scratchbird/engine/sblr/lowering.hpp"
 
@@ -168,7 +170,8 @@ engine_sblr::SblrOperationEnvelope MakeIndexEnvelope(std::string operation_id,
              policy_allows_mutation ? "true" : "false");
   AddOperand(&envelope, "catalog_resolution_proven", "true");
   AddOperand(&envelope, "names_resolved_to_uuids", "true");
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 api::EngineRequestContext MakeContext(const RouteIds& ids) {
@@ -220,6 +223,13 @@ void AssertRegistryEntry(std::string_view operation_id,
           "DPC-060 index registry entry does not require security context");
   Require(entry->requires_transaction_context,
           "DPC-060 index registry entry does not require transaction context");
+  Require(entry->code != 0,
+          "DPC-060 index registry entry has no canonical opcode code");
+  Require(entry->executor_evidence_required &&
+              !entry->executor_evidence_accepted &&
+              entry->missing_executor_evidence_diagnostic ==
+                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+          "DPC-060 index registry executor-evidence refusal drifted");
   if (mutating) {
     Require(entry->transaction_effect == engine_sblr::SblrOpcodeTransactionEffect::management,
             "DPC-060 mutating index route does not use management transaction effect");
@@ -229,10 +239,19 @@ void AssertRegistryEntry(std::string_view operation_id,
   }
 }
 
-void AssertServerAdmission(const std::string& encoded,
+void AssertExecutorEvidenceRefusal(
+    const engine_sblr::SblrOperationEnvelope& envelope) {
+  const auto validation = engine_sblr::ValidateSblrOpcodeForEnvelope(envelope);
+  Require(!validation.ok &&
+              validation.diagnostic_id ==
+                  "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+          "DPC-060 unavailable index executor was not refused exactly");
+}
+
+void AssertServerAdmission(const engine_sblr::SblrOperationEnvelope& envelope,
                            std::string_view expected_operation) {
-  server::ServerSblrAdmissionRequest request;
-  request.encoded_sblr_envelope = encoded;
+  const auto request =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope);
   const auto admission = server::AdmitServerSblrEnvelope(request);
   Require(admission.admitted, "DPC-060 server admission refused index SBLR route");
   Require(admission.operation_id == expected_operation,
@@ -391,38 +410,42 @@ void AssertExecutorBatchInternalOnly() {
 int main() {
   const UuidFactory uuids;
   const RouteIds ids = MakeRouteIds(uuids);
-  const auto context = MakeContext(ids);
 
-  AssertRegistryEntry("index.validate", "SBLR_INDEX_VALIDATE", false);
-  AssertRegistryEntry("index.repair", "SBLR_INDEX_REPAIR", true);
-  AssertRegistryEntry("index.discard_unpublished",
-                      "SBLR_INDEX_DISCARD_UNPUBLISHED",
+  AssertRegistryEntry("engine.op.index_verify", "SBLR_INDEX_VERIFY", false);
+  AssertRegistryEntry("engine.op.index_rebuild", "SBLR_INDEX_REBUILD", true);
+  AssertRegistryEntry("engine.op.index_cleanup_mga_versions",
+                      "SBLR_INDEX_CLEANUP_MGA_VERSIONS",
                       true);
 
-  const auto validate = MakeIndexEnvelope("index.validate",
+  const auto validate = MakeIndexEnvelope("engine.op.index_verify",
                                           ids,
                                           "ordered_table_candidate_set",
                                           false);
-  const auto repair = MakeIndexEnvelope("index.repair",
+  const auto repair = MakeIndexEnvelope("engine.op.index_rebuild",
                                         ids,
                                         "secondary_delta_ledger",
                                         true);
-  const auto discard = MakeIndexEnvelope("index.discard_unpublished",
+  const auto cleanup = MakeIndexEnvelope("engine.op.index_cleanup_mga_versions",
                                          ids,
                                          "ordered_table_candidate_set",
                                          true);
 
-  AssertServerAdmission(engine_sblr::EncodeSblrEnvelope(validate), "index.validate");
-  AssertServerAdmission("sblr.index.validate", "index.validate");
+  AssertExecutorEvidenceRefusal(validate);
+  AssertExecutorEvidenceRefusal(repair);
+  AssertExecutorEvidenceRefusal(cleanup);
+  server::ServerSblrAdmissionRequest retired_route;
+  retired_route.encoded_sblr_envelope = "sblr.index.validate";
+  const auto retired_admission = server::AdmitServerSblrEnvelope(retired_route);
+  Require(!retired_admission.admitted &&
+              !retired_admission.diagnostics.empty() &&
+              retired_admission.diagnostics.front().code ==
+                  "SBLR.OPERATION.NONCANONICAL",
+          "DPC-060 retired index route shorthand was not refused canonically");
   server::ServerSblrAdmissionRequest raw_sql;
   raw_sql.encoded_sblr_envelope = "select * from dpc060_route_surface";
   Require(!server::AdmitServerSblrEnvelope(raw_sql).admitted,
           "DPC-060 raw SQL bypass was admitted");
 
-  AssertSblrDispatch(validate, context, false);
-  AssertSblrDispatch(repair, context, true);
-  AssertSblrDispatch(discard, context, true);
-  AssertPublicAbiDispatch(validate, ids);
   AssertCapabilityReportHasNoBenchmarkClaim();
   AssertExecutorBatchInternalOnly();
 

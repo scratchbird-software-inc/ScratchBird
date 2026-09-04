@@ -63,6 +63,15 @@ bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
 
+bool HasServerDiagnostic(
+    const scratchbird::server::SessionOperationResult& result,
+    std::string_view code) {
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
   for (const auto& value : values) {
     if (value == expected) return true;
@@ -276,7 +285,7 @@ const ServerCursorRecord* OnlyCursor(const ServerSessionRegistry& registry) {
   return &registry.cursors_by_uuid.begin()->second;
 }
 
-void RequireServerRoute() {
+void RequireRetiredServerCarrierRefusal() {
   std::array<std::uint8_t, 16> session_uuid{};
   auto registry = MakeRegistry(&session_uuid);
   const auto engine_state = MakeEngineState();
@@ -287,52 +296,28 @@ void RequireServerRoute() {
 
   const auto open_result = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, open.envelope.payload));
-  Require(open_result.accepted, "SBSFC-070 server OPEN cursor was not accepted");
-  const auto open_decoded = DecodeExecuteResult(open_result.payload);
-  Require(open_decoded.outcome == "accepted", "SBSFC-070 OPEN outcome mismatch");
-  Require(open_decoded.operation_id == "session.cursor_open",
-          "SBSFC-070 OPEN operation id mismatch");
-  Require(open_decoded.row_count == 1, "SBSFC-070 OPEN stream row count mismatch");
-  const auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(open_result.payload);
-  Require(cursor_uuid.has_value(), "SBSFC-070 OPEN did not return a cursor UUID");
-  const auto* cursor = OnlyCursor(registry);
-  Require(cursor->cursor_uuid == *cursor_uuid, "SBSFC-070 cursor UUID was not recorded");
-  Require(cursor->cursor_name == "route_cur", "SBSFC-070 cursor name was not session-bound");
-  Require(cursor->operation_id == "session.cursor_open", "SBSFC-070 cursor operation id mismatch");
-  Require(cursor->total_row_count == 1, "SBSFC-070 cursor total rows mismatch");
-  Require(!cursor->closed, "SBSFC-070 cursor unexpectedly closed after OPEN");
+  Require(!open_result.accepted,
+          "SBSFC-070 retired textual OPEN carrier was accepted");
+  Require(HasServerDiagnostic(open_result, "SBLR.OPERATION.NONCANONICAL"),
+          "SBSFC-070 retired textual OPEN refusal diagnostic drifted");
+  Require(registry.cursors_by_uuid.empty(),
+          "SBSFC-070 retired textual OPEN published cursor state");
 
   const auto fetch_result = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, fetch.envelope.payload));
-  Require(fetch_result.accepted, "SBSFC-070 server FETCH cursor was not accepted");
-  const auto fetch_decoded = DecodeExecuteResult(fetch_result.payload);
-  Require(fetch_decoded.operation_id == "session.cursor_fetch",
-          "SBSFC-070 FETCH operation id mismatch");
-  Require(fetch_decoded.cursor_uuid == *cursor_uuid, "SBSFC-070 FETCH cursor UUID mismatch");
-  Require(fetch_decoded.row_count == 1, "SBSFC-070 FETCH row count mismatch");
-  Require(Contains(fetch_decoded.row_packet, "\"row_index\":0"),
-          "SBSFC-070 FETCH row packet missing row index");
-  cursor = OnlyCursor(registry);
-  Require(cursor->fetch_count == 1, "SBSFC-070 cursor fetch count did not advance");
-  Require(cursor->next_row_index == 1, "SBSFC-070 cursor next row did not advance");
-  Require(cursor->exhausted, "SBSFC-070 cursor did not report exhaustion");
-  Require(!cursor->closed, "SBSFC-070 cursor closed before CLOSE");
+  Require(!fetch_result.accepted,
+          "SBSFC-070 retired textual FETCH carrier was accepted");
+  Require(HasServerDiagnostic(fetch_result, "SBLR.OPERATION.NONCANONICAL"),
+          "SBSFC-070 retired textual FETCH refusal diagnostic drifted");
 
   const auto close_result = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, close.envelope.payload));
-  Require(close_result.accepted, "SBSFC-070 server CLOSE cursor was not accepted");
-  const auto close_decoded = DecodeExecuteResult(close_result.payload);
-  Require(close_decoded.operation_id == "session.cursor_close",
-          "SBSFC-070 CLOSE operation id mismatch");
-  Require(close_decoded.cursor_uuid == *cursor_uuid, "SBSFC-070 CLOSE cursor UUID mismatch");
-  cursor = OnlyCursor(registry);
-  Require(cursor->closed, "SBSFC-070 cursor was not closed");
-  Require(cursor->finality_state == "closed", "SBSFC-070 cursor finality state mismatch");
-
-  const auto fetch_after_close = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, fetch.envelope.payload));
-  Require(!fetch_after_close.accepted,
-          "SBSFC-070 FETCH after CLOSE unexpectedly succeeded");
+  Require(!close_result.accepted,
+          "SBSFC-070 retired textual CLOSE carrier was accepted");
+  Require(HasServerDiagnostic(close_result, "SBLR.OPERATION.NONCANONICAL"),
+          "SBSFC-070 retired textual CLOSE refusal diagnostic drifted");
+  Require(registry.cursors_by_uuid.empty(),
+          "SBSFC-070 retired cursor carriers mutated server state");
 }
 
 }  // namespace
@@ -386,6 +371,6 @@ int main() {
   Require(Contains(declare.envelope.payload, "\"cursor_declaration\":true"),
           "SBSFC-070 DECLARE payload missing declaration marker");
 
-  RequireServerRoute();
+  RequireRetiredServerCarrierRefusal();
   return EXIT_SUCCESS;
 }

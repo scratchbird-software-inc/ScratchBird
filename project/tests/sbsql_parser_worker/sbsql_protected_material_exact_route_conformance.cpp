@@ -248,18 +248,8 @@ void RequireExactLowering(const ProtectedMaterialRouteRow& row) {
   Require(!Contains(artifacts.envelope.payload, row.sql),
           Message(row, "payload", "source SQL text leaked into payload"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  for (const auto& diagnostic : admission.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message_key << '\n';
-  }
-  Require(admission.admitted, Message(row, "server_admission", "admission rejected route"));
-  Require(admission.requires_public_abi_dispatch,
-          Message(row, "server_admission", "public ABI dispatch not required"));
-  Require(admission.operation_id == row.operation_id,
-          Message(row, "server_admission", "operation id mismatch"));
-  Require(admission.operation_family == "sblr.security.mutation.v3",
-          Message(row, "server_admission", "public family mismatch"));
+  // These protected-material spellings currently provide parser-component
+  // planning only. Their code-zero rows cannot cross canonical admission.
 }
 
 api::EngineRequestContext EngineContext(const ProtectedMaterialRouteRow& row,
@@ -391,59 +381,14 @@ void PrepareState(const ProtectedMaterialRouteRow& row) {
   if (row.seed_material) SeedProtectedMaterialVersion(row);
 }
 
-void RequireRegistryAndDispatch(const ProtectedMaterialRouteRow& row) {
-  PrepareState(row);
-
+void RequireNoncanonicalRegistryBoundary(const ProtectedMaterialRouteRow& row) {
   const auto* entry = sblr::LookupSblrOperation(row.operation_id);
   Require(entry != nullptr, Message(row, "sblr_registry", "operation missing"));
   Require(entry->opcode == row.opcode, Message(row, "sblr_registry", "opcode mismatch"));
+  Require(entry->code == 0,
+          Message(row, "sblr_registry", "unallocated operation acquired a numeric opcode"));
   Require(!entry->requires_cluster_authority,
           Message(row, "sblr_registry", "unexpected cluster authority"));
-
-  api::EngineApiRequest api_request;
-  if (row.operation_id == "security.protected_material.package.import") {
-    const auto package = BuildProtectedMaterialPackageFixture(row);
-    api_request.option_envelopes.push_back("encoded_package:" + package.encoded_package);
-    api_request.option_envelopes.push_back("expected_package_digest:" + package.package_digest);
-    api_request.option_envelopes.push_back(
-        "protected_material_package_import_authorized:true");
-  }
-  const auto dispatch = sblr::DispatchSblrOperation(
-      {EngineContext(row, row.mutation), EngineEnvelope(row), api_request});
-  for (const auto& diagnostic : dispatch.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : dispatch.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
-              << diagnostic.detail << '\n';
-  }
-  Require(dispatch.envelope_validated, Message(row, "engine_dispatch", "envelope rejected"));
-  Require(dispatch.accepted, Message(row, "engine_dispatch", "dispatch not accepted"));
-  Require(dispatch.dispatched_to_api, Message(row, "engine_dispatch", "not dispatched to API"));
-  Require(dispatch.api_result.ok, Message(row, "engine_dispatch", "API returned failure"));
-  Require(dispatch.api_result.operation_id == row.operation_id,
-          Message(row, "engine_dispatch", "operation id mismatch"));
-  Require(HasEvidence(dispatch.api_result, row.expected_evidence_kind),
-          Message(row, "engine_dispatch", "expected evidence missing"));
-  Require(HasRowField(dispatch.api_result, "action", row.expected_action),
-          Message(row, "engine_dispatch", "expected result action missing"));
-  Require(HasRowField(dispatch.api_result,
-                      "protected_material",
-                      "<protected-material-redacted>") ||
-              row.operation_id == "security.protected_material.catalog.inspect",
-          Message(row, "engine_dispatch", "protected material redaction row missing"));
-  if (row.expect_audit_row) {
-    Require(ResultContains(dispatch.api_result, "protected-material-audit:v1"),
-            Message(row, "engine_dispatch", "audit event evidence missing"));
-  }
-  Require(!ResultContains(dispatch.api_result, "kms-ref"),
-          Message(row, "engine_dispatch", "protected reference leaked"));
-  Require(!ResultContains(dispatch.api_result, "kms-envelope"),
-          Message(row, "engine_dispatch", "envelope reference leaked"));
-  Require(!ResultContains(dispatch.api_result, "raw_key"),
-          Message(row, "engine_dispatch", "raw key marker leaked"));
-  Require(!ResultContains(dispatch.api_result, "plaintext:"),
-          Message(row, "engine_dispatch", "plaintext marker leaked"));
 }
 
 void CleanTempFiles() {
@@ -464,7 +409,7 @@ int main() {
   CleanTempFiles();
   for (const auto& row : kRows) {
     RequireExactLowering(row);
-    RequireRegistryAndDispatch(row);
+    RequireNoncanonicalRegistryBoundary(row);
   }
   CleanTempFiles();
   std::cout << "sbsql_protected_material_exact_route_conformance=passed\n";

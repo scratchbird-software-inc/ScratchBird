@@ -345,8 +345,12 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
       descriptor.source_relation_uuid.canonical,
       descriptor.source_relation_descriptor_uuid.canonical,
       descriptor.source_column_uuid.canonical,
-      descriptor.source_column_descriptor_uuid.canonical,
       descriptor.aggregate_function_uuid.canonical};
+  const bool source_column_descriptor_identity_conflicts =
+      descriptor.source_column_descriptor_uuid.canonical !=
+          descriptor.source_column_uuid.canonical &&
+      persisted_identities.contains(
+          descriptor.source_column_descriptor_uuid.canonical);
 
   if (!view_generation || *view_generation == 0 || !source_generation ||
       *source_generation == 0 || !literal ||
@@ -369,7 +373,8 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
                           descriptor.aggregate_function_uuid.canonical) ||
       descriptor.aggregate_function_uuid.canonical !=
           EngineGlobalAggregateAvgFunctionUuid() ||
-      !SafeAlias(descriptor.result_alias) || persisted_identities.size() != 7) {
+      source_column_descriptor_identity_conflicts ||
+      !SafeAlias(descriptor.result_alias) || persisted_identities.size() != 6) {
     return std::nullopt;
   }
   descriptor.view_descriptor_generation = *view_generation;

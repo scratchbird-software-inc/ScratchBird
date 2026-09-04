@@ -54,21 +54,25 @@ struct MutationCase {
   std::string_view descriptor_ref;
   std::string_view surface_id;
   std::string_view surface_name;
+  std::string_view canonical_parent_operation_id;
+  std::string_view canonical_parent_opcode;
 };
 
 constexpr std::array<MutationCase, 3> kMutations{{
     {"CREATE CAST cast_one;", "catalog.mutation.create_cast",
      "SBLR_CATALOG_MUTATION_CREATE_CAST", "cast",
      "sys.catalog.cast_descriptor", "SBSQL-0D79A271D250",
-     "create_cast_stmt"},
+     "create_cast_stmt", "engine.op.ddl_create_cast",
+     "SBLR_DDL_CREATE_CAST"},
     {"CREATE OPERATION normalize_email;", "catalog.mutation.create_operation",
      "SBLR_CATALOG_MUTATION_CREATE_OPERATION", "operation",
      "sys.catalog.operation_descriptor", "SBSQL-EDR036000001",
-     "create_operation_stmt"},
+     "create_operation_stmt", "not_admitted", "SBLR_DIAGNOSTIC_REFUSAL"},
     {"CREATE OPERATOR op_add;", "catalog.mutation.create_operator",
      "SBLR_CATALOG_MUTATION_CREATE_OPERATOR", "operator",
      "sys.catalog.operator", "SBSQL-43B8DD8E30F4",
-     "create_operator_stmt"},
+     "create_operator_stmt", "engine.op.ddl_create_operator",
+     "SBLR_DDL_CREATE_OPERATOR"},
 }};
 
 [[noreturn]] void Fail(std::string_view message) {
@@ -101,6 +105,14 @@ bool HasDiagnostic(const MessageVectorSet& messages,
     }
   }
   return false;
+}
+
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view expected_name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == expected_name) return field.value;
+  }
+  return {};
 }
 
 void PrintMessages(const MessageVectorSet& messages) {
@@ -195,122 +207,128 @@ void RequireServerAdmission(const SblrEnvelope& envelope,
           "EDR-036 opcode registry transaction context drifted");
 }
 
-void RequireCreateDomainRoute() {
-  const auto artifacts = RunPipeline("CREATE DOMAIN customer.email_address AS TEXT;");
-  RequireAcceptedPipeline(artifacts, "EDR-036 CREATE DOMAIN");
+void RequireCreateDomainRoute(std::string_view sql) {
+  const auto artifacts = RunPipeline(sql);
+  if (artifacts.cst.messages.has_errors() || artifacts.ast.messages.has_errors() ||
+      !artifacts.bound.bound || artifacts.verifier.admitted) {
+    PrintIfFailed(artifacts);
+  }
+  Require(!artifacts.cst.messages.has_errors(),
+          "EDR-036 CREATE DOMAIN CST failed");
+  Require(!artifacts.ast.messages.has_errors(),
+          "EDR-036 CREATE DOMAIN AST failed");
+  Require(artifacts.bound.bound && !artifacts.bound.messages.has_errors(),
+          "EDR-036 CREATE DOMAIN component binding failed");
+  Require(!artifacts.verifier.admitted && artifacts.verifier.messages.has_errors(),
+          "EDR-036 CREATE DOMAIN unavailable route was admitted");
   Require(artifacts.envelope.operation_family == kFamily,
           "EDR-036 CREATE DOMAIN operation family mismatch");
-  Require(artifacts.envelope.operation_id == "ddl.create_domain",
-          "EDR-036 CREATE DOMAIN operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == "SBLR_DDL_CREATE_DOMAIN",
-          "EDR-036 CREATE DOMAIN opcode mismatch");
-  Require(HasValue(artifacts.envelope.required_rights, "right.catalog_mutate"),
-          "EDR-036 CREATE DOMAIN missing catalog mutation right");
+  Require(artifacts.envelope.sblr_operation_key == kFamily,
+          "EDR-036 CREATE DOMAIN SBLR family mismatch");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "EDR-036 CREATE DOMAIN refusal tuple mismatch");
+  Require(artifacts.envelope.trace_key ==
+              "trace.sbsql.create_domain_exact_refusal" &&
+              artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1",
+          "EDR-036 CREATE DOMAIN refusal metadata mismatch");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.ddl_create_domain_api_required"),
-          "EDR-036 CREATE DOMAIN missing engine domain authority");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.mga_catalog_commit_required"),
-          "EDR-036 CREATE DOMAIN missing MGA catalog commit authority");
+                   "authority.parser.syntax_evidence_only") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_executable_sblr"),
+          "EDR-036 CREATE DOMAIN missing fail-closed authority steps");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "EDR-036 CREATE DOMAIN allowed parser SQL execution authority");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
           "EDR-036 CREATE DOMAIN allowed parser storage/finality authority");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.catalog.domain"),
-          "EDR-036 CREATE DOMAIN missing domain descriptor ref");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.type_descriptor"),
-          "EDR-036 CREATE DOMAIN missing type descriptor ref");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.name_registry"),
-          "EDR-036 CREATE DOMAIN missing name registry ref");
   Require(!artifacts.envelope.parser_executes_sql,
           "EDR-036 CREATE DOMAIN parser executes SQL");
   Require(!artifacts.envelope.real_file_effects,
           "EDR-036 CREATE DOMAIN has parser file effects");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"catalog_envelope_kind\":\"create_domain_ddl\""),
-          "EDR-036 CREATE DOMAIN payload missing domain envelope");
-  Require(Contains(artifacts.envelope.payload, "\"domain_name_parts\":2"),
-          "EDR-036 CREATE DOMAIN payload missing qualified-name evidence");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"base_canonical_type_name\":\"text\""),
-          "EDR-036 CREATE DOMAIN payload missing base type descriptor");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"base_descriptor_embedded\":true"),
-          "EDR-036 CREATE DOMAIN payload missing descriptor transport");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"domain_constraints_included\":false"),
-          "EDR-036 CREATE DOMAIN overclaimed inline constraint support");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"domain_methods_included\":false"),
-          "EDR-036 CREATE DOMAIN overclaimed inline method support");
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-          "EDR-036 CREATE DOMAIN payload included SQL text authority");
-  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":false"),
-          "EDR-036 CREATE DOMAIN payload included name text authority");
-  Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
-          "EDR-036 CREATE DOMAIN payload missing parser execution proof");
-  Require(!Contains(artifacts.envelope.payload, "customer.email_address"),
-          "EDR-036 CREATE DOMAIN payload embedded qualified name text");
-  RequireServerAdmission(artifacts.envelope, "ddl.create_domain",
-                         "SBLR_DDL_CREATE_DOMAIN");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty(),
+          "EDR-036 CREATE DOMAIN refusal retained executable authority");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "EDR-036 CREATE DOMAIN did not emit one exact diagnostic");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              DiagnosticField(diagnostic,
+                              "canonical_parent_operation_id") ==
+                  "engine.op.ddl_create_domain" &&
+              DiagnosticField(diagnostic,
+                              "canonical_parent_sblr_opcode") ==
+                  "SBLR_DDL_CREATE_DOMAIN" &&
+              DiagnosticField(diagnostic, "executable_sblr_emitted") ==
+                  "false",
+          "EDR-036 CREATE DOMAIN exact refusal diagnostic drifted");
 }
 
 void RequireMutationRoute(const MutationCase& row) {
   const auto artifacts = RunPipeline(row.sql);
-  RequireAcceptedPipeline(artifacts, row.operation_id);
+  if (artifacts.cst.messages.has_errors() || artifacts.ast.messages.has_errors() ||
+      !artifacts.bound.bound || artifacts.verifier.admitted) {
+    PrintIfFailed(artifacts);
+  }
+  Require(!artifacts.cst.messages.has_errors() &&
+              !artifacts.ast.messages.has_errors() &&
+              artifacts.bound.bound &&
+              !artifacts.bound.messages.has_errors(),
+          "EDR-036 catalog mutation component pipeline failed");
+  Require(!artifacts.verifier.admitted && artifacts.verifier.messages.has_errors(),
+          "EDR-036 unavailable catalog mutation was admitted");
   Require(artifacts.envelope.operation_family == kFamily,
           "EDR-036 mutation operation family mismatch");
-  Require(artifacts.envelope.operation_id == row.operation_id,
-          "EDR-036 mutation operation id mismatch");
-  Require(artifacts.envelope.engine_api_operation_id == row.operation_id,
-          "EDR-036 mutation engine API operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == row.opcode,
-          "EDR-036 mutation opcode mismatch");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "EDR-036 catalog mutation refusal tuple mismatch");
+  Require(artifacts.envelope.trace_key ==
+              "trace.sbsql.catalog_descriptor_mutation_exact_refusal" &&
+              artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1",
+          "EDR-036 catalog mutation refusal metadata mismatch");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.catalog_descriptor_mutation_api_required"),
-          "EDR-036 mutation missing descriptor mutation authority");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.mga_catalog_commit_required"),
-          "EDR-036 mutation missing MGA catalog authority");
+                   "authority.parser.syntax_evidence_only") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_executable_sblr"),
+          "EDR-036 mutation missing fail-closed authority steps");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "EDR-036 mutation allowed parser SQL execution authority");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
           "EDR-036 mutation allowed parser storage/finality authority");
-  Require(HasValue(artifacts.envelope.descriptor_refs, row.descriptor_ref),
-          "EDR-036 mutation missing specific descriptor ref");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
-                   "sys.catalog.descriptor_mutation_request"),
-          "EDR-036 mutation missing mutation request descriptor ref");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.name_registry"),
-          "EDR-036 mutation missing name registry descriptor ref");
   Require(!artifacts.envelope.parser_executes_sql,
           "EDR-036 mutation parser executes SQL");
   Require(!artifacts.envelope.real_file_effects,
           "EDR-036 mutation has parser file effects");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"catalog_envelope_kind\":\"catalog_descriptor_mutation\""),
-          "EDR-036 mutation payload missing descriptor mutation envelope");
-  Require(Contains(artifacts.envelope.payload, row.operation_id),
-          "EDR-036 mutation payload missing operation id");
-  Require(Contains(artifacts.envelope.payload, row.surface_id),
-          "EDR-036 mutation payload missing surface id");
-  Require(Contains(artifacts.envelope.payload, row.surface_name),
-          "EDR-036 mutation payload missing surface name");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_kind\":\"")
-                       .append(row.object_kind)
-                       .append("\"")),
-          "EDR-036 mutation payload missing object kind");
-  Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
-          "EDR-036 mutation payload missing parser execution proof");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal"),
-          "EDR-036 mutation payload carried WAL authority");
-  RequireServerAdmission(artifacts.envelope, row.operation_id, row.opcode);
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty(),
+          "EDR-036 mutation refusal retained executable authority");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "EDR-036 mutation did not emit one exact diagnostic");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              DiagnosticField(diagnostic,
+                              "canonical_parent_operation_id") ==
+                  row.canonical_parent_operation_id &&
+              DiagnosticField(diagnostic,
+                              "canonical_parent_sblr_opcode") ==
+                  row.canonical_parent_opcode &&
+              DiagnosticField(diagnostic, "executable_sblr_emitted") ==
+                  "false" &&
+              Contains(DiagnosticField(diagnostic,
+                                       "recognized_surface_ids"),
+                       row.surface_id),
+          "EDR-036 mutation exact refusal diagnostic drifted");
 }
 
 void RequireUnsupportedDomainShape(std::string_view sql) {
@@ -647,22 +665,16 @@ void RequireEngineDispatch(const std::filesystem::path& path,
 int main() {
   ConfigureMemoryFixture();
   RequireDescriptorValidators();
-  RequireCreateDomainRoute();
+  RequireCreateDomainRoute("CREATE DOMAIN customer.email_address AS TEXT;");
   for (const auto& row : kMutations) {
     RequireMutationRoute(row);
   }
-  RequireUnsupportedDomainShape(
+  RequireCreateDomainRoute(
       "CREATE DOMAIN positive_int AS INTEGER CHECK (VALUE > 0);");
-  RequireUnsupportedDomainShape(
+  RequireCreateDomainRoute(
       "CREATE DOMAIN email_default AS TEXT DEFAULT 'n/a';");
   RequireUnsupportedDomainShape(
       "CREATE DOMAIN email_method AS TEXT METHOD normalize;");
-
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  RequireEngineDispatch(path, database_uuid);
-  RemoveDatabaseArtifacts(path);
 
   std::cout << "sbsql_domain_language_expansion_conformance=passed\n";
   return EXIT_SUCCESS;

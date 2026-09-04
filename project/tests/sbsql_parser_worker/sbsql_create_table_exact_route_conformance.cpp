@@ -792,6 +792,10 @@ api::EngineRequestContext EngineContext(const std::string& database_uuid) {
   context.current_schema_uuid.canonical.clear();
   context.security_context_present = true;
   context.catalog_generation_id = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
@@ -827,6 +831,8 @@ api::EngineRequestContext BeginEngineTransaction(const std::string& database_uui
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  envelope.result_shape = "transaction_handle";
+  envelope.diagnostic_shape = "diagnostic_vector";
   sblr::SblrTransactionBeginOptionsV1 options;
   options.isolation_profile_uuid[0] = 1;
   options.isolation_profile_generation = 1;
@@ -837,7 +843,7 @@ api::EngineRequestContext BeginEngineTransaction(const std::string& database_uui
   options.wait_policy = 1;
   sblr::SblrOperand operand;
   operand.ordinal = 1;
-  operand.type = "transaction.begin.options";
+  operand.type = "transaction.begin_options";
   operand.name = "options";
   operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
   operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);

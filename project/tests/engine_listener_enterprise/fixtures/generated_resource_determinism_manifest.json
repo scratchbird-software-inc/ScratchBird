@@ -9,22 +9,22 @@
     {
             "path": "project/src/engine/sblr/sblr_opcode_registry.cpp",
             "resource_kind": "engine_sblr_opcode_registry",
-            "sha256": "bf21cba89fe2c04e549caba461767b5d9b698bbd1359b931189497af6e104e42"
+            "sha256": "c75e97eda73bfccf62ac38dd9468c340477e65465b06bb18ae47cf43f8e0cd79"
     },
     {
             "path": "project/src/server/sblr_admission.cpp",
             "resource_kind": "server_sblr_admission_surface",
-            "sha256": "af440b449144f2fc459b70343c5c01a8c37fe6bdedbe26207c532790be5f7ffa"
+            "sha256": "15182bc660f88f75f012158f24095a3c3c162e8ecb5de67f9eb8f8c55ad62c27"
     },
     {
             "path": "project/src/server/sblr_dispatch_server.cpp",
             "resource_kind": "server_sblr_dispatch_surface",
-            "sha256": "a594ec889d4d0f503345052162a36c15569ee4d03e8fe9c787e3143a8a8585e2"
+            "sha256": "e32e867ca041605cf0f842f9417f6d34da1febb74cd8ca062158ec56f60f17c1"
     },
     {
             "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
             "resource_kind": "parser_facing_strict_row_coverage_ledger",
-            "sha256": "57ef88c5b31bf18e7b9861fc76e6474ee1770593aed160ec9c7079636ec3b8c9"
+            "sha256": "c395c6be9524c559be0f4ffcd3895c896f7cac21d836d62f03852ee5f36596a8"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
@@ -34,7 +34,7 @@
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
       "resource_kind": "parser_facing_sblr_family_snapshot",
-      "sha256": "81bcd40e1426c626b46ccae7594ef6ad419dc7854e20b5b6ca3d1bf58881836a"
+      "sha256": "6ae1bd9838ba267cf605acce2e97c86da1c058c847481612e2acba2a1b37b35c"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
@@ -44,12 +44,12 @@
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
       "resource_kind": "reference_sblr_fixture_hash_manifest",
-      "sha256": "a4fa0de2898694e5ee275212a460d252d9e3e887aeff6fb70fcb8da19fc731e4"
+      "sha256": "74cce61f4e9bb4f97e2029cd62686e842803b1121951be10c4c62af526e70537"
     },
     {
             "path": "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
             "resource_kind": "parser_facing_contract_freeze_manifest",
-            "sha256": "a7047987141cfc0e84635b401a82947eb2e8c0e019acce6add66af4a5ad6aa17"
+            "sha256": "86e071c33de40d333e5bb0f1b03d2fa8b9728f0f008c5b985bf719ab33e59ee4"
     },
     {
       "path": "project/tests/engine_listener_enterprise/fixtures/external_review_closure_manifest.json",

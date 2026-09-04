@@ -61,9 +61,12 @@ def ensure_output_policy(repo_root: Path, output_root: Path) -> None:
         rel = resolved_output.relative_to(resolved_repo)
     except ValueError:
         return
-    if not rel.parts or rel.parts[0] != "build":
+    if not rel.parts or not (
+        rel.parts[0] == "build" or rel.parts[0].startswith("build-")
+    ):
         raise ValueError(
-            f"output root inside the repository must be under build/: {resolved_output}"
+            "output root inside the repository must be under a top-level "
+            f"build or build-* directory: {resolved_output}"
         )
 
 

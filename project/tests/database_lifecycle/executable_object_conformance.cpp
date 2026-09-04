@@ -93,6 +93,7 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
                                   std::uint64_t tx,
                                   std::uint64_t visible_through = 0) {
   api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_path = path.string();
   context.database_uuid.canonical = "db-dblc-013ag";
   context.principal_uuid.canonical = "principal-owner";
@@ -101,6 +102,7 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
   context.local_transaction_id = tx;
   context.snapshot_visible_through_local_transaction_id = visible_through;
   context.security_context_present = true;
+  context.trace_tags.push_back("security.fixture_trace_authority");
   context.catalog_generation_id = tx;
   context.security_epoch = tx;
   context.resource_epoch = tx;
@@ -124,16 +126,16 @@ TRequest BaseRequest(const std::filesystem::path& path,
 }
 
 void AddManage(api::EngineApiRequest* request) {
-  request->option_envelopes.push_back("permission:manage_executable");
+  request->context.trace_tags.push_back("right:CATALOG_MUTATE");
 }
 
 void AddEventTriggerManage(api::EngineApiRequest* request) {
   AddManage(request);
-  request->option_envelopes.push_back("permission:manage_event_trigger");
+  request->context.trace_tags.push_back("right:EVENT_ADMIN");
 }
 
 void AddInvoke(api::EngineApiRequest* request) {
-  request->option_envelopes.push_back("permission:invoke_executable");
+  request->context.trace_tags.push_back("right:EXECUTE");
 }
 
 void AddStoredSblr(api::EngineApiRequest* request, std::string hash_seed) {
@@ -215,7 +217,7 @@ void TestCreateAlterDropDependencyAndGeneration(const std::filesystem::path& pat
 
   auto inspect = BaseRequest<api::EngineInspectExecutableObjectRequest>(
       path, 9, "proc-invoice", "procedure");
-  inspect.option_envelopes.push_back("permission:inspect_executable");
+  inspect.context.trace_tags.push_back("right:DISCOVER");
   const auto inspected = api::EngineInspectExecutableObjects(inspect);
   RequireOk(inspected, "inspect after dependency invalidation failed");
   Require(HasRowField(inspected, "invalidated", "true"),
@@ -241,8 +243,8 @@ void TestCreateAlterDropDependencyAndGeneration(const std::filesystem::path& pat
 }
 
 void TestPermissionExecutionBoundaryAndStoredSblr(const std::filesystem::path& path) {
-  auto no_permission = CreateSblrRequest(path, 20, "fn-denied", "function", "denied");
-  no_permission.option_envelopes.clear();
+  auto no_permission = BaseRequest<api::EngineCreateExecutableObjectRequest>(
+      path, 20, "fn-denied", "function");
   AddStoredSblr(&no_permission, "denied");
   RequireDiagnostic(api::EngineCreateExecutableObject(no_permission),
                     api::kExecutableObjectDiagnosticPermissionDenied,
@@ -359,6 +361,7 @@ void TestEventTriggerBoundary(const std::filesystem::path& path) {
   fire.target_object.uuid.canonical.clear();
   fire.target_schema.uuid.canonical.clear();
   fire.option_envelopes.push_back("engine_event_trigger_dispatch:true");
+  fire.context.trace_tags.push_back("right:EVENT_PUBLISH");
   fire.option_envelopes.push_back("event:DDL_COMMAND_END");
   fire.option_envelopes.push_back("ddl_command_tag:CREATE_TABLE");
   fire.option_envelopes.push_back("ddl_object_kind:table");
@@ -371,6 +374,7 @@ void TestEventTriggerBoundary(const std::filesystem::path& path) {
 
   auto self_fire = fire;
   self_fire.context = Context(path, 52, 52);
+  self_fire.context.trace_tags.push_back("right:EVENT_PUBLISH");
   self_fire.option_envelopes.back() = "ddl_object_kind:event_trigger";
   const auto suppressed = api::EngineFireExecutableEventTrigger(self_fire);
   RequireOk(suppressed, "event trigger self-boundary dispatch failed");

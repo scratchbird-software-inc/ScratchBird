@@ -7,9 +7,7 @@
 int main() {
   const auto plan =
       optimizer::CoordinateModelFamilyDependencyDagV1(Admission(349));
-  const auto root = std::filesystem::temp_directory_path() /
-                    "sb_rcp080_qow_ias_008";
-  std::filesystem::remove_all(root);
+  const auto root = UniqueTempRoot("sb_rcp080_qow_ias_008");
   memory::TempWorkspaceLifecycleManager workspace(
       WorkspacePolicy(root, "rcp080_qow_ias_008"));
   RuntimeCounters counters;

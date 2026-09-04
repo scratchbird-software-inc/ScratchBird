@@ -8,6 +8,8 @@
 
 #include "backup_archive/backup_archive_api.hpp"
 
+#include "../release/public_release_authz_fixture.hpp"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -25,6 +27,8 @@ namespace engine_api = scratchbird::engine::internal_api;
 
 constexpr std::string_view kDatabaseUuid = "019e0f62-0000-7000-8000-000000000013";
 constexpr std::string_view kFilespaceUuid = "019e0f62-0000-7000-8000-000000000014";
+constexpr std::string_view kAdminPrincipalUuid =
+    "019e0f62-0001-7000-8000-000000000013";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -144,9 +148,14 @@ engine_api::EngineRequestContext Context(const std::filesystem::path& database_p
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   context.database_path = database_path.string();
   context.database_uuid.canonical = std::string(kDatabaseUuid);
+  context.principal_uuid.canonical = std::string(kAdminPrincipalUuid);
   context.security_context_present = true;
+  context.catalog_generation_id = 1;
+  context.security_epoch = 1;
   context.trace_tags.push_back("security.bootstrap");
   context.local_transaction_id = transaction_id;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &context, {"BACKUP_CREATE", "BACKUP_RESTORE"});
   return context;
 }
 
@@ -218,6 +227,7 @@ void TestPhysicalBackupRestoreLifecycle(const std::filesystem::path& temp_dir) {
   backup.option_envelopes = LifecycleOptions();
   backup.option_envelopes.push_back("target_uri:" + manifest.string());
   auto backup_result = engine_api::EngineStartPhysicalBackup(backup);
+  if (!backup_result.ok) { DumpDiagnostics(backup_result); }
   Require(backup_result.ok, "physical backup lifecycle path failed");
   Require(backup_result.image_bytes == source_image.size(), "physical backup image size mismatch");
   Require(HasEvidence(backup_result, "snapshot_hold"), "backup did not publish snapshot hold");

@@ -37,6 +37,10 @@ class EmbeddedEngineClient {
                                                bool quoted,
                                                std::string_view object_class,
                                                const ParserConfig& config);
+  std::vector<PublicNameResolutionResult> ResolveRelationDescriptorsPublic(
+      const SessionContext& session,
+      const std::vector<ipc::PublicRelationResolutionRequest>& requests,
+      const ParserConfig& config);
   PublicNameResolutionResult RenderUuidPublic(const SessionContext& session,
                                               std::string_view object_uuid);
   ipc::ServerStatementContextResult AcquireNativeStatementContext(
@@ -51,9 +55,24 @@ class EmbeddedEngineClient {
   ipc::ServerLiteralBindingResult FinalizeLiteralBinding(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_sblf);
+  ipc::ServerParameterBindingResult NegotiateParameterDescriptors(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbpr);
+  ipc::ServerParameterBindingResult FinalizeParameterBinding(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbpf);
   ipc::ServerVariableBindingResult CoordinateBulkImportStream(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerBulkImportBindResult BindBulkImportStream(
+      const SessionContext& session,
+      const scratchbird::wire::sbps_bulk_import::Bind& bind);
+  ipc::ServerBulkImportChunkResult AppendBulkImportStream(
+      const SessionContext& session,
+      const scratchbird::wire::sbps_bulk_import::Chunk& chunk);
+  ipc::ServerBulkImportSealResult SealBulkImportStream(
+      const SessionContext& session,
+      const scratchbird::wire::sbps_bulk_import::Seal& seal);
   ipc::ServerVariableBindingResult CoordinateDmlUpdateRowsBind(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);

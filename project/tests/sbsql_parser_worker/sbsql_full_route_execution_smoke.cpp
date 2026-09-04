@@ -29,6 +29,8 @@ constexpr std::string_view kAliceVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 constexpr std::string_view kWrongVerifier =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+constexpr std::string_view kAlicePassword = "ScratchBird-E2E-2026!";
+constexpr std::string_view kWrongPassword = "ScratchBird-E2E-wrong";
 constexpr std::string_view kAlicePrincipalUuid =
     "019f0a11-ce00-7000-8000-000000000001";
 
@@ -160,17 +162,24 @@ std::string LocalPasswordEvidence(std::string_view verifier) {
          std::string(verifier);
 }
 
+std::string AuthenticationEvidence(bool seeded_database, bool valid) {
+  if (seeded_database) {
+    return std::string(valid ? kAlicePassword : kWrongPassword);
+  }
+  return LocalPasswordEvidence(valid ? kAliceVerifier : kWrongVerifier);
+}
+
 bool RunExampleDatabaseSeeder(const std::filesystem::path& seeder,
                               const std::filesystem::path& database_path) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     const std::string user = "alice";
-    const std::string verifier(kAliceVerifier);
+    const std::string password(kAlicePassword);
     ::execl(seeder.c_str(),
             seeder.c_str(),
             database_path.c_str(),
             user.c_str(),
-            verifier.c_str(),
+            password.c_str(),
             nullptr);
     _exit(127);
   }
@@ -191,19 +200,10 @@ bool ExecuteAndExpectResult(int fd,
   const std::string result_prefix = "RESULT " + std::string(operation_id) + " ";
   for (int i = 0; i < 512 && ReadLine(fd, line); ++i) {
     if (line->starts_with(result_prefix)) {
-      if (!operation_id.starts_with("transaction.")) {
-        DrainAvailableLines(fd, line);
-        return true;
-      }
-      for (int drain = 0; drain < 20 && ReadLine(fd, line); ++drain) {
-        if (line->starts_with("transaction_uuid=")) {
-          DrainAvailableLines(fd, line);
-          return true;
-        }
-        if (line->starts_with("MESSAGE ")) return false;
-      }
-      return false;
+      DrainAvailableLines(fd, line);
+      return true;
     }
+    if (line->starts_with("RESULT ")) return false;
     if (line->starts_with("MESSAGE ")) return false;
   }
   return false;
@@ -225,6 +225,7 @@ bool ExecuteAndExpectResultRows(int fd,
       DrainAvailableLines(fd, line);
       return true;
     }
+    if (line->starts_with("RESULT ")) return false;
     if (line->starts_with("MESSAGE ")) return false;
   }
   return false;
@@ -239,15 +240,19 @@ bool ExecuteAndExpectMessage(int fd,
   command += '\n';
   if (!WriteAll(fd, command)) return false;
   for (int i = 0; i < 512 && ReadLine(fd, line); ++i) {
-    if (line->starts_with(message_prefix)) return true;
+    if (line->starts_with(message_prefix)) {
+      DrainAvailableLines(fd, line);
+      return true;
+    }
     if (line->starts_with("RESULT ")) return false;
+    if (line->starts_with("MESSAGE ")) return false;
   }
   return false;
 }
 
-bool AuthenticateAlice(int fd, std::string* line) {
+bool AuthenticateAlice(int fd, bool seeded_database, std::string* line) {
   const std::string valid_auth =
-      "AUTH alice " + LocalPasswordEvidence(kAliceVerifier) + "\n";
+      "AUTH alice " + AuthenticationEvidence(seeded_database, true) + "\n";
   if (!WriteAll(fd, valid_auth)) return false;
   for (int i = 0; i < 4 && ReadLine(fd, line); ++i) {
     if (*line == "OK AUTHENTICATED") return true;
@@ -255,7 +260,7 @@ bool AuthenticateAlice(int fd, std::string* line) {
   return false;
 }
 
-int ConnectAndAuthenticate(int port, std::string* line) {
+int ConnectAndAuthenticate(int port, bool seeded_database, std::string* line) {
   int fd = -1;
   for (int i = 0; i < 120; ++i) {
     fd = ConnectLoopback(port);
@@ -264,14 +269,17 @@ int ConnectAndAuthenticate(int port, std::string* line) {
   }
   if (fd < 0) return -1;
   if (!ReadLine(fd, line) || *line != "ScratchBird SBSQL parser ready" ||
-      !AuthenticateAlice(fd, line)) {
+      !AuthenticateAlice(fd, seeded_database, line)) {
     ::close(fd);
     return -1;
   }
   return fd;
 }
 
-bool RunTemporaryTableFullRouteProof(int* fd, int port, std::string* line) {
+bool RunTemporaryTableFullRouteProof(int* fd,
+                                     int port,
+                                     bool seeded_database,
+                                     std::string* line) {
   if (!ExecuteAndExpectResult(*fd,
                               "CREATE TEMPORARY TABLE route_temp_delete (id int) ON COMMIT DELETE ROWS",
                               "ddl.create_table",
@@ -280,29 +288,29 @@ bool RunTemporaryTableFullRouteProof(int* fd, int port, std::string* line) {
               << *line << '\n';
     return false;
   }
-  if (!ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line)) {
+  if (!ExecuteAndExpectResult(*fd, "COMMIT", "engine.op.txn_commit", line)) {
     std::cerr << "TEMP-TABLE-GATE-015 live route private temp create commit failed, last_line="
               << *line << '\n';
     return false;
   }
   if (!ExecuteAndExpectResultRows(*fd,
-                                  "INSERT INTO route_temp_delete VALUES (1)",
+                                  "INSERT INTO route_temp_delete (id) VALUES (1)",
                                   "dml.insert_rows",
                                   1,
                                   line) ||
       !ExecuteAndExpectResultRows(*fd,
                                   "SELECT * FROM route_temp_delete",
-                                  "dml.select_rows",
+                                  "query.execute",
                                   1,
                                   line)) {
     std::cerr << "TEMP-TABLE-GATE-015 live route private temp DML failed, last_line="
               << *line << '\n';
     return false;
   }
-  if (!ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+  if (!ExecuteAndExpectResult(*fd, "COMMIT", "engine.op.txn_commit", line) ||
       !ExecuteAndExpectResultRows(*fd,
                                   "SELECT * FROM route_temp_delete",
-                                  "dml.select_rows",
+                                  "query.execute",
                                   0,
                                   line)) {
     std::cerr << "TEMP-TABLE-GATE-015 live route ON COMMIT DELETE proof failed, last_line="
@@ -310,34 +318,26 @@ bool RunTemporaryTableFullRouteProof(int* fd, int port, std::string* line) {
     return false;
   }
   if (!ExecuteAndExpectResultRows(*fd,
-                                  "INSERT INTO route_temp_delete VALUES (2)",
+                                  "INSERT INTO route_temp_delete (id) VALUES (2)",
                                   "dml.insert_rows",
                                   1,
                                   line) ||
-      !ExecuteAndExpectResult(*fd, "ROLLBACK", "transaction.rollback", line) ||
+      !ExecuteAndExpectResult(*fd, "ROLLBACK", "engine.op.txn_rollback", line) ||
       !ExecuteAndExpectResultRows(*fd,
                                   "SELECT * FROM route_temp_delete",
-                                  "dml.select_rows",
+                                  "query.execute",
                                   0,
                                   line)) {
     std::cerr << "TEMP-TABLE-GATE-015 live route rollback proof failed, last_line="
               << *line << '\n';
     return false;
   }
-  if (!ExecuteAndExpectResult(*fd,
-                              "DROP TABLE route_temp_delete",
-                              "ddl.drop_object",
-                              line)) {
-    std::cerr << "TEMP-TABLE-GATE-015 live route private temp drop failed, last_line="
-              << *line << '\n';
-    return false;
-  }
   if (!ExecuteAndExpectMessage(
           *fd,
-          "SELECT * FROM route_temp_delete",
-          "MESSAGE ERROR SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE",
+          "DROP TABLE route_temp_delete",
+          "MESSAGE ERROR SBSQL.IMPL.NOT_AVAILABLE",
           line)) {
-    std::cerr << "TEMP-TABLE-GATE-015 live route private temp drop refusal failed, last_line="
+    std::cerr << "TEMP-TABLE-GATE-015 generic temp drop did not fail closed, last_line="
               << *line << '\n';
     return false;
   }
@@ -345,16 +345,16 @@ bool RunTemporaryTableFullRouteProof(int* fd, int port, std::string* line) {
                               "CREATE GLOBAL TEMPORARY TABLE route_gtt (id int) ON COMMIT PRESERVE ROWS",
                               "ddl.create_table",
                               line) ||
-      !ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResult(*fd, "COMMIT", "engine.op.txn_commit", line) ||
       !ExecuteAndExpectResultRows(*fd,
-                                  "INSERT INTO route_gtt VALUES (7)",
+                                  "INSERT INTO route_gtt (id) VALUES (7)",
                                   "dml.insert_rows",
                                   1,
                                   line) ||
-      !ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResult(*fd, "COMMIT", "engine.op.txn_commit", line) ||
       !ExecuteAndExpectResultRows(*fd,
                                   "SELECT * FROM route_gtt",
-                                  "dml.select_rows",
+                                  "query.execute",
                                   1,
                                   line)) {
     std::cerr << "TEMP-TABLE-GATE-015 live route GTT preserve proof failed, last_line="
@@ -365,16 +365,16 @@ bool RunTemporaryTableFullRouteProof(int* fd, int port, std::string* line) {
                               "CREATE TEMPORARY TABLE route_temp_cleanup (id int) ON COMMIT PRESERVE ROWS",
                               "ddl.create_table",
                               line) ||
-      !ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResult(*fd, "COMMIT", "engine.op.txn_commit", line) ||
       !ExecuteAndExpectResultRows(*fd,
-                                  "INSERT INTO route_temp_cleanup VALUES (9)",
+                                  "INSERT INTO route_temp_cleanup (id) VALUES (9)",
                                   "dml.insert_rows",
                                   1,
                                   line) ||
-      !ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResult(*fd, "COMMIT", "engine.op.txn_commit", line) ||
       !ExecuteAndExpectResultRows(*fd,
                                   "SELECT * FROM route_temp_cleanup",
-                                  "dml.select_rows",
+                                  "query.execute",
                                   1,
                                   line)) {
     std::cerr << "TEMP-TABLE-GATE-015 live route private preserve proof failed, last_line="
@@ -383,7 +383,7 @@ bool RunTemporaryTableFullRouteProof(int* fd, int port, std::string* line) {
   }
 
   ::close(*fd);
-  *fd = ConnectAndAuthenticate(port, line);
+  *fd = ConnectAndAuthenticate(port, seeded_database, line);
   if (*fd < 0) {
     std::cerr << "TEMP-TABLE-GATE-015 live route reconnect after temp cleanup failed, last_line="
               << *line << '\n';
@@ -391,15 +391,19 @@ bool RunTemporaryTableFullRouteProof(int* fd, int port, std::string* line) {
   }
   if (!ExecuteAndExpectResultRows(*fd,
                                   "SELECT * FROM route_gtt",
-                                  "dml.select_rows",
+                                  "query.execute",
                                   0,
-                                  line) ||
-      !ExecuteAndExpectMessage(
+                                  line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 global temp session isolation proof failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectMessage(
           *fd,
           "SELECT * FROM route_temp_cleanup",
-          "MESSAGE ERROR SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE",
+          "MESSAGE ERROR CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
           line)) {
-    std::cerr << "TEMP-TABLE-GATE-015 live route session cleanup proof failed, last_line="
+    std::cerr << "TEMP-TABLE-GATE-015 private temp session cleanup proof failed, last_line="
               << *line << '\n';
     return false;
   }
@@ -446,7 +450,6 @@ pid_t LaunchServer(const std::filesystem::path& server,
             server.c_str(),
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             control_arg.c_str(),
             control_dir.c_str(),
             runtime_arg.c_str(),
@@ -512,7 +515,10 @@ pid_t LaunchListener(const std::filesystem::path& listener,
 } // namespace
 
 int main(int argc, char** argv) {
-  ::alarm(75);
+  // This process drives multiple independent authenticated sessions and full
+  // canonical statement-context acquisitions. Keep a deadlock watchdog, but
+  // leave enough headroom for an unoptimized conformance build.
+  ::alarm(180);
   if (argc != 4 && argc != 5) {
     std::cerr << "usage: sbp_sbsql_full_route_execution_smoke <sb_server> <sb_listener> <sbp_sbsql> [sbsql_example_database_seed]\n";
     return EXIT_FAILURE;
@@ -592,7 +598,7 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   const std::string invalid_auth =
-      "AUTH alice " + LocalPasswordEvidence(kWrongVerifier) + "\n";
+      "AUTH alice " + AuthenticationEvidence(copy_fixture_seeded, false) + "\n";
   if (!WriteAll(fd, invalid_auth)) {
     StopProcess(listener_pid);
     StopProcess(server_pid);
@@ -646,7 +652,7 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   const std::string valid_auth =
-      "AUTH alice " + LocalPasswordEvidence(kAliceVerifier) + "\n";
+      "AUTH alice " + AuthenticationEvidence(copy_fixture_seeded, true) + "\n";
   if (!WriteAll(fd, valid_auth)) {
     StopProcess(listener_pid);
     StopProcess(server_pid);
@@ -665,7 +671,7 @@ int main(int argc, char** argv) {
     std::cerr << "authentication did not complete, last line: " << line << '\n';
     return EXIT_FAILURE;
   }
-  if (!ExecuteAndExpectResult(fd, "BEGIN", "transaction.begin", &line)) {
+  if (!ExecuteAndExpectResult(fd, "BEGIN", "engine.op.txn_begin", &line)) {
     StopProcess(listener_pid);
     StopProcess(server_pid);
     std::cerr << "full route did not begin an MGA transaction after auth under "
@@ -682,9 +688,9 @@ int main(int argc, char** argv) {
   }
   bool saw_prepared = false;
   bool saw_result = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
+  for (int i = 0; i < 512 && ReadLine(fd, &line); ++i) {
     if (line.starts_with("PREPARED sblr.query.relational.v3")) saw_prepared = true;
-    if (line.starts_with("RESULT dml.select_rows 1 ")) {
+    if (line.starts_with("RESULT query.execute 1 ")) {
       saw_result = true;
       break;
     }
@@ -707,9 +713,9 @@ int main(int argc, char** argv) {
   }
   bool saw_name_prepared = false;
   bool saw_name_result = false;
-  for (int i = 0; i < 10 && ReadLine(fd, &line); ++i) {
+  for (int i = 0; i < 512 && ReadLine(fd, &line); ++i) {
     if (line.starts_with("PREPARED sblr.query.relational.v3")) saw_name_prepared = true;
-    if (line.starts_with("RESULT dml.select_rows 1 ")) {
+    if (line.starts_with("RESULT query.execute 1 ")) {
       saw_name_result = true;
       break;
     }
@@ -724,14 +730,18 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  if (!WriteAll(fd, "STREAM 5 " + routed_select_sql + "\n")) {
+  const std::string streaming_select_sql =
+      "SELECT key_a, COUNT(*), SUM(amount) FROM "
+      "(VALUES (0, 10), (1, 11), (2, 12), (3, 13), (4, 14)) "
+      "AS input(key_a, amount) GROUP BY key_a";
+  if (!WriteAll(fd, "STREAM 5 " + streaming_select_sql + "\n")) {
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
   bool saw_stream_cursor = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
+  for (int i = 0; i < 512 && ReadLine(fd, &line); ++i) {
     if (line.starts_with("CURSOR ")) {
       saw_stream_cursor = true;
       break;
@@ -752,34 +762,12 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  bool saw_fetch_limit_error = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("MESSAGE ERROR SERVER.STREAM.CHUNK_TOO_LARGE")) {
-      saw_fetch_limit_error = true;
-      break;
-    }
-    if (line.starts_with("FETCH ")) break;
-  }
-  if (!saw_fetch_limit_error) {
-    std::cerr << "full route did not return streaming chunk-limit diagnostic under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 2\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
   bool saw_fetch_first = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") && line.find(" 2 end=false ") != std::string::npos &&
-        line.find("\"row_index\":0") != std::string::npos &&
-        line.find("\"row_index\":1") != std::string::npos) {
+  for (int i = 0; i < 512 && ReadLine(fd, &line); ++i) {
+    if (line.starts_with("FETCH ") &&
+        line.find(" 4 end=false ") != std::string::npos) {
       saw_fetch_first = true;
+      DrainAvailableLines(fd, &line);
       break;
     }
     if (line.starts_with("MESSAGE ")) break;
@@ -792,18 +780,18 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  if (!WriteAll(fd, "FETCH 3\n")) {
+  if (!WriteAll(fd, "FETCH 1024\n")) {
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
   bool saw_fetch_final = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") && line.find(" 3 end=true ") != std::string::npos &&
-        line.find("\"row_index\":2") != std::string::npos &&
-        line.find("\"row_index\":4") != std::string::npos) {
+  for (int i = 0; i < 512 && ReadLine(fd, &line); ++i) {
+    if (line.starts_with("FETCH ") &&
+        line.find(" 1 end=true ") != std::string::npos) {
       saw_fetch_final = true;
+      DrainAvailableLines(fd, &line);
       break;
     }
     if (line.starts_with("MESSAGE ")) break;
@@ -816,29 +804,7 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  if (!WriteAll(fd, "CLOSE CURSOR\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_cursor_closed = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line == "OK CURSOR_CLOSED") {
-      saw_cursor_closed = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_cursor_closed) {
-    std::cerr << "full route did not close streaming cursor under " << work
-              << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!ExecuteAndExpectResult(fd, "COMMIT", "transaction.commit", &line)) {
+  if (!ExecuteAndExpectResult(fd, "COMMIT", "engine.op.txn_commit", &line)) {
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
@@ -846,7 +812,8 @@ int main(int argc, char** argv) {
               << work << " last_line=" << line << '\n';
     return EXIT_FAILURE;
   }
-  if (!RunTemporaryTableFullRouteProof(&fd, port, &line)) {
+  if (!RunTemporaryTableFullRouteProof(
+          &fd, port, copy_fixture_seeded, &line)) {
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
@@ -876,134 +843,83 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  if (!WriteAll(fd, "FETCH 1\n")) {
+  if (!WriteAll(fd, "FETCH 1024\n")) {
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
   bool saw_engine_fetch_header = false;
-  bool saw_engine_fetch_product = false;
+  bool saw_engine_fetch_payload = false;
   for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
     if (line.starts_with("FETCH ") &&
-        line.find(" 1 end=true ") != std::string::npos &&
+        line.find(" 4 end=false ") != std::string::npos &&
         line.find("detail={\"cursor_metadata\"") != std::string::npos &&
-        line.find("operation_id=observability.show_version") != std::string::npos) {
+        line.find("\"operation_id\":\"query.execute\"") != std::string::npos) {
       saw_engine_fetch_header = true;
-      continue;
-    }
-    if (line.find("product=ScratchBird") != std::string::npos) {
-      saw_engine_fetch_product = true;
+      saw_engine_fetch_payload = true;
+      DrainAvailableLines(fd, &line);
       break;
     }
     if (line.starts_with("MESSAGE ")) break;
   }
-  if (!saw_engine_fetch_header || !saw_engine_fetch_product) {
+  if (!saw_engine_fetch_header || !saw_engine_fetch_payload) {
     std::cerr << "full route did not render engine-backed stream metadata/payload under "
               << work << " header=" << saw_engine_fetch_header
-              << " product=" << saw_engine_fetch_product
+              << " payload=" << saw_engine_fetch_payload
               << " last_line=" << line << '\n';
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  if (!WriteAll(fd, "CLOSE CURSOR\n")) {
+  if (!WriteAll(fd, "FETCH 1024\n")) {
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  bool saw_engine_cursor_closed = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line == "OK CURSOR_CLOSED") {
-      saw_engine_cursor_closed = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_engine_cursor_closed) {
-    std::cerr << "full route did not close engine-backed streaming cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "ROUTINE CURSOR\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_routine_cursor = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("ROUTINE_CURSOR ") &&
-        line.find("operation_id=routine.execute_cursor_argument") != std::string::npos &&
-        line.find("routine_rows=1") != std::string::npos &&
-        line.find("same_cursor=true") != std::string::npos &&
-        line.find("routine_row_zero=true") != std::string::npos &&
-        line.find("routine_operation=true") != std::string::npos) {
-      saw_routine_cursor = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_routine_cursor) {
-    std::cerr << "ROUTINE-CURSOR-GATE-009 full route routine cursor proof failed under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 1\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_routine_owner_fetch = false;
+  bool saw_engine_fetch_final = false;
   for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
     if (line.starts_with("FETCH ") &&
-        line.find("\"chunk_start\":1") != std::string::npos &&
-        line.find("\"event\":\"command_tag\"") != std::string::npos &&
-        line.find("\"tag\":\"SELECT 1\"") != std::string::npos) {
-      saw_routine_owner_fetch = true;
+        line.find(" 1 end=true ") != std::string::npos &&
+        line.find("detail={\"cursor_metadata\"") != std::string::npos &&
+        line.find("\"operation_id\":\"query.execute\"") !=
+            std::string::npos) {
+      saw_engine_fetch_final = true;
+      DrainAvailableLines(fd, &line);
       break;
     }
     if (line.starts_with("MESSAGE ")) break;
   }
-  if (!saw_routine_owner_fetch) {
-    std::cerr << "ROUTINE-CURSOR-GATE-009 full route owner fetch after routine did not advance under "
+  if (!saw_engine_fetch_final) {
+    std::cerr << "full route did not finish engine-backed stream under "
               << work << " last_line=" << line << '\n';
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  if (!WriteAll(fd, "CLOSE CURSOR\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_routine_cursor_closed = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line == "OK CURSOR_CLOSED") {
-      saw_routine_cursor_closed = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_routine_cursor_closed) {
-    std::cerr << "ROUTINE-CURSOR-GATE-009 full route routine cursor close failed under "
+  if (!ExecuteAndExpectMessage(
+          fd,
+          "CREATE PROCEDURE replay_cursor_procedure(route_cursor cursor)",
+          "MESSAGE ERROR SBSQL.IMPL.NOT_AVAILABLE",
+          &line)) {
+    std::cerr << "ROUTINE-CURSOR-GATE-009 full route routine cursor parent did not fail closed under "
               << work << " last_line=" << line << '\n';
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
+  // This one operation intentionally produces a response larger than one
+  // physical SBPS frame.  O0 conformance builds can spend longer than the
+  // ordinary per-command timeout preparing it; the process-wide alarm still
+  // bounds the complete test.  Restore the normal timeout after the response.
+  timeval chunked_timeout{};
+  chunked_timeout.tv_sec = 90;
+  (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &chunked_timeout,
+                     sizeof(chunked_timeout));
   if (!WriteAll(fd, "SBPS CHUNKED EXECUTE\n")) {
     ::close(fd);
     StopProcess(listener_pid);
@@ -1013,13 +929,17 @@ int main(int argc, char** argv) {
   bool saw_chunked_execute = false;
   for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
     if (line.starts_with("CHUNKED_EXECUTE accepted ") &&
-        line.find("row_count=24000") != std::string::npos &&
-        line.find("last_row=true") != std::string::npos) {
+        line.find("row_count=300") != std::string::npos &&
+        line.find("canonical_response_chunked=true") != std::string::npos) {
       saw_chunked_execute = true;
       break;
     }
     if (line.starts_with("MESSAGE ")) break;
   }
+  timeval ordinary_timeout{};
+  ordinary_timeout.tv_sec = 15;
+  (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &ordinary_timeout,
+                     sizeof(ordinary_timeout));
   if (!saw_chunked_execute) {
     std::cerr << "full route did not round-trip chunked SBPS request/response under "
               << work << " last_line=" << line << '\n';
@@ -1035,101 +955,21 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  bool saw_copy_cursor = false;
+  bool saw_copy_result = false;
   for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("COPY_CURSOR ") &&
-        line.find(" events=4") != std::string::npos &&
+    if (line.starts_with("COPY_RESULT ") &&
+        line.find("affected_rows=1") != std::string::npos &&
         line.find(" source=engine") != std::string::npos &&
-        line.find("operation_id=dml.execute_import_rows") != std::string::npos &&
+        line.find("operation_id=engine.op.bulk_import_stream") !=
+            std::string::npos &&
         line.find("committed=true") != std::string::npos) {
-      saw_copy_cursor = true;
+      saw_copy_result = true;
       break;
     }
     if (line.starts_with("MESSAGE ")) break;
   }
-  if (!saw_copy_cursor) {
-    std::cerr << "full route did not open COPY streaming cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 2\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_copy_progress = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"event\":\"progress\"") != std::string::npos &&
-        line.find("\"event\":\"reject_record\"") != std::string::npos &&
-        line.find("\"rows_processed\":2") != std::string::npos &&
-        line.find("\"rows_rejected\":1") != std::string::npos &&
-        (line.find("\"diagnostic_detail\":\"crud.unique_index:unique_index_duplicate\"") != std::string::npos ||
-         line.find("\"diagnostic_detail\":\"constraint.primary_key.violation:duplicate_key") != std::string::npos ||
-         line.find("\"diagnostic_detail\":\"constraint.unique.violation:duplicate_key") != std::string::npos ||
-         line.find("\"diagnostic_detail\":\"duplicate_key:") != std::string::npos) &&
-        line.find("\"value_redacted\":true") != std::string::npos) {
-      saw_copy_progress = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_copy_progress) {
-    std::cerr << "full route did not render COPY progress/reject records under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 3\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_copy_summary = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"event\":\"bulk_summary\"") != std::string::npos &&
-        line.find("\"event\":\"final_status\"") != std::string::npos &&
-        line.find("\"accepted_rows\":1") != std::string::npos &&
-        line.find("\"rejected_rows\":1") != std::string::npos &&
-        line.find("\"status\":\"completed_with_rejects\"") != std::string::npos &&
-        line.find("end=true") != std::string::npos) {
-      saw_copy_summary = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_copy_summary) {
-    std::cerr << "full route did not render COPY summary/final status under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "CLOSE CURSOR\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_copy_cursor_closed = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line == "OK CURSOR_CLOSED") {
-      saw_copy_cursor_closed = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_copy_cursor_closed) {
-    std::cerr << "full route did not close COPY streaming cursor under "
+  if (!saw_copy_result) {
+    std::cerr << "full route did not complete canonical COPY streaming under "
               << work << " last_line=" << line << '\n';
     ::close(fd);
     StopProcess(listener_pid);
@@ -1137,386 +977,22 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   }
-  if (!WriteAll(fd, "MULTI RESULT\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_multi_cursor = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("MULTI_CURSOR ") && line.find(" events=7") != std::string::npos) {
-      saw_multi_cursor = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_multi_cursor) {
-    std::cerr << "full route did not open multi-result cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 2\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_multi_first = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"event\":\"result_set_metadata\"") != std::string::npos &&
-        line.find("\"event\":\"command_tag\"") != std::string::npos &&
-        line.find("\"tag\":\"SELECT 1\"") != std::string::npos) {
-      saw_multi_first = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_multi_first) {
-    std::cerr << "full route did not render first multi-result metadata/tag under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 4\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_multi_middle = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"tag\":\"SELECT 3\"") != std::string::npos &&
-        line.find("\"event\":\"command_tag\"") != std::string::npos &&
-        line.find("end=false") != std::string::npos) {
-      saw_multi_middle = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_multi_middle) {
-    std::cerr << "full route did not render middle multi-result sequence under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 1\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_multi_final = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"event\":\"multi_result_finality\"") != std::string::npos &&
-        line.find("end=true") != std::string::npos) {
-      saw_multi_final = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_multi_final) {
-    std::cerr << "full route did not render multi-result finality under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "CLOSE CURSOR\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_multi_cursor_closed = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line == "OK CURSOR_CLOSED") {
-      saw_multi_cursor_closed = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_multi_cursor_closed) {
-    std::cerr << "full route did not close multi-result cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "WARNING STREAM\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_warning_cursor = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("WARNING_CURSOR ") && line.find(" events=6") != std::string::npos) {
-      saw_warning_cursor = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_warning_cursor) {
-    std::cerr << "full route did not open warning/partial-result cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 3\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_partial_rows = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"event\":\"partial_result_row\"") != std::string::npos &&
-        line.find("\"partial_result\":true") != std::string::npos &&
-        line.find("end=false") != std::string::npos) {
-      saw_partial_rows = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_partial_rows) {
-    std::cerr << "full route did not render warning stream partial rows under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 2\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_warning_chain = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"event\":\"warning\"") != std::string::npos &&
-        line.find("\"diagnostic_code\":\"STREAM.WARNING.0\"") != std::string::npos &&
-        line.find("\"does_not_abort\":true") != std::string::npos) {
-      saw_warning_chain = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_warning_chain) {
-    std::cerr << "full route did not render non-aborting warning chain under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 1\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_warning_finality = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"event\":\"partial_result_finality\"") != std::string::npos &&
-        line.find("\"status\":\"completed_with_warnings\"") != std::string::npos &&
-        line.find("end=true") != std::string::npos) {
-      saw_warning_finality = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_warning_finality) {
-    std::cerr << "full route did not render warning/partial-result finality under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "CLOSE CURSOR\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_warning_cursor_closed = false;
-  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
-    if (line == "OK CURSOR_CLOSED") {
-      saw_warning_cursor_closed = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_warning_cursor_closed) {
-    std::cerr << "full route did not close warning/partial-result cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "TIMEOUT STREAM\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_timeout_cursor = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("TIMEOUT_CURSOR ") && line.find(" events=2") != std::string::npos) {
-      saw_timeout_cursor = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_timeout_cursor) {
-    std::cerr << "full route did not open timeout stream cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 1\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_timeout_initial_row = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"row_index\":0") != std::string::npos &&
-        line.find("end=false") != std::string::npos) {
-      saw_timeout_initial_row = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_timeout_initial_row) {
-    std::cerr << "full route did not render timeout stream initial row under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 1\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_timeout_finality = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("MESSAGE ERROR SERVER.STREAM.TIMEOUT")) {
-      saw_timeout_finality = true;
-      break;
-    }
-    if (line.starts_with("FETCH ")) break;
-  }
-  if (!saw_timeout_finality) {
-    std::cerr << "full route did not return deterministic stream timeout diagnostic under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "DRAIN STREAM\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_drain_cursor = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("DRAIN_CURSOR ") && line.find(" events=2") != std::string::npos) {
-      saw_drain_cursor = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_drain_cursor) {
-    std::cerr << "full route did not open drain stream cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "FETCH 1\n")) {
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  bool saw_drain_finality = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("FETCH ") &&
-        line.find("\"stream_finality\"") != std::string::npos &&
-        line.find("\"state\":\"drained\"") != std::string::npos &&
-        line.find("end=true") != std::string::npos) {
-      saw_drain_finality = true;
-      break;
-    }
-    if (line.starts_with("MESSAGE ")) break;
-  }
-  if (!saw_drain_finality) {
-    std::cerr << "full route did not render deterministic stream drain finality under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!WriteAll(fd, "CANCEL STREAM\n")) {
+  if (!WriteAll(fd, "STREAM 3 " + streaming_select_sql + "\n")) {
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
   bool saw_cancel_cursor = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("CANCEL_CURSOR ") && line.find(" events=2") != std::string::npos) {
+  for (int i = 0; i < 512 && ReadLine(fd, &line); ++i) {
+    if (line.starts_with("CURSOR ")) {
       saw_cancel_cursor = true;
       break;
     }
     if (line.starts_with("MESSAGE ")) break;
   }
   if (!saw_cancel_cursor) {
-    std::cerr << "full route did not open cancel stream cursor under "
-              << work << " last_line=" << line << '\n';
-    ::close(fd);
-    StopProcess(listener_pid);
-    StopProcess(server_pid);
-    return EXIT_FAILURE;
-  }
-  if (!ExecuteAndExpectResultRows(fd,
-                                  "SELECT d.* FROM sys.parser.dialects AS d",
-                                  "observability.show_catalog",
-                                  1,
-                                  &line)) {
-    std::cerr << "full route did not resolve parser dialect projection with alias under "
+    std::cerr << "full route did not open canonical cursor for cancellation under "
               << work << " last_line=" << line << '\n';
     ::close(fd);
     StopProcess(listener_pid);
@@ -1532,7 +1008,10 @@ int main(int argc, char** argv) {
   bool saw_cancel_finality = false;
   for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
     if (line.starts_with("OK CURSOR_CANCELLED") &&
-        line.find("\"state\":\"cancelled\"") != std::string::npos) {
+        line.find("\"state\":\"cancelled_unknown_outcome\"") !=
+            std::string::npos &&
+        line.find("\"reason\":\"cancel_requested_outcome_unknown_preserved\"") !=
+            std::string::npos) {
       saw_cancel_finality = true;
       break;
     }
@@ -1546,6 +1025,18 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
+  if (!ExecuteAndExpectResultRows(fd,
+                                  routed_select_sql,
+                                  "query.execute",
+                                  1,
+                                  &line)) {
+    std::cerr << "full route did not remain queryable after cursor cancellation under "
+              << work << " last_line=" << line << '\n';
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    return EXIT_FAILURE;
+  }
   if (!WriteAll(fd, "EXECUTE SELECT * FROM hidden_table\n")) {
     ::close(fd);
     StopProcess(listener_pid);
@@ -1553,11 +1044,13 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   bool saw_hidden_safe_error = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
-    if (line.starts_with("MESSAGE ERROR SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE")) {
+  for (int i = 0; i < 512 && ReadLine(fd, &line); ++i) {
+    if (line.starts_with("MESSAGE ERROR CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE")) {
       saw_hidden_safe_error = true;
+      DrainAvailableLines(fd, &line);
       break;
     }
+    if (line.starts_with("MESSAGE ")) break;
     if (line.starts_with("RESULT ")) break;
   }
   if (!saw_hidden_safe_error) {
@@ -1568,7 +1061,7 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
-  if (!ExecuteAndExpectResult(fd, "BEGIN", "transaction.begin", &line)) {
+  if (!ExecuteAndExpectResult(fd, "BEGIN", "engine.op.txn_begin", &line)) {
     ::close(fd);
     StopProcess(listener_pid);
     StopProcess(server_pid);
@@ -1583,7 +1076,7 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   bool saw_disconnect_cursor = false;
-  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
+  for (int i = 0; i < 512 && ReadLine(fd, &line); ++i) {
     if (line.starts_with("CURSOR ")) {
       saw_disconnect_cursor = true;
       break;

@@ -394,7 +394,7 @@ void ValidateReplayIndex(const CsvTable& replay_index,
                          const CsvTable& membership,
                          const CsvTable& surface_backlog,
                          const CsvTable& surface_registry,
-                         const CsvTable& operation_matrix,
+                         const CsvTable& release_declaration,
                          const std::set<std::string>& reference_native_names,
                          const std::filesystem::path& payload_path,
                          Harness* harness) {
@@ -431,13 +431,17 @@ void ValidateReplayIndex(const CsvTable& replay_index,
                                "validation_fixture_id"},
                               harness);
   schema_ok &= RequireColumns(surface_registry,
-                              {"surface_id", "canonical_name", "status",
-                               "cluster_scope", "sblr_operation_family"},
+                              {"surface_id", "fixed_uuid_v7", "canonical_name",
+                               "surface_kind", "family", "source_status",
+                               "cluster_scope", "canonical_spec",
+                               "sblr_operation_family", "batch_id", "ctest_label",
+                               "oracle_key", "validation_fixture_id", "status"},
                               harness);
-  schema_ok &= RequireColumns(operation_matrix,
-                              {"surface_id", "canonical_name",
-                               "sblr_operation_family", "required_context",
-                               "result_shape", "diagnostics"},
+  schema_ok &= RequireColumns(release_declaration,
+                              {"surface_id", "fixed_uuid_v7", "canonical_name",
+                               "surface_kind", "family", "final_status",
+                               "diagnostic_refs", "result_refs", "auth_route_ref",
+                               "sblr_round_trip_ref", "release_status"},
                               harness);
   if (!schema_ok) return;
 
@@ -448,7 +452,8 @@ void ValidateReplayIndex(const CsvTable& replay_index,
   const auto membership_by_surface = IndexUnique(membership, "surface_id", harness);
   const auto backlog_by_surface = IndexUnique(surface_backlog, "surface_id", harness);
   const auto registry_by_surface = IndexUnique(surface_registry, "surface_id", harness);
-  const auto operation_by_surface = IndexUnique(operation_matrix, "surface_id", harness);
+  const auto release_by_surface =
+      IndexUnique(release_declaration, "surface_id", harness);
 
   harness->Check(replay_index.rows.size() == kExpectedSurfaceCount,
                  "replay index must contain corrected authority surface count");
@@ -460,8 +465,8 @@ void ValidateReplayIndex(const CsvTable& replay_index,
                  "replay index/surface backlog row count mismatch");
   harness->Check(replay_index.rows.size() == surface_registry.rows.size(),
                  "replay index/surface registry row count mismatch");
-  harness->Check(replay_index.rows.size() == operation_matrix.rows.size(),
-                 "replay index/operation matrix row count mismatch");
+  harness->Check(replay_index.rows.size() == release_declaration.rows.size(),
+                 "replay index/release declaration row count mismatch");
 
   std::map<std::string, std::size_t> route_counts;
   std::set<std::string> index_fixture_ids;
@@ -502,6 +507,20 @@ void ValidateReplayIndex(const CsvTable& replay_index,
     harness->Check(Contains(Field(row, "expected_payload_json"), "#" + fixture_id),
                    context + " payload reference does not anchor fixture id");
 
+    const auto release_it = release_by_surface.find(surface_id);
+    harness->Check(release_it != release_by_surface.end(),
+                   context + " missing release declaration row");
+    const std::string final_status =
+        release_it == release_by_surface.end()
+            ? std::string()
+            : std::string(Field(*release_it->second, "final_status"));
+    harness->Check(final_status == "e2e_passed" ||
+                       final_status == "exact_refusal_passed" ||
+                       final_status == "cluster_provider_route_passed",
+                   context + " has unsupported release final status");
+    harness->Check(Contains(Field(row, "expected_server_result"), final_status),
+                   context + " server result is not bound to release evidence");
+
     const auto route_names = Split(Field(row, "route_set"), ';');
     const std::set<std::string> route_set(route_names.begin(), route_names.end());
     harness->Check(route_set.contains(std::string(Field(row, "primary_route"))),
@@ -517,10 +536,8 @@ void ValidateReplayIndex(const CsvTable& replay_index,
                      context + " references missing route " + route);
     }
 
-    const bool active_native =
-        Field(row, "source_status") == "native_now" &&
-        Field(row, "cluster_scope") != "cluster_private";
-    if (active_native) {
+    const bool executable = final_status == "e2e_passed";
+    if (executable) {
       for (const auto& route :
            {"udr_sql_to_sblr", "engine_behavior", "full_route"}) {
         harness->Check(route_set.contains(route),
@@ -528,10 +545,23 @@ void ValidateReplayIndex(const CsvTable& replay_index,
       }
       harness->Check(Contains(Field(row, "expected_engine_effect"), "execute-sblr") &&
                          Contains(Field(row, "expected_engine_effect"), "no-sql-text"),
-                     context + " active native engine effect is not SBLR-only");
+                     context + " released executable engine effect is not SBLR-only");
     } else {
       harness->Check(Contains(Field(row, "expected_engine_effect"), "no-engine-mutation"),
                      context + " refusal/profile fixture must not mutate engine");
+      harness->Check(!route_set.contains("engine_behavior") &&
+                         !route_set.contains("full_route") &&
+                         !route_set.contains("udr_sql_to_sblr"),
+                     context + " refusal/profile fixture exposes execution routes");
+      if (final_status == "exact_refusal_passed") {
+        harness->Check(Field(row, "expected_engine_effect") ==
+                           "no-engine-mutation-exact-refusal",
+                       context + " exact refusal effect is not exact");
+      } else if (final_status == "cluster_provider_route_passed") {
+        harness->Check(Field(row, "expected_engine_effect") ==
+                           "no-engine-mutation;exact-refusal-or-profile-gate",
+                       context + " cluster-provider effect is not exact");
+      }
     }
     if (reference_native_names.contains(std::string(Field(row, "canonical_name")))) {
       harness->Check(route_set.contains("reference_alias"),
@@ -542,19 +572,16 @@ void ValidateReplayIndex(const CsvTable& replay_index,
     const auto membership_it = membership_by_surface.find(surface_id);
     const auto backlog_it = backlog_by_surface.find(surface_id);
     const auto registry_it = registry_by_surface.find(surface_id);
-    const auto operation_it = operation_by_surface.find(surface_id);
     harness->Check(oracle_it != oracle_by_surface.end(), context + " missing oracle row");
     harness->Check(membership_it != membership_by_surface.end(),
                    context + " missing membership row");
     harness->Check(backlog_it != backlog_by_surface.end(), context + " missing backlog row");
     harness->Check(registry_it != registry_by_surface.end(), context + " missing registry row");
-    harness->Check(operation_it != operation_by_surface.end(),
-                   context + " missing operation matrix row");
     if (oracle_it == oracle_by_surface.end() ||
         membership_it == membership_by_surface.end() ||
         backlog_it == backlog_by_surface.end() ||
         registry_it == registry_by_surface.end() ||
-        operation_it == operation_by_surface.end()) {
+        release_it == release_by_surface.end()) {
       continue;
     }
 
@@ -562,7 +589,7 @@ void ValidateReplayIndex(const CsvTable& replay_index,
     const auto& member = *membership_it->second;
     const auto& backlog = *backlog_it->second;
     const auto& registry = *registry_it->second;
-    const auto& operation = *operation_it->second;
+    const auto& release = *release_it->second;
     harness->Check(Field(row, "fixture_id") == Field(oracle, "fixture_id"),
                    context + " fixture_id mismatch with oracle");
     harness->Check(Field(row, "fixture_id") == Field(member, "validation_fixture_id"),
@@ -575,27 +602,43 @@ void ValidateReplayIndex(const CsvTable& replay_index,
       harness->Check(Field(row, column) == Field(backlog, column),
                      context + " " + std::string(column) +
                          " mismatch with surface backlog");
-      if (std::string(column) != "family" && std::string(column) != "surface_kind" &&
-          std::string(column) != "source_status") {
-        harness->Check(Field(row, column) == Field(registry, column),
-                       context + " " + std::string(column) +
-                           " mismatch with surface registry");
-      }
+      harness->Check(Field(row, column) == Field(registry, column),
+                     context + " " + std::string(column) +
+                         " mismatch with surface registry");
     }
     harness->Check(Field(row, "operation_family") == Field(backlog, "sblr_operation_family"),
                    context + " operation family mismatch with backlog");
     harness->Check(Field(row, "operation_family") == Field(registry, "sblr_operation_family"),
                    context + " operation family mismatch with registry");
-    harness->Check(Field(row, "operation_family") == Field(operation, "sblr_operation_family"),
-                   context + " operation family mismatch with operation matrix");
-    harness->Check(Field(row, "session_context") == Field(operation, "required_context"),
-                   context + " session context mismatch");
+    harness->Check(Field(row, "session_context") ==
+                       "engine-issued-session-database-transaction-security-result-authority;"
+                       "release-evidence-bound",
+                   context + " session context is not engine/release-evidence bound");
     harness->Check(Contains(Field(row, "expected_bound_shape"),
-                            Field(operation, "result_shape")),
-                   context + " bound shape lacks operation result shape");
+                            "canonical-operation-family=" +
+                                std::string(Field(registry, "sblr_operation_family"))) &&
+                       Contains(Field(row, "expected_bound_shape"),
+                                "engine-issued-descriptor-and-result-authority"),
+                   context + " bound shape lacks canonical family or engine authority");
     harness->Check(Contains(Field(row, "expected_message_vector"),
-                            Field(operation, "diagnostics")),
-                   context + " message vector lacks operation diagnostics");
+                            Field(release, "diagnostic_refs")),
+                   context + " message vector lacks release diagnostic evidence");
+    harness->Check(Field(release, "release_status") == "row_evidence_complete",
+                   context + " release evidence is incomplete");
+    for (const auto column :
+         {"fixed_uuid_v7", "canonical_name", "family", "surface_kind"}) {
+      harness->Check(Field(registry, column) == Field(release, column),
+                     context + " canonical/release " + std::string(column) +
+                         " mismatch");
+    }
+    harness->Check(Field(registry, "fixed_uuid_v7") == Field(backlog, "fixed_uuid_v7") &&
+                       Field(registry, "fixed_uuid_v7") == Field(member, "fixed_uuid_v7"),
+                   context + " canonical UUID differs across evidence joins");
+    harness->Check(Field(registry, "batch_id") == Field(member, "batch_id") &&
+                       Field(registry, "ctest_label") == Field(member, "ctest_label") &&
+                       Field(registry, "validation_fixture_id") ==
+                           Field(member, "validation_fixture_id"),
+                   context + " canonical membership identity drifted");
     harness->Check(Field(row, "oracle_type") == Field(oracle, "oracle_type"),
                    context + " oracle type mismatch");
     harness->Check(Field(row, "oracle_source") == Field(oracle, "oracle_source"),
@@ -607,6 +650,9 @@ void ValidateReplayIndex(const CsvTable& replay_index,
     harness->Check(Field(row, "expected_result_summary") ==
                        Field(oracle, "expected_result_summary"),
                    context + " expected result summary mismatch");
+    harness->Check(Field(oracle, "oracle_source") == Field(registry, "canonical_spec") &&
+                       Field(oracle, "oracle_type") == Field(registry, "oracle_key"),
+                   context + " oracle evidence differs from canonical registry");
   }
 
   for (const auto& required :
@@ -648,12 +694,33 @@ int main(int argc, char** argv) {
   Harness harness;
 
   try {
+    const auto canonical_surface_registry_file =
+        std::filesystem::is_regular_file(canonicalization_root)
+            ? canonicalization_root
+            : canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv";
+    if (!std::filesystem::is_regular_file(canonical_surface_registry_file) ||
+        canonical_surface_registry_file.filename() != "SBSQL_SURFACE_REGISTRY.csv" ||
+        canonical_surface_registry_file.parent_path().filename() !=
+            "public_input_snapshot") {
+      throw std::runtime_error(
+          "canonical surface authority is not the repository snapshot file");
+    }
+    const auto repo_root = canonical_surface_registry_file.parent_path().parent_path();
+    const auto release_declaration_file =
+        repo_root /
+        "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/"
+        "SBSQL_SURFACE_RELEASE_DECLARATION.csv";
+    if (!std::filesystem::is_regular_file(release_declaration_file)) {
+      throw std::runtime_error("release declaration evidence is unavailable");
+    }
+    const auto surface_registry = ReadCsv(canonical_surface_registry_file);
+    const auto release_declaration = ReadCsv(release_declaration_file);
+    const auto reference_matrix =
+        ReadCsv(artifact_root / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv");
     const auto route_manifest =
         ReadCsv(replay_root / "DIFFERENTIAL_REPLAY_ROUTE_MANIFEST.csv");
     const auto replay_index =
         ReadCsv(replay_root / "DIFFERENTIAL_REPLAY_FIXTURE_INDEX.csv");
-    const auto reference_matrix =
-        ReadCsv(canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv");
     const auto reference_fixtures = ReadCsv(reference_fixtures_path);
     const auto reference_native_names =
         ReadReferenceNativeSurfaceNames(reference_matrix, &harness);
@@ -666,9 +733,8 @@ int main(int argc, char** argv) {
                         ReadCsv(artifact_root / "SEMANTIC_ORACLE_AUTHORITY_MAP.csv"),
                         ReadCsv(artifact_root / "BATCH_ROW_MEMBERSHIP.csv"),
                         ReadCsv(artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv"),
-                        ReadCsv(canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv"),
-                        ReadCsv(canonicalization_root /
-                                "SBSQL_TO_SBLR_OPERATION_MATRIX.csv"),
+                        surface_registry,
+                        release_declaration,
                         reference_native_names,
                         replay_root / "DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl",
                         &harness);

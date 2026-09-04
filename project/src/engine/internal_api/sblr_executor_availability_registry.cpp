@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -32,8 +33,44 @@ std::recursive_mutex& RegistryMutex() {
   return mutex;
 }
 
-std::string StorePath(const EngineRequestContext& context,
-                      const SblrExecutorAvailabilityRowIdentity& identity) {
+struct VerifiedSnapshotCacheEntry {
+  SblrExecutorAvailabilitySnapshot snapshot;
+  std::uintmax_t file_size{0};
+  std::filesystem::file_time_type last_write_time{};
+};
+
+std::map<std::string, VerifiedSnapshotCacheEntry>& VerifiedSnapshotCache() {
+  static std::map<std::string, VerifiedSnapshotCacheEntry> cache;
+  return cache;
+}
+
+bool ReadStoreFileIdentity(
+    const std::string& path,
+    std::uintmax_t* file_size,
+    std::filesystem::file_time_type* last_write_time) {
+  if (file_size == nullptr || last_write_time == nullptr) { return false; }
+  std::error_code error;
+  *file_size = std::filesystem::file_size(path, error);
+  if (error) { return false; }
+  *last_write_time = std::filesystem::last_write_time(path, error);
+  return !error;
+}
+
+void RememberVerifiedSnapshot(
+    const std::string& path,
+    const SblrExecutorAvailabilitySnapshot& snapshot) {
+  VerifiedSnapshotCacheEntry entry;
+  if (!ReadStoreFileIdentity(path, &entry.file_size,
+                             &entry.last_write_time)) {
+    VerifiedSnapshotCache().erase(path);
+    return;
+  }
+  entry.snapshot = snapshot;
+  VerifiedSnapshotCache()[path] = std::move(entry);
+}
+
+std::string ComputeStorePath(const EngineRequestContext& context,
+                             const SblrExecutorAvailabilityRowIdentity& identity) {
   const auto suffix = identity.executor_id == kSblrParameterExecutorId ? ".parameter" :
       identity.executor_id == kSblrVariableExecutorId ? ".variable" :
       identity.executor_id == kSblrSourceMapExecutorId ? ".source_map" :
@@ -121,8 +158,12 @@ std::string StorePath(const EngineRequestContext& context,
   const auto ddl_create_domain_suffix = identity.executor_id == kSblrDdlCreateDomainExecutorId ? ".ddl_create_domain" : system_config_set_suffix;
   const auto ddl_create_schema_suffix = identity.executor_id == kSblrDdlCreateSchemaExecutorId ? ".ddl_create_schema" : ddl_create_domain_suffix;
   const auto ddl_create_table_suffix = identity.executor_id == kSblrDdlCreateTableExecutorId ? ".ddl_create_table" : ddl_create_schema_suffix;
-  const auto ddl_create_index_suffix = identity.executor_id == kSblrDdlCreateIndexExecutorId ? ".ddl_create_index" : ddl_create_table_suffix;
-  const auto ddl_drop_index_suffix = identity.executor_id == kSblrDdlDropIndexExecutorId ? ".ddl_drop_index" : ddl_create_index_suffix;
+  const auto ddl_drop_table_suffix = identity.executor_id == kSblrDdlDropTableExecutorId ? ".ddl_drop_table" : ddl_create_table_suffix;
+  const auto ddl_create_index_suffix = identity.executor_id == kSblrDdlCreateIndexExecutorId ? ".ddl_create_index" : ddl_drop_table_suffix;
+  const auto ddl_create_trigger_suffix = identity.executor_id == kSblrDdlCreateTriggerExecutorId ? ".ddl_create_trigger" : ddl_create_index_suffix;
+  const auto ddl_alter_trigger_suffix = identity.executor_id == kSblrDdlAlterTriggerExecutorId ? ".ddl_alter_trigger" : ddl_create_trigger_suffix;
+  const auto ddl_drop_trigger_suffix = identity.executor_id == kSblrDdlDropTriggerExecutorId ? ".ddl_drop_trigger" : ddl_alter_trigger_suffix;
+  const auto ddl_drop_index_suffix = identity.executor_id == kSblrDdlDropIndexExecutorId ? ".ddl_drop_index" : ddl_drop_trigger_suffix;
   const auto ddl_drop_synonym_suffix = identity.executor_id == kSblrDdlDropSynonymExecutorId ? ".ddl_drop_synonym" : ddl_drop_index_suffix;
   const auto ddl_drop_foreign_table_suffix = identity.executor_id == kSblrDdlDropForeignTableExecutorId ? ".ddl_drop_foreign_table" : ddl_drop_synonym_suffix;
   const auto contextual_text_literal_suffix =
@@ -133,8 +174,51 @@ std::string StorePath(const EngineRequestContext& context,
       identity.executor_id == kSblrDmlPlanImportRowsExecutorId
           ? ".dml_plan_import_rows"
           : contextual_text_literal_suffix;
+  const auto ddl_create_temporary_table_suffix =
+      identity.executor_id == kSblrDdlCreateTemporaryTableExecutorId
+          ? ".ddl_create_temporary_table"
+          : dml_plan_import_rows_suffix;
+  const auto ddl_drop_temporary_table_suffix =
+      identity.executor_id == kSblrDdlDropTemporaryTableExecutorId
+          ? ".ddl_drop_temporary_table"
+          : ddl_create_temporary_table_suffix;
   return context.database_path + ".sb.sblr_executor_availability_registry.v1" +
-         dml_plan_import_rows_suffix;
+         ddl_drop_temporary_table_suffix;
+}
+
+std::mutex& StoreSuffixCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<SblrExecutorAvailabilityRowIdentity, std::string>&
+StoreSuffixCache() {
+  static std::map<SblrExecutorAvailabilityRowIdentity, std::string> cache;
+  return cache;
+}
+
+std::string StorePath(const EngineRequestContext& context,
+                      const SblrExecutorAvailabilityRowIdentity& identity) {
+  constexpr std::string_view kStoreStem =
+      ".sb.sblr_executor_availability_registry.v1";
+  const std::string prefix = context.database_path + std::string(kStoreStem);
+  {
+    const std::lock_guard<std::mutex> guard(StoreSuffixCacheMutex());
+    const auto cached = StoreSuffixCache().find(identity);
+    if (cached != StoreSuffixCache().end()) {
+      return prefix + cached->second;
+    }
+  }
+  const std::string computed = ComputeStorePath(context, identity);
+  if (!computed.starts_with(prefix)) {
+    return computed;
+  }
+  const std::string suffix = computed.substr(prefix.size());
+  {
+    const std::lock_guard<std::mutex> guard(StoreSuffixCacheMutex());
+    StoreSuffixCache().emplace(identity, suffix);
+  }
+  return prefix + suffix;
 }
 
 void AddField(std::string* out, std::string_view key, std::string_view value) {
@@ -323,6 +407,7 @@ bool ExactDdlCreatePublicationIdentity(const SblrExecutorAvailabilityRowIdentity
 bool ExactDdlCreateDomainIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateDomainExecutorId&&r.opcode_code==1542&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateDomainOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateDomainResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateSchemaIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateSchemaExecutorId&&r.opcode_code==1536&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateSchemaOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateSchemaResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateTableExecutorId&&r.opcode_code==1537&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateTableResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropTableExecutorId&&r.opcode_code==1539&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropTableResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateIndexIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateIndexExecutorId&&r.opcode_code==1540&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateIndexOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateIndexResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropIndexIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropIndexExecutorId&&r.opcode_code==1541&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropIndexOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropIndexResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropSynonymIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropSynonymExecutorId&&r.opcode_code==1575&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropSynonymOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropSynonymResultDescriptorId&&r.result_descriptor_version==1;}
@@ -330,6 +415,8 @@ bool ExactDdlDropForeignTableIdentity(const SblrExecutorAvailabilityRowIdentity&
 bool ExactDdlCreateFdwIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateFdwExecutorId&&r.opcode_code==1578&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateFdwOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateFdwResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropFdwIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropFdwExecutorId&&r.opcode_code==1579&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropFdwOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropFdwResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactSecurityCreateUserIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrSecurityCreateUserExecutorId&&r.opcode_code==1792&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrSecurityCreateUserOperandDescriptorId&&r.result_descriptor_id==kSblrSecurityCreateUserResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactSecurityDropRoleIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id=="engine.op.sec_drop_role"&&r.opcode_code==1801&&r.opcode_version=="1.0"&&r.operand_descriptor_id=="drop_role_descriptor"&&r.result_descriptor_id=="security_result"&&r.result_descriptor_version==1;}
+bool ExactSecurityCreateRoleIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id=="engine.op.sec_create_role"&&r.opcode_code==1794&&r.opcode_version=="1.0"&&r.operand_descriptor_id=="create_role_descriptor"&&r.result_descriptor_id=="security_result"&&r.result_descriptor_version==1;}
 bool ExactDdlAlterDomainIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterDomainExecutorId&&r.opcode_code==1547&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterDomainOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterDomainResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateViewExecutorId&&r.opcode_code==1548&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateViewResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlAlterViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterViewExecutorId&&r.opcode_code==1549&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterViewResultDescriptorId&&r.result_descriptor_version==1;}
@@ -343,7 +430,7 @@ bool ExactDdlCreateFunctionIdentity(const SblrExecutorAvailabilityRowIdentity&r)
 bool ExactDdlAlterFunctionIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterFunctionExecutorId&&r.opcode_code==1558&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterFunctionOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterFunctionResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropFunctionIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropFunctionExecutorId&&r.opcode_code==1559&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropFunctionOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropFunctionResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreatePackageIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreatePackageExecutorId&&r.opcode_code==1560&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreatePackageOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreatePackageResultDescriptorId&&r.result_descriptor_version==1;}
-bool ExactDdlDropTemporaryTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropTemporaryTableExecutorId&&r.opcode_code==1562&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropTemporaryTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropTemporaryTableResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropTemporaryTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropTemporaryTableExecutorId&&r.opcode_code==1613&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropTemporaryTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropTemporaryTableResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateTemporaryTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateTemporaryTableExecutorId&&r.opcode_code==1612&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateTemporaryTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateTemporaryTableResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlRenameObjectVectorIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlRenameObjectVectorExecutorId&&r.opcode_code==1563&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlRenameObjectVectorOperandDescriptorId&&r.result_descriptor_id==kSblrDdlRenameObjectVectorResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlRenameObjectIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlRenameObjectExecutorId&&r.opcode_code==1572&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlRenameObjectOperandDescriptorId&&r.result_descriptor_id==kSblrDdlRenameObjectResultDescriptorId&&r.result_descriptor_version==1;}
@@ -383,7 +470,8 @@ bool ExactDmlCounterAddIdentity(const SblrExecutorAvailabilityRowIdentity&r){ret
 bool ExactDdlTimeseriesSeriesCardinalityPolicyIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyExecutorId&&r.opcode_code==1649&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyOperandDescriptorId&&r.result_descriptor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateTimeseriesValueCacheIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateTimeseriesValueCacheExecutorId&&r.opcode_code==1650&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateTimeseriesValueCacheOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateTimeseriesValueCacheResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropViewExecutorId&&r.opcode_code==1550&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropViewResultDescriptorId&&r.result_descriptor_version==1;}
-bool ExactAdmittedIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+bool ExactAdmittedIdentityLinear(
+    const SblrExecutorAvailabilityRowIdentity& row) {
   if (ExactDatabaseSerializeLogicalSnapshotIdentity(row)) return true;
   if (ExactDatabaseDeserializeLogicalSnapshotIdentity(row)) return true;
   if (ExactDdlCreateMacroIdentity(row)) return true;
@@ -407,6 +495,8 @@ bool ExactAdmittedIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
   if (ExactDdlCreateFdwIdentity(row)) return true;
   if (ExactDdlDropFdwIdentity(row)) return true;
   if (ExactSecurityCreateUserIdentity(row)) return true;
+  if (ExactSecurityDropRoleIdentity(row)) return true;
+  if (ExactSecurityCreateRoleIdentity(row)) return true;
   if (row.executor_id == kSblrSecurityAlterUserExecutorId && row.opcode_code == kSblrSecurityAlterUserOpcodeCode && row.opcode_version == kSblrSecurityAlterUserOpcodeVersion && row.operand_descriptor_id == kSblrSecurityAlterUserOperandDescriptorId && row.result_descriptor_id == kSblrSecurityAlterUserResultDescriptorId && row.result_descriptor_version == kSblrSecurityAlterUserResultDescriptorVersion) return true;
   if (ExactSystemConfigGetIdentity(row)) return true;
   if (ExactSystemConfigResetIdentity(row)) return true;
@@ -417,9 +507,46 @@ bool ExactAdmittedIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
          ExactContextualTextLiteralIdentity(row) ||
          ExactParameterIdentity(row) ||
          ExactVariableIdentity(row) || ExactSourceMapIdentity(row) ||
-         ExactErrorVectorIdentity(row) || ExactDdlCreateProcedureIdentity(row) || ExactDdlDropProcedureIdentity(row) || ExactSequenceSetvalIdentity(row) || ExactQueryNumericIdentity(row) || ExactAdvancedDatatypeFamilyIdentity(row) || ExactProjectIdentity(row) || ExactAggregateIdentity(row) || ExactGroupIdentity(row) || ExactSortIdentity(row) || ExactLimitIdentity(row) || ExactWindowIdentity(row) || ExactReturnResultSetIdentity(row) || ExactKvStructuredReadIdentity(row) || ExactKvStructuredMutateIdentity(row) || ExactKvStructuredScanIdentity(row) || ExactKvStructuredStreamReadIdentity(row) || ExactKvStructuredStreamAppendIdentity(row) || ExactKvStructuredTimeseriesIdentity(row) || ExactSystemConfigSetIdentity(row) || ExactDdlCreateDomainIdentity(row) || ExactDdlCreateSchemaIdentity(row) || ExactDdlCreateTableIdentity(row) || ExactDdlCreateIndexIdentity(row) || ExactDdlAlterDomainIdentity(row) || ExactDdlCreateViewIdentity(row) || ExactDdlAlterViewIdentity(row) || ExactDdlDropViewIdentity(row) || ExactDdlCreateTriggerIdentity(row) || ExactDdlAlterTriggerIdentity(row) || ExactDdlDropTriggerIdentity(row) || ExactDdlDropIndexIdentity(row) || ExactDdlDropSynonymIdentity(row) || ExactTxnBeginIdentity(row) ||
+         ExactErrorVectorIdentity(row) || ExactDdlCreateProcedureIdentity(row) || ExactDdlDropProcedureIdentity(row) || ExactSequenceSetvalIdentity(row) || ExactQueryNumericIdentity(row) || ExactAdvancedDatatypeFamilyIdentity(row) || ExactProjectIdentity(row) || ExactAggregateIdentity(row) || ExactGroupIdentity(row) || ExactSortIdentity(row) || ExactLimitIdentity(row) || ExactWindowIdentity(row) || ExactReturnResultSetIdentity(row) || ExactKvStructuredReadIdentity(row) || ExactKvStructuredMutateIdentity(row) || ExactKvStructuredScanIdentity(row) || ExactKvStructuredStreamReadIdentity(row) || ExactKvStructuredStreamAppendIdentity(row) || ExactKvStructuredTimeseriesIdentity(row) || ExactSystemConfigSetIdentity(row) || ExactDdlCreateDomainIdentity(row) || ExactDdlCreateSchemaIdentity(row) || ExactDdlCreateTableIdentity(row) || ExactDdlDropTableIdentity(row) || ExactDdlCreateIndexIdentity(row) || ExactDdlAlterDomainIdentity(row) || ExactDdlCreateViewIdentity(row) || ExactDdlAlterViewIdentity(row) || ExactDdlDropViewIdentity(row) || ExactDdlCreateTriggerIdentity(row) || ExactDdlAlterTriggerIdentity(row) || ExactDdlDropTriggerIdentity(row) || ExactDdlDropIndexIdentity(row) || ExactDdlDropSynonymIdentity(row) || ExactTxnBeginIdentity(row) ||
          ExactDdlCreateFunctionIdentity(row) || ExactDdlAlterFunctionIdentity(row) || ExactDdlDropFunctionIdentity(row) || ExactDdlCreatePackageIdentity(row) || ExactDdlCreateTemporaryTableIdentity(row) || ExactDdlDropTemporaryTableIdentity(row) || ExactDdlRenameObjectVectorIdentity(row) || ExactDdlRenameObjectIdentity(row) || ExactDdlCreateOrReplaceSrsIdentity(row) || ExactDdlDropSrsIdentity(row) || ExactDdlCreateRewriteRuleIdentity(row) || ExactDdlAlterRewriteRuleIdentity(row) || ExactDdlDropRewriteRuleIdentity(row) || ExactDdlValidateConstraintIdentity(row) || ExactSecurityCreatePrivilegeTemplateIdentity(row) || ExactSecurityAlterPrivilegeTemplateIdentity(row) || ExactSecurityDropPrivilegeTemplateIdentity(row) || ExactDatabaseCreateTemplateCloneIdentity(row) || ExactDdlCreateAggregateIdentity(row) || ExactDdlAlterAggregateIdentity(row) || ExactDdlDropAggregateIdentity(row) || ExactDdlPurgeSystemHistoryIdentity(row) || ExactDdlSetIndexOptimizerEligibilityIdentity(row) || ExactDdlSetTableTypeEnforcementIdentity(row) || ExactTxnCommitIdentity(row) || ExactTxnRollbackIdentity(row) ||
          ExactTxnSavepointIdentity(row) || ExactTxnReleaseSavepointIdentity(row) || ExactTxnRollbackToSavepointIdentity(row) || ExactPsqlAutonomousFrameIdentity(row) || ExactReservationReleaseIdentity(row) || ExactTemporaryInstanceCleanupIdentity(row) || ExactCursorOpenIdentity(row) || ExactCursorFetchIdentity(row) || ExactCursorCloseIdentity(row) || ExactReadByKeyIdentity(row) || ExactReadRangeIdentity(row) || ExactReadStreamIdentity(row) || ExactResultSetPassIdentity(row) || ExactAccessCursorOpenIdentity(row) || ExactAccessCursorFetchIdentity(row) || ExactAccessCursorCloseIdentity(row) || ExactInsertIdentity(row) || ExactUpdateIdentity(row) || ExactDmlUpdateRowsIdentity(row) || ExactDmlPlanImportRowsIdentity(row) || ExactDeleteIdentity(row) || ExactMergeIdentity(row) || ExactTableTruncateIdentity(row) || ExactTableAnalyzeIdentity(row) || ExactBulkImportStreamIdentity(row) || ExactBulkExportStreamIdentity(row) || ExactStatementBatchIdentity(row) || ExactAtomicCasIdentity(row) || ExactAtomicRmwIdentity(row) || ExactAdvisoryLockIdentity(row) || ExactAdvisoryLockReleaseIdentity(row) || ExactFunctionCallIdentity(row) || ExactOperatorCallIdentity(row) || ExactCastIdentity(row) || ExactCompareIdentity(row) || ExactDomainOperationIdentity(row) || ExactUdrInvokeIdentity(row) || ExactProcedureInvokeIdentity(row) || ExactFunctionInvokeIdentity(row) || ExactAggregateInvokeIdentity(row) || ExactSequenceNextvalIdentity(row) || ExactSequenceCurrvalIdentity(row);
+}
+
+bool SameExecutorAvailabilityIdentity(
+    const SblrExecutorAvailabilityRowIdentity& lhs,
+    const SblrExecutorAvailabilityRowIdentity& rhs) {
+  return lhs.executor_id == rhs.executor_id &&
+         lhs.opcode_code == rhs.opcode_code &&
+         lhs.opcode_version == rhs.opcode_version &&
+         lhs.operand_descriptor_id == rhs.operand_descriptor_id &&
+         lhs.result_descriptor_id == rhs.result_descriptor_id &&
+         lhs.result_descriptor_version == rhs.result_descriptor_version;
+}
+
+std::mutex& AdmittedIdentityIndexMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::set<SblrExecutorAvailabilityRowIdentity>& AdmittedIdentityIndex() {
+  static std::set<SblrExecutorAvailabilityRowIdentity> index;
+  return index;
+}
+
+bool ExactAdmittedIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  {
+    const std::lock_guard<std::mutex> guard(AdmittedIdentityIndexMutex());
+    const auto indexed = AdmittedIdentityIndex().find(row);
+    if (indexed != AdmittedIdentityIndex().end()) {
+      return true;
+    }
+  }
+  if (!ExactAdmittedIdentityLinear(row)) {
+    return false;
+  }
+  const std::lock_guard<std::mutex> guard(AdmittedIdentityIndexMutex());
+  AdmittedIdentityIndex().emplace(row);
+  return true;
 }
 
 std::string StateName(SblrExecutorAvailabilityState state) {
@@ -677,15 +804,17 @@ SblrExecutorAvailabilityLoadResult BootstrapLocked(
                                : "bootstrap.admitted_literal.v1";
   pair.snapshot.decision_evidence_sha256 = Sha256(DecisionPayload(
       pair.snapshot.database_uuid, {}, 0, pair.snapshot, pair.reason_code));
+  const std::string path = StorePath(context, identity);
   if (pair.snapshot.snapshot_uuid.empty() ||
       pair.snapshot.row_identity_sha256.empty() ||
       pair.snapshot.decision_evidence_sha256.empty() ||
-      !PublishPair(StorePath(context, identity), pair)) {
+      !PublishPair(path, pair)) {
     result.diagnostic = RegistryDiagnostic(
         "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
         "sblr.executor_registry.bootstrap_failed", "durable bootstrap failed");
     return result;
   }
+  RememberVerifiedSnapshot(path, pair.snapshot);
   result.ok = true;
   result.snapshot = pair.snapshot;
   result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
@@ -709,7 +838,38 @@ SblrExecutorAvailabilityLoadResult LoadLocked(
     return result;
   }
   if (!exists) {
+    VerifiedSnapshotCache().erase(path);
     return allow_bootstrap ? BootstrapLocked(context, identity) : result;
+  }
+  std::uintmax_t file_size{0};
+  std::filesystem::file_time_type last_write_time;
+  if (!ReadStoreFileIdentity(path, &file_size, &last_write_time)) {
+    VerifiedSnapshotCache().erase(path);
+    result.diagnostic = RegistryDiagnostic(
+        "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+        "sblr.executor_registry.torn_or_missing_evidence", "fail closed");
+    return result;
+  }
+  const auto cached = VerifiedSnapshotCache().find(path);
+  if (cached != VerifiedSnapshotCache().end()) {
+    const auto expected_row_identity =
+        ComputeSblrExecutorAvailabilityRowIdentitySha256(identity);
+    if (cached->second.file_size == file_size &&
+        cached->second.last_write_time == last_write_time &&
+        cached->second.snapshot.database_uuid ==
+            context.database_uuid.canonical &&
+        cached->second.snapshot.row_identity_sha256 == expected_row_identity) {
+      result.ok = true;
+      result.snapshot = cached->second.snapshot;
+      result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
+      return result;
+    }
+    if (cached->second.file_size != file_size ||
+        cached->second.last_write_time != last_write_time ||
+        cached->second.snapshot.database_uuid !=
+            context.database_uuid.canonical) {
+      VerifiedSnapshotCache().erase(cached);
+    }
   }
   std::ifstream input(path, std::ios::binary);
   std::vector<std::string> lines;
@@ -767,6 +927,7 @@ SblrExecutorAvailabilityLoadResult LoadLocked(
   result.ok = true;
   result.snapshot = prior;
   result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
+  RememberVerifiedSnapshot(path, result.snapshot);
   return result;
 }
 
@@ -803,7 +964,6 @@ SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
 SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
     const EngineRequestContext& context,
     const SblrExecutorAvailabilityRowIdentity& exact_row_identity) {
-  std::lock_guard<std::recursive_mutex> guard(RegistryMutex());
   if (!ExactAdmittedIdentity(exact_row_identity)) {
     SblrExecutorAvailabilityLoadResult result;
     result.diagnostic = RegistryDiagnostic(
@@ -811,7 +971,92 @@ SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
         "exact admitted executor row required");
     return result;
   }
+  if (context.statement_executor_availability_cohort != nullptr) {
+    const auto& cohort = *context.statement_executor_availability_cohort;
+    if (cohort.database_path != context.database_path ||
+        cohort.database_uuid != context.database_uuid.canonical ||
+        cohort.statement_uuid.empty() ||
+        cohort.statement_uuid != context.statement_uuid.canonical) {
+      SblrExecutorAvailabilityLoadResult result;
+      result.diagnostic = RegistryDiagnostic(
+          "SBLR.OPCODE.EXECUTOR_EVIDENCE_STALE",
+          "sblr.executor_registry.statement_cohort_stale",
+          "statement executor availability cohort identity changed");
+      return result;
+    }
+    const auto indexed =
+        cohort.row_by_exact_identity.find(exact_row_identity);
+    if (indexed != cohort.row_by_exact_identity.end()) {
+      if (indexed->second >= cohort.identities.size() ||
+          indexed->second >= cohort.rows.size() ||
+          !SameExecutorAvailabilityIdentity(
+              cohort.identities[indexed->second], exact_row_identity)) {
+        SblrExecutorAvailabilityLoadResult result;
+        result.diagnostic = RegistryDiagnostic(
+            "SBLR.OPERAND_INVALID",
+            "sblr.executor_registry.statement_cohort_tuple_mismatch",
+            "exact statement executor tuple changed");
+        return result;
+      }
+      return cohort.rows[indexed->second];
+    }
+  }
+  std::lock_guard<std::recursive_mutex> guard(RegistryMutex());
   return LoadLocked(context, exact_row_identity, true);
+}
+
+SblrExecutorAvailabilityBatchLoadResult LoadSblrExecutorAvailabilitySnapshots(
+    const EngineRequestContext& context,
+    const std::span<const SblrExecutorAvailabilityRowIdentity>
+        exact_row_identities) {
+  SblrExecutorAvailabilityBatchLoadResult result;
+  result.rows.reserve(exact_row_identities.size());
+  if (exact_row_identities.empty()) {
+    result.diagnostic = RegistryDiagnostic(
+        "SBLR.OPERAND_INVALID", "sblr.executor_registry.batch_empty",
+        "one or more exact admitted executor rows are required");
+    return result;
+  }
+  std::set<SblrExecutorAvailabilityRowIdentity> unique_rows;
+  for (const auto& identity : exact_row_identities) {
+    if (!ExactAdmittedIdentity(identity)) {
+      result.diagnostic = RegistryDiagnostic(
+          "SBLR.OPERAND_INVALID", "sblr.executor_registry.row_invalid",
+          "exact admitted executor row required");
+      return result;
+    }
+    unique_rows.emplace(identity);
+  }
+
+  const std::lock_guard<std::recursive_mutex> guard(RegistryMutex());
+  bool complete = true;
+  for (const auto& identity : exact_row_identities) {
+    auto loaded = LoadLocked(context, identity, true);
+    if (!loaded.ok && complete) {
+      result.diagnostic = loaded.diagnostic;
+      complete = false;
+    }
+    result.rows.push_back(std::move(loaded));
+  }
+  result.ok = complete;
+  if (result.ok) {
+    result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
+  }
+  if (!context.statement_uuid.canonical.empty()) {
+    auto cohort =
+        std::make_shared<SblrExecutorAvailabilityStatementCohort>();
+    cohort->database_path = context.database_path;
+    cohort->database_uuid = context.database_uuid.canonical;
+    cohort->statement_uuid = context.statement_uuid.canonical;
+    cohort->identities.assign(exact_row_identities.begin(),
+                              exact_row_identities.end());
+    cohort->rows = result.rows;
+    for (std::size_t index = 0; index < cohort->identities.size(); ++index) {
+      cohort->row_by_exact_identity.emplace(cohort->identities[index], index);
+    }
+    result.cohort = std::move(cohort);
+  }
+  return result;
 }
 
 SblrExecutorAvailabilityLoadResult
@@ -884,14 +1129,16 @@ SblrExecutorAvailabilitySetResult SetSblrExecutorAvailability(
   next.snapshot.decision_evidence_sha256 = Sha256(DecisionPayload(
       request.database_uuid, next.prior_snapshot_uuid, next.prior_generation,
       next.snapshot, next.reason_code));
+  const std::string path = StorePath(context, request.exact_row_identity);
   if (next.snapshot.snapshot_uuid.empty() ||
       next.snapshot.decision_evidence_sha256.empty() ||
-      !PublishPair(StorePath(context, request.exact_row_identity), next)) {
+      !PublishPair(path, next)) {
     result.diagnostic = RegistryDiagnostic(
         "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
         "sblr.executor_registry.publish_failed", "durable evidence or snapshot failed");
     return result;
   }
+  RememberVerifiedSnapshot(path, next.snapshot);
   result.ok = true;
   result.snapshot = next.snapshot;
   result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);

@@ -157,6 +157,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
     parser.add_argument("--ipc-tester", required=True)
+    parser.add_argument("--database-seeder", required=True)
     parser.add_argument("--work-dir", required=True)
     parsed = parser.parse_args()
     parsed.work = live.make_work_dir(Path(parsed.work_dir))
@@ -164,11 +165,18 @@ def main() -> int:
     server: subprocess.Popen[bytes] | None = None
     try:
         database = parsed.work / "agent-thread-runtime.sbdb"
-        live.write_live_auth_fixture(database)
+        seeded = subprocess.run(
+            [parsed.database_seeder, str(database), "alice", live.PASSWORD],
+            stdout=(parsed.work / "database_seed.out").open("wb"),
+            stderr=(parsed.work / "database_seed.err").open("wb"),
+            check=False,
+        )
+        require(seeded.returncode == 0 and database.is_file(),
+                f"approved_database_seed_failed:{seeded.returncode}")
         control_dir = parsed.work / "sc"
         endpoint = control_dir / "s.sock"
         server = live.start_server(
-            parsed, database, control_dir, parsed.work / "sr", endpoint, "agent_threads", True
+            parsed, database, control_dir, parsed.work / "sr", endpoint, "agent_threads", False
         )
         status_path = control_dir / "sb_server.agent_runtime.json"
         pre_client = wait_for_status(

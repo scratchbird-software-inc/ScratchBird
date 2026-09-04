@@ -21,6 +21,7 @@
 #include "uuid.hpp"
 
 #include "../canonical_sblr_admission_test_helper.hpp"
+#include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -247,11 +248,23 @@ void CommitFixture(Fixture* fixture) {
                                                fixture->typed_local_transaction_id,
                                                1790700000100);
   Require(committed.ok(), "local transaction commit failed");
-  fixture->inventory = std::move(committed.inventory);
+  const auto reopen_transaction_uuid =
+      uuid::GenerateEngineIdentityV7(UuidKind::transaction, 1790700000101);
+  Require(reopen_transaction_uuid.ok(),
+          "reopen transaction UUID generation failed");
+  auto reopened = txn::BeginLocalTransaction(std::move(committed.inventory),
+                                             reopen_transaction_uuid.value,
+                                             1790700000102);
+  Require(reopened.ok(), "reopen transaction begin failed");
+  fixture->inventory = std::move(reopened.inventory);
+  fixture->transaction_uuid =
+      uuid::UuidToString(reopen_transaction_uuid.value.value);
+  fixture->local_transaction_id = reopened.entry.identity.local_id.value;
+  fixture->typed_local_transaction_id = reopened.entry.identity.local_id;
   Require(db::PersistLocalTransactionInventoryToDatabase(fixture->path.string(),
                                                          fixture->inventory)
               .ok(),
-          "committed transaction inventory persist failed");
+          "reopen transaction inventory persist failed");
 }
 
 std::string AdmissionFrame(std::string operation_id, std::string family) {
@@ -278,38 +291,69 @@ void RequireParserUnionGrammar() {
 }
 
 void RequireAdmissionAndOpcodeRegistry() {
-  struct Route {
-    std::string operation_id;
-    std::string family;
-    std::string opcode;
-  };
-  const Route routes[] = {
-      {"ddl.create_schema", "sblr.catalog.mutation.v3",
-       "SBLR_DDL_CREATE_SCHEMA"},
-      {"ddl.alter_object", "sblr.catalog.mutation.v3",
-       "SBLR_DDL_ALTER_OBJECT"},
-      {"ddl.drop_object", "sblr.catalog.mutation.v3",
-       "SBLR_DDL_DROP_OBJECT"},
-      {"ddl.constraint.drop", "sblr.catalog.mutation.v3",
-       "SBLR_DDL_CONSTRAINT_DROP"},
-      {"lifecycle.drop_database", "sblr.database.management.v3",
-       "SBLR_LIFECYCLE_DROP_DATABASE"},
-  };
-  for (const auto& route : routes) {
-    const auto* entry = sblr::LookupSblrOperation(route.operation_id);
-    Require(entry != nullptr, "DDL/catalog opcode registry row missing");
-    Require(entry->opcode == route.opcode, "DDL/catalog opcode drifted");
-    Require(entry->requires_security_context,
-            "DDL/catalog route must require security context");
-    const auto admitted = server::AdmitServerSblrEnvelope(
-        scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
-            route.operation_id, route.opcode));
-    Require(admitted.admitted, "server admission rejected DDL/catalog route");
-    Require(admitted.requires_public_abi_dispatch,
-            "DDL/catalog route did not require public ABI dispatch");
-    Require(admitted.operation_id == route.operation_id,
-            "server admission operation id drifted");
+  constexpr std::string_view kCreateSchemaOperation =
+      "engine.op.ddl_create_schema";
+  constexpr std::string_view kCreateSchemaOpcode = "SBLR_DDL_CREATE_SCHEMA";
+  const auto* create_schema =
+      sblr::LookupSblrOperation(kCreateSchemaOperation);
+  Require(create_schema != nullptr,
+          "CREATE SCHEMA opcode registry row missing");
+  Require(create_schema->opcode == kCreateSchemaOpcode &&
+              create_schema->code == 1536 &&
+              create_schema->operand_contract == "create_schema_descriptor" &&
+              create_schema->result_contract == "ddl_result" &&
+              create_schema->requires_security_context,
+          "CREATE SCHEMA canonical registry tuple drifted");
+
+  sblr::SblrDdlCreateSchemaDescriptorV1 descriptor;
+  descriptor.body[0] = 1;
+  descriptor.availability = 1;
+  auto operation = sblr::MakeSblrEnvelope(
+      std::string(kCreateSchemaOperation), std::string(kCreateSchemaOpcode),
+      "ddl-catalog-gap-create-schema");
+  operation.result_shape = "ddl_result";
+  operation.diagnostic_shape = "diagnostic_vector";
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "create_schema_descriptor";
+  operand.name = "schema";
+  operand.value_kind = sblr::SblrValueKind::create_schema_descriptor;
+  operand.value_body =
+      sblr::EncodeSblrDdlCreateSchemaDescriptorV1(descriptor, true);
+  Require(!operand.value_body.empty(),
+          "CREATE SCHEMA canonical descriptor construction failed");
+  operation.operands.push_back(std::move(operand));
+  const auto admitted = server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          std::move(operation)));
+  Require(admitted.admitted,
+          "server admission rejected exact CREATE SCHEMA carrier");
+  Require(admitted.requires_public_abi_dispatch,
+          "CREATE SCHEMA did not require public ABI dispatch");
+  Require(admitted.operation_id == kCreateSchemaOperation,
+          "CREATE SCHEMA admission operation id drifted");
+
+  // These symbolic rows have no Core numeric opcode, operand layout, result
+  // layout, or executor-evidence profile.  They may remain parser/catalog
+  // classifications, but must never be promoted into executable SBOPs.
+  for (const std::string_view symbolic_operation : {
+           "ddl.alter_object", "ddl.drop_object", "ddl.constraint.drop"}) {
+    const auto* entry = sblr::LookupSblrOperation(symbolic_operation);
+    Require(entry == nullptr || entry->code == 0,
+            "unallocated symbolic DDL route became executable");
   }
+
+  const auto* drop_database =
+      sblr::LookupSblrOperation("lifecycle.drop_database");
+  Require(drop_database != nullptr &&
+              drop_database->opcode == "SBLR_LIFECYCLE_DROP_DATABASE" &&
+              drop_database->code == 5142 &&
+              drop_database->operand_contract ==
+                  "lifecycle_drop_database_descriptor" &&
+              drop_database->result_contract == "lifecycle_drop_result" &&
+              drop_database->executor_evidence_required &&
+              !drop_database->executor_evidence_accepted,
+          "DROP DATABASE fail-closed registry tuple drifted");
 }
 
 void RequireCreateAndAlterSchema(api::EngineRequestContext context) {
@@ -522,8 +566,7 @@ int main() {
   RequireTopLevelDropForms(authorized);
 
   CommitFixture(&fixture);
-  authorized.snapshot_visible_through_local_transaction_id =
-      fixture.local_transaction_id;
+  authorized = Context(fixture, true);
   const auto schema = api::FindVisibleSchemaTreeRecord(
       authorized,
       std::string(kSchemaUuid),

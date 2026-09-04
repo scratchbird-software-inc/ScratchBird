@@ -1404,7 +1404,11 @@ def copy_expected_indexes(repo_root: Path, output_root: Path, roundtrip_records:
     if replay_rows:
         fieldnames = list(replay_rows[0].keys())
         with replay_index_target.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=fieldnames,
+                lineterminator="\n",
+            )
             writer.writeheader()
             for row in replay_rows:
                 copy = dict(row)

@@ -1305,6 +1305,55 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   const bool exact_ddl_drop_type = IsExactDdlDropTypeIdentity(envelope);
   const bool exact_ddl_type = exact_ddl_create_type || exact_ddl_alter_type ||
                               exact_ddl_drop_type;
+  const bool exact_ddl_create_materialized_view =
+      envelope.operation_id == "engine.op.ddl_create_materialized_view" &&
+      envelope.opcode == "SBLR_DDL_CREATE_MATERIALIZED_VIEW" &&
+      envelope.opcode_code == 1566;
+  const bool exact_bulk_import_stream =
+      envelope.operation_id == "engine.op.bulk_import_stream" &&
+      envelope.opcode == "SBLR_BULK_IMPORT_STREAM" &&
+      envelope.opcode_code == 775;
+  const bool exact_ddl_create_synonym =
+      envelope.operation_id == "engine.op.ddl_create_synonym" &&
+      envelope.opcode == "SBLR_DDL_CREATE_SYNONYM" &&
+      envelope.opcode_code == 1574;
+  const bool exact_ddl_drop_synonym =
+      envelope.operation_id == "engine.op.ddl_drop_synonym" &&
+      envelope.opcode == "SBLR_DDL_DROP_SYNONYM" &&
+      envelope.opcode_code == 1575;
+  const bool exact_txn_begin =
+      envelope.operation_id == "engine.op.txn_begin" &&
+      envelope.opcode == "SBLR_TXN_BEGIN" && envelope.opcode_code == 256;
+  const bool exact_txn_commit =
+      envelope.operation_id == "engine.op.txn_commit" &&
+      envelope.opcode == "SBLR_TXN_COMMIT" && envelope.opcode_code == 257;
+  const bool exact_txn_rollback =
+      envelope.operation_id == "engine.op.txn_rollback" &&
+      envelope.opcode == "SBLR_TXN_ROLLBACK" && envelope.opcode_code == 258;
+  const bool exact_query_numeric =
+      envelope.operation_id == "engine.op.query_apply_numeric_operation" &&
+      envelope.opcode == "SBLR_QUERY_APPLY_NUMERIC_OPERATION" &&
+      envelope.opcode_code == 1036;
+  const bool exact_advanced_datatype_family =
+      envelope.operation_id ==
+          "engine.op.query_evaluate_advanced_datatype_family" &&
+      envelope.opcode == "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY" &&
+      envelope.opcode_code == 1037;
+  const bool exact_ddl_create_trigger =
+      envelope.operation_id == "engine.op.ddl_create_trigger" &&
+      envelope.opcode == "SBLR_DDL_CREATE_TRIGGER" &&
+      envelope.opcode_code == 1551;
+  const bool exact_ddl_create_procedure =
+      envelope.operation_id == "engine.op.ddl_create_procedure" &&
+      envelope.opcode == "SBLR_DDL_CREATE_PROCEDURE" &&
+      envelope.opcode_code == 1554;
+  const bool exact_ddl_create_function =
+      envelope.operation_id == "engine.op.ddl_create_function" &&
+      envelope.opcode == "SBLR_DDL_CREATE_FUNCTION" &&
+      envelope.opcode_code == 1557;
+  const bool exact_ddl_create_executable =
+      exact_ddl_create_trigger || exact_ddl_create_procedure ||
+      exact_ddl_create_function;
   const auto fail = [&result, plan_import_rows_identity_claim](
                         std::string code, std::string message) {
     if (plan_import_rows_identity_claim && code != "SBLR.OPCODE_INVALID") {
@@ -1690,6 +1739,66 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       variable_node_references.push_back(reference);
     }
   }
+  if ((exact_txn_begin || exact_txn_commit || exact_txn_rollback) && result.ok) {
+    bool canonical_operand = false;
+    if (envelope.operands.size() == 1 &&
+        envelope.diagnostic_shape == "diagnostic_vector") {
+      const auto& operand = envelope.operands.front();
+      const bool canonical_common =
+          operand.ordinal == 1 && operand.name == "options";
+      canonical_operand =
+          (exact_txn_begin && envelope.result_shape == "transaction_handle" &&
+           canonical_common && operand.type == "transaction.begin_options" &&
+           operand.value_kind == SblrValueKind::transaction_begin_options) ||
+          (exact_txn_commit && envelope.result_shape == "commit_result" &&
+           canonical_common && operand.type == "transaction.commit.options" &&
+           operand.value_kind == SblrValueKind::transaction_commit_options) ||
+          (exact_txn_rollback && envelope.result_shape == "rollback_result" &&
+           canonical_common && operand.type == "transaction.rollback.options" &&
+           operand.value_kind == SblrValueKind::transaction_rollback_options);
+    }
+    if (!canonical_operand) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical transaction root requires one exact typed options operand");
+    }
+  }
+  if ((exact_query_numeric || exact_advanced_datatype_family) && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.operands.size() == 1 &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids) {
+      const auto& operand = envelope.operands.front();
+      std::string detail;
+      if (exact_query_numeric && envelope.result_shape == "typed_value" &&
+          operand.ordinal == 1 &&
+          operand.type == "numeric_descriptor_and_operand_values" &&
+          operand.name == "numeric_operation" &&
+          operand.value_kind == SblrValueKind::numeric_operation_descriptor) {
+        SblrQueryNumericDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrQueryNumericDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      } else if (exact_advanced_datatype_family &&
+                 envelope.result_shape == "datatype_family_evaluation" &&
+                 operand.ordinal == 1 &&
+                 operand.type ==
+                     "advanced_family_descriptor_operation_index_profile" &&
+                 operand.name == "datatype_family" &&
+                 operand.value_kind ==
+                     SblrValueKind::advanced_datatype_family_descriptor) {
+        SblrAdvancedDatatypeFamilyDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrAdvancedDatatypeFamilyDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      }
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical datatype evaluation requires one exact engine-bound "
+           "operation descriptor");
+    }
+  }
   if (exact_ddl_create_index && result.ok) {
     bool canonical_descriptor = false;
     if (envelope.operands.size() == 1) {
@@ -1712,6 +1821,50 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
     if (!canonical_descriptor) {
       fail("SBLR.OPERAND_INVALID",
            "canonical CREATE INDEX envelope or CIDO operand is invalid");
+    }
+  }
+  if (exact_ddl_create_executable && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "ddl_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      const bool canonical_common = operand.ordinal == 1;
+      std::string detail;
+      if (exact_ddl_create_trigger && canonical_common &&
+          operand.type == "create_trigger_descriptor" &&
+          operand.name == "trigger" &&
+          operand.value_kind == SblrValueKind::create_trigger_descriptor) {
+        SblrDdlCreateTriggerDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrDdlCreateTriggerDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      } else if (exact_ddl_create_procedure && canonical_common &&
+                 operand.type == "create_procedure_descriptor" &&
+                 operand.name == "procedure" &&
+                 operand.value_kind ==
+                     SblrValueKind::create_procedure_descriptor) {
+        SblrDdlCreateProcedureDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrDdlCreateProcedureDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      } else if (exact_ddl_create_function && canonical_common &&
+                 operand.type == "create_function_descriptor" &&
+                 operand.name == "function" &&
+                 operand.value_kind ==
+                     SblrValueKind::create_function_descriptor) {
+        SblrDdlCreateFunctionDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrDdlCreateFunctionDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      }
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical executable-object CREATE requires one exact "
+           "engine-bound descriptor");
     }
   }
   if (exact_ddl_type && result.ok) {
@@ -1751,6 +1904,92 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
     if (!canonical_descriptor) {
       fail("SBLR.OPERAND_INVALID",
            "canonical TYPE DDL result, diagnostic, or operation-specific "
+           "descriptor binding is invalid");
+    }
+  }
+  if (exact_ddl_create_materialized_view && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "ddl_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrDdlCreateMaterializedViewDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          operand.ordinal == 1 &&
+          operand.type == "create_materialized_view_descriptor" &&
+          operand.name == "view" &&
+          operand.value_kind ==
+              SblrValueKind::create_materialized_view_descriptor &&
+          DecodeSblrDdlCreateMaterializedViewDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail, true);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical CREATE MATERIALIZED VIEW result, diagnostic, or exact "
+           "engine-bound descriptor binding is invalid");
+    }
+  }
+  if (exact_bulk_import_stream && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "bulk_mutation_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrBulkImportStreamDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          operand.ordinal == 1 &&
+          operand.type == "bulk_import_stream_descriptor" &&
+          operand.name == "bulk_import" &&
+          operand.value_kind ==
+              SblrValueKind::bulk_import_stream_descriptor &&
+          DecodeSblrBulkImportStreamDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail, true);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical BULK IMPORT STREAM result, diagnostic, or BIRO "
+           "descriptor binding is invalid");
+    }
+  }
+  if ((exact_ddl_create_synonym || exact_ddl_drop_synonym) && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "ddl_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      const bool canonical_common =
+          operand.ordinal == 1 && operand.name == "synonym";
+      std::string detail;
+      if (exact_ddl_create_synonym && canonical_common &&
+          operand.type == "create_synonym_descriptor" &&
+          operand.value_kind == SblrValueKind::create_synonym_descriptor) {
+        SblrDdlCreateSynonymDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrDdlCreateSynonymDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      } else if (exact_ddl_drop_synonym && canonical_common &&
+                 operand.type == "drop_synonym_descriptor" &&
+                 operand.value_kind ==
+                     SblrValueKind::drop_synonym_descriptor) {
+        SblrDdlDropSynonymDescriptorV1 descriptor;
+        canonical_descriptor = DecodeSblrDdlDropSynonymDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail, true);
+      }
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical SYNONYM DDL result, diagnostic, or operation-specific "
            "descriptor binding is invalid");
     }
   }

@@ -13,8 +13,6 @@
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
-#include "sblr_dispatch.hpp"
-#include "sblr_engine_envelope.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -35,7 +33,6 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
-namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
@@ -163,6 +160,10 @@ api::EngineRequestContext BaseContext(const DatabaseFixture& fixture,
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
@@ -227,79 +228,74 @@ api::EngineColumnDefinition PrimaryKeyColumn(std::uint32_t ordinal,
   return column;
 }
 
-sblr::SblrDispatchResult DispatchCreateTable(
+api::EngineCreateTableResult CreateTableComponent(
     const api::EngineRequestContext& context,
-    api::EngineApiRequest request) {
-  constexpr std::string_view kOperation = "ddl.create_table";
-  auto envelope = sblr::MakeSblrEnvelope(
-      std::string(kOperation),
-      "SBLR_DDL_CREATE_TABLE",
-      "SBLR_COMPOSITE_KEY_AUTHORITY");
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  request.operation_id = std::string(kOperation);
+    api::EngineCreateTableRequest request) {
+  request.operation_id = "engine.op.ddl_create_table";
   request.context = context;
-  sblr::SblrDispatchRequest dispatch{context, std::move(envelope),
-                                     std::move(request)};
-  auto result = sblr::DispatchSblrOperation(std::move(dispatch));
-  if (!result.envelope_validated || !result.accepted ||
-      !result.dispatched_to_api) {
-    std::cerr << sblr::SerializeSblrDispatchResultToJson(result) << '\n';
-  }
-  Require(result.envelope_validated,
-          "composite-key SBLR envelope validation failed");
-  Require(result.accepted, "composite-key SBLR dispatch was not accepted");
-  Require(result.dispatched_to_api,
-          "composite-key SBLR dispatch did not reach engine API");
-  return result;
+  return api::EngineCreateTable(request);
 }
 
-api::EngineApiRequest TableRequest(
+api::EngineCreateTableRequest TableRequest(
     const std::string& schema_uuid,
     std::string table_name,
     std::vector<api::EngineColumnDefinition> columns,
-    std::vector<std::string> index_options) {
-  api::EngineApiRequest request;
+    std::vector<api::EngineIndexDefinition> indexes) {
+  api::EngineCreateTableRequest request;
   request.target_schema.uuid.canonical = schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.localized_names.push_back(Name(std::move(table_name)));
-  request.columns = std::move(columns);
-  request.option_envelopes = std::move(index_options);
+  request.table_names.push_back(Name(std::move(table_name)));
+  request.table_columns = std::move(columns);
+  request.table_indexes = std::move(indexes);
   return request;
 }
 
-std::vector<std::string> CompositeIndexOptions() {
-  return {
-      "table_index_count:2",
-      "table_index_0_key_count:2",
-      "table_index_0_key_0:tenant_id",
-      "table_index_0_key_1:item_id",
-      "table_index_0_constraint_kind:primary_key",
-      "table_index_0_index_name:idx_orders_tenant_item",
-      "table_index_0_constraint_name:pk_orders",
-      "table_index_1_key_count:2",
-      "table_index_1_key_0:external_id",
-      "table_index_1_key_1:region_id",
-      "table_index_1_constraint_kind:unique",
-      "table_index_1_constraint_name:uq_orders_external_region",
-  };
+api::EngineIndexDefinition IndexDefinition(
+    std::string constraint_kind,
+    std::vector<std::string> keys,
+    std::string index_name = {},
+    std::string constraint_name = {}) {
+  api::EngineIndexDefinition index;
+  index.index_kind = "btree";
+  index.key_envelopes = std::move(keys);
+  index.key_envelopes.push_back(std::move(constraint_kind));
+  if (!index_name.empty()) {
+    index.names.push_back(Name(index_name));
+  }
+  if (!constraint_name.empty() && constraint_name != index_name) {
+    auto name = Name(std::move(constraint_name));
+    if (!index.names.empty()) {
+      name.name_class = "constraint";
+      name.default_name = false;
+    }
+    index.names.push_back(std::move(name));
+  }
+  return index;
 }
 
-std::vector<std::string> OneIndexOptions(std::string kind,
-                                         std::string first_key,
-                                         std::string second_key,
-                                         std::string name) {
-  std::vector<std::string> options{
-      "table_index_count:1",
-      "table_index_0_key_count:2",
-      "table_index_0_key_0:" + std::move(first_key),
-      "table_index_0_key_1:" + std::move(second_key),
-      "table_index_0_constraint_kind:" + std::move(kind),
-      "table_index_0_constraint_name:" + std::move(name),
-  };
-  return options;
+std::vector<api::EngineIndexDefinition> CompositeIndexes() {
+  std::vector<api::EngineIndexDefinition> indexes;
+  indexes.push_back(IndexDefinition(
+      "primary_key", {"tenant_id", "item_id"},
+      "idx_orders_tenant_item", "pk_orders"));
+  indexes.push_back(IndexDefinition(
+      "unique", {"external_id", "region_id"}, {},
+      "uq_orders_external_region"));
+  return indexes;
+}
+
+std::vector<api::EngineIndexDefinition> OneIndex(
+    std::string kind,
+    std::string first_key,
+    std::string second_key,
+    std::string name) {
+  std::vector<std::string> keys;
+  keys.push_back(std::move(first_key));
+  if (!second_key.empty()) keys.push_back(std::move(second_key));
+  std::vector<api::EngineIndexDefinition> indexes;
+  indexes.push_back(IndexDefinition(std::move(kind), std::move(keys), {},
+                                    std::move(name)));
+  return indexes;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -394,153 +390,134 @@ int main() {
   RequireOk(api::EngineCreateSchema(schema),
             "composite-key schema create failed");
 
-  const auto nullable_pk = DispatchCreateTable(
+  const auto nullable_pk = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "nullable_composite_pk",
                    {Column(0, "left_key", true), Column(1, "right_key", false)},
-                   OneIndexOptions("primary_key", "left_key", "right_key",
-                                   "pk_nullable_rejected")));
-  Require(!nullable_pk.api_result.ok &&
-              HasDiagnostic(nullable_pk.api_result,
+                   OneIndex("primary_key", "left_key", "right_key",
+                            "pk_nullable_rejected")));
+  if (nullable_pk.ok ||
+      !HasDiagnostic(nullable_pk,
+                     "SB_ENGINE_API_INVALID_REQUEST",
+                     "ddl.create_table:primary_key_column_nullable:left_key")) {
+    for (const auto& diagnostic : nullable_pk.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+  }
+  Require(!nullable_pk.ok &&
+              HasDiagnostic(nullable_pk,
                             "SB_ENGINE_API_INVALID_REQUEST",
                             "ddl.create_table:primary_key_column_nullable:left_key"),
           "nullable composite primary key did not fail closed");
 
-  const auto nullable_unique = DispatchCreateTable(
+  const auto nullable_unique = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "nullable_composite_unique",
                    {Column(0, "left_key", true), Column(1, "right_key", false)},
-                   OneIndexOptions("unique", "left_key", "right_key",
-                                   "uq_nullable_rejected")));
-  Require(!nullable_unique.api_result.ok &&
-              HasDiagnostic(nullable_unique.api_result,
+                   OneIndex("unique", "left_key", "right_key",
+                            "uq_nullable_rejected")));
+  Require(!nullable_unique.ok &&
+              HasDiagnostic(nullable_unique,
                             "SB_ENGINE_API_INVALID_REQUEST",
                             "ddl.create_table:composite_unique_nullable_policy_unsupported:left_key"),
           "nullable composite UNIQUE policy did not fail closed explicitly");
 
-  const auto malformed_count = DispatchCreateTable(
+  api::EngineIndexDefinition unsupported_index;
+  unsupported_index.index_kind = "invalid_inline_table_index_descriptor";
+  unsupported_index.key_envelopes = {"key_value"};
+  const auto unsupported_profile = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
-                   "malformed_index_count",
+                   "unsupported_index_profile",
                    {Column(0, "key_value", false)},
-                   {"table_index_count:not-a-number"}));
-  Require(!malformed_count.api_result.ok &&
-              HasDiagnosticDetail(malformed_count.api_result,
-                                  "ddl.create_table:unsupported_inline_index_profile"),
-          "malformed inline-index count descriptor did not fail closed");
+                   {std::move(unsupported_index)}));
+  Require(!unsupported_profile.ok &&
+              HasDiagnosticDetail(
+                  unsupported_profile,
+                  "ddl.create_table:unsupported_inline_index_profile"),
+          "unsupported inline-index profile did not fail closed");
 
-  const auto oversized_count = DispatchCreateTable(
-      setup,
-      TableRequest(schema_uuid,
-                   "oversized_index_count",
-                   {Column(0, "key_value", false)},
-                   {"table_index_count:65"}));
-  Require(!oversized_count.api_result.ok &&
-              HasDiagnosticDetail(oversized_count.api_result,
-                                  "ddl.create_table:unsupported_inline_index_profile"),
-          "oversized inline-index count descriptor did not fail closed");
-
-  auto mixed_index_request = TableRequest(
-      schema_uuid,
-      "mixed_inline_index_representations",
-      {Column(0, "first_key", false), Column(1, "second_key", false)},
-      OneIndexOptions("unique", "first_key", "second_key", "uq_encoded"));
-  api::EngineIndexDefinition structured_index;
-  structured_index.names.push_back(Name("uq_structured"));
-  structured_index.index_kind = "btree";
-  structured_index.key_envelopes = {"first_key", "second_key", "unique"};
-  mixed_index_request.indexes.push_back(std::move(structured_index));
-  const auto mixed_index_representations =
-      DispatchCreateTable(setup, std::move(mixed_index_request));
-  Require(!mixed_index_representations.api_result.ok &&
-              HasDiagnosticDetail(mixed_index_representations.api_result,
-                                  "ddl.create_table:unsupported_inline_index_profile"),
-          "mixed structured/encoded inline-index representations were not rejected");
-
-  const auto duplicate_key_descriptor = DispatchCreateTable(
+  const auto duplicate_key_descriptor = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "duplicate_key_descriptor",
                    {Column(0, "duplicate_key", false)},
-                   OneIndexOptions("unique", "duplicate_key", "duplicate_key",
-                                   "uq_duplicate_descriptor")));
-  Require(!duplicate_key_descriptor.api_result.ok &&
-              HasDiagnostic(duplicate_key_descriptor.api_result,
+                   OneIndex("unique", "duplicate_key", "duplicate_key",
+                            "uq_duplicate_descriptor")));
+  Require(!duplicate_key_descriptor.ok &&
+              HasDiagnostic(duplicate_key_descriptor,
                             "SB_ENGINE_API_INVALID_REQUEST",
                             "ddl.create_table:inline_index_duplicate_key_column:duplicate_key"),
           "duplicate inline key-column descriptor was not rejected");
 
-  const auto multiple_primary_keys = DispatchCreateTable(
+  std::vector<api::EngineIndexDefinition> duplicate_primary_indexes;
+  duplicate_primary_indexes.push_back(
+      IndexDefinition("primary_key", {"first_key"}, {}, "pk_first"));
+  duplicate_primary_indexes.push_back(
+      IndexDefinition("primary_key", {"second_key"}, {}, "pk_second"));
+  const auto multiple_primary_keys = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "multiple_primary_keys",
                    {Column(0, "first_key", false),
                     Column(1, "second_key", false)},
-                   {"table_index_count:2",
-                    "table_index_0_key_count:1",
-                    "table_index_0_key_0:first_key",
-                    "table_index_0_constraint_kind:primary_key",
-                    "table_index_0_constraint_name:pk_first",
-                    "table_index_1_key_count:1",
-                    "table_index_1_key_0:second_key",
-                    "table_index_1_constraint_kind:primary_key",
-                    "table_index_1_constraint_name:pk_second"}));
-  Require(!multiple_primary_keys.api_result.ok &&
-              HasDiagnostic(multiple_primary_keys.api_result,
+                   std::move(duplicate_primary_indexes)));
+  Require(!multiple_primary_keys.ok &&
+              HasDiagnostic(multiple_primary_keys,
                             "SB_ENGINE_API_INVALID_REQUEST",
                             "ddl.create_table:multiple_primary_key_indexes_for_table"),
           "multiple inline primary-key indexes were not rejected");
 
-  const auto multiple_column_primary_keys = DispatchCreateTable(
+  const auto multiple_column_primary_keys = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "multiple_column_primary_keys",
                    {PrimaryKeyColumn(0, "first_key", false),
                     PrimaryKeyColumn(1, "second_key", false)},
                    {}));
-  Require(!multiple_column_primary_keys.api_result.ok &&
-              HasDiagnostic(multiple_column_primary_keys.api_result,
+  Require(!multiple_column_primary_keys.ok &&
+              HasDiagnostic(multiple_column_primary_keys,
                             "SB_ENGINE_API_INVALID_REQUEST",
                             "ddl.create_table:multiple_primary_key_indexes_for_table"),
           "multiple column-level primary-key descriptors were not rejected");
 
-  const auto column_and_inline_primary_keys = DispatchCreateTable(
+  const auto column_and_inline_primary_keys = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "column_and_inline_primary_keys",
                    {PrimaryKeyColumn(0, "first_key", false),
                     Column(1, "second_key", false)},
-                   OneIndexOptions("primary_key", "first_key", "second_key",
-                                   "pk_inline_conflict")));
-  Require(!column_and_inline_primary_keys.api_result.ok &&
-              HasDiagnostic(column_and_inline_primary_keys.api_result,
+                   OneIndex("primary_key", "first_key", "second_key",
+                            "pk_inline_conflict")));
+  Require(!column_and_inline_primary_keys.ok &&
+              HasDiagnostic(column_and_inline_primary_keys,
                             "SB_ENGINE_API_INVALID_REQUEST",
                             "ddl.create_table:multiple_primary_key_indexes_for_table"),
           "column-level and inline primary keys were not mutually exclusive");
 
-  const auto nullable_column_primary_key = DispatchCreateTable(
+  const auto nullable_column_primary_key = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "nullable_column_primary_key",
                    {PrimaryKeyColumn(0, "key_value", true)},
                    {}));
-  Require(!nullable_column_primary_key.api_result.ok &&
-              HasDiagnostic(nullable_column_primary_key.api_result,
+  Require(!nullable_column_primary_key.ok &&
+              HasDiagnostic(nullable_column_primary_key,
                             "SB_ENGINE_API_INVALID_REQUEST",
                             "ddl.create_table:primary_key_column_nullable:key_value"),
           "nullable column-level primary key did not fail closed");
 
-  const auto expression_unique_constraint = DispatchCreateTable(
+  const auto expression_unique_constraint = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "expression_unique_constraint",
                    {Column(0, "left_key", false), Column(1, "right_key", false)},
-                   OneIndexOptions("unique", "lower:left_key", "right_key",
-                                   "uq_expression_rejected")));
-  Require(!expression_unique_constraint.api_result.ok &&
-              HasDiagnosticDetail(expression_unique_constraint.api_result,
+                   OneIndex("unique", "lower:left_key", "right_key",
+                            "uq_expression_rejected")));
+  Require(!expression_unique_constraint.ok &&
+              HasDiagnosticDetail(expression_unique_constraint,
                                   "ddl.create_table:unique_constraint_requires_direct_columns"),
           "expression envelope in UNIQUE constraint was not rejected");
 
@@ -554,26 +531,23 @@ int main() {
   expression_index.index_kind = "expression";
   expression_index.key_envelopes = {"lower:expression_source",
                                     "upper:expression_source"};
-  expression_index_request.indexes.push_back(std::move(expression_index));
+  expression_index_request.table_indexes.push_back(std::move(expression_index));
   const auto expression_index_created =
-      DispatchCreateTable(setup, std::move(expression_index_request));
-  Require(expression_index_created.api_result.ok,
+      CreateTableComponent(setup, std::move(expression_index_request));
+  Require(expression_index_created.ok,
           "general expression-index behavior was misclassified as duplicate constraint keys");
 
-  auto single_unique_options = OneIndexOptions(
-      "unique", "single_key", "unused_key", "uq_single_nullable");
-  single_unique_options[1] = "table_index_0_key_count:1";
-  single_unique_options.erase(single_unique_options.begin() + 3);
-  const auto single_nullable_unique = DispatchCreateTable(
+  const auto single_nullable_unique = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "single_nullable_unique",
                    {Column(0, "single_key", true)},
-                   std::move(single_unique_options)));
-  Require(single_nullable_unique.api_result.ok,
+                   OneIndex("unique", "single_key", {},
+                            "uq_single_nullable")));
+  Require(single_nullable_unique.ok,
           "existing single-column nullable UNIQUE create behavior regressed");
 
-  const auto created = DispatchCreateTable(
+  const auto created = CreateTableComponent(
       setup,
       TableRequest(schema_uuid,
                    "orders",
@@ -581,9 +555,9 @@ int main() {
                     Column(1, "item_id", false),
                     Column(2, "external_id", false),
                     Column(3, "region_id", false)},
-                   CompositeIndexOptions()));
-  Require(created.api_result.ok, "composite-key table create failed");
-  const std::string table_uuid = created.api_result.primary_object.uuid.canonical;
+                   CompositeIndexes()));
+  Require(created.ok, "composite-key table create failed");
+  const std::string table_uuid = created.table_object.uuid.canonical;
   Require(uuid::ParseDurableEngineIdentityUuid(UuidKind::object, table_uuid).ok(),
           "table UUID was not engine-generated durable object identity");
   Commit(setup);

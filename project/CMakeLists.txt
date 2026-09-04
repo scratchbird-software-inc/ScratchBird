@@ -2985,7 +2985,14 @@ foreach(sb_engine_internal_module_target IN ITEMS
 endforeach()
 
 if(TARGET sb_engine_shared AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
-  target_link_options(sb_engine_shared PRIVATE "-Wl,--exclude-libs,ALL")
+  set(sb_engine_shared_export_map
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/engine/sbcore.exports.map")
+  target_link_options(sb_engine_shared PRIVATE
+    "-Wl,--exclude-libs,ALL"
+    "-Wl,--version-script=${sb_engine_shared_export_map}"
+  )
+  set_property(TARGET sb_engine_shared APPEND PROPERTY
+    LINK_DEPENDS "${sb_engine_shared_export_map}")
 endif()
 
 option(SB_BUILD_SB_LISTENER "Build the standalone sb_listener executable product" OFF)

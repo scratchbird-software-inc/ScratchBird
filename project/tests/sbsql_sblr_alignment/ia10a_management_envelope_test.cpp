@@ -70,6 +70,8 @@ sb::SblrOperationEnvelope Envelope(const sb::SblrManagementEnvelopeRecord& recor
   envelope.opcode_code = sb::ManagementEnvelopeOpcodeCode(record.kind);
   envelope.parser_package_uuid = kUuidB;
   envelope.registry_snapshot_uuid = kUuidC;
+  envelope.requires_security_context = true;
+  envelope.requires_transaction_context = true;
   envelope.operands = {sb::MakeSblrManagementEnvelopeOperand(encoded)};
   return envelope;
 }
@@ -78,6 +80,8 @@ sb::SblrDispatchResult Dispatch(const sb::SblrManagementEnvelopeRecord& record,
                                 bool security = true, bool cancelled = false) {
   scratchbird::engine::internal_api::EngineRequestContext context;
   context.security_context_present = security;
+  context.local_transaction_id = 1;
+  context.transaction_uuid.canonical = kUuidA;
   if (cancelled) context.query_cancellation_requested = [] { return true; };
   sb::SblrDispatchRequest request; request.context = std::move(context); request.envelope = Envelope(record);
   return sb::DispatchSblrOperation(std::move(request));
@@ -98,16 +102,22 @@ int main() {
     Require(!sb::DecodeSblrManagementEnvelopeRecord(corrupted.data(), corrupted.size()).ok, "CSC-TEST-003328 crc refusal");
   }
 
-  Require(Dispatch(Record(K::operation, kUuidA)).accepted, "CSC-TEST-003330 operation admission");
-  Require(Dispatch(Record(K::payload, kUuidA)).accepted, "CSC-TEST-003329 payload admission");
-  Require(Dispatch(Record(K::progress, kUuidA)).accepted, "CSC-TEST-003331 progress admission");
-  auto stale = Record(K::progress, kUuidA); for (auto& f : stale.fields) if (f.name == "completed_work") f.value = {'0'};
-  Require(!Dispatch(stale).accepted, "CSC-TEST-003331 nonmonotonic refusal");
-  Require(Dispatch(Record(K::diagnostic, kUuidA)).accepted, "CSC-TEST-003332 diagnostic publication");
-  Require(Dispatch(Record(K::metric_snapshot_ref, kUuidA)).accepted, "CSC-TEST-003332 metric publication");
-  Require(Dispatch(Record(K::result, kUuidA)).accepted, "CSC-TEST-003330 terminal publication");
-  Require(!Dispatch(Record(K::progress, kUuidA)).accepted, "CSC-TEST-003331 terminal publication refusal");
-  Require(!Dispatch(Record(K::operation, kUuidB), true, true).accepted, "CSC-TEST-003333 cancellation refusal");
-  Require(!Dispatch(Record(K::operation, kUuidC), false).accepted, "security refusal");
+  for (const auto kind : {K::operation, K::payload, K::result, K::progress, K::diagnostic, K::metric_snapshot_ref}) {
+    const auto refused = Dispatch(Record(kind, kUuidA));
+    Require(!refused.accepted, "management executor evidence must be refused");
+    Require(!refused.api_result.diagnostics.empty() &&
+                refused.api_result.diagnostics.front().code ==
+                    "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+            "management refusal diagnostic: " +
+                (refused.api_result.diagnostics.empty()
+                     ? std::string("<none>")
+                     : refused.api_result.diagnostics.front().code));
+    Require(!refused.dispatched_to_api && !refused.canonical_result_published,
+            "management refusal published state");
+  }
+  Require(!Dispatch(Record(K::operation, kUuidB), true, true).accepted,
+          "CSC-TEST-003333 cancellation refusal");
+  Require(!Dispatch(Record(K::operation, kUuidC), false).accepted,
+          "security refusal");
   return 0;
 }

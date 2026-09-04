@@ -672,6 +672,11 @@ std::vector<std::uint8_t> V2ExecuteResultFixture(
   }
   PutSbpsString(&payload, "typed_fixture");
   PutSbpsString(&payload, "");
+  // Canonical execute results always carry the cursor-stream descriptor
+  // trailer.  This transaction-only fixture has no cursor, so encode the
+  // exact absent-descriptor marker rather than relying on the retired
+  // trailer-less V2 shape.
+  payload.push_back(0);
   return payload;
 }
 

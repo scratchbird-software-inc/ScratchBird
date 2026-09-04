@@ -84,6 +84,40 @@ bool ExactUuid(std::string_view text) {
          scratchbird::core::uuid::UuidToString(parsed.value) == text;
 }
 
+struct ExactEncodedDescriptorFieldLookup {
+  bool well_formed = false;
+  bool present = false;
+  std::string value;
+};
+
+ExactEncodedDescriptorFieldLookup LookupExactEncodedDescriptorField(
+    const std::string_view descriptor,
+    const std::string_view requested_key) {
+  ExactEncodedDescriptorFieldLookup result;
+  if (descriptor.empty() || requested_key.empty()) return result;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string_view::npos ? std::string_view::npos
+                                             : end - start);
+    const auto equals = field.find('=');
+    if (field.empty() || equals == std::string_view::npos || equals == 0 ||
+        equals + 1 == field.size()) {
+      return {};
+    }
+    if (field.substr(0, equals) == requested_key) {
+      if (result.present) return {};
+      result.present = true;
+      result.value = std::string(field.substr(equals + 1));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  result.well_formed = true;
+  return result;
+}
+
 bool ToWireUuid(std::string_view text, wire::NarrowQueryUuid* output) {
   if (output == nullptr || !ExactUuid(text)) return false;
   const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
@@ -364,12 +398,23 @@ bool BuildProjectedSource(const EngineRequestContext& context,
   for (const auto& column : descriptor.columns) {
     ProjectedColumn projected;
     projected.descriptor = column;
+    const auto embedded_datatype_descriptor =
+        LookupExactEncodedDescriptorField(
+            column.value_descriptor.encoded_descriptor,
+            "datatype_descriptor_uuid");
+    const std::string& canonical_datatype_descriptor_uuid =
+        embedded_datatype_descriptor.present
+            ? embedded_datatype_descriptor.value
+            : column.value_descriptor.descriptor_uuid.canonical;
     const auto datatype = datatypes::LookupDatatypeTypeCodecIdentityV1(
         context.datatype_catalog_snapshot_uuid.canonical,
         context.datatype_catalog_generation,
         context.datatype_registry_generation,
-        column.value_descriptor.descriptor_uuid.canonical, 1);
-    if (datatype.ok) projected.datatype = datatype.row;
+        canonical_datatype_descriptor_uuid, 1);
+    if (embedded_datatype_descriptor.well_formed &&
+        ExactUuid(canonical_datatype_descriptor_uuid) && datatype.ok) {
+      projected.datatype = datatype.row;
+    }
 
     if (!column.charset_uuid.empty()) {
       EngineUuid uuid{column.charset_uuid};

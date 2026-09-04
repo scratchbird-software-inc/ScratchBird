@@ -357,6 +357,8 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  envelope.result_shape = "transaction_handle";
+  envelope.diagnostic_shape = "diagnostic_vector";
   sblr::SblrTransactionBeginOptionsV1 options;
   options.isolation_profile_uuid[0] = 1;
   options.isolation_profile_generation = 1;
@@ -367,7 +369,7 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   options.wait_policy = 1;
   sblr::SblrOperand operand;
   operand.ordinal = 1;
-  operand.type = "transaction.begin.options";
+  operand.type = "transaction.begin_options";
   operand.name = "options";
   operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
   operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);

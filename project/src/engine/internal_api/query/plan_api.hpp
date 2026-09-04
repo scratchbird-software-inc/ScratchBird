@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -580,6 +581,7 @@ struct CanonicalHeapOptimizerSelectedExecutionRequest {
   std::function<bool()> cancellation_requested;
   std::string execution_attempt_uuid;
   std::string transaction_effect_evidence_uuid;
+  std::shared_ptr<const PreparedMgaHeapReadAuthorityCohort> authority_cohort;
   std::optional<
       scratchbird::engine::executor::CanonicalHeapTableSampleProfile>
       table_sample_profile;

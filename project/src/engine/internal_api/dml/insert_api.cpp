@@ -1794,7 +1794,20 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
       diagnostic.detail =
           "dml.insert_rows:" + diagnostic.detail.substr(kDirectOperationPrefix.size());
     }
-    if (StartsWith(diagnostic.code, "SB-BULK-CONSTRAINT-UNIQUE-") ||
+    if (diagnostic.detail.find("bulk_unique_proof_support_index_missing") !=
+        std::string::npos) {
+      diagnostic.code = "CLI.SUPPORT_STRUCTURE_UNAVAILABLE";
+      diagnostic.message_key = "constraint.support_structure.unavailable";
+      diagnostic.detail =
+          "constraint.support_structure.unavailable:"
+          "required_unique_backing_index_missing";
+    } else if (diagnostic.detail.find("bulk_fk_proof_descriptor_invalid") !=
+               std::string::npos) {
+      diagnostic.code = "CLI.CONSTRAINT_DESCRIPTOR_INVALID";
+      diagnostic.message_key = "constraint.descriptor.invalid";
+      diagnostic.detail =
+          "constraint.descriptor.invalid:referenced_key_descriptor_missing";
+    } else if (StartsWith(diagnostic.code, "SB-BULK-CONSTRAINT-UNIQUE-") ||
         diagnostic.detail.find("bulk_unique_proof_persisted_conflict") !=
             std::string::npos ||
         diagnostic.detail.find("bulk_unique_proof_duplicate_in_batch") !=
@@ -1839,6 +1852,19 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
       continue;
     }
     result.evidence.push_back(evidence);
+    if (evidence.evidence_kind ==
+        "direct_physical_runtime_security_policy_evaluated") {
+      result.evidence.push_back(
+          {"insert_runtime_security_policy_evaluated", evidence.evidence_id});
+    } else if (evidence.evidence_kind ==
+               "direct_physical_runtime_security_policy_result") {
+      result.evidence.push_back(
+          {"insert_runtime_security_policy_result", evidence.evidence_id});
+    } else if (evidence.evidence_kind ==
+               "direct_physical_runtime_security_recheck") {
+      result.evidence.push_back(
+          {"insert_runtime_security_recheck", evidence.evidence_id});
+    }
     if (evidence.evidence_kind == "constraint_proof_store" &&
         StartsWith(evidence.evidence_id, "unique_preflight:")) {
       result.evidence.push_back(

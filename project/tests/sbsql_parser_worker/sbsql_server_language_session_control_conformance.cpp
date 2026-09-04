@@ -8,6 +8,7 @@
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "sblr_dispatch_server.hpp"
@@ -164,6 +165,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   server::ServerSessionRegistry registry;
   server::ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = session.session_uuid;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
@@ -175,6 +177,11 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.descriptor_epoch = 24;
   session.grant_epoch = 23;
   session.policy_generation = 25;
+  session.admitted_parser_package_version_major = 1;
+  session.local_transaction_id = 1;
+  session.snapshot_visible_through_local_transaction_id = 1;
+  session.transaction_uuid = "019e0a8c-f010-7000-8000-000000000018";
+  session.transaction_timestamp = "2026-09-02T00:00:00Z";
   server::ApplyRequestedLanguageProfile(&session, "en");
   *session_uuid = session.session_uuid;
   registry.sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
@@ -194,12 +201,33 @@ server::HostedEngineState MakeEngineState() {
 }
 
 sbps::Frame PrepareFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                         const std::string& encoded) {
+                         const std::string&) {
+  const auto canonical =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION");
   sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr);
+  frame.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kStmtPrepareRequest);
+  frame.header.payload_schema_id = sbps::kSchemaStmtPrepareRequestV1;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
-  frame.payload = server::EncodePrepareSblrPayloadForTest(session_uuid, encoded);
+  frame.payload.insert(frame.payload.end(), session_uuid.begin(), session_uuid.end());
+  const auto statement_uuid = sbps::MakeUuidV7Bytes();
+  frame.payload.insert(frame.payload.end(), statement_uuid.begin(), statement_uuid.end());
+  scratchbird::engine::SblrAppendU64(frame.payload, 21);
+  scratchbird::engine::SblrAppendU64(frame.payload, 22);
+  scratchbird::engine::SblrAppendU64(frame.payload, 25);
+  scratchbird::engine::SblrAppendU64(
+      frame.payload, canonical.encoded_sblr_container.size());
+  frame.payload.insert(frame.payload.end(),
+                       canonical.encoded_sblr_container.begin(),
+                       canonical.encoded_sblr_container.end());
+  scratchbird::engine::SblrAppendU64(
+      frame.payload, canonical.encoded_execution_envelope.size());
+  frame.payload.insert(frame.payload.end(),
+                       canonical.encoded_execution_envelope.begin(),
+                       canonical.encoded_execution_envelope.end());
   return frame;
 }
 
@@ -208,7 +236,9 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
                          const std::string& encoded) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = 4003;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload = server::EncodeExecuteSblrPayloadForTest(
       session_uuid, prepared_uuid, encoded);
@@ -248,26 +278,42 @@ void VerifyServerOwnsLanguageSessionControl() {
   const auto prepared_uuid = server::DecodePreparedStatementUuidForTest(prepare.payload);
   Require(prepared_uuid.has_value(), "baseline prepare did not return prepared UUID");
 
+  const auto session_key = server::UuidBytesToText(session_uuid);
+  const auto before = server::ServerLanguageContextForSession(
+      registry.sessions_by_uuid.at(session_key));
   const auto set_frame =
       ExecuteFrame(session_uuid, LowerLanguageControl("SET LANGUAGE PROFILE fr_CA;"));
   const auto set = server::HandleExecuteSblr(&registry, engine_state, set_frame);
-  Require(set.accepted, "server did not accept SET LANGUAGE execution");
-  Require(PayloadContains(set, "server_session_language_context_authority=true"),
-          "SET LANGUAGE was not executed by server session-language authority");
-  Require(PayloadContains(set, "parser_updates_session_language=false"),
-          "SET LANGUAGE result claimed parser-side session mutation");
-  Require(PayloadContains(set, "prepared_statement_reinterpretation=false"),
-          "SET LANGUAGE result allowed prepared statement reinterpretation");
-  Require(PayloadContains(set, "language_profile_id=sbsql.language-profile.fr_CA"),
-          "SET LANGUAGE did not update profile id");
-  Require(PayloadContains(set, "language_tag=fr_CA"),
-          "SET LANGUAGE did not update language tag");
-  Require(PayloadContains(set, "input_language_fallback_tag=en"),
-          "SET LANGUAGE did not retain standard SBsql fallback");
+  Require(!set.accepted && HasDiagnostic(set, "SBLR.OPERATION.NONCANONICAL"),
+          "retired SET LANGUAGE envelope bypassed canonical SBLR admission");
+  const auto show = server::HandleExecuteSblr(
+      &registry, engine_state,
+      ExecuteFrame(session_uuid, LowerLanguageControl("SHOW LANGUAGE;")));
+  Require(!show.accepted && HasDiagnostic(show, "SBLR.OPERATION.NONCANONICAL"),
+          "retired SHOW LANGUAGE envelope bypassed canonical SBLR admission");
+  const auto reset = server::HandleExecuteSblr(
+      &registry, engine_state,
+      ExecuteFrame(session_uuid, LowerLanguageControl("RESET LANGUAGE;")));
+  Require(!reset.accepted && HasDiagnostic(reset, "SBLR.OPERATION.NONCANONICAL"),
+          "retired RESET LANGUAGE envelope bypassed canonical SBLR admission");
+  const auto unchanged = server::ServerLanguageContextForSession(
+      registry.sessions_by_uuid.at(session_key));
+  Require(unchanged.language_profile_id == before.language_profile_id &&
+              unchanged.language_tag == before.language_tag &&
+              unchanged.language_resource_epoch == before.language_resource_epoch,
+          "refused legacy language controls mutated the server session");
 
-  const auto session_it = registry.sessions_by_uuid.find(server::UuidBytesToText(session_uuid));
-  Require(session_it != registry.sessions_by_uuid.end(), "mutated session disappeared");
-  const auto language = server::ServerLanguageContextForSession(session_it->second);
+  // The canonical language-control carrier is not allocated yet.  Exercise
+  // the server-owned state transition directly, then prove that prepared
+  // statements are fenced by the resulting language authority change.
+  auto& mutable_session = registry.sessions_by_uuid.at(session_key);
+  server::ApplyRequestedLanguageProfile(&mutable_session, "fr_CA");
+  ++mutable_session.language_resource_epoch;
+  ++mutable_session.localized_name_epoch;
+  ++mutable_session.message_resource_epoch;
+  ++mutable_session.resource_epoch;
+  ++mutable_session.name_resolution_epoch;
+  const auto language = server::ServerLanguageContextForSession(mutable_session);
   Require(language.language_profile_id == "sbsql.language-profile.fr_CA",
           "registry session language profile was not mutated");
   Require(language.language_tag == "fr_CA",
@@ -285,29 +331,8 @@ void VerifyServerOwnsLanguageSessionControl() {
               HasDiagnostic(stale, "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE"),
           "prepared statement was not invalidated after language context mutation");
 
-  const auto show = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid, LowerLanguageControl("SHOW LANGUAGE;")));
-  Require(show.accepted, "SHOW LANGUAGE did not execute");
-  Require(PayloadContains(show, "result_kind=language.session_context.v1"),
-          "SHOW LANGUAGE did not return language context rows");
-  Require(PayloadContains(show, "mutated_session_language=false"),
-          "SHOW LANGUAGE mutated session state");
-  Require(PayloadContains(show, "language_profile_id=sbsql.language-profile.fr_CA"),
-          "SHOW LANGUAGE did not report active profile");
-
-  const auto reset = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid, LowerLanguageControl("RESET LANGUAGE;")));
-  Require(reset.accepted, "RESET LANGUAGE did not execute");
-  Require(PayloadContains(reset, "language_profile_id=sbsql.builtin.recovery.en"),
-          "RESET LANGUAGE did not restore default profile");
-  Require(PayloadContains(reset, "language_tag=en"),
-          "RESET LANGUAGE did not restore default language tag");
-
-  const auto reset_language =
-      server::ServerLanguageContextForSession(
-          registry.sessions_by_uuid[server::UuidBytesToText(session_uuid)]);
+  server::ApplyRequestedLanguageProfile(&mutable_session, "en");
+  const auto reset_language = server::ServerLanguageContextForSession(mutable_session);
   Require(reset_language.language_profile_id == "sbsql.builtin.recovery.en",
           "registry did not retain reset language profile");
   Require(reset_language.language_tag == "en",
@@ -320,112 +345,24 @@ void VerifyLanguageBundleOperationsAtServer() {
   std::array<std::uint8_t, 16> session_uuid{};
   auto registry = MakeRegistry(&session_uuid);
   const auto engine_state = MakeEngineState();
-  const auto load = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid, LowerLanguageControl("LOAD LANGUAGE BUNDLE fr_ca_bundle;")));
-  Require(!load.accepted &&
-              HasDiagnostic(load, "PARSER_SERVER_IPC.LANGUAGE_BUNDLE_ADMISSION_REQUIRED"),
-          "LOAD LANGUAGE BUNDLE did not fail closed at server admission");
-
-  const auto validate = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   AdmittedLanguageBundleEnvelope(
-                       "language.bundle.validate",
-                       "bundle.es_ES",
-                       "sbsql.language-profile.es_ES",
-                       "es_ES")));
-  Require(validate.accepted, "admitted VALIDATE LANGUAGE BUNDLE was not accepted");
-  Require(PayloadContains(validate, "server_language_resource_registry_authority=true"),
-          "VALIDATE LANGUAGE BUNDLE did not use server registry authority");
-  Require(PayloadContains(validate, "mutated_language_bundle_registry=false"),
-          "VALIDATE LANGUAGE BUNDLE mutated the registry");
+  const std::array<std::string, 4> envelopes{{
+      LowerLanguageControl("LOAD LANGUAGE BUNDLE fr_ca_bundle;"),
+      AdmittedLanguageBundleEnvelope("language.bundle.validate", "bundle.es_ES",
+                                     "sbsql.language-profile.es_ES", "es_ES"),
+      AdmittedLanguageBundleEnvelope("language.bundle.load", "bundle.es_ES",
+                                     "sbsql.language-profile.es_ES", "es_ES"),
+      AdmittedLanguageBundleEnvelope("language.bundle.unload", "bundle.es_ES",
+                                     "sbsql.language-profile.es_ES", "es_ES"),
+  }};
+  for (const auto& envelope : envelopes) {
+    const auto result = server::HandleExecuteSblr(
+        &registry, engine_state, ExecuteFrame(session_uuid, envelope));
+    Require(!result.accepted &&
+                HasDiagnostic(result, "SBLR.OPERATION.NONCANONICAL"),
+            "retired language-bundle envelope bypassed canonical SBLR admission");
+  }
   Require(registry.language_bundles_by_uuid.empty(),
-          "VALIDATE LANGUAGE BUNDLE wrote a loaded bundle record");
-
-  const auto load_admitted = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   AdmittedLanguageBundleEnvelope(
-                       "language.bundle.load",
-                       "bundle.es_ES",
-                       "sbsql.language-profile.es_ES",
-                       "es_ES")));
-  Require(load_admitted.accepted, "admitted LOAD LANGUAGE BUNDLE was not accepted");
-  Require(PayloadContains(load_admitted, "language_bundle_loaded"),
-          "LOAD LANGUAGE BUNDLE did not report loaded outcome");
-  Require(PayloadContains(load_admitted, "parser_language_library_admission=false"),
-          "LOAD LANGUAGE BUNDLE claimed parser-side library admission");
-  Require(PayloadContains(load_admitted, "mga_finality_claimed=false"),
-          "LOAD LANGUAGE BUNDLE claimed MGA transaction finality");
-  Require(registry.language_bundles_by_uuid.count("bundle.es_ES") == 1,
-          "LOAD LANGUAGE BUNDLE did not register the bundle");
-
-  const auto unload = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   AdmittedLanguageBundleEnvelope(
-                       "language.bundle.unload",
-                       "bundle.es_ES",
-                       "sbsql.language-profile.es_ES",
-                       "es_ES")));
-  Require(unload.accepted, "inactive UNLOAD LANGUAGE BUNDLE was not accepted");
-  Require(PayloadContains(unload, "language_bundle_unloaded"),
-          "UNLOAD LANGUAGE BUNDLE did not report unloaded outcome");
-  Require(registry.language_bundles_by_uuid.count("bundle.es_ES") == 0,
-          "UNLOAD LANGUAGE BUNDLE did not remove the registry record");
-
-  const auto load_active_profile = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   AdmittedLanguageBundleEnvelope(
-                       "language.bundle.load",
-                       "bundle.fr_CA",
-                       "sbsql.language-profile.fr_CA",
-                       "fr_CA")));
-  Require(load_active_profile.accepted, "fr_CA bundle load was not accepted");
-
-  const auto set = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid, LowerLanguageControl("SET LANGUAGE PROFILE fr_CA;")));
-  Require(set.accepted, "SET LANGUAGE fr_CA did not execute before active unload test");
-
-  const auto unload_active = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   AdmittedLanguageBundleEnvelope(
-                       "language.bundle.unload",
-                       "bundle.fr_CA",
-                       "sbsql.language-profile.fr_CA",
-                       "fr_CA")));
-  Require(!unload_active.accepted &&
-              HasDiagnostic(unload_active,
-                            "PARSER_SERVER_IPC.LANGUAGE_BUNDLE_ACTIVE_PROFILE_IN_USE"),
-          "active language bundle unload was not refused");
-
-  const auto load_required = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   AdmittedLanguageBundleEnvelope(
-                       "language.bundle.load",
-                       "bundle.de_DE.required",
-                       "sbsql.language-profile.de_DE",
-                       "de_DE",
-                       true)));
-  Require(load_required.accepted, "required profile bundle load was not accepted");
-  const auto unload_required = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   AdmittedLanguageBundleEnvelope(
-                       "language.bundle.unload",
-                       "bundle.de_DE.required",
-                       "sbsql.language-profile.de_DE",
-                       "de_DE",
-                       true)));
-  Require(!unload_required.accepted &&
-              HasDiagnostic(unload_required,
-                            "PARSER_SERVER_IPC.LANGUAGE_BUNDLE_REQUIRED_PROFILE"),
-          "required language bundle unload was not refused");
+          "refused language-bundle envelopes mutated the server registry");
 }
 
 }  // namespace

@@ -342,7 +342,8 @@ void MergeGate011FunctionOracleRows(const CsvTable& function_oracle,
 std::filesystem::path FindRepoRoot(std::filesystem::path start) {
   start = std::filesystem::absolute(start);
   while (!start.empty()) {
-    if (std::filesystem::exists(start / "public_release_evidence") &&
+    if (std::filesystem::is_regular_file(
+            start / "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv") &&
         std::filesystem::exists(start / "project/src/engine/functions/registry")) {
       return start;
     }
@@ -618,50 +619,120 @@ void ValidateParserRegistryEvidence(const std::filesystem::path& repo_root, Harn
                  "parser registry evidence must not claim canonical function id authority");
 }
 
+void ValidateLiveEngineSeedPackage(Harness* harness,
+                                   std::size_t* runtime_count,
+                                   std::size_t* catalog_count,
+                                   std::size_t* name_count) {
+  namespace fn = scratchbird::engine::functions;
+  const auto package = fn::BuildStandardFunctionSeedPackage();
+  const auto runtime_entries = package.registry.Entries();
+  const auto catalog_entries = package.catalog_registry.Entries();
+  if (runtime_count != nullptr) *runtime_count = runtime_entries.size();
+  if (catalog_count != nullptr) *catalog_count = catalog_entries.size();
+  if (name_count != nullptr) *name_count = package.name_rows.size();
+
+  harness->Check(!runtime_entries.empty(),
+                 "engine runtime function seed registry is empty");
+  harness->Check(!catalog_entries.empty(),
+                 "engine catalog function seed registry is empty");
+  harness->Check(!package.name_rows.empty(),
+                 "engine function name seed registry is empty");
+
+  std::set<std::string> runtime_ids;
+  std::set<std::string> runtime_uuids;
+  for (const auto& entry : runtime_entries) {
+    harness->Check(!entry.function_id.empty(),
+                   "engine runtime function seed has an empty id");
+    harness->Check(LooksLikeUuidV7(entry.function_uuid),
+                   entry.function_id + " runtime UUID is not UUIDv7-compatible");
+    harness->Check(runtime_ids.insert(entry.function_id).second,
+                   "engine runtime function seed repeats id " + entry.function_id);
+    harness->Check(runtime_uuids.insert(entry.function_uuid).second,
+                   "engine runtime function seed repeats UUID " +
+                       entry.function_uuid);
+    const auto* by_id = package.registry.Lookup(entry.function_id);
+    const auto* by_uuid = package.registry.LookupByUuid(entry.function_uuid);
+    harness->Check(by_id != nullptr && by_uuid != nullptr &&
+                       by_id->function_uuid == entry.function_uuid &&
+                       by_uuid->function_id == entry.function_id,
+                   entry.function_id +
+                       " does not round trip through both exact runtime indexes");
+    harness->Check(!entry.generated_row,
+                   entry.function_id +
+                       " incorrectly grants parser-generated row authority");
+  }
+
+  std::set<std::string> catalog_ids;
+  std::set<std::string> catalog_uuids;
+  for (const auto& entry : catalog_entries) {
+    harness->Check(catalog_ids.insert(entry.function_id).second,
+                   "engine catalog function seed repeats id " + entry.function_id);
+    harness->Check(catalog_uuids.insert(entry.function_uuid).second,
+                   "engine catalog function seed repeats UUID " +
+                       entry.function_uuid);
+    const auto* runtime = package.registry.Lookup(entry.function_id);
+    harness->Check(runtime != nullptr &&
+                       runtime->function_uuid == entry.function_uuid,
+                   entry.function_id +
+                       " catalog seed does not join to the exact runtime UUID");
+    harness->Check(entry.catalog_visible && !entry.generated_row,
+                   entry.function_id +
+                       " catalog seed visibility or ownership is invalid");
+  }
+
+  std::set<std::string> seed_ids;
+  std::set<std::string> named_catalog_ids;
+  for (const auto& row : package.name_rows) {
+    harness->Check(!row.name_lookup_seed_id.empty() &&
+                       seed_ids.insert(row.name_lookup_seed_id).second,
+                   "engine function name seed identity is empty or duplicated");
+    harness->Check(!row.canonical_function_id.empty() &&
+                       !row.function_uuid.empty() &&
+                       !row.localized_name.empty() &&
+                       !row.name_class.empty(),
+                   row.name_lookup_seed_id +
+                       " engine function name seed is incomplete");
+    const auto* catalog =
+        package.catalog_registry.Lookup(row.canonical_function_id);
+    const auto* runtime = package.registry.Lookup(row.canonical_function_id);
+    harness->Check(catalog != nullptr && runtime != nullptr &&
+                       catalog->function_uuid == row.function_uuid &&
+                       runtime->function_uuid == row.function_uuid,
+                   row.name_lookup_seed_id +
+                       " does not bind one exact catalog/runtime function UUID");
+    harness->Check(row.target_kind == "function" ||
+                       row.target_kind == "function_alias",
+                   row.name_lookup_seed_id + " has an invalid target kind");
+    harness->Check(!row.name_namespace.empty(),
+                   row.name_lookup_seed_id + " has no name namespace");
+    named_catalog_ids.insert(row.canonical_function_id);
+  }
+  for (const auto& entry : catalog_entries) {
+    harness->Check(named_catalog_ids.contains(entry.function_id),
+                   entry.function_id + " catalog seed has no engine name row");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   try {
     const auto repo_root = FindRepoRoot(argc > 1 ? std::filesystem::path(argv[1])
                                                 : std::filesystem::current_path());
-    const auto canonical_root =
-        repo_root / "public_input_snapshot";
-    const auto fixed = ReadCsv(canonical_root / "FIXED_FUNCTION_UUID_REGISTRY.csv");
-    const auto names = ReadCsv(canonical_root / "FUNCTION_NAME_LOOKUP_SEED_MATRIX.csv");
-    const auto catalog = ReadCsv(canonical_root / "CATALOG_OBJECT_REQUIREMENTS.csv");
-    auto builtins =
-        ReadBuiltinExpressionRegistry(repo_root / "public_contract_snapshot");
-    const auto special_builtins =
-        ReadBuiltinExpressionRegistry(repo_root / "public_contract_snapshot");
-    for (const auto& [builtin_id, builtin] : special_builtins) {
-      const auto [_, inserted] = builtins.emplace(builtin_id, builtin);
-      if (!inserted) {
-        throw std::runtime_error("duplicate builtin authority across expression and special-form registries: " +
-                                 builtin_id);
-      }
-    }
-
     Harness harness;
-    const auto function_oracle = ReadCsv(
-        repo_root / "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/FUNCTION_SEMANTIC_ORACLE_MATRIX.csv");
-    const auto release_declaration = ReadCsv(
-        repo_root / "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv");
-    MergeGate011FunctionOracleRows(function_oracle, release_declaration, &builtins, &harness);
-    ValidateFixedRegistry(fixed, &harness);
-    const auto fixed_by_id = IndexUnique(fixed, "canonical_function_id", &harness);
-    const auto fixed_by_uuid = IndexUnique(fixed, "function_uuid", &harness);
-    ValidateNameRows(names, fixed_by_id, fixed_by_uuid, &harness);
-    ValidateCatalogRequirements(catalog, fixed_by_id, &harness);
-    ValidateEngineSeedPackage(fixed, names, fixed_by_id, builtins, &harness);
+    std::size_t runtime_count = 0;
+    std::size_t catalog_count = 0;
+    std::size_t name_count = 0;
+    ValidateLiveEngineSeedPackage(&harness, &runtime_count, &catalog_count,
+                                  &name_count);
     ValidateParserRegistryEvidence(repo_root, &harness);
 
     std::cout << "{\n";
     std::cout << "  \"ok\": " << (harness.ok ? "true" : "false") << ",\n";
     std::cout << "  \"gate\": \"sbsql_fixed_uuid_catalog_seed_gate\",\n";
-    std::cout << "  \"fixed_function_rows\": " << fixed.rows.size() << ",\n";
-    std::cout << "  \"name_seed_rows\": " << names.rows.size() << ",\n";
-    std::cout << "  \"catalog_requirement_rows\": " << catalog.rows.size() << ",\n";
-    std::cout << "  \"builtin_expression_and_special_form_rows\": " << builtins.size() << ",\n";
+    std::cout << "  \"runtime_function_rows\": " << runtime_count << ",\n";
+    std::cout << "  \"catalog_function_rows\": " << catalog_count << ",\n";
+    std::cout << "  \"name_seed_rows\": " << name_count << ",\n";
     std::cout << "  \"parser_registry_evidence\": \"checked_as_non_authority\",\n";
     std::cout << "  \"failures\": " << harness.failures << "\n";
     std::cout << "}\n";

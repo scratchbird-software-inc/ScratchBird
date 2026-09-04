@@ -346,11 +346,10 @@ def run_command(
     return 0
 
 
-def stage_source(ctx: Context) -> Path:
-    stage = ctx.component_build_root / "stage"
+def stage_source_tree(ctx: Context, source: Path, stage: Path) -> Path:
     if stage.exists():
         shutil.rmtree(stage)
-    tracked_paths = git_tracked_paths(ctx, ctx.source_dir)
+    tracked_paths = git_tracked_paths(ctx, source)
 
     def ignore(current_dir: str, names: list[str]) -> set[str]:
         ignored = set()
@@ -367,7 +366,16 @@ def stage_source(ctx: Context) -> Path:
                 ignored.add(name)
         return ignored
 
-    shutil.copytree(ctx.source_dir, stage, ignore=ignore)
+    shutil.copytree(source, stage, ignore=ignore)
+    return stage
+
+
+def stage_source(ctx: Context) -> Path:
+    stage = stage_source_tree(
+        ctx,
+        ctx.source_dir,
+        ctx.component_build_root / "stage",
+    )
     stage_shared_conformance_fixtures(ctx)
     return stage
 
@@ -753,11 +761,38 @@ def run_dbeaver_stock_install_smoke(ctx: Context, stage: Path) -> int:
 
 def run_metabase(ctx: Context) -> int:
     stage = stage_source(ctx)
-    env = {"CLJ_CONFIG": str(ctx.deps_root / "clojure" / "config")}
+    jdbc_stage = stage_source_tree(
+        ctx,
+        ctx.project_root / "drivers" / "driver" / "jdbc",
+        ctx.component_build_root / "jdbc-stage",
+    )
+    local_maven_repo = ctx.deps_root / "jvm" / "maven-repo"
+    result = run_command(
+        ctx,
+        "jdbc-publish-local",
+        [
+            "bash",
+            str(jdbc_stage / "gradlew"),
+            "--no-daemon",
+            "--console=plain",
+            "-g",
+            str(ctx.deps_root / "jvm" / "gradle-home"),
+            f"-Dmaven.repo.local={local_maven_repo}",
+            "publishToMavenLocal",
+        ],
+        cwd=jdbc_stage,
+        env={"JAVA_HOME": ""},
+    )
+    if result != 0:
+        return result
+    env = {
+        "CLJ_CONFIG": str(ctx.deps_root / "clojure" / "config"),
+        "SCRATCHBIRD_MAVEN_LOCAL_REPO": str(local_maven_repo),
+    }
     argv = [
         "clojure",
         "-Sdeps",
-        f"{{:mvn/local-repo \"{ctx.deps_root / 'jvm' / 'maven-repo'}\"}}",
+        f"{{:mvn/local-repo \"{local_maven_repo}\"}}",
         "-T:build",
         "jar",
     ]
@@ -800,6 +835,8 @@ def run_elixir(ctx: Context) -> int:
         "MIX_DEPS_PATH": str(ctx.component_build_root / "deps"),
     }
     for name, argv in (
+        ("mix-local-hex", ["mix", "local.hex", "--force"]),
+        ("mix-local-rebar", ["mix", "local.rebar", "--force"]),
         ("mix-deps-get", ["mix", "deps.get"]),
         ("mix-test", ["mix", "test"]),
     ):

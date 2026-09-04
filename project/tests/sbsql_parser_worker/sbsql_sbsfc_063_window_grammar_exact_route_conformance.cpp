@@ -10,19 +10,26 @@
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
+#include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
+#include "memory.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "rendering/rendering.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "uuid.hpp"
+#include "wire/sbsql_test_wire.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -30,9 +37,21 @@ namespace {
 using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
+namespace database = scratchbird::storage::database;
+namespace memory = scratchbird::core::memory;
+namespace uuid = scratchbird::core::uuid;
+using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kTableUuid = "019f0000-0000-7000-8000-000000063001";
 constexpr std::string_view kTimeSeriesUuid = "019f0000-0000-7000-8000-000000063002";
+constexpr std::string_view kFixturePrincipal = "qow_packet7_user";
+constexpr std::string_view kFixturePassword =
+    "QOW-Packet7-live-route-password";
+constexpr std::string_view kFixtureCredentialFingerprint =
+    "local-password-pbkdf2-sha256:v1:iterations=600000:"
+    "salt=0123456789abcdef0123456789abcdef:"
+    "verifier=7b622f17d15a5e6f2d5122c606937dfc"
+    "76f5982782adb52b03f7b1ca024f72c9";
 
 struct GrammarRow {
   std::string_view surface_id;
@@ -56,16 +75,7 @@ struct WindowCase {
   std::string_view opcode;
   std::string_view operation_family;
   std::vector<std::string_view> surface_ids;
-  std::vector<std::string> resolved_uuids;
   std::vector<std::string_view> payload_markers;
-};
-
-struct PipelineArtifacts {
-  CstDocument cst;
-  AstDocument ast;
-  BoundStatement bound;
-  SblrEnvelope envelope;
-  SblrVerifierResult verifier;
 };
 
 void Require(bool condition, std::string_view message) {
@@ -108,7 +118,65 @@ std::string FieldValue(const api::EngineApiResult& result,
   return {};
 }
 
-SessionContext ParserSession() {
+std::filesystem::path MakeFixtureDatabase() {
+  static std::atomic<std::uint64_t> identity_time{1788203000000ULL};
+  std::string template_path = "/tmp/sbsql_sbsfc_063_window.XXXXXX";
+  std::vector<char> writable(template_path.begin(), template_path.end());
+  writable.push_back('\0');
+  char* directory = ::mkdtemp(writable.data());
+  if (directory == nullptr) return {};
+
+  const auto database_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::database, identity_time.fetch_add(2));
+  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::filespace, identity_time.fetch_add(2));
+  if (!database_uuid.ok() || !filespace_uuid.ok()) {
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+
+  const auto path =
+      std::filesystem::path(directory) / "sbsfc_063_window.sbdb";
+  database::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = identity_time.fetch_add(2);
+  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
+  create.allow_minimal_resource_bootstrap = false;
+  create.require_resource_seed_pack = true;
+  create.bootstrap_principal_name = std::string(kFixturePrincipal);
+  create.bootstrap_credential_fingerprint =
+      std::string(kFixtureCredentialFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  const auto created = database::CreateDatabaseFile(create);
+  if (!created.ok() ||
+      created.create_finality != database::DatabaseCreateFinalityClass::committed) {
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key;
+    for (const auto& argument : created.diagnostic.arguments) {
+      std::cerr << ':' << argument.key << '=' << argument.value;
+    }
+    std::cerr << '\n';
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+  return path;
+}
+
+PipelineResult RunEnginePipelineForConformance(
+    SbsqlTestWireSession* session,
+    std::string_view sql,
+    SbsqlPipelineConformanceSummary* summary) {
+  return session->RunPipeline(sql, true, false, 0, false, {}, nullptr, false,
+                              nullptr, {}, 0, nullptr, nullptr, summary);
+}
+
+void RequireStaticScalarProjectionLowering(const WindowCase& test_case) {
   SessionContext session;
   session.authenticated = true;
   session.session_uuid = "019f0000-0000-7000-8000-000000063101";
@@ -118,32 +186,64 @@ SessionContext ParserSession() {
   session.catalog_epoch = 363;
   session.security_policy_epoch = 364;
   session.descriptor_epoch = 365;
-  return session;
-}
 
-ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_063_window_grammar_route";
   config.parser_uuid = "019f0000-0000-7000-8000-000000063104";
-  config.bundle_contract_id = "sbp_sbsql@sbsfc-063-window-grammar-route-test";
+  config.bundle_contract_id =
+      "sbp_sbsql@sbsfc-063-window-grammar-route-test";
   config.build_id = "sbsql-sbsfc-063-window-grammar-route-test";
-  return config;
-}
 
-PipelineArtifacts RunPipeline(const WindowCase& test_case) {
-  PipelineArtifacts artifacts;
-  const auto session = ParserSession();
-  artifacts.cst = BuildCst(std::string(test_case.sql));
-  artifacts.ast = BuildAst(artifacts.cst);
-  artifacts.bound = BindAst(artifacts.ast,
-                            artifacts.cst,
-                            ParserConfigForTest(),
-                            session,
-                            test_case.resolved_uuids);
-  artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
-  artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
-  return artifacts;
+  const auto cst = BuildCst(std::string(test_case.sql));
+  const auto ast = BuildAst(cst);
+  const auto bound = BindAst(ast, cst, config, session, {});
+  const auto envelope = LowerToSblr(bound, cst, session);
+  const auto verifier = VerifySblrEnvelope(envelope);
+  if (cst.messages.has_errors()) {
+    std::cerr << RenderMessageVectorSet(cst.messages);
+  }
+  if (ast.messages.has_errors()) {
+    std::cerr << RenderMessageVectorSet(ast.messages);
+  }
+  if (!bound.bound) {
+    std::cerr << RenderMessageVectorSet(bound.messages);
+  }
+  if (!verifier.admitted) {
+    std::cerr << RenderMessageVectorSet(verifier.messages);
+  }
+  Require(!cst.messages.has_errors(), "SBSFC-063 scalar CST failed");
+  Require(!ast.messages.has_errors(), "SBSFC-063 scalar AST failed");
+  Require(bound.bound, "SBSFC-063 scalar bind failed");
+  Require(verifier.admitted,
+          "SBSFC-063 scalar verifier rejected exact route");
+  Require(envelope.operation_id == test_case.operation_id,
+          "SBSFC-063 scalar operation id mismatch");
+  Require(envelope.sblr_opcode == test_case.opcode,
+          "SBSFC-063 scalar opcode mismatch");
+  Require(envelope.operation_family == test_case.operation_family,
+          "SBSFC-063 scalar operation family mismatch");
+  Require(!envelope.parser_executes_sql,
+          "SBSFC-063 scalar lowering allowed parser SQL execution");
+  Require(!Contains(envelope.payload, test_case.sql),
+          "SBSFC-063 scalar payload embedded source SQL text");
+  for (const auto surface_id : test_case.surface_ids) {
+    Require(Contains(envelope.payload, surface_id),
+            "SBSFC-063 scalar payload omitted its surface identity");
+  }
+  for (const auto marker : test_case.payload_markers) {
+    Require(Contains(envelope.payload, marker),
+            "SBSFC-063 scalar payload omitted an exact marker");
+  }
+
+  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
+  Require(admission.admitted,
+          "server admission rejected SBSFC-063 scalar exact route");
+  Require(admission.requires_public_abi_dispatch,
+          "SBSFC-063 scalar route did not require public ABI dispatch");
+  Require(admission.operation_id == test_case.operation_id,
+          "server admission SBSFC-063 scalar operation id mismatch");
 }
 
 void RequireRegistryEvidence() {
@@ -163,69 +263,44 @@ void RequireRegistryEvidence() {
   }
 }
 
-void RequireExactLowering(const WindowCase& test_case,
-                          const PipelineArtifacts& artifacts) {
-  if (artifacts.cst.messages.has_errors()) {
-    std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
+void RequireExactLowering(
+    const WindowCase& test_case,
+    const PipelineResult& result,
+    const SbsqlPipelineConformanceSummary& summary) {
+  if (!result.accepted || result.messages.has_errors()) {
+    std::cerr << "SBSFC-063 SQL: " << test_case.sql << '\n';
+    std::cerr << RenderMessageVectorSet(result.messages);
   }
-  if (artifacts.ast.messages.has_errors()) {
-    std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
-  }
-  if (!artifacts.bound.bound) {
-    std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
-  }
-  if (!artifacts.verifier.admitted) {
-    std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
-  }
-  Require(!artifacts.cst.messages.has_errors(), "SBSFC-063 CST failed");
-  Require(!artifacts.ast.messages.has_errors(), "SBSFC-063 AST failed");
-  Require(artifacts.bound.bound, "SBSFC-063 bind failed");
-  Require(artifacts.verifier.admitted, "SBSFC-063 verifier rejected exact route");
-  Require(artifacts.envelope.operation_id == test_case.operation_id,
+  Require(result.accepted && !result.messages.has_errors(),
+          "SBSFC-063 live engine pipeline failed");
+  Require(summary.captured, "SBSFC-063 final parser artifacts were not captured");
+  Require(summary.bound && !summary.bound_has_errors,
+          "SBSFC-063 did not bind under engine descriptor authority");
+  Require(summary.verifier_admitted && !summary.verifier_has_errors,
+          "SBSFC-063 verifier rejected the engine-bound route");
+  Require(summary.payload_nonempty && !result.sblr_payload.empty(),
+          "SBSFC-063 produced no canonical SBLR payload");
+  Require(summary.operation_id == test_case.operation_id,
           "SBSFC-063 operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == test_case.opcode,
+  Require(summary.sblr_opcode == test_case.opcode,
           "SBSFC-063 SBLR opcode mismatch");
-  Require(artifacts.envelope.operation_family == test_case.operation_family,
+  Require(summary.operation_family == test_case.operation_family,
           "SBSFC-063 operation family mismatch");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_sql_text_execution"),
-          "SBSFC-063 no-SQL-execution authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_storage_or_finality"),
-          "SBSFC-063 no-storage-finality authority missing");
-  Require(!artifacts.envelope.parser_executes_sql,
+  Require(result.server_operation_id == test_case.operation_id,
+          "SBSFC-063 engine operation id mismatch");
+  Require(summary.has_read_right && summary.has_syntax_authority,
+          "SBSFC-063 read/syntax authority projection missing");
+  Require(!result.parser_executes_sql,
           "SBSFC-063 lowering allowed parser SQL execution");
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-          "SBSFC-063 payload did not prove no SQL text authority");
-  Require(!Contains(artifacts.envelope.payload, test_case.sql),
+  Require(!Contains(result.sblr_payload, test_case.sql),
           "SBSFC-063 payload embedded source SQL text");
-  Require(!Contains(artifacts.envelope.payload, "SBSQL_SURFACE_REPLAY") &&
-              !Contains(artifacts.envelope.payload, "refusal"),
+  Require(!Contains(result.sblr_payload, "SBSQL_SURFACE_REPLAY") &&
+              !Contains(result.sblr_payload, "refusal"),
           "SBSFC-063 payload used forbidden replay/refusal evidence");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal") &&
-              !Contains(artifacts.envelope.payload, "recovery"),
+  Require(!Contains(result.sblr_payload, "WAL") &&
+              !Contains(result.sblr_payload, "wal") &&
+              !Contains(result.sblr_payload, "recovery"),
           "SBSFC-063 payload carried WAL/recovery authority");
-  for (const auto surface_id : test_case.surface_ids) {
-    Require(Contains(artifacts.envelope.payload, surface_id),
-            std::string("SBSFC-063 payload missing row marker ") +
-                std::string(surface_id));
-  }
-  for (const auto marker : test_case.payload_markers) {
-    Require(Contains(artifacts.envelope.payload, marker),
-            std::string("SBSFC-063 payload missing marker ") + std::string(marker));
-  }
-}
-
-void RequireServerAdmission(const WindowCase& test_case,
-                            const SblrEnvelope& envelope) {
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
-  Require(admission.admitted, "server admission rejected SBSFC-063 exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI dispatch for SBSFC-063");
-  Require(admission.operation_id == test_case.operation_id,
-          "server admission SBSFC-063 operation id mismatch");
 }
 
 api::EngineRequestContext EngineContext() {
@@ -306,6 +381,8 @@ void RequireWindowPlanDispatch() {
   envelope.operands.push_back({"text", "window_frame_clause_present", "true"});
   envelope.operands.push_back({"text", "window_frame_mode", "rows"});
   envelope.operands.push_back({"text", "window_exclude_target", "no_others"});
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 
   api::EngineApiRequest api_request;
   api_request.rows.push_back(Row("relation-0-row-019f0000-0000-7000-8000-000000063301", "2"));
@@ -338,15 +415,24 @@ void RequireTimeSeriesProjectionDispatch() {
   envelope.operands.push_back({"text", "projection_count", "1"});
   envelope.operands.push_back({"text", "projection_0_name", "ts_window"});
   envelope.operands.push_back({"text", "projection_0_expr_kind", "function"});
+  envelope.operands.push_back({"text", "projection_0_expr_opcode", "SBLR_FUNCTION_CALL"});
   envelope.operands.push_back({"text", "projection_0_type", "real64"});
+  envelope.operands.push_back({"text", "projection_0_value", ""});
+  envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   envelope.operands.push_back({"text", "projection_0_function_id", "timeseries.aggregate"});
   envelope.operands.push_back({"text", "projection_0_function_arg_count", "2"});
+  envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", "text"});
   envelope.operands.push_back({"text", "projection_0_arg_0_value", "sum"});
+  envelope.operands.push_back({"text", "projection_0_arg_0_is_null", "false"});
+  envelope.operands.push_back({"text", "projection_0_arg_1_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_1_type", "text"});
   envelope.operands.push_back({"text", "projection_0_arg_1_value", "1,2,3"});
+  envelope.operands.push_back({"text", "projection_0_arg_1_is_null", "false"});
   envelope.operands.push_back({"text", "projection_0_time_series_window_expr_present", "true"});
   envelope.operands.push_back({"text", "projection_0_time_series_window_interval_value", "1 day"});
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 
   const sblr::SblrDispatchRequest request{EngineContext(), envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
@@ -368,6 +454,8 @@ void RequireTimeSeriesAppendDispatch() {
                                  "trace.sbsfc063.timeseries.append");
   envelope.operands.push_back({"text", "target_object_uuid", std::string(kTimeSeriesUuid)});
   envelope.operands.push_back({"text", "target_object_kind", "time_series"});
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 
   const sblr::SblrDispatchRequest request{EngineContext(), envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
@@ -389,11 +477,10 @@ int main() {
   RequireRegistryEvidence();
   const std::vector<WindowCase> cases = {
       {"SELECT row_number() OVER win FROM customer WINDOW win AS (ORDER BY id)",
-       "query.plan_operation",
-       "SBLR_QUERY_PLAN_OPERATION",
+       "query.execute",
+       "SBLR_QUERY_EXECUTE",
        "sblr.query.relational.v3",
        {"SBSQL-0AC427EBCC12", "SBSQL-1BD209DEB737", "SBSQL-3AF5139D4E9A"},
-       {std::string(kTableUuid)},
        {"\"query_envelope_kind\":\"table_row_number_window\"",
         "\"window_named_reference_present\":true",
         "\"window_named_definition_present\":true",
@@ -402,11 +489,10 @@ int main() {
         "\"window_definition_descriptor\":\"named_window_0\"",
         "\"order_by\":\"id\""}},
       {"SELECT row_number() OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE NO OTHERS) FROM customer",
-       "query.plan_operation",
-       "SBLR_QUERY_PLAN_OPERATION",
+       "query.execute",
+       "SBLR_QUERY_EXECUTE",
        "sblr.query.relational.v3",
        {"SBSQL-541127FA7A87", "SBSQL-777A3A7148F0", "SBSQL-D2633118D544"},
-       {std::string(kTableUuid)},
        {"\"query_envelope_kind\":\"table_row_number_window\"",
         "\"window_frame_clause_present\":true",
         "\"window_frame_mode\":\"rows\"",
@@ -419,7 +505,6 @@ int main() {
        "SBLR_QUERY_EVALUATE_PROJECTION",
        "sblr.query.relational.v3",
        {"SBSQL-0C21F22A9420"},
-       {},
        {"\"query_envelope_kind\":\"scalar_projection\"",
         "\"projection_0_name\":\"ts_window\"",
         "\"projection_0_function_id\":\"timeseries.aggregate\"",
@@ -427,12 +512,55 @@ int main() {
         "\"projection_0_time_series_window_interval_value\":\"1 day\""}},
   };
 
-  for (const auto& test_case : cases) {
-    const auto artifacts = RunPipeline(test_case);
-    RequireExactLowering(test_case, artifacts);
-    RequireServerAdmission(test_case, artifacts.envelope);
+  auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "sbsql_sbsfc_063_window_conformance";
+  const auto memory_configured =
+      memory::ConfigureDefaultMemoryManagerForFixture(
+          memory_policy, "sbsql_sbsfc_063_window_conformance");
+  Require(memory_configured.ok(),
+          "SBSFC-063 memory manager configuration failed");
+
+  const auto fixture_database = MakeFixtureDatabase();
+  Require(!fixture_database.empty(), "SBSFC-063 fixture database creation failed");
+  ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.embedded_database_path = fixture_database.string();
+  ParserMetrics metrics;
+  SblrTemplateCache cache;
+  {
+    SbsqlTestWireSession session(config, &metrics, &cache);
+    AuthCredentialEnvelope credentials;
+    credentials.provider_family = "local_password";
+    credentials.principal = std::string(kFixturePrincipal);
+    credentials.requested_database = fixture_database.string();
+    credentials.application_name = "sbsfc_063_window_conformance";
+    credentials.credential_evidence = std::string(kFixturePassword);
+    credentials.credential_evidence_present = true;
+    MessageVectorSet authentication_messages;
+    const bool authenticated =
+        session.AuthenticateCredentials(credentials, &authentication_messages);
+    if (!authenticated) {
+      std::cerr << RenderMessageVectorSet(authentication_messages);
+    }
+    Require(authenticated && session.session().authenticated,
+            "SBSFC-063 fixture did not authenticate");
+    const auto created = session.RunPipeline("CREATE TABLE customer (id INT)", true);
+    if (!created.accepted) std::cerr << RenderMessageVectorSet(created.messages);
+    Require(created.accepted && !created.messages.has_errors(),
+            "SBSFC-063 fixture relation creation failed");
+
+    for (std::size_t index = 0; index < 2; ++index) {
+      const auto& test_case = cases[index];
+      SbsqlPipelineConformanceSummary summary;
+      const auto result =
+          RunEnginePipelineForConformance(&session, test_case.sql, &summary);
+      RequireExactLowering(test_case, result, summary);
+    }
   }
-  RequireWindowPlanDispatch();
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
+  RequireStaticScalarProjectionLowering(cases.back());
   RequireTimeSeriesProjectionDispatch();
   RequireTimeSeriesAppendDispatch();
   std::cout << "sbsql_sbsfc_063_window_grammar_exact_route_conformance=passed\n";

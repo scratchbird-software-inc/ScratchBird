@@ -262,6 +262,7 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id,
                                          std::move(trace_key));
   envelope.opcode_code = registry_entry->code;
   envelope.result_shape = registry_entry->result_contract;
+  envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
       UuidText(MakeUuid(UuidKind::object, 40));
   envelope.registry_snapshot_uuid =
@@ -437,7 +438,7 @@ bool ProveSblrEnvelopeAuthority() {
   options.wait_policy = 1;
   sblr::SblrOperand operand;
   operand.ordinal = 1;
-  operand.type = "transaction.begin.options";
+  operand.type = "transaction.begin_options";
   operand.name = "options";
   operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
   operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
@@ -510,7 +511,7 @@ bool BeginRouteTransaction(Fixture const& fixture,
 
   sblr::SblrOperand operand;
   operand.ordinal = 1;
-  operand.type = "transaction.begin.options";
+  operand.type = "transaction.begin_options";
   operand.name = "options";
   operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
   operand.value_body = std::move(body);
@@ -565,6 +566,29 @@ bool BeginRouteTransaction(Fixture const& fixture,
 bool ProveRoutePlanning(const Fixture& fixture,
                         const api::EngineRequestContext& context) {
   (void)fixture;
+  auto parser_authority = QueryExecuteEnvelope(context);
+  parser_authority.contains_sql_text = true;
+  const auto parser_refused = Dispatch(context, std::move(parser_authority));
+  bool ok = Expect(!parser_refused.accepted &&
+                       !parser_refused.dispatched_to_api,
+                   "optimizer route did not reject parser SQL execution authority") &&
+            Expect(DispatchHasDiagnostic(
+                       parser_refused,
+                       "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY"),
+                   "optimizer route did not preserve parser SQL refusal") ;
+
+  auto transaction_authority = QueryExecuteEnvelope(context);
+  transaction_authority.requires_transaction_context = true;
+  auto transactionless = context;
+  transactionless.transaction_uuid.canonical.clear();
+  transactionless.local_transaction_id = 0;
+  const auto transaction_refused =
+      Dispatch(transactionless, std::move(transaction_authority));
+  ok = Expect(!transaction_refused.accepted &&
+                  !transaction_refused.dispatched_to_api,
+              "optimizer route did not reject parser transaction authority") &&
+       ok;
+
   const auto executed = sblr::DispatchSblrOperation(
       {context, QueryExecuteEnvelope(context), api::EngineApiRequest{},
        std::nullopt});
@@ -590,7 +614,8 @@ bool ProveRoutePlanning(const Fixture& fixture,
                             .fields.front()
                             .second.encoded_value == "42",
                 "query.execute did not publish the independent one-row int64 "
-                "result");
+                "result") &&
+         ok;
 }
 
 bool ProveSecurityAuthorization(const Fixture& fixture,

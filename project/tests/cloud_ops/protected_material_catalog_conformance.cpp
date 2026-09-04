@@ -50,11 +50,15 @@ api::EngineRequestContext Context(std::uint64_t tx,
                                   std::uint64_t visible_through,
                                   std::uint64_t epoch = 1000) {
   api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_path = DatabasePath().string();
   context.database_uuid.canonical = std::string(kDatabaseUuid);
   context.principal_uuid.canonical = "019e18d0-1120-7000-8000-000000000010";
   context.security_context_present = true;
   context.trace_tags.push_back("security.bootstrap");
+  context.trace_tags.push_back("security.fixture_trace_authority");
+  context.trace_tags.push_back("right:KEY_RELEASE_APPROVE");
+  context.trace_tags.push_back("right:PROTECTED_MATERIAL_RELEASE");
   context.local_transaction_id = tx;
   context.snapshot_visible_through_local_transaction_id = visible_through;
   context.security_epoch = 7;

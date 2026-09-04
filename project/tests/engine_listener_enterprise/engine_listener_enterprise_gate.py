@@ -225,7 +225,7 @@ SBSQL_SYNC_REQUIRED_FIELDS = (
 SBSQL_NATIVE_STYLE = "sbsql_native_normalized"
 SBSQL_ACTIVE_EXECUTION_PLAN_PREFIX = PUBLIC_PARSER_HANDOFF_PREFIX
 SBSQL_SUPERSEDED_EXECUTION_PLAN_PREFIXES = (PUBLIC_SBSQL_HANDOFF_PREFIX,)
-EXPECTED_PRIMARY_SBLR_FAMILY_ROWS = 54
+EXPECTED_PRIMARY_SBLR_FAMILY_ROWS = 61
 EXPECTED_SBLR_OPCODE_ROWS = 217
 EXPECTED_PARSER_CONTRACT_MINIMUM_ROWS = 1300
 SBSQL_FORBIDDEN_STYLE_TOKENS = (
@@ -546,8 +546,8 @@ INTEGRATED_PRODUCT_PROOF_ROWS: tuple[dict[str, Any], ...] = (
         "evidence_files": {
             "tests/release/public_sblr_uuid_mga_route_integration_gate.cpp": (
                 "CreateDatabaseFile",
-                "SBLR_TRANSACTION_BEGIN",
-                "SBLR_TRANSACTION_COMMIT",
+                "SBLR_TXN_BEGIN",
+                "SBLR_TXN_COMMIT",
                 "committed transaction was not recorded in MGA inventory",
             ),
         },
@@ -560,8 +560,8 @@ INTEGRATED_PRODUCT_PROOF_ROWS: tuple[dict[str, Any], ...] = (
         "expected_result": "sblr_refuses_sql_text_and_unresolved_names_then_dispatches_auth_optimizer_and_cluster_fail_closed",
         "evidence_files": {
             "tests/release/public_sblr_uuid_mga_route_integration_gate.cpp": (
-                "SB_SBLR_SQL_TEXT_FORBIDDEN",
-                "SB_SBLR_NAMES_NOT_RESOLVED_TO_UUIDS",
+                "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY",
+                "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
                 "materialized_authorization_context",
                 "cluster SBLR route did not fail closed at provider boundary",
             ),

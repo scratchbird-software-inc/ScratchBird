@@ -301,6 +301,9 @@ sblr::SblrOperationEnvelope EngineEnvelope(const FunctionCase& test_case) {
   envelope.operands.push_back({"text", "projection_count", "1"});
   envelope.operands.push_back({"text", "projection_0_name", std::string(test_case.projection_name)});
   envelope.operands.push_back({"text", "projection_0_expr_kind", "function"});
+  envelope.operands.push_back({"text", "projection_0_type", std::string(test_case.expected_type)});
+  envelope.operands.push_back({"text", "projection_0_value", ""});
+  envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   envelope.operands.push_back({"text", "projection_0_function_id", std::string(test_case.function_id)});
   envelope.operands.push_back({"text", "projection_0_function_arg_count",
                                std::to_string(test_case.args.size())});
@@ -308,11 +311,13 @@ sblr::SblrOperationEnvelope EngineEnvelope(const FunctionCase& test_case) {
     const auto& arg = test_case.args[index];
     const auto prefix = "projection_0_arg_" + std::to_string(index) + "_";
     envelope.operands.push_back({"text", prefix + "name", arg.name});
+    envelope.operands.push_back({"text", prefix + "expr_kind", "literal"});
     envelope.operands.push_back({"text", prefix + "type", arg.type});
     envelope.operands.push_back({"text", prefix + "value", arg.value});
     envelope.operands.push_back({"text", prefix + "is_null", "false"});
   }
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 void RequireEngineDispatch(const FunctionCase& test_case) {

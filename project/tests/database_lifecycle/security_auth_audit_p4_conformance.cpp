@@ -14,7 +14,15 @@
 #include "security/protected_material_api.hpp"
 #include "security/security_crypto_policy.hpp"
 #include "security/security_principal_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
+#include "database_lifecycle.hpp"
+#include "uuid.hpp"
 
+#include "../release/public_release_authz_fixture.hpp"
+
+#include <openssl/evp.h>
+
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -28,11 +36,16 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
+namespace platform = scratchbird::core::platform;
+namespace uuid = scratchbird::core::uuid;
 
 constexpr std::string_view kDatabaseUuid = "019e1d7e-7000-7000-8000-0000000000a4";
 constexpr std::string_view kFilespaceUuid = "019e1d7e-7001-7000-8000-0000000000b4";
 constexpr std::string_view kAdminPrincipalUuid =
     "019e1d7e-7002-7000-8000-0000000000a4";
+constexpr std::string_view kSessionUuid =
+    "019e1d7e-7004-7000-8000-0000000000a4";
 constexpr std::string_view kAlicePrincipalUuid =
     "019e1d7e-7003-7000-8000-0000000000a4";
 constexpr std::string_view kVerifier =
@@ -43,6 +56,8 @@ constexpr std::string_view kPlaintextSecret = "CorrectHorseBatteryStaple-P4";
 constexpr std::string_view kHexProof =
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 constexpr std::string_view kFutureExpiryMs = "4102444800000";
+
+api::EngineRequestContext g_transaction_context;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -62,33 +77,137 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
-api::EngineRequestContext Context(const std::filesystem::path& database_path, bool admin = true) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+void CreateDatabaseFixture(const std::filesystem::path& database_path) {
+  const auto database_uuid = uuid::ParseUuid(std::string(kDatabaseUuid));
+  const auto filespace_uuid = uuid::ParseUuid(std::string(kFilespaceUuid));
+  Require(database_uuid.ok() && filespace_uuid.ok(),
+          "P4 database fixture UUID parse failed");
+
+  db::DatabaseCreateConfig create;
+  create.path = database_path.string();
+  create.database_uuid = {platform::UuidKind::database, database_uuid.value};
+  create.filespace_uuid = {platform::UuidKind::filespace, filespace_uuid.value};
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = 1950000000000ull;
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  create.allow_overwrite = false;
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key << '\n';
+  }
+  Require(created.ok(), "P4 database fixture create failed");
+}
+
+void GrantAdminAuthority(api::EngineRequestContext* context) {
+  context->principal_uuid.canonical = std::string(kAdminPrincipalUuid);
+  context->security_context_present = true;
+  context->trace_tags.push_back("security.bootstrap");
+  context->trace_tags.push_back("group:SEC");
+  context->trace_tags.push_back("group:AUD");
+  context->trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
+  scratchbird::tests::release::GrantMaterializedRights(
+      context,
+      {"AUTH_PROVIDER_ADMIN",
+       "SEC_IDENTITY_ADMIN",
+       "POLICY_ADMIN",
+       "KEY_RELEASE_APPROVE",
+       "PROTECTED_MATERIAL_RELEASE"});
+}
+
+void BeginFixtureTransaction(const std::filesystem::path& database_path) {
+  api::EngineBeginTransactionRequest begin;
+  begin.context.trust_mode = api::EngineTrustMode::server_isolated;
+  begin.context.database_path = database_path.string();
+  begin.context.database_uuid.canonical = std::string(kDatabaseUuid);
+  begin.context.session_uuid.canonical = std::string(kSessionUuid);
+  begin.context.resource_epoch = 1000;
+  begin.context.catalog_generation_id = 1;
+  begin.context.security_epoch = 2;
+  begin.context.name_resolution_epoch = 1;
+  GrantAdminAuthority(&begin.context);
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  if (!begun.ok) {
+    for (const auto& diagnostic : begun.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+  }
+  Require(begun.ok, "P4 fixture transaction begin failed");
+
+  g_transaction_context = begin.context;
+  g_transaction_context.local_transaction_id = begun.local_transaction_id;
+  g_transaction_context.transaction_uuid = begun.transaction_uuid;
+  g_transaction_context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  g_transaction_context.transaction_isolation_level = begun.isolation_level;
+}
+
+api::EngineRequestContext Context(const std::filesystem::path& database_path,
+                                  bool admin = true) {
+  api::EngineRequestContext context = g_transaction_context;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = std::string(kDatabaseUuid);
-  context.security_context_present = true;
-  context.local_transaction_id = 1;
-  context.transaction_uuid.canonical = "txn-p4-security";
-  context.principal_uuid.canonical = admin ? "principal-p4-admin" : "principal-p4-user";
-  context.resource_epoch = 1000;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 2;
   if (admin) {
     context.principal_uuid.canonical = std::string(kAdminPrincipalUuid);
-    context.trace_tags.push_back("security.bootstrap");
-    context.trace_tags.push_back("group:SEC");
-    context.trace_tags.push_back("group:AUD");
-    context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
+    const auto current = api::LoadSecurityPrincipalLifecycleState(context);
+    if (!current.ok) {
+      std::cerr << current.diagnostic.code << ':'
+                << current.diagnostic.detail << '\n';
+    }
+    Require(current.ok && current.state.security_context_generation != 0,
+            "P4 current security authority load failed");
+    context.authorization_context.security_context_generation =
+        current.state.security_context_generation;
+  } else {
+    context.principal_uuid.canonical = std::string(kAlicePrincipalUuid);
+    context.trace_tags.clear();
+    context.authorization_context = {};
   }
-  if (!admin) { context.principal_uuid.canonical = std::string(kAlicePrincipalUuid); }
-  std::ofstream touch(database_path, std::ios::app);
-  Require(static_cast<bool>(touch), "P4 database fixture create failed");
   return context;
 }
 
+void CommitFixtureTransaction(const std::filesystem::path& database_path) {
+  api::EngineCommitTransactionRequest commit;
+  commit.context = Context(database_path);
+  const auto committed = api::EngineCommitTransaction(commit);
+  if (!committed.ok) {
+    for (const auto& diagnostic : committed.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+  }
+  Require(committed.ok, "P4 fixture transaction commit failed");
+}
+
 std::string LocalPasswordCredentialFingerprint(std::string_view verifier) {
-  return "local-password-verifier:v1:sha256:" + api::SecuritySha256Hex(verifier);
+  constexpr int kIterations = 600000;
+  const std::array<unsigned char, 16> salt = {
+      0x50, 0x34, 0x2d, 0x53, 0x63, 0x72, 0x61, 0x74,
+      0x63, 0x68, 0x42, 0x69, 0x72, 0x64, 0x2d, 0x31};
+  std::array<unsigned char, 32> derived{};
+  const bool ok =
+      PKCS5_PBKDF2_HMAC(verifier.data(),
+                        static_cast<int>(verifier.size()),
+                        salt.data(),
+                        static_cast<int>(salt.size()),
+                        kIterations,
+                        EVP_sha256(),
+                        static_cast<int>(derived.size()),
+                        derived.data()) == 1;
+  Require(ok, "P4 PBKDF2 password fixture derivation failed");
+  auto lower_hex = [](const auto& bytes) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string encoded;
+    encoded.reserve(bytes.size() * 2);
+    for (const auto byte : bytes) {
+      encoded.push_back(kHex[(byte >> 4) & 0x0f]);
+      encoded.push_back(kHex[byte & 0x0f]);
+    }
+    return encoded;
+  };
+  return "local-password-pbkdf2-sha256:v1:iterations=" +
+         std::to_string(kIterations) + ":salt=" + lower_hex(salt) +
+         ":verifier=" + lower_hex(derived);
 }
 
 std::string TemporaryTokenCredentialFingerprint(std::string_view token,
@@ -201,10 +320,7 @@ api::EngineAuthenticateRequest AuthRequest(const std::filesystem::path& database
   request.context = Context(database_path);
   request.provider_family = "local_password";
   request.principal_claim = "alice";
-  request.credential_evidence = std::string("scheme=local_password_v1;principal=alice;verifier=") +
-                                std::string(verifier) +
-                                ";principal_uuid=" + std::string(kAlicePrincipalUuid) +
-                                ";storage_authority=durable_security_catalog";
+  request.credential_evidence = std::string(verifier);
   request.credential_evidence_present = true;
   request.target_database.uuid.canonical = std::string(kDatabaseUuid);
   request.option_envelopes.push_back("auth_authority:engine");
@@ -336,6 +452,11 @@ void TestAuthProviderManifestAndPolicy(const std::filesystem::path& database_pat
 void TestEngineAuthenticationAndPolicy(const std::filesystem::path& database_path) {
   WriteAuthStore(database_path);
   const auto good = api::EngineAuthenticate(AuthRequest(database_path));
+  if (!good.ok) {
+    for (const auto& diagnostic : good.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+  }
   Require(good.ok && good.authenticated, "P4 engine authentication rejected valid verifier");
   Require(HasEvidence(good, "authentication_provider"),
           "P4 engine authentication evidence missing");
@@ -787,12 +908,15 @@ void TestAuditAndProtectedMaterial(const std::filesystem::path& database_path) {
 int main() {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "p4_security_auth_audit.sbdb";
+  CreateDatabaseFixture(database_path);
+  BeginFixtureTransaction(database_path);
   TestAuthProviderManifestAndPolicy(database_path);
   TestEngineAuthenticationAndPolicy(database_path);
   TestAuthRegistryMethodPosture(database_path);
   TestFederatedDirectoryAndMfaProviders(database_path);
   TestWorkloadProxyTokenAndRefreshProviders(database_path);
   TestAuditAndProtectedMaterial(database_path);
+  CommitFixtureTransaction(database_path);
   std::filesystem::remove_all(temp_dir);
   return EXIT_SUCCESS;
 }

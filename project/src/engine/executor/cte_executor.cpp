@@ -103,14 +103,24 @@ std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
-  std::string type_uuid;
-  for (const auto& row : manifest.manifest.descriptor_rows) {
-    if (row.stable_name != stable_name) continue;
-    if (!type_uuid.empty()) return {};
-    type_uuid =
-        scratchbird::core::uuid::UuidToString(row.descriptor_uuid.value);
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (count != 1 || found == manifest.manifest.descriptor_rows.end() ||
+      !found->descriptor_uuid.valid()) {
+    return {};
   }
-  return type_uuid;
+  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
+      found->descriptor_uuid.value);
+  const auto identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          "019d0000-0000-7000-8000-00000000d701",
+          manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+          found->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 struct RecursiveCteCancellationPoll {

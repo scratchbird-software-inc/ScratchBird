@@ -173,6 +173,7 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcod
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "sbsql.example_database_seed");
   envelope.opcode_code = registry_entry->code;
   envelope.result_shape = registry_entry->result_contract;
+  envelope.diagnostic_shape = "diagnostic_vector";
   static const std::string parser_package_uuid = NewUuid(UuidKind::object);
   static const std::string registry_snapshot_uuid = NewUuid(UuidKind::object);
   envelope.parser_package_uuid = parser_package_uuid;
@@ -210,7 +211,7 @@ SeedTransaction BeginSeedTransaction(const std::filesystem::path& database_path,
 
   sblr::SblrOperand operand;
   operand.ordinal = 1;
-  operand.type = "transaction.begin.options";
+  operand.type = "transaction.begin_options";
   operand.name = "options";
   operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
   operand.value_body = std::move(body);
@@ -484,6 +485,33 @@ void SeedCopyStreamFixtureRow(const api::EngineRequestContext& context,
   }
 }
 
+void SeedChunkedResponseFixtureRows(const api::EngineRequestContext& context,
+                                    const std::string& table_uuid) {
+  constexpr std::size_t kRowCount = 300;
+  constexpr std::size_t kPayloadBytes = 3800;
+  api::EngineInsertRowsRequest request;
+  request.context = context;
+  request.operation_id = "dml.insert_rows";
+  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.object_kind = "table";
+  request.input_rows.reserve(kRowCount);
+  const std::string payload_prefix(kPayloadBytes - 1, 'x');
+  for (std::size_t ordinal = 0; ordinal < kRowCount; ++ordinal) {
+    api::EngineRowValue row;
+    row.requested_row_uuid.canonical = NewUuid(UuidKind::row);
+    row.fields.push_back(
+        {"id", TextValue("chunk-response-" + std::to_string(ordinal + 1))});
+    row.fields.push_back(
+        {"payload",
+         TextValue(payload_prefix +
+                   static_cast<char>('a' + (ordinal % 26)))});
+    request.input_rows.push_back(std::move(row));
+  }
+  if (!api::EngineInsertRows(request).ok) {
+    Fail("engine-owned chunked-response row seed failed");
+  }
+}
+
 void SeedUserSchemas(const std::filesystem::path& database_path,
                      const std::string& database_uuid) {
   auto transaction = BeginSeedTransaction(database_path, database_uuid);
@@ -491,8 +519,9 @@ void SeedUserSchemas(const std::filesystem::path& database_path,
 
   const std::string public_schema_uuid = SchemaUuidForPath(context, "users.public");
   if (public_schema_uuid.empty()) Fail("users.public schema UUID was not visible after database create");
+  const std::string chunked_response_table_uuid = NewUuid(UuidKind::object);
   CreateTable(context,
-              NewUuid(UuidKind::object),
+              chunked_response_table_uuid,
               public_schema_uuid,
               "benchmark_public_items");
   const std::string copy_stream_table_uuid = CreateCopyStreamFixtureTable(context, public_schema_uuid);
@@ -501,6 +530,8 @@ void SeedUserSchemas(const std::filesystem::path& database_path,
 
   auto seed_transaction = BeginSeedTransaction(database_path, database_uuid);
   SeedCopyStreamFixtureRow(seed_transaction.context, copy_stream_table_uuid);
+  SeedChunkedResponseFixtureRows(seed_transaction.context,
+                                 chunked_response_table_uuid);
   CommitSeedTransaction(seed_transaction);
 }
 

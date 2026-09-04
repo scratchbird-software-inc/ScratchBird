@@ -35,6 +35,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -207,7 +208,11 @@ bool BuildMgaContextualTextProjectionMaterialV2(
     MgaContextualTextProjectionMaterialV2* output,
     EngineApiDiagnostic* diagnostic);
 
+using scratchbird::storage::database::AcquireLocalTransactionInventorySnapshot;
 using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;
+using scratchbird::storage::database::LocalTransactionInventorySnapshot;
+using scratchbird::storage::database::RevalidateLocalTransactionInventorySnapshot;
+using scratchbird::transaction::mga::LocalTransactionInventory;
 using scratchbird::transaction::mga::LookupLocalTransaction;
 using scratchbird::transaction::mga::MakeLocalTransactionId;
 using scratchbird::transaction::mga::TransactionState;
@@ -4433,7 +4438,23 @@ EngineApiDiagnostic RewriteMgaIndexEntriesForMergedIndex(
     const CrudIndexRecord& index,
     const std::string& table_uuid,
     const std::vector<idx::SecondaryIndexBaseEntry>& base_entries) {
-  const std::string path = IndexStorePath(context);
+  // New writes are relation-scoped and readers deliberately prefer the
+  // scoped segment over the legacy database-wide sidecar.  Publishing a
+  // merge into the legacy file while a scoped segment exists makes the
+  // merged rows unreachable as soon as the delta ledger is cleaned.  Rewrite
+  // the same physical authority that supplied this relation's base entries;
+  // retain the legacy path only for databases that have not yet created a
+  // scoped segment.
+  const std::string scoped_path = ScopedIndexStorePath(context, table_uuid);
+  const bool relation_uses_scoped_storage =
+      FileExistsAndNotEmpty(ScopedRowStorePath(context, table_uuid)) ||
+      FileExistsAndNotEmpty(ScopedRowBinaryStorePath(context, table_uuid)) ||
+      FileExistsAndNotEmpty(scoped_path) ||
+      FileExistsAndNotEmpty(ScopedIndexBinaryStorePath(context, table_uuid)) ||
+      FileExistsAndNotEmpty(ScopedSummaryStorePath(context, table_uuid));
+  const std::string path = relation_uses_scoped_storage
+                               ? scoped_path
+                               : IndexStorePath(context);
   const auto existing_lines = ReadLines(path);
   std::vector<std::string> output_lines;
   output_lines.reserve(existing_lines.size() + base_entries.size());
@@ -5139,13 +5160,23 @@ bool LoadDecodedScopedRowsForTableBounded(
           DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
       if (fields.size() >= 12) { row.temporary_session_uuid = fields[11]; }
       if (!AdmitBoundedScopedRow(control, row)) { return false; }
-      decoded_rows.push_back(std::move(row));
-      if (!CheckedHeapReadMemoryAdd(line_projection,
+      // line_projection is a conservative bound for the transient tab/hex
+      // decoder working set.  It is not retained once the decoded row has
+      // been materialized.  Charging that transient estimate for every row
+      // made the receipt grow by 128 times the complete relation payload and
+      // rejected small, bounded relations despite a much smaller live set.
+      // Account the exact owned row carriers instead; the vector's reserved
+      // structural storage is already included in
+      // retained_text_row_projection.
+      std::uint64_t retained_row_bytes = 0;
+      if (!AccountHeapReadRowDynamicMemoryBytes(row, &retained_row_bytes) ||
+          !CheckedHeapReadMemoryAdd(retained_row_bytes,
                                     &retained_text_row_projection)) {
         control->refusal_detail =
             "heap_read_text_memory_receipt_overflow";
         return false;
       }
+      decoded_rows.push_back(std::move(row));
       return true;
     };
     constexpr std::size_t kReadChunkBytes = 64 * 1024;
@@ -5283,7 +5314,8 @@ bool IsMgaLargeValueLocator(const std::string& value) {
 }
 
 EngineApiDiagnostic OverlayMgaTransactionAuthority(const EngineRequestContext& context,
-                                                   CrudState* state);
+                                                   CrudState* state,
+                                                   bool allow_read_only_active);
 
 struct LargeValueRecord {
   std::uint64_t total_bytes = 0;
@@ -5306,7 +5338,8 @@ LargeValueReclaimLoadResult LoadVisibleMgaLargeValueReclaims(
     const EngineRequestContext& context) {
   LargeValueReclaimLoadResult result;
   CrudState transaction_state;
-  const auto authority = OverlayMgaTransactionAuthority(context, &transaction_state);
+  const auto authority =
+      OverlayMgaTransactionAuthority(context, &transaction_state, true);
   if (authority.error) {
     result.diagnostic = authority;
     return result;
@@ -5732,11 +5765,14 @@ bool IndexEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
   return false;
 }
 
+using DescriptorFieldsByRelation =
+    std::map<std::string,
+             std::vector<std::pair<std::string, std::string>>>;
+
 struct DescriptorFieldsCacheRecord {
   std::uintmax_t file_size = 0;
   std::int64_t file_mtime_ticks = 0;
-  std::map<std::string, std::vector<std::pair<std::string, std::string>>>
-      descriptors;
+  std::shared_ptr<const DescriptorFieldsByRelation> descriptors;
 };
 
 std::mutex& DescriptorFieldsCacheMutex() {
@@ -5784,6 +5820,11 @@ struct MgaMetadataCacheEntry {
   std::vector<CrudIndexRecord> indexes;
   std::vector<CrudSealedRelationDescriptorSnapshot>
       sealed_relation_descriptor_snapshots;
+  // Preserve the provenance of temporary relation identities even when a
+  // savepoint rollback filters their visible metadata rows.  Catalog and MGA
+  // journals have independent event sequences, so the name-resolution layer
+  // cannot reconstruct this distinction from the catalog row alone.
+  std::set<std::string> known_temporary_relation_uuids;
   std::uint64_t max_event_sequence = 0;
 };
 
@@ -5792,8 +5833,11 @@ std::mutex& MgaMetadataCacheMutex() {
   return mutex;
 }
 
-std::map<MgaMetadataCacheKey, MgaMetadataCacheEntry>& MgaMetadataCache() {
-  static std::map<MgaMetadataCacheKey, MgaMetadataCacheEntry> cache;
+std::map<MgaMetadataCacheKey,
+         std::shared_ptr<const MgaMetadataCacheEntry>>&
+MgaMetadataCache() {
+  static std::map<MgaMetadataCacheKey,
+                  std::shared_ptr<const MgaMetadataCacheEntry>> cache;
   return cache;
 }
 
@@ -5813,7 +5857,8 @@ ScopedRelationFileIdentity ExistingFileIdentity(const std::string& path) {
   return ScopedRelationTextFileIdentity(path);
 }
 
-std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDescriptorFieldsByRelation(
+std::shared_ptr<const DescriptorFieldsByRelation>
+LoadDescriptorFieldsSnapshot(
     const EngineRequestContext& context,
     std::string_view required_relation_uuid = {}) {
   const std::string path = DescriptorStorePath(context);
@@ -5827,8 +5872,9 @@ std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDesc
     if (cached != DescriptorFieldsCache().end() &&
         cached->second.file_size == file_size &&
         cached->second.file_mtime_ticks == file_mtime_ticks &&
+        cached->second.descriptors != nullptr &&
         (required_relation_uuid.empty() ||
-         cached->second.descriptors.contains(
+         cached->second.descriptors->contains(
              std::string(required_relation_uuid)))) {
       return cached->second.descriptors;
     }
@@ -5840,7 +5886,7 @@ std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDesc
   // names an exact required relation and the matching cache entry omits it,
   // re-read the durable store even if its coarse file identity is unchanged.
   // A genuine durable miss remains fail-closed in the caller.
-  std::map<std::string, std::vector<std::pair<std::string, std::string>>> descriptors;
+  DescriptorFieldsByRelation descriptors;
   for (const auto& line : ReadLines(path)) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 4 || fields[0] != kDescriptorMagic || fields[1] != "RELATION") { continue; }
@@ -5848,9 +5894,19 @@ std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDesc
   }
   {
     const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
-    DescriptorFieldsCache()[path] = {file_size, file_mtime_ticks, descriptors};
+    auto immutable =
+        std::make_shared<const DescriptorFieldsByRelation>(std::move(descriptors));
+    DescriptorFieldsCache()[path] = {file_size, file_mtime_ticks, immutable};
+    return immutable;
   }
-  return descriptors;
+}
+
+DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
+    const EngineRequestContext& context,
+    std::string_view required_relation_uuid = {}) {
+  const auto snapshot =
+      LoadDescriptorFieldsSnapshot(context, required_relation_uuid);
+  return snapshot == nullptr ? DescriptorFieldsByRelation{} : *snapshot;
 }
 
 EngineApiDiagnostic PersistDescriptorFields(const EngineRequestContext& context,
@@ -5869,7 +5925,12 @@ EngineApiDiagnostic PersistDescriptorFields(const EngineRequestContext& context,
     auto cached = DescriptorFieldsCache().find(path);
     if (cached != DescriptorFieldsCache().end()) {
       const auto updated_identity = ExistingFileIdentity(path);
-      cached->second.descriptors[relation_uuid] = fields;
+      auto updated = std::make_shared<DescriptorFieldsByRelation>(
+          cached->second.descriptors == nullptr
+              ? DescriptorFieldsByRelation{}
+              : *cached->second.descriptors);
+      (*updated)[relation_uuid] = fields;
+      cached->second.descriptors = std::move(updated);
       cached->second.file_size =
           updated_identity.ok ? updated_identity.file_size : 0;
       cached->second.file_mtime_ticks =
@@ -5899,34 +5960,79 @@ std::string MgaTransactionStateName(TransactionState state) {
   }
 }
 
-EngineApiDiagnostic OverlayMgaTransactionAuthority(const EngineRequestContext& context, CrudState* state) {
+struct StatementTransactionInventoryAuthority {
+  std::shared_ptr<const LocalTransactionInventorySnapshot> snapshot;
+  EngineApiDiagnostic diagnostic;
+
+  bool ok() const { return snapshot != nullptr && !diagnostic.error; }
+};
+
+StatementTransactionInventoryAuthority ResolveStatementTransactionInventory(
+    const EngineRequestContext& context) {
+  StatementTransactionInventoryAuthority result;
+  if (context.statement_transaction_inventory_snapshot != nullptr) {
+    const auto& retained = *context.statement_transaction_inventory_snapshot;
+    if (retained.database_path != context.database_path ||
+        retained.inventory_root_body_sha256.empty() ||
+        (retained.publish_journal_present &&
+         retained.publish_journal_sha256.empty())) {
+      result.diagnostic = MakeInvalidRequestDiagnostic(
+          "mga.transaction_authority",
+          "statement_transaction_inventory_snapshot_stale");
+      return result;
+    }
+    result.snapshot = context.statement_transaction_inventory_snapshot;
+    result.diagnostic = OkDiagnostic();
+    return result;
+  }
+  const auto acquired =
+      AcquireLocalTransactionInventorySnapshot(context.database_path);
+  if (!acquired.ok()) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        acquired.diagnostic.diagnostic_code.empty()
+            ? "SB-MGA-TXN-INV-LOAD-FAILED"
+            : acquired.diagnostic.diagnostic_code,
+        acquired.diagnostic.message_key.empty()
+            ? "mga.transaction_inventory.load_failed"
+            : acquired.diagnostic.message_key,
+        acquired.diagnostic.remediation_hint, true);
+    return result;
+  }
+  result.snapshot = acquired.snapshot;
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+EngineApiDiagnostic OverlayMgaTransactionAuthority(
+    const EngineRequestContext& context,
+    CrudState* state,
+    bool allow_read_only_active) {
   if (state == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.transaction_authority", "state_required");
   }
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.transaction_authority", "database_path_required");
   }
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(context.database_path);
-  if (!loaded.ok()) {
-    return MakeEngineApiDiagnostic(loaded.diagnostic.diagnostic_code.empty() ? "SB-MGA-TXN-INV-LOAD-FAILED" : loaded.diagnostic.diagnostic_code,
-                                   loaded.diagnostic.message_key.empty() ? "mga.transaction_inventory.load_failed" : loaded.diagnostic.message_key,
-                                   loaded.diagnostic.remediation_hint,
-                                   true);
-  }
-  for (const auto& entry : loaded.inventory.entries) {
+  const auto loaded = ResolveStatementTransactionInventory(context);
+  if (!loaded.ok()) return loaded.diagnostic;
+  for (const auto& entry : loaded.snapshot->inventory.entries) {
     if (!entry.identity.local_id.valid()) { continue; }
     state->transactions[entry.identity.local_id.value] = MgaTransactionStateName(entry.state);
     state->max_transaction_id = std::max(state->max_transaction_id, entry.identity.local_id.value);
   }
   if (context.local_transaction_id != 0) {
-    const auto lookup = LookupLocalTransaction(loaded.inventory, MakeLocalTransactionId(context.local_transaction_id));
+    const auto lookup = LookupLocalTransaction(
+        loaded.snapshot->inventory,
+        MakeLocalTransactionId(context.local_transaction_id));
     if (!lookup.ok()) {
       return MakeEngineApiDiagnostic(lookup.diagnostic.diagnostic_code.empty() ? "SB-MGA-TXN-INV-LOOKUP-FAILED" : lookup.diagnostic.diagnostic_code,
                                      lookup.diagnostic.message_key.empty() ? "mga.transaction_inventory.lookup_failed" : lookup.diagnostic.message_key,
                                      lookup.diagnostic.remediation_hint,
                                      true);
     }
-    if (lookup.entry.state != TransactionState::active) {
+    if (lookup.entry.state != TransactionState::active &&
+        !(allow_read_only_active &&
+          lookup.entry.state == TransactionState::read_only_active)) {
       return MakeInvalidRequestDiagnostic("mga.transaction_authority", "active_local_transaction_required");
     }
   }
@@ -5942,11 +6048,10 @@ bool ExactTextMigrationCreatorTransaction(
       scratchbird::core::platform::UuidKind::transaction,
       std::string(transaction_uuid));
   if (!parsed.ok()) return false;
-  const auto inventory =
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  const auto inventory = ResolveStatementTransactionInventory(context);
   if (!inventory.ok()) return false;
   const auto exact = LookupLocalTransaction(
-      inventory.inventory, MakeLocalTransactionId(creator_tx));
+      inventory.snapshot->inventory, MakeLocalTransactionId(creator_tx));
   return exact.ok() &&
          exact.entry.identity.transaction_uuid.value == parsed.value.value;
 }
@@ -5956,11 +6061,11 @@ bool TextMigrationLineageCreatorVisible(
     const std::uint64_t migration_creator_tx,
     const std::uint64_t candidate_creator_tx) {
   if (candidate_creator_tx == 0) return true;
-  const auto inventory =
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  const auto inventory = ResolveStatementTransactionInventory(context);
   if (!inventory.ok()) return false;
   const auto exact = LookupLocalTransaction(
-      inventory.inventory, MakeLocalTransactionId(candidate_creator_tx));
+      inventory.snapshot->inventory,
+      MakeLocalTransactionId(candidate_creator_tx));
   if (!exact.ok()) return false;
   if (exact.entry.state == TransactionState::committed ||
       exact.entry.state == TransactionState::archived) {
@@ -6037,7 +6142,8 @@ EngineApiDiagnostic ValidateMgaMutatingTransactionAuthority(const EngineRequestC
     return MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required");
   }
   CrudState state;
-  const auto authority = OverlayMgaTransactionAuthority(context, &state);
+  const auto authority =
+      OverlayMgaTransactionAuthority(context, &state, false);
   if (authority.error) { return authority; }
   return OkDiagnostic();
 }
@@ -6137,20 +6243,21 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
   {
     const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());
     const auto cached = MgaMetadataCache().find(cache_key);
-    if (cached != MgaMetadataCache().end()) {
+    if (cached != MgaMetadataCache().end() && cached->second != nullptr) {
+      const auto& snapshot = *cached->second;
       state->tables.insert(state->tables.end(),
-                           cached->second.tables.begin(),
-                           cached->second.tables.end());
+                           snapshot.tables.begin(),
+                           snapshot.tables.end());
       state->indexes.insert(state->indexes.end(),
-                            cached->second.indexes.begin(),
-                            cached->second.indexes.end());
+                            snapshot.indexes.begin(),
+                            snapshot.indexes.end());
       state->sealed_relation_descriptor_snapshots.insert(
           state->sealed_relation_descriptor_snapshots.end(),
-          cached->second.sealed_relation_descriptor_snapshots.begin(),
-          cached->second.sealed_relation_descriptor_snapshots.end());
+          snapshot.sealed_relation_descriptor_snapshots.begin(),
+          snapshot.sealed_relation_descriptor_snapshots.end());
       state->max_event_sequence =
           std::max(state->max_event_sequence,
-                   cached->second.max_event_sequence);
+                   snapshot.max_event_sequence);
       return OkDiagnostic();
     }
   }
@@ -6173,6 +6280,9 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       table.temporary_scope = fields[8];
       table.temporary_session_uuid = fields[9];
       table.on_commit_action = fields[10];
+      if (table.temporary && !table.table_uuid.empty()) {
+        decoded.known_temporary_relation_uuids.insert(table.table_uuid);
+      }
       if (MetadataEventRolledBackBySavepoint(savepoints,
                                              table.creator_tx,
                                              table.event_sequence)) {
@@ -6241,6 +6351,9 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       table.temporary_session_uuid =
           fields[stf::kTemporarySessionUuid];
       table.on_commit_action = fields[stf::kOnCommitAction];
+      if (table.temporary && !table.table_uuid.empty()) {
+        decoded.known_temporary_relation_uuids.insert(table.table_uuid);
+      }
       const auto complete_fields =
           DecodeCrudPairs(fields[stf::kDescriptorFields]);
       if (EncodeCrudText(table.default_name) !=
@@ -6799,9 +6912,12 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
           if (column.column_uuid.canonical != row.column_uuid) continue;
           if (column.canonical_name_key != migrated_column_name ||
               column.value_descriptor.descriptor_uuid.canonical !=
-                  kCanonicalTextDescriptorUuid ||
+                  row.column_uuid ||
               column.value_descriptor.encoded_descriptor !=
                   migrated_column_descriptor ||
+              !ExactCanonicalMigratedTextDescriptor(
+                  context, column.value_descriptor.encoded_descriptor,
+                  row.column_uuid) ||
               column.column_generation != event_sequence) {
             return MakeInvalidRequestDiagnostic(
                 "mga.relation_metadata",
@@ -6988,9 +7104,7 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
                 return candidate.first == column.canonical_name_key;
               });
           if (prior_column == expected_table.columns.end() ||
-              sealed_column == table.columns.end() ||
-              column.value_descriptor.encoded_descriptor !=
-                  prior_column->second) {
+              sealed_column == table.columns.end()) {
             return MakeInvalidRequestDiagnostic(
                 "mga.relation_metadata",
                 "text_migration_prior_relation_column_invalid");
@@ -6998,18 +7112,26 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
           const bool declared = identities.contains(
               {row.object_uuid, column.column_uuid.canonical});
           if (!declared) {
-            if (prior_column->second != sealed_column->second) {
+            if (column.value_descriptor.encoded_descriptor !=
+                    prior_column->second ||
+                prior_column->second != sealed_column->second) {
               return MakeInvalidRequestDiagnostic(
                   "mga.relation_metadata",
                   "text_migration_undeclared_column_transition");
             }
             continue;
           }
+          auto migrated_table_descriptor = prior_column->second;
           if (column.column_generation != row.old_row_generation ||
+              !RewriteLegacyTextDescriptor(
+                  context, &migrated_table_descriptor,
+                  column.column_uuid.canonical) ||
               !RewriteLegacyTextDescriptor(
                   context,
                   &column.value_descriptor.encoded_descriptor,
                   column.column_uuid.canonical) ||
+              migrated_table_descriptor !=
+                  column.value_descriptor.encoded_descriptor ||
               column.value_descriptor.encoded_descriptor !=
                   sealed_column->second) {
             return MakeInvalidRequestDiagnostic(
@@ -7018,7 +7140,7 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
           }
           prior_column->second = sealed_column->second;
           column.value_descriptor.descriptor_uuid.canonical =
-              std::string(kCanonicalTextDescriptorUuid);
+              column.column_uuid.canonical;
           column.value_descriptor.canonical_type_name = "text";
           column.column_generation = event_sequence;
           ++migrated_lineage_columns;
@@ -7159,9 +7281,295 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       std::max(state->max_event_sequence, decoded.max_event_sequence);
   {
     const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());
-    MgaMetadataCache()[cache_key] = std::move(decoded);
+    auto& cache = MgaMetadataCache();
+    cache[cache_key] =
+        std::make_shared<const MgaMetadataCacheEntry>(std::move(decoded));
+    // Old generations remain alive through any statement that borrowed them;
+    // only the process-level lookup entry is evicted. This is copy-on-write
+    // publication with bounded cache residency, not in-place mutation.
+    constexpr std::size_t kMaximumMgaMetadataGenerations = 128;
+    while (cache.size() > kMaximumMgaMetadataGenerations) {
+      cache.erase(cache.begin());
+    }
   }
   return OkDiagnostic();
+}
+
+struct MgaMetadataSnapshotLoadResult {
+  EngineApiDiagnostic diagnostic;
+  std::shared_ptr<const MgaMetadataCacheEntry> snapshot;
+  MgaMetadataCacheKey key;
+
+  bool ok() const { return snapshot != nullptr && !diagnostic.error; }
+};
+
+MgaMetadataSnapshotLoadResult LoadMgaMetadataSnapshot(
+    const EngineRequestContext& context) {
+  MgaMetadataSnapshotLoadResult result;
+  const std::string metadata_path = MetadataStorePath(context);
+  const std::string savepoint_path = SavepointStorePath(context);
+  const auto metadata_identity = ExistingFileIdentity(metadata_path);
+  const auto savepoint_identity = ExistingFileIdentity(savepoint_path);
+  result.key = MgaMetadataCacheKey{
+      context.database_uuid.canonical,
+      metadata_path,
+      metadata_identity.ok ? metadata_identity.file_size : 0,
+      metadata_identity.ok ? metadata_identity.file_mtime_ticks : 0,
+      savepoint_path,
+      savepoint_identity.ok ? savepoint_identity.file_size : 0,
+      savepoint_identity.ok ? savepoint_identity.file_mtime_ticks : 0,
+      context.local_transaction_id};
+  {
+    const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());
+    const auto cached = MgaMetadataCache().find(result.key);
+    if (cached != MgaMetadataCache().end() && cached->second != nullptr) {
+      result.snapshot = cached->second;
+      result.diagnostic = OkDiagnostic();
+      return result;
+    }
+  }
+
+  // The compatibility decoder remains the single canonical parser for the
+  // metadata/savepoint streams.  A cold generation is decoded once and then
+  // published as an immutable shared snapshot; this temporary state is never
+  // retained by statement consumers.
+  CrudState compatibility_state;
+  result.diagnostic = LoadMgaMetadata(&compatibility_state, context);
+  if (result.diagnostic.error) return result;
+  {
+    const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());
+    const auto cached = MgaMetadataCache().find(result.key);
+    if (cached != MgaMetadataCache().end()) result.snapshot = cached->second;
+  }
+  if (result.snapshot == nullptr) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_metadata", "immutable_snapshot_publication_failed");
+  }
+  return result;
+}
+
+struct MgaStatementMetadataViewKey {
+  MgaMetadataCacheKey metadata;
+  std::string database_uuid;
+  std::string session_uuid;
+  std::string transaction_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t snapshot_visible_through_local_transaction_id{0};
+  std::uint64_t catalog_generation{0};
+  std::uint64_t security_epoch{0};
+  std::uint64_t policy_epoch{0};
+  std::uint64_t resource_epoch{0};
+  std::string descriptor_path;
+  std::uint64_t descriptor_file_size{0};
+  std::int64_t descriptor_file_mtime_ticks{0};
+  std::uint64_t inventory_file_size{0};
+  std::int64_t inventory_file_mtime_ticks{0};
+  bool publish_journal_present{false};
+  std::uint64_t publish_journal_size{0};
+  std::int64_t publish_journal_mtime_ticks{0};
+
+  bool operator<(const MgaStatementMetadataViewKey& other) const {
+    return std::tie(metadata, database_uuid, session_uuid, transaction_uuid,
+                    local_transaction_id,
+                    snapshot_visible_through_local_transaction_id,
+                    catalog_generation, security_epoch, policy_epoch,
+                    resource_epoch, descriptor_path, descriptor_file_size,
+                    descriptor_file_mtime_ticks, inventory_file_size,
+                    inventory_file_mtime_ticks, publish_journal_present,
+                    publish_journal_size, publish_journal_mtime_ticks) <
+           std::tie(other.metadata, other.database_uuid, other.session_uuid,
+                    other.transaction_uuid, other.local_transaction_id,
+                    other.snapshot_visible_through_local_transaction_id,
+                    other.catalog_generation, other.security_epoch,
+                    other.policy_epoch, other.resource_epoch,
+                    other.descriptor_path, other.descriptor_file_size,
+                    other.descriptor_file_mtime_ticks,
+                    other.inventory_file_size,
+                    other.inventory_file_mtime_ticks,
+                    other.publish_journal_present,
+                    other.publish_journal_size,
+                    other.publish_journal_mtime_ticks);
+  }
+};
+
+struct MgaStatementMetadataView {
+  std::shared_ptr<const MgaMetadataCacheEntry> source_snapshot;
+  std::shared_ptr<const LocalTransactionInventorySnapshot>
+      transaction_inventory_snapshot;
+  std::shared_ptr<const DescriptorFieldsByRelation> descriptor_fields;
+  CrudState visible_metadata;
+  std::unordered_map<std::string, std::size_t> visible_table_ordinals;
+  std::unordered_map<std::string, std::vector<CrudIndexRecord>>
+      visible_indexes_by_relation;
+};
+
+struct MgaStatementMetadataViewLoadResult {
+  EngineApiDiagnostic diagnostic;
+  std::shared_ptr<const MgaStatementMetadataView> view;
+  MgaStatementMetadataViewKey key;
+
+  bool ok() const { return view != nullptr && !diagnostic.error; }
+};
+
+std::mutex& MgaStatementMetadataViewCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<MgaStatementMetadataViewKey,
+         std::shared_ptr<const MgaStatementMetadataView>>&
+MgaStatementMetadataViewCache() {
+  static std::map<MgaStatementMetadataViewKey,
+                  std::shared_ptr<const MgaStatementMetadataView>> cache;
+  return cache;
+}
+
+MgaStatementMetadataViewLoadResult LoadMgaStatementMetadataView(
+    const EngineRequestContext& context,
+    const std::span<const std::string> required_relation_uuids = {}) {
+  MgaStatementMetadataViewLoadResult result;
+  EngineRequestContext statement_context = context;
+  if (statement_context.statement_transaction_inventory_snapshot == nullptr) {
+    auto acquired = AcquireLocalTransactionInventorySnapshot(
+        statement_context.database_path);
+    if (!acquired.ok()) {
+      result.diagnostic = MakeEngineApiDiagnostic(
+          acquired.diagnostic.diagnostic_code.empty()
+              ? "SB-MGA-TXN-INV-LOAD-FAILED"
+              : acquired.diagnostic.diagnostic_code,
+          acquired.diagnostic.message_key.empty()
+              ? "mga.transaction_inventory.load_failed"
+              : acquired.diagnostic.message_key,
+          acquired.diagnostic.remediation_hint, true);
+      return result;
+    }
+    statement_context.statement_transaction_inventory_snapshot =
+        std::move(acquired.snapshot);
+  }
+  const auto metadata = LoadMgaMetadataSnapshot(statement_context);
+  if (!metadata.ok()) {
+    result.diagnostic = metadata.diagnostic;
+    return result;
+  }
+  const auto& inventory =
+      *statement_context.statement_transaction_inventory_snapshot;
+  const auto descriptor_path = DescriptorStorePath(statement_context);
+  const auto descriptor_identity = ExistingFileIdentity(descriptor_path);
+  result.key = MgaStatementMetadataViewKey{
+      metadata.key,
+      context.database_uuid.canonical,
+      context.session_uuid.canonical,
+      context.transaction_uuid.canonical,
+      context.local_transaction_id,
+      context.snapshot_visible_through_local_transaction_id,
+      context.catalog_generation_id,
+      context.authorization_context.security_epoch != 0
+          ? context.authorization_context.security_epoch
+          : context.security_epoch,
+      context.authorization_context.policy_epoch,
+      context.resource_epoch,
+      descriptor_path,
+      descriptor_identity.ok ? descriptor_identity.file_size : 0,
+      descriptor_identity.ok ? descriptor_identity.file_mtime_ticks : 0,
+      inventory.database_file_size,
+      inventory.database_write_time_count,
+      inventory.publish_journal_present,
+      inventory.publish_journal_size,
+      inventory.publish_journal_write_time_count};
+  {
+    const std::lock_guard<std::mutex> guard(
+        MgaStatementMetadataViewCacheMutex());
+    const auto cached = MgaStatementMetadataViewCache().find(result.key);
+    if (cached != MgaStatementMetadataViewCache().end() &&
+        cached->second != nullptr &&
+        cached->second->descriptor_fields != nullptr &&
+        std::ranges::all_of(required_relation_uuids,
+                            [&cached](const std::string& relation_uuid) {
+          return cached->second->descriptor_fields->contains(relation_uuid);
+        })) {
+      result.view = cached->second;
+      result.diagnostic = OkDiagnostic();
+      return result;
+    }
+  }
+
+  auto view = std::make_shared<MgaStatementMetadataView>();
+  view->source_snapshot = metadata.snapshot;
+  view->transaction_inventory_snapshot =
+      statement_context.statement_transaction_inventory_snapshot;
+  view->visible_metadata.tables = metadata.snapshot->tables;
+  view->visible_metadata.indexes = metadata.snapshot->indexes;
+  view->visible_metadata.sealed_relation_descriptor_snapshots =
+      metadata.snapshot->sealed_relation_descriptor_snapshots;
+  view->visible_metadata.max_event_sequence =
+      metadata.snapshot->max_event_sequence;
+  const auto transaction_authority = OverlayMgaTransactionAuthority(
+      statement_context, &view->visible_metadata, true);
+  if (transaction_authority.error) {
+    result.diagnostic = transaction_authority;
+    return result;
+  }
+  FilterVisibleRetiredTemporaryMetadata(statement_context,
+                                        &view->visible_metadata);
+  FilterMgaTemporaryObjectsForSession(statement_context,
+                                      &view->visible_metadata);
+  view->descriptor_fields = LoadDescriptorFieldsSnapshot(statement_context);
+  const auto missing_required = std::ranges::find_if(
+      required_relation_uuids, [&view](const std::string& relation_uuid) {
+        return view->descriptor_fields == nullptr ||
+               !view->descriptor_fields->contains(relation_uuid);
+      });
+  if (missing_required != required_relation_uuids.end()) {
+    // A negative snapshot can have the same coarse size/mtime identity as a
+    // repaired durable store. Exact relation lookup must force one reread at
+    // that boundary; a genuine durable miss remains visible to the caller.
+    view->descriptor_fields =
+        LoadDescriptorFieldsSnapshot(statement_context, *missing_required);
+  }
+  if (view->descriptor_fields == nullptr) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_metadata", "descriptor_snapshot_unavailable");
+    return result;
+  }
+  view->visible_table_ordinals.reserve(view->visible_metadata.tables.size());
+  for (std::size_t ordinal = 0;
+       ordinal < view->visible_metadata.tables.size(); ++ordinal) {
+    const auto& table = view->visible_metadata.tables[ordinal];
+    if (!CrudCreatorVisible(view->visible_metadata, table.creator_tx,
+                            table.event_sequence,
+                            statement_context.local_transaction_id)) {
+      continue;
+    }
+    const auto found =
+        view->visible_table_ordinals.find(table.table_uuid);
+    if (found == view->visible_table_ordinals.end() ||
+        table.creator_tx >=
+            view->visible_metadata.tables[found->second].creator_tx) {
+      view->visible_table_ordinals[table.table_uuid] = ordinal;
+    }
+  }
+  view->visible_indexes_by_relation.reserve(
+      view->visible_metadata.indexes.size());
+  for (const auto& index : view->visible_metadata.indexes) {
+    if (CrudCreatorVisible(view->visible_metadata, index.creator_tx,
+                           index.event_sequence,
+                           statement_context.local_transaction_id)) {
+      view->visible_indexes_by_relation[index.table_uuid].push_back(index);
+    }
+  }
+  result.view = view;
+  result.diagnostic = OkDiagnostic();
+  {
+    const std::lock_guard<std::mutex> guard(
+        MgaStatementMetadataViewCacheMutex());
+    auto& cache = MgaStatementMetadataViewCache();
+    cache[result.key] = std::move(view);
+    constexpr std::size_t kMaximumStatementMetadataViews = 128;
+    while (cache.size() > kMaximumStatementMetadataViews) {
+      cache.erase(cache.begin());
+    }
+  }
+  return result;
 }
 
 std::string EncodeStringListAsCrudPairs(const std::vector<std::string>& values) {
@@ -7688,10 +8096,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
                              &contextual.column_uuid) ||
         !CopyContextualUuidV2(
             column.value_descriptor.descriptor_uuid.canonical,
-            &projected.descriptor_uuid) ||
-        !CopyContextualUuidV2(
-            column.value_descriptor.descriptor_uuid.canonical,
-            &contextual.projected_datatype_descriptor_uuid)) {
+            &projected.descriptor_uuid)) {
       *diagnostic = ContextualTextMgaDiagnostic(
           "projected column identity is invalid or duplicated");
       return false;
@@ -7773,12 +8178,33 @@ bool BuildMgaContextualTextProjectionMaterialV2(
       return false;
     }
 
+    const auto encoded_descriptor_fields = StrictRelationDescriptorFields(
+        column.value_descriptor.encoded_descriptor);
+    const auto embedded_datatype_descriptor =
+        encoded_descriptor_fields == std::nullopt
+            ? std::map<std::string, std::string>::const_iterator{}
+            : encoded_descriptor_fields->find("datatype_descriptor_uuid");
+    const std::string canonical_datatype_descriptor_uuid =
+        encoded_descriptor_fields != std::nullopt &&
+                embedded_datatype_descriptor !=
+                    encoded_descriptor_fields->end() &&
+                CanonicalNonNilMigrationUuid(
+                    embedded_datatype_descriptor->second)
+            ? embedded_datatype_descriptor->second
+            : column.value_descriptor.descriptor_uuid.canonical;
+    if (!CopyContextualUuidV2(
+            canonical_datatype_descriptor_uuid,
+            &contextual.projected_datatype_descriptor_uuid)) {
+      *diagnostic = ContextualTextMgaDiagnostic(
+          "projected canonical datatype descriptor UUID is invalid");
+      return false;
+    }
     const auto datatype = catalog_context_exact
         ? scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
               context.datatype_catalog_snapshot_uuid.canonical,
               context.datatype_catalog_generation,
               context.datatype_registry_generation,
-              column.value_descriptor.descriptor_uuid.canonical, 1)
+              canonical_datatype_descriptor_uuid, 1)
         : scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1{};
     if (datatype.ok) {
       const auto& row = datatype.row;
@@ -7801,8 +8227,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
     }
 
     const bool canonical_text_identity =
-        column.value_descriptor.descriptor_uuid.canonical ==
-        kCanonicalTextDescriptorUuid;
+        canonical_datatype_descriptor_uuid == kCanonicalTextDescriptorUuid;
     if (canonical_text_identity) {
       if (!catalog_context_exact || context.resource_epoch == 0 ||
           !ExactCanonicalTextIdentityAuthorityAvailable(context) ||
@@ -7867,7 +8292,8 @@ bool BuildMgaContextualTextProjectionMaterialV2(
         descriptor.flags = 1;
         descriptor.malformed_sequence_policy = 1;
         descriptor.null_encoding = 1;
-        descriptor.descriptor_uuid = projected.descriptor_uuid;
+        descriptor.descriptor_uuid =
+            contextual.projected_datatype_descriptor_uuid;
         descriptor.descriptor_generation = datatype.row.descriptor_generation;
         descriptor.type_uuid = projected.type_uuid;
         descriptor.type_generation = datatype.row.type_generation;
@@ -7967,15 +8393,14 @@ bool BindFreshCanonicalTextColumnIdentitiesV2(
           "fresh table and relation column order differs");
       return false;
     }
-    if (relation_column.value_descriptor.descriptor_uuid.canonical ==
-        kCanonicalTextDescriptorUuid) {
-      const auto fields =
-          StrictRelationDescriptorFields(table_column.second);
-      if (!fields) {
-        *diagnostic = ContextualTextMgaDiagnostic(
-            "fresh canonical d718 descriptor is malformed");
-        return false;
-      }
+    const auto fields = StrictRelationDescriptorFields(table_column.second);
+    const auto embedded_datatype_descriptor =
+        fields == std::nullopt
+            ? std::map<std::string, std::string>::const_iterator{}
+            : fields->find("datatype_descriptor_uuid");
+    if (fields != std::nullopt &&
+        embedded_datatype_descriptor != fields->end() &&
+        embedded_datatype_descriptor->second == kCanonicalTextDescriptorUuid) {
       const auto carried = fields->find("column_uuid");
       if (carried != fields->end()) {
         if (!CanonicalNonNilMigrationUuid(carried->second)) {
@@ -7997,6 +8422,13 @@ bool BindFreshCanonicalTextColumnIdentitiesV2(
       }
       relation_column.value_descriptor.encoded_descriptor =
           table_column.second;
+      // The persisted relation column owns a distinct public descriptor
+      // handle.  The canonical datatype descriptor remains embedded in the
+      // exact registry suffix and is projected separately into the live DAG.
+      // This is the same split retained by the canonical TEXT migration path.
+      relation_column.value_descriptor.descriptor_uuid.canonical =
+          relation_column.column_uuid.canonical;
+      relation_column.value_descriptor.canonical_type_name = "text";
     }
     if (!CanonicalNonNilMigrationUuid(
             relation_column.column_uuid.canonical) ||
@@ -8230,7 +8662,8 @@ MgaMetadataWorkPresenceResult HasVisibleMgaDeferredConstraintMetadata(
     result.diagnostic = loaded;
     return result;
   }
-  const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
+  const auto authority =
+      OverlayMgaTransactionAuthority(context, &metadata, true);
   if (authority.error) {
     result.diagnostic = authority;
     return result;
@@ -8280,7 +8713,8 @@ MgaMetadataWorkPresenceResult HasMgaTemporaryCleanupMetadataWork(
     result.diagnostic = loaded;
     return result;
   }
-  const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
+  const auto authority =
+      OverlayMgaTransactionAuthority(context, &metadata, true);
   if (authority.error) {
     result.diagnostic = authority;
     return result;
@@ -8325,7 +8759,8 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     result.diagnostic = metadata;
     return result;
   }
-  const auto authority = OverlayMgaTransactionAuthority(context, &result.state.crud_metadata);
+  const auto authority = OverlayMgaTransactionAuthority(
+      context, &result.state.crud_metadata, false);
   if (authority.error) {
     result.diagnostic = authority;
     return result;
@@ -8535,7 +8970,8 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     result.diagnostic = metadata;
     return result;
   }
-  const auto authority = OverlayMgaTransactionAuthority(context, &result.state.crud_metadata);
+  const auto authority = OverlayMgaTransactionAuthority(
+      context, &result.state.crud_metadata, true);
   if (authority.error) {
     result.diagnostic = authority;
     return result;
@@ -8859,12 +9295,19 @@ MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
                                                      "table_uuid_required");
     return result;
   }
-  CrudState state;
-  const auto metadata = LoadMgaMetadata(&state, context);
-  if (metadata.error) {
-    result.diagnostic = metadata;
+  const auto metadata = LoadMgaMetadataSnapshot(context);
+  if (!metadata.ok()) {
+    result.diagnostic = metadata.diagnostic;
     return result;
   }
+  CrudState state;
+  state.tables = metadata.snapshot->tables;
+  state.indexes = metadata.snapshot->indexes;
+  state.sealed_relation_descriptor_snapshots =
+      metadata.snapshot->sealed_relation_descriptor_snapshots;
+  state.max_event_sequence = metadata.snapshot->max_event_sequence;
+  const bool known_temporary_relation =
+      metadata.snapshot->known_temporary_relation_uuids.contains(table_uuid);
   bool has_table_candidate = false;
   bool temporary_table_candidate = false;
   for (const auto& table : state.tables) {
@@ -8877,9 +9320,12 @@ MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
   if (!has_table_candidate) {
     result.ok = true;
     result.diagnostic = OkDiagnostic();
+    result.known_temporary = known_temporary_relation;
+    result.hidden_by_temporary_visibility = known_temporary_relation;
     return result;
   }
-  const auto authority = OverlayMgaTransactionAuthority(context, &state);
+  const auto authority =
+      OverlayMgaTransactionAuthority(context, &state, true);
   if (authority.error) {
     result.diagnostic = authority;
     return result;
@@ -9508,22 +9954,13 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
         "mga.relation_descriptor.load", "transaction_uuid_invalid");
     return result;
   }
-  const auto inventory =
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  const auto inventory = ResolveStatementTransactionInventory(context);
   if (!inventory.ok()) {
-    result.diagnostic = MakeEngineApiDiagnostic(
-        inventory.diagnostic.diagnostic_code.empty()
-            ? "SB-MGA-TXN-INV-LOAD-FAILED"
-            : inventory.diagnostic.diagnostic_code,
-        inventory.diagnostic.message_key.empty()
-            ? "mga.transaction_inventory.load_failed"
-            : inventory.diagnostic.message_key,
-        inventory.diagnostic.remediation_hint,
-        true);
+    result.diagnostic = inventory.diagnostic;
     return result;
   }
   const auto exact_transaction = LookupLocalTransaction(
-      inventory.inventory,
+      inventory.snapshot->inventory,
       MakeLocalTransactionId(context.local_transaction_id));
   if (!exact_transaction.ok() ||
       exact_transaction.entry.identity.transaction_uuid.value !=
@@ -9536,34 +9973,29 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
     return result;
   }
 
-  CrudState metadata;
-  const auto loaded = LoadMgaMetadata(&metadata, context);
-  if (loaded.error) {
-    result.diagnostic = loaded;
+  const std::array<std::string, 1> required_relations{relation_uuid};
+  const auto metadata_view =
+      LoadMgaStatementMetadataView(context, required_relations);
+  if (!metadata_view.ok()) {
+    result.diagnostic = metadata_view.diagnostic;
     return result;
   }
-  for (const auto& entry : inventory.inventory.entries) {
-    if (!entry.identity.local_id.valid()) { continue; }
-    metadata.transactions[entry.identity.local_id.value] =
-        MgaTransactionStateName(entry.state);
-    metadata.max_transaction_id = std::max(
-        metadata.max_transaction_id, entry.identity.local_id.value);
-  }
-  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
-  FilterMgaTemporaryObjectsForSession(context, &metadata);
-  const auto table = FindVisibleCrudTable(
-      metadata, relation_uuid, context.local_transaction_id);
-  if (!table) {
+  const auto& statement_view = *metadata_view.view;
+  const auto& metadata = statement_view.visible_metadata;
+  const auto table_ordinal =
+      statement_view.visible_table_ordinals.find(relation_uuid);
+  if (table_ordinal == statement_view.visible_table_ordinals.end() ||
+      table_ordinal->second >= metadata.tables.size()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.relation_descriptor.load", "relation_not_visible");
     return result;
   }
+  const auto& table = metadata.tables[table_ordinal->second];
 
-  const auto persisted =
-      LoadDescriptorFieldsByRelation(context, relation_uuid);
+  const auto& persisted = *statement_view.descriptor_fields;
   const auto fields = persisted.find(relation_uuid);
   const auto sealed = SelectVisibleSealedRelationDescriptorSnapshot(
-      context, metadata, *table);
+      context, metadata, table);
   if (sealed.conflict) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.relation_descriptor.load",
@@ -9575,10 +10007,15 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
         "mga.relation_descriptor.load", "persisted_descriptor_required");
     return result;
   }
-  const auto indexes = VisibleCrudIndexesForTable(
-      metadata, relation_uuid, context.local_transaction_id);
+  static const std::vector<CrudIndexRecord> kNoVisibleIndexes;
+  const auto indexed =
+      statement_view.visible_indexes_by_relation.find(relation_uuid);
+  const auto& indexes =
+      indexed == statement_view.visible_indexes_by_relation.end()
+          ? kNoVisibleIndexes
+          : indexed->second;
   result.descriptor = BuildMgaRelationStorageDescriptorFromCrudMetadata(
-      context, *table, indexes,
+      context, table, indexes,
       sealed.found ? sealed.fields : fields->second);
   const auto validated =
       ValidateMgaRelationStorageDescriptor(result.descriptor);
@@ -9625,45 +10062,29 @@ LoadVisibleMgaContextualTextSidecarSnapshotV2(
     return refuse("visible relation descriptor identity does not match claim");
   }
 
-  CrudState metadata;
-  const auto metadata_loaded = LoadMgaMetadata(&metadata, context);
-  if (metadata_loaded.error) {
-    result.diagnostic = metadata_loaded;
+  const std::array<std::string, 1> required_relations{relation_uuid};
+  const auto metadata_view =
+      LoadMgaStatementMetadataView(context, required_relations);
+  if (!metadata_view.ok()) {
+    result.diagnostic = metadata_view.diagnostic;
     return result;
   }
-  const auto inventory =
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
-  if (!inventory.ok()) {
-    result.diagnostic = MakeEngineApiDiagnostic(
-        inventory.diagnostic.diagnostic_code.empty()
-            ? "SB-MGA-TXN-INV-LOAD-FAILED"
-            : inventory.diagnostic.diagnostic_code,
-        inventory.diagnostic.message_key.empty()
-            ? "mga.transaction_inventory.load_failed"
-            : inventory.diagnostic.message_key,
-        inventory.diagnostic.remediation_hint, true);
-    return result;
+  const auto& metadata = metadata_view.view->visible_metadata;
+  const auto table_ordinal =
+      metadata_view.view->visible_table_ordinals.find(relation_uuid);
+  if (table_ordinal == metadata_view.view->visible_table_ordinals.end() ||
+      table_ordinal->second >= metadata.tables.size()) {
+    return refuse("relation is not visible");
   }
-  for (const auto& entry : inventory.inventory.entries) {
-    if (!entry.identity.local_id.valid()) continue;
-    metadata.transactions[entry.identity.local_id.value] =
-        MgaTransactionStateName(entry.state);
-    metadata.max_transaction_id = std::max(
-        metadata.max_transaction_id, entry.identity.local_id.value);
-  }
-  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
-  FilterMgaTemporaryObjectsForSession(context, &metadata);
-  const auto table = FindVisibleCrudTable(
-      metadata, relation_uuid, context.local_transaction_id);
-  if (!table) return refuse("relation is not visible");
+  const auto& table = metadata.tables[table_ordinal->second];
   const auto selected = SelectVisibleSealedRelationDescriptorSnapshot(
-      context, metadata, *table);
+      context, metadata, table);
   if (!selected.found || selected.conflict) {
     return refuse("one exact sealed descriptor snapshot is required");
   }
   const auto& persisted = selected.snapshot;
-  if (persisted.creator_tx != table->creator_tx ||
-      persisted.event_sequence != table->event_sequence ||
+  if (persisted.creator_tx != table.creator_tx ||
+      persisted.event_sequence != table.event_sequence ||
       persisted.relation_uuid != relation_uuid ||
       persisted.relation_descriptor_uuid != relation_descriptor_uuid ||
       persisted.relation_descriptor_generation !=
@@ -9675,7 +10096,7 @@ LoadVisibleMgaContextualTextSidecarSnapshotV2(
   }
 
   MgaVisibleContextualTextSidecarSnapshotV2 snapshot;
-  snapshot.table = *table;
+  snapshot.table = table;
   snapshot.relation_descriptor = loaded_descriptor.descriptor;
   const auto copy_uuid = [](const std::string& text,
                             MgaContextualTextUuidV2* output) {
@@ -10043,121 +10464,274 @@ std::optional<std::uint64_t> HeapReadVisibilityMapMemoryBytes(
   return bytes;
 }
 
-struct PreparedMgaHeapReadAuthority {
-  scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
-  MgaRelationStorageDescriptor descriptor;
-  std::map<std::uint64_t, std::string> transaction_states;
-  std::uint64_t current_relation_base_generation{0};
-  std::string relation_uuid;
-  std::string database_uuid;
-  std::string statement_uuid;
-  std::string transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
-  std::string catalog_epoch_uuid;
-  std::string authorization_authority_uuid;
-  std::uint64_t catalog_generation{0};
-  std::uint64_t security_epoch{0};
-  std::uint64_t policy_epoch{0};
-  std::uint64_t local_transaction_id{0};
-};
-
 struct PreparedMgaHeapReadAuthorityResult {
   bool ok{false};
   EngineApiDiagnostic diagnostic;
   PreparedMgaHeapReadAuthority authority;
 };
 
-PreparedMgaHeapReadAuthorityResult PrepareMgaHeapReadAuthority(
-    const EngineRequestContext& context, const std::string& relation_uuid) {
-  PreparedMgaHeapReadAuthorityResult result;
+EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthority(
+    const EngineRequestContext& context, const CrudTableRecord& table) {
+  const auto exact_session_uuid = [](const std::string& value) {
+    const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
+        scratchbird::core::platform::UuidKind::session, value);
+    return parsed.ok() &&
+           scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
+  };
+  if (!table.temporary) {
+    if (!table.temporary_scope.empty() ||
+        !table.temporary_session_uuid.empty()) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.prepare",
+          "permanent_relation_temporary_authority_invalid");
+    }
+    return OkDiagnostic();
+  }
+  if (!exact_session_uuid(context.session_uuid.canonical)) {
+    return MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare",
+        "temporary_relation_session_authority_required");
+  }
+  if (table.temporary_scope == "global") {
+    if (!table.temporary_session_uuid.empty()) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.prepare",
+          "global_temporary_relation_owner_invalid");
+    }
+    return OkDiagnostic();
+  }
+  if (table.temporary_scope != "private" ||
+      !exact_session_uuid(table.temporary_session_uuid) ||
+      table.temporary_session_uuid != context.session_uuid.canonical) {
+    return MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare",
+        "private_temporary_relation_owner_mismatch");
+  }
+  return OkDiagnostic();
+}
+
+PreparedMgaHeapReadAuthorityCohortResult PrepareMgaHeapReadAuthoritiesImpl(
+    const EngineRequestContext& context,
+    const std::span<const std::string> relation_uuids,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor*
+        resolved_statement_snapshot = nullptr) {
+  PreparedMgaHeapReadAuthorityCohortResult result;
   const auto refuse = [&](EngineApiDiagnostic diagnostic) {
     result = {};
     result.diagnostic = std::move(diagnostic);
     return result;
   };
-  if (relation_uuid.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+  if (relation_uuids.empty() || context.database_path.empty() ||
+      context.database_uuid.canonical.empty() ||
+      context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty() ||
+      context.statement_uuid.canonical.empty() ||
+      context.statement_snapshot_uuid.canonical.empty() ||
+      !context.statement_metadata_snapshot_engine_owned ||
+      context.statement_metadata_snapshot_uuid.canonical.empty() ||
+      context.catalog_epoch_uuid.canonical.empty() ||
+      !context.security_context_present ||
+      !context.authorization_context.present ||
+      context.catalog_generation_id == 0 || context.security_epoch == 0 ||
+      context.resource_epoch == 0) {
     return refuse(MakeInvalidRequestDiagnostic(
         "mga.heap_relation_read.prepare",
-        "exact_relation_transaction_and_snapshot_required"));
+        "exact_statement_authority_cohort_required"));
   }
+  std::set<std::string> unique_relations;
+  for (const auto& relation_uuid : relation_uuids) {
+    if (relation_uuid.empty() || !unique_relations.insert(relation_uuid).second) {
+      if (!relation_uuid.empty()) continue;
+      return refuse(MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.prepare", "exact_relation_uuid_required"));
+    }
+  }
+
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(context.database_path);
-  EngineResolveStatementSnapshotRequest snapshot_request;
-  snapshot_request.context = context;
-  auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
-  if (!snapshot.ok || !snapshot.snapshot_vector.inventory_authoritative ||
-      !snapshot.snapshot_vector.complete) {
+  EngineRequestContext statement_context = context;
+  if (statement_context.statement_transaction_inventory_snapshot == nullptr) {
+    auto acquired = scratchbird::storage::database::
+        AcquireLocalTransactionInventorySnapshot(context.database_path);
+    if (!acquired.ok()) {
+      return refuse(MakeEngineApiDiagnostic(
+          acquired.diagnostic.diagnostic_code.empty()
+              ? "SB-MGA-TXN-INV-LOAD-FAILED"
+              : acquired.diagnostic.diagnostic_code,
+          acquired.diagnostic.message_key.empty()
+              ? "mga.transaction_inventory.load_failed"
+              : acquired.diagnostic.message_key,
+          acquired.diagnostic.remediation_hint, true));
+    }
+    statement_context.statement_transaction_inventory_snapshot =
+        std::move(acquired.snapshot);
+  }
+
+  scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
+  if (resolved_statement_snapshot != nullptr) {
+    snapshot_vector = *resolved_statement_snapshot;
+  } else {
+    EngineResolveStatementSnapshotRequest snapshot_request;
+    snapshot_request.context = statement_context;
+    auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
+    if (!snapshot.ok) {
+      return refuse(MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.prepare",
+          "exact_current_statement_snapshot_vector_required"));
+    }
+    snapshot_vector = std::move(snapshot.snapshot_vector);
+  }
+  if (!snapshot_vector.inventory_authoritative ||
+      !snapshot_vector.complete ||
+      snapshot_vector.owning_transaction.value !=
+          context.local_transaction_id) {
     return refuse(MakeInvalidRequestDiagnostic(
         "mga.heap_relation_read.prepare",
         "exact_current_statement_snapshot_vector_required"));
   }
-  auto descriptor = LoadMgaRelationStorageDescriptor(context, relation_uuid);
-  if (!descriptor.ok) return refuse(std::move(descriptor.diagnostic));
-  if (descriptor.descriptor.relation_uuid.canonical != relation_uuid ||
-      descriptor.descriptor.database_uuid.canonical !=
-          context.database_uuid.canonical ||
-      descriptor.descriptor.relation_kind != "table" ||
-      descriptor.descriptor.storage_profile != "local_mga_rowstore_v1" ||
-      descriptor.descriptor.descriptor_uuid.canonical.empty() ||
-      descriptor.descriptor.descriptor_generation == 0 ||
-      descriptor.descriptor.descriptor_status.empty()) {
-    return refuse(MakeInvalidRequestDiagnostic(
-        "mga.heap_relation_read.prepare",
-        "current_persisted_local_heap_descriptor_required"));
-  }
-  CrudState metadata;
-  const auto metadata_loaded = LoadMgaMetadata(&metadata, context);
-  if (metadata_loaded.error) return refuse(metadata_loaded);
-  metadata.transactions.clear();
-  metadata.max_transaction_id = 0;
-  const auto transaction_authority =
-      OverlayMgaTransactionAuthority(context, &metadata);
-  if (transaction_authority.error) return refuse(transaction_authority);
-  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
-  FilterMgaTemporaryObjectsForSession(context, &metadata);
-  const auto table = FindVisibleCrudTable(
-      metadata, relation_uuid, context.local_transaction_id);
-  if (!table) {
-    return refuse(MakeInvalidRequestDiagnostic(
-        "mga.heap_relation_read.prepare", "heap_relation_not_visible"));
-  }
-  if (table->temporary) {
-    return refuse(MakeInvalidRequestDiagnostic(
-        "mga.heap_relation_read.prepare",
-        "temporary_relation_outside_local_heap_profile"));
-  }
-  const auto authorization = EvaluateMaterializedAuthorization(
-      context, context.authorization_context, "SELECT", relation_uuid);
-  if (!authorization.authorized || authorization.denied ||
-      authorization.policy_recheck_required ||
-      !authorization.diagnostics.empty()) {
-    return refuse(MakeInvalidRequestDiagnostic(
-        "mga.heap_relation_read.prepare",
-        authorization.diagnostics.empty()
-            ? "select_authorization_is_indeterminate"
-            : authorization.diagnostics.front().detail));
-  }
-  auto& prepared = result.authority;
-  prepared.snapshot_vector = std::move(snapshot.snapshot_vector);
-  prepared.descriptor = std::move(descriptor.descriptor);
-  prepared.transaction_states = std::move(metadata.transactions);
-  prepared.current_relation_base_generation = table->event_sequence;
-  prepared.relation_uuid = relation_uuid;
-  prepared.database_uuid = context.database_uuid.canonical;
-  prepared.statement_uuid = context.statement_uuid.canonical;
-  prepared.transaction_uuid = context.transaction_uuid.canonical;
-  prepared.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
-  prepared.statement_metadata_snapshot_uuid =
+  const auto metadata_view =
+      LoadMgaStatementMetadataView(statement_context, relation_uuids);
+  if (!metadata_view.ok()) return refuse(metadata_view.diagnostic);
+  const auto& metadata = metadata_view.view->visible_metadata;
+
+  auto statement = std::make_shared<PreparedMgaHeapStatementAuthority>();
+  statement->snapshot_vector = std::move(snapshot_vector);
+  statement->transaction_states =
+      std::make_shared<const std::map<std::uint64_t, std::string>>(
+          metadata.transactions);
+  statement->transaction_inventory_snapshot =
+      metadata_view.view->transaction_inventory_snapshot;
+  statement->database_uuid = context.database_uuid.canonical;
+  statement->statement_uuid = context.statement_uuid.canonical;
+  statement->transaction_uuid = context.transaction_uuid.canonical;
+  statement->statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  statement->statement_metadata_snapshot_uuid =
       context.statement_metadata_snapshot_uuid.canonical;
-  prepared.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
-  prepared.authorization_authority_uuid =
+  statement->catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  statement->authorization_authority_uuid =
       context.authorization_context.authority_uuid.canonical;
-  prepared.catalog_generation = context.catalog_generation_id;
-  prepared.security_epoch = context.authorization_context.security_epoch;
-  prepared.policy_epoch = context.authorization_context.policy_epoch;
-  prepared.local_transaction_id = context.local_transaction_id;
+  statement->catalog_generation = context.catalog_generation_id;
+  statement->security_epoch = context.authorization_context.security_epoch;
+  statement->policy_epoch = context.authorization_context.policy_epoch;
+  statement->resource_epoch = context.resource_epoch;
+  statement->local_transaction_id = context.local_transaction_id;
+  statement->metadata_path = metadata_view.key.metadata.metadata_path;
+  statement->metadata_file_size =
+      metadata_view.key.metadata.metadata_file_size;
+  statement->metadata_file_mtime_ticks =
+      metadata_view.key.metadata.metadata_file_mtime_ticks;
+  statement->savepoint_path = metadata_view.key.metadata.savepoint_path;
+  statement->savepoint_file_size =
+      metadata_view.key.metadata.savepoint_file_size;
+  statement->savepoint_file_mtime_ticks =
+      metadata_view.key.metadata.savepoint_file_mtime_ticks;
+
+  statement->descriptor_path = DescriptorStorePath(statement_context);
+  const auto descriptor_identity =
+      ExistingFileIdentity(statement->descriptor_path);
+  statement->descriptor_file_size =
+      descriptor_identity.ok ? descriptor_identity.file_size : 0;
+  statement->descriptor_file_mtime_ticks =
+      descriptor_identity.ok ? descriptor_identity.file_mtime_ticks : 0;
+
+  const auto& persisted = *metadata_view.view->descriptor_fields;
+  auto cohort = std::make_shared<PreparedMgaHeapReadAuthorityCohort>();
+  cohort->statement = statement;
+  for (const auto& relation_uuid : unique_relations) {
+    const auto table_ordinal =
+        metadata_view.view->visible_table_ordinals.find(relation_uuid);
+    if (table_ordinal ==
+            metadata_view.view->visible_table_ordinals.end() ||
+        table_ordinal->second >= metadata.tables.size()) {
+      return refuse(MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.prepare", "heap_relation_not_visible"));
+    }
+    const auto& table = metadata.tables[table_ordinal->second];
+    const auto temporary_authority =
+        ValidateMgaHeapTemporaryRelationAuthority(context, table);
+    if (temporary_authority.error) return refuse(temporary_authority);
+    const auto authorization = EvaluateMaterializedAuthorization(
+        context, context.authorization_context, "SELECT", relation_uuid);
+    if (!authorization.authorized || authorization.denied ||
+        authorization.policy_recheck_required ||
+        !authorization.diagnostics.empty()) {
+      return refuse(MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.prepare",
+          authorization.diagnostics.empty()
+              ? "select_authorization_is_indeterminate"
+              : authorization.diagnostics.front().detail));
+    }
+    const auto sealed = SelectVisibleSealedRelationDescriptorSnapshot(
+        statement_context, metadata, table);
+    if (sealed.conflict) {
+      return refuse(MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.prepare",
+          "sealed_relation_descriptor_snapshot_conflict"));
+    }
+    const auto fields = persisted.find(relation_uuid);
+    if (!sealed.found && fields == persisted.end()) {
+      return refuse(MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.prepare", "persisted_descriptor_required"));
+    }
+    static const std::vector<CrudIndexRecord> kNoVisibleIndexes;
+    const auto indexed =
+        metadata_view.view->visible_indexes_by_relation.find(relation_uuid);
+    const auto& indexes =
+        indexed == metadata_view.view->visible_indexes_by_relation.end()
+            ? kNoVisibleIndexes
+            : indexed->second;
+    auto relation = std::make_shared<PreparedMgaHeapReadAuthority>();
+    relation->statement = statement;
+    relation->descriptor = BuildMgaRelationStorageDescriptorFromCrudMetadata(
+        statement_context, table, indexes,
+        sealed.found ? sealed.fields : fields->second);
+    const auto validated =
+        ValidateMgaRelationStorageDescriptor(relation->descriptor);
+    if (validated.error ||
+        relation->descriptor.relation_uuid.canonical != relation_uuid ||
+        relation->descriptor.database_uuid.canonical !=
+            context.database_uuid.canonical ||
+        relation->descriptor.relation_kind != "table" ||
+        relation->descriptor.storage_profile != "local_mga_rowstore_v1" ||
+        relation->descriptor.descriptor_uuid.canonical.empty() ||
+        relation->descriptor.descriptor_generation == 0 ||
+        relation->descriptor.descriptor_status.empty()) {
+      return refuse(validated.error
+                        ? validated
+                        : MakeInvalidRequestDiagnostic(
+                              "mga.heap_relation_read.prepare",
+                              "current_persisted_local_heap_descriptor_required"));
+    }
+    relation->current_relation_base_generation = table.event_sequence;
+    relation->relation_uuid = relation_uuid;
+    relation->temporary = table.temporary;
+    relation->temporary_scope = table.temporary_scope;
+    relation->temporary_session_uuid = table.temporary_session_uuid;
+    cohort->relations.emplace(relation_uuid, std::move(relation));
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  result.cohort = std::move(cohort);
+  return result;
+}
+
+PreparedMgaHeapReadAuthorityResult PrepareMgaHeapReadAuthority(
+    const EngineRequestContext& context, const std::string& relation_uuid) {
+  PreparedMgaHeapReadAuthorityResult result;
+  const std::array<std::string, 1> relations{relation_uuid};
+  auto prepared = PrepareMgaHeapReadAuthoritiesImpl(context, relations);
+  if (!prepared.ok || prepared.cohort == nullptr) {
+    result.diagnostic = std::move(prepared.diagnostic);
+    return result;
+  }
+  const auto found = prepared.cohort->relations.find(relation_uuid);
+  if (found == prepared.cohort->relations.end() || found->second == nullptr) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare", "heap_relation_not_prepared");
+    return result;
+  }
+  result.authority = *found->second;
   result.ok = true;
   return result;
 }
@@ -10253,34 +10827,38 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   const std::map<std::uint64_t, std::string>* transaction_states = nullptr;
   std::uint64_t current_relation_base_generation = 0;
   if (prepared_authority != nullptr) {
-    if (prepared_authority->relation_uuid != relation_uuid ||
-        prepared_authority->database_uuid != context.database_uuid.canonical ||
-        prepared_authority->statement_uuid != context.statement_uuid.canonical ||
-        prepared_authority->transaction_uuid !=
+    const auto* prepared_statement = prepared_authority->statement.get();
+    if (prepared_statement == nullptr ||
+        prepared_statement->transaction_states == nullptr ||
+        prepared_authority->relation_uuid != relation_uuid ||
+        prepared_statement->database_uuid != context.database_uuid.canonical ||
+        prepared_statement->statement_uuid != context.statement_uuid.canonical ||
+        prepared_statement->transaction_uuid !=
             context.transaction_uuid.canonical ||
-        prepared_authority->statement_snapshot_uuid !=
+        prepared_statement->statement_snapshot_uuid !=
             context.statement_snapshot_uuid.canonical ||
-        prepared_authority->statement_metadata_snapshot_uuid !=
+        prepared_statement->statement_metadata_snapshot_uuid !=
             context.statement_metadata_snapshot_uuid.canonical ||
-        prepared_authority->catalog_epoch_uuid !=
+        prepared_statement->catalog_epoch_uuid !=
             context.catalog_epoch_uuid.canonical ||
-        prepared_authority->authorization_authority_uuid !=
+        prepared_statement->authorization_authority_uuid !=
             context.authorization_context.authority_uuid.canonical ||
-        prepared_authority->catalog_generation !=
+        prepared_statement->catalog_generation !=
             context.catalog_generation_id ||
-        prepared_authority->security_epoch !=
+        prepared_statement->security_epoch !=
             context.authorization_context.security_epoch ||
-        prepared_authority->policy_epoch !=
+        prepared_statement->policy_epoch !=
             context.authorization_context.policy_epoch ||
-        prepared_authority->local_transaction_id !=
+        prepared_statement->resource_epoch != context.resource_epoch ||
+        prepared_statement->local_transaction_id !=
             context.local_transaction_id ||
-        !prepared_authority->snapshot_vector.inventory_authoritative ||
-        !prepared_authority->snapshot_vector.complete) {
+        !prepared_statement->snapshot_vector.inventory_authoritative ||
+        !prepared_statement->snapshot_vector.complete) {
       return invalid("prepared_heap_read_authority_is_stale", &control,
                      MgaHeapReadFailureCategoryV1::kMgaContext);
     }
-    snapshot_vector = &prepared_authority->snapshot_vector;
-    transaction_states = &prepared_authority->transaction_states;
+    snapshot_vector = &prepared_statement->snapshot_vector;
+    transaction_states = prepared_statement->transaction_states.get();
     current_relation_base_generation =
         prepared_authority->current_relation_base_generation;
   } else {
@@ -10323,7 +10901,8 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     }
     metadata.transactions.clear();
     metadata.max_transaction_id = 0;
-    const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
+    const auto authority =
+        OverlayMgaTransactionAuthority(context, &metadata, true);
     if (authority.error) {
       return refuse(authority, nullptr,
                     MgaHeapReadFailureCategoryV1::kMgaContext);
@@ -10336,9 +10915,11 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
       return invalid("heap_relation_not_visible", nullptr,
                      MgaHeapReadFailureCategoryV1::kCatalog);
     }
-    if (table->temporary) {
-      return invalid("temporary_relation_outside_local_heap_profile",
-                     nullptr, MgaHeapReadFailureCategoryV1::kCatalog);
+    const auto temporary_authority =
+        ValidateMgaHeapTemporaryRelationAuthority(context, *table);
+    if (temporary_authority.error) {
+      return refuse(temporary_authority, nullptr,
+                    MgaHeapReadFailureCategoryV1::kCatalog);
     }
     current_relation_base_generation = table->event_sequence;
     owned_transaction_states = std::move(metadata.transactions);
@@ -12409,6 +12990,123 @@ bool DecodeVisibleStreamBinaryFile(
 
 }  // namespace
 
+PreparedMgaHeapReadAuthorityCohortResult PrepareMgaHeapReadAuthorities(
+    const EngineRequestContext& context,
+    const std::span<const std::string> relation_uuids) {
+  return PrepareMgaHeapReadAuthoritiesImpl(context, relation_uuids);
+}
+
+PreparedMgaHeapReadAuthorityCohortResult PrepareMgaHeapReadAuthorities(
+    const EngineRequestContext& context,
+    const std::span<const std::string> relation_uuids,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor&
+        resolved_statement_snapshot) {
+  return PrepareMgaHeapReadAuthoritiesImpl(
+      context, relation_uuids, &resolved_statement_snapshot);
+}
+
+EngineApiDiagnostic RevalidatePreparedMgaHeapReadAuthorityCohort(
+    const EngineRequestContext& context,
+    const PreparedMgaHeapReadAuthorityCohort& cohort) {
+  const auto* statement = cohort.statement.get();
+  if (statement == nullptr || statement->transaction_states == nullptr ||
+      statement->transaction_inventory_snapshot == nullptr ||
+      cohort.relations.empty() ||
+      statement->database_uuid != context.database_uuid.canonical ||
+      statement->statement_uuid != context.statement_uuid.canonical ||
+      statement->transaction_uuid != context.transaction_uuid.canonical ||
+      statement->statement_snapshot_uuid !=
+          context.statement_snapshot_uuid.canonical ||
+      statement->statement_metadata_snapshot_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      statement->catalog_epoch_uuid != context.catalog_epoch_uuid.canonical ||
+      statement->authorization_authority_uuid !=
+          context.authorization_context.authority_uuid.canonical ||
+      statement->catalog_generation != context.catalog_generation_id ||
+      statement->security_epoch != context.authorization_context.security_epoch ||
+      statement->policy_epoch != context.authorization_context.policy_epoch ||
+      statement->resource_epoch != context.resource_epoch ||
+      statement->local_transaction_id != context.local_transaction_id ||
+      !statement->snapshot_vector.inventory_authoritative ||
+      !statement->snapshot_vector.complete) {
+    return MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.revalidate",
+        "statement_authority_identity_stale");
+  }
+  const auto inventory_fence = scratchbird::storage::database::
+      RevalidateLocalTransactionInventorySnapshot(
+          *statement->transaction_inventory_snapshot);
+  if (!inventory_fence.ok()) {
+    // Inventory publication is database-wide, while this cohort is scoped to
+    // one statement and owning transaction. An unrelated session may replace
+    // the journal without invalidating either. Resolve through the exact
+    // published snapshot authority on the slow path and compare the immutable
+    // statement projection; this retains the execution-time TOCTOU fence
+    // without turning unrelated transaction finality into a false conflict.
+    EngineResolveStatementSnapshotRequest snapshot_request;
+    snapshot_request.context = context;
+    const auto current_snapshot =
+        EngineResolveStatementSnapshot(snapshot_request);
+    if (!current_snapshot.ok || !current_snapshot.snapshot_vector.complete ||
+        !current_snapshot.snapshot_vector.inventory_authoritative ||
+        current_snapshot.snapshot_vector.snapshot_uuid.kind !=
+            statement->snapshot_vector.snapshot_uuid.kind ||
+        current_snapshot.snapshot_vector.snapshot_uuid.value !=
+            statement->snapshot_vector.snapshot_uuid.value ||
+        current_snapshot.snapshot_vector.owning_transaction.value !=
+            statement->snapshot_vector.owning_transaction.value ||
+        current_snapshot.snapshot_vector.visible_committed_high_watermark !=
+            statement->snapshot_vector.visible_committed_high_watermark) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.revalidate",
+          "transaction_inventory_statement_authority_stale");
+    }
+  }
+  const auto metadata_identity = ExistingFileIdentity(statement->metadata_path);
+  const auto savepoint_identity = ExistingFileIdentity(statement->savepoint_path);
+  const auto descriptor_identity = ExistingFileIdentity(statement->descriptor_path);
+  if ((metadata_identity.ok ? metadata_identity.file_size : 0) !=
+          statement->metadata_file_size ||
+      (metadata_identity.ok ? metadata_identity.file_mtime_ticks : 0) !=
+          statement->metadata_file_mtime_ticks ||
+      (savepoint_identity.ok ? savepoint_identity.file_size : 0) !=
+          statement->savepoint_file_size ||
+      (savepoint_identity.ok ? savepoint_identity.file_mtime_ticks : 0) !=
+          statement->savepoint_file_mtime_ticks ||
+      (descriptor_identity.ok ? descriptor_identity.file_size : 0) !=
+          statement->descriptor_file_size ||
+      (descriptor_identity.ok ? descriptor_identity.file_mtime_ticks : 0) !=
+          statement->descriptor_file_mtime_ticks) {
+    return MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.revalidate",
+        "catalog_or_mga_file_identity_stale");
+  }
+  for (const auto& [relation_uuid, relation] : cohort.relations) {
+    if (relation == nullptr || relation->statement.get() != statement ||
+        relation->relation_uuid != relation_uuid ||
+        relation->descriptor.relation_uuid.canonical != relation_uuid ||
+        relation->descriptor.database_uuid.canonical !=
+            context.database_uuid.canonical ||
+        relation->descriptor.descriptor_uuid.canonical.empty() ||
+        relation->descriptor.descriptor_generation == 0 ||
+        relation->current_relation_base_generation == 0 ||
+        (relation->temporary
+             ? (relation->temporary_scope == "global"
+                    ? (!relation->temporary_session_uuid.empty() ||
+                       context.session_uuid.canonical.empty())
+                    : (relation->temporary_scope != "private" ||
+                       relation->temporary_session_uuid !=
+                           context.session_uuid.canonical))
+             : (!relation->temporary_scope.empty() ||
+                !relation->temporary_session_uuid.empty()))) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.heap_relation_read.revalidate",
+          "relation_authority_identity_stale");
+    }
+  }
+  return OkDiagnostic();
+}
+
 static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
     const EngineRequestContext& context,
     const MgaVisibleHeapRelationCountRequest& request,
@@ -12419,6 +13117,16 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
   result.memory_grant_bytes = request.maximum_memory_bytes;
   const auto refuse = [&](std::string detail,
                           const MgaHeapReadFailureCategoryV1 category) {
+    if (const char* trace_path =
+            std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+        trace_path != nullptr && *trace_path != '\0') {
+      std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
+      if (trace) {
+        trace << "layer=mga_heap_count\taccepted=false\tcategory="
+              << static_cast<unsigned>(category) << "\tdetail=" << detail
+              << '\n';
+      }
+    }
     result.ok = false;
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.heap_relation_count", std::move(detail));
@@ -12475,29 +13183,33 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
     owned_authority = std::move(prepared.authority);
     prepared_authority = &owned_authority;
   }
-  if (prepared_authority->relation_uuid != relation_uuid ||
-      prepared_authority->database_uuid != context.database_uuid.canonical ||
-      prepared_authority->statement_uuid != context.statement_uuid.canonical ||
-      prepared_authority->transaction_uuid !=
+  const auto* prepared_statement = prepared_authority->statement.get();
+  if (prepared_statement == nullptr ||
+      prepared_statement->transaction_states == nullptr ||
+      prepared_authority->relation_uuid != relation_uuid ||
+      prepared_statement->database_uuid != context.database_uuid.canonical ||
+      prepared_statement->statement_uuid != context.statement_uuid.canonical ||
+      prepared_statement->transaction_uuid !=
           context.transaction_uuid.canonical ||
-      prepared_authority->statement_snapshot_uuid !=
+      prepared_statement->statement_snapshot_uuid !=
           context.statement_snapshot_uuid.canonical ||
-      prepared_authority->statement_metadata_snapshot_uuid !=
+      prepared_statement->statement_metadata_snapshot_uuid !=
           context.statement_metadata_snapshot_uuid.canonical ||
-      prepared_authority->catalog_epoch_uuid !=
+      prepared_statement->catalog_epoch_uuid !=
           context.catalog_epoch_uuid.canonical ||
-      prepared_authority->authorization_authority_uuid !=
+      prepared_statement->authorization_authority_uuid !=
           context.authorization_context.authority_uuid.canonical ||
-      prepared_authority->catalog_generation !=
+      prepared_statement->catalog_generation !=
           context.catalog_generation_id ||
-      prepared_authority->security_epoch !=
+      prepared_statement->security_epoch !=
           context.authorization_context.security_epoch ||
-      prepared_authority->policy_epoch !=
+      prepared_statement->policy_epoch !=
           context.authorization_context.policy_epoch ||
-      prepared_authority->local_transaction_id !=
+      prepared_statement->resource_epoch != context.resource_epoch ||
+      prepared_statement->local_transaction_id !=
           context.local_transaction_id ||
-      !prepared_authority->snapshot_vector.inventory_authoritative ||
-      !prepared_authority->snapshot_vector.complete) {
+      !prepared_statement->snapshot_vector.inventory_authoritative ||
+      !prepared_statement->snapshot_vector.complete) {
     return refuse("prepared_heap_count_authority_is_stale",
                   MgaHeapReadFailureCategoryV1::kMgaContext);
   }
@@ -12587,8 +13299,8 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
   if (text_exists &&
       !DecodeStreamingCountTextFile(
           text_path, text_bytes, relation_uuid,
-          context.session_uuid.canonical, prepared_authority->snapshot_vector,
-          prepared_authority->transaction_states, savepoints,
+          context.session_uuid.canonical, prepared_statement->snapshot_vector,
+          *prepared_statement->transaction_states, savepoints,
           result.descriptor, request.maximum_decoded_bytes,
           request.maximum_memory_bytes, &cancellation_requested, &rows,
           &fallback_identities, &result.peak_live_memory_bytes, &result,
@@ -12602,8 +13314,8 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
   if (binary_exists &&
       !DecodeStreamingCountBinaryFile(
           binary_path, binary_bytes, relation_uuid,
-          context.session_uuid.canonical, prepared_authority->snapshot_vector,
-          prepared_authority->transaction_states, savepoints,
+          context.session_uuid.canonical, prepared_statement->snapshot_vector,
+          *prepared_statement->transaction_states, savepoints,
           result.descriptor, request.maximum_decoded_bytes,
           request.maximum_memory_bytes, &cancellation_requested, &rows,
           &fallback_identities, &result.peak_live_memory_bytes, &result,
@@ -12858,7 +13570,8 @@ MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelation(
       result.delivered_row_count == *request.maximum_delivered_visible_rows;
   if (result.delivered_row_count != delivery_target ||
       source_ordinal > result.scanned_row_version_count ||
-      (!request.maximum_delivered_visible_rows.has_value() &&
+      (delivery_target != 0 &&
+       !request.maximum_delivered_visible_rows.has_value() &&
        (source_ordinal != result.scanned_row_version_count ||
         !result.complete_value_delivery)) ||
       (!result.complete_value_delivery &&
@@ -14398,9 +15111,18 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
 
   const bool requires_contextual_policy = std::ranges::any_of(
       relation_descriptor.columns, [](const auto& column) {
-        return column.value_descriptor.descriptor_uuid.canonical ==
-                   kCanonicalTextDescriptorUuid &&
-               !column.charset_uuid.empty() &&
+        const auto fields = StrictRelationDescriptorFields(
+            column.value_descriptor.encoded_descriptor);
+        const auto embedded =
+            fields == std::nullopt
+                ? std::map<std::string, std::string>::const_iterator{}
+                : fields->find("datatype_descriptor_uuid");
+        const bool canonical_text =
+            column.value_descriptor.descriptor_uuid.canonical ==
+                kCanonicalTextDescriptorUuid ||
+            (fields != std::nullopt && embedded != fields->end() &&
+             embedded->second == kCanonicalTextDescriptorUuid);
+        return canonical_text && !column.charset_uuid.empty() &&
                !column.collation_uuid.empty();
       });
   EngineContextualTextPolicyRowSetV2 policy_rows;
@@ -15516,16 +16238,21 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
   std::map<std::string, MgaRelationStorageDescriptor>
       updated_descriptors_by_object;
   std::map<std::string, std::set<std::string>> changed_columns_by_object;
+  // Validate the complete mapping before transforming any descriptor.  This
+  // keeps duplicate/stale authority precedence independent of row order and
+  // prevents a malformed first row from masking a later duplicate identity.
   for (const auto& requested : request.rows) {
+    const auto identity =
+        std::make_pair(requested.object_uuid, requested.column_uuid);
     if (!CanonicalNonNilMigrationUuid(requested.object_uuid) ||
         !CanonicalNonNilMigrationUuid(requested.column_uuid) ||
         requested.old_row_generation == 0 ||
-        !identities.emplace(requested.object_uuid,
-                            requested.column_uuid).second) {
+        identities.contains(identity)) {
       return refuse("CORE.AUTHORITY.CONFLICT",
                     "text_identity_migration_multiple_mapping",
                     "each object and column identity must occur exactly once");
     }
+    identities.insert(identity);
     const auto object_generation = object_generations.find(
         requested.object_uuid);
     if (object_generation != object_generations.end() &&
@@ -15535,7 +16262,9 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
                     requested.object_uuid);
     }
     object_generations[requested.object_uuid] = requested.old_row_generation;
+  }
 
+  for (const auto& requested : request.rows) {
     auto updated = updated_by_object.find(requested.object_uuid);
     if (updated == updated_by_object.end()) {
       const CrudTableRecord* exact = nullptr;
@@ -15602,7 +16331,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
         storage_column->canonical_name_key.empty() ||
         storage_column->column_generation != requested.old_row_generation ||
         storage_column->value_descriptor.descriptor_uuid.canonical !=
-            kLegacyTextDescriptorUuid) {
+            requested.column_uuid) {
       return refuse("DATATYPE.DESCRIPTOR_INVALID",
                     "text_identity_migration_relation_column_stale",
                     requested.column_uuid);
@@ -15612,9 +16341,13 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     for (auto& [column_name, descriptor] : updated->second.columns) {
       if (column_name != storage_column->canonical_name_key) continue;
       ++matched_columns;
-      if (descriptor != storage_column->value_descriptor.encoded_descriptor ||
-          !RewriteLegacyTextDescriptor(context, &descriptor,
-                                       requested.column_uuid)) {
+      auto migrated_storage_descriptor =
+          storage_column->value_descriptor.encoded_descriptor;
+      if (!RewriteLegacyTextDescriptor(context, &descriptor,
+                                       requested.column_uuid) ||
+          !RewriteLegacyTextDescriptor(context, &migrated_storage_descriptor,
+                                       requested.column_uuid) ||
+          descriptor != migrated_storage_descriptor) {
         return refuse("DATATYPE.DESCRIPTOR_INVALID",
                       "text_identity_migration_legacy_identity_required",
                       requested.column_uuid);
@@ -15628,7 +16361,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
                       requested.column_uuid);
       }
       storage_column->value_descriptor.descriptor_uuid.canonical =
-          std::string(kCanonicalTextDescriptorUuid);
+          requested.column_uuid;
       storage_column->value_descriptor.canonical_type_name = "text";
       storage_column->value_descriptor.encoded_descriptor = descriptor;
       changed_columns_by_object[requested.object_uuid].insert(
@@ -15648,11 +16381,12 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
                   "cancellation was observed before the sealed batch append");
   }
   const bool requires_contextual_policy = std::ranges::any_of(
-      updated_descriptors_by_object, [](const auto& entry) {
+      updated_descriptors_by_object, [&context](const auto& entry) {
         return std::ranges::any_of(entry.second.columns,
-                                   [](const auto& column) {
-          return column.value_descriptor.descriptor_uuid.canonical ==
-                     kCanonicalTextDescriptorUuid &&
+                                   [&context](const auto& column) {
+          return ExactCanonicalMigratedTextDescriptor(
+                     context, column.value_descriptor.encoded_descriptor,
+                     column.column_uuid.canonical) &&
                  !column.charset_uuid.empty() &&
                  !column.collation_uuid.empty();
         });
@@ -21935,6 +22669,880 @@ EngineApiDiagnostic ValidateMgaSavepointExists(const EngineRequestContext& conte
   return OkDiagnostic();
 }
 
+namespace {
+
+constexpr std::string_view kBulkImportPublicationKindV1 =
+    "BULK_IMPORT_PUBLICATION_V1";
+constexpr std::string_view kBulkImportPublicationEvidenceDomainV1 =
+    "ScratchBird.BulkImportStreamMgaPublicationRecord.V1";
+constexpr std::size_t kBulkImportPublicationFieldCountV1 = 35;
+
+std::mutex& BulkImportPublicationMutexV1() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::string BulkImportPublicationPathV1(
+    const EngineRequestContext& context) {
+  return context.database_path + ".sb.mga_bulk_import_publication.v1";
+}
+
+bool BulkImportPublicationUuidV1(std::string_view value) {
+  return DmlUpdateStatementParseUuid(value);
+}
+
+bool BulkImportPublicationShaV1(const MgaBulkImportSha256V1& value) {
+  return DmlUpdateStatementShaNonzero(value);
+}
+
+void BulkImportPublicationAppendShaV1(
+    std::vector<std::uint8_t>* material,
+    const MgaBulkImportSha256V1& value) {
+  material->insert(material->end(), value.begin(), value.end());
+}
+
+MgaBulkImportSha256V1 BulkImportPublicationEvidenceV1(
+    const MgaBulkImportPublicationRecordV1& record) {
+  std::vector<std::uint8_t> material;
+  material.reserve(640);
+  material.insert(material.end(), kBulkImportPublicationEvidenceDomainV1.begin(),
+                  kBulkImportPublicationEvidenceDomainV1.end());
+  if (!DmlUpdateStatementAppendUuid(&material,
+                                    record.durable_publication_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(
+      &material, record.durable_publication_generation);
+  BulkImportPublicationAppendShaV1(
+      &material, record.recovery_idempotency_key);
+  if (!DmlUpdateStatementAppendUuid(&material, record.stream_uuid)) return {};
+  DmlUpdateStatementAppendU64(&material, record.stream_generation);
+  BulkImportPublicationAppendShaV1(&material, record.descriptor_evidence);
+  if (!DmlUpdateStatementAppendUuid(&material,
+                                    record.target_relation_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(&material, record.target_relation_generation);
+  if (!DmlUpdateStatementAppendUuid(&material,
+                                    record.owning_transaction_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(&material,
+                              record.owning_local_transaction_id);
+  if (!DmlUpdateStatementAppendUuid(&material,
+                                    record.authenticated_receipt_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material, record.statement_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(&material, record.savepoint_ordinal);
+  if (
+      !DmlUpdateStatementAppendUuid(&material, record.mutation_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material, record.bulk_batch_uuid)) {
+    return {};
+  }
+  BulkImportPublicationAppendShaV1(&material, record.content_sha256);
+  DmlUpdateStatementAppendU64(&material, record.total_stream_bytes);
+  DmlUpdateStatementAppendU64(&material, record.chunk_count);
+  DmlUpdateStatementAppendU64(&material, record.input_row_count);
+  DmlUpdateStatementAppendU64(&material, record.affected_rows);
+  DmlUpdateStatementAppendU64(&material, record.rejected_rows);
+  DmlUpdateStatementAppendU64(
+      &material, record.imported_row_postcondition_count);
+  BulkImportPublicationAppendShaV1(
+      &material, record.imported_row_postcondition_sha256);
+  BulkImportPublicationAppendShaV1(
+      &material, record.normalized_statement_effect_sha256);
+  BulkImportPublicationAppendShaV1(
+      &material, record.column_descriptor_set_sha256);
+  BulkImportPublicationAppendShaV1(
+      &material, record.import_policy_bundle_sha256);
+  BulkImportPublicationAppendShaV1(
+      &material, record.default_descriptor_set_sha256);
+  BulkImportPublicationAppendShaV1(&material, record.constraint_set_sha256);
+  BulkImportPublicationAppendShaV1(&material, record.trigger_set_sha256);
+  BulkImportPublicationAppendShaV1(&material, record.index_set_sha256);
+  DmlUpdateStatementAppendU64(
+      &material, record.executor_availability_generation);
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material);
+  return digest.ok() ? digest.digest : MgaBulkImportSha256V1{};
+}
+
+bool BulkImportPublicationRecordShapeV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportPublicationRecordV1& record) {
+  return !context.database_path.empty() &&
+         BulkImportPublicationUuidV1(record.durable_publication_uuid) &&
+         record.durable_publication_generation == 1 &&
+         BulkImportPublicationShaV1(record.recovery_idempotency_key) &&
+         BulkImportPublicationUuidV1(record.stream_uuid) &&
+         record.stream_generation != 0 &&
+         BulkImportPublicationShaV1(record.descriptor_evidence) &&
+         BulkImportPublicationUuidV1(record.target_relation_uuid) &&
+         record.target_relation_generation != 0 &&
+         BulkImportPublicationUuidV1(record.owning_transaction_uuid) &&
+         record.owning_transaction_uuid == context.transaction_uuid.canonical &&
+         record.owning_local_transaction_id != 0 &&
+         record.owning_local_transaction_id == context.local_transaction_id &&
+         BulkImportPublicationUuidV1(record.authenticated_receipt_uuid) &&
+         record.authenticated_receipt_uuid ==
+             context.statement_receipt_uuid.canonical &&
+         BulkImportPublicationUuidV1(record.statement_uuid) &&
+         record.statement_uuid == context.statement_uuid.canonical &&
+         record.savepoint_ordinal != 0 &&
+         BulkImportPublicationUuidV1(record.mutation_uuid) &&
+         BulkImportPublicationUuidV1(record.bulk_batch_uuid) &&
+         BulkImportPublicationShaV1(record.content_sha256) &&
+         record.total_stream_bytes != 0 && record.chunk_count != 0 &&
+         record.input_row_count != 0 &&
+         record.affected_rows == record.input_row_count &&
+         record.rejected_rows == 0 &&
+         record.imported_row_postcondition_count == record.input_row_count &&
+         BulkImportPublicationShaV1(
+             record.imported_row_postcondition_sha256) &&
+         BulkImportPublicationShaV1(
+             record.normalized_statement_effect_sha256) &&
+         BulkImportPublicationShaV1(
+             record.column_descriptor_set_sha256) &&
+         BulkImportPublicationShaV1(record.import_policy_bundle_sha256) &&
+         BulkImportPublicationShaV1(
+             record.default_descriptor_set_sha256) &&
+         BulkImportPublicationShaV1(record.constraint_set_sha256) &&
+         BulkImportPublicationShaV1(record.trigger_set_sha256) &&
+         BulkImportPublicationShaV1(record.index_set_sha256) &&
+         record.executor_availability_generation != 0;
+}
+
+bool BulkImportPublicationAuthorityEqualV1(
+    const MgaBulkImportPublicationRecordV1& left,
+    const MgaBulkImportPublicationRecordV1& right) {
+  auto normalized_left = left;
+  auto normalized_right = right;
+  normalized_left.lifecycle = MgaBulkImportPublicationLifecycleV1::prepared;
+  normalized_right.lifecycle = MgaBulkImportPublicationLifecycleV1::prepared;
+  normalized_left.record_evidence_sha256 = {};
+  normalized_right.record_evidence_sha256 = {};
+  return normalized_left == normalized_right;
+}
+
+std::string BulkImportPublicationLineV1(
+    const MgaBulkImportPublicationRecordV1& record) {
+  return JoinLine(
+      {std::string(kRowStoreMagic),
+       std::string(kBulkImportPublicationKindV1),
+       std::to_string(static_cast<unsigned>(record.lifecycle)),
+       record.durable_publication_uuid,
+       std::to_string(record.durable_publication_generation),
+       DmlUpdateStatementShaHex(record.recovery_idempotency_key),
+       record.stream_uuid,
+       std::to_string(record.stream_generation),
+       DmlUpdateStatementShaHex(record.descriptor_evidence),
+       record.target_relation_uuid,
+       std::to_string(record.target_relation_generation),
+       record.owning_transaction_uuid,
+       std::to_string(record.owning_local_transaction_id),
+       record.authenticated_receipt_uuid,
+       record.statement_uuid,
+       std::to_string(record.savepoint_ordinal),
+       record.mutation_uuid,
+       record.bulk_batch_uuid,
+       DmlUpdateStatementShaHex(record.content_sha256),
+       std::to_string(record.total_stream_bytes),
+       std::to_string(record.chunk_count),
+       std::to_string(record.input_row_count),
+       std::to_string(record.affected_rows),
+       std::to_string(record.rejected_rows),
+       std::to_string(record.imported_row_postcondition_count),
+       DmlUpdateStatementShaHex(record.imported_row_postcondition_sha256),
+       DmlUpdateStatementShaHex(record.normalized_statement_effect_sha256),
+       DmlUpdateStatementShaHex(record.column_descriptor_set_sha256),
+       DmlUpdateStatementShaHex(record.import_policy_bundle_sha256),
+       DmlUpdateStatementShaHex(record.default_descriptor_set_sha256),
+       DmlUpdateStatementShaHex(record.constraint_set_sha256),
+       DmlUpdateStatementShaHex(record.trigger_set_sha256),
+       DmlUpdateStatementShaHex(record.index_set_sha256),
+       std::to_string(record.executor_availability_generation),
+       DmlUpdateStatementShaHex(record.record_evidence_sha256)});
+}
+
+bool BulkImportPublicationParseV1(
+    const std::string& line, MgaBulkImportPublicationRecordV1* record) {
+  if (record == nullptr) return false;
+  const auto fields = SplitTabs(line);
+  if (fields.size() != kBulkImportPublicationFieldCountV1 ||
+      fields[0] != kRowStoreMagic ||
+      fields[1] != kBulkImportPublicationKindV1) {
+    return false;
+  }
+  const auto lifecycle = ParseU64(fields[2]);
+  if (lifecycle < 1 || lifecycle > 3) return false;
+  MgaBulkImportPublicationRecordV1 parsed;
+  parsed.lifecycle =
+      static_cast<MgaBulkImportPublicationLifecycleV1>(lifecycle);
+  parsed.durable_publication_uuid = fields[3];
+  parsed.durable_publication_generation = ParseU64(fields[4]);
+  parsed.stream_uuid = fields[6];
+  parsed.stream_generation = ParseU64(fields[7]);
+  parsed.target_relation_uuid = fields[9];
+  parsed.target_relation_generation = ParseU64(fields[10]);
+  parsed.owning_transaction_uuid = fields[11];
+  parsed.owning_local_transaction_id = ParseU64(fields[12]);
+  parsed.authenticated_receipt_uuid = fields[13];
+  parsed.statement_uuid = fields[14];
+  parsed.savepoint_ordinal = ParseU64(fields[15]);
+  parsed.mutation_uuid = fields[16];
+  parsed.bulk_batch_uuid = fields[17];
+  parsed.total_stream_bytes = ParseU64(fields[19]);
+  parsed.chunk_count = ParseU64(fields[20]);
+  parsed.input_row_count = ParseU64(fields[21]);
+  parsed.affected_rows = ParseU64(fields[22]);
+  parsed.rejected_rows = ParseU64(fields[23]);
+  parsed.imported_row_postcondition_count = ParseU64(fields[24]);
+  parsed.executor_availability_generation = ParseU64(fields[33]);
+  if (!DmlUpdateStatementParseSha(fields[5],
+                                  &parsed.recovery_idempotency_key) ||
+      !DmlUpdateStatementParseSha(fields[8],
+                                  &parsed.descriptor_evidence) ||
+      !DmlUpdateStatementParseSha(fields[18], &parsed.content_sha256) ||
+      !DmlUpdateStatementParseSha(
+          fields[25], &parsed.imported_row_postcondition_sha256) ||
+      !DmlUpdateStatementParseSha(
+          fields[26], &parsed.normalized_statement_effect_sha256) ||
+      !DmlUpdateStatementParseSha(
+          fields[27], &parsed.column_descriptor_set_sha256) ||
+      !DmlUpdateStatementParseSha(
+          fields[28], &parsed.import_policy_bundle_sha256) ||
+      !DmlUpdateStatementParseSha(
+          fields[29], &parsed.default_descriptor_set_sha256) ||
+      !DmlUpdateStatementParseSha(fields[30],
+                                  &parsed.constraint_set_sha256) ||
+      !DmlUpdateStatementParseSha(fields[31],
+                                  &parsed.trigger_set_sha256) ||
+      !DmlUpdateStatementParseSha(fields[32], &parsed.index_set_sha256) ||
+      !DmlUpdateStatementParseSha(fields[34],
+                                  &parsed.record_evidence_sha256) ||
+      BulkImportPublicationEvidenceV1(parsed) !=
+          parsed.record_evidence_sha256) {
+    return false;
+  }
+  *record = std::move(parsed);
+  return true;
+}
+
+MgaBulkImportPublicationResultV1 BulkImportPublicationFailureV1(
+    std::string code, std::string key, std::string detail) {
+  MgaBulkImportPublicationResultV1 result;
+  result.diagnostic = MakeEngineApiDiagnostic(
+      std::move(code), std::move(key), std::move(detail), true);
+  return result;
+}
+
+bool BulkImportPublicationAppendV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportPublicationRecordV1& record) {
+  std::string line = BulkImportPublicationLineV1(record);
+  if (line.empty()) return false;
+  line.push_back('\n');
+  const auto* begin = reinterpret_cast<const std::uint8_t*>(line.data());
+  return DmlUpdateDurableAppendEncodedFrame(
+             BulkImportPublicationPathV1(context),
+             std::span<const std::uint8_t>(begin, line.size()), false) ==
+         DmlUpdateDurableRawAppendResultV1::ok;
+}
+
+MgaBulkImportPublicationResultV1 BulkImportPublicationLoadV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportSha256V1& recovery_idempotency_key) {
+  MgaBulkImportPublicationResultV1 result;
+  if (context.database_path.empty() ||
+      !BulkImportPublicationShaV1(recovery_idempotency_key)) {
+    return BulkImportPublicationFailureV1(
+        "SBLR.OPERAND_INVALID",
+        "mga.bulk_import.publication_lookup_invalid",
+        "database path and recovery key are required");
+  }
+  std::optional<MgaBulkImportPublicationRecordV1> found;
+  for (const auto& line : ReadLines(BulkImportPublicationPathV1(context))) {
+    MgaBulkImportPublicationRecordV1 parsed;
+    if (!BulkImportPublicationParseV1(line, &parsed)) {
+      return BulkImportPublicationFailureV1(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "mga.bulk_import.publication_record_corrupt",
+          "one durable publication record failed canonical validation");
+    }
+    if (parsed.recovery_idempotency_key != recovery_idempotency_key) continue;
+    if (found.has_value() &&
+        !BulkImportPublicationAuthorityEqualV1(*found, parsed)) {
+      return BulkImportPublicationFailureV1(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "mga.bulk_import.publication_record_forked",
+          "the recovery key has incompatible durable publication records");
+    }
+    if (!found.has_value() ||
+        static_cast<unsigned>(parsed.lifecycle) >=
+            static_cast<unsigned>(found->lifecycle)) {
+      found = std::move(parsed);
+    }
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  if (found.has_value()) {
+    result.found = true;
+    result.record = std::move(*found);
+  }
+  return result;
+}
+
+constexpr std::string_view kBulkImportImportedRowKindV1 =
+    "BULK_IMPORT_IMPORTED_ROW_V1";
+constexpr std::string_view kBulkImportImportedRowEvidenceDomainV1 =
+    "ScratchBird.BulkImportStreamImportedRowEvent.V1";
+constexpr std::size_t kBulkImportImportedRowFieldCountV1 = 23;
+
+std::string BulkImportImportedRowPathV1(
+    const EngineRequestContext& context) {
+  return context.database_path + ".sb.mga_bulk_import_imported_rows.v1";
+}
+
+MgaBulkImportSha256V1 BulkImportImportedRowEvidenceV1(
+    const MgaBulkImportImportedRowEventV1& event) {
+  std::vector<std::uint8_t> material;
+  material.reserve(560);
+  material.insert(material.end(), kBulkImportImportedRowEvidenceDomainV1.begin(),
+                  kBulkImportImportedRowEvidenceDomainV1.end());
+  material.insert(material.end(), {1, 0, 0, 0});
+  if (!DmlUpdateStatementAppendUuid(&material,
+                                    event.durable_publication_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(&material,
+                              event.durable_publication_generation);
+  BulkImportPublicationAppendShaV1(
+      &material, event.recovery_idempotency_key);
+  if (!DmlUpdateStatementAppendUuid(&material, event.mutation_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material, event.bulk_batch_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material,
+                                    event.owning_transaction_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(&material,
+                              event.owning_local_transaction_id);
+  if (!DmlUpdateStatementAppendUuid(&material, event.statement_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(&material, event.savepoint_ordinal);
+  if (!DmlUpdateStatementAppendUuid(&material,
+                                    event.target_relation_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(&material, event.target_relation_generation);
+  DmlUpdateStatementAppendU64(&material, event.import_ordinal);
+  if (!DmlUpdateStatementAppendUuid(&material, event.row_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material, event.row_version_uuid) ||
+      !DmlUpdateStatementAppendUuid(&material, event.row_image_uuid)) {
+    return {};
+  }
+  DmlUpdateStatementAppendU64(
+      &material, event.row_image_metadata_generation);
+  BulkImportPublicationAppendShaV1(&material, event.row_image_domain_hash);
+  BulkImportPublicationAppendShaV1(&material, event.row_image_value_hash);
+  BulkImportPublicationAppendShaV1(
+      &material, event.column_descriptor_set_sha256);
+  BulkImportPublicationAppendShaV1(
+      &material, event.canonical_typed_field_vector_sha256);
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material);
+  return digest.ok() ? digest.digest : MgaBulkImportSha256V1{};
+}
+
+bool BulkImportImportedRowShapeV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportImportedRowEventV1& event) {
+  return BulkImportPublicationUuidV1(event.durable_publication_uuid) &&
+         event.durable_publication_generation == 1 &&
+         BulkImportPublicationShaV1(event.recovery_idempotency_key) &&
+         BulkImportPublicationUuidV1(event.mutation_uuid) &&
+         BulkImportPublicationUuidV1(event.bulk_batch_uuid) &&
+         BulkImportPublicationUuidV1(event.owning_transaction_uuid) &&
+         event.owning_transaction_uuid == context.transaction_uuid.canonical &&
+         event.owning_local_transaction_id == context.local_transaction_id &&
+         event.owning_local_transaction_id != 0 &&
+         BulkImportPublicationUuidV1(event.statement_uuid) &&
+         event.statement_uuid == context.statement_uuid.canonical &&
+         event.savepoint_ordinal != 0 &&
+         BulkImportPublicationUuidV1(event.target_relation_uuid) &&
+         event.target_relation_generation != 0 && event.import_ordinal != 0 &&
+         BulkImportPublicationUuidV1(event.row_uuid) &&
+         BulkImportPublicationUuidV1(event.row_version_uuid) &&
+         BulkImportPublicationUuidV1(event.row_image_uuid) &&
+         event.row_uuid != event.row_version_uuid &&
+         event.row_uuid != event.row_image_uuid &&
+         event.row_version_uuid != event.row_image_uuid &&
+         event.row_image_metadata_generation != 0 &&
+         BulkImportPublicationShaV1(event.row_image_domain_hash) &&
+         BulkImportPublicationShaV1(event.row_image_value_hash) &&
+         BulkImportPublicationShaV1(
+             event.column_descriptor_set_sha256) &&
+         BulkImportPublicationShaV1(
+             event.canonical_typed_field_vector_sha256) &&
+         event.row_image_value_hash ==
+             event.canonical_typed_field_vector_sha256;
+}
+
+std::string BulkImportImportedRowLineV1(
+    const MgaBulkImportImportedRowEventV1& event) {
+  return JoinLine(
+      {std::string(kRowStoreMagic), std::string(kBulkImportImportedRowKindV1),
+       event.durable_publication_uuid,
+       std::to_string(event.durable_publication_generation),
+       DmlUpdateStatementShaHex(event.recovery_idempotency_key),
+       event.mutation_uuid, event.bulk_batch_uuid,
+       event.owning_transaction_uuid,
+       std::to_string(event.owning_local_transaction_id), event.statement_uuid,
+       std::to_string(event.savepoint_ordinal), event.target_relation_uuid,
+       std::to_string(event.target_relation_generation),
+       std::to_string(event.import_ordinal), event.row_uuid,
+       event.row_version_uuid, event.row_image_uuid,
+       std::to_string(event.row_image_metadata_generation),
+       DmlUpdateStatementShaHex(event.row_image_domain_hash),
+       DmlUpdateStatementShaHex(event.row_image_value_hash),
+       DmlUpdateStatementShaHex(event.column_descriptor_set_sha256),
+       DmlUpdateStatementShaHex(
+           event.canonical_typed_field_vector_sha256),
+       DmlUpdateStatementShaHex(event.event_evidence_sha256)});
+}
+
+bool BulkImportImportedRowParseV1(
+    const std::string& line, MgaBulkImportImportedRowEventV1* event) {
+  if (event == nullptr) return false;
+  const auto fields = SplitTabs(line);
+  if (fields.size() != kBulkImportImportedRowFieldCountV1 ||
+      fields[0] != kRowStoreMagic ||
+      fields[1] != kBulkImportImportedRowKindV1) {
+    return false;
+  }
+  MgaBulkImportImportedRowEventV1 parsed;
+  parsed.durable_publication_uuid = fields[2];
+  parsed.durable_publication_generation = ParseU64(fields[3]);
+  parsed.mutation_uuid = fields[5];
+  parsed.bulk_batch_uuid = fields[6];
+  parsed.owning_transaction_uuid = fields[7];
+  parsed.owning_local_transaction_id = ParseU64(fields[8]);
+  parsed.statement_uuid = fields[9];
+  parsed.savepoint_ordinal = ParseU64(fields[10]);
+  parsed.target_relation_uuid = fields[11];
+  parsed.target_relation_generation = ParseU64(fields[12]);
+  parsed.import_ordinal = ParseU64(fields[13]);
+  parsed.row_uuid = fields[14];
+  parsed.row_version_uuid = fields[15];
+  parsed.row_image_uuid = fields[16];
+  parsed.row_image_metadata_generation = ParseU64(fields[17]);
+  if (!DmlUpdateStatementParseSha(fields[4],
+                                  &parsed.recovery_idempotency_key) ||
+      !DmlUpdateStatementParseSha(fields[18],
+                                  &parsed.row_image_domain_hash) ||
+      !DmlUpdateStatementParseSha(fields[19],
+                                  &parsed.row_image_value_hash) ||
+      !DmlUpdateStatementParseSha(
+          fields[20], &parsed.column_descriptor_set_sha256) ||
+      !DmlUpdateStatementParseSha(
+          fields[21], &parsed.canonical_typed_field_vector_sha256) ||
+      !DmlUpdateStatementParseSha(fields[22],
+                                  &parsed.event_evidence_sha256) ||
+      BulkImportImportedRowEvidenceV1(parsed) !=
+          parsed.event_evidence_sha256) {
+    return false;
+  }
+  *event = std::move(parsed);
+  return true;
+}
+
+MgaBulkImportImportedRowEventResultV1 BulkImportImportedRowFailureV1(
+    std::string code, std::string key, std::string detail) {
+  MgaBulkImportImportedRowEventResultV1 result;
+  result.diagnostic = MakeEngineApiDiagnostic(
+      std::move(code), std::move(key), std::move(detail), true);
+  return result;
+}
+
+MgaBulkImportImportedRowEventResultV1 BulkImportImportedRowLoadV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportSha256V1& recovery_idempotency_key) {
+  MgaBulkImportImportedRowEventResultV1 result;
+  if (context.database_path.empty() ||
+      !BulkImportPublicationShaV1(recovery_idempotency_key)) {
+    return BulkImportImportedRowFailureV1(
+        "SBLR.OPERAND_INVALID", "mga.bulk_import.imported_row_lookup_invalid",
+        "database path and recovery key are required");
+  }
+  for (const auto& line : ReadLines(BulkImportImportedRowPathV1(context))) {
+    MgaBulkImportImportedRowEventV1 parsed;
+    if (!BulkImportImportedRowParseV1(line, &parsed)) {
+      return BulkImportImportedRowFailureV1(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "mga.bulk_import.imported_row_event_corrupt",
+          "one imported-row event failed canonical validation");
+    }
+    if (parsed.recovery_idempotency_key == recovery_idempotency_key) {
+      result.events.push_back(std::move(parsed));
+    }
+  }
+  std::sort(result.events.begin(), result.events.end(),
+            [](const auto& left, const auto& right) {
+              return left.import_ordinal < right.import_ordinal;
+            });
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+}  // namespace
+
+MgaBulkImportPublicationResultV1 PrepareMgaBulkImportPublicationV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportPublicationRecordV1& requested) {
+  std::lock_guard<std::mutex> guard(BulkImportPublicationMutexV1());
+  auto record = requested;
+  record.lifecycle = MgaBulkImportPublicationLifecycleV1::prepared;
+  record.record_evidence_sha256 = BulkImportPublicationEvidenceV1(record);
+  if (!BulkImportPublicationRecordShapeV1(context, record) ||
+      !BulkImportPublicationShaV1(record.record_evidence_sha256)) {
+    return BulkImportPublicationFailureV1(
+        "SBLR.OPERAND_INVALID",
+        "mga.bulk_import.publication_record_invalid",
+        "the prepared publication authority is incomplete");
+  }
+  DmlUpdateDurableFileLock file_lock(BulkImportPublicationPathV1(context));
+  if (!file_lock.ok()) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_lock_failed",
+        "the durable publication lock could not be acquired");
+  }
+  auto existing = BulkImportPublicationLoadV1(
+      context, record.recovery_idempotency_key);
+  if (!existing.ok) return existing;
+  if (existing.found) {
+    if (!BulkImportPublicationAuthorityEqualV1(existing.record, record)) {
+      return BulkImportPublicationFailureV1(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "mga.bulk_import.publication_identity_conflict",
+          "the recovery key is already bound to another publication");
+    }
+    existing.replayed = true;
+    return existing;
+  }
+  if (!BulkImportPublicationAppendV1(context, record)) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.ABORTED",
+        "mga.bulk_import.publication_prepare_failed",
+        "the prepared publication record was not durable");
+  }
+  MgaBulkImportPublicationResultV1 result;
+  result.ok = true;
+  result.found = true;
+  result.record = std::move(record);
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+MgaBulkImportPublicationResultV1 PublishMgaBulkImportPublicationV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportPublicationRecordV1& prepared_record) {
+  std::lock_guard<std::mutex> guard(BulkImportPublicationMutexV1());
+  DmlUpdateDurableFileLock file_lock(BulkImportPublicationPathV1(context));
+  if (!file_lock.ok()) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_lock_failed",
+        "the durable publication lock could not be acquired");
+  }
+  auto existing = BulkImportPublicationLoadV1(
+      context, prepared_record.recovery_idempotency_key);
+  if (!existing.ok || !existing.found) {
+    return existing.ok
+               ? BulkImportPublicationFailureV1(
+                     "BULK.IMPORT.RECOVERY_CONFLICT",
+                     "mga.bulk_import.publication_prepare_missing",
+                     "publication requires the exact prepared record")
+               : existing;
+  }
+  if (!BulkImportPublicationAuthorityEqualV1(existing.record,
+                                              prepared_record)) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_identity_conflict",
+        "the prepared publication authority changed");
+  }
+  if (existing.record.lifecycle ==
+      MgaBulkImportPublicationLifecycleV1::published_uncommitted) {
+    existing.replayed = true;
+    return existing;
+  }
+  if (existing.record.lifecycle !=
+      MgaBulkImportPublicationLifecycleV1::prepared) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_lifecycle_invalid",
+        "an aborted publication cannot be promoted");
+  }
+  auto published = existing.record;
+  published.lifecycle =
+      MgaBulkImportPublicationLifecycleV1::published_uncommitted;
+  if (!BulkImportPublicationAppendV1(context, published)) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_publish_failed",
+        "row mutation crossed its barrier but the publication successor was not durable");
+  }
+  MgaBulkImportPublicationResultV1 result;
+  result.ok = true;
+  result.found = true;
+  result.record = std::move(published);
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+MgaBulkImportPublicationResultV1 AbortMgaBulkImportPublicationV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportPublicationRecordV1& prepared_record) {
+  std::lock_guard<std::mutex> guard(BulkImportPublicationMutexV1());
+  DmlUpdateDurableFileLock file_lock(BulkImportPublicationPathV1(context));
+  if (!file_lock.ok()) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_lock_failed",
+        "the durable publication lock could not be acquired");
+  }
+  auto existing = BulkImportPublicationLoadV1(
+      context, prepared_record.recovery_idempotency_key);
+  if (!existing.ok || !existing.found) return existing;
+  if (!BulkImportPublicationAuthorityEqualV1(existing.record,
+                                              prepared_record)) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_identity_conflict",
+        "the prepared publication authority changed");
+  }
+  if (existing.record.lifecycle == MgaBulkImportPublicationLifecycleV1::aborted) {
+    existing.replayed = true;
+    return existing;
+  }
+  if (existing.record.lifecycle ==
+      MgaBulkImportPublicationLifecycleV1::published_uncommitted) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_already_published",
+        "a published mutation cannot be aborted");
+  }
+  auto aborted = existing.record;
+  aborted.lifecycle = MgaBulkImportPublicationLifecycleV1::aborted;
+  if (!BulkImportPublicationAppendV1(context, aborted)) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_abort_failed",
+        "the abort successor was not durable");
+  }
+  MgaBulkImportPublicationResultV1 result;
+  result.ok = true;
+  result.found = true;
+  result.record = std::move(aborted);
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+MgaBulkImportPublicationResultV1 RecoverMgaBulkImportPublicationV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportSha256V1& recovery_idempotency_key) {
+  std::lock_guard<std::mutex> guard(BulkImportPublicationMutexV1());
+  DmlUpdateDurableFileLock file_lock(BulkImportPublicationPathV1(context));
+  if (!file_lock.ok()) {
+    return BulkImportPublicationFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.publication_lock_failed",
+        "the durable publication lock could not be acquired");
+  }
+  return BulkImportPublicationLoadV1(context, recovery_idempotency_key);
+}
+
+MgaBulkImportImportedRowEventResultV1 StoreMgaBulkImportImportedRowEventsV1(
+    const EngineRequestContext& context,
+    const std::vector<MgaBulkImportImportedRowEventV1>& requested) {
+  std::lock_guard<std::mutex> guard(BulkImportPublicationMutexV1());
+  if (requested.empty()) {
+    return BulkImportImportedRowFailureV1(
+        "SBLR.OPERAND_INVALID", "mga.bulk_import.imported_rows_empty",
+        "at least one imported-row event is required");
+  }
+  auto events = requested;
+  for (std::size_t index = 0; index < events.size(); ++index) {
+    auto& event = events[index];
+    event.event_evidence_sha256 = BulkImportImportedRowEvidenceV1(event);
+    if (event.import_ordinal != index + 1 ||
+        !BulkImportImportedRowShapeV1(context, event) ||
+        !BulkImportPublicationShaV1(event.event_evidence_sha256) ||
+        (index != 0 &&
+         (event.recovery_idempotency_key !=
+              events.front().recovery_idempotency_key ||
+          event.durable_publication_uuid !=
+              events.front().durable_publication_uuid ||
+          event.mutation_uuid != events.front().mutation_uuid ||
+          event.bulk_batch_uuid != events.front().bulk_batch_uuid ||
+          event.target_relation_uuid !=
+              events.front().target_relation_uuid))) {
+      return BulkImportImportedRowFailureV1(
+          "SBLR.OPERAND_INVALID",
+          "mga.bulk_import.imported_row_event_invalid",
+          "the ordered imported-row event set is incomplete or inconsistent");
+    }
+  }
+  std::set<std::string> identities;
+  for (const auto& event : events) {
+    if (!identities.insert(event.row_uuid).second ||
+        !identities.insert(event.row_version_uuid).second ||
+        !identities.insert(event.row_image_uuid).second) {
+      return BulkImportImportedRowFailureV1(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "mga.bulk_import.imported_row_identity_collision",
+          "row, version, and image identities must be globally distinct in the event set");
+    }
+  }
+  DmlUpdateDurableFileLock file_lock(BulkImportImportedRowPathV1(context));
+  if (!file_lock.ok()) {
+    return BulkImportImportedRowFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.imported_row_lock_failed",
+        "the durable imported-row event lock could not be acquired");
+  }
+  auto existing = BulkImportImportedRowLoadV1(
+      context, events.front().recovery_idempotency_key);
+  if (!existing.ok) return existing;
+  if (!existing.events.empty()) {
+    if (existing.events != events) {
+      return BulkImportImportedRowFailureV1(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "mga.bulk_import.imported_row_event_conflict",
+          "the recovery key already owns another imported-row event set");
+    }
+    existing.replayed = true;
+    return existing;
+  }
+  std::string payload;
+  for (const auto& event : events) {
+    std::string line = BulkImportImportedRowLineV1(event);
+    if (line.empty()) {
+      return BulkImportImportedRowFailureV1(
+          "BULK.IMPORT.ABORTED",
+          "mga.bulk_import.imported_row_encode_failed",
+          "the imported-row event set could not be encoded");
+    }
+    payload.append(line);
+    payload.push_back('\n');
+  }
+  const auto* begin =
+      reinterpret_cast<const std::uint8_t*>(payload.data());
+  if (DmlUpdateDurableAppendEncodedFrame(
+          BulkImportImportedRowPathV1(context),
+          std::span<const std::uint8_t>(begin, payload.size()), false) !=
+      DmlUpdateDurableRawAppendResultV1::ok) {
+    return BulkImportImportedRowFailureV1(
+        "BULK.IMPORT.ABORTED",
+        "mga.bulk_import.imported_row_persist_failed",
+        "the imported-row event set was not durable");
+  }
+  MgaBulkImportImportedRowEventResultV1 result;
+  result.ok = true;
+  result.events = std::move(events);
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+MgaBulkImportImportedRowEventResultV1 RecoverMgaBulkImportImportedRowEventsV1(
+    const EngineRequestContext& context,
+    const MgaBulkImportSha256V1& recovery_idempotency_key) {
+  std::lock_guard<std::mutex> guard(BulkImportPublicationMutexV1());
+  DmlUpdateDurableFileLock file_lock(BulkImportImportedRowPathV1(context));
+  if (!file_lock.ok()) {
+    return BulkImportImportedRowFailureV1(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.imported_row_lock_failed",
+        "the durable imported-row event lock could not be acquired");
+  }
+  auto result =
+      BulkImportImportedRowLoadV1(context, recovery_idempotency_key);
+  if (!result.ok) return result;
+  for (std::size_t index = 0; index < result.events.size(); ++index) {
+    if (result.events[index].import_ordinal != index + 1 ||
+        !BulkImportImportedRowShapeV1(context, result.events[index])) {
+      return BulkImportImportedRowFailureV1(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "mga.bulk_import.imported_row_event_invalid",
+          "the durable imported-row event set failed authority validation");
+    }
+  }
+  return result;
+}
+
+MgaBulkImportRowLineageResultV1 ProbeMgaBulkImportRowIdentityLineageV1(
+    const EngineRequestContext& context, const std::string& table_uuid,
+    const std::string& row_uuid) {
+  MgaBulkImportRowLineageResultV1 result;
+  if (context.database_path.empty() || !BulkImportPublicationUuidV1(table_uuid) ||
+      !BulkImportPublicationUuidV1(row_uuid)) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        "SBLR.OPERAND_INVALID", "mga.bulk_import.row_lineage_lookup_invalid",
+        "database, table, and row identities are required", true);
+    return result;
+  }
+  std::vector<CrudRowVersionRecord> rows;
+  bool used_segment = false;
+  if (!LoadDecodedScopedRowsForTable(context, table_uuid, &rows,
+                                     &used_segment)) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "mga.bulk_import.row_lineage_decode_failed",
+        "the retained relation row lineage could not be decoded", true);
+    return result;
+  }
+  for (const auto& line : ReadLines(RowStorePath(context))) {
+    const auto fields = SplitTabs(line);
+    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
+        fields[1] != "ROW_VERSION" || fields[4] != table_uuid ||
+        fields[5] != row_uuid) {
+      continue;
+    }
+    CrudRowVersionRecord row;
+    row.creator_tx = ParseU64(fields[2]);
+    row.event_sequence = ParseU64(fields[3]);
+    row.sequence = row.event_sequence;
+    row.table_uuid = fields[4];
+    row.row_uuid = fields[5];
+    row.version_uuid = fields[6];
+    row.deleted = fields[7] == "1";
+    row.previous_version_uuid = fields[8];
+    row.previous_sequence = ParseU64(fields[9]);
+    row.values = DecodeCrudPairs(fields[10]);
+    if (fields.size() >= 12) row.temporary_session_uuid = fields[11];
+    rows.push_back(std::move(row));
+  }
+  rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const auto& row) {
+               return row.table_uuid != table_uuid || row.row_uuid != row_uuid;
+             }),
+             rows.end());
+  std::sort(rows.begin(), rows.end(), [](const auto& left, const auto& right) {
+    return std::tie(left.event_sequence, left.version_uuid) <
+           std::tie(right.event_sequence, right.version_uuid);
+  });
+  rows.erase(std::unique(rows.begin(), rows.end(),
+                         [](const auto& left, const auto& right) {
+                           return left.event_sequence == right.event_sequence &&
+                                  left.version_uuid == right.version_uuid;
+                         }),
+             rows.end());
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  result.versions = std::move(rows);
+  return result;
+}
+
 std::vector<std::string> ActiveMgaSavepointNames(const EngineRequestContext& context) {
   std::vector<std::string> names;
   if (context.local_transaction_id == 0 || context.database_path.empty()) {
@@ -23042,6 +24650,33 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     }
     projected_columns.push_back(&column);
     auto output_descriptor = column.value_descriptor;
+    if (output_descriptor.canonical_type_name == "text" &&
+        !relational_descriptor->datatype_identity_authoritative) {
+      // The persisted column carrier includes storage-only datatype evidence
+      // that is not part of a non-contextual relational graph descriptor.
+      // Publication at this boundary uses the exact scalar execution view
+      // already bound above; contextual descriptors retain the full
+      // persisted carrier and are revalidated through their live authority.
+      output_descriptor.descriptor_uuid.canonical =
+          relational_descriptor->descriptor_uuid;
+      output_descriptor.encoded_descriptor =
+          "type_uuid=" + relational_descriptor->type_uuid +
+          ";nullability=" + (nullable ? "nullable" : "non_null");
+      if (relational_descriptor->collation_uuid.has_value()) {
+        output_descriptor.encoded_descriptor +=
+            ";collation_uuid=" + *relational_descriptor->collation_uuid;
+      }
+      if (relational_descriptor->width.has_value()) {
+        output_descriptor.encoded_descriptor +=
+            ";width=" + std::to_string(*relational_descriptor->width);
+      }
+    } else if (output_descriptor.canonical_type_name == "text" &&
+               output_descriptor.encoded_descriptor.find(
+                   "datatype_descriptor_uuid=") != std::string::npos &&
+               output_descriptor.encoded_descriptor.find("column_uuid=") !=
+                   std::string::npos) {
+      output_descriptor.descriptor_uuid = column.column_uuid;
+    }
     output_descriptor.descriptor_kind = "scalar";
     batch.columns.push_back({column.canonical_name_key,
                              output_descriptor,
@@ -23311,6 +24946,9 @@ struct HeapPhysicalExecutorState {
   std::optional<CanonicalExecutionMgaAuthority> owned_mga_authority;
   std::shared_ptr<const CanonicalExecutionMgaAuthority> shared_mga_authority;
   const CanonicalExecutionMgaAuthority* mga_authority = nullptr;
+  std::shared_ptr<const scratchbird::engine::internal_api::
+                            PreparedMgaHeapReadAuthorityCohort>
+      heap_read_authority_cohort;
   std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
   bool exact_global_count_star_consumer = false;
   std::vector<HeapAcquisitionLeafBinding> acquisition_leaf_bindings;
@@ -23475,7 +25113,7 @@ std::optional<std::uint64_t> HeapPhysicalRegistrationRetainedMemoryBytes(
   constexpr std::uint64_t kTreeNodeOverhead = 4 * sizeof(void*);
   constexpr std::uint64_t kSharedAllocationOverhead = 4 * sizeof(void*);
   std::uint64_t bytes = sizeof(state) + sizeof(observation) +
-                        2 * sizeof(std::shared_ptr<void>) +
+                        3 * sizeof(std::shared_ptr<void>) +
                         3 * kSharedAllocationOverhead;
   std::uint64_t allocation_bytes = 0;
   if (state.mga_authority == nullptr ||
@@ -23520,23 +25158,47 @@ std::optional<std::uint64_t> HeapPhysicalRegistrationRetainedMemoryBytes(
     if (authority == nullptr || already_accounted) {
       continue;
     }
+    const auto* statement = authority->statement.get();
+    if (statement == nullptr || statement->transaction_states == nullptr) {
+      return std::nullopt;
+    }
+    bool statement_already_accounted = false;
+    for (std::size_t prior = 0; prior < binding_index; ++prior) {
+      const auto* prior_authority =
+          state.acquisition_leaf_bindings[prior].read_authority.get();
+      if (prior_authority != nullptr &&
+          prior_authority->statement.get() == statement) {
+        statement_already_accounted = true;
+        break;
+      }
+    }
     if (!api::CheckedHeapReadMemoryAdd(
             sizeof(api::PreparedMgaHeapReadAuthority) +
                 kSharedAllocationOverhead,
             &bytes) ||
+        !AccountHeapRegistrationDescriptor(authority->descriptor, &bytes) ||
+        !AccountHeapRegistrationString(authority->relation_uuid, &bytes)) {
+      return std::nullopt;
+    }
+    if (statement_already_accounted) {
+      continue;
+    }
+    if (!api::CheckedHeapReadMemoryAdd(
+            sizeof(api::PreparedMgaHeapStatementAuthority) +
+                kSharedAllocationOverhead,
+            &bytes) ||
         !api::CheckedHeapReadMemoryMultiply(
-            authority->snapshot_vector
+            statement->snapshot_vector
                 .active_excluded_local_transaction_ids.capacity(),
             sizeof(std::uint64_t), &allocation_bytes) ||
         !api::CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
         !api::CheckedHeapReadMemoryMultiply(
-            authority->snapshot_vector
+            statement->snapshot_vector
                 .in_doubt_excluded_local_transaction_ids.capacity(),
             sizeof(std::uint64_t), &allocation_bytes) ||
         !api::CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
-        !AccountHeapRegistrationDescriptor(authority->descriptor, &bytes) ||
         !api::CheckedHeapReadMemoryMultiply(
-            authority->transaction_states.size(),
+            statement->transaction_states->size(),
             sizeof(std::pair<const std::uint64_t, std::string>) +
                 kTreeNodeOverhead,
             &allocation_bytes) ||
@@ -23544,21 +25206,23 @@ std::optional<std::uint64_t> HeapPhysicalRegistrationRetainedMemoryBytes(
       return std::nullopt;
     }
     for (const auto& [transaction_id, state_name] :
-         authority->transaction_states) {
+         *statement->transaction_states) {
       (void)transaction_id;
       if (!AccountHeapRegistrationString(state_name, &bytes)) {
         return std::nullopt;
       }
     }
     for (const auto* value : {
-             &authority->relation_uuid,
-             &authority->database_uuid,
-             &authority->statement_uuid,
-             &authority->transaction_uuid,
-             &authority->statement_snapshot_uuid,
-             &authority->statement_metadata_snapshot_uuid,
-             &authority->catalog_epoch_uuid,
-             &authority->authorization_authority_uuid}) {
+             &statement->database_uuid,
+             &statement->statement_uuid,
+             &statement->transaction_uuid,
+             &statement->statement_snapshot_uuid,
+             &statement->statement_metadata_snapshot_uuid,
+             &statement->catalog_epoch_uuid,
+             &statement->authorization_authority_uuid,
+             &statement->metadata_path,
+             &statement->savepoint_path,
+             &statement->descriptor_path}) {
       if (!AccountHeapRegistrationString(*value, &bytes)) {
         return std::nullopt;
       }
@@ -24060,6 +25724,61 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
       ExactGlobalCountStarHeapConsumer(
           *state->relational_dag, *state->physical_dag,
           *heap_nodes.front());
+
+  std::vector<std::string> relation_uuids;
+  relation_uuids.reserve(heap_nodes.size());
+  for (const auto* heap_node : heap_nodes) {
+    const auto prepared_relation_node = std::ranges::find_if(
+        state->relational_dag->nodes, [&](const auto& candidate) {
+          return candidate.node_id == heap_node->relational_node_id;
+        });
+    if (prepared_relation_node == state->relational_dag->nodes.end() ||
+        prepared_relation_node->required_object_uuids.size() != 1) {
+      result.diagnostic = HeapAcquisitionRefusal(
+          "QOW-DIAG-QRY-004-HEAP-DISPATCH-IDENTITY-V1",
+          "heap acquisition leaf has no exact relation identity");
+      return result;
+    }
+    const auto& relation_uuid =
+        prepared_relation_node->required_object_uuids.front();
+    if (std::ranges::find(relation_uuids, relation_uuid) ==
+        relation_uuids.end()) {
+      relation_uuids.push_back(relation_uuid);
+    }
+  }
+  state->heap_read_authority_cohort = request.heap_read_authority_cohort;
+  if (state->heap_read_authority_cohort == nullptr) {
+    auto prepared =
+        scratchbird::engine::internal_api::PrepareMgaHeapReadAuthorities(
+            *state->context, relation_uuids);
+    if (!prepared.ok || prepared.cohort == nullptr) {
+      result.diagnostic = HeapAcquisitionRefusal(
+          prepared.diagnostic.code.empty()
+              ? "QOW-DIAG-QRY-004-HEAP-READ-PREPARATION-V1"
+              : prepared.diagnostic.code,
+          prepared.diagnostic.detail);
+      return result;
+    }
+    state->heap_read_authority_cohort = std::move(prepared.cohort);
+  }
+  if (state->heap_read_authority_cohort->relations.size() !=
+      relation_uuids.size()) {
+    result.diagnostic = HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-READ-PREPARATION-V1",
+        "heap authority cohort differs from the exact relation set");
+    return result;
+  }
+  const auto authority_fence = scratchbird::engine::internal_api::
+      RevalidatePreparedMgaHeapReadAuthorityCohort(
+          *state->context, *state->heap_read_authority_cohort);
+  if (authority_fence.error) {
+    result.diagnostic = HeapAcquisitionRefusal(
+        authority_fence.code.empty()
+            ? "QOW-DIAG-QRY-004-HEAP-READ-PREPARATION-V1"
+            : authority_fence.code,
+        authority_fence.detail);
+    return result;
+  }
   state->acquisition_leaf_bindings.reserve(heap_nodes.size());
   for (const auto* heap_node : heap_nodes) {
     HeapAcquisitionLeafBinding binding;
@@ -24082,29 +25801,16 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
     }
     const auto& relation_uuid =
         prepared_relation_node->required_object_uuids.front();
-    const auto shared_authority = std::ranges::find_if(
-        state->acquisition_leaf_bindings, [&](const auto& candidate) {
-          return candidate.read_authority != nullptr &&
-                 candidate.read_authority->relation_uuid == relation_uuid;
-        });
-    if (shared_authority != state->acquisition_leaf_bindings.end()) {
-      binding.read_authority = shared_authority->read_authority;
-    } else {
-      auto prepared_read_authority =
-          scratchbird::engine::internal_api::PrepareMgaHeapReadAuthority(
-              *state->context, relation_uuid);
-      if (!prepared_read_authority.ok) {
-        result.diagnostic = HeapAcquisitionRefusal(
-            prepared_read_authority.diagnostic.code.empty()
-                ? "QOW-DIAG-QRY-004-HEAP-READ-PREPARATION-V1"
-                : prepared_read_authority.diagnostic.code,
-            prepared_read_authority.diagnostic.detail);
-        return result;
-      }
-      binding.read_authority = std::make_shared<
-          const scratchbird::engine::internal_api::PreparedMgaHeapReadAuthority>(
-          std::move(prepared_read_authority.authority));
+    const auto authority =
+        state->heap_read_authority_cohort->relations.find(relation_uuid);
+    if (authority == state->heap_read_authority_cohort->relations.end() ||
+        authority->second == nullptr) {
+      result.diagnostic = HeapAcquisitionRefusal(
+          "QOW-DIAG-QRY-004-HEAP-READ-PREPARATION-V1",
+          "heap relation is absent from the exact authority cohort");
+      return result;
     }
+    binding.read_authority = authority->second;
     state->acquisition_leaf_bindings.push_back(std::move(binding));
   }
   result.observation = std::make_shared<HeapPhysicalDispatchObservation>();
@@ -24962,6 +26668,7 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   registration_request.maximum_output_cells = request.maximum_output_cells;
   registration_request.cancellation_requested = request.cancellation_requested;
   registration_request.mga_authority = mga_authority;
+  registration_request.heap_read_authority_cohort = request.authority_cohort;
   registration_request.table_sample_profile = request.table_sample_profile;
   auto built = exec::BuildHeapPhysicalRegistration(registration_request);
   if (!built.diagnostic.ok || !built.registration.has_value() ||

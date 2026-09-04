@@ -245,6 +245,10 @@ struct CanonicalTimeSeriesAsofJoinRequestV1 {
   std::vector<std::string> right_tie_break_row_uuids;
   CanonicalTimeSeriesAsofInputBindingV1 left_binding;
   CanonicalTimeSeriesAsofInputBindingV1 right_binding;
+  // The optimizer owns the physical transformation rule. Specialized
+  // providers retain this exact semantic receipt beside that generic rule so
+  // execution can revalidate tolerance, direction, and bound key ordinals.
+  std::string bound_transformation_receipt;
   std::int64_t tolerance_ns{0};
   bool left_outer{true};
   bool right_is_time_series_raw{false};

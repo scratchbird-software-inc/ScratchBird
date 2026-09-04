@@ -377,6 +377,12 @@ void FillPreparedGovernanceEpochsFromKey(
 
 }  // namespace
 
+std::shared_ptr<PreparedTemplateStatementUseReceipt>
+PreparedTemplateStatementUseReceipt::Create() {
+  struct ConstructionAccess final : PreparedTemplateStatementUseReceipt {};
+  return std::make_shared<ConstructionAccess>();
+}
+
 std::string PreparedTemplateStableDigest(const std::vector<std::string>& parts) {
   std::uint64_t hash = 1469598103934665603ull;
   for (const auto& part : parts) {
@@ -852,8 +858,7 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
         "catalog epoch UUID must be independent from statement and transaction MGA identities");
   }
 
-  auto receipt = std::shared_ptr<PreparedTemplateStatementUseReceipt>(
-      new PreparedTemplateStatementUseReceipt());
+  auto receipt = PreparedTemplateStatementUseReceipt::Create();
   receipt->prepared_template_id_ = prepared_template.template_id;
   receipt->catalog_epoch_uuid_ = key.catalog_epoch_uuid;
   receipt->statement_context_ = mga_check.current_statement_context;

@@ -171,7 +171,8 @@ sblr::SblrOperationEnvelope EngineEnvelopeFromParserEnvelope(
              cursor + 1, value_end_quote - cursor - 1))});
     index = value_end_quote + 1;
   }
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 bool HasEvidence(const api::EngineApiResult& result,
@@ -403,7 +404,8 @@ sblr::SblrOperationEnvelope EngineEnvelope(std::string_view trace_key) {
   AddTextOperand(&envelope, "projection_0_type", "text");
   AddTextOperand(&envelope, "projection_0_is_null", "false");
   AddTextOperand(&envelope, "projection_0_special_form_arg_count", "3");
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 void AddComparisonCondition(sblr::SblrOperationEnvelope* envelope,
@@ -435,6 +437,8 @@ void RequireCaseRuntime(std::string_view trace_key,
   AddComparisonCondition(&envelope, condition_op, left, right);
   AddLiteral(&envelope, "projection_0_arg_1_", "text", std::string(selected_value));
   AddLiteral(&envelope, "projection_0_arg_2_", "text", std::string(fallback_value));
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 
   const sblr::SblrDispatchRequest request{
       EngineContext(),

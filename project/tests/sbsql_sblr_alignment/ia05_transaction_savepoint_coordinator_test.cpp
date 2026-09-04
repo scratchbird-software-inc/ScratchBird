@@ -10,6 +10,13 @@ namespace api = scratchbird::engine::internal_api;
 namespace {
 std::string Id(scratchbird::core::platform::UuidKind kind) {
   static std::uint64_t stamp = 1787003000000ull;
+  if (!scratchbird::core::uuid::UuidKindAllowsDurableIdentity(kind)) {
+    auto raw = scratchbird::core::uuid::GenerateCompatibilityUnixTimeV7(++stamp);
+    assert(raw.ok());
+    auto typed = scratchbird::core::uuid::MakeTypedUuid(kind, raw.value);
+    assert(typed.ok());
+    return scratchbird::core::uuid::UuidToString(typed.value.value);
+  }
   auto value = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, ++stamp);
   assert(value.ok());
   return scratchbird::core::uuid::UuidToString(value.value.value);

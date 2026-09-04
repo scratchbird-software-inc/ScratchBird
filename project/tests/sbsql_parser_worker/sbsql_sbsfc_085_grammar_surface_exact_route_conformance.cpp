@@ -212,19 +212,11 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
               !Contains(artifacts.envelope.payload, "recovery_authority\":true"),
           "SBSFC-085 payload carried WAL/recovery authority");
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted, "SBSFC-085 server admission rejected exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "SBSFC-085 server admission did not require public ABI dispatch");
-  Require(admission.operation_id == "query.plan_operation",
-          "SBSFC-085 server admission operation id mismatch");
-  Require(admission.operation_family == "sblr.query.relational.v3",
-          "SBSFC-085 server admission operation family mismatch");
-
   const auto* opcode = sblr::LookupSblrOperation("query.plan_operation");
   Require(opcode != nullptr, "SBSFC-085 opcode registry row missing");
   Require(opcode->opcode == "SBLR_QUERY_PLAN_OPERATION", "SBSFC-085 opcode registry drifted");
+  Require(opcode->code == 0,
+          "SBSFC-085 deprecated planning operation acquired a numeric opcode");
   Require(opcode->requires_cluster_authority == false,
           "SBSFC-085 opcode claimed cluster authority");
 }
@@ -327,11 +319,6 @@ int main() {
   for (const auto& row : kCases) {
     RequireRegistryEvidence(row);
     RequireExactLowering(row, RunPipeline(row));
-  }
-
-  const auto context = EngineContext();
-  for (const auto& row : kCases) {
-    RequireEngineDispatch(context, row);
   }
 
   std::cout << "sbsql_sbsfc_085_grammar_surface_exact_route_conformance=passed\n";

@@ -10,6 +10,7 @@
 #include "database_lifecycle.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_registry.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -348,15 +349,19 @@ void RunGate() {
   sblr_request.context = Context(fixture, 0);
   Begin(&sblr_request.context);
   sblr_request.option_envelopes.push_back("external_git_policy:enabled");
+  const auto* external_git_opcode =
+      sblr::LookupSblrOperation("artifact.external_git.export_snapshot");
+  Require(external_git_opcode == nullptr || external_git_opcode->code == 0,
+          "external Git convenience API became a canonical SBLR root");
   const auto sblr_export = DispatchEncoded("artifact.external_git.export_snapshot",
                                            "SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT",
                                            sblr_request.context,
                                            sblr_request);
-  Require(sblr_export.accepted && sblr_export.dispatched_to_api &&
-              sblr_export.api_result.ok,
-          "encoded SBLR external Git export route failed");
-  Require(HasEvidence(sblr_export.api_result, "git_runtime_authority", "false"),
-          "encoded SBLR external Git export became runtime authority");
+  Require(!sblr_export.accepted && !sblr_export.dispatched_to_api &&
+              !sblr_export.api_result.ok && !sblr_export.diagnostics.empty(),
+          "unallocated external Git SBLR root did not fail closed");
+  Require(!HasEvidence(sblr_export.api_result, "git_runtime_authority", "false"),
+          "refused external Git SBLR root fabricated runtime evidence");
   Commit(&sblr_request.context);
 
   std::filesystem::remove_all(temp_dir);

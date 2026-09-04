@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::parser::sbsql {
@@ -68,6 +69,20 @@ struct SblrVerifierResult {
   MessageVectorSet messages;
 };
 
+enum class CentralImportCommandDisposition {
+  kNotApplicable,
+  kBulkImportStream,
+  kExactRefusal,
+};
+
+struct CentralImportCommandRoute {
+  CentralImportCommandDisposition disposition{
+      CentralImportCommandDisposition::kNotApplicable};
+  std::string_view surface_id;
+  std::string_view canonical_name;
+  std::string_view diagnostic_id;
+};
+
 struct CanonicalNamedWindowDefinition {
   std::string name;
   std::optional<std::string> base_name;
@@ -91,6 +106,9 @@ CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(
     const std::vector<CanonicalNamedWindowDefinition>& definitions,
     const std::vector<std::string>& referenced_names,
     std::size_t maximum_definition_count = 1024);
+
+CentralImportCommandRoute AnalyzeCentralImportCommandRoute(
+    const CstDocument& cst);
 
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session);
 SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope);

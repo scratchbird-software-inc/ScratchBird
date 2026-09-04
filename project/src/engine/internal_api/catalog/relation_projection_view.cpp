@@ -551,9 +551,15 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
     identities.insert(output.expression_uuid.canonical);
   }
   identities.insert(descriptor.outputs[0].source_column_uuid.canonical);
-  identities.insert(
-      descriptor.outputs[0].source_column_type_descriptor_uuid.canonical);
-  if (identities.size() != (v1 ? 12u : 9u)) return std::nullopt;
+  const bool source_type_identity_conflicts =
+      descriptor.outputs[0].source_column_type_descriptor_uuid.canonical !=
+          descriptor.outputs[0].source_column_uuid.canonical &&
+      identities.contains(
+          descriptor.outputs[0].source_column_type_descriptor_uuid.canonical);
+  if (source_type_identity_conflicts ||
+      identities.size() != (v1 ? 11u : 8u)) {
+    return std::nullopt;
+  }
 
   descriptor.present = true;
   descriptor.diagnostic = OkDiagnostic();
@@ -1707,15 +1713,20 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
       source.output_column_uuid.canonical,
       source.expression_uuid.canonical,
       source.output_type.type_descriptor_uuid.canonical,
-      source.source_column_uuid.canonical,
-      source.source_column_type_descriptor_uuid.canonical};
+      source.source_column_uuid.canonical};
   if (v1) {
     const auto& literal = envelope.outputs[1];
     identities.insert(literal.output_column_uuid.canonical);
     identities.insert(literal.expression_uuid.canonical);
     identities.insert(literal.output_type.type_descriptor_uuid.canonical);
   }
-  if (identities.size() != (v1 ? 10u : 7u)) {
+  const bool source_type_identity_conflicts =
+      source.source_column_type_descriptor_uuid.canonical !=
+          source.source_column_uuid.canonical &&
+      identities.contains(
+          source.source_column_type_descriptor_uuid.canonical);
+  if (source_type_identity_conflicts ||
+      identities.size() != (v1 ? 9u : 6u)) {
     return ViewDiagnostic(
         "relation_projection_identity_collision");
   }

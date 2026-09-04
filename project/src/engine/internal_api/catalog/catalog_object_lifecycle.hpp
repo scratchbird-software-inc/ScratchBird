@@ -298,6 +298,11 @@ EngineCatalogValidateMetadataCacheResult EngineCatalogValidateMetadataCache(
 
 EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleState(
     const EngineRequestContext& context);
+// Loads only the statement-visible catalog and name-resolution epoch
+// projection.  Unlike LoadCatalogObjectLifecycleState, this boundary does not
+// materialize catalog objects, descriptors, or CRUD row state.
+EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState(
+    const EngineRequestContext& context);
 bool EngineCatalogObjectCanOwnChildren(const std::string& object_kind);
 EngineCatalogSynonymResolutionResult ResolveCatalogSynonymChain(
     const EngineCatalogObjectLifecycleState& state,

@@ -13,14 +13,18 @@
 #include "query/plan_api.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
 
+struct PreparedMgaHeapReadAuthorityCohort;
+
 struct CanonicalHeapOptimizerAdmissionRequest {
   EngineRequestContext context;
   TypedRelationalDag relational_dag;
+  std::shared_ptr<const PreparedMgaHeapReadAuthorityCohort> authority_cohort;
 };
 
 struct CanonicalHeapOptimizerAdmissionIssue {
@@ -36,6 +40,7 @@ struct CanonicalHeapOptimizerAdmissionResult {
   std::uint64_t current_relation_descriptor_generation{0};
   std::vector<std::string> current_relation_projection_type_names;
   std::vector<EngineDescriptor> current_relation_projection_descriptors;
+  std::shared_ptr<const PreparedMgaHeapReadAuthorityCohort> authority_cohort;
   CanonicalHeapOptimizerAdmissionIssue issue;
 };
 

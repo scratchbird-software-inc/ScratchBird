@@ -9,13 +9,12 @@
 
 """Generate SBSQL differential replay fixture index and payload JSONL.
 
-The replay fixtures are derived from the public surface implementation
-authority, optional public operation/alias matrices, and the full
-parser/UDR/engine proof artifacts.  The implementation backlog is the
-checked-in public surface authority: it contains the canonical identity,
-status, scope, and SBLR-family fields consumed here.  The output is
-intentionally deterministic and repo-local; it does not execute the parser
-or engine and does not introduce parser-side storage/finality.
+Canonical surface identities and operation families come only from the
+single public surface snapshot.  Executable, exact-refusal, and cluster-provider
+route classifications come only from the release declaration.  The older
+implementation backlogs remain joined evidence and never override either
+authority.  The output is deterministic and repo-local; it does not execute
+the parser or engine and does not introduce parser-side storage/finality.
 """
 
 from __future__ import annotations
@@ -28,8 +27,12 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+CANONICAL_SURFACE_REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
 FULL_SURFACE_ARTIFACT_ROOT = (
     "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts"
+)
+RELEASE_ARTIFACT_ROOT = (
+    "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 )
 REPLAY_ROOT = "project/tests/sbsql_parser_worker/generated/replay"
 
@@ -81,8 +84,8 @@ def surface_source_status(surface: dict[str, str]) -> str:
     return surface.get("source_status") or surface.get("status", "")
 
 
-def read_surfaces(artifact_root: Path) -> list[dict[str, str]]:
-    path = artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+def read_surfaces(repo_root: Path) -> list[dict[str, str]]:
+    path = repo_root / CANONICAL_SURFACE_REGISTRY
     if not path.is_file():
         raise FileNotFoundError(path)
     rows = read_csv(path)
@@ -104,18 +107,20 @@ def index_unique(rows: list[dict[str, str]], key: str, label: str) -> dict[str, 
 
 
 def read_reference_native_names(artifact_root: Path) -> set[str]:
-    path = artifact_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"
+    path = artifact_root / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv"
     if not path.is_file():
-        return set()
+        raise FileNotFoundError(path)
     rows = read_csv(path)
     names: set[str] = set()
     for row in rows:
         native_name = row.get("native_sbsql_surface", "")
         if not native_name:
-            raise ValueError("REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX row missing native_sbsql_surface")
+            raise ValueError(
+                "REFERENCE_ALIAS_COVERAGE_BACKLOG row missing native_sbsql_surface"
+            )
         names.add(native_name)
     if not names:
-        raise ValueError("REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX has no native surface aliases")
+        raise ValueError("REFERENCE_ALIAS_COVERAGE_BACKLOG has no native surface aliases")
     return names
 
 
@@ -124,115 +129,11 @@ def fixture_id(surface_id: str) -> str:
     return f"SBSQL-SURFACE-{digest}"
 
 
-def active_native(surface: dict[str, str]) -> bool:
-    return (
-        surface_source_status(surface) == "native_now"
-        and surface["cluster_scope"] != "cluster_private"
-    )
-
-
-def result_shape(surface: dict[str, str]) -> str:
-    if surface["cluster_scope"] == "cluster_private":
-        return "rs.sbsql.cluster_private_refusal.v1"
-
-    family = surface["family"]
-    name = surface["canonical_name"]
-    if family in {"acceleration", "archive_replication", "jobs_scheduler",
-                  "runtime_management", "storage_management"}:
-        return "rs.sbsql.admin_command_or_report.v1"
-    if family == "bridge":
-        return "rs.sbsql.bridge_operation.v1"
-    if family == "ddl_catalog" or family == "dml":
-        return "rs.sbsql.command_completion.v1"
-    if family == "expression_runtime":
-        return "rs.sbsql.scalar_value.v1"
-    if family == "general":
-        return "rs.sbsql.structural_lowering.v1"
-    if family == "migration":
-        return "rs.migration.operation.v1"
-    if family in {"multi_model", "query"}:
-        return "rs.sbsql.rowset.v1"
-    if family == "observability":
-        return "rs.sbsql.observability_report.v1"
-    if family == "security":
-        return "rs.sbsql.security_command_or_report.v1"
-    if family == "transaction":
-        if name in {"lock_table", "lock_table_stmt"}:
-            return "rs.sbsql.command_completion.v1"
-        return "rs.sbsql.transaction_finality.v1"
-    return "rs.sbsql.structural_lowering.v1"
-
-
-def diagnostics(surface: dict[str, str]) -> str:
-    family = surface["family"]
-    base = [
-        "diag.parser.syntax.v1",
-        "diag.binding.failure.v1",
-    ]
-    if family == "bridge":
-        base.extend(
-            [
-                "diag.sbsql.sblr_envelope.v1",
-                "diag.sbsql.opcode_admission.v1",
-                "diag.bridge.policy.v1",
-                "diag.server.runtime.v1",
-            ]
-        )
-    elif family == "migration":
-        base.extend(
-            [
-                "diag.rights.failure.v1",
-                "diag.migration.policy_gate_denied.v1",
-                "diag.sbsql.sblr_envelope.v1",
-                "diag.sbsql.opcode_admission.v1",
-            ]
-        )
-    elif family == "transaction" and surface["canonical_name"] in {"lock_table", "lock_table_stmt"}:
-        base.extend(
-            [
-                "diag.sbsql.transaction_lock.v1",
-                "diag.rights.failure.v1",
-                "diag.sbsql.sblr_envelope.v1",
-                "diag.sbsql.opcode_admission.v1",
-            ]
-        )
-    else:
-        base.extend(
-            [
-                "diag.sbsql.catalog_resolution.v1",
-                "diag.rights.failure.v1",
-                "diag.sbsql.sblr_envelope.v1",
-                "diag.sbsql.opcode_admission.v1",
-            ]
-        )
-        if family == "observability":
-            base.append("diag.message_vector.v1")
-        elif family == "runtime_management":
-            base.append("diag.server.runtime.v1")
-        elif family == "transaction":
-            base.append("diag.sbsql.transaction_finality.v1")
-    if surface["cluster_scope"] == "cluster_private":
-        base.append("diag.private.refusal.v1")
-    return "; ".join(base)
-
-
-def read_operations(artifact_root: Path, surfaces: list[dict[str, str]]) -> dict[str, dict[str, str]]:
-    path = artifact_root / "SBSQL_TO_SBLR_OPERATION_MATRIX.csv"
-    if path.is_file():
-        return index_unique(read_csv(path), "surface_id", "SBSQL_TO_SBLR_OPERATION_MATRIX")
-    return {
-        surface["surface_id"]: {
-            "surface_id": surface["surface_id"],
-            "sblr_operation_family": surface["sblr_operation_family"],
-            "required_context": (
-                "session_uuid; database_uuid; transaction_context; "
-                "security_context; language_profile; result_contract"
-            ),
-            "result_shape": result_shape(surface),
-            "diagnostics": diagnostics(surface),
-        }
-        for surface in surfaces
-    }
+VALID_RELEASE_STATUSES = {
+    "e2e_passed",
+    "exact_refusal_passed",
+    "cluster_provider_route_passed",
+}
 
 
 def input_text(surface: dict[str, str]) -> str:
@@ -272,21 +173,27 @@ def input_text(surface: dict[str, str]) -> str:
     return f"SBSQL_SURFACE_REPLAY {surface['surface_id']}"
 
 
-def route_set(surface: dict[str, str], reference_native_names: set[str]) -> list[str]:
+def route_set(
+    surface: dict[str, str],
+    final_status: str,
+    reference_native_names: set[str],
+) -> list[str]:
     routes = list(BASE_ROUTES)
-    if active_native(surface):
+    if final_status == "e2e_passed":
         routes.extend(EXECUTION_ROUTES)
     if surface["canonical_name"] in reference_native_names:
         routes.append("reference_alias")
     return routes
 
 
-def expected_engine_effect(surface: dict[str, str]) -> str:
-    if active_native(surface):
+def expected_engine_effect(final_status: str) -> str:
+    if final_status == "e2e_passed":
         return "execute-sblr-internal-procedure-only-no-sql-text"
-    if surface["cluster_scope"] == "cluster_private":
+    if final_status == "cluster_provider_route_passed":
         return "no-engine-mutation;exact-refusal-or-profile-gate"
-    return "no-engine-mutation-exact-refusal"
+    if final_status == "exact_refusal_passed":
+        return "no-engine-mutation-exact-refusal"
+    raise ValueError(f"unsupported release final_status: {final_status}")
 
 
 def payload_for(row: dict[str, str]) -> dict[str, object]:
@@ -337,11 +244,14 @@ def main() -> int:
 
     root = args.repo_root
     artifact_root = root / args.artifact_root
+    release_root = root / RELEASE_ARTIFACT_ROOT
     replay_root = root / args.replay_root
 
-    surfaces = read_surfaces(artifact_root)
+    surfaces = read_surfaces(root)
+    canonical_by_id = index_unique(
+        surfaces, "surface_id", "SBSQL_SURFACE_REGISTRY"
+    )
     reference_native_names = read_reference_native_names(artifact_root)
-    operations = read_operations(artifact_root, surfaces)
     backlog = index_unique(
         read_csv(artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv"),
         "surface_id",
@@ -357,17 +267,61 @@ def main() -> int:
         "surface_id",
         "SEMANTIC_ORACLE_AUTHORITY_MAP",
     )
+    release = index_unique(
+        read_csv(release_root / "SBSQL_SURFACE_RELEASE_DECLARATION.csv"),
+        "surface_id",
+        "SBSQL_SURFACE_RELEASE_DECLARATION",
+    )
+
+    surface_ids = set(canonical_by_id)
+    for label, rows_by_id in {
+        "SURFACE_IMPLEMENTATION_BACKLOG": backlog,
+        "BATCH_ROW_MEMBERSHIP": membership,
+        "SEMANTIC_ORACLE_AUTHORITY_MAP": oracle,
+        "SBSQL_SURFACE_RELEASE_DECLARATION": release,
+    }.items():
+        if set(rows_by_id) != surface_ids:
+            missing = sorted(surface_ids - set(rows_by_id))
+            extra = sorted(set(rows_by_id) - surface_ids)
+            raise ValueError(
+                f"{label} identity set mismatch: missing={missing[:3]} extra={extra[:3]}"
+            )
 
     rows: list[dict[str, str]] = []
     for surface in surfaces:
         sid = surface["surface_id"]
-        if sid not in operations or sid not in backlog or sid not in membership or sid not in oracle:
-            raise ValueError(f"{sid}: missing replay authority row")
-        operation = operations[sid]
+        backlog_row = backlog[sid]
         member = membership[sid]
         oracle_row = oracle[sid]
+        release_row = release[sid]
+        for column in (
+            "fixed_uuid_v7",
+            "canonical_name",
+            "family",
+            "surface_kind",
+            "source_status",
+            "cluster_scope",
+        ):
+            if surface[column] != backlog_row[column] or surface[column] != member[column]:
+                raise ValueError(f"{sid}: canonical {column} differs from evidence joins")
+        for column in ("fixed_uuid_v7", "canonical_name", "family", "surface_kind"):
+            if surface[column] != release_row[column]:
+                raise ValueError(f"{sid}: canonical {column} differs from release evidence")
+        if surface["validation_fixture_id"] != member["validation_fixture_id"]:
+            raise ValueError(f"{sid}: canonical fixture differs from membership evidence")
+        if surface["canonical_spec"] != backlog_row["canonical_spec"]:
+            raise ValueError(f"{sid}: canonical specification differs from backlog evidence")
+        if surface["canonical_spec"] != oracle_row["oracle_source"]:
+            raise ValueError(f"{sid}: canonical specification differs from oracle evidence")
+        if surface["oracle_key"] != oracle_row["oracle_type"]:
+            raise ValueError(f"{sid}: canonical oracle identity differs from oracle evidence")
+        final_status = release_row["final_status"]
+        if final_status not in VALID_RELEASE_STATUSES:
+            raise ValueError(f"{sid}: unsupported release final_status {final_status}")
+        if release_row["release_status"] != "row_evidence_complete":
+            raise ValueError(f"{sid}: release evidence is not complete")
         fid = member["validation_fixture_id"] or fixture_id(sid)
-        routes = route_set(surface, reference_native_names)
+        routes = route_set(surface, final_status, reference_native_names)
         row = {
             "fixture_id": fid,
             "surface_id": sid,
@@ -377,26 +331,30 @@ def main() -> int:
             "surface_kind": surface["surface_kind"],
             "source_status": surface_source_status(surface),
             "cluster_scope": surface["cluster_scope"],
-            "operation_family": operation["sblr_operation_family"],
+            "operation_family": surface["sblr_operation_family"],
             "primary_route": "parser_parse_only",
             "route_set": ";".join(routes),
             "parser_profile": "standalone-native-profile",
-            "session_context": operation["required_context"],
+            "session_context": (
+                "engine-issued-session-database-transaction-security-result-authority;"
+                "release-evidence-bound"
+            ),
             "input_text": input_text(surface),
             "expected_parse": "accepted-or-exact-canonical-refusal",
             "expected_bound_shape": (
-                f"{operation['sblr_operation_family']};{operation['result_shape']};"
+                f"canonical-operation-family={surface['sblr_operation_family']};"
+                "engine-issued-descriptor-and-result-authority;"
                 "ExecutionResultEnvelope.v3 with message_vector_set"
             ),
             "expected_sblr_digest_policy": "stable-normalized-envelope-digest;not-derived-from-current-output",
             "expected_server_result": (
-                "accepted-or-exact-canonical-refusal;"
-                "admit_revalidate_route_stream_cancel_and_return_message_vector"
+                f"release-evidence={final_status};"
+                "admit-revalidate-or-exact-refuse-without-unauthorized-mutation"
             ),
-            "expected_engine_effect": expected_engine_effect(surface),
+            "expected_engine_effect": expected_engine_effect(final_status),
             "expected_message_vector": (
                 "canonical_message_vector_and_parser_rendering;"
-                f"{operation['diagnostics']};SBSQL.BINDING.*;SBLR.ENVELOPE.*;"
+                f"{release_row['diagnostic_refs']};SBSQL.BINDING.*;SBLR.ENVELOPE.*;"
                 "SBLR.OPCODE.*;SECURITY.*;CATALOG.NAME.*"
             ),
             "expected_rendered_output": "ExecutionResultEnvelope.v3 with message_vector_set",

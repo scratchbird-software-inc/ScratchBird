@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Regenerate only the nine ``dml.plan_import_rows`` evidence rows/files.
+"""Regenerate only the nine central-import evidence rows/files.
 
 All four full-table generators run against a temporary artifact copy.  The
 candidate is rejected unless every header and every non-selector physical CSV
@@ -29,7 +29,7 @@ import tempfile
 from pathlib import Path
 
 from plan_import_rows_generated_evidence import (
-    PLAN_IMPORT_ROWS_CORE_SELECTOR_KEY,
+    BULK_IMPORT_STREAM_SURFACE_IDS,
     PLAN_IMPORT_ROWS_SURFACE_IDS,
     authoritative_provenance_inputs,
 )
@@ -59,6 +59,7 @@ GENERATORS = (
 AUTH_MATRIX_NAME = "AUTHENTICATED_FULL_ROUTE_MATRIX.csv"
 ROUND_MATRIX_NAME = "SBLR_BINARY_ROUND_TRIP_MATRIX.csv"
 AUTHOR_HELPER = "project/tools/sb_parser_gen/author_route_and_round_trip_fixtures.py"
+PROMOTION_HELPER = "project/tools/sb_parser_gen/promote_route_and_round_trip_fixtures.py"
 RELEASE_GENERATOR = "project/tools/sb_parser_gen/generate_sbsql_surface_release_declaration.py"
 RELEASE_CSV_NAME = "SBSQL_SURFACE_RELEASE_DECLARATION.csv"
 RELEASE_JSON_NAME = "SBSQL_SURFACE_RELEASE_DECLARATION.json"
@@ -74,8 +75,8 @@ HASH_MANIFEST_COLUMNS = (
 WORKPLAN_RELATIVE = "Workplans/sbsql-sblr-implementation-alignment"
 PROVENANCE_NAME = "GENERATED_PROVENANCE.csv"
 PROVENANCE_ARTIFACT_ID = "IA-GEN-0008"
-PROVENANCE_GENERATOR_VERSION = "v1"
-PROVENANCE_GENERATED_AT = "2026-08-29T00:57:02Z"
+PROVENANCE_GENERATOR_VERSION = "v2"
+PROVENANCE_GENERATED_AT = "2026-09-01T03:21:00Z"
 PROVENANCE_COLUMNS = (
     "artifact_id",
     "area_id",
@@ -201,10 +202,7 @@ def provenance_row(
         "output_sha256_set": output_manifest_sha256,
         "generated_at": PROVENANCE_GENERATED_AT,
         "validation_result": "PASS",
-        "status": (
-            "accepted_nonfinal_plan_import_rows_generated_evidence_"
-            "pending_independent_SBWP_TLS_post_state_proof"
-        ),
+        "status": "accepted_final_central_import_generated_evidence_two_e2e_seven_exact_refusal",
     }
 
 
@@ -327,8 +325,6 @@ def assert_selector_only_per_element_tree(current: Path, candidate: Path) -> int
 
 
 def matrix_fixture_paths(path: Path) -> dict[str, str]:
-    import csv
-
     with path.open(newline="", encoding="utf-8") as handle:
         rows = {
             row["surface_id"]: row["fixture_path"]
@@ -338,6 +334,11 @@ def matrix_fixture_paths(path: Path) -> dict[str, str]:
     if set(rows) != set(PLAN_IMPORT_ROWS_SURFACE_IDS):
         fail(f"selector matrix does not contain the exact nine surface ids: {path}")
     return rows
+
+
+def _load_release_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
 
 
 def parse_fixture(path: Path) -> dict[str, str]:
@@ -427,18 +428,35 @@ def main() -> int:
             (temp_artifact_root / RELEASE_JSON_NAME).read_text(encoding="utf-8")
         )
         if (
-            release_summary.get("status") != "blocked"
-            or release_summary.get("blocked_rows") != len(PLAN_IMPORT_ROWS_SURFACE_IDS)
-            or release_summary.get("final_status_counts", {}).get("pending")
-            != len(PLAN_IMPORT_ROWS_SURFACE_IDS)
-            or release_summary.get("remaining_risk_rows")
-            != len(PLAN_IMPORT_ROWS_SURFACE_IDS)
-            or release_summary.get("authenticated_route_pending_rows")
-            != len(PLAN_IMPORT_ROWS_SURFACE_IDS)
-            or release_summary.get("sblr_round_trip_pending_rows")
-            != len(PLAN_IMPORT_ROWS_SURFACE_IDS)
+            release_summary.get("status") != "row_evidence_complete"
+            or release_summary.get("blocked_rows") != 0
+            or release_summary.get("final_status_counts", {}).get("pending", 0) != 0
+            or release_summary.get("remaining_risk_rows") != 0
+            or release_summary.get("authenticated_route_pending_rows") != 0
+            or release_summary.get("sblr_round_trip_pending_rows") != 0
         ):
-            fail(f"selector release summary does not expose exactly nine blocked rows: {release_summary}")
+            fail(
+                "central-import release summary did not close the last pending rows: "
+                f"{release_summary}"
+            )
+        release_rows = {
+            row["surface_id"]: row
+            for row in _load_release_rows(temp_artifact_root / RELEASE_CSV_NAME)
+            if row.get("surface_id") in PLAN_IMPORT_ROWS_SURFACE_IDS
+        }
+        if set(release_rows) != set(PLAN_IMPORT_ROWS_SURFACE_IDS):
+            fail("central-import release declaration does not contain the exact nine rows")
+        for surface_id, row in release_rows.items():
+            expected = (
+                "e2e_passed"
+                if surface_id in BULK_IMPORT_STREAM_SURFACE_IDS
+                else "exact_refusal_passed"
+            )
+            if row.get("final_status") != expected:
+                fail(
+                    f"{surface_id} release final status drift: "
+                    f"expected={expected} observed={row.get('final_status', '')}"
+                )
 
         run_checked(
             [
@@ -485,6 +503,18 @@ def main() -> int:
             author_command.extend(("--surface-id", surface_id))
         run_checked(author_command)
 
+        promotion_command = [
+            sys.executable,
+            str(root / PROMOTION_HELPER),
+            "--repo-root",
+            str(temp_fixture_root),
+            "--artifact-root",
+            str(temp_artifact_root),
+        ]
+        for surface_id in sorted(PLAN_IMPORT_ROWS_SURFACE_IDS):
+            promotion_command.extend(("--surface-id", surface_id))
+        run_checked(promotion_command)
+
         for surface_id in sorted(PLAN_IMPORT_ROWS_SURFACE_IDS):
             for fixture_path in (auth_paths[surface_id], round_paths[surface_id]):
                 candidate = temp_fixture_root / fixture_path
@@ -493,10 +523,19 @@ def main() -> int:
                 fields = parse_fixture(candidate)
                 if fields.get("surface_id") != surface_id:
                     fail(f"selector fixture surface-id drift: {fixture_path}")
-                if fields.get("fixture_status") != "fixture_authored":
-                    fail(f"selector fixture is not fixture_authored: {fixture_path}")
-                if fields.get("per_row_final_state") != "pending":
-                    fail(f"selector fixture overstates final state: {fixture_path}")
+                expected_state = (
+                    "e2e_passed"
+                    if surface_id in BULK_IMPORT_STREAM_SURFACE_IDS
+                    else "exact_refusal_passed"
+                )
+                if fields.get("fixture_status") != expected_state:
+                    fail(
+                        f"selector fixture final status drift: {fixture_path}: "
+                        f"expected={expected_state} "
+                        f"observed={fields.get('fixture_status', '')}"
+                    )
+                if fields.get("per_row_final_state") != expected_state:
+                    fail(f"selector fixture per-row final state drift: {fixture_path}")
 
         output_manifest = artifact_manifest_bytes(
             root,

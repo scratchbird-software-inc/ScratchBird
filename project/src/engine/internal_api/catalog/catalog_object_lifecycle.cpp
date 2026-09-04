@@ -11,6 +11,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
+#include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "uuid.hpp"
 
@@ -657,7 +658,27 @@ std::string CatalogLifecycleLoadCacheKey(const EngineRequestContext& context,
       << "|resource=" << context.resource_epoch
       << "|name_resolution=" << context.name_resolution_epoch
       << "|events=" << CatalogLifecycleFileFingerprint(EventPath(context))
-      << "|crud=" << CatalogLifecycleFileFingerprint(context.database_path + ".sb.crud_events");
+      << "|crud=" << CatalogLifecycleFileFingerprint(context.database_path + ".sb.crud_events")
+      << "|mga_savepoints="
+      << CatalogLifecycleFileFingerprint(context.database_path +
+                                         ".sb.mga_savepoints");
+  if (context.statement_transaction_inventory_snapshot != nullptr) {
+    const auto& inventory =
+        *context.statement_transaction_inventory_snapshot;
+    key << "|txn_snapshot_db_size=" << inventory.database_file_size
+        << "|txn_snapshot_db_mtime=" << inventory.database_write_time_count
+        << "|txn_snapshot_journal_present="
+        << (inventory.publish_journal_present ? 1 : 0)
+        << "|txn_snapshot_journal_size=" << inventory.publish_journal_size
+        << "|txn_snapshot_journal_mtime="
+        << inventory.publish_journal_write_time_count;
+  } else {
+    key << "|txn_db="
+        << CatalogLifecycleFileFingerprint(context.database_path)
+        << "|txn_publish="
+        << CatalogLifecycleFileFingerprint(context.database_path +
+                                           ".sb.txn_publish");
+  }
   return key.str();
 }
 
@@ -1272,6 +1293,114 @@ EngineApiDiagnostic PersistResolverNames(const EngineRequestContext& context,
 EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleState(
     const EngineRequestContext& context) {
   return LoadState(context, {.enforce_visibility = true});
+}
+
+EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState(
+    const EngineRequestContext& context) {
+  EngineLoadCatalogObjectLifecycleStateResult result;
+  if (context.database_path.empty()) {
+    result.diagnostic = CatalogDiagnostic(
+        kCatalogObjectDiagnosticDatabasePathRequired, "database_path");
+    return result;
+  }
+
+  const auto inventory =
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+          context.database_path);
+  if (!inventory.ok()) {
+    result.diagnostic = CatalogDiagnostic(
+        kCatalogObjectDiagnosticMgaVisibilityRefused,
+        "transaction_inventory_unavailable");
+    return result;
+  }
+
+  const auto event_visible = [&](std::uint64_t creator_tx) {
+    if (creator_tx == 0) return true;
+    const auto found = scratchbird::transaction::mga::LookupLocalTransaction(
+        inventory.inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(creator_tx));
+    if (!found.ok()) return false;
+    using scratchbird::transaction::mga::TransactionState;
+    if (creator_tx == context.local_transaction_id) {
+      const bool exact_transaction =
+          found.entry.identity.transaction_uuid.valid() &&
+          scratchbird::core::uuid::UuidToString(
+              found.entry.identity.transaction_uuid.value) ==
+              context.transaction_uuid.canonical;
+      return exact_transaction &&
+             (found.entry.state == TransactionState::active ||
+              found.entry.state == TransactionState::read_only_active ||
+              found.entry.state == TransactionState::preparing ||
+              found.entry.state == TransactionState::prepared);
+    }
+    if (found.entry.state != TransactionState::committed &&
+        found.entry.state != TransactionState::archived) {
+      return false;
+    }
+    if (context.snapshot_visible_through_local_transaction_id != 0) {
+      return creator_tx <=
+             context.snapshot_visible_through_local_transaction_id;
+    }
+    return context.local_transaction_id == 0 ||
+           creator_tx <= context.local_transaction_id;
+  };
+
+  std::ifstream in(EventPath(context), std::ios::binary);
+  if (!in) {
+    result.ok = true;
+    result.diagnostic = OkDiagnostic();
+    return result;
+  }
+
+  const auto observe_metadata = [&](std::uint64_t epoch) {
+    result.state.metadata_epoch =
+        std::max(result.state.metadata_epoch, epoch);
+  };
+  const auto observe_name = [&](std::uint64_t epoch) {
+    observe_metadata(epoch);
+    result.state.name_resolution_epoch =
+        std::max(result.state.name_resolution_epoch, epoch);
+  };
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!StartsWith(line, kCatalogObjectLifecycleEventMagic)) continue;
+    const auto parts = Split(line, '\t');
+    if (parts.size() < 3 || !event_visible(ParseU64(parts[2]))) continue;
+    const auto& event = parts[1];
+    if (event == "OBJECT" && parts.size() >= 12) {
+      observe_metadata(ParseU64(parts[9]));
+    } else if (event == "NAME" && parts.size() >= 17) {
+      observe_name(ParseU64(parts[15]));
+    } else if (event == "RETIRE_NAMES" && parts.size() >= 5) {
+      observe_name(ParseU64(parts[4]));
+    } else if (event == "DEPENDENCY" && parts.size() >= 9) {
+      observe_metadata(ParseU64(parts[7]));
+    } else if (event == "COLUMN_METADATA" && parts.size() >= 12) {
+      observe_metadata(ParseU64(parts[10]));
+    } else if (event == "CONSTRAINT_DESCRIPTOR" && parts.size() >= 20) {
+      observe_metadata(ParseU64(parts[18]));
+    } else if (event == "KEY_DESCRIPTOR" && parts.size() >= 16) {
+      observe_metadata(ParseU64(parts[14]));
+    } else if (event == "CONSTRAINT_SUBJECT" && parts.size() >= 12) {
+      observe_metadata(ParseU64(parts[10]));
+    } else if (event == "CONSTRAINT_DEPENDENCY" && parts.size() >= 12) {
+      observe_metadata(ParseU64(parts[10]));
+    } else if (event == "CONSTRAINT_SUPPORT" && parts.size() >= 16) {
+      observe_metadata(ParseU64(parts[14]));
+    } else if (event == "CACHE_INVALIDATE" && parts.size() >= 7) {
+      observe_metadata(ParseU64(parts[5]));
+      observe_name(ParseU64(parts[6]));
+    }
+  }
+  if (!in.eof()) {
+    result.diagnostic = CatalogDiagnostic(
+        kCatalogObjectDiagnosticMgaVisibilityRefused,
+        "catalog_epoch_journal_read_failed");
+    return result;
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  return result;
 }
 
 bool EngineCatalogObjectCanOwnChildren(const std::string& object_kind) {

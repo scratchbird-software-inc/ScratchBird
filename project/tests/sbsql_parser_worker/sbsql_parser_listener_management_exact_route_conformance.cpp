@@ -256,7 +256,7 @@ void RequireExactLowering(const ManagementRowEvidence& row) {
                           "server admission did not require engine public ABI dispatch"));
   Require(admission.operation_id == "management.inspect_runtime",
           EvidenceMessage(row, "server_admission", "server admission operation id mismatch"));
-  Require(admission.operation_family == "sblr.management.runtime_operation.v3",
+  Require(admission.operation_family == "sblr.management.report.v3",
           EvidenceMessage(row, "server_admission", "server admission family mismatch"));
 }
 
@@ -280,10 +280,10 @@ api::EngineRequestContext EngineContext(const ManagementRowEvidence& row) {
 }
 
 sblr::SblrOperationEnvelope EngineEnvelope(const ManagementRowEvidence& row) {
-  auto envelope = sblr::MakeSblrEnvelope("management.inspect_runtime",
-                                         "SBLR_MANAGEMENT_INSPECT_RUNTIME",
-                                         std::string("trace.management_runtime.exact_route.") +
-                                             std::string(row.surface_id));
+  auto envelope = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+      "management.inspect_runtime",
+      "SBLR_MANAGEMENT_INSPECT_RUNTIME",
+      std::string("trace.management_runtime.exact_route.") + std::string(row.surface_id));
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.requires_cluster_authority = false;

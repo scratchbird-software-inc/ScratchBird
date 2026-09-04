@@ -24,7 +24,10 @@ import re
 import sys
 from pathlib import Path
 
-from plan_import_rows_generated_evidence import PLAN_IMPORT_ROWS_SURFACE_IDS
+from plan_import_rows_generated_evidence import (
+    CENTRAL_IMPORT_REFUSAL_SURFACE_IDS,
+    PLAN_IMPORT_ROWS_SURFACE_IDS,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -88,6 +91,12 @@ ALLOWED_CLOSURE_STATUS_PAIRS = {
     ("exact_refusal_passed", "exact_refusal_passed"),
     ("exact_refusal_passed", "cluster_provider_route_passed"),
     ("e2e_passed", "cluster_provider_route_passed"),
+}
+CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
+    "SBSQL-A57CFDE0BBA9",
+    "SBSQL-28F16A4C7DD0",
+    "SBSQL-B1816929AD45",
+    "SBSQL-5CC9FDFFE6F7",
 }
 
 
@@ -232,11 +241,14 @@ def validate_inputs(
         if backlog_row["validation_fixture_id"] != oracle_row["fixture_id"]:
             fail(f"{surface_id} fixture identifier disagreement between public artifacts")
         status_pair = (backlog_row["status"], release_row["final_status"])
-        plan_import_pending = (
-            surface_id in PLAN_IMPORT_ROWS_SURFACE_IDS
-            and status_pair == ("e2e_passed", "pending")
+        central_import_exact_refusal = (
+            surface_id in CENTRAL_IMPORT_REFUSAL_SURFACE_IDS
+            and status_pair == ("e2e_passed", "exact_refusal_passed")
         )
-        if status_pair not in ALLOWED_CLOSURE_STATUS_PAIRS and not plan_import_pending:
+        if (
+            status_pair not in ALLOWED_CLOSURE_STATUS_PAIRS
+            and not central_import_exact_refusal
+        ):
             fail(
                 f"{surface_id} unsupported public closure-status pair: "
                 f"backlog={status_pair[0]} release={status_pair[1]}"
@@ -331,6 +343,24 @@ def spec_body(
             f"| {name} | {markdown_cell(value)} |" for name, value in rows
         ]
 
+    boundary_lines = [
+        "- This snapshot is derived only from tracked public release artifacts.",
+        "- SQL text remains parser-side input; engine behavior is reached through "
+        "the published SBLR/internal-API contract.",
+        "- This snapshot carries no implementation, source-tree, absolute, or "
+        "private canonicalization path.",
+    ]
+    if backlog["surface_id"] in CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS:
+        boundary_lines = [
+            "- This snapshot is derived only from tracked public release artifacts.",
+            "- SQL text remains parser-side input; this exact refusal stops before "
+            "executable SBLR, server admission, engine execution, or catalog mutation.",
+            "- The canonical parent is CREATE TABLE; its authenticated CTDX/CTDO "
+            "constraint carrier remains unavailable in this implementation profile.",
+            "- This snapshot carries no implementation, source-tree, absolute, or "
+            "private canonicalization path.",
+        ]
+
     lines = [
         f"# {backlog['surface_id']} — {title}",
         "",
@@ -354,11 +384,7 @@ def spec_body(
         "",
         "## Boundary",
         "",
-        "- This snapshot is derived only from tracked public release artifacts.",
-        "- SQL text remains parser-side input; engine behavior is reached through "
-        "the published SBLR/internal-API contract.",
-        "- This snapshot carries no implementation, source-tree, absolute, or "
-        "private canonicalization path.",
+        *boundary_lines,
         "",
     ]
     return "\n".join(lines)

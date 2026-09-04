@@ -944,7 +944,22 @@ int main(int argc, char** argv) {
     if (!exact_refusal || !no_result_publication) {
       std::cerr << static_refusal_test_id << ' '
                 << static_refusal_operation_label
-                << " fail_closed_contract_failed\n";
+                << " fail_closed_contract_failed"
+                << " accepted=" << result.accepted
+                << " diagnostic_count="
+                << result.messages.diagnostics.size()
+                << " server_operation_id=" << result.server_operation_id
+                << " server_cursor_uuid=" << result.server_cursor_uuid
+                << " server_row_count=" << result.server_row_count
+                << " server_affected_rows=" << result.server_affected_rows
+                << " server_affected_rows_present="
+                << result.server_affected_rows_present
+                << " server_result_payload_bytes="
+                << result.server_result_payload.size() << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << "diagnostic=" << diagnostic.code << ':'
+                  << diagnostic.message << '\n';
+      }
       return 4;
     }
     std::cout << static_refusal_test_id << ' '

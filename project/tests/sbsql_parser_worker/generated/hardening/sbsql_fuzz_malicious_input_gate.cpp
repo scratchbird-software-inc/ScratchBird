@@ -287,8 +287,8 @@ void ValidateParserDiagnostics(Harness* harness) {
   auto bound = sbsql::BindAst(ast, cst, config, session, {});
   harness->Check(bound.messages.has_errors() &&
                      HasDiagnostic(bound.messages,
-                                   "SBSQL.NAME_RESOLUTION.PUBLIC_RESOLVER_REQUIRED"),
-                 "binder did not fail closed for missing public name resolution");
+                                   "QOW-DIAG-BOUNDAST-SCOPE"),
+                 "native binder did not fail closed without engine-issued descriptor and epoch context");
 }
 
 void ValidateResourceDiagnostics(Harness* harness) {
@@ -328,7 +328,7 @@ void ValidateResourceDiagnostics(Harness* harness) {
   sblr_config.allow_probe_auth = true;
   sblr_config.resource_budget.max_sblr_envelope_bytes = 1;
   harness->Check(
-      LoweringHasSblrEnvelopeBudgetDiagnostic("SELECT 1", sblr_config,
+      LoweringHasSblrEnvelopeBudgetDiagnostic("ENGINE QUERY BIND EXPRESSION", sblr_config,
                                               "SBSQL.RESOURCE.SBLR_ENVELOPE_TOO_LARGE"),
       "oversized SBLR envelope did not fail closed with resource diagnostic");
 }
@@ -373,8 +373,8 @@ void ValidateSbpsDiagnostics(Harness* harness) {
                               scratchbird::server::ServerSblrAdmissionRequest{
                                   "SELECT * FROM hidden_table", false})
                               .diagnostics,
-                          "SBLR.SQL_TEXT_FORBIDDEN"),
-      "raw SQL SBLR admission payload did not fail closed");
+                          "SBLR.OPERATION.NONCANONICAL"),
+      "raw SQL in the retired text ingress did not fail closed as noncanonical");
 
   harness->Check(
       HasServerDiagnostic(scratchbird::server::AdmitServerSblrEnvelope(
@@ -383,8 +383,8 @@ void ValidateSbpsDiagnostics(Harness* harness) {
                                   "\"operation_family\":\"sblr.query.relational.v3\"}",
                                   false})
                               .diagnostics,
-                          "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"),
-      "malformed SBLR envelope did not fail closed");
+                          "SBLR.OPERATION.NONCANONICAL"),
+      "malformed retired JSON SBLR ingress did not fail closed as noncanonical");
 
   harness->Check(
       HasServerDiagnostic(scratchbird::server::AdmitServerSblrEnvelope(
@@ -397,8 +397,8 @@ void ValidateSbpsDiagnostics(Harness* harness) {
                                   "parser_resolved_names_to_uuids=true\n",
                                   false})
                               .diagnostics,
-                          "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD"),
-      "duplicate text SBLR authority key did not fail closed");
+                          "SBLR.OPERATION.NONCANONICAL"),
+      "duplicate-key retired text SBLR ingress did not fail closed as noncanonical");
 
   harness->Check(
       HasServerDiagnostic(scratchbird::server::AdmitServerSblrEnvelope(
@@ -411,8 +411,8 @@ void ValidateSbpsDiagnostics(Harness* harness) {
                                   "\"diagnostic_shape\":\"diagnostic_vector\"}",
                                   false})
                               .diagnostics,
-                          "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD"),
-      "duplicate JSON SBLR authority key did not fail closed");
+                          "SBLR.OPERATION.NONCANONICAL"),
+      "duplicate-key retired JSON SBLR ingress did not fail closed as noncanonical");
 
   harness->Check(HasServerDiagnostic(sbps::DecodeFrameBytes({0, 1, 2}, 1024).diagnostics,
                                      "PARSER_SERVER_IPC.FRAME_LENGTH_INVALID"),

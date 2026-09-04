@@ -18,7 +18,32 @@ std::string RenderSafe(std::string_view text) {
   return EscapeJson(text);
 }
 
+bool RequiresBinaryResultEncoding(std::string_view payload) {
+  for (const unsigned char byte : payload) {
+    if (byte == 0x7f || (byte < 0x20 && byte != '\n' && byte != '\r' &&
+                         byte != '\t')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string HexEncodeResultPayload(std::string_view payload) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(29 + payload.size() * 2);
+  encoded = "canonical_binary_payload_hex=";
+  for (const unsigned char byte : payload) {
+    encoded.push_back(kHex[byte >> 4]);
+    encoded.push_back(kHex[byte & 0x0f]);
+  }
+  return encoded;
+}
+
 std::string RedactPublicResultPayload(std::string payload) {
+  if (RequiresBinaryResultEncoding(payload)) {
+    return HexEncodeResultPayload(payload);
+  }
   const std::string hidden_row_version =
       ",{\"ordinal\":1,\"name\":\"_sb_row_version\",\"alias\":\"_sb_row_version\","
       "\"object_uuid\":\"019e05df-f012-7000-8000-0000000000f1\","
@@ -139,9 +164,11 @@ std::string RenderPipelineResult(const PipelineResult& result) {
     out << "CURSOR " << result.server_cursor_uuid << ' ' << result.server_row_count << "\n";
   }
   if (!result.server_result_payload.empty()) {
+    const auto rendered_payload =
+        RedactPublicResultPayload(result.server_result_payload);
     out << "RESULT " << result.server_operation_id << ' ' << result.server_row_count << ' '
-        << RedactPublicResultPayload(result.server_result_payload);
-    if (result.server_result_payload.empty() || result.server_result_payload.back() != '\n') out << '\n';
+        << rendered_payload;
+    if (rendered_payload.empty() || rendered_payload.back() != '\n') out << '\n';
   }
   return out.str();
 }

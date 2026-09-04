@@ -700,11 +700,18 @@ def stage_tool(
             and tool.kind in NATIVE_BINARY_KINDS
             and tool.kind != "cmake_native_binary"
         )
+        optional_launcher_build_failed = (
+            build_result is not None
+            and build_result["returncode"] != 0
+            and tool.kind not in NATIVE_BINARY_KINDS
+            and not strict_runtimes
+        )
         if (
             launch_failed
             or (not strict_runtimes and missing_runtimes)
             or native_tool_unavailable
             or optional_native_build_failed
+            or optional_launcher_build_failed
         ):
             status = "waived"
 

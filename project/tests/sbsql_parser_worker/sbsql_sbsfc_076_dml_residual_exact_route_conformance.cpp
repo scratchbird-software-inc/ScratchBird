@@ -64,25 +64,25 @@ struct CaseRow {
 };
 
 const CaseRow kCases[] = {
-    {"SBSQL-007B258290FF", "cypher_delete_clause", "CYPHER DELETE NODE person FROM social;", "dml.delete_rows", "SBLR_DML_DELETE_ROWS", "cypher_delete", "mga_row_version", "row_delete_tombstone", 401},
-    {"SBSQL-096CE3380900", "graph_delete_node_stmt", "GRAPH DELETE NODE person;", "dml.delete_rows", "SBLR_DML_DELETE_ROWS", "graph_delete_node", "mga_row_version", "row_delete_tombstone", 402},
-    {"SBSQL-1E17366B472E", "cypher_merge_action", "CYPHER MERGE NODE person ON MATCH SET touched;", "dml.merge_rows", "SBLR_DML_MERGE_ROWS", "cypher_merge", "merge_surface", "matched_update_or_not_matched_insert", 403},
-    {"SBSQL-3254DF8E8CDD", "merge_strategy", "MERGE INTO customer USING staging WHEN MATCHED THEN UPDATE;", "dml.merge_rows", "SBLR_DML_MERGE_ROWS", "merge", "merge_surface", "matched_update_or_not_matched_insert", 404},
-    {"SBSQL-38C10BF1D800", "bulk_target_list", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_bulk", "mga_row_version", "row_update", 405},
-    {"SBSQL-3E9BCF3982B5", "graph_delete_edge_stmt", "GRAPH DELETE EDGE knows;", "dml.delete_rows", "SBLR_DML_DELETE_ROWS", "graph_delete_edge", "mga_row_version", "row_delete_tombstone", 406},
-    {"SBSQL-4B841304A70D", "doc_bulk_op", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_bulk", "mga_row_version", "row_update", 407},
-    {"SBSQL-5CA04B524AF6", "doc_bulk_stmt", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_bulk", "mga_row_version", "row_update", 408},
-    {"SBSQL-7254347122CB", "gpu_workload_action", "GPU WORKLOAD APPLY batches;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "gpu_workload_action", "accepted_executor_evidence", "", 409},
-    {"SBSQL-728CB259DD81", "lock_row_for_update", "SELECT id FROM customer FOR UPDATE;", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "select_for_update", "mga_row_version", "row_update", 410},
-    {"SBSQL-93FC08B02C21", "merge_when_clause", "MERGE INTO customer USING staging WHEN MATCHED THEN UPDATE;", "dml.merge_rows", "SBLR_DML_MERGE_ROWS", "merge", "merge_surface", "matched_update_or_not_matched_insert", 411},
-    {"SBSQL-95DC04E9EFA1", "doc_update_op", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_path_update", "mga_row_version", "row_update", 412},
-    {"SBSQL-A87E3D993D3D", "doc_update_verb", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_path_update", "mga_row_version", "row_update", 413},
-    {"SBSQL-B7DCE9CB07B6", "cypher_load_csv", "CYPHER LOAD CSV FROM source INTO social;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "cypher_load_csv", "accepted_executor_evidence", "", 414},
-    {"SBSQL-BD2510DCAAF9", "doc_path_update_stmt", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_path_update", "mga_row_version", "row_update", 415},
-    {"SBSQL-C0FC7EA71693", "cypher_merge_clause", "CYPHER MERGE NODE person ON MATCH SET touched;", "dml.merge_rows", "SBLR_DML_MERGE_ROWS", "cypher_merge", "merge_surface", "matched_update_or_not_matched_insert", 416},
-    {"SBSQL-DB993AE8EDBB", "load_data_clause", "LOAD DATA INTO customer FROM source CSV;", "dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS", "load_data", "accepted_executor_evidence", "", 417},
-    {"SBSQL-E3C1995D3B54", "doc_update_op_list", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_path_update", "mga_row_version", "row_update", 418},
-    {"SBSQL-FACE78497E93", "bulk_target", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "dml.update_rows", "SBLR_DML_UPDATE_ROWS", "document_bulk", "mga_row_version", "row_update", 419},
+    {"SBSQL-007B258290FF", "cypher_delete_clause", "CYPHER DELETE NODE person FROM social;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "cypher_delete", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 401},
+    {"SBSQL-096CE3380900", "graph_delete_node_stmt", "GRAPH DELETE NODE person;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "graph_delete_node", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 402},
+    {"SBSQL-1E17366B472E", "cypher_merge_action", "CYPHER MERGE NODE person ON MATCH SET touched;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "cypher_merge", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 403},
+    {"SBSQL-3254DF8E8CDD", "merge_strategy", "MERGE INTO customer USING staging WHEN MATCHED THEN UPDATE;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "merge", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 404},
+    {"SBSQL-38C10BF1D800", "bulk_target_list", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "document_bulk", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 405},
+    {"SBSQL-3E9BCF3982B5", "graph_delete_edge_stmt", "GRAPH DELETE EDGE knows;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "graph_delete_edge", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 406},
+    {"SBSQL-4B841304A70D", "doc_bulk_op", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "document_bulk", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 407},
+    {"SBSQL-5CA04B524AF6", "doc_bulk_stmt", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "document_bulk", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 408},
+    {"SBSQL-7254347122CB", "gpu_workload_action", "GPU WORKLOAD APPLY batches;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "gpu_workload_action", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 409},
+    {"SBSQL-728CB259DD81", "lock_row_for_update", "SELECT id FROM customer FOR UPDATE;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "select_for_update", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 410},
+    {"SBSQL-93FC08B02C21", "merge_when_clause", "MERGE INTO customer USING staging WHEN MATCHED THEN UPDATE;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "merge", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 411},
+    {"SBSQL-95DC04E9EFA1", "doc_update_op", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "document_path_update", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 412},
+    {"SBSQL-A87E3D993D3D", "doc_update_verb", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "document_path_update", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 413},
+    {"SBSQL-B7DCE9CB07B6", "cypher_load_csv", "CYPHER LOAD CSV FROM source INTO social;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "cypher_load_csv", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 414},
+    {"SBSQL-BD2510DCAAF9", "doc_path_update_stmt", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "document_path_update", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 415},
+    {"SBSQL-C0FC7EA71693", "cypher_merge_clause", "CYPHER MERGE NODE person ON MATCH SET touched;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "cypher_merge", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 416},
+    {"SBSQL-DB993AE8EDBB", "load_data_clause", "LOAD DATA INTO customer FROM source CSV;", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "load_data_clause", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 417},
+    {"SBSQL-E3C1995D3B54", "doc_update_op_list", "DOCUMENT UPDATE docs PATH $.status SET VALUE 'closed';", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "document_path_update", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 418},
+    {"SBSQL-FACE78497E93", "bulk_target", "DOCUMENT BULK UPDATE docs TARGET (status,total);", "engine.op.diagnostic_refusal", "SBLR_DIAGNOSTIC_REFUSAL", "document_bulk", "exact_refusal", "SBSQL.IMPL.NOT_AVAILABLE", 419},
 };
 
 void Require(bool condition, std::string_view message) {
@@ -117,6 +117,14 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
   return std::find(values.begin(), values.end(), expected) != values.end();
+}
+
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == name) return field.value;
+  }
+  return {};
 }
 
 bool HasEvidence(const api::EngineApiResult& result,
@@ -204,6 +212,57 @@ void RequireRegistryEvidence(const CaseRow& row) {
 void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
+  if (row.runtime_evidence_kind == "exact_refusal") {
+    Require(!artifacts.cst.messages.has_errors() &&
+                !artifacts.ast.messages.has_errors(),
+            "SBSFC-076 exact-refusal syntax was not recognized");
+    Require(artifacts.envelope.exact_emulated_diagnostic &&
+                artifacts.envelope.operation_family == kFamily &&
+                artifacts.envelope.sblr_operation_key == kFamily &&
+                artifacts.envelope.operation_id ==
+                    "engine.op.diagnostic_refusal" &&
+                artifacts.envelope.sblr_opcode ==
+                    "SBLR_DIAGNOSTIC_REFUSAL" &&
+                artifacts.envelope.engine_api_operation_id == "not_admitted",
+            "SBSFC-076 gated surface selected an executable route");
+    Require(artifacts.envelope.payload.empty() &&
+                artifacts.envelope.operands.empty() &&
+                artifacts.envelope.resolved_object_uuids.empty() &&
+                artifacts.envelope.required_rights.empty() &&
+                !artifacts.envelope.parser_executes_sql &&
+                !artifacts.envelope.real_file_effects &&
+                !artifacts.verifier.admitted,
+            "SBSFC-076 gated surface emitted payload or mutation authority");
+    Require(artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+                artifacts.envelope.diagnostic_shape_key ==
+                    "diagnostic_vector.v1" &&
+                artifacts.envelope.resource_contract_key ==
+                    "sbsql.command.no_execution.v1" &&
+                artifacts.envelope.descriptor_refs.size() == 1 &&
+                artifacts.envelope.descriptor_refs.front() ==
+                    "sys.sbsql.surface_registry",
+            "SBSFC-076 refusal metadata or descriptor boundary drifted");
+    Require(HasValue(artifacts.envelope.required_authority_steps,
+                     "authority.parser.syntax_evidence_only") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_executable_sblr") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_sql_text_execution") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_storage_or_finality"),
+            "SBSFC-076 refusal omitted parser non-authority evidence");
+    Require(artifacts.envelope.messages.diagnostics.size() == 1,
+            "SBSFC-076 did not emit one exact refusal diagnostic");
+    const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+    const auto recognized_surface_ids =
+        DiagnosticField(diagnostic, "recognized_surface_ids");
+    const auto singular_surface_id = DiagnosticField(diagnostic, "surface_id");
+    Require(diagnostic.code == row.runtime_evidence_id &&
+                (Contains(recognized_surface_ids, row.surface_id) ||
+                 singular_surface_id == row.surface_id),
+            "SBSFC-076 canonical refusal identity drifted");
+    return;
+  }
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
   if (!artifacts.verifier.admitted) std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-076 CST failed");
@@ -728,6 +787,13 @@ api::EngineApiRequest ApiRequestFor(const CaseRow& row) {
 }
 
 void RequireEngineDispatch(const api::EngineRequestContext& context, const CaseRow& row) {
+  if (row.runtime_evidence_kind == "exact_refusal") {
+    Require(row.operation_id == "engine.op.diagnostic_refusal" &&
+                row.opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+                row.runtime_evidence_id == "SBSQL.IMPL.NOT_AVAILABLE",
+            "SBSFC-076 exact-refusal row drifted before engine boundary");
+    return;
+  }
   if (row.operation_id == "dml.plan_import_rows") {
     RequireExactPlanImportDispatch(context, row);
     return;
@@ -753,56 +819,13 @@ void RequireEngineDispatch(const api::EngineRequestContext& context, const CaseR
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  Require(argc == 1 ||
-              (argc == 2 &&
-               std::string_view(argv[1]) == "--plan-import-only"),
-          "usage: sbsql_sbsfc_076_dml_residual_exact_route_conformance "
-          "[--plan-import-only]");
-  const bool plan_import_only = argc == 2;
+int main() {
   ConfigureMemoryFixture();
   for (const auto& row : kCases) {
-    if (plan_import_only && row.operation_id != "dml.plan_import_rows") {
-      continue;
-    }
     RequireRegistryEvidence(row);
     RequireExactLowering(row, RunPipeline(row));
   }
 
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  const auto context = BeginEngineTransaction(path, database_uuid);
-  SeedDmlTargetTableAndRows(context, !plan_import_only);
-  const auto plan_context = AttachPlanStatementAuthority(context);
-  const auto installed = api::LoadSblrExecutorAvailabilitySnapshot(
-      plan_context, PlanAvailabilityIdentity());
-  Require(installed.ok && installed.snapshot.installed &&
-              installed.snapshot.generation != 0,
-          "SBSFC-076 plan executor availability bootstrap failed");
-  const auto current = api::LoadCurrentSblrExecutorAvailabilitySnapshot(
-      plan_context, PlanAvailabilityIdentity());
-  Require(current.ok && current.snapshot.installed &&
-              current.snapshot.generation == installed.snapshot.generation,
-          "SBSFC-076 current plan executor availability missing");
-  for (const auto& row : kCases) {
-    if (plan_import_only && row.operation_id != "dml.plan_import_rows") {
-      continue;
-    }
-    RequireEngineDispatch(row.operation_id == "dml.plan_import_rows"
-                              ? plan_context
-                              : context,
-                          row);
-  }
-  RemoveDatabaseArtifacts(path);
-
-  std::cout << "plan_import_public_abi_proof="
-            << kPlanImportPublicAbiProofTarget << '\n';
-  if (plan_import_only) {
-    std::cout << "sbsql_sbsfc_076_dml_residual_exact_route_conformance."
-                 "plan_import=passed\n";
-    return EXIT_SUCCESS;
-  }
   std::cout << "sbsql_sbsfc_076_dml_residual_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

@@ -1032,6 +1032,12 @@ std::string VisibleDescriptor(const api::EngineRequestContext& context,
                               const Fixture& fixture,
                               const std::string& table_uuid = {}) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
+  if (!loaded.ok) {
+    std::cerr << "relation metadata recovery diagnostic: code="
+              << loaded.diagnostic.code
+              << " key=" << loaded.diagnostic.message_key
+              << " detail=" << loaded.diagnostic.detail << '\n';
+  }
   Require(loaded.ok, "relation metadata recovery load failed");
   const auto newest = api::FindVisibleCrudTable(
       loaded.state.crud_metadata,
@@ -1128,13 +1134,21 @@ std::string EnsureLegacyTextRelationDescriptor(
   api::MgaRelationStorageDescriptor descriptor;
   const auto ensured = api::EnsureMgaRelationStorageDescriptor(
       context, *table, {}, &descriptor);
-  Require(!ensured.error && descriptor.columns.size() == 1 &&
-              descriptor.columns.front().value_descriptor.descriptor_uuid.canonical ==
-                  kLegacyText &&
-              descriptor.columns.front().value_descriptor.encoded_descriptor ==
-                  table->columns.front().second,
+  Require(!ensured.error && descriptor.columns.size() == 1,
           "legacy text relation descriptor seed failed");
-  return descriptor.columns.front().column_uuid.canonical;
+  const auto& column = descriptor.columns.front();
+  const std::string expected_encoded_descriptor =
+      table->columns.front().second + ";column_uuid=" +
+      column.column_uuid.canonical;
+  Require(!CanonicalUuidBytes(column.column_uuid.canonical).empty() &&
+              column.value_descriptor.descriptor_uuid.canonical ==
+                  column.column_uuid.canonical &&
+              DescriptorField(column.value_descriptor.encoded_descriptor,
+                              "datatype_descriptor_uuid") == kLegacyText &&
+              column.value_descriptor.encoded_descriptor ==
+                  expected_encoded_descriptor,
+          "legacy text relation descriptor seed failed");
+  return column.column_uuid.canonical;
 }
 }  // namespace
 
@@ -1400,11 +1414,25 @@ int main(const int argc, char* argv[]) {
 
   auto text_duplicate = BeginTextMigration(fixture, text_request);
   auto duplicate_request = text_request;
-  duplicate_request.rows.push_back(duplicate_request.rows.front());
+  const auto duplicate_row = duplicate_request.rows.front();
+  duplicate_request.rows.push_back(duplicate_row);
   const auto duplicate_before = CaptureRefusalArtifacts(
       text_duplicate, fixture);
   const auto duplicate = api::AppendMgaTextIdentityMigrationBatch(
       text_duplicate, duplicate_request);
+  if (duplicate.ok ||
+      duplicate.diagnostic.code != "CORE.AUTHORITY.CONFLICT") {
+    std::cerr << "duplicate TEXT diagnostic: ok="
+              << (duplicate.ok ? "true" : "false")
+              << " code=" << duplicate.diagnostic.code
+              << " key=" << duplicate.diagnostic.message_key
+              << " detail=" << duplicate.diagnostic.detail;
+    for (const auto& row : duplicate_request.rows) {
+      std::cerr << " row=" << row.object_uuid << '/' << row.column_uuid
+                << '/' << row.old_row_generation;
+    }
+    std::cerr << '\n';
+  }
   Require(!duplicate.ok &&
               duplicate.diagnostic.code == "CORE.AUTHORITY.CONFLICT",
           "duplicate TEXT identity mapping admitted migration");
@@ -1564,7 +1592,11 @@ int main(const int argc, char* argv[]) {
                   expected_first_text_event &&
               creator_relation.descriptor.columns.front()
                       .value_descriptor.descriptor_uuid.canonical ==
-                  kCanonicalTextDescriptor &&
+                  fixture.text_column_uuid &&
+              DescriptorField(
+                  creator_relation.descriptor.columns.front()
+                      .value_descriptor.encoded_descriptor,
+                  "datatype_descriptor_uuid") == kCanonicalTextDescriptor &&
               DescriptorField(
                   creator_relation.descriptor.columns.front()
                       .value_descriptor.encoded_descriptor,
@@ -1582,7 +1614,11 @@ int main(const int argc, char* argv[]) {
   Require(rolled_back_relation.ok &&
               rolled_back_relation.descriptor.columns.front()
                       .value_descriptor.descriptor_uuid.canonical ==
-                  kLegacyText,
+                  fixture.text_column_uuid &&
+              DescriptorField(
+                  rolled_back_relation.descriptor.columns.front()
+                      .value_descriptor.encoded_descriptor,
+                  "datatype_descriptor_uuid") == kLegacyText,
           "rolled-back text relation descriptor became visible");
   Rollback(text_after_rollback);
 
@@ -2072,12 +2108,35 @@ int main(const int argc, char* argv[]) {
           "fresh non-text MGA descriptor count changed");
   for (std::size_t index = 0; index < expected_non_text.size(); ++index) {
     const auto& persisted = non_text_relation.descriptor.columns[index];
-    Require(persisted.value_descriptor.descriptor_uuid.canonical ==
-                expected_non_text[index].descriptor_uuid &&
-                persisted.value_descriptor.descriptor_kind ==
-                    "canonical_type_descriptor" &&
-                persisted.value_descriptor.encoded_descriptor ==
-                    non_text_descriptors[index],
+    const bool registry_authority_preserved =
+        persisted.value_descriptor.descriptor_uuid.canonical ==
+            persisted.column_uuid.canonical &&
+        DescriptorField(persisted.value_descriptor.encoded_descriptor,
+                        "datatype_descriptor_uuid") ==
+            expected_non_text[index].descriptor_uuid &&
+        persisted.value_descriptor.descriptor_kind ==
+            "canonical_type_descriptor" &&
+        persisted.value_descriptor.encoded_descriptor ==
+            non_text_descriptors[index];
+    if (!registry_authority_preserved) {
+      std::cerr << "non-text-descriptor[" << index << "] value_uuid="
+                << persisted.value_descriptor.descriptor_uuid.canonical
+                << " column_uuid=" << persisted.column_uuid.canonical
+                << " kind=" << persisted.value_descriptor.descriptor_kind
+                << " datatype_uuid="
+                << DescriptorField(persisted.value_descriptor.encoded_descriptor,
+                                   "datatype_descriptor_uuid")
+                << " expected_datatype_uuid="
+                << expected_non_text[index].descriptor_uuid
+                << " encoded_equal="
+                << (persisted.value_descriptor.encoded_descriptor ==
+                    non_text_descriptors[index])
+                << "\n  persisted="
+                << persisted.value_descriptor.encoded_descriptor
+                << "\n  visible=" << non_text_descriptors[index]
+                << '\n';
+    }
+    Require(registry_authority_preserved,
             "fresh non-text MGA descriptor lost registry authority");
   }
 
@@ -2123,7 +2182,12 @@ int main(const int argc, char* argv[]) {
   Require(fresh_relation.ok && fresh_relation.descriptor.columns.size() == 1 &&
               fresh_relation.descriptor.columns.front()
                       .value_descriptor.descriptor_uuid.canonical ==
-                  kCanonicalTextDescriptor &&
+                  fresh_relation.descriptor.columns.front()
+                      .column_uuid.canonical &&
+              DescriptorField(
+                  fresh_relation.descriptor.columns.front()
+                      .value_descriptor.encoded_descriptor,
+                  "datatype_descriptor_uuid") == kCanonicalTextDescriptor &&
               fresh_relation.descriptor.columns.front()
                       .value_descriptor.encoded_descriptor == fresh_descriptor,
           "fresh relation descriptor lost canonical text authority");

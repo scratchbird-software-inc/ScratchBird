@@ -243,6 +243,7 @@ MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request,
   direct.require_generated_row_uuid = request.require_generated_row_uuid;
   direct.strict_bulk_load_requested = request.import_policy.strict_bulk_load_requested;
   direct.direct_lane_enabled = NativeDirectPhysicalLaneEnabled(request);
+  direct.before_row_publication = request.before_row_publication;
   return direct;
 }
 
@@ -271,6 +272,8 @@ EngineExecuteNativeBulkIngestResult WrapDirectPhysicalResult(
   result.inserted_rows = direct.inserted_rows;
   result.rejected_rows = direct.rejected_rows;
   result.row_uuids = std::move(direct.row_uuids);
+  result.row_version_uuids = std::move(direct.row_version_uuids);
+  result.row_image_uuids = std::move(direct.row_image_uuids);
   result.delegated_to_import_execution = false;
   result.dml_summary = std::move(direct.dml_summary);
   AddNativeBulkIngestEvidence(&result, true);
@@ -472,6 +475,17 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
     } else {
       failure.evidence.push_back(
           {"native_bulk_logical_batch_atomicity", "no_partial_visibility"});
+      if (request.after_statement_rollback) {
+        try {
+          request.after_statement_rollback();
+        } catch (...) {
+          failure.diagnostics.push_back(MakeEngineApiDiagnostic(
+              "BULK.IMPORT.RECOVERY_CONFLICT",
+              "dml.native_bulk_ingest.rollback_observer_failed",
+              "the statement rolled back but its durable observer failed",
+              true));
+        }
+      }
     }
     return failure;
   };
@@ -488,6 +502,25 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
               true),
           "cancelled_before_publication");
     }
+    if (request.before_statement_publication) {
+      EngineApiDiagnostic prepared;
+      try {
+        prepared = request.before_statement_publication(
+            success.accepted_rows, success.inserted_rows,
+            success.rejected_rows);
+      } catch (...) {
+        prepared = MakeEngineApiDiagnostic(
+            "BULK.IMPORT.ABORTED",
+            "dml.native_bulk_ingest.publication_prepare_exception",
+            "the statement publication observer threw before the barrier",
+            true);
+      }
+      if (prepared.error) {
+        return rollback_failure(
+            NativeFailure(request, std::move(prepared), true),
+            "statement_publication_prepare_failed");
+      }
+    }
     const auto released = ReleaseMgaSavepointMarker(request.context,
                                                     savepoint_name);
     if (released.error) {
@@ -503,6 +536,27 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
               true),
           "statement_savepoint_release_failed");
     }
+    if (request.after_statement_publication) {
+      EngineApiDiagnostic published;
+      try {
+        published = request.after_statement_publication(
+            success.accepted_rows, success.inserted_rows,
+            success.rejected_rows);
+      } catch (...) {
+        published = MakeEngineApiDiagnostic(
+            "BULK.IMPORT.RECOVERY_CONFLICT",
+            "dml.native_bulk_ingest.publication_observer_exception",
+            "the mutation crossed its barrier but terminal observation failed",
+            true);
+      }
+      if (published.error) {
+        success.ok = false;
+        success.diagnostics.push_back(std::move(published));
+        success.evidence.push_back(
+            {"native_bulk_logical_batch_atomicity", "recovery_required"});
+        return success;
+      }
+    }
     success.evidence.push_back(
         {"native_bulk_logical_batch", "published"});
     success.evidence.push_back(
@@ -513,6 +567,22 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
         {"native_bulk_logical_batch_row_count", std::to_string(row_count)});
     return success;
   };
+  if (request.before_mutation_publication) {
+    EngineApiDiagnostic prepared;
+    try {
+      prepared = request.before_mutation_publication();
+    } catch (...) {
+      prepared = MakeEngineApiDiagnostic(
+          "BULK.IMPORT.ABORTED",
+          "dml.native_bulk_ingest.pre_mutation_observer_exception",
+          "the durable publication intent could not be prepared", true);
+    }
+    if (prepared.error) {
+      return rollback_failure(
+          NativeFailure(request, std::move(prepared), true),
+          "pre_mutation_publication_prepare_failed");
+    }
+  }
   auto execute_direct = [&](dml::DirectPhysicalBulkAppendRequest direct_request,
                             dml::DirectPhysicalBulkAppendResult* direct_result,
                             std::string* exception_reason) {
@@ -659,9 +729,15 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
       result.primary_object = direct.primary_object;
     }
     if (row_count <= 10000) {
-      result.row_uuids.insert(result.row_uuids.end(),
+    result.row_uuids.insert(result.row_uuids.end(),
                               direct.row_uuids.begin(),
                               direct.row_uuids.end());
+    result.row_version_uuids.insert(result.row_version_uuids.end(),
+                                    direct.row_version_uuids.begin(),
+                                    direct.row_version_uuids.end());
+    result.row_image_uuids.insert(result.row_image_uuids.end(),
+                                  direct.row_image_uuids.begin(),
+                                  direct.row_image_uuids.end());
     }
     result.evidence.insert(result.evidence.end(),
                            std::make_move_iterator(direct.evidence.begin()),

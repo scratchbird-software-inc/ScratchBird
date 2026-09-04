@@ -9,13 +9,17 @@
 #include "backup_archive/backup_archive_api.hpp"
 #include "artifacts/artifact_api.hpp"
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "maintenance_coordinator.hpp"
+#include "management/support_bundle_api.hpp"
 #include "manager_control.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sbps.hpp"
 #include "server_observability.hpp"
 #include "uuid.hpp"
+
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -208,6 +212,10 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& database_pa
   context.security_context_present = true;
   context.local_transaction_id = local_transaction_id;
   context.trace_tags.push_back("security.bootstrap");
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context,
+      "CBQ-057 backup/restore/export fixture",
+      {"BACKUP_CREATE", "BACKUP_RESTORE", "SUPPORT_EXPORT"});
   return context;
 }
 
@@ -256,6 +264,11 @@ void TestBackupRestoreEngineOwnedLifecycle(const std::filesystem::path& temp_dir
   backup.option_envelopes = BackupOptions();
   backup.option_envelopes.push_back("target_uri:" + manifest.string());
   const auto backup_result = api::EngineStartPhysicalBackup(backup);
+  if (!backup_result.ok) {
+    for (const auto& diagnostic : backup_result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+  }
   Require(backup_result.ok, "physical backup failed");
   Require(backup_result.image_bytes == source_image.size(), "physical backup image size mismatch");
   Require(HasEvidence(backup_result, "snapshot_hold"), "backup omitted snapshot hold evidence");
@@ -337,6 +350,8 @@ sblr::SblrDispatchResult DispatchEncoded(std::string operation_id,
                                          bool requires_transaction = false) {
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "CBQ-057");
   envelope.requires_transaction_context = requires_transaction;
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
   const auto encoded = sblr::EncodeSblrEnvelope(envelope);
   return sblr::DecodeAndDispatchSblrOperation(encoded, std::move(context), std::move(api_request));
 }
@@ -373,55 +388,80 @@ void TestSblrExportAndSupportBundleRoutes(const std::filesystem::path& temp_dir)
                             "artifact.export_catalog:local_transaction_id_required"),
           "catalog export accepted missing transaction authority");
 
-  api::EngineApiRequest support_request;
+  api::EnginePrepareSupportBundleRequest support_request;
   support_request.context = EngineContext(database_path);
   support_request.option_envelopes.push_back("engine_authorized_support_export:true");
-  const auto support_result = DispatchEncoded("management.prepare_support_bundle",
-                                             "SBLR_MANAGEMENT_PREPARE_SUPPORT_BUNDLE",
-                                             support_request.context,
-                                             support_request);
-  Require(support_result.accepted && support_result.api_result.ok,
-          "encoded SBLR support-bundle preparation route failed");
-  Require(HasEvidence(support_result.api_result,
+  const auto support_result = api::EnginePrepareSupportBundle(support_request);
+  Require(support_result.ok,
+          "typed support-bundle preparation route failed");
+  Require(support_result.operation_id == "management.prepare_support_bundle",
+          "typed support-bundle route returned the wrong operation identity");
+  Require(HasEvidence(support_result,
                       "support_bundle_authority",
                       "engine.authorization.management.SUPPORT_EXPORT"),
           "support bundle route omitted engine authorization evidence");
-  Require(HasEvidence(support_result.api_result,
+  Require(HasEvidence(support_result,
                       "supportability_flush",
                       "required_before_export"),
           "support bundle route omitted flush-before-export evidence");
 
-  api::EngineApiRequest missing_authority;
+  api::EnginePrepareSupportBundleRequest missing_authority;
   missing_authority.context = EngineContext(database_path);
-  const auto missing_authority_result = DispatchEncoded("management.prepare_support_bundle",
-                                                       "SBLR_MANAGEMENT_PREPARE_SUPPORT_BUNDLE",
-                                                       missing_authority.context,
-                                                       missing_authority);
-  Require(!missing_authority_result.api_result.ok &&
-              HasDiagnostic(missing_authority_result.api_result,
+  const auto missing_authority_result =
+      api::EnginePrepareSupportBundle(missing_authority);
+  Require(!missing_authority_result.ok &&
+              HasDiagnostic(missing_authority_result,
                             "OPS.SUPPORT_BUNDLE.ENGINE_AUTHORIZATION_REQUIRED"),
           "support bundle route accepted missing engine authorization");
 
-  api::EngineApiRequest protected_material;
+  api::EnginePrepareSupportBundleRequest protected_material;
   protected_material.context = EngineContext(database_path);
   protected_material.option_envelopes.push_back("engine_authorized_support_export:true");
   protected_material.option_envelopes.push_back("include_protected_material:true");
-  const auto protected_result = DispatchEncoded("management.prepare_support_bundle",
-                                               "SBLR_MANAGEMENT_PREPARE_SUPPORT_BUNDLE",
-                                               protected_material.context,
-                                               protected_material);
-  Require(!protected_result.api_result.ok &&
-              HasDiagnostic(protected_result.api_result,
+  const auto protected_result =
+      api::EnginePrepareSupportBundle(protected_material);
+  Require(!protected_result.ok &&
+              HasDiagnostic(protected_result,
                             "OPS.SUPPORT_BUNDLE.PROTECTED_MATERIAL_FORBIDDEN"),
           "support bundle route accepted protected material export");
 }
 
 void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_dir) {
   const auto database_path = temp_dir / "external_git_versioning.sbdb";
-  WriteFile(database_path, "SBDB_EXTERNAL_GIT_VERSIONING_ROUTE");
+  const auto database_uuid =
+      uuid::ParseTypedUuid(UuidKind::database, std::string(kDatabaseUuid));
+  const auto filespace_uuid =
+      uuid::ParseTypedUuid(UuidKind::filespace, std::string(kFilespaceUuid));
+  Require(database_uuid.ok() && filespace_uuid.ok(),
+          "external Git fixture UUID parsing failed");
+  db::DatabaseCreateConfig create;
+  create.path = database_path.string();
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = 1783900000057;
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  create.allow_overwrite = true;
+  Require(db::CreateDatabaseFile(create).ok(),
+          "external Git fixture database create failed");
+  Require(db::OpenDatabaseFile({database_path.string(), false, false, false}).ok(),
+          "external Git fixture database open failed");
+  Require(db::MarkDatabaseCleanShutdown(database_path.string()).ok(),
+          "external Git fixture clean-shutdown marker failed");
+  const auto transaction =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          database_path, "CBQ-057 external Git");
+  const auto transaction_context = [&]() {
+    auto context = EngineContext(database_path, transaction.local_transaction_id);
+    context.transaction_uuid = transaction.transaction_uuid;
+    context.snapshot_visible_through_local_transaction_id =
+        transaction.snapshot_visible_through_local_transaction_id;
+    return context;
+  };
 
   api::EngineImportCatalogArtifactsRequest import;
-  import.context = EngineContext(database_path, 700);
+  import.context = transaction_context();
   import.option_envelopes.push_back("external_git_policy:enabled");
   import.rows.push_back(ArtifactRow("019e3900-0000-7000-8000-00000000cb57",
                                     "schema",
@@ -439,7 +479,7 @@ void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_di
           "external Git import did not preserve MGA transaction authority");
 
   api::EngineExportExternalGitSnapshotRequest export_request;
-  export_request.context = EngineContext(database_path, 701);
+  export_request.context = transaction_context();
   export_request.option_envelopes.push_back("external_git_policy:enabled");
   const auto exported = api::EngineExportExternalGitSnapshot(export_request);
   Require(exported.ok, "external Git snapshot export failed");
@@ -475,7 +515,7 @@ void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_di
   Require(!candidate_rows.empty(), "external Git snapshot exported no object rows");
 
   api::EngineDiffExternalGitSnapshotRequest diff_request;
-  diff_request.context = EngineContext(database_path, 702);
+  diff_request.context = transaction_context();
   diff_request.option_envelopes.push_back("external_git_policy:enabled");
   diff_request.rows = candidate_rows;
   const auto diff = api::EngineDiffExternalGitSnapshot(diff_request);
@@ -491,7 +531,7 @@ void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_di
           "external Git diff became runtime authority");
 
   api::EnginePlanExternalGitRollbackRequest rollback_request;
-  rollback_request.context = EngineContext(database_path, 703);
+  rollback_request.context = transaction_context();
   rollback_request.option_envelopes.push_back("external_git_policy:enabled");
   rollback_request.rows = candidate_rows;
   const auto rollback_plan = api::EnginePlanExternalGitRollback(rollback_request);
@@ -517,7 +557,7 @@ void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_di
     }
   }
   api::EngineDiffExternalGitSnapshotRequest corrupt_request;
-  corrupt_request.context = EngineContext(database_path, 704);
+  corrupt_request.context = transaction_context();
   corrupt_request.option_envelopes.push_back("external_git_policy:enabled");
   corrupt_request.rows = corrupt_rows;
   const auto corrupt = api::EngineDiffExternalGitSnapshot(corrupt_request);
@@ -527,7 +567,7 @@ void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_di
           "external Git diff accepted a corrupt snapshot row");
 
   api::EngineImportCatalogArtifactsRequest forbidden_import;
-  forbidden_import.context = EngineContext(database_path, 705);
+  forbidden_import.context = transaction_context();
   forbidden_import.option_envelopes.push_back("external_git_policy:enabled");
   forbidden_import.option_envelopes.push_back("external_git_direct_apply:true");
   forbidden_import.rows.push_back(import.rows.front());
@@ -535,19 +575,15 @@ void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_di
   Require(!forbidden.ok && HasDiagnostic(forbidden, "external_git_authority_forbidden"),
           "catalog import accepted external Git direct authority");
 
-  api::EngineApiRequest sblr_request;
-  sblr_request.context = EngineContext(database_path, 706);
-  sblr_request.option_envelopes.push_back("external_git_policy:enabled");
-  const auto sblr_export = DispatchEncoded("artifact.external_git.export_snapshot",
-                                           "SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT",
-                                           sblr_request.context,
-                                           sblr_request,
-                                           true);
-  Require(sblr_export.accepted && sblr_export.dispatched_to_api &&
-              sblr_export.api_result.ok,
-          "encoded SBLR external Git export route failed");
-  Require(HasEvidence(sblr_export.api_result, "git_runtime_authority", "false"),
-          "encoded SBLR external Git route became runtime authority");
+  const auto* external_git_opcode =
+      sblr::LookupSblrOperation("artifact.external_git.export_snapshot");
+  Require(external_git_opcode == nullptr || external_git_opcode->code == 0,
+          "external Git convenience API became a public executable SBLR root");
+  Require(HasEvidence(exported, "git_runtime_authority", "false"),
+          "typed external Git route became runtime authority");
+
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
+      transaction);
 }
 
 struct DatabaseFixture {
@@ -603,6 +639,17 @@ std::array<std::uint8_t, 16> AddSession(server::ServerSessionRegistry* registry,
   session.database_path = path.string();
   session.database_uuid = std::move(database_uuid);
   session.effective_user_uuid = sbps::MakeUuidV7Bytes();
+  session.principal_uuid = session.effective_user_uuid;
+  session.embedded_in_process = true;
+  session.engine_authorization_trace_tags.push_back(
+      "security.fixture_trace_authority");
+  if (principal == "admin") {
+    session.engine_authorization_trace_tags.push_back(
+        "right:OBS_MANAGEMENT_CONTROL");
+    session.engine_authorization_trace_tags.push_back(
+        "right:OBS_MANAGEMENT_INSPECT");
+    session.engine_authorization_trace_tags.push_back("right:SUPPORT_EXPORT");
+  }
   session.local_transaction_id = local_transaction_id;
   registry->sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
   registry->auth_contexts_by_uuid[server::UuidBytesToText(session.auth_context_uuid)] = session;

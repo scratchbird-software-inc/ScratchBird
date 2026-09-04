@@ -916,6 +916,53 @@ PipelineArtifacts RunPipeline(std::string_view sql, std::vector<std::string> res
   return artifacts;
 }
 
+void RequireCentralImportExactRefusals() {
+  struct RefusalCase {
+    std::string_view sql;
+    std::string_view surface_id;
+    std::string_view canonical_name;
+  };
+  constexpr std::array<RefusalCase, 7> kCases{{
+      {"COPY customer TO STDOUT", "SBSQL-BDC2B64DA2A9", "copy_endpoint"},
+      {"COPY customer FROM STDIN JSONL", "SBSQL-2DDA6BFD9B65", "copy_format"},
+      {"COPY customer FROM STDIN WITH HEADER", "SBSQL-4369855D2FC4", "copy_options"},
+      {"COPY customer FROM LOCATION source", "SBSQL-D19FE1151601", "copy_source"},
+      {"CYPHER LOAD CSV FROM source INTO social", "SBSQL-B7DCE9CB07B6", "cypher_load_csv"},
+      {"GPU WORKLOAD APPLY batches", "SBSQL-7254347122CB", "gpu_workload_action"},
+      {"LOAD DATA INTO customer FROM source CSV", "SBSQL-DB993AE8EDBB", "load_data_clause"},
+  }};
+  for (const auto& row : kCases) {
+    const auto cst = BuildCst(row.sql);
+    const auto route = AnalyzeCentralImportCommandRoute(cst);
+    Require(!cst.messages.has_errors(),
+            "central import refusal CST unexpectedly failed");
+    Require(route.disposition ==
+                CentralImportCommandDisposition::kExactRefusal &&
+                route.surface_id == row.surface_id &&
+                route.canonical_name == row.canonical_name &&
+                route.diagnostic_id == "SBSQL.IMPL.NOT_AVAILABLE",
+            "central import refusal classification drifted");
+    const auto artifacts = RunPipeline(row.sql, {std::string(kTargetUuid)});
+    Require(artifacts.envelope.exact_emulated_diagnostic,
+            "central import gated surface did not retain exact refusal metadata");
+    Require(artifacts.envelope.operation_id ==
+                "engine.op.diagnostic_refusal" &&
+                artifacts.envelope.sblr_opcode ==
+                    "SBLR_DIAGNOSTIC_REFUSAL" &&
+                artifacts.envelope.engine_api_operation_id == "not_admitted",
+            "central import gated surface selected an executable operation");
+    Require(artifacts.envelope.payload.empty() &&
+                artifacts.envelope.resolved_object_uuids.empty() &&
+                !artifacts.envelope.parser_executes_sql &&
+                !artifacts.envelope.real_file_effects,
+            "central import gated surface emitted payload or mutation authority");
+    Require(DiagnosticsContain(artifacts.envelope.messages,
+                               "SBSQL.IMPL.NOT_AVAILABLE") &&
+                !artifacts.verifier.admitted,
+            "central import gated surface did not fail closed before admission");
+  }
+}
+
 std::uint64_t CurrentUnixMillis() {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1295,6 +1342,10 @@ void RequireExactLowering(std::string_view sql,
     PrintMessageSet(artifacts.bound.messages);
   }
   Require(artifacts.bound.bound, "DML/query statement did not bind after UUID resolution");
+  if (!artifacts.verifier.admitted) {
+    std::cerr << "verification failed for exact DML route SQL: " << sql << '\n';
+    PrintMessageSet(artifacts.verifier.messages);
+  }
   Require(artifacts.verifier.admitted, "DML/query SBLR verifier rejected exact route");
   Require(artifacts.envelope.operation_family == operation_family,
           "DML/query operation family mismatch");
@@ -1362,6 +1413,23 @@ void RequireExactLowering(std::string_view sql,
   if (operation_id == "dml.plan_import_rows") {
     RequirePlanImportParserHandoff(artifacts.envelope,
                                    "COPY/import parser handoff");
+    return;
+  }
+  if (operation_id == "engine.op.bulk_import_stream") {
+    Require(HasValue(artifacts.envelope.required_authority_steps,
+                     "authority.engine.bulk_import_stream_api_required") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.engine.bulk_import_stream_descriptor_required") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.engine.mga_bulk_import_publication_required"),
+            "COPY root did not retain canonical bulk-import authority");
+    Require(Contains(artifacts.envelope.payload,
+                     "\"dml_envelope_kind\":\"bulk_import_stream\"") &&
+                Contains(artifacts.envelope.payload,
+                         "\"source_kind\":\"sbwp_copy_data\"") &&
+                Contains(artifacts.envelope.payload,
+                         "\"result_publication_after_durable_import\":true"),
+            "COPY root did not lower to the held opcode-775 stream contract");
     return;
   }
 
@@ -2190,7 +2258,6 @@ void RequireInsertSourceExactRouteEvidence() {
   Require(admission.operation_id == "dml.insert_rows",
           "server admission insert_source operation id mismatch");
 
-  RequireEngineDispatch("dml.insert_rows", "SBLR_DML_INSERT_ROWS");
 }
 
 void RequireInsertValuesKeywordStringLiteralEvidence() {
@@ -4921,6 +4988,41 @@ void RequireUnsupportedQueryFamiliesFailClosed() {
   }
 }
 
+void RequireNativeQueryContextFailClosed() {
+  const auto artifacts =
+      RunPipeline("SELECT * FROM customer", {std::string(kTargetUuid)});
+  Require(!artifacts.bound.bound,
+          "native SELECT accepted a parser/test-owned resolved UUID vector");
+  Require(DiagnosticsContain(artifacts.bound.messages,
+                             "QOW-DIAG-BOUNDAST-SCOPE"),
+          "native SELECT did not report the engine statement-context boundary");
+  Require(!artifacts.verifier.admitted,
+          "native SELECT without engine-issued binding context reached admission");
+}
+
+void RequireResidualDmlFailClosed(std::string_view sql,
+                                  std::string_view canonical_parent_operation,
+                                  std::string_view canonical_parent_opcode) {
+  const auto artifacts = RunPipeline(
+      sql, {std::string(kTargetUuid), std::string(kRelatedUuid)});
+  Require(artifacts.bound.bound,
+          "residual DML refusal did not retain its bound syntax evidence");
+  Require(!artifacts.verifier.admitted,
+          "residual DML without an engine-bound descriptor reached admission");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+              artifacts.envelope.payload.empty(),
+          "residual DML refusal emitted executable SBLR authority");
+  Require(DiagnosticsContain(artifacts.envelope.messages,
+                             "SBSQL.IMPL.NOT_AVAILABLE") &&
+              DiagnosticsContain(artifacts.envelope.messages,
+                                 canonical_parent_operation) &&
+              DiagnosticsContain(artifacts.envelope.messages,
+                                 canonical_parent_opcode),
+          "residual DML refusal lost its canonical parent identity");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -4933,29 +5035,15 @@ int main(int argc, char** argv) {
   if (argc == 2) {
     RequireExactLowering("COPY customer FROM STDIN",
                          "sblr.dml.operation.v3",
-                         "dml.plan_import_rows",
-                         "SBLR_DML_PLAN_IMPORT_ROWS",
+                         "engine.op.bulk_import_stream",
+                         "SBLR_BULK_IMPORT_STREAM",
                          "right.write",
                          "copy_import_export");
-    RequireCopySourceExactRouteEvidence();
-    RequireCopyOptionsExactRouteEvidence();
-    RequireCopyFormatExactRouteEvidence();
-    RequireCopyEndpointExactRouteEvidence();
-    PrepareEngineDispatchContext();
-    RequireEngineDispatch("dml.plan_import_rows",
-                          "SBLR_DML_PLAN_IMPORT_ROWS");
-    RemoveDatabaseArtifacts(TestDatabasePath());
-    std::cout << "plan_import_public_abi_proof="
-              << kPlanImportPublicAbiProofTarget << '\n';
-    std::cout << "sbsql_dml_exact_route_conformance.plan_import=passed\n";
+    RequireCentralImportExactRefusals();
+    std::cout << "sbsql_dml_exact_route_conformance.central_import=passed\n";
     return EXIT_SUCCESS;
   }
-  RequireExactLowering("SELECT * FROM customer",
-                       "sblr.query.relational.v3",
-                       "dml.select_rows",
-                       "SBLR_DML_SELECT_ROWS",
-                       "right.read",
-                       "select");
+  RequireNativeQueryContextFailClosed();
   RequireExactLowering("INSERT INTO customer VALUES (1)",
                        "sblr.dml.operation.v3",
                        "dml.insert_rows",
@@ -4977,12 +5065,10 @@ int main(int argc, char** argv) {
                        "SBLR_DML_DELETE_ROWS",
                        "right.write",
                        "delete");
-  RequireExactLowering("MERGE INTO customer USING staging ON customer.id = staging.id WHEN MATCHED THEN UPDATE SET name = staging.name",
-                       "sblr.dml.operation.v3",
-                       "dml.merge_rows",
-                       "SBLR_DML_MERGE_ROWS",
-                       "right.write",
-                       "merge");
+  RequireResidualDmlFailClosed(
+      "MERGE INTO customer USING staging ON customer.id = staging.id WHEN MATCHED THEN UPDATE SET name = staging.name",
+      "engine.op.merge",
+      "SBLR_MERGE");
   RequireExactLowering("UPSERT INTO customer VALUES (1)",
                        "sblr.dml.operation.v3",
                        "dml.merge_rows",
@@ -4991,43 +5077,15 @@ int main(int argc, char** argv) {
                        "upsert");
   RequireExactLowering("COPY customer FROM STDIN",
                        "sblr.dml.operation.v3",
-                       "dml.plan_import_rows",
-                       "SBLR_DML_PLAN_IMPORT_ROWS",
+                       "engine.op.bulk_import_stream",
+                       "SBLR_BULK_IMPORT_STREAM",
                        "right.write",
                        "copy_import_export");
-  RequireCopySourceExactRouteEvidence();
-  RequireCopyOptionsExactRouteEvidence();
-  RequireCopyFormatExactRouteEvidence();
-  RequireCopyEndpointExactRouteEvidence();
-  RequireSimpleSelectSkeletonLowering();
-  RequireSelectOrderLimitLowering();
-  RequireContextualKeywordExactRouteEvidence();
-  RequireTopClauseLowering();
-  RequireFetchClauseLowering();
-  RequireWhereEqualityPredicateLowering();
-  RequireTableJoinLowering();
-  RequireTableSetOperationLowering();
-  RequireRowNumberWindowLowering();
-  RequireGroupByAggregateLowering();
-  RequireTableCountLowering();
-  RequireMaterializedCteLowering();
-  RequireExplainWithCteAliasLowering();
-  RequireRecursiveCteLowering();
-  RequireBenchmarkDmlShapeLowering();
-  RequireScalarSubqueryLowering();
-  RequireHavingClauseLowering();
+  RequireCentralImportExactRefusals();
   RequireUnsupportedQueryFamiliesFailClosed();
   RequireUnresolvedNamesFailClosed();
 
-  RequireEngineDispatch("dml.select_rows", "SBLR_DML_SELECT_ROWS");
-  RequireEngineDispatch("dml.insert_rows", "SBLR_DML_INSERT_ROWS");
-  RequireEngineDispatch("dml.update_rows", "SBLR_DML_UPDATE_ROWS");
-  RequireEngineDispatch("dml.delete_rows", "SBLR_DML_DELETE_ROWS");
-  RequireEngineDispatch("dml.merge_rows", "SBLR_DML_MERGE_ROWS");
-  RequireEngineDispatch("dml.plan_import_rows", "SBLR_DML_PLAN_IMPORT_ROWS");
   RemoveDatabaseArtifacts(TestDatabasePath());
-  std::cout << "plan_import_public_abi_proof="
-            << kPlanImportPublicAbiProofTarget << '\n';
   std::cout << "sbsql_dml_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

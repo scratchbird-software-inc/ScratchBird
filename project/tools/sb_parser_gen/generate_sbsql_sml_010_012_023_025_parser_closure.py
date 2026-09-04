@@ -449,26 +449,35 @@ def manifest_rows() -> list[dict[str, str]]:
         ),
         row(
             sml_id="SML-025",
-            row_id="SML-025-SECURITY-AUTHORIZATION-SERVER-RECLASSIFY",
+            row_id="SML-025-SECURITY-AUTHORIZATION-SERVER-CANONICAL-EVALUATION",
             proof_domain="legacy_security_projection_server_evaluated",
-            coverage_class="security_authorization_server_reclassify",
-            scenario="compatibility security authorization is reclassified by server SBLR admission, not by parser projection",
-            route_class="server_sblr_security_admission",
+            coverage_class="security_authorization_server_canonical_evaluation",
+            scenario=(
+                "an exact security GRANT is admitted through canonical SBLR and "
+                "completed by the engine security API, never authorized by the parser"
+            ),
+            route_class="canonical_security_grant_process_e2e",
             evidence_kind="ctest",
             expected_contract=(
-                "security authorization projections remain server-evaluated and "
-                "require server security policy context"
+                "the parser supplies no security authorization; the authenticated "
+                "GRANT process route coordinates an exact engine-owned descriptor, "
+                "submits engine.op.sec_grant, and reaches its success barrier"
             ),
-            expected_diagnostic="PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED",
+            expected_diagnostic="none",
             evidence_paths=(
-                "project/tests/sbsql_parser_worker/sbsql_sml022_shared_parser_runtime_authority_conformance.cpp",
-                "project/src/server/sblr_admission.cpp",
+                "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
+                "project/tests/sbsql_sblr_alignment/CMakeLists.txt",
+                "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
+                "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py",
+                "project/src/parsers/sbsql_worker/wire/sbsql_test_wire.cpp",
             ),
             evidence_tokens=(
-                "security.authorize",
-                "authority.server.security_policy_context_required",
                 "authority.parser.no_security_authorization",
-                "server did not reclassify security authorization through SBLR authority",
+                "sbsql_sblr_alignment_ia08_security_grant_process_e2e",
+                "RunSecurityGrantForWire",
+                "engine.op.sec_grant",
+                "SBLR_SEC_GRANT",
+                "parent_success_barrier=passed",
             ),
             resolver_filtering="server_security_context",
             security_projection_authority="server_sblr_admission_and_engine_security_api",
@@ -478,26 +487,33 @@ def manifest_rows() -> list[dict[str, str]]:
             row_id="SML-025-PROTECTED-MATERIAL-REDACTED-PROJECTION",
             proof_domain="legacy_security_projection_server_evaluated",
             coverage_class="protected_material_redacted_projection",
-            scenario="protected material catalog and audit projections return redacted server-evaluated results",
-            route_class="protected_material_catalog_projection",
+            scenario=(
+                "parser-only protected-material routes remain noncanonical while the "
+                "engine-owned durable catalog projection returns redacted results"
+            ),
+            route_class="pre_sblr_refusal_and_engine_protected_material_projection",
             evidence_kind="ctest",
             expected_contract=(
-                "protected material projection rows are evaluated through engine "
-                "security APIs and redact protected references"
+                "unallocated parser routes cannot cross canonical admission; the "
+                "engine security API reloads the durable catalog and redacts every "
+                "protected reference without leaking wrapped material"
             ),
             expected_diagnostic="protected-material-redacted",
             evidence_paths=(
                 "project/tests/sbsql_parser_worker/sbsql_protected_material_exact_route_conformance.cpp",
+                "project/tests/engine_listener_enterprise/engine_listener_protected_material_durable_catalog_conformance.cpp",
             ),
             evidence_tokens=(
                 "security.protected_material.catalog.inspect",
                 "authority.engine.protected_material_api_required",
                 "authority.parser.no_security_authorization",
-                "protected-material-redacted",
-                "protected reference leaked",
+                "unallocated operation acquired a numeric opcode",
+                "EngineInspectProtectedMaterialCatalog",
+                "<protected-material-redacted>",
+                "protected material inspect result leaked wrapped reference",
             ),
             resolver_filtering="server_security_projection_redaction",
-            security_projection_authority="server_sblr_admission_and_engine_security_api",
+            security_projection_authority="pre_sblr_refusal_and_engine_security_api",
         ),
         row(
             sml_id="SML-025",

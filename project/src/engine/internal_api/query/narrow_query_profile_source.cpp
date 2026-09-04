@@ -123,6 +123,40 @@ std::string UuidText(const wire::NarrowQueryUuid& value) {
   return scratchbird::core::uuid::UuidToString(parsed);
 }
 
+struct ExactEncodedDescriptorFieldLookup {
+  bool well_formed = false;
+  bool present = false;
+  std::string value;
+};
+
+ExactEncodedDescriptorFieldLookup LookupExactEncodedDescriptorField(
+    const std::string_view descriptor,
+    const std::string_view requested_key) {
+  ExactEncodedDescriptorFieldLookup result;
+  if (descriptor.empty() || requested_key.empty()) return result;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string_view::npos ? std::string_view::npos
+                                             : end - start);
+    const auto equals = field.find('=');
+    if (field.empty() || equals == std::string_view::npos || equals == 0 ||
+        equals + 1 == field.size()) {
+      return {};
+    }
+    if (field.substr(0, equals) == requested_key) {
+      if (result.present) return {};
+      result.present = true;
+      result.value = std::string(field.substr(equals + 1));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  result.well_formed = true;
+  return result;
+}
+
 bool SameOccurrence(const wire::NarrowQueryUuid& left_uuid,
                     std::uint64_t left_generation,
                     const wire::NarrowQueryUuid& right_uuid,
@@ -999,12 +1033,22 @@ class NarrowQueryProfileOccurrenceSource final
             "sblr.query_execute.source_column_stale", key.first);
         return false;
       }
+      const auto embedded_datatype_descriptor =
+          LookupExactEncodedDescriptorField(
+              found->value_descriptor.encoded_descriptor,
+              "datatype_descriptor_uuid");
+      const std::string& canonical_datatype_descriptor_uuid =
+          embedded_datatype_descriptor.present
+              ? embedded_datatype_descriptor.value
+              : found->value_descriptor.descriptor_uuid.canonical;
       const auto datatype = datatypes::LookupDatatypeTypeCodecIdentityV1(
           context_.datatype_catalog_snapshot_uuid.canonical,
           context_.datatype_catalog_generation,
           context_.datatype_registry_generation,
-          found->value_descriptor.descriptor_uuid.canonical, 1);
-      if (!datatype.ok ||
+          canonical_datatype_descriptor_uuid, 1);
+      if ((embedded_datatype_descriptor.present &&
+           !embedded_datatype_descriptor.well_formed) ||
+          !datatype.ok ||
           (datatype.row.canonical_binary_type_code !=
                static_cast<std::uint32_t>(datatypes::CanonicalTypeId::int32) &&
            datatype.row.canonical_binary_type_code !=

@@ -35,7 +35,7 @@ namespace datatypes = scratchbird::core::datatypes;
 namespace {
 
 constexpr std::string_view kCanonicalInt64TypeUuid =
-    "019d0000-0000-7000-8000-00000000d711";
+    "019d0000-0000-7000-8000-00000000d712";
 
 std::string Uuid(const std::uint64_t value) {
   char buffer[37];

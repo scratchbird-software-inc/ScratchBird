@@ -8,7 +8,7 @@
     "execution_plan_runtime": "rejected",
     "registered_sources": "validated"
   },
-  "result_hash": "63959c3bef515ac23f1e24df2649b5394f3f082a902386cdd514bdc01700674a",
+  "result_hash": "9b9d01201957e8b4a72d94c9331b77dc6e5e9f18ac82ecf63e06c9400d61e448",
   "ctest_independence": {
     "registered_dpc_sources": "validated",
     "runtime_fixture_root": "project_tests_database_lifecycle_fixtures",

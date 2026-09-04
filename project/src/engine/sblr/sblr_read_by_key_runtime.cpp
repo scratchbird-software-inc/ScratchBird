@@ -1,7 +1,6 @@
 #include "sblr_read_by_key_runtime.hpp"
 #include "core/hash/hash_digest.hpp"
 #include <algorithm>
-#pragma GCC diagnostic ignored "-Wnarrowing"
 namespace scratchbird::core::hash {
 inline HashDigestResult ComputeReadByKeyDigest(std::vector<std::uint8_t> material) {
   static constexpr std::string_view domain =

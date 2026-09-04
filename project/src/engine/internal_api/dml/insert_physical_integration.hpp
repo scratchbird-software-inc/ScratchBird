@@ -18,6 +18,7 @@
 #include "secondary_index_delta_overlay.hpp"
 #include "strict_bulk_load_lifecycle.hpp"
 
+#include <functional>
 #include <string>
 #include <span>
 #include <vector>
@@ -143,6 +144,13 @@ struct DirectPhysicalBulkAppendRequest {
   bool require_generated_row_uuid = true;
   bool strict_bulk_load_requested = false;
   bool direct_lane_enabled = true;
+  // Specialized MGA producers may durably bind the exact row/version/image
+  // identities after the normal allocators run but before any row bytes are
+  // appended. A diagnostic aborts the whole caller-owned statement savepoint.
+  std::function<EngineApiDiagnostic(
+      std::span<const std::string>, std::span<const std::string>,
+      std::span<const std::string>)>
+      before_row_publication;
 };
 
 struct DirectPhysicalBulkAppendResult : EngineApiResult {
@@ -150,6 +158,8 @@ struct DirectPhysicalBulkAppendResult : EngineApiResult {
   EngineApiU64 inserted_rows = 0;
   EngineApiU64 rejected_rows = 0;
   std::vector<EngineUuid> row_uuids;
+  std::vector<EngineUuid> row_version_uuids;
+  std::vector<EngineUuid> row_image_uuids;
   bool direct_lane_selected = false;
 };
 

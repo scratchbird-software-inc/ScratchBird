@@ -731,6 +731,62 @@ std::string DirectConstraintUuid(
          constraint_class;
 }
 
+void PopulateDirectUniqueViolationDiagnostic(
+    const CrudTableRecord& table,
+    const scratchbird::core::bulk_load::BulkConstraintProofRequest& request,
+    const scratchbird::core::bulk_load::BulkConstraintProofResult& result,
+    EngineApiDiagnostic* diagnostic) {
+  if (diagnostic == nullptr ||
+      (result.refusal_reason != "bulk_unique_proof_duplicate_in_batch" &&
+       result.refusal_reason != "bulk_unique_proof_persisted_conflict")) {
+    return;
+  }
+
+  std::string conflict_constraint_uuid;
+  for (const auto& evidence : result.evidence) {
+    if (evidence.evidence_kind == "bulk_unique_proof_conflict_constraint") {
+      conflict_constraint_uuid = evidence.evidence_id;
+      break;
+    }
+  }
+  if (conflict_constraint_uuid.empty()) {
+    return;
+  }
+
+  const auto proof = std::find_if(
+      request.unique_proofs.begin(), request.unique_proofs.end(),
+      [&](const auto& candidate) {
+        return candidate.constraint_uuid == conflict_constraint_uuid;
+      });
+  if (proof == request.unique_proofs.end()) {
+    return;
+  }
+
+  for (const auto& [column_name, descriptor] : table.columns) {
+    const auto fields = DirectDescriptorFields(descriptor);
+    const bool primary_key = DirectBoolField(fields, {"primary_key", "pk"});
+    const bool unique_key =
+        primary_key || DirectBoolField(fields, {"unique", "unique_key"});
+    if (!unique_key) {
+      continue;
+    }
+    const std::string constraint_class =
+        primary_key ? "primary_key" : "unique_key";
+    if (DirectConstraintUuid(fields, table, column_name, constraint_class) !=
+        conflict_constraint_uuid) {
+      continue;
+    }
+    diagnostic->code = primary_key ? "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION"
+                                   : "CLI.CONSTRAINT_UNIQUE_VIOLATION";
+    diagnostic->message_key = primary_key
+                                  ? "constraint.primary_key.violation"
+                                  : "constraint.unique.violation";
+    diagnostic->detail = diagnostic->message_key + ":duplicate_key:" +
+                         proof->index_uuid;
+    return;
+  }
+}
+
 struct DirectForeignKeyReference {
   std::string parent_table_uuid;
   std::string parent_column;
@@ -794,11 +850,86 @@ bool DirectDescriptorDeclaresForeignKey(
               .empty();
 }
 
+bool DirectTimingRequiresDeferredStore(
+    const std::map<std::string, std::string>& fields) {
+  const std::string timing = LowerAscii(DirectFieldOrEmpty(
+      fields, {"enforcement_timing", "timing"}));
+  return timing == "deferred" || timing == "transaction_end" ||
+         timing == "initially_deferred" ||
+         DirectBoolField(fields, {"deferrable", "initially_deferred"});
+}
+
+bool DirectDescriptorHasExclusion(
+    const std::map<std::string, std::string>& fields) {
+  return DirectBoolField(fields, {"exclusion", "exclusion_constraint"}) ||
+         !DirectFieldOrEmpty(
+              fields, {"exclusion_operator", "exclusion_family"})
+              .empty();
+}
+
+struct DirectTableConstraintShape {
+  bool exclusion = false;
+  bool deferred = false;
+  bool deferred_unique = false;
+  bool deferred_foreign_key = false;
+};
+
+DirectTableConstraintShape DirectInspectTableConstraintShape(
+    const CrudTableRecord& table) {
+  DirectTableConstraintShape shape;
+  for (const auto& [column_name, descriptor] : table.columns) {
+    (void)column_name;
+    const auto fields = DirectDescriptorFields(descriptor);
+    shape.exclusion = shape.exclusion || DirectDescriptorHasExclusion(fields);
+    if (!DirectTimingRequiresDeferredStore(fields)) {
+      continue;
+    }
+    shape.deferred = true;
+    shape.deferred_unique =
+        shape.deferred_unique ||
+        DirectBoolField(fields, {"primary_key", "pk", "unique", "unique_key"});
+    shape.deferred_foreign_key =
+        shape.deferred_foreign_key || DirectDescriptorDeclaresForeignKey(fields);
+  }
+  return shape;
+}
+
 bool DirectTableDeclaresForeignKey(const CrudTableRecord& table) {
   for (const auto& [column_name, descriptor] : table.columns) {
     (void)column_name;
     if (DirectDescriptorDeclaresForeignKey(DirectDescriptorFields(descriptor))) {
       return true;
+    }
+  }
+  return false;
+}
+
+bool DirectTableRequiresLiveRowVisibility(const CrudTableRecord& table) {
+  const auto shape = DirectInspectTableConstraintShape(table);
+  return DirectTableDeclaresForeignKey(table) || shape.exclusion ||
+         shape.deferred;
+}
+
+bool DirectStateHasVisibleInboundForeignKey(
+    const CrudState& state,
+    std::string_view target_table_uuid,
+    std::uint64_t local_transaction_id) {
+  for (const auto& candidate : state.tables) {
+    if (candidate.table_uuid.empty() ||
+        candidate.table_uuid == target_table_uuid ||
+        !CrudCreatorVisible(state,
+                            candidate.creator_tx,
+                            candidate.event_sequence,
+                            local_transaction_id)) {
+      continue;
+    }
+    for (const auto& [column_name, descriptor] : candidate.columns) {
+      (void)column_name;
+      const auto reference =
+          DirectParseForeignKeyReference(DirectDescriptorFields(descriptor));
+      if (reference && reference->parent_table_uuid == target_table_uuid) {
+        return true;
+      }
     }
   }
   return false;
@@ -1635,10 +1766,23 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
 
   for (const auto& [column_name, descriptor] : table.columns) {
     const auto fields = DirectDescriptorFields(descriptor);
+    const bool deferred_timing = DirectTimingRequiresDeferredStore(fields);
     const bool primary_key = DirectBoolField(fields, {"primary_key", "pk"});
     const bool unique_key =
         primary_key || DirectBoolField(fields, {"unique", "unique_key"});
-    if (unique_key) {
+    if (unique_key && deferred_timing) {
+      // The backing index remains part of physical publication, but duplicate
+      // enforcement belongs to the transaction-end constraint pass.  Mark it
+      // handled so the generic unique-index proof below cannot accidentally
+      // turn a deferred descriptor into an immediate constraint.
+      for (const auto& index : visible_indexes) {
+        if (DirectIndexIsUnique(index) &&
+            DirectIndexCoversColumn(index, column_name)) {
+          proofed_unique_indexes.insert(index.index_uuid);
+        }
+      }
+    }
+    if (unique_key && !deferred_timing) {
       std::optional<CrudIndexRecord> support_index;
       for (const auto& index : visible_indexes) {
         if (DirectIndexIsUnique(index) &&
@@ -1715,6 +1859,9 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     }
 
     if (!DirectDescriptorDeclaresForeignKey(fields)) {
+      continue;
+    }
+    if (deferred_timing) {
       continue;
     }
     const auto reference = DirectParseForeignKeyReference(fields);
@@ -1839,11 +1986,28 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
                                    : proven.refusal_reason;
     selection.diagnostic = CoreBulkDiagnosticToEngine(proven.diagnostic,
                                                       selection.failure_reason);
+    PopulateDirectUniqueViolationDiagnostic(table,
+                                            proof_request,
+                                            proven,
+                                            &selection.diagnostic);
     PopulateDirectForeignKeyViolationFields(table,
                                             proof_request,
                                             proven,
                                             &selection.diagnostic);
     return selection;
+  }
+  // The bulk proof replaces the per-row UNIQUE/FK probes, but it must retain
+  // the canonical constraint evidence contract exposed by the ordinary DML
+  // validator.  Publish that evidence from the exact proof inputs only after
+  // the complete batch proof has succeeded; this avoids repeating descriptor
+  // lookup or row validation while keeping the two execution lanes
+  // observationally equivalent.
+  for (const auto& proof : proof_request.unique_proofs) {
+    selection.evidence.push_back({"constraint_key_support", proof.index_uuid});
+  }
+  for (const auto& proof : proof_request.foreign_key_proofs) {
+    selection.evidence.push_back(
+        {"constraint_foreign_key", proof.child_column_name});
   }
   return selection;
 }
@@ -7604,6 +7768,7 @@ void AddRequiredPreallocationSummary(
 struct DirectBulkUuidBatch {
   std::vector<std::string> row_uuids;
   std::vector<std::string> version_uuids;
+  std::vector<std::string> row_image_uuids;
   std::size_t generated_row_uuids = 0;
   std::size_t caller_row_uuids = 0;
   std::size_t reservoir_served_uuids = 0;
@@ -7777,6 +7942,9 @@ DirectBulkUuidBatch BuildDirectBulkUuidBatch(
   DirectBulkUuidBatch batch;
   batch.row_uuids.reserve(row_count);
   batch.version_uuids.reserve(row_count);
+  if (request.before_row_publication) {
+    batch.row_image_uuids.reserve(row_count);
+  }
   batch.batch_evidence_id =
       "direct-bulk-uuid-batch:" + request.context.request_id + ":" +
       std::to_string(row_count);
@@ -7791,7 +7959,9 @@ DirectBulkUuidBatch BuildDirectBulkUuidBatch(
   }
   DirectUuidReservoir::AcquireStats acquire_stats;
   std::vector<std::string> generated_uuids =
-      DirectBulkUuidReservoir().Acquire(generated_row_count + row_count,
+      DirectBulkUuidReservoir().Acquire(
+          generated_row_count + row_count +
+              (request.before_row_publication ? row_count : 0),
                                         &acquire_stats);
   batch.reservoir_served_uuids = acquire_stats.served_from_reservoir;
   batch.reservoir_sync_generated_uuids = acquire_stats.synchronously_generated;
@@ -7810,6 +7980,10 @@ DirectBulkUuidBatch BuildDirectBulkUuidBatch(
           request.borrowed_input_rows[index].requested_row_uuid.canonical);
     }
     batch.version_uuids.push_back(std::move(generated_uuids[generated_index++]));
+    if (request.before_row_publication) {
+      batch.row_image_uuids.push_back(
+          std::move(generated_uuids[generated_index++]));
+    }
   }
   return batch;
 }
@@ -7827,6 +8001,9 @@ void AddDirectBulkUuidBatchEvidence(const DirectBulkUuidBatch& batch,
   result->evidence.push_back(
       {"direct_bulk_uuid_batch_version_capacity",
        std::to_string(batch.version_uuids.size())});
+  result->evidence.push_back(
+      {"direct_bulk_uuid_batch_row_image_capacity",
+       std::to_string(batch.row_image_uuids.size())});
   result->evidence.push_back(
       {"direct_bulk_generated_row_uuids",
        std::to_string(batch.generated_row_uuids)});
@@ -8851,8 +9028,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                      "target_table_not_visible"),
         "target_table_not_visible");
   }
+  const bool relation_state_requires_live_rows =
+      table->temporary || DirectTableRequiresLiveRowVisibility(*table) ||
+      DirectStateHasVisibleInboundForeignKey(
+          *state,
+          request.target_table.uuid.canonical,
+          request.context.local_transaction_id);
   if (index_entries_authoritative &&
-      (table->temporary || DirectTableDeclaresForeignKey(*table))) {
+      relation_state_requires_live_rows) {
     auto reloaded = LoadMgaRelationStoreStateForInsertTarget(
         request.context,
         request.target_table.uuid.canonical);
@@ -8941,7 +9124,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
     if (index_entries_authoritative &&
         !bypass_single_window_native_bulk_cache &&
-        !DirectTableDeclaresForeignKey(*table)) {
+        !relation_state_requires_live_rows) {
       DirectStoreBulkAppendContextCache(request.context,
                                         request.target_table.uuid.canonical,
                                         index_only_eligibility.row_version_count,
@@ -9050,6 +9233,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   result.evidence.push_back({"relation_state_scoped_loads",
                              loaded.scoped_state_load ? "1" : "0"});
   result.evidence.push_back({"relation_state_load_reason",
+                             "target_table_insert_scope"});
+  result.evidence.push_back({"direct_physical_relation_state_load_route",
                              bulk_context_cache_hit
                                  ? "direct_physical_bulk_append_context_reuse"
                                  : "direct_physical_bulk_insert_target_scoped"});
@@ -9059,6 +9244,27 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       BuildDirectBulkUuidBatch(request, direct_row_count);
   AddDirectBulkUuidBatchEvidence(uuid_batch, &result);
   mark_phase("uuid_batch");
+  if (request.before_row_publication) {
+    EngineApiDiagnostic publication;
+    try {
+      publication = request.before_row_publication(
+          uuid_batch.row_uuids, uuid_batch.version_uuids,
+          uuid_batch.row_image_uuids);
+    } catch (...) {
+      publication = MakeEngineApiDiagnostic(
+          "BULK.IMPORT.ABORTED",
+          "dml.direct_physical_bulk_append.row_publication_sink_exception",
+          "the durable row-version/image publication sink threw", true);
+    }
+    if (publication.error) {
+      return DirectBulkFailureWithEvidence(
+          request, std::move(publication),
+          "row_version_image_publication_refused", result.evidence,
+          result.dml_summary);
+    }
+    result.evidence.push_back(
+        {"direct_bulk_row_version_image_publication", "durable_pre_mutation"});
+  }
   if (batch_context.page_reservation.reservation_available) {
     ++result.dml_summary.page_reservations;
   }
@@ -9117,14 +9323,21 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       batch_context.row_encoder_plan.not_null_validator_count != 0;
   const bool has_check_validators =
       batch_context.row_encoder_plan.check_validator_count != 0;
+  const DirectTableConstraintShape direct_constraint_shape =
+      DirectInspectTableConstraintShape(*table);
+  const bool has_complex_row_validators =
+      direct_constraint_shape.exclusion || direct_constraint_shape.deferred;
   const bool has_immediate_row_validators =
-      has_not_null_validators || has_check_validators;
+      has_not_null_validators || has_check_validators ||
+      has_complex_row_validators;
   const bool can_use_direct_not_null_validation =
-      has_not_null_validators && !has_check_validators;
+      has_not_null_validators && !has_check_validators &&
+      !has_complex_row_validators;
   const bool can_use_ordered_row_fast_path =
       !has_default_validators &&
       !has_domain_validators &&
-      !has_check_validators;
+      !has_check_validators &&
+      !has_complex_row_validators;
   const bool rowset_shared_shape =
       DirectOptionTruthy(request, "sblr.canonical_rowset_shared_shape");
   const bool generated_counter_direct_input =
@@ -9265,7 +9478,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       !sorted_bulk_index_requested &&
       !DirectOrderedIngestRequested(request) &&
       !DirectPhysicalClusteringRequested(request) &&
-      !DirectTableDeclaresForeignKey(*table) &&
+      !DirectTableRequiresLiveRowVisibility(*table) &&
       DirectSharedFieldOrderMatchesEncoderOrder(request.shared_row_field_order,
                                                 batch_context.row_encoder_plan) &&
       ((synchronous_indexes.empty() && !direct_retail_exact_append_candidate) ||
@@ -9813,8 +10026,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	      add_row_stage_elapsed(row_stage_convert_us, convert_start);
 
 	      ConstraintDmlValidationOptions direct_constraint_options;
-	      direct_constraint_options.validate_unique_constraints = false;
-	      direct_constraint_options.validate_foreign_key_constraints = false;
+	      direct_constraint_options.validate_unique_constraints =
+	          direct_constraint_shape.deferred_unique;
+	      direct_constraint_options.validate_foreign_key_constraints =
+	          direct_constraint_shape.deferred_foreign_key;
 	      bool values_mutated_by_validation = false;
 	      const bool default_requested =
 	          std::any_of(values.begin(), values.end(), [](const auto& field) {
@@ -10366,8 +10581,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     add_row_stage_elapsed(row_stage_prepare_us, prepare_start);
 
     ConstraintDmlValidationOptions direct_constraint_options;
-    direct_constraint_options.validate_unique_constraints = false;
-    direct_constraint_options.validate_foreign_key_constraints = false;
+    direct_constraint_options.validate_unique_constraints =
+        direct_constraint_shape.deferred_unique;
+    direct_constraint_options.validate_foreign_key_constraints =
+        direct_constraint_shape.deferred_foreign_key;
     bool values_mutated_by_validation = false;
 
     const bool default_requested =
@@ -11801,7 +12018,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   mark_phase("strict_bulk_publish");
   if (index_entries_authoritative &&
       !bypass_single_window_native_bulk_cache &&
-      !DirectTableDeclaresForeignKey(*table)) {
+      !DirectTableRequiresLiveRowVisibility(*table)) {
     const auto next_row_version_count =
         index_only_eligibility.row_version_count +
         static_cast<std::uint64_t>(staged_rows.size());
@@ -11864,6 +12081,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       returning_row.values = logical_value_batch[index];
       returning_rows.push_back(std::move(returning_row));
       result.row_uuids.push_back({row.row_uuid});
+      result.row_version_uuids.push_back({row.version_uuid});
+      if (index < uuid_batch.row_image_uuids.size()) {
+        result.row_image_uuids.push_back(
+            {uuid_batch.row_image_uuids[index]});
+      }
     }
     ++result.inserted_rows;
     ++batch_context.actual_row_count;

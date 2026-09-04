@@ -1,5 +1,7 @@
 #include "sblr_dml_conditional_mutate_runtime.hpp"
+#include "core/hash/hash_digest.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace scratchbird::engine::sblr {
@@ -37,6 +39,17 @@ bool NonZero(const std::uint8_t* bytes, std::size_t size) {
   return false;
 }
 
+std::array<std::uint8_t, 32> Evidence(const char* domain,
+                                      const std::uint8_t* bytes,
+                                      std::size_t size) {
+  std::vector<std::uint8_t> material(domain, domain + std::strlen(domain));
+  material.insert(material.end(), bytes, bytes + size);
+  std::array<std::uint8_t, 32> evidence{};
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material);
+  if (digest.ok()) std::copy(digest.digest.begin(), digest.digest.end(), evidence.begin());
+  return evidence;
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> EncodeSblrDmlConditionalMutateRequestV1(
@@ -69,8 +82,10 @@ std::vector<std::uint8_t> EncodeSblrDmlConditionalMutateDescriptorV1(
   std::vector<std::uint8_t> bytes(488, 0);
   std::memcpy(bytes.data(), operand ? "CMO" : "CMDT", 4);
   bytes[4] = 1;
-  std::memcpy(bytes.data() + 16, value.body.data(), value.body.size());
-  std::memcpy(bytes.data() + 416, value.evidence.data(), value.evidence.size());
+  std::memcpy(bytes.data() + 16, value.body.data(), 400);
+  const auto evidence = Evidence("ScratchBird.SblrDmlConditionalMutateDescriptor.V1", bytes.data() + 16, 400);
+  if (NonZero(value.evidence.data(), value.evidence.size()) && value.evidence != evidence) return {};
+  std::memcpy(bytes.data() + 416, evidence.data(), evidence.size());
   PutU64(bytes, 448, value.availability);
   return bytes;
 }
@@ -88,7 +103,7 @@ bool DecodeSblrDmlConditionalMutateDescriptorV1(
   std::memcpy(value->body.data(), bytes + 16, value->body.size());
   std::memcpy(value->evidence.data(), bytes + 416, value->evidence.size());
   value->availability = GetU64(bytes, 448);
-  return true;
+  return Evidence("ScratchBird.SblrDmlConditionalMutateDescriptor.V1", bytes + 16, 400) == value->evidence;
 }
 
 std::vector<std::uint8_t> EncodeSblrDmlConditionalMutateResultV1(
@@ -97,7 +112,9 @@ std::vector<std::uint8_t> EncodeSblrDmlConditionalMutateResultV1(
   std::memcpy(bytes.data(), "CMR", 4);
   bytes[4] = 1;
   std::memcpy(bytes.data() + 16, value.body.data(), value.body.size());
-  std::memcpy(bytes.data() + 256, value.evidence.data(), value.evidence.size());
+  const auto evidence = Evidence("ScratchBird.SblrDmlConditionalMutateResult.V1", bytes.data() + 16, 240);
+  if (NonZero(value.evidence.data(), value.evidence.size()) && value.evidence != evidence) return {};
+  std::memcpy(bytes.data() + 256, evidence.data(), evidence.size());
   PutU64(bytes, 288, value.availability);
   std::memcpy(bytes.data() + 296, value.publication_barrier.data(),
               value.publication_barrier.size());
@@ -118,7 +135,7 @@ bool DecodeSblrDmlConditionalMutateResultV1(
   value->availability = GetU64(bytes, 288);
   std::memcpy(value->publication_barrier.data(), bytes + 296,
               value->publication_barrier.size());
-  return true;
+  return Evidence("ScratchBird.SblrDmlConditionalMutateResult.V1", bytes + 16, 240) == value->evidence;
 }
 
 }  // namespace scratchbird::engine::sblr

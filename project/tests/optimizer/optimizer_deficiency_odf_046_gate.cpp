@@ -428,7 +428,7 @@ void DuplicateBatchUniqueRefusesBeforeAppend() {
   Require(!imported.ok, "ODF-046 duplicate batch was accepted");
   Require(!imported.diagnostics.empty(), "ODF-046 duplicate lacked diagnostic");
   Require(imported.diagnostics.front().code ==
-              "SB-BULK-CONSTRAINT-UNIQUE-DUPLICATE-BATCH",
+              "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
           "ODF-046 duplicate diagnostic code drifted");
   Require(HasEvidence(imported.evidence,
                       "bulk_constraint_proof_conflict_reason",
@@ -459,8 +459,14 @@ void PersistedUniqueConflictRefusesBeforeAppend() {
   Require(!duplicate.ok, "ODF-046 persisted unique conflict was accepted");
   Require(!duplicate.diagnostics.empty(),
           "ODF-046 persisted conflict lacked diagnostic");
+  if (duplicate.diagnostics.front().code !=
+      "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION") {
+    std::cerr << duplicate.diagnostics.front().code << ':'
+              << duplicate.diagnostics.front().message_key << ':'
+              << duplicate.diagnostics.front().detail << '\n';
+  }
   Require(duplicate.diagnostics.front().code ==
-              "SB-BULK-CONSTRAINT-UNIQUE-PERSISTED-CONFLICT",
+              "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
           "ODF-046 persisted conflict diagnostic code drifted");
   Require(HasEvidence(duplicate.evidence,
                       "bulk_constraint_proof_conflict_reason",

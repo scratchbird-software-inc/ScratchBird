@@ -2,8 +2,8 @@
   "schema_id": "scratchbird.sblr_surface.primary_sblr_family_snapshot.v1",
   "fixture_root": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03",
   "source_authority": "promoted project-test snapshot from SBLR operation matrix; public release proof must not depend on public_release_evidence",
-  "declared_envelope_family_count": 54,
-  "envelope_to_opcode_family_binding_count": 54,
+  "declared_envelope_family_count": 61,
+  "envelope_to_opcode_family_binding_count": 61,
   "declared_envelope_families": [
     "sblr.query.relational.v3",
     "sblr.query.document.v3",
@@ -16,7 +16,9 @@
     "sblr.dml.update.v3",
     "sblr.dml.delete.v3",
     "sblr.dml.merge.v3",
+    "sblr.dml.truncate.v1",
     "sblr.catalog.mutation.v3",
+    "sblr.catalog.create_table_as.v1",
     "sblr.security.mutation.v3",
     "sblr.transaction.control.v3",
     "sblr.routine.define.v3",
@@ -58,7 +60,12 @@
     "sblr.graph.execution.v3",
     "sblr.vector.execution.v3",
     "sblr.fulltext.execution.v3",
-    "sblr.diagnostic.control.v3"
+    "sblr.diagnostic.control.v3",
+    "sblr.donor.cluster.v1",
+    "sblr.kv.structured.read.v3",
+    "sblr.kv.structured.mutate.v3",
+    "sblr.versioned.history.read.v3",
+    "sblr.versioned.history.mutate.v3"
   ],
   "envelope_to_opcode_family_bindings": [
     "sblr.query.relational.v3",
@@ -72,7 +79,9 @@
     "sblr.dml.update.v3",
     "sblr.dml.delete.v3",
     "sblr.dml.merge.v3",
+    "sblr.dml.truncate.v1",
     "sblr.catalog.mutation.v3",
+    "sblr.catalog.create_table_as.v1",
     "sblr.security.mutation.v3",
     "sblr.transaction.control.v3",
     "sblr.routine.define.v3",
@@ -114,6 +123,11 @@
     "sblr.graph.execution.v3",
     "sblr.vector.execution.v3",
     "sblr.fulltext.execution.v3",
-    "sblr.diagnostic.control.v3"
+    "sblr.diagnostic.control.v3",
+    "sblr.donor.cluster.v1",
+    "sblr.kv.structured.read.v3",
+    "sblr.kv.structured.mutate.v3",
+    "sblr.versioned.history.read.v3",
+    "sblr.versioned.history.mutate.v3"
   ]
 }

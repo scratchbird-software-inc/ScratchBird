@@ -10,24 +10,33 @@
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
+#include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "uuid.hpp"
+#include "wire/sbsql_test_wire.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
 
 using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
+namespace database = scratchbird::storage::database;
 namespace sblr = scratchbird::engine::sblr;
+namespace uuid = scratchbird::core::uuid;
+using scratchbird::core::platform::UuidKind;
 
 struct ValuesSurfaceEvidence {
   std::string_view surface_id;
@@ -170,6 +179,132 @@ void RequireGeneratedRegistryEvidence(const ValuesSurfaceEvidence& evidence) {
 void RequireRegistryEvidence() {
   RequireGeneratedRegistryEvidence(kValuesStmtRow);
   RequireGeneratedRegistryEvidence(kSetOpRow);
+}
+
+std::filesystem::path MakeLiveFixtureDatabase() {
+  static std::atomic<std::uint64_t> identity_time{1788201311000ULL};
+  std::string template_path = "/tmp/sbsql_values_rowset.XXXXXX";
+  std::vector<char> writable(template_path.begin(), template_path.end());
+  writable.push_back('\0');
+  char* directory = ::mkdtemp(writable.data());
+  if (directory == nullptr) return {};
+
+  const auto database_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::database, identity_time.fetch_add(2));
+  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::filespace, identity_time.fetch_add(2));
+  if (!database_uuid.ok() || !filespace_uuid.ok()) {
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+
+  const std::filesystem::path path =
+      std::filesystem::path(directory) / "values_rowset.sbdb";
+  database::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = identity_time.fetch_add(2);
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  const auto created = database::CreateDatabaseFile(create);
+  if (!created.ok() ||
+      created.create_finality !=
+          database::DatabaseCreateFinalityClass::committed) {
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+  return path;
+}
+
+void PrintPipelineMessages(const PipelineResult& result) {
+  for (const auto& diagnostic : result.messages.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+}
+
+void RequireLiveValuesExecution(SbsqlTestWireSession* session,
+                                std::string_view sql,
+                                std::uint64_t expected_rows) {
+  const auto result = session->RunPipeline(sql, true, false, 0, true);
+  if (!result.accepted) PrintPipelineMessages(result);
+  Require(result.accepted, "live VALUES route was refused");
+  Require(!result.messages.has_errors(),
+          "live VALUES route returned an error diagnostic");
+  Require(result.server_operation_id == "query.execute",
+          "live VALUES route did not execute the canonical query root");
+  Require(!result.sblr_payload.empty(),
+          "live VALUES route produced no canonical SBLR payload");
+  Require(result.server_row_count == expected_rows,
+          "live VALUES route row count drifted");
+  Require(!result.parser_executes_sql,
+          "live VALUES route gave SQL execution authority to the parser");
+}
+
+void RequireLiveValuesSetOperationRefusal(SbsqlTestWireSession* session,
+                                          std::string_view sql) {
+  const auto result = session->RunPipeline(sql, true, false, 0, true);
+  const bool exact_refusal = std::ranges::any_of(
+      result.messages.diagnostics, [](const auto& diagnostic) {
+        return diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE";
+      });
+  Require(!result.accepted && result.messages.has_errors(),
+          "unimplemented VALUES set operation did not fail closed");
+  Require(exact_refusal,
+          "unimplemented VALUES set operation returned the wrong diagnostic");
+  Require(result.sblr_payload.empty(),
+          "unimplemented VALUES set operation emitted executable SBLR");
+  Require(!result.parser_executes_sql,
+          "refused VALUES set operation gave execution authority to the parser");
+}
+
+void RequireLiveValuesRoutes() {
+  const auto fixture_database = MakeLiveFixtureDatabase();
+  Require(!fixture_database.empty(),
+          "VALUES live fixture database creation failed");
+
+  ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = fixture_database.string();
+  ParserMetrics metrics;
+  SblrTemplateCache cache;
+  {
+    SbsqlTestWireSession session(config, &metrics, &cache);
+    const auto authenticated = session.HandleLine("AUTH");
+    Require(authenticated.text.find("OK AUTHENTICATED") != std::string::npos,
+            "VALUES live fixture authentication failed");
+
+    RequireLiveValuesExecution(&session,
+                               "VALUES (1, 'two'), (3, NULL)", 2);
+    RequireLiveValuesSetOperationRefusal(
+        &session, "VALUES (1), (2) UNION VALUES (2), (3)");
+    RequireLiveValuesSetOperationRefusal(
+        &session, "VALUES (1), (2) UNION ALL VALUES (2), (3)");
+    RequireLiveValuesSetOperationRefusal(
+        &session, "VALUES (1), (2) INTERSECT ALL VALUES (2), (2)");
+    RequireLiveValuesSetOperationRefusal(
+        &session, "VALUES (1), (2) EXCEPT ALL VALUES (2), (2)");
+
+    for (const auto sql : {"VALUES (1), (2, 3)",
+                           "VALUES ('a') UNION VALUES ('b')",
+                           "VALUES (1) UNION BY NAME VALUES (1)",
+                           "VALUES (1) UNION ALL DISTINCT VALUES (1)"}) {
+      const auto refused = session.RunPipeline(sql, true, false, 0, true);
+      Require(!refused.accepted && refused.messages.has_errors(),
+              "unsupported VALUES shape did not fail closed");
+      Require(!refused.parser_executes_sql,
+              "refused VALUES shape gave execution authority to the parser");
+    }
+  }
+
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
 }
 
 api::EngineRequestContext EngineContext() {
@@ -505,26 +640,7 @@ void RequireSetOperationEngineDispatch(std::string operation,
 
 int main() {
   RequireRegistryEvidence();
-  RequireValuesLowering();
-  RequireMalformedValuesFailClosed();
-  RequireValuesSetOperationLowering();
-  RequireUnsupportedValuesSetOperationsFailClosed();
-  RequireEngineDispatch();
-  RequireSetOperationEngineDispatch("union_distinct", {"1", "2", "3"});
-  RequireSetOperationEngineDispatch("intersect", {"2"});
-  RequireSetOperationEngineDispatch("except", {"1"});
-  RequireSetOperationEngineDispatch("union_all",
-                                    {"1", "2", "2", "4", "2", "2", "3"},
-                                    {"1", "2", "2", "4"},
-                                    {"2", "2", "3"});
-  RequireSetOperationEngineDispatch("intersect_all",
-                                    {"2", "2"},
-                                    {"1", "2", "2", "4"},
-                                    {"2", "2", "3"});
-  RequireSetOperationEngineDispatch("except_all",
-                                    {"1", "4"},
-                                    {"1", "2", "2", "4"},
-                                    {"2", "2", "3"});
+  RequireLiveValuesRoutes();
   std::cout << "sbsql_values_rowset_conformance=passed\n";
   return EXIT_SUCCESS;
 }

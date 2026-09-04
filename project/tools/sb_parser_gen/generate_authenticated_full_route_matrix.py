@@ -113,6 +113,16 @@ ALLOWED_AUTHORED_FIXTURE_STATUSES = {
 }
 ENGINE_LIFECYCLE_CREATE_SURFACE_ID = "SBSQL-EB95D772BD63"
 BRIDGE_CLUSTER_ROUTE_SURFACE_ID = "SBSQL-D50EC7C4422E"
+CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
+    "SBSQL-A57CFDE0BBA9",
+    "SBSQL-28F16A4C7DD0",
+    "SBSQL-B1816929AD45",
+    "SBSQL-5CC9FDFFE6F7",
+}
+CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
+    "SBSQL-DE4B8AAF6326",
+    "SBSQL-7BA0B928798B",
+}
 
 
 def fail(message: str) -> None:
@@ -163,6 +173,48 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
     cluster_scope = surface["cluster_scope"]
 
     fixture_path = f"project/tests/sbsql_parser_worker/generated/full_surface/authenticated_route/{surface_id}.route.yaml"
+
+    if surface_id in CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS:
+        return {
+            "fixture_path": fixture_path,
+            "credential_profile_accepted": "not_applicable_exact_refusal_before_executable_sblr",
+            "credential_profile_refused": "authenticated_sbsql_session_constraint_child_refusal_is_implementation_evidence_driven",
+            "auth_policy": AUTH_POLICY,
+            "session_profile": SESSION_PROFILE,
+            "transaction_profile": "not_applicable_no_engine_transaction_or_catalog_mutation_reached",
+            "transport_route": "sbsql_input_to_parser_worker_refusal_before_sbps_submission",
+            "tls_profile_ref": TLS_PROFILE_REF,
+            "listener_path": "not_reached_exact_pre_sblr_refusal",
+            "ipc_admission_path": "not_reached_no_executable_sblr_emitted",
+            "engine_admission_authority": "not_reached_engine_bound_create_table_descriptor_unavailable",
+            "mga_execution_authority": "not_reached_no_catalog_mutation_no_wal_authority",
+            "expected_authorization_accepted_outcome": "not_applicable_until_authenticated_engine_binder_publishes_exact_CTDX_CTDO_constraint_vector",
+            "expected_authorization_refused_outcome": "refused_with_SBSQL_IMPL_NOT_AVAILABLE_before_executable_sblr_or_server_dispatch",
+            "expected_diagnostic_codes": "SBSQL.IMPL.NOT_AVAILABLE",
+            "fixture_status": "pending_authoring",
+            "notes": "CREATE TABLE constraint child surface: grammar and bound syntax are recognized, but the child never owns an executor. Until the authenticated engine binder freezes the complete table, column, and constraint vector into CTDX/CTDO, lowering returns SBSQL.IMPL.NOT_AVAILABLE with parent engine.op.ddl_create_table/SBLR_DDL_CREATE_TABLE and emits no executable SBLR. No listener, SBPS, server dispatch, EngineCreateConstraint SQL-route, catalog mutation, or MGA finality is claimed.",
+        }
+
+    if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS:
+        return {
+            "fixture_path": fixture_path,
+            "credential_profile_accepted": "not_applicable_exact_refusal_before_executable_sblr",
+            "credential_profile_refused": "authenticated_sbsql_session_create_schema_refusal_is_implementation_evidence_driven",
+            "auth_policy": AUTH_POLICY,
+            "session_profile": SESSION_PROFILE,
+            "transaction_profile": "not_applicable_no_engine_transaction_or_catalog_mutation_reached",
+            "transport_route": "sbsql_input_to_parser_worker_refusal_before_sbps_submission",
+            "tls_profile_ref": TLS_PROFILE_REF,
+            "listener_path": "not_reached_exact_pre_sblr_refusal",
+            "ipc_admission_path": "not_reached_no_executable_sblr_emitted",
+            "engine_admission_authority": "not_reached_engine_bound_create_schema_descriptor_unavailable",
+            "mga_execution_authority": "not_reached_no_catalog_mutation_no_wal_authority",
+            "expected_authorization_accepted_outcome": "not_applicable_until_authenticated_engine_binder_publishes_exact_CSDX_CSDO_carrier",
+            "expected_authorization_refused_outcome": "refused_with_SBSQL_IMPL_NOT_AVAILABLE_before_executable_sblr_or_server_dispatch",
+            "expected_diagnostic_codes": "SBSQL.IMPL.NOT_AVAILABLE",
+            "fixture_status": "pending_authoring",
+            "notes": "CREATE SCHEMA syntax is recognized, but the command refuses before executable SBLR until the authenticated engine binder publishes the exact CSDX/CSDO carrier. Lowering returns SBSQL.IMPL.NOT_AVAILABLE with parent engine.op.ddl_create_schema/SBLR_DDL_CREATE_SCHEMA. No listener, SBPS, server dispatch, EngineCreateSchema SQL route, catalog mutation, or MGA finality is claimed.",
+        }
 
     if surface_id == BRIDGE_CLUSTER_ROUTE_SURFACE_ID:
         return {
@@ -316,9 +368,9 @@ def main() -> int:
         source_status = surface.get("source_status") or surface["status"]
         status_counts[source_status] = status_counts.get(source_status, 0) + 1
         outcome = (
-            "accepted_route_required"
-            if source_status == "native_now" and surface["cluster_scope"] != "cluster_private"
-            else "fail_closed_only"
+            "fail_closed_only"
+            if classification["credential_profile_accepted"].startswith("not_applicable_")
+            else "accepted_route_required"
         )
         accepted_counts[outcome] = accepted_counts.get(outcome, 0) + 1
 

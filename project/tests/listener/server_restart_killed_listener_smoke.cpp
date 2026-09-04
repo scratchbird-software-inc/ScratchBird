@@ -169,7 +169,7 @@ bool WriteConfig(const std::filesystem::path& config_path,
   out << "control_dir=" << control_dir.string() << "\n\n";
   out << "[server.database]\n";
   out << "default_path=" << (work / "t.sbdb").string() << "\n";
-  out << "auto_create=true\n";
+  out << "auto_create=false\n";
   out << "open_mode=normal\n\n";
   out << "[server.parser]\n";
   out << "sbps_enabled=true\n";
@@ -197,14 +197,6 @@ bool WriteConfig(const std::filesystem::path& config_path,
   return static_cast<bool>(out);
 }
 
-bool WriteAuthStore(const std::filesystem::path& database_path) {
-  std::ofstream out(database_path.string() + ".sb.local_password_auth", std::ios::trunc);
-  if (!out) return false;
-  out << "alice\tlocal_password\t" << kAliceVerifier << '\n';
-  out << "sysdba\tlocal_password\t" << kAliceVerifier << '\n';
-  return static_cast<bool>(out);
-}
-
 bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_path) {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "server_restart_killed_listener_smoke");
@@ -225,6 +217,13 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
   create.creation_unix_epoch_millis = 1780700000000;
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
+  create.bootstrap_principal_name = "fixture_sysarch";
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=0358b60b6875c81e17d3e0ab67f8b785f49d4146547c79da401f21dc641c2c16";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -233,6 +232,11 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
     return false;
   }
   const auto database_uuid_text = uuid::UuidToString(create.database_uuid.value);
+  const auto bootstrap =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          database_path, "server_restart_killed_listener_smoke");
+  const auto tx_uuid = bootstrap.transaction_uuid.canonical;
+  const auto tx_id = bootstrap.local_transaction_id;
 
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
@@ -240,8 +244,8 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
       kAlicePrincipalUuid,
       "alice",
       kAliceVerifier,
-      17,
-      "server_restart_killed_listener_smoke:alice");
+      tx_id,
+      "server_restart_killed_listener_smoke:alice", tx_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       database_path,
       database_uuid_text,
@@ -249,16 +253,19 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
       database_uuid_text,
       "database",
       "CONNECT",
-      19,
-      "server_restart_killed_listener_smoke:alice-connect");
+      tx_id,
+      "server_restart_killed_listener_smoke:alice-connect", tx_uuid);
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
       database_uuid_text,
       kSysdbaPrincipalUuid,
       "sysdba",
       kAliceVerifier,
-      18,
-      "server_restart_killed_listener_smoke:sysdba");
+      tx_id,
+      "server_restart_killed_listener_smoke:sysdba", tx_uuid,
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=0358b60b6875c81e17d3e0ab67f8b785f49d4146547c79da401f21dc641c2c16");
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       database_path,
       database_uuid_text,
@@ -266,8 +273,8 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
       database_uuid_text,
       "database",
       "CONNECT",
-      20,
-      "server_restart_killed_listener_smoke:sysdba-connect");
+      tx_id,
+      "server_restart_killed_listener_smoke:sysdba-connect", tx_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       database_path,
       database_uuid_text,
@@ -275,8 +282,10 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
       "",
       "server_management",
       "OBS_MANAGEMENT_CONTROL",
-      21,
-      "server_restart_killed_listener_smoke:sysdba-management");
+      tx_id,
+      "server_restart_killed_listener_smoke:sysdba-management", tx_uuid);
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
+      bootstrap);
   return true;
 }
 
@@ -402,7 +411,6 @@ int main(int argc, char** argv) {
   Require(WriteConfig(config_path, work, listener, parser, port), "could not write server config");
   Require(CreateDatabaseWithDurablePrincipals(database_path),
           "could not create durable-auth restart smoke database");
-  Require(WriteAuthStore(database_path), "could not write temporary auth verifier store");
   const auto sbps_endpoint = work / "c" / "sb_server.sbps.sock";
   const auto listener_control_dir = work / "lc";
   const auto stdout_path = work / "server.out";

@@ -164,6 +164,13 @@ void OverwriteFile(const std::filesystem::path& path,
   Require(static_cast<bool>(out), "could not overwrite temporary artifact");
 }
 
+std::vector<platform::byte> ReadFile(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  Require(static_cast<bool>(in), "could not read temporary artifact");
+  return {std::istreambuf_iterator<char>(in),
+          std::istreambuf_iterator<char>()};
+}
+
 void RequireSpilledCurrent(const idx::TemporaryWorkResult& result,
                            idx::TemporaryWorkFamily family) {
   Require(result.ok(), "temporary work build/open refused");
@@ -387,6 +394,9 @@ void VerifyStaleCorruptAndCancel(const std::filesystem::path& root) {
           "stale runtime generation did not fail closed");
 
   auto corrupt_descriptor = built.descriptor;
+  // Spilled descriptors intentionally retain only the durable path so the
+  // executor does not keep a second, potentially large, in-memory copy.
+  corrupt_descriptor.artifact = ReadFile(corrupt_descriptor.path);
   Require(corrupt_descriptor.artifact.size() > 90,
           "artifact too small for corruption check");
   corrupt_descriptor.artifact[90] ^= 0x5a;

@@ -12,7 +12,6 @@
 #include "metric_registry.hpp"
 #include "parser_package_registry.hpp"
 #include "sblr_admission.hpp"
-#include "sbu_firebird_parser_support.hpp"
 #include "sbu_sbsql_parser_support.hpp"
 #include "sb_udr_runtime.hpp"
 #include "transaction/transaction_api.hpp"
@@ -36,10 +35,10 @@ namespace uuid = scratchbird::core::uuid;
 namespace metrics = scratchbird::core::metrics;
 namespace server = scratchbird::server;
 namespace udr_runtime = scratchbird::udr::runtime;
-namespace firebird_udr = scratchbird::udr::firebird_parser_support;
 namespace sbsql_udr = scratchbird::udr::sbsql_parser_support;
 
 constexpr std::string_view kDatabaseUuid = "019e13b0-0000-7000-8000-000000000001";
+constexpr std::string_view kUdrProbeStatement = "ENGINE QUERY BIND EXPRESSION";
 constexpr std::uint64_t kDefaultLifecycleTransactionMarker = 10;
 
 std::string g_lifecycle_database_uuid = std::string(kDatabaseUuid);
@@ -198,6 +197,31 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
   context.security_epoch = 3;
   context.resource_epoch = 3;
   context.name_resolution_epoch = 3;
+
+  auto& authorization = context.authorization_context;
+  authorization.present = true;
+  authorization.authority_uuid.canonical =
+      "019e13b0-0000-7000-8000-000000000210";
+  authorization.security_context_generation = 1;
+  authorization.principal_uuid = context.principal_uuid;
+  authorization.security_epoch = context.security_epoch;
+  authorization.policy_epoch = 3;
+  authorization.catalog_generation_id = context.catalog_generation_id;
+  authorization.effective_subjects.push_back(
+      api::EngineAuthorizationSubject{context.principal_uuid, "principal"});
+  const std::vector<std::string> udr_rights = {
+      "UDR_MANAGE", "UDR_INSPECT", "UDR_INVOKE"};
+  for (std::size_t index = 0; index < udr_rights.size(); ++index) {
+    api::EngineMaterializedAuthorizationGrant grant;
+    grant.grant_uuid.canonical =
+        "019e13b0-0000-7000-8000-00000000021" +
+        std::to_string(index + 1);
+    grant.subject_uuid = context.principal_uuid;
+    grant.subject_kind = "principal";
+    grant.right = udr_rights[index];
+    grant.security_epoch = context.security_epoch;
+    authorization.grants.push_back(std::move(grant));
+  }
   return context;
 }
 
@@ -297,7 +321,7 @@ void AddInvokeUdrOptions(api::EngineApiRequest* request) {
   request->option_envelopes.push_back("sblr_authorized_invocation:true");
   request->option_envelopes.push_back("operation_family:sblr.udr.operation.v3");
   request->option_envelopes.push_back("entrypoint:sbu_sbsql_parse_to_sblr");
-  request->option_envelopes.push_back("payload:select 1");
+  request->option_envelopes.push_back("payload:" + std::string(kUdrProbeStatement));
   request->option_envelopes.push_back("context_packet:engine_context=trusted;resolver=public;authenticated=true");
   request->option_envelopes.push_back("memory_budget_bytes:4096");
   request->option_envelopes.push_back("cpu_budget_microseconds:1000");
@@ -326,7 +350,6 @@ void SeedActiveTransaction(const std::filesystem::path& database_path, std::uint
 
 void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   const auto sbsql_descriptor = sbsql_udr::sbu_sbsql_package_descriptor();
-  const auto firebird_descriptor = firebird_udr::sbu_firebird_package_descriptor();
   SeedActiveTransaction(database_path, 10);
 
   auto register_request = UdrRequest<api::EngineRegisterUdrPackageRequest>(database_path);
@@ -336,6 +359,12 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
                 "source_revision:",
                 "source_revision:tampered-source-revision");
   const auto bad_provenance_result = api::EngineRegisterUdrPackage(bad_provenance);
+  if (bad_provenance_result.ok ||
+      !HasDiagnostic(bad_provenance_result, "SB_ENGINE_API_UDR_DESCRIPTOR_MISMATCH")) {
+    for (const auto& diagnostic : bad_provenance_result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+  }
   Require(!bad_provenance_result.ok &&
               HasDiagnostic(bad_provenance_result, "SB_ENGINE_API_UDR_DESCRIPTOR_MISMATCH"),
           "UDR registration admitted mismatched runtime descriptor provenance");
@@ -358,6 +387,13 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   const auto duplicate = api::EngineRegisterUdrPackage(register_request);
   Require(!duplicate.ok && HasDiagnostic(duplicate, "SB_ENGINE_API_UDR_ALREADY_REGISTERED"),
           "duplicate UDR registration was not refused");
+
+  auto not_loaded = UdrRequest<api::EngineInvokeUdrPackageRequest>(database_path);
+  AddInvokeUdrOptions(&not_loaded);
+  const auto not_loaded_result = api::EngineInvokeUdrPackage(not_loaded);
+  Require(!not_loaded_result.ok &&
+              HasDiagnostic(not_loaded_result, "SB_ENGINE_API_UDR_NOT_LOADED"),
+          "unloaded registered UDR invocation was admitted");
 
   auto untrusted = UdrRequest<api::EngineRegisterUdrPackageRequest>(
       database_path, "019e13b0-0000-7000-8000-000000000103");
@@ -463,14 +499,14 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   auto invoke_request = UdrRequest<api::EngineInvokeUdrPackageRequest>(database_path);
   AddInvokeUdrOptions(&invoke_request);
   const auto invoked = api::EngineInvokeUdrPackage(invoke_request);
-  Require(invoked.ok, "loaded UDR invocation through SBLR authority was refused");
+  RequireOk(invoked, "loaded UDR invocation through SBLR authority was refused");
   Require(HasEvidence(invoked, "sblr_authority", "SBLR_UDR_INVOKE"),
           "UDR invocation did not record SBLR authority evidence");
   Require(HasEvidence(invoked, "udr_dispatch", "entrypoint_callback_invoked"),
           "UDR invocation did not dispatch through the trusted runtime callback");
   Require(RowFieldContains(invoked, "result_payload", "SBLRExecutionEnvelope.v3"),
           "UDR invocation did not return parser-generated SBLR");
-  Require(!RowFieldContains(invoked, "result_payload", "select 1") &&
+  Require(!RowFieldContains(invoked, "result_payload", kUdrProbeStatement) &&
               !RowFieldContains(invoked, "result_payload", "sql_text"),
           "UDR invocation leaked raw SQL text through the engine result payload");
 
@@ -487,19 +523,6 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   Require(!shutdown_invoke_result.ok &&
               HasDiagnostic(shutdown_invoke_result, "SB_ENGINE_API_UDR_SHUTDOWN_DRAIN_ACTIVE"),
           "UDR invocation was admitted during shutdown drain");
-
-  auto second_register =
-      UdrRequest<api::EngineRegisterUdrPackageRequest>(database_path,
-                                                       firebird_descriptor.package_uuid);
-  AddManageUdrOptions(&second_register, firebird_descriptor);
-  Require(api::EngineRegisterUdrPackage(second_register).ok,
-          "second UDR registration for not-loaded check failed");
-  auto not_loaded = UdrRequest<api::EngineInvokeUdrPackageRequest>(
-      database_path, firebird_descriptor.package_uuid);
-  AddInvokeUdrOptions(&not_loaded);
-  const auto not_loaded_result = api::EngineInvokeUdrPackage(not_loaded);
-  Require(!not_loaded_result.ok && HasDiagnostic(not_loaded_result, "SB_ENGINE_API_UDR_NOT_LOADED"),
-          "unloaded registered UDR invocation was admitted");
 
   auto loaded_admission_registry = server::ParserPackageRegistry{};
   loaded_admission_registry.entries.push_back(server::ParserPackageRegistryEntry{});
@@ -576,7 +599,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   inspect.option_envelopes.push_back("permission:inspect_udr");
   const auto inspected = api::EngineInspectUdrPackages(inspect);
   Require(inspected.ok, "UDR inspect was refused");
-  Require(inspected.result_shape.rows.size() >= 2, "UDR inspect did not return lifecycle rows");
+  Require(!inspected.result_shape.rows.empty(), "UDR inspect did not return lifecycle rows");
   Require(RowFieldContains(inspected, "entrypoints", "sbu_sbsql_parse_to_sblr"),
           "UDR inspect did not expose sanitized runtime entrypoint inventory");
   Require(RowFieldContains(inspected, "runtime_language", "cpp"),
@@ -585,7 +608,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   CommitLifecycleTransaction(database_path);
   const auto restart_catalog = api::VisibleApiBehaviorRecords(
       Context(database_path, 0), "udr_package", 0);
-  Require(restart_catalog.size() >= 2,
+  Require(!restart_catalog.empty(),
           "restart catalog reload did not reconstruct UDR package rows");
 
   const auto event_text = ReadFile(database_path.string() + ".sb.api_events");
@@ -604,15 +627,17 @@ void TestServerSblrUdrAdmission() {
       "diagnostic_shape=message_vector\n"
       "parser_resolved_names_to_uuids=true\n";
   const auto admitted = server::AdmitServerSblrEnvelope(request);
-  Require(admitted.admitted, "server did not admit UDR SBLR operation family");
-  Require(admitted.operation_family == "sblr.udr.operation.v3",
-          "server did not classify UDR operation as sblr.udr.operation.v3");
+  Require(!admitted.admitted &&
+              HasServerDiagnostic(admitted.diagnostics,
+                                  "SBLR.OPERATION.NONCANONICAL"),
+          "server admitted the retired text UDR SBLR carrier");
 
   server::ServerSblrAdmissionRequest raw_sql;
   raw_sql.encoded_sblr_envelope = "select extensibility.invoke_udr_package";
   const auto raw_sql_result = server::AdmitServerSblrEnvelope(raw_sql);
   Require(!raw_sql_result.admitted &&
-              HasServerDiagnostic(raw_sql_result.diagnostics, "SBLR.SQL_TEXT_FORBIDDEN"),
+              HasServerDiagnostic(raw_sql_result.diagnostics,
+                                  "SBLR.OPERATION.NONCANONICAL"),
           "server admitted raw SQL as a UDR route");
 }
 
@@ -623,9 +648,6 @@ int main() {
   const auto sbsql_registered =
       udr_runtime::RegisterPackage(sbsql_udr::sbu_sbsql_package_descriptor());
   Require(sbsql_registered.ok, "failed to register SBSQL parser-support runtime descriptor");
-  const auto firebird_registered =
-      udr_runtime::RegisterPackage(firebird_udr::sbu_firebird_package_descriptor());
-  Require(firebird_registered.ok, "failed to register Firebird parser-support runtime descriptor");
 
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "udr_lifecycle.sbdb";

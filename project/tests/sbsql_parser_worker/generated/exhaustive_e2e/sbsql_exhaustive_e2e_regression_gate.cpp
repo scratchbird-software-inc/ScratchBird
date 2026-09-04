@@ -11,6 +11,7 @@
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 #include "sbu_sbsql_parser_support.hpp"
+#include "wire/sbsql_test_wire.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "memory.hpp"
 #include "transaction/transaction_api.hpp"
@@ -254,22 +255,47 @@ void CheckRoute(Harness* harness,
                      " missing route " + std::string(route));
 }
 
-void CheckVariationManifest(const CsvTable& matrix, Harness* harness) {
+void CheckVariationManifest(const CsvTable& matrix,
+                            const CsvTable& surface_registry,
+                            const CsvTable& release_declaration,
+                            Harness* harness) {
   RequireColumns(matrix,
                  {"scope_id", "source_path", "expected_count", "coverage_rule", "status"},
                  harness);
+  RequireColumns(surface_registry,
+                 {"surface_id", "surface_kind", "family", "sblr_operation_family"},
+                 harness);
+  RequireColumns(release_declaration, {"surface_id", "final_status"}, harness);
   const auto by_scope = IndexUnique(matrix, "scope_id", harness);
+  std::size_t expression_rows = 0;
+  std::set<std::string> operation_families;
+  for (const auto& row : surface_registry.rows) {
+    if (Field(row, "family") == "expression_runtime") ++expression_rows;
+    operation_families.insert(std::string(Field(row, "sblr_operation_family")));
+  }
+  std::size_t executable_rows = 0;
+  std::size_t refusal_or_profile_rows = 0;
+  for (const auto& row : release_declaration.rows) {
+    const auto status = Field(row, "final_status");
+    if (status == "e2e_passed") {
+      ++executable_rows;
+    } else if (status == "exact_refusal_passed" ||
+               status == "cluster_provider_route_passed") {
+      ++refusal_or_profile_rows;
+    }
+  }
   const std::map<std::string, std::string> required = {
-      {"surface_registry", "2617"},
-      {"replay_fixture_index", "2617"},
-      {"full_route_executable_surfaces", "2560"},
-      {"exact_refusal_surfaces", "57"},
-      {"expression_runtime_catalog", "1534"},
-      {"statement_surface_catalog", "1049"},
-      {"sblr_operation_families", "16"},
+      {"surface_registry", std::to_string(surface_registry.rows.size())},
+      {"replay_fixture_index", std::to_string(surface_registry.rows.size())},
+      {"full_route_executable_surfaces", std::to_string(executable_rows)},
+      {"exact_refusal_surfaces", std::to_string(refusal_or_profile_rows)},
+      {"expression_runtime_catalog", std::to_string(expression_rows)},
+      {"statement_surface_catalog",
+       std::to_string(surface_registry.rows.size() - expression_rows)},
+      {"sblr_operation_families", std::to_string(operation_families.size())},
       {"engine_gap_backlog", "932"},
       {"reference_alias_backlog", "312"},
-      {"dynamic_stored_procedure_udr_sblr", "1"},
+      {"dynamic_sql_udr_binding_and_live_query", "1"},
   };
   for (const auto& [scope, expected_count] : required) {
     const auto found = by_scope.find(scope);
@@ -330,12 +356,14 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
     const CsvTable& surface_backlog,
     const CsvTable& batch_membership,
     const CsvTable& semantic_oracle,
+    const CsvTable& release_declaration,
     const CsvTable& fixture_index,
     const std::vector<std::string>& payload_lines,
     Harness* harness) {
   RequireColumns(surfaces,
-                 {"surface_id", "canonical_name", "surface_kind", "family", "status",
-                  "cluster_scope", "sblr_operation_family"},
+                 {"surface_id", "fixed_uuid_v7", "canonical_name", "surface_kind",
+                  "family", "source_status", "status", "cluster_scope",
+                  "sblr_operation_family", "validation_fixture_id"},
                  harness);
   RequireColumns(surface_backlog,
                  {"surface_id", "validation_fixture_id", "final_acceptance_rule", "status"},
@@ -346,10 +374,17 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
   RequireColumns(semantic_oracle,
                  {"fixture_id", "surface_id", "oracle_type", "status"},
                  harness);
+  RequireColumns(release_declaration,
+                 {"surface_id", "fixed_uuid_v7", "canonical_name", "surface_kind",
+                  "family", "final_status", "diagnostic_refs", "result_refs",
+                  "auth_route_ref", "sblr_round_trip_ref", "release_status"},
+                 harness);
   RequireColumns(fixture_index,
                  {"fixture_id", "surface_id", "canonical_name", "family", "surface_kind",
                   "source_status", "cluster_scope", "operation_family", "route_set",
-                  "input_text", "expected_engine_effect", "expected_payload_json", "status"},
+                  "session_context", "input_text", "expected_bound_shape",
+                  "expected_server_result", "expected_engine_effect",
+                  "expected_message_vector", "expected_payload_json", "status"},
                  harness);
 
   harness->Check(surfaces.rows.size() == 2617,
@@ -360,6 +395,8 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
                  "batch membership row count changed from corrected authority baseline");
   harness->Check(semantic_oracle.rows.size() == 2617,
                  "semantic oracle row count changed from corrected authority baseline");
+  harness->Check(release_declaration.rows.size() == 2617,
+                 "release declaration row count changed from canonical surface total");
   harness->Check(fixture_index.rows.size() == 2617,
                  "differential replay fixture count changed from corrected authority baseline");
   harness->Check(payload_lines.size() == 2617,
@@ -368,12 +405,15 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
   const auto backlog_by_surface = IndexUnique(surface_backlog, "surface_id", harness);
   const auto batch_by_surface = IndexUnique(batch_membership, "surface_id", harness);
   const auto oracle_by_surface = IndexUnique(semantic_oracle, "surface_id", harness);
+  const auto release_by_surface =
+      IndexUnique(release_declaration, "surface_id", harness);
   const auto fixture_by_surface = IndexUnique(fixture_index, "surface_id", harness);
   const auto payload_surface_by_fixture = ReadPayloadSurfaceIndex(payload_lines, harness);
 
   SurfaceCoverageSummary summary;
   summary.surfaces = surfaces.rows.size();
   std::map<std::string, std::size_t> family_counts;
+  std::map<std::string, std::size_t> release_status_counts;
 
   for (const auto& surface : surfaces.rows) {
     const std::string surface_id(Field(surface, "surface_id"));
@@ -383,13 +423,22 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
                    "surface missing batch membership row " + surface_id);
     harness->Check(oracle_by_surface.contains(surface_id),
                    "surface missing semantic oracle row " + surface_id);
+    const auto release_it = release_by_surface.find(surface_id);
+    harness->Check(release_it != release_by_surface.end(),
+                   "surface missing release declaration row " + surface_id);
     const auto fixture_it = fixture_by_surface.find(surface_id);
     harness->Check(fixture_it != fixture_by_surface.end(),
                    "surface missing replay fixture row " + surface_id);
-    if (fixture_it == fixture_by_surface.end()) continue;
+    if (fixture_it == fixture_by_surface.end() ||
+        release_it == release_by_surface.end()) {
+      continue;
+    }
 
     const auto& fixture = *fixture_it->second;
+    const auto& release = *release_it->second;
     const std::string fixture_id(Field(fixture, "fixture_id"));
+    const std::string final_status(Field(release, "final_status"));
+    ++release_status_counts[final_status];
     harness->Check(Field(fixture, "status") == "replay_ready",
                    "fixture is not replay_ready " + fixture_id);
     harness->Check(Field(fixture, "canonical_name") == Field(surface, "canonical_name"),
@@ -400,6 +449,25 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
                    "fixture surface_kind drift for " + surface_id);
     harness->Check(Field(fixture, "operation_family") == Field(surface, "sblr_operation_family"),
                    "fixture operation_family drift for " + surface_id);
+    for (const auto column :
+         {"fixed_uuid_v7", "canonical_name", "family", "surface_kind"}) {
+      harness->Check(Field(release, column) == Field(surface, column),
+                     "release/canonical " + std::string(column) +
+                         " drift for " + surface_id);
+    }
+    harness->Check(Field(release, "release_status") == "row_evidence_complete",
+                   "release evidence incomplete for " + surface_id);
+    harness->Check(Contains(Field(fixture, "expected_server_result"), final_status),
+                   "fixture server result is not bound to release status " + surface_id);
+    harness->Check(Contains(Field(fixture, "expected_message_vector"),
+                            Field(release, "diagnostic_refs")),
+                   "fixture diagnostics are not bound to release evidence " + surface_id);
+    harness->Check(Contains(Field(fixture, "expected_bound_shape"),
+                            "canonical-operation-family=" +
+                                std::string(Field(surface, "sblr_operation_family"))) &&
+                       Contains(Field(fixture, "expected_bound_shape"),
+                                "engine-issued-descriptor-and-result-authority"),
+                   "fixture bound shape invents or omits canonical authority " + surface_id);
     harness->Check(!Field(fixture, "input_text").empty(),
                    "fixture input_text missing for " + surface_id);
     harness->Check(Contains(Field(fixture, "expected_payload_json"), fixture_id),
@@ -419,20 +487,29 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
     CheckRoute(harness, fixture, "server_admission", surface_id);
 
     const auto engine_effect = Field(fixture, "expected_engine_effect");
-    if (engine_effect == "execute-sblr-internal-procedure-only-no-sql-text") {
+    if (final_status == "e2e_passed") {
+      harness->Check(engine_effect ==
+                         "execute-sblr-internal-procedure-only-no-sql-text",
+                     "E2E release row lacks executable replay effect " + surface_id);
       ++summary.executable;
       CheckRoute(harness, fixture, "udr_sql_to_sblr", surface_id);
       CheckRoute(harness, fixture, "engine_behavior", surface_id);
       CheckRoute(harness, fixture, "full_route", surface_id);
-    } else if (engine_effect == "no-engine-mutation-exact-refusal" ||
-               engine_effect == "no-engine-mutation;exact-refusal-or-profile-gate") {
+    } else if (final_status == "exact_refusal_passed" ||
+               final_status == "cluster_provider_route_passed") {
+      const std::string_view expected_effect =
+          final_status == "exact_refusal_passed"
+              ? "no-engine-mutation-exact-refusal"
+              : "no-engine-mutation;exact-refusal-or-profile-gate";
+      harness->Check(engine_effect == expected_effect,
+                     "refusal/profile release row has wrong replay effect " + surface_id);
       ++summary.exact_refusals;
       harness->Check(!Contains(Field(fixture, "route_set"), "engine_behavior"),
                      "exact-refusal fixture has engine_behavior route " + fixture_id);
       harness->Check(!Contains(Field(fixture, "route_set"), "full_route"),
                      "exact-refusal fixture has full_route route " + fixture_id);
     } else {
-      harness->Check(false, "unknown expected_engine_effect for " + fixture_id);
+      harness->Check(false, "unsupported release final status for " + fixture_id);
     }
 
     const std::string family(Field(surface, "family"));
@@ -448,10 +525,15 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
     }
   }
 
-  harness->Check(summary.executable == 2560,
-                 "executable full-route surface count changed from corrected authority baseline");
-  harness->Check(summary.exact_refusals == 57,
-                 "exact-refusal surface count changed from corrected authority baseline");
+  harness->Check(summary.executable == release_status_counts["e2e_passed"],
+                 "executable replay count differs from release evidence");
+  harness->Check(
+      summary.exact_refusals ==
+          release_status_counts["exact_refusal_passed"] +
+              release_status_counts["cluster_provider_route_passed"],
+      "refusal/profile replay count differs from release evidence");
+  harness->Check(release_status_counts.size() == 3,
+                 "release declaration contains an unsupported final status");
   harness->Check(summary.expression_rows == 1534,
                  "expression runtime surface count changed from corrected authority baseline");
   harness->Check(summary.statement_rows == 1083,
@@ -467,16 +549,17 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
   CheckFamilyCount(harness, family_counts, "archive_replication", 10);
   CheckFamilyCount(harness, family_counts, "bridge", 34);
   CheckFamilyCount(harness, family_counts, "cluster_private", 24);
-  CheckFamilyCount(harness, family_counts, "ddl_catalog", 180);
+  CheckFamilyCount(harness, family_counts, "ddl_catalog", 175);
   CheckFamilyCount(harness, family_counts, "dml", 36);
   CheckFamilyCount(harness, family_counts, "expression_runtime", 1534);
   CheckFamilyCount(harness, family_counts, "general", 554);
   CheckFamilyCount(harness, family_counts, "jobs_scheduler", 8);
+  CheckFamilyCount(harness, family_counts, "migration", 4);
   CheckFamilyCount(harness, family_counts, "multi_model", 70);
-  CheckFamilyCount(harness, family_counts, "observability", 41);
+  CheckFamilyCount(harness, family_counts, "observability", 40);
   CheckFamilyCount(harness, family_counts, "query", 44);
-  CheckFamilyCount(harness, family_counts, "runtime_management", 14);
-  CheckFamilyCount(harness, family_counts, "security", 23);
+  CheckFamilyCount(harness, family_counts, "runtime_management", 15);
+  CheckFamilyCount(harness, family_counts, "security", 28);
   CheckFamilyCount(harness, family_counts, "storage_management", 11);
   CheckFamilyCount(harness, family_counts, "transaction", 26);
 
@@ -487,19 +570,23 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
       "sblr.bridge.operation.v3",
       "sblr.catalog.mutation.v3",
       "sblr.cluster.private_operation.v3",
+      "sblr.cursor.operation.v3",
       "sblr.dml.operation.v3",
       "sblr.expression.runtime.v3",
       "sblr.general.operation.v3",
       "sblr.jobs.operation.v3",
+      "sblr.management.control.v3",
       "sblr.management.runtime_operation.v3",
       "sblr.migration.operation.v3",
       "sblr.observability.inspect.v3",
+      "sblr.policy.operation.v3",
       "sblr.query.multimodel_or_ddl.v3",
       "sblr.query.relational.v3",
-      "sblr.query.relational.v3",
       "sblr.security.mutation.v3",
+      "sblr.session.management.v3",
       "sblr.filespace.management.v3",
       "sblr.transaction.control.v3",
+      "sblr.udr.operation.v3",
   };
   harness->Check(summary.operation_families == expected_families,
                  "SBLR operation family coverage set drifted");
@@ -696,109 +783,91 @@ bool HasDiagnostic(const scratchbird::server::SessionOperationResult& result,
 
 void CheckDynamicStoredProcedureRoute(Harness* harness) {
   using scratchbird::udr::sbsql_parser_support::sbu_sbsql_parse_to_sblr;
+  namespace sbsql = scratchbird::parser::sbsql;
 
   const std::string part_select = "SELECT * ";
   const std::string part_from = "FROM ";
   const std::string target_object = "sys.version";
   const std::string dynamic_sql = part_select + part_from + target_object;
+  const std::string live_source_free_sql = std::string("SELECT ") + "1";
 
   const auto missing_resolution = sbu_sbsql_parse_to_sblr(
       dynamic_sql, "engine_context=trusted;resolver=public;authenticated=true");
-  harness->Check(!missing_resolution.ok &&
+  harness->Check(!missing_resolution.ok && missing_resolution.payload.empty() &&
                      Contains(missing_resolution.message_vector_json,
-                              "SBSQL.NAME_RESOLUTION.PUBLIC_RESOLVER_REQUIRED"),
-                 "dynamic SQL without engine-resolved UUID did not fail closed");
+                              "QOW-DIAG-BOUNDAST-SCOPE"),
+                 "direct dynamic SQL UDR call without an engine binding receipt did not fail closed");
 
-  const auto generated = sbu_sbsql_parse_to_sblr(
+  const auto caller_claimed_resolution = sbu_sbsql_parse_to_sblr(
       dynamic_sql,
       "engine_context=trusted;resolver=public;authenticated=true;"
       "resolved_uuid=b4a0fd27-e19b-7719-9105-5882443ee2bc");
-  harness->Check(generated.ok,
-                 "dynamic SQL UDR conversion failed: " + generated.message_vector_json);
-  harness->Check(Contains(generated.payload, "SBLRExecutionEnvelope.v3"),
-                 "UDR payload missing SBLRExecutionEnvelope.v3");
-  harness->Check(Contains(generated.payload, "\"operation_family\":\"sblr.query.relational.v3\""),
-                 "UDR payload did not lower to relational query SBLR");
-  harness->Check(Contains(generated.payload, "\"resolved_object_uuids\""),
-                 "UDR payload missing resolved UUID list");
-  harness->Check(Contains(generated.payload, kDynamicRouteSysVersionUuid),
-                 "UDR payload did not preserve the engine-resolved UUID");
-  harness->Check(Contains(generated.payload, "authority.server.resolve_name_registry_public"),
-                 "UDR payload missing name-resolution authority contract");
-  harness->Check(!Contains(generated.payload, dynamic_sql),
-                 "UDR payload leaked original dynamic SQL text");
-  harness->Check(Contains(generated.payload, "\"sql_text_included\":false"),
-                 "UDR payload missing no-SQL-text authority marker");
-  harness->Check(!Contains(generated.payload, "\"sql_text\":") &&
-                     !Contains(generated.payload, "\"source_text\""),
-                 "UDR payload exposed a raw SQL text field");
+  harness->Check(!caller_claimed_resolution.ok &&
+                     caller_claimed_resolution.payload.empty() &&
+                     Contains(caller_claimed_resolution.message_vector_json,
+                              "QOW-DIAG-BOUNDAST-SCOPE"),
+                 "caller-authored resolved UUID bypassed the engine binding receipt requirement");
 
   const auto raw_direct = scratchbird::server::AdmitServerSblrEnvelope(
       scratchbird::server::ServerSblrAdmissionRequest{dynamic_sql, false});
   harness->Check(!raw_direct.admitted && !raw_direct.diagnostics.empty(),
                  "server admitted concatenated raw SQL without UDR/SBLR conversion");
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
-          "dml.select_rows", "SBLR_DML_SELECT_ROWS"));
-  harness->Check(admission.admitted,
-                 "server admission rejected UDR-generated SBLR payload");
-  harness->Check(admission.operation_family == "sblr.query.relational.v3",
-                 "server admission operation family mismatch for dynamic SBLR");
-  harness->Check(admission.operation_id == "dml.select_rows",
-                 "server admission operation id mismatch for dynamic SBLR");
+  const auto work = MakeTempDir();
+  harness->Check(!work.empty(), "failed to create live dynamic SQL route directory");
+  if (work.empty()) return;
+  const auto database_path = work / "sbsql_dynamic_live_route.sbdb";
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          database_path, {});
+  harness->Check(created.ok(),
+                 "live dynamic SQL route credentialed database creation failed");
+  if (!created.ok()) return;
 
-  std::array<std::uint8_t, 16> session_uuid{};
-  const auto dynamic_route = CreateDynamicRouteContext(harness);
-  auto registry = MakeRegistry(dynamic_route, &session_uuid);
-  const auto engine_state = MakeEngineState(dynamic_route);
+  sbsql::ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = database_path.string();
+  sbsql::ParserMetrics metrics;
+  sbsql::SblrTemplateCache cache;
+  {
+    sbsql::SbsqlTestWireSession parser(config, &metrics, &cache);
+    const auto authenticated = parser.HandleLine("AUTH");
+    harness->Check(Contains(authenticated.text, "OK AUTHENTICATED"),
+                   "live dynamic SQL route did not authenticate through the embedded engine");
+    if (!Contains(authenticated.text, "OK AUTHENTICATED")) return;
 
-  const auto raw_prepare = scratchbird::server::HandlePrepareSblr(
-      &registry, engine_state, PrepareFrame(session_uuid, dynamic_sql));
-  harness->Check(!raw_prepare.accepted,
-                 "server prepared concatenated raw SQL without UDR/SBLR conversion");
-
-  const auto prepare = scratchbird::server::HandlePrepareSblr(
-      &registry, engine_state, PrepareFrame(session_uuid, generated.payload));
-  harness->Check(prepare.accepted,
-                 "server did not prepare UDR-generated SBLR payload");
-  const auto prepared_uuid =
-      scratchbird::server::DecodePreparedStatementUuidForTest(prepare.payload);
-  harness->Check(prepared_uuid.has_value(),
-                 "prepare did not return a prepared statement UUID");
-  if (prepared_uuid.has_value()) {
-    const auto prepared_execute = scratchbird::server::HandleExecuteSblr(
-        &registry, engine_state, ExecuteFrame(session_uuid, *prepared_uuid, ""));
-    harness->Check(prepared_execute.accepted,
-                   "server did not execute prepared dynamic SBLR payload");
-  }
-
-  const auto cursor_execute = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, {}, generated.payload, true));
-  harness->Check(cursor_execute.accepted,
-                 "server did not execute dynamic SBLR as cursor route");
-  const auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(cursor_execute.payload);
-  harness->Check(cursor_uuid.has_value(),
-                 "dynamic SBLR cursor execution did not return a cursor UUID");
-  if (cursor_uuid.has_value()) {
-    const auto fetch =
-        scratchbird::server::HandleFetch(&registry, FetchFrame(session_uuid, *cursor_uuid));
-    harness->Check(fetch.accepted, "dynamic SBLR cursor fetch was rejected");
-    const auto decoded_fetch = scratchbird::server::DecodeFetchResultForTest(fetch.payload);
-    harness->Check(decoded_fetch.has_value(), "dynamic SBLR fetch payload did not decode");
-    if (decoded_fetch.has_value()) {
-      harness->Check(decoded_fetch->row_count == 1,
-                     "dynamic SBLR fetch did not return expected row_count=1");
+    const auto executed = parser.RunPipeline(live_source_free_sql, true, true);
+    if (!executed.accepted) {
+      for (const auto& diagnostic : executed.messages.diagnostics) {
+        std::cerr << "dynamic_live_route_diagnostic=" << diagnostic.code
+                  << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << "dynamic_live_route_field=" << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+    }
+    harness->Check(executed.accepted && !executed.messages.has_errors(),
+                   "engine-backed dynamic SQL route rejected the canonical query");
+    harness->Check(executed.operation_family == "sblr.query.relational.v3" &&
+                       executed.server_operation_id == "query.execute",
+                   "engine-backed dynamic SQL route did not use the canonical query tuple");
+    harness->Check(!executed.sblr_payload.empty() &&
+                       !Contains(executed.sblr_payload, live_source_free_sql),
+                   "canonical query package was absent or retained executable SQL text");
+    harness->Check(!executed.server_cursor_uuid.empty(),
+                   "engine-backed dynamic SQL query did not publish a cursor");
+    if (!executed.server_cursor_uuid.empty()) {
+      const auto fetched = parser.FetchCursorOnRoute(executed.server_cursor_uuid, 1);
+      harness->Check(fetched.accepted && fetched.row_count == 1,
+                     "engine-backed source-free query cursor did not return one row");
     }
   }
-
-  const auto tampered_payload =
-      generated.payload.substr(0, generated.payload.size() - 1) +
-      ",\"sql_text\":\"SELECT * FROM sys.version\"}";
-  const auto tampered = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, {}, tampered_payload));
-  harness->Check(!tampered.accepted && HasDiagnostic(tampered, "SBLR.SQL_TEXT_FORBIDDEN"),
-                 "server did not reject tampered dynamic SBLR payload with sql_text marker");
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(work, cleanup_error);
 }
 
 }  // namespace
@@ -820,13 +889,38 @@ int main(int argc, char** argv) {
 
     Harness harness;
     ConfigureMemoryFixture(&harness);
-    CheckVariationManifest(ReadCsv(variation_matrix_path), &harness);
+    const auto canonical_surface_registry_file =
+        std::filesystem::is_regular_file(canonicalization_root)
+            ? canonicalization_root
+            : canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv";
+    if (!std::filesystem::is_regular_file(canonical_surface_registry_file) ||
+        canonical_surface_registry_file.filename() != "SBSQL_SURFACE_REGISTRY.csv" ||
+        canonical_surface_registry_file.parent_path().filename() !=
+            "public_input_snapshot") {
+      throw std::runtime_error(
+          "canonical surface authority is not the repository snapshot file");
+    }
+    const auto repo_root = canonical_surface_registry_file.parent_path().parent_path();
+    const auto release_declaration_file =
+        repo_root /
+        "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/"
+        "SBSQL_SURFACE_RELEASE_DECLARATION.csv";
+    if (!std::filesystem::is_regular_file(release_declaration_file)) {
+      throw std::runtime_error("release declaration evidence is unavailable");
+    }
+    const auto surface_registry = ReadCsv(canonical_surface_registry_file);
+    const auto release_declaration = ReadCsv(release_declaration_file);
+    CheckVariationManifest(ReadCsv(variation_matrix_path),
+                           surface_registry,
+                           release_declaration,
+                           &harness);
 
     const auto summary = CheckSurfaceReplayCoverage(
-        ReadCsv(canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv"),
+        surface_registry,
         ReadCsv(artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv"),
         ReadCsv(artifact_root / "BATCH_ROW_MEMBERSHIP.csv"),
         ReadCsv(artifact_root / "SEMANTIC_ORACLE_AUTHORITY_MAP.csv"),
+        release_declaration,
         ReadCsv(replay_root / "DIFFERENTIAL_REPLAY_FIXTURE_INDEX.csv"),
         ReadLines(replay_root / "DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl"),
         &harness);

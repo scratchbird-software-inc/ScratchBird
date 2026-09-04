@@ -12,6 +12,7 @@
 
 #include "config_policy_security_lifecycle.hpp"
 #include "engine_host.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 #include "sblr_parameter_runtime.hpp"
 #include "sblr_error_vector_runtime.hpp"
 #include "sblr_source_map_runtime.hpp"
@@ -208,9 +209,9 @@
 #include "sblr_dml_async_insert_submit_coordinator.hpp"
 #include "sblr_dml_counter_add_runtime.hpp"
 #include "sblr_dml_conditional_mutate_runtime.hpp"
-#include "engine/internal_api/sblr_ddl_alter_timeseries_value_cache_coordinator.hpp"
-#include "engine/internal_api/sblr_ddl_drop_timeseries_value_cache_coordinator.hpp"
-#include "engine/internal_api/sblr_dml_conditional_mutate_coordinator.hpp"
+#include "sblr_ddl_alter_timeseries_value_cache_coordinator.hpp"
+#include "sblr_ddl_drop_timeseries_value_cache_coordinator.hpp"
+#include "sblr_dml_conditional_mutate_coordinator.hpp"
 #include "sblr_dml_counter_add_coordinator.hpp"
 #include "sblr_dml_timeseries_schema_write_runtime.hpp"
 #include "sblr_dml_timeseries_schema_write_coordinator.hpp"
@@ -250,7 +251,7 @@
 #include "sblr_ddl_create_schema_coordinator.hpp"
 #include "sblr_ddl_create_table_coordinator.hpp"
 #include "sblr_ddl_create_index_coordinator.hpp"
-#include "engine/internal_api/sblr_ddl_drop_index_coordinator.hpp"
+#include "sblr_ddl_drop_index_coordinator.hpp"
 #include "sblr_result_set_pass_runtime.hpp"
 #include "sblr_result_set_pass_coordinator.hpp"
 #include "sblr_access_cursor_open_runtime.hpp"
@@ -356,12 +357,15 @@
 #include "query/narrow_query_binding_authority.hpp"
 #include "engine/sblr/contextual_text_literal_v2_codec.hpp"
 #include "wire/narrow_query_binding_demand_codec.hpp"
+#include "wire/parser_server_ipc/sbps_bulk_import_stream_codec.hpp"
+#include "sblr_bulk_import_stream_registry.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iomanip>
 #include <map>
 #include <set>
@@ -375,7 +379,11 @@ namespace engine_api = scratchbird::engine::internal_api;
 namespace engine_bridge = scratchbird::server_engine_bridge;
 
 namespace {
-engine_api::EngineRequestContext EngineContextForSession(const ServerSessionRecord&,const HostedEngineState&,const sbps::Frame&);
+engine_api::EngineRequestContext EngineContextForSession(
+    const ServerSessionRecord&,
+    const HostedEngineState&,
+    const sbps::Frame&,
+    const engine_api::EngineSecurityPrincipalLifecycleState* retained_security_state = nullptr);
 
 constexpr std::string_view kDefaultLanguageTag = "en";
 constexpr std::string_view kDefaultLanguageProfileId = "sbsql.builtin.recovery.en";
@@ -672,6 +680,7 @@ bool StartsWith(std::string_view value, std::string_view prefix) {
 bool OperationCancellationCanBeDeterministic(std::string_view operation_id) {
   return StartsWith(operation_id, "dml.select") ||
          StartsWith(operation_id, "query.select") ||
+         operation_id == "query.execute" ||
          operation_id == "observability.show_version" ||
          operation_id == "catalog.show_version";
 }
@@ -1150,13 +1159,20 @@ engine_api::EngineRequestContext DurableProjectionContextForSession(
 engine_api::DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationForSession(
     const ServerSessionRecord& session,
     const engine_api::EngineRequestContext& context,
-    engine_api::EngineSecurityPrincipalLifecycleState* lifecycle_state = nullptr) {
+    engine_api::EngineSecurityPrincipalLifecycleState* lifecycle_state = nullptr,
+    const engine_api::EngineSecurityPrincipalLifecycleState* retained_state = nullptr) {
   engine_api::DurableAuthorizationMaterializeResult result;
-  const auto loaded = engine_api::LoadSecurityPrincipalLifecycleState(context);
-  if (!loaded.ok || !LifecycleStateHasDurableSubjects(loaded.state)) return result;
-  if (lifecycle_state != nullptr) *lifecycle_state = loaded.state;
+  engine_api::EngineLoadSecurityPrincipalLifecycleStateResult loaded;
+  const engine_api::EngineSecurityPrincipalLifecycleState* state = retained_state;
+  if (state == nullptr) {
+    loaded = engine_api::LoadSecurityPrincipalLifecycleState(context);
+    if (!loaded.ok) return result;
+    state = &loaded.state;
+  }
+  if (!LifecycleStateHasDurableSubjects(*state)) return result;
+  if (lifecycle_state != nullptr) *lifecycle_state = *state;
   const auto durable_state =
-      DurableAuthorizationStateFromLifecycle(loaded.state, session, context);
+      DurableAuthorizationStateFromLifecycle(*state, session, context);
   engine_api::DurableAuthorizationMaterializeRequest request;
   request.principal_uuid = context.principal_uuid;
   request.observed_security_epoch = context.security_epoch;
@@ -1191,13 +1207,27 @@ std::string ResolveRequestedRoleUuid(
 }
 
 bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
-                                                  std::string* rejection_detail) {
+                                                  std::string* rejection_detail,
+                                                  const engine_api::EngineSecurityPrincipalLifecycleState*
+                                                      retained_state = nullptr,
+                                                  engine_api::EngineSecurityPrincipalLifecycleState*
+                                                      loaded_state = nullptr) {
   if (session == nullptr) return true;
   const auto context = DurableProjectionContextForSession(*session);
-  engine_api::EngineSecurityPrincipalLifecycleState lifecycle;
+  engine_api::EngineSecurityPrincipalLifecycleState local_lifecycle;
+  auto* lifecycle_destination =
+      retained_state == nullptr
+          ? (loaded_state == nullptr ? &local_lifecycle : loaded_state)
+          : nullptr;
   const auto materialized =
-      MaterializeDurableAuthorizationForSession(*session, context, &lifecycle);
-  if (!LifecycleStateHasDurableSubjects(lifecycle)) {
+      MaterializeDurableAuthorizationForSession(
+          *session,
+          context,
+          lifecycle_destination,
+          retained_state);
+  const auto& effective_lifecycle =
+      retained_state == nullptr ? *lifecycle_destination : *retained_state;
+  if (!LifecycleStateHasDurableSubjects(effective_lifecycle)) {
     if (!session->requested_role_name.empty() && rejection_detail != nullptr) {
       *rejection_detail = "requested_role_unavailable";
     }
@@ -1226,7 +1256,8 @@ bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
 
   if (!session->requested_role_name.empty()) {
     const std::string requested_uuid =
-        ResolveRequestedRoleUuid(lifecycle, session->requested_role_name);
+        ResolveRequestedRoleUuid(effective_lifecycle,
+                                 session->requested_role_name);
     if (requested_uuid.empty()) {
       if (rejection_detail != nullptr) *rejection_detail = "requested_role_not_found";
       return false;
@@ -1267,7 +1298,9 @@ bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
 
 engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizationContext(
     const ServerSessionRecord& session,
-    const engine_api::EngineRequestContext& context) {
+    const engine_api::EngineRequestContext& context,
+    const engine_api::EngineSecurityPrincipalLifecycleState*
+        retained_security_state) {
   engine_api::EngineMaterializedAuthorizationContext authorization;
   authorization.authority_uuid = context.database_uuid;
   authorization.principal_uuid = context.principal_uuid;
@@ -1282,7 +1315,8 @@ engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizati
     return authorization;
   }
 
-  const auto durable = MaterializeDurableAuthorizationForSession(session, context);
+  const auto durable = MaterializeDurableAuthorizationForSession(
+      session, context, nullptr, retained_security_state);
   if (durable.ok) {
     auto durable_context = durable.context;
     durable_context.evidence_tags.push_back(
@@ -1324,9 +1358,13 @@ engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizati
   return authorization;
 }
 
-engine_api::EngineRequestContext EngineContextForSession(const ServerSessionRecord& session,
-                                                         const HostedEngineState& engine_state,
-                                                         const sbps::Frame& request) {
+engine_api::EngineRequestContext EngineContextForSessionProjection(
+    const ServerSessionRecord& session,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request,
+    bool materialize_authorization,
+    const engine_api::EngineSecurityPrincipalLifecycleState*
+        retained_security_state) {
   auto context = EngineContextBase(engine_state, request);
   context.trust_mode = TrustModeForSession(session);
   context.database_path = session.database_path.empty() ? context.database_path : session.database_path;
@@ -1352,8 +1390,34 @@ engine_api::EngineRequestContext EngineContextForSession(const ServerSessionReco
   PopulateEngineLanguageContextFromSession(session, &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
   context.trace_tags.push_back("sb_server.session_registry");
-  context.authorization_context = MaterializeSessionAuthorizationContext(session, context);
+  if (materialize_authorization) {
+    context.authorization_context =
+        MaterializeSessionAuthorizationContext(
+            session, context, retained_security_state);
+  }
   return context;
+}
+
+engine_api::EngineRequestContext EngineContextForSession(
+    const ServerSessionRecord& session,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request,
+    const engine_api::EngineSecurityPrincipalLifecycleState*
+        retained_security_state) {
+  return EngineContextForSessionProjection(
+      session, engine_state, request, true, retained_security_state);
+}
+
+engine_api::EngineRequestContext EngineCatalogEpochContextForSession(
+    const ServerSessionRecord& session,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  // Catalog-epoch projection validates only the exact transaction visibility
+  // vector and catalog event journal. Building the full durable authorization
+  // graph here duplicated the later statement-context security materialization
+  // without contributing to the epoch result.
+  return EngineContextForSessionProjection(
+      session, engine_state, request, false, nullptr);
 }
 
 bool ApplyBeginTransactionResultToSession(
@@ -1395,7 +1459,9 @@ bool StartAlwaysActiveTransactionForSession(ServerSessionRecord* session,
                                             const HostedEngineState& engine_state,
                                             const sbps::Frame& request,
                                             std::string* diagnostic_code,
-                                            std::string* diagnostic_detail) {
+                                            std::string* diagnostic_detail,
+                                            const engine_api::EngineSecurityPrincipalLifecycleState*
+                                                retained_security_state = nullptr) {
   if (session == nullptr) {
     if (diagnostic_code != nullptr) *diagnostic_code = "PARSER_SERVER_IPC.SESSION_REQUIRED";
     if (diagnostic_detail != nullptr) *diagnostic_detail = "session_required";
@@ -1416,7 +1482,8 @@ bool StartAlwaysActiveTransactionForSession(ServerSessionRecord* session,
     return false;
   }
   engine_api::EngineBeginTransactionRequest begin;
-  begin.context = EngineContextForSession(*session, engine_state, request);
+  begin.context = EngineContextForSession(
+      *session, engine_state, request, retained_security_state);
   begin.context.local_transaction_id = 0;
   begin.context.transaction_uuid.canonical.clear();
   begin.context.snapshot_visible_through_local_transaction_id = 0;
@@ -2683,7 +2750,8 @@ std::vector<std::uint8_t> EncodeAuthHandoffPayloadForTest(const std::string& pri
                                                           bool mfa_required,
                                                           bool mfa_present,
                                                           const std::string& principal_uuid,
-                                                          const std::string& storage_authority) {
+                                                          const std::string& storage_authority,
+                                                          const std::string& credential_secret) {
   std::vector<std::uint8_t> out;
   PutUuid(&out, sbps::MakeUuidV7Bytes());
   out.push_back(credential_valid ? 1 : 0);
@@ -2694,18 +2762,28 @@ std::vector<std::uint8_t> EncodeAuthHandoffPayloadForTest(const std::string& pri
   PutString(&out, principal);
   PutString(&out, "default");
   PutString(&out, "en");
-  const std::string verifier = credential_valid
-      ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  std::string evidence = "scheme=local_password_v1;principal=" + principal;
-  if (!principal_uuid.empty()) {
-    evidence += ";principal_uuid=" + principal_uuid;
-    evidence += ";storage_authority=" +
-                (storage_authority.empty() ? std::string("mga_security_principal_lifecycle")
-                                           : storage_authority);
-    evidence += ";authorization_tags=right:CONNECT,right:OBS_MANAGEMENT_CONTROL";
+  std::string evidence;
+  if (credential_valid && !credential_secret.empty()) {
+    // A real password is deliberately unstructured. Engine authentication
+    // resolves the durable principal by name and verifies this secret against
+    // the stored PBKDF2 fingerprint. The structured form below is retained
+    // only for existing synthetic protocol fixtures.
+    evidence = credential_secret;
+  } else {
+    const std::string verifier = credential_valid
+        ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    evidence = "scheme=local_password_v1;principal=" + principal;
+    if (!principal_uuid.empty()) {
+      evidence += ";principal_uuid=" + principal_uuid;
+      evidence += ";storage_authority=" +
+                  (storage_authority.empty()
+                       ? std::string("mga_security_principal_lifecycle")
+                       : storage_authority);
+      evidence += ";authorization_tags=right:CONNECT,right:OBS_MANAGEMENT_CONTROL";
+    }
+    evidence += ";verifier=" + verifier;
   }
-  evidence += ";verifier=" + verifier;
   PutString(&out, evidence);
   return out;
 }
@@ -3308,6 +3386,19 @@ SessionOperationResult HandleAcquireStatementContext(
     ServerSessionRegistry* registry,
     const HostedEngineState& engine_state,
     const sbps::Frame& request) {
+  using AcquireClock = std::chrono::steady_clock;
+  std::vector<std::pair<std::string, std::uint64_t>> acquire_phase_micros;
+  auto acquire_phase_started = AcquireClock::now();
+  const auto mark_acquire_phase = [&](std::string phase) {
+    const auto finished = AcquireClock::now();
+    acquire_phase_micros.emplace_back(
+        std::move(phase),
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                finished - acquire_phase_started)
+                .count()));
+    acquire_phase_started = finished;
+  };
   SessionOperationResult result;
   result.response_message_type = static_cast<std::uint16_t>(
       sbps::MessageType::kAcquireStatementContextResult);
@@ -3453,6 +3544,47 @@ SessionOperationResult HandleAcquireStatementContext(
     }
     transaction = transaction_it->second;
   }
+  mark_acquire_phase("request_and_transaction_validation");
+
+  // A session's catalog epoch is statement-bound visibility authority, not an
+  // attach-time constant.  Ask the engine for its narrow epoch projection;
+  // materializing the full catalog/CRUD state here made every statement scan
+  // the database file when the legacy CRUD journal was absent.
+  {
+    auto catalog_context =
+        EngineCatalogEpochContextForSession(session, engine_state, request);
+    catalog_context.local_transaction_id = transaction.local_transaction_id;
+    catalog_context.transaction_uuid.canonical = transaction.transaction_uuid;
+    catalog_context.snapshot_visible_through_local_transaction_id =
+        transaction.snapshot_visible_through_local_transaction_id;
+    catalog_context.transaction_timestamp = transaction.transaction_timestamp;
+    const auto catalog = engine_api::LoadCatalogObjectLifecycleEpochState(
+        catalog_context);
+    if (!catalog.ok) {
+      return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED",
+                    catalog.diagnostic.message_key.empty()
+                        ? "catalog_visibility_snapshot_unavailable"
+                        : catalog.diagnostic.message_key);
+    }
+    std::lock_guard<std::mutex> guard(*session.transaction_mutex);
+    const auto live =
+        session.transactions_by_local_id.find(transaction.local_transaction_id);
+    if (live == session.transactions_by_local_id.end() ||
+        live->second.lifecycle_state !=
+            ServerTransactionLifecycleState::kActive ||
+        live->second.transaction_uuid != transaction.transaction_uuid) {
+      return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_TRANSACTION_INVALID",
+                    "transaction_changed_during_catalog_epoch_projection");
+    }
+    transaction = live->second;
+    session.catalog_generation = std::max<std::uint64_t>(
+        std::max<std::uint64_t>(1, session.catalog_generation),
+        catalog.state.metadata_epoch);
+    session.name_resolution_epoch = std::max<std::uint64_t>(
+        std::max<std::uint64_t>(1, session.name_resolution_epoch),
+        catalog.state.name_resolution_epoch);
+  }
+  mark_acquire_phase("catalog_epoch_projection");
 
   std::string ensure_detail;
   auto* public_context = EnsureServerPublicAbiSessionForContext(
@@ -3462,6 +3594,7 @@ SessionOperationResult HandleAcquireStatementContext(
                   ensure_detail.empty() ? "engine_session_missing"
                                         : std::move(ensure_detail));
   }
+  mark_acquire_phase("public_session_projection");
 
   auto engine_context = EngineContextForSession(session, engine_state, request);
   // The SBPS request UUID identifies transport work only. Statement identity
@@ -3538,6 +3671,7 @@ SessionOperationResult HandleAcquireStatementContext(
     acquire_request.variable_frame_selector.expected_coordinator_generation=
         GetU64(request.payload,kSuffix+36);
   }
+  mark_acquire_phase("acquire_request_projection");
   engine_bridge::StatementContextReceiptHandle receipt;
   engine_bridge::StatementContextReceiptView view;
   sb_engine_result_t engine_result = nullptr;
@@ -3556,6 +3690,7 @@ SessionOperationResult HandleAcquireStatementContext(
                   std::string("engine_status=") +
                       sb_engine_status_name(status));
   }
+  mark_acquire_phase("engine_receipt_acquire");
   if (variable_frame_acquire) {
     const auto coordination_uuid=UuidBytesToText(GetUuid(request.payload,
         kRequestBytes+4));
@@ -3594,6 +3729,7 @@ SessionOperationResult HandleAcquireStatementContext(
                     "statement_identity_already_owned");
     }
   }
+  mark_acquire_phase("server_receipt_publish");
 
   PutU16(&result.payload, projection_version);
   result.payload.push_back(1);
@@ -3837,6 +3973,24 @@ SessionOperationResult HandleAcquireStatementContext(
                           view.active_transaction_handle_bytes.end());
     PutU64(&result.payload,
            view.maximum_mga_relation_decoded_bytes_per_pass);
+  }
+  mark_acquire_phase("response_payload_projection");
+  if (const char* trace_path =
+          std::getenv("SCRATCHBIRD_STATEMENT_CONTEXT_PHASE_TRACE_FILE");
+      trace_path != nullptr && *trace_path != '\0') {
+    std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
+    if (trace) {
+      trace << "layer=server_statement_context_acquire"
+            << "\toperation=engine.statement_context.acquire"
+            << "\tenvelope_bytes=" << request.payload.size();
+      std::uint64_t total = 0;
+      for (const auto& [phase, micros] : acquire_phase_micros) {
+        trace << '\t' << phase << "_us=" << micros;
+        total += micros;
+      }
+      trace << "\ttotal_us=" << total
+            << "\tparent_success_barrier=passed\n";
+    }
   }
   result.accepted = true;
   ++public_context->reuse_count;
@@ -4453,7 +4607,36 @@ SessionOperationResult HandleFinalizeLiteralBinding(
   if(registry==nullptr||request.header.payload_schema_id!=sbps::kSchemaFinalizeLiteralBindingRequestV1||request.payload.size()<208||request.payload.size()>1036600||request.payload[0]!='S'||request.payload[1]!='B'||request.payload[2]!='L'||request.payload[3]!='F')return refuse("SBLR.OPERAND_INVALID","literal_finalize_frame_invalid");
   const auto preliminary_uuid=UuidBytesToText(GetUuid(request.payload,16));engine_bridge::StatementContextReceiptHandle receipt;
   {std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);const auto found=std::find_if(registry->statement_contexts_by_statement_uuid.begin(),registry->statement_contexts_by_statement_uuid.end(),[&](const auto& entry){return entry.second.view.receipt_uuid==preliminary_uuid&&entry.second.session_uuid==request.header.session_uuid;});if(found==registry->statement_contexts_by_statement_uuid.end())return refuse("DATATYPE.DESCRIPTOR_INVALID","preliminary_receipt_not_live");receipt=found->second.receipt;}
-  sb_engine_result_t engine_result=nullptr;const auto status=engine_bridge::FinalizeStatementLiteralBindingV1(receipt,request.payload,&result.payload,&engine_result);if(engine_result)(void)sb_engine_result_release(engine_result);if(status!=SB_ENGINE_STATUS_OK)return refuse("DATATYPE.DESCRIPTOR_INVALID",std::string("engine_status=")+sb_engine_status_name(status));result.accepted=true;return result;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::FinalizeStatementLiteralBindingV1(
+      receipt, request.payload, &result.payload, &engine_result);
+  std::string engine_code;
+  std::string engine_key;
+  std::string engine_detail;
+  if (engine_result != nullptr) {
+    sb_engine_diagnostic_set_view_t diagnostics{};
+    if (sb_engine_result_diagnostics(engine_result, &diagnostics) ==
+            SB_ENGINE_STATUS_OK &&
+        diagnostics.diagnostic_count != 0 && diagnostics.diagnostics != nullptr) {
+      const auto& diagnostic = diagnostics.diagnostics[0];
+      engine_code.assign(diagnostic.symbolic_code.data,
+                         diagnostic.symbolic_code.size_bytes);
+      engine_key.assign(diagnostic.message_key.data,
+                        diagnostic.message_key.size_bytes);
+      engine_detail.assign(diagnostic.safe_detail.data,
+                           diagnostic.safe_detail.size_bytes);
+    }
+    (void)sb_engine_result_release(engine_result);
+  }
+  if (status != SB_ENGINE_STATUS_OK) {
+    return refuse(
+        engine_code.empty() ? "DATATYPE.DESCRIPTOR_INVALID"
+                            : std::move(engine_code),
+        std::string("engine_status=") + sb_engine_status_name(status) +
+            ";key=" + engine_key + ";detail=" + engine_detail);
+  }
+  result.accepted = true;
+  return result;
 }
 
 SessionOperationResult HandleNegotiateParameterDescriptors(
@@ -6116,7 +6299,8 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
       auth_result.connection_security_context.authorization_trace_tags;
   std::string role_group_projection_rejection;
   if (!ApplyDurableAuthorizationProjectionToSession(&session,
-                                                    &role_group_projection_rejection)) {
+                                                    &role_group_projection_rejection,
+                                                    auth_result.durable_security_state.get())) {
     const std::string detail = role_group_projection_rejection.empty()
                                    ? "requested_role_rejected"
                                    : role_group_projection_rejection;
@@ -6425,9 +6609,16 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
   session.database_path = database->database_path;
   session.database_uuid = database->database_uuid;
   ApplyDatabaseHealthToSession(&session, *database);
+  // Attach needs one fresh, durable security snapshot. Reuse that same immutable
+  // snapshot for CONNECT authorization and initial-transaction admission so
+  // those two consumers cannot independently re-read and rehash the security
+  // lifecycle while still observing the exact same attach authority.
+  engine_api::EngineSecurityPrincipalLifecycleState attach_security_state;
   std::string role_group_projection_rejection;
   if (!ApplyDurableAuthorizationProjectionToSession(&session,
-                                                    &role_group_projection_rejection)) {
+                                                    &role_group_projection_rejection,
+                                                    nullptr,
+                                                    &attach_security_state)) {
     const std::string detail = role_group_projection_rejection.empty()
                                    ? "requested_role_rejected"
                                    : role_group_projection_rejection;
@@ -6448,7 +6639,8 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
     return result;
   }
   engine_api::EngineAuthorizeRequest authorize;
-  authorize.context = EngineContextForSession(session, engine_state, request);
+  authorize.context = EngineContextForSession(
+      session, engine_state, request, &attach_security_state);
   authorize.required_right = "CONNECT";
   authorize.target_database.uuid.canonical = session.database_uuid;
   authorize.target_database.object_kind = "database";
@@ -6480,7 +6672,8 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
                                               engine_state,
                                               request,
                                               &transaction_diagnostic_code,
-                                              &transaction_diagnostic_detail)) {
+                                              &transaction_diagnostic_detail,
+                                              &attach_security_state)) {
     const std::string detail = transaction_diagnostic_detail.empty()
                                    ? "transaction_begin_failed"
                                    : transaction_diagnostic_detail;
@@ -7964,7 +8157,905 @@ SessionOperationResult HandleCoordinateMerge(ServerSessionRegistry*registry,cons
 SessionOperationResult HandleCoordinateTableTruncate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=103;result.response_schema_id=sbps::kSchemaCoordinateTableTruncateResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.table_truncate_refused","Table truncate coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrTableTruncateRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrTableTruncateRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","table_truncate_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_table_truncate_compiler");auto q=engine_api::CompileSblrTableTruncateDescriptor(c,ru,v.occurrence,v.truncate_occurrence,r->view.table_truncate_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrTableTruncateDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("TABLE.TRUNCATE.ABORTED","TTRD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateTableAnalyze(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=105;result.response_schema_id=sbps::kSchemaCoordinateTableAnalyzeResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.table_analyze_refused","Table analyze coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrTableAnalyzeRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrTableAnalyzeRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","table_analyze_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_table_analyze_compiler");auto q=engine_api::CompileSblrTableAnalyzeDescriptor(c,ru,v.occurrence,v.analyze_occurrence,r->view.table_analyze_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrTableAnalyzeDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("TABLE.ANALYZE.ABORTED","TTAD_encode_failed");result.accepted=true;return result;}
 
-SessionOperationResult HandleCoordinateBulkImportStream(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=107;result.response_schema_id=sbps::kSchemaCoordinateBulkImportStreamResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.bulk_import_stream_refused","Bulk import stream coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrBulkImportStreamRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrBulkImportStreamRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","bulk_import_stream_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_bulk_import_stream_compiler");auto q=engine_api::CompileSblrBulkImportStreamDescriptor(c,ru,v.occurrence,v.import_occurrence,r->view.bulk_import_stream_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrBulkImportStreamDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("BULK.IMPORT.ABORTED","BIRD_encode_failed");result.accepted=true;return result;}
+SessionOperationResult HandleBindBulkImportStream(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  (void)engine_state;
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kBulkImportStreamBindAck);
+  result.response_schema_id = sbps::kSchemaBulkImportStreamBindAckV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string message_key,
+                          std::string detail) {
+    result.accepted = false;
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code),
+        message_key.empty() ? "parser_server_ipc.bulk_import_stream_bind_refused"
+                            : std::move(message_key),
+        "Bulk import stream binding was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+
+  if (registry == nullptr || registry->statement_context_mutex == nullptr ||
+      request.header.payload_schema_id != sbps::kSchemaBulkImportStreamBindV1) {
+    return refuse("SBLR.OPERAND_INVALID", {}, "bulk_import.bind.schema_invalid");
+  }
+  scratchbird::wire::sbps_bulk_import::Bind decoded;
+  std::string detail;
+  if (!scratchbird::wire::sbps_bulk_import::DecodeBind(
+          request.payload.data(), request.payload.size(), &decoded, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", {}, std::move(detail));
+  }
+  std::vector<scratchbird::wire::sbps_bulk_import::BindTargetNameAtom> atoms;
+  if (!scratchbird::wire::sbps_bulk_import::DecodeBindTargetNameAtoms(
+          decoded.target_name_atom_vector, &atoms, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", {}, std::move(detail));
+  }
+
+  const auto session = registry->sessions_by_uuid.find(
+      UuidBytesToText(request.header.session_uuid));
+  if (session == registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
+  }
+  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  engine_bridge::StatementContextReceiptHandle receipt_handle;
+  bool receipt_released = false;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto receipt = std::find_if(
+        registry->statement_contexts_by_statement_uuid.begin(),
+        registry->statement_contexts_by_statement_uuid.end(),
+        [&](const auto& entry) {
+          return entry.second.view.receipt_uuid == receipt_uuid;
+        });
+    if (receipt == registry->statement_contexts_by_statement_uuid.end() ||
+        receipt->second.session_uuid != request.header.session_uuid) {
+      return refuse("SECURITY.ACCESS_DENIED", {},
+                    "bulk_import_bind_receipt_hidden");
+    }
+    receipt_handle = receipt->second.receipt;
+    receipt_released = receipt->second.released;
+  }
+  if (receipt_released || !receipt_handle) {
+    return refuse("MGA.TRANSACTION_INVALID", {},
+                  "bulk_import_bind_receipt_ended");
+  }
+
+  engine_bridge::StatementBulkImportBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = receipt_uuid;
+  bind_request.command_surface_id = decoded.command_surface_id;
+  bind_request.structural_occurrence = decoded.structural_occurrence;
+  bind_request.import_occurrence = decoded.import_occurrence;
+  bind_request.target_name_atoms.reserve(atoms.size());
+  for (const auto& atom : atoms) {
+    bind_request.target_name_atoms.push_back(
+        {atom.raw_utf8, atom.quoted});
+  }
+  bind_request.input_format_demand = decoded.input_format_demand;
+  bind_request.character_encoding_demand =
+      decoded.character_encoding_demand;
+  bind_request.conversion_policy_demand = decoded.conversion_policy_demand;
+  bind_request.null_default_policy_demand =
+      decoded.null_default_policy_demand;
+  bind_request.reject_policy_demand = decoded.reject_policy_demand;
+  bind_request.maximum_rejected_rows = decoded.maximum_rejected_rows;
+  bind_request.syntax_demand_sha256 = decoded.syntax_demand_sha256;
+  bind_request.exact_bind_request_bytes = request.payload;
+
+  engine_bridge::StatementBulkImportBindAckV1 bridge_ack;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::BindStatementBulkImportAuthorityV1(
+      receipt_handle, &bind_request, &bridge_ack, &engine_result);
+  std::string engine_code;
+  std::string engine_key;
+  std::string engine_detail;
+  const bool engine_result_present = engine_result != nullptr;
+  sb_engine_status_t engine_diagnostics_status = SB_ENGINE_STATUS_OK;
+  if (engine_result != nullptr) {
+    sb_engine_diagnostic_set_view_t diagnostics{};
+    engine_diagnostics_status =
+        sb_engine_result_diagnostics(engine_result, &diagnostics);
+    if (engine_diagnostics_status == SB_ENGINE_STATUS_OK &&
+        diagnostics.diagnostic_count != 0 && diagnostics.diagnostics != nullptr) {
+      const auto& diagnostic = diagnostics.diagnostics[0];
+      engine_code.assign(diagnostic.symbolic_code.data,
+                         diagnostic.symbolic_code.size_bytes);
+      engine_key.assign(diagnostic.message_key.data,
+                        diagnostic.message_key.size_bytes);
+      engine_detail.assign(diagnostic.safe_detail.data,
+                           diagnostic.safe_detail.size_bytes);
+    }
+    (void)sb_engine_result_release(engine_result);
+  }
+  if (status != SB_ENGINE_STATUS_OK) {
+    if (engine_code.empty()) {
+      engine_code = bridge_ack.failure_code;
+      engine_key = bridge_ack.failure_message_key;
+      engine_detail = bridge_ack.failure_detail;
+    }
+    if (engine_code.empty()) {
+      engine_code =
+          status == SB_ENGINE_STATUS_SECURITY_DENIED
+              ? "SECURITY.ACCESS_DENIED"
+              : status == SB_ENGINE_STATUS_TIMEOUT
+                    ? "PROCESS.CANCELLED"
+                    : status == SB_ENGINE_STATUS_RESOURCE_EXHAUSTED
+                          ? "RESOURCE.BUDGET_EXCEEDED"
+                          : status == SB_ENGINE_STATUS_CONFLICT
+                                ? "MGA.AUTHORITY_MISMATCH"
+                                : "SBLR.OPERAND_INVALID";
+    }
+    if (engine_detail.empty()) {
+      engine_detail = std::string("engine_status=") +
+                      sb_engine_status_name(status) +
+                      ";engine_result=" +
+                      (engine_result_present ? "present" : "missing") +
+                      ";diagnostics_status=" +
+                      sb_engine_status_name(engine_diagnostics_status);
+    }
+    return refuse(std::move(engine_code), std::move(engine_key),
+                  std::move(engine_detail));
+  }
+
+  scratchbird::wire::sbps_bulk_import::BindAck decoded_ack;
+  if (bridge_ack.exact_bind_ack_bytes.empty() ||
+      !scratchbird::wire::sbps_bulk_import::DecodeBindAck(
+          bridge_ack.exact_bind_ack_bytes.data(),
+          bridge_ack.exact_bind_ack_bytes.size(), &decoded_ack, &detail) ||
+      decoded_ack.authenticated_receipt_uuid !=
+          decoded.authenticated_receipt_uuid ||
+      decoded_ack.structural_occurrence != decoded.structural_occurrence ||
+      decoded_ack.import_occurrence != decoded.import_occurrence ||
+      decoded_ack.syntax_demand_sha256 != decoded.syntax_demand_sha256 ||
+      UuidBytesToText(decoded_ack.binding_uuid) != bridge_ack.binding_uuid ||
+      decoded_ack.binding_generation != bridge_ack.binding_generation ||
+      decoded_ack.binding_evidence_sha256 !=
+          bridge_ack.binding_evidence_sha256) {
+    return refuse("BULK.IMPORT.ABORTED", {},
+                  detail.empty() ? "bulk_import.bind.engine_ack_invalid"
+                                 : std::move(detail));
+  }
+  result.payload = std::move(bridge_ack.exact_bind_ack_bytes);
+  result.accepted = true;
+  return result;
+}
+
+namespace {
+
+struct BulkImportTransportAdmission {
+  bool ok = false;
+  std::string diagnostic_code;
+  std::string detail;
+  std::shared_ptr<const HostedDatabaseRuntime> runtime;
+  engine_bridge::StatementBulkImportAuthorityV1 authority;
+  engine_api::EngineRequestContext engine_context;
+  engine_api::BulkImportStreamEntry stream;
+  std::string session_key;
+};
+
+void ReadFirstEngineDiagnostic(sb_engine_result_t engine_result,
+                               std::string* code,
+                               std::string* detail) {
+  if (engine_result == nullptr) return;
+  sb_engine_diagnostic_set_view_t diagnostics{};
+  if (sb_engine_result_diagnostics(engine_result, &diagnostics) ==
+          SB_ENGINE_STATUS_OK &&
+      diagnostics.diagnostic_count != 0 && diagnostics.diagnostics != nullptr) {
+    const auto& diagnostic = diagnostics.diagnostics[0];
+    if (code != nullptr) {
+      code->assign(diagnostic.symbolic_code.data,
+                   diagnostic.symbolic_code.size_bytes);
+    }
+    if (detail != nullptr) {
+      detail->assign(diagnostic.safe_detail.data,
+                     diagnostic.safe_detail.size_bytes);
+      if (detail->empty()) {
+        detail->assign(diagnostic.message_key.data,
+                       diagnostic.message_key.size_bytes);
+      }
+    }
+  }
+  (void)sb_engine_result_release(engine_result);
+}
+
+std::string BulkImportRegistryDiagnostic(std::string_view error) {
+  if (error == "chunk_conflict") return "BULK.IMPORT.CHUNK_CONFLICT";
+  if (error == "seal_conflict" || error == "allocation_authority_conflict")
+    return "BULK.IMPORT.RECOVERY_CONFLICT";
+  if (error == "unknown_stream" || error == "stream_identity_required" ||
+      error == "stream_identity_conflict")
+    return "BULK.IMPORT.STREAM_IDENTITY_MISMATCH";
+  if (error == "chunk_sequence_or_offset_invalid" ||
+      error == "seal_tuple_invalid")
+    return "BULK.IMPORT.CHUNK_SEQUENCE_INVALID";
+  if (error == "content_hash_mismatch")
+    return "BULK.IMPORT.CONTENT_HASH_MISMATCH";
+  if (error == "chunk_limit_invalid") return "RESOURCE.BUDGET_EXCEEDED";
+  if (error == "payload_hash_mismatch" || error == "chunk_chain_mismatch" ||
+      error == "seal_evidence_invalid")
+    return "BULK.IMPORT.STREAM_PACKET_INVALID";
+  return "BULK.IMPORT.ABORTED";
+}
+
+bool BulkImportAllocationMatchesAuthority(
+    const engine_api::BulkImportStreamAllocation& allocation,
+    const engine_bridge::StatementBulkImportAuthorityV1& authority) {
+  return allocation.authenticated_receipt_uuid ==
+             TextToUuid(authority.acknowledgement.authenticated_receipt_uuid) &&
+         allocation.structural_occurrence ==
+             authority.acknowledgement.structural_occurrence &&
+         allocation.import_occurrence ==
+             authority.acknowledgement.import_occurrence &&
+         allocation.target_relation_uuid ==
+             TextToUuid(authority.target_relation_uuid) &&
+         allocation.target_relation_generation ==
+             authority.target_relation_generation &&
+         allocation.owning_transaction_uuid ==
+             TextToUuid(authority.owning_transaction_uuid) &&
+         allocation.owning_local_transaction_id ==
+             authority.owning_local_transaction_id &&
+         allocation.statement_snapshot_uuid ==
+             TextToUuid(authority.statement_snapshot_uuid) &&
+         allocation.catalog_epoch_uuid == TextToUuid(authority.catalog_epoch_uuid) &&
+         allocation.catalog_generation == authority.catalog_generation &&
+         allocation.security_context_uuid ==
+             TextToUuid(authority.security_context_uuid) &&
+         allocation.security_epoch == authority.security_epoch &&
+         allocation.policy_snapshot_uuid ==
+             TextToUuid(authority.import_policy_snapshot_uuid) &&
+         allocation.policy_generation == authority.import_policy_generation &&
+         allocation.route_snapshot_uuid ==
+             TextToUuid(authority.import_route_snapshot_uuid) &&
+         allocation.route_generation == authority.import_route_generation &&
+         allocation.row_shape_uuid == TextToUuid(authority.row_shape_uuid) &&
+         allocation.row_shape_generation == authority.row_shape_generation &&
+         allocation.column_descriptor_set_sha256 ==
+             authority.column_descriptor_set_sha256 &&
+         allocation.import_policy_bundle_sha256 ==
+             authority.import_policy_bundle_sha256 &&
+         allocation.resource_grant_uuid ==
+             TextToUuid(authority.resource_grant_uuid) &&
+         allocation.resource_grant_generation ==
+             authority.resource_grant_generation &&
+         allocation.cluster_bound == authority.cluster_bound &&
+         allocation.cluster_epoch == authority.cluster_epoch &&
+         allocation.cluster_fence_uuid ==
+             TextToUuid(authority.cluster_fence_uuid) &&
+         allocation.executor_availability_generation ==
+             authority.executor_availability_generation &&
+         allocation.effective_maximum_stream_bytes ==
+             authority.maximum_stream_bytes &&
+         allocation.effective_maximum_chunk_count ==
+             authority.maximum_chunk_count &&
+         allocation.effective_maximum_chunk_bytes ==
+             authority.maximum_chunk_bytes &&
+         allocation.effective_maximum_rows ==
+             authority.maximum_affected_plus_rejected_rows &&
+         allocation.effective_maximum_target_columns ==
+             authority.maximum_target_columns;
+}
+
+bool ParseCanonicalBulkImportUuid(
+    std::string_view text,
+    scratchbird::engine::sblr::BulkImportUuid* output,
+    bool allow_nil = false) {
+  if (output == nullptr) return false;
+  const auto parsed = TextToUuid(text);
+  if (sbps::IsZeroUuid(parsed)) {
+    if (allow_nil && text.empty()) {
+      *output = {};
+      return true;
+    }
+    return false;
+  }
+  if (UuidBytesToText(parsed) != text) return false;
+  *output = parsed;
+  return true;
+}
+
+bool CopyBulkImportAuthorityInput(
+    const engine_bridge::StatementBulkImportAuthorityV1& source,
+    engine_api::SblrBulkImportStreamAuthorityInputV1* output) {
+  if (output == nullptr) return false;
+  engine_api::SblrBulkImportStreamAuthorityInputV1 value;
+  value.admitted_command_surface_id = source.admitted_command_surface_id;
+  value.binding_generation = source.acknowledgement.binding_generation;
+  value.structural_occurrence =
+      source.acknowledgement.structural_occurrence;
+  value.import_occurrence = source.acknowledgement.import_occurrence;
+  value.syntax_demand_sha256 = source.acknowledgement.syntax_demand_sha256;
+  value.binding_evidence_sha256 =
+      source.acknowledgement.binding_evidence_sha256;
+  value.target_relation_generation = source.target_relation_generation;
+  value.owning_local_transaction_id =
+      source.owning_local_transaction_id;
+  value.catalog_generation = source.catalog_generation;
+  value.security_epoch = source.security_epoch;
+  value.policy_generation = source.import_policy_generation;
+  value.import_policy_bundle_sha256 = source.import_policy_bundle_sha256;
+  value.route_generation = source.import_route_generation;
+  value.row_shape_generation = source.row_shape_generation;
+  value.column_descriptor_set_sha256 = source.column_descriptor_set_sha256;
+  value.resource_grant_generation = source.resource_grant_generation;
+  value.cluster_bound = source.cluster_bound;
+  value.cluster_epoch = source.cluster_epoch;
+  value.executor_availability_generation =
+      source.executor_availability_generation;
+  value.effective_maximum_stream_bytes = source.maximum_stream_bytes;
+  value.effective_maximum_chunk_count = source.maximum_chunk_count;
+  value.effective_maximum_chunk_bytes = source.maximum_chunk_bytes;
+  value.effective_maximum_rows =
+      source.maximum_affected_plus_rejected_rows;
+  value.effective_maximum_target_columns = source.maximum_target_columns;
+  if (!ParseCanonicalBulkImportUuid(
+          source.acknowledgement.authenticated_receipt_uuid,
+          &value.authenticated_receipt_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.acknowledgement.binding_uuid,
+                                    &value.binding_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.target_relation_uuid,
+                                    &value.target_relation_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.owning_transaction_uuid,
+                                    &value.owning_transaction_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.statement_snapshot_uuid,
+                                    &value.statement_snapshot_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.catalog_epoch_uuid,
+                                    &value.catalog_epoch_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.security_context_uuid,
+                                    &value.security_context_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.import_policy_snapshot_uuid,
+                                    &value.policy_snapshot_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.import_route_snapshot_uuid,
+                                    &value.route_snapshot_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.row_shape_uuid,
+                                    &value.row_shape_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.resource_grant_uuid,
+                                    &value.resource_grant_uuid) ||
+      !ParseCanonicalBulkImportUuid(source.cluster_fence_uuid,
+                                    &value.cluster_fence_uuid,
+                                    !source.cluster_bound)) {
+    return false;
+  }
+  *output = std::move(value);
+  return true;
+}
+
+BulkImportTransportAdmission AdmitBulkImportTransport(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request,
+    const scratchbird::engine::sblr::BulkImportUuid& receipt_uuid,
+    const scratchbird::engine::sblr::BulkImportUuid& stream_uuid,
+    std::optional<std::pair<std::uint64_t, std::uint32_t>> requested_occurrence) {
+  BulkImportTransportAdmission admitted;
+  const auto fail = [&](std::string code, std::string detail) {
+    admitted.diagnostic_code = std::move(code);
+    admitted.detail = std::move(detail);
+    return admitted;
+  };
+  if (registry == nullptr || registry->statement_context_mutex == nullptr)
+    return fail("BULK.IMPORT.ABORTED", "bulk_import.registry_unavailable");
+
+  const auto session_key = UuidBytesToText(request.header.session_uuid);
+  admitted.session_key = session_key;
+  const auto session = registry->sessions_by_uuid.find(session_key);
+  if (session == registry->sessions_by_uuid.end())
+    return fail("SECURITY.ACCESS_DENIED", "session_hidden");
+  const auto receipt_text = UuidBytesToText(receipt_uuid);
+  ServerStatementContextRecord receipt;
+  bool found_receipt = false;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found = std::find_if(
+        registry->statement_contexts_by_statement_uuid.begin(),
+        registry->statement_contexts_by_statement_uuid.end(),
+        [&](const auto& entry) {
+          return entry.second.view.receipt_uuid == receipt_text;
+        });
+    if (found != registry->statement_contexts_by_statement_uuid.end() &&
+        found->second.session_uuid == request.header.session_uuid) {
+      receipt = found->second;
+      found_receipt = true;
+    }
+  }
+  if (!found_receipt)
+    return fail("SECURITY.ACCESS_DENIED", "bulk_import_stream_receipt_hidden");
+  if (receipt.released || !receipt.receipt)
+    return fail("MGA.TRANSACTION_INVALID", "bulk_import_stream_receipt_ended");
+
+  const auto& live_session = session->second;
+  if (live_session.transaction_mutex == nullptr)
+    return fail("MGA.TRANSACTION_INVALID", "bulk_import_stream_transaction_invalid");
+  {
+    std::lock_guard<std::mutex> guard(*live_session.transaction_mutex);
+    const auto transaction = live_session.transactions_by_local_id.find(
+        receipt.owning_local_transaction_id);
+    if (transaction == live_session.transactions_by_local_id.end() ||
+        transaction->second.lifecycle_state !=
+            ServerTransactionLifecycleState::kActive ||
+        transaction->second.transaction_uuid != receipt.owning_transaction_uuid) {
+      return fail("MGA.TRANSACTION_INVALID",
+                  "bulk_import_stream_transaction_invalid");
+    }
+  }
+
+  admitted.runtime = FindHostedDatabaseRuntime(
+      engine_state, live_session.database_uuid);
+  if (!admitted.runtime || !admitted.runtime->bulk_import_stream_registry ||
+      !admitted.runtime->bulk_import_stream_registry->healthy()) {
+    return fail("BULK.IMPORT.ABORTED", "bulk_import_stream_registry_unavailable");
+  }
+
+  const auto recovered =
+      admitted.runtime->bulk_import_stream_registry->Recover(stream_uuid,
+                                                              &admitted.stream);
+  if (!recovered.ok) {
+    return fail(BulkImportRegistryDiagnostic(recovered.error), recovered.error);
+  }
+  const auto& allocation = admitted.stream.allocation;
+  if (allocation.authenticated_receipt_uuid != receipt_uuid ||
+      (requested_occurrence &&
+       (allocation.structural_occurrence != requested_occurrence->first ||
+        allocation.import_occurrence != requested_occurrence->second))) {
+    return fail("BULK.IMPORT.STREAM_IDENTITY_MISMATCH",
+                "bulk_import_stream_occurrence_mismatch");
+  }
+
+  sb_engine_result_t authority_result = nullptr;
+  const auto authority_status = engine_bridge::CopyStatementBulkImportAuthorityV1(
+      receipt.receipt, allocation.structural_occurrence,
+      allocation.import_occurrence, &admitted.authority, &authority_result);
+  std::string authority_code;
+  std::string authority_detail;
+  ReadFirstEngineDiagnostic(authority_result, &authority_code, &authority_detail);
+  if (authority_status != SB_ENGINE_STATUS_OK) {
+    return fail(authority_code.empty() ? "SECURITY.ACCESS_DENIED"
+                                       : std::move(authority_code),
+                authority_detail.empty() ? "bulk_import_stream_authority_hidden"
+                                         : std::move(authority_detail));
+  }
+  if (admitted.authority.acknowledgement.authenticated_receipt_uuid !=
+          receipt_text ||
+      admitted.authority.owning_local_transaction_id !=
+          receipt.owning_local_transaction_id ||
+      admitted.authority.owning_transaction_uuid !=
+          receipt.owning_transaction_uuid) {
+    return fail("MGA.AUTHORITY_MISMATCH",
+                "bulk_import_stream_receipt_authority_mismatch");
+  }
+
+  sb_engine_result_t context_result = nullptr;
+  const auto context_status = engine_bridge::CopyStatementContextEngineContextV1(
+      receipt.receipt, &admitted.engine_context, &context_result);
+  std::string context_code;
+  std::string context_detail;
+  ReadFirstEngineDiagnostic(context_result, &context_code, &context_detail);
+  if (context_status != SB_ENGINE_STATUS_OK) {
+    return fail("MGA.TRANSACTION_INVALID",
+                context_detail.empty() ? "bulk_import_stream_receipt_ended"
+                                       : std::move(context_detail));
+  }
+  const auto& context = admitted.engine_context;
+  if (context.database_uuid.canonical != live_session.database_uuid ||
+      context.session_uuid.canonical != session_key ||
+      context.statement_receipt_uuid.canonical != receipt_text ||
+      context.transaction_uuid.canonical !=
+          admitted.authority.owning_transaction_uuid ||
+      context.local_transaction_id !=
+          admitted.authority.owning_local_transaction_id ||
+      context.statement_snapshot_uuid.canonical !=
+          admitted.authority.statement_snapshot_uuid ||
+      context.catalog_epoch_uuid.canonical !=
+          admitted.authority.catalog_epoch_uuid ||
+      context.catalog_generation_id != admitted.authority.catalog_generation ||
+      context.authorization_context.authority_uuid.canonical !=
+          admitted.authority.security_context_uuid ||
+      context.authorization_context.security_epoch !=
+          admitted.authority.security_epoch ||
+      context.resource_admission_uuid.canonical !=
+          admitted.authority.resource_grant_uuid ||
+      context.resource_epoch != admitted.authority.resource_grant_generation) {
+    return fail("MGA.AUTHORITY_MISMATCH",
+                "bulk_import_stream_live_authority_mismatch");
+  }
+  if (allocation.descriptor_evidence ==
+          scratchbird::engine::sblr::BulkImportSha{} ||
+      !BulkImportAllocationMatchesAuthority(allocation, admitted.authority)) {
+    return fail("BULK.IMPORT.GENERATION_CONFLICT",
+                "bulk_import_stream_allocation_authority_mismatch");
+  }
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return fail("PROCESS.CANCELLED",
+                "bulk_import_stream_cancelled_before_durable_mutation");
+  }
+  admitted.ok = true;
+  return admitted;
+}
+
+}  // namespace
+
+SessionOperationResult HandleAppendBulkImportStream(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kBulkImportStreamChunkAck);
+  result.response_schema_id = sbps::kSchemaBulkImportStreamChunkAckV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.bulk_import_stream_chunk_refused",
+        "Bulk import stream chunk append was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  if (request.header.payload_schema_id !=
+      sbps::kSchemaBulkImportStreamChunkV1) {
+    return refuse("BULK.IMPORT.STREAM_PACKET_INVALID",
+                  "bulk_import_stream_chunk_schema_invalid");
+  }
+  scratchbird::wire::sbps_bulk_import::Chunk decoded;
+  std::string detail;
+  if (!scratchbird::wire::sbps_bulk_import::DecodeChunk(
+          request.payload.data(), request.payload.size(), &decoded, &detail)) {
+    return refuse("BULK.IMPORT.STREAM_PACKET_INVALID", std::move(detail));
+  }
+  auto admitted = AdmitBulkImportTransport(
+      registry, engine_state, request, decoded.authenticated_receipt_uuid,
+      decoded.stream_uuid,
+      std::make_pair(decoded.structural_occurrence,
+                     decoded.import_occurrence));
+  if (!admitted.ok)
+    return refuse(std::move(admitted.diagnostic_code), std::move(admitted.detail));
+  if (decoded.stream_generation != admitted.stream.allocation.stream_generation ||
+      decoded.descriptor_evidence !=
+          admitted.stream.allocation.descriptor_evidence) {
+    return refuse("BULK.IMPORT.STREAM_IDENTITY_MISMATCH",
+                  "bulk_import_stream_descriptor_mismatch");
+  }
+  engine_api::BulkImportChunk chunk;
+  chunk.authenticated_receipt_uuid = decoded.authenticated_receipt_uuid;
+  chunk.stream_uuid = decoded.stream_uuid;
+  chunk.stream_generation = decoded.stream_generation;
+  chunk.structural_occurrence = decoded.structural_occurrence;
+  chunk.import_occurrence = decoded.import_occurrence;
+  chunk.descriptor_evidence = decoded.descriptor_evidence;
+  chunk.sequence = decoded.chunk_sequence;
+  chunk.byte_offset = decoded.byte_offset;
+  chunk.previous_chain_sha = decoded.previous_chain_sha256;
+  chunk.payload_sha = decoded.payload_sha256;
+  chunk.chain_sha = decoded.chunk_chain_sha256;
+  chunk.payload = decoded.chunk_payload;
+  const auto live_session =
+      registry->sessions_by_uuid.find(admitted.session_key);
+  if (live_session == registry->sessions_by_uuid.end() ||
+      live_session->second.transaction_mutex == nullptr) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "bulk_import_stream_transaction_ended");
+  }
+  std::unique_lock<std::mutex> transaction_guard(
+      *live_session->second.transaction_mutex);
+  const auto transaction = live_session->second.transactions_by_local_id.find(
+      admitted.authority.owning_local_transaction_id);
+  if (transaction == live_session->second.transactions_by_local_id.end() ||
+      transaction->second.lifecycle_state !=
+          ServerTransactionLifecycleState::kActive ||
+      transaction->second.transaction_uuid !=
+          admitted.authority.owning_transaction_uuid) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "bulk_import_stream_transaction_ended");
+  }
+  if (admitted.engine_context.query_cancellation_requested &&
+      admitted.engine_context.query_cancellation_requested()) {
+    return refuse("PROCESS.CANCELLED",
+                  "bulk_import_stream_cancelled_before_durable_append");
+  }
+  const auto appended =
+      admitted.runtime->bulk_import_stream_registry->Append(chunk);
+  if (!appended.ok)
+    return refuse(BulkImportRegistryDiagnostic(appended.error), appended.error);
+  scratchbird::wire::sbps_bulk_import::ChunkAck ack;
+  if (appended.response_wire.empty() ||
+      !scratchbird::wire::sbps_bulk_import::DecodeChunkAck(
+          appended.response_wire.data(), appended.response_wire.size(), &ack,
+          &detail) ||
+      ack.stream_uuid != decoded.stream_uuid ||
+      ack.stream_generation != decoded.stream_generation ||
+      ack.accepted_sequence != decoded.chunk_sequence ||
+      ack.accepted_total_bytes !=
+          decoded.byte_offset + decoded.chunk_payload.size() ||
+      ack.accepted_chain_sha256 != decoded.chunk_chain_sha256) {
+    return refuse("BULK.IMPORT.ABORTED",
+                  detail.empty() ? "bulk_import_stream_chunk_ack_invalid"
+                                 : std::move(detail));
+  }
+  result.payload = appended.response_wire;
+  result.accepted = true;
+  return result;
+}
+
+SessionOperationResult HandleSealBulkImportStream(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kBulkImportStreamSealAck);
+  result.response_schema_id = sbps::kSchemaBulkImportStreamSealAckV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.bulk_import_stream_seal_refused",
+        "Bulk import stream seal was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  if (request.header.payload_schema_id != sbps::kSchemaBulkImportStreamSealV1) {
+    return refuse("BULK.IMPORT.STREAM_PACKET_INVALID",
+                  "bulk_import_stream_seal_schema_invalid");
+  }
+  scratchbird::wire::sbps_bulk_import::Seal decoded;
+  std::string detail;
+  if (!scratchbird::wire::sbps_bulk_import::DecodeSeal(
+          request.payload.data(), request.payload.size(), &decoded, &detail)) {
+    return refuse("BULK.IMPORT.STREAM_PACKET_INVALID", std::move(detail));
+  }
+  auto admitted = AdmitBulkImportTransport(
+      registry, engine_state, request, decoded.authenticated_receipt_uuid,
+      decoded.stream_uuid, std::nullopt);
+  if (!admitted.ok)
+    return refuse(std::move(admitted.diagnostic_code), std::move(admitted.detail));
+  if (decoded.stream_generation != admitted.stream.allocation.stream_generation ||
+      decoded.descriptor_evidence !=
+          admitted.stream.allocation.descriptor_evidence) {
+    return refuse("BULK.IMPORT.STREAM_IDENTITY_MISMATCH",
+                  "bulk_import_stream_descriptor_mismatch");
+  }
+  engine_api::BulkImportSeal seal;
+  seal.authenticated_receipt_uuid = decoded.authenticated_receipt_uuid;
+  seal.stream_uuid = decoded.stream_uuid;
+  seal.stream_generation = decoded.stream_generation;
+  seal.descriptor_evidence = decoded.descriptor_evidence;
+  seal.final_chunk_count = decoded.final_chunk_count;
+  seal.total_stream_bytes = decoded.total_stream_bytes;
+  seal.final_chain_sha = decoded.final_chain_sha256;
+  seal.content_sha = decoded.content_sha256;
+  seal.seal_request_evidence = decoded.seal_request_evidence_sha256;
+  const auto live_session =
+      registry->sessions_by_uuid.find(admitted.session_key);
+  if (live_session == registry->sessions_by_uuid.end() ||
+      live_session->second.transaction_mutex == nullptr) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "bulk_import_stream_transaction_ended");
+  }
+  std::unique_lock<std::mutex> transaction_guard(
+      *live_session->second.transaction_mutex);
+  const auto transaction = live_session->second.transactions_by_local_id.find(
+      admitted.authority.owning_local_transaction_id);
+  if (transaction == live_session->second.transactions_by_local_id.end() ||
+      transaction->second.lifecycle_state !=
+          ServerTransactionLifecycleState::kActive ||
+      transaction->second.transaction_uuid !=
+          admitted.authority.owning_transaction_uuid) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "bulk_import_stream_transaction_ended");
+  }
+  if (admitted.engine_context.query_cancellation_requested &&
+      admitted.engine_context.query_cancellation_requested()) {
+    return refuse("PROCESS.CANCELLED",
+                  "bulk_import_stream_cancelled_before_durable_seal");
+  }
+  const auto sealed = admitted.runtime->bulk_import_stream_registry->Seal(seal);
+  if (!sealed.ok)
+    return refuse(BulkImportRegistryDiagnostic(sealed.error), sealed.error);
+  scratchbird::wire::sbps_bulk_import::SealAck ack;
+  if (sealed.response_wire.empty() ||
+      !scratchbird::wire::sbps_bulk_import::DecodeSealAck(
+          sealed.response_wire.data(), sealed.response_wire.size(), &ack,
+          &detail) ||
+      ack.stream_uuid != decoded.stream_uuid ||
+      ack.stream_generation != decoded.stream_generation ||
+      ack.durable_spool_uuid !=
+          admitted.stream.allocation.durable_spool_uuid ||
+      ack.durable_spool_generation !=
+          admitted.stream.allocation.durable_spool_generation ||
+      ack.chunk_count != decoded.final_chunk_count ||
+      ack.total_stream_bytes != decoded.total_stream_bytes ||
+      ack.final_chain_sha256 != decoded.final_chain_sha256 ||
+      ack.content_sha256 != decoded.content_sha256) {
+    return refuse("BULK.IMPORT.ABORTED",
+                  detail.empty() ? "bulk_import_stream_seal_ack_invalid"
+                                 : std::move(detail));
+  }
+  result.payload = sealed.response_wire;
+  result.accepted = true;
+  return result;
+}
+
+SessionOperationResult HandleCoordinateBulkImportStream(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kCoordinateBulkImportStreamResult);
+  result.response_schema_id =
+      sbps::kSchemaCoordinateBulkImportStreamResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.bulk_import_stream_refused",
+        "Bulk import stream coordination was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  if (registry == nullptr || registry->statement_context_mutex == nullptr ||
+      request.header.payload_schema_id !=
+          sbps::kSchemaCoordinateBulkImportStreamRequestV1) {
+    return refuse("SBLR.OPERAND_INVALID", "BIRQ_schema_invalid");
+  }
+  scratchbird::engine::sblr::SblrBulkImportStreamRequestV1 decoded;
+  std::string detail;
+  if (!scratchbird::engine::sblr::DecodeSblrBulkImportStreamRequestV1(
+          request.payload.data(), request.payload.size(), &decoded, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", std::move(detail));
+  }
+
+  const auto session_key = UuidBytesToText(request.header.session_uuid);
+  const auto session = registry->sessions_by_uuid.find(session_key);
+  if (session == registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
+  }
+  const auto receipt_text = UuidBytesToText(decoded.receipt);
+  ServerStatementContextRecord receipt;
+  bool found_receipt = false;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found = std::find_if(
+        registry->statement_contexts_by_statement_uuid.begin(),
+        registry->statement_contexts_by_statement_uuid.end(),
+        [&](const auto& entry) {
+          return entry.second.view.receipt_uuid == receipt_text;
+        });
+    if (found != registry->statement_contexts_by_statement_uuid.end() &&
+        found->second.session_uuid == request.header.session_uuid) {
+      receipt = found->second;
+      found_receipt = true;
+    }
+  }
+  if (!found_receipt) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "bulk_import_stream_receipt_hidden");
+  }
+  if (receipt.released || !receipt.receipt ||
+      receipt.owning_local_transaction_id == 0 ||
+      receipt.owning_transaction_uuid.empty()) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "bulk_import_stream_receipt_ended");
+  }
+  auto& live_session = session->second;
+  if (live_session.transaction_mutex == nullptr) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "bulk_import_stream_transaction_invalid");
+  }
+  std::unique_lock<std::mutex> transaction_guard(
+      *live_session.transaction_mutex);
+  const auto transaction = live_session.transactions_by_local_id.find(
+      receipt.owning_local_transaction_id);
+  if (transaction == live_session.transactions_by_local_id.end() ||
+      transaction->second.lifecycle_state !=
+          ServerTransactionLifecycleState::kActive ||
+      transaction->second.transaction_uuid != receipt.owning_transaction_uuid) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "bulk_import_stream_transaction_invalid");
+  }
+
+  engine_bridge::StatementBulkImportAuthorityV1 authority;
+  sb_engine_result_t authority_result = nullptr;
+  const auto authority_status =
+      engine_bridge::CopyStatementBulkImportAuthorityV1(
+          receipt.receipt, decoded.occurrence, decoded.import_occurrence,
+          &authority, &authority_result);
+  std::string authority_code;
+  std::string authority_detail;
+  ReadFirstEngineDiagnostic(authority_result, &authority_code,
+                            &authority_detail);
+  if (authority_status != SB_ENGINE_STATUS_OK) {
+    return refuse(authority_code.empty() ? "SECURITY.ACCESS_DENIED"
+                                         : std::move(authority_code),
+                  authority_detail.empty()
+                      ? "bulk_import_stream_authority_hidden"
+                      : std::move(authority_detail));
+  }
+  if (authority.acknowledgement.authenticated_receipt_uuid != receipt_text ||
+      authority.acknowledgement.structural_occurrence != decoded.occurrence ||
+      authority.acknowledgement.import_occurrence !=
+          decoded.import_occurrence ||
+      authority.owning_local_transaction_id !=
+          receipt.owning_local_transaction_id ||
+      authority.owning_transaction_uuid != receipt.owning_transaction_uuid ||
+      authority.executor_availability_generation !=
+          receipt.view.bulk_import_stream_executor_availability_generation) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "bulk_import_stream_receipt_authority_mismatch");
+  }
+
+  engine_api::SblrBulkImportStreamAuthorityInputV1 neutral_authority;
+  if (!CopyBulkImportAuthorityInput(authority, &neutral_authority) ||
+      neutral_authority.authenticated_receipt_uuid != decoded.receipt) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "bulk_import_stream_private_authority_invalid");
+  }
+  engine_api::EngineRequestContext engine_context;
+  sb_engine_result_t context_result = nullptr;
+  const auto context_status =
+      engine_bridge::CopyStatementContextEngineContextV1(
+          receipt.receipt, &engine_context, &context_result);
+  std::string context_code;
+  std::string context_detail;
+  ReadFirstEngineDiagnostic(context_result, &context_code, &context_detail);
+  if (context_status != SB_ENGINE_STATUS_OK) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  context_detail.empty() ? "bulk_import_stream_receipt_ended"
+                                         : std::move(context_detail));
+  }
+  if (engine_context.database_uuid.canonical != live_session.database_uuid ||
+      engine_context.session_uuid.canonical != session_key ||
+      engine_context.statement_receipt_uuid.canonical != receipt_text ||
+      engine_context.transaction_uuid.canonical !=
+          receipt.owning_transaction_uuid ||
+      engine_context.local_transaction_id !=
+          receipt.owning_local_transaction_id) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "bulk_import_stream_live_context_mismatch");
+  }
+
+  const auto runtime =
+      FindHostedDatabaseRuntime(engine_state, live_session.database_uuid);
+  if (!runtime || !runtime->bulk_import_stream_registry ||
+      !runtime->bulk_import_stream_registry->healthy()) {
+    return refuse("BULK.IMPORT.RECOVERY_CONFLICT",
+                  "bulk_import_stream_registry_unavailable");
+  }
+  engine_context.trace_tags.push_back("private_bulk_import_stream_compiler");
+  const auto coordinated =
+      engine_api::CoordinateDurableSblrBulkImportStreamDescriptorV1(
+          engine_context, *runtime->bulk_import_stream_registry,
+          neutral_authority);
+  if (!coordinated.ok) {
+    return refuse(
+        coordinated.diagnostic.code.empty() ? "BULK.IMPORT.ABORTED"
+                                            : coordinated.diagnostic.code,
+        coordinated.diagnostic.detail.empty()
+            ? coordinated.diagnostic.message_key
+            : coordinated.diagnostic.detail);
+  }
+  result.payload =
+      scratchbird::engine::sblr::EncodeSblrBulkImportStreamDescriptorV1(
+          coordinated.descriptor, false);
+  scratchbird::engine::sblr::SblrBulkImportStreamDescriptorV1 verified;
+  if (result.payload.size() !=
+          scratchbird::engine::sblr::BulkImportWireLayout::descriptor_size ||
+      !scratchbird::engine::sblr::DecodeSblrBulkImportStreamDescriptorV1(
+          result.payload.data(), result.payload.size(), &verified, &detail,
+          false) ||
+      verified.evidence != coordinated.allocation.descriptor_evidence ||
+      verified.availability_generation !=
+          authority.executor_availability_generation) {
+    result.payload.clear();
+    return refuse("BULK.IMPORT.RECOVERY_CONFLICT",
+                  detail.empty() ? "BIRD_replay_invalid" : std::move(detail));
+  }
+  result.accepted = true;
+  return result;
+}
 SessionOperationResult HandleCoordinateBulkExportStream(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=109;result.response_schema_id=sbps::kSchemaCoordinateBulkExportStreamResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.bulk_export_stream_refused","Bulk export stream coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrBulkExportStreamRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrBulkExportStreamRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","bulk_export_stream_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_bulk_export_stream_compiler");auto q=engine_api::CompileSblrBulkExportStreamDescriptor(c,ru,v.occurrence,v.export_occurrence,r->view.bulk_export_stream_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrBulkExportStreamDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("BULK.EXPORT.ABORTED","BERD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateStatementBatch(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=111;result.response_schema_id=sbps::kSchemaCoordinateStatementBatchResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.statement_batch_refused","Statement batch coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrStatementBatchRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrStatementBatchRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","statement_batch_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_statement_batch_compiler");auto q=engine_api::CompileSblrStatementBatchDescriptor(c,ru,v.occurrence,1,r->view.statement_batch_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrStatementBatchDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("STATEMENT.BATCH.ABORTED","SBDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateAtomicCas(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=113;result.response_schema_id=sbps::kSchemaCoordinateAtomicCasResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.atomic_cas_refused","Atomic CAS coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrAtomicCasRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrAtomicCasRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","atomic_cas_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_atomic_cas_compiler");auto q=engine_api::CompileSblrAtomicCasDescriptor(c,ru,v.occurrence,v.cas_occurrence,r->view.atomic_cas_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrAtomicCasDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("ATOMIC.CAS.ABORTED","CASD_encode_failed");result.accepted=true;return result;}

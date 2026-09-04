@@ -20,7 +20,9 @@ has been promoted out of the in-progress states (`inventory_only`,
 `engine_runtime_implemented`) into a final state with row-specific
 function/API operation id and fixture evidence:
 
-- native_now rows MUST reach `e2e_passed`.
+- native_now rows MUST reach `e2e_passed`, or `exact_refusal_passed` when the
+  row carries an exact canonical diagnostic plus no-SBLR, no-result, and
+  no-mutation evidence for an unavailable authoritative engine route.
 - native_future rows MUST reach `e2e_passed` (after SBSFC-003 promotion) or
   must have been removed from the canonical SBsql surface registry by spec
   change.
@@ -124,6 +126,7 @@ def main() -> int:
     seen_ids: set[str] = set()
     state_violations: list[str] = []
     native_now_state_violations: list[str] = []
+    native_now_refusal_evidence_violations: list[str] = []
     native_future_state_violations: list[str] = []
     cluster_private_state_violations: list[str] = []
     function_id_violations: list[str] = []
@@ -160,7 +163,7 @@ def main() -> int:
         if cluster_private_public_row:
             if state not in {"exact_refusal_passed", "private_profile_implemented"}:
                 cluster_private_state_violations.append(surface_id)
-        elif status == "native_now" and state != "e2e_passed":
+        elif status == "native_now" and state not in {"e2e_passed", "exact_refusal_passed"}:
             native_now_state_violations.append(surface_id)
         if status == "native_future" and state != "e2e_passed":
             native_future_state_violations.append(surface_id)
@@ -170,6 +173,38 @@ def main() -> int:
                 function_id_violations.append(surface_id)
             if row["fixture_evidence"] in FORBIDDEN_FIXTURE_VALUES:
                 fixture_violations.append(surface_id)
+            if state == "exact_refusal_passed":
+                diagnostic = row["diagnostic_evidence"]
+                combined = ";".join(
+                    row[column]
+                    for column in (
+                        "function_or_api_operation_id",
+                        "diagnostic_evidence",
+                        "fixture_evidence",
+                        "engine_runtime_evidence",
+                    )
+                )
+                diagnostic_tokens = (token.strip() for token in diagnostic.split(";"))
+                has_concrete_diagnostic = any(
+                    token
+                    and "=" not in token
+                    and "." in token
+                    and token == token.upper()
+                    for token in diagnostic_tokens
+                )
+                required_refusal_proofs = (
+                    has_concrete_diagnostic,
+                    "canonical_message_vector_set" in diagnostic,
+                    "executable_sblr_emitted=false" in combined,
+                    "exact_refusal=true" in combined or "accepted=false" in combined,
+                    "engine_dispatch_not_reached=true" in combined
+                    or "result_published=false" in combined,
+                    "catalog_mutation=false" in combined
+                    or "no_catalog_mutation" in combined
+                    or "no_mutation" in combined,
+                )
+                if not all(required_refusal_proofs):
+                    native_now_refusal_evidence_violations.append(surface_id)
 
         if cluster_private_public_row:
             if row["fixture_evidence"] in FORBIDDEN_FIXTURE_VALUES:
@@ -184,7 +219,11 @@ def main() -> int:
     print(f"  current_state_distribution={dict(Counter(r['current_state'] for r in ledger))}")
     print(f"  unknown_state_rows={len(unknown_state_rows)}")
     print(f"  rows_not_in_final_state={len(state_violations)}")
-    print(f"  native_now_not_e2e_passed={len(native_now_state_violations)}")
+    print(f"  native_now_not_e2e_or_exact_refusal={len(native_now_state_violations)}")
+    print(
+        "  native_now_exact_refusal_evidence_invalid="
+        f"{len(native_now_refusal_evidence_violations)}"
+    )
     print(f"  native_future_not_e2e_passed={len(native_future_state_violations)}")
     print(f"  cluster_private_not_exact_refusal_or_private_profile={len(cluster_private_state_violations)}")
     print(f"  native_now_function_or_api_operation_id_grey={len(function_id_violations)}")
@@ -195,6 +234,7 @@ def main() -> int:
         unknown_state_rows
         or state_violations
         or native_now_state_violations
+        or native_now_refusal_evidence_violations
         or native_future_state_violations
         or cluster_private_state_violations
         or function_id_violations
@@ -206,6 +246,8 @@ def main() -> int:
         sample = sorted(set(
             unknown_state_rows[:3]
             + state_violations[:3]
+            + native_now_state_violations[:3]
+            + native_now_refusal_evidence_violations[:3]
             + function_id_violations[:3]
             + fixture_violations[:3]
         ))[:6]

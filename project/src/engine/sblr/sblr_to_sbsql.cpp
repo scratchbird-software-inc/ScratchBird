@@ -9,6 +9,9 @@
 #include "sblr_to_sbsql.hpp"
 
 #include "sblr_opcode_registry.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "sblr_transaction_commit_runtime.hpp"
+#include "sblr_transaction_rollback_runtime.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
 
 #include <cctype>
@@ -160,6 +163,20 @@ bool ValidateSourcePolicy(const SblrOperationEnvelope& envelope,
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REDACTED",
         "Source-preserving SBLR-to-SBsql conversion cannot use redacted artifacts"));
+    return false;
+  }
+  if (source.contains_sql_text) {
+    result->ok = false;
+    result->diagnostics.push_back(Diagnostic(
+        "SB_SBLR_SOURCE_ARTIFACT_SQL_TEXT_FORBIDDEN",
+        "Source-preserving SBLR-to-SBsql conversion cannot consume retained SQL text"));
+    return false;
+  }
+  if (!source.render_metadata_only || source.raw_sql_text_authoritative) {
+    result->ok = false;
+    result->diagnostics.push_back(Diagnostic(
+        "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_POLICY_UNSUPPORTED",
+        "Source-preserving SBLR-to-SBsql conversion requires non-authoritative render-only metadata"));
     return false;
   }
   if (source.policy_status != "non_authoritative_render_metadata") {
@@ -697,8 +714,33 @@ SblrToSbsqlResult RenderCatalogGetDescriptor(const SblrOperationEnvelope& envelo
 
 SblrToSbsqlResult RenderTransactionSimpleControl(const SblrOperationEnvelope& envelope) {
   SblrToSbsqlResult result;
-  if (!RequireRenderFamily(envelope, "source_preserving_transaction_control_v1",
+  const bool exact_begin =
+      IsOperation(envelope, "engine.op.txn_begin", "SBLR_TXN_BEGIN");
+  const bool exact_commit =
+      IsOperation(envelope, "engine.op.txn_commit", "SBLR_TXN_COMMIT");
+  const bool exact_rollback =
+      IsOperation(envelope, "engine.op.txn_rollback", "SBLR_TXN_ROLLBACK");
+  if (!exact_begin && !exact_commit && !exact_rollback &&
+      !RequireRenderFamily(envelope,
+                           "source_preserving_transaction_control_v1",
                            &result)) {
+    return result;
+  }
+
+  if (exact_begin) {
+    const auto* operand = FindOperand(envelope, "options");
+    SblrTransactionBeginOptionsV1 options;
+    std::string detail;
+    if (operand == nullptr ||
+        !DecodeSblrTransactionBeginOptionsV1(
+            operand->value_body.data(), operand->value_body.size(), &options,
+            &detail) ||
+        options.read_mode != 1 || options.authority_scope != 1) {
+      return Refuse("SB_SBLR_TO_SBSQL_OPERAND_UNSUPPORTED",
+                    "SBLR-to-SBsql transaction begin rendering supports the exact local read-write profile only");
+    }
+    result.ok = true;
+    result.sbsql_text = "BEGIN TRANSACTION;";
     return result;
   }
 
@@ -739,6 +781,23 @@ SblrToSbsqlResult RenderTransactionSimpleControl(const SblrOperationEnvelope& en
                   "SBLR-to-SBsql transaction route supports read_write and read_only modes only");
   }
 
+  if (exact_commit) {
+    const auto* operand = FindOperand(envelope, "options");
+    SblrTransactionCommitOptionsV1 options;
+    std::string detail;
+    if (operand == nullptr ||
+        !DecodeSblrTransactionCommitOptionsV1(
+            operand->value_body.data(), operand->value_body.size(), &options,
+            &detail) ||
+        options.commit_mode != 1 || options.authority_scope != 1) {
+      return Refuse("SB_SBLR_TO_SBSQL_OPERAND_UNSUPPORTED",
+                    "SBLR-to-SBsql transaction commit rendering supports the exact local durable-normal profile only");
+    }
+    result.ok = true;
+    result.sbsql_text = "COMMIT;";
+    return result;
+  }
+
   if (IsAnyOperation(envelope, "transaction.commit", "SBLR_TRANSACTION_COMMIT",
                      "transaction.txn_commit", "SBLR_TXN_COMMIT")) {
     if (!RequireOperand(envelope, "transaction_context_uuid",
@@ -748,6 +807,23 @@ SblrToSbsqlResult RenderTransactionSimpleControl(const SblrOperationEnvelope& en
     }
     result.ok = true;
     result.sbsql_text = "COMMIT;";
+    return result;
+  }
+
+  if (exact_rollback) {
+    const auto* operand = FindOperand(envelope, "options");
+    SblrTransactionRollbackOptionsV1 options;
+    std::string detail;
+    if (operand == nullptr ||
+        !DecodeSblrTransactionRollbackOptionsV1(
+            operand->value_body.data(), operand->value_body.size(), &options,
+            &detail) ||
+        options.rollback_mode != 1 || options.authority_scope != 1) {
+      return Refuse("SB_SBLR_TO_SBSQL_OPERAND_UNSUPPORTED",
+                    "SBLR-to-SBsql transaction rollback rendering supports the exact local full-rollback profile only");
+    }
+    result.ok = true;
+    result.sbsql_text = "ROLLBACK;";
     return result;
   }
 
@@ -881,12 +957,15 @@ SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const SblrOperationEnvelope& envelop
                   "SBLR_CATALOG_GET_DESCRIPTOR")) {
     return RenderCatalogGetDescriptor(envelope);
   }
-  if (IsAnyOperation(envelope, "transaction.begin", "SBLR_TRANSACTION_BEGIN",
+  if (IsOperation(envelope, "engine.op.txn_begin", "SBLR_TXN_BEGIN") ||
+      IsAnyOperation(envelope, "transaction.begin", "SBLR_TRANSACTION_BEGIN",
                      "transaction.txn_begin", "SBLR_TXN_BEGIN") ||
       IsOperation(envelope, "transaction.set_characteristics",
                   "SBLR_TRANSACTION_SET_CHARACTERISTICS") ||
+      IsOperation(envelope, "engine.op.txn_commit", "SBLR_TXN_COMMIT") ||
       IsAnyOperation(envelope, "transaction.commit", "SBLR_TRANSACTION_COMMIT",
                      "transaction.txn_commit", "SBLR_TXN_COMMIT") ||
+      IsOperation(envelope, "engine.op.txn_rollback", "SBLR_TXN_ROLLBACK") ||
       IsAnyOperation(envelope, "transaction.rollback", "SBLR_TRANSACTION_ROLLBACK",
                      "transaction.txn_rollback", "SBLR_TXN_ROLLBACK")) {
     return RenderTransactionSimpleControl(envelope);

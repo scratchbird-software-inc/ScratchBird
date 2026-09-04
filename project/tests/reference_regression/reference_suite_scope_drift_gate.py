@@ -140,7 +140,6 @@ def validate_harness(repo_root: pathlib.Path, family: str, harness_root: pathlib
         if row["tool_exists"] == "yes":
             native_tool_rows += 1
             locator = repo_root / row["tool_locator"]
-            require(locator.exists(), f"{context}: declared native tool missing: {locator}")
             require(row["tool_kind"] == "file", f"{context}: native tool kind must be file")
             require(int(row["tool_file_count"]) > 0, f"{context}: native tool file count is zero")
             require(int(row["tool_total_bytes"]) > 0, f"{context}: native tool bytes is zero")
@@ -148,6 +147,14 @@ def validate_harness(repo_root: pathlib.Path, family: str, harness_root: pathlib
                     f"{context}: native tool digest must be sha256")
             require("engine retains" in row["parser_authority_rule"],
                     f"{context}: native tool authority rule must preserve engine authority")
+            # Native reference tools are external, ignored local installations.
+            # The scope manifest records their acquired shape even when this
+            # checkout has no runnable tool; execution gates classify that
+            # condition as a skip rather than packaging a donor binary.
+            if locator.exists():
+                require(locator.is_file(), f"{context}: installed native tool is not a file")
+                require(locator.stat().st_size == int(row["tool_total_bytes"]),
+                        f"{context}: installed native tool size drift")
         else:
             require(row["tool_locator"] == "no_compiled_tool_packaged",
                     f"{context}: non-tool row must not point at a payload")

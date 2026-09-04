@@ -31,13 +31,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from live_auth_fixture import (
-    DEFAULT_PRINCIPAL_UUID,
-    local_password_evidence as cli_password_evidence,
-    write_local_password_auth_fixture,
-)
 from sbsql_sbwp_tls_engine_auth_route_smoke import (
-    BENCHMARK_VERIFIER,
     FEATURE_BULK_REJECTS,
     FEATURE_STREAMING,
     MSG_COMMAND_COMPLETE,
@@ -59,17 +53,19 @@ from sbsql_sbwp_tls_engine_auth_route_smoke import (
     decode_ready,
     expect_frame,
     expect_ready_after_command,
-    expect_ready_after_copy,
     generate_server_cert,
     query_payload,
     recv_frame,
     send_frame,
 )
+from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD
 
 
 USER = "benchmark_user"
 DATABASE_NAME = "default"
-VERIFIER = BENCHMARK_VERIFIER.decode("ascii")
+# The approved example seeder accepts this fixed fixture password and writes
+# the matching local-password authority record used by both sb_isql and SBWP.
+VERIFIER = PUBLIC_TEST_PASSWORD
 PERSIST_TABLE_PLAIN = "copy_plain_persist"
 ROLLBACK_TABLE_PLAIN = "copy_plain_rollback"
 PERSIST_TABLE_TLS = "copy_tls_persist"
@@ -150,16 +146,6 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> None:
         proc.wait(timeout=4)
 
 
-def write_auth_store(database: Path) -> None:
-    write_local_password_auth_fixture(
-        database,
-        USER,
-        VERIFIER,
-        DEFAULT_PRINCIPAL_UUID,
-        "right:CONNECT",
-    )
-
-
 def start_route(
     args: argparse.Namespace,
     root: Path,
@@ -176,14 +162,19 @@ def start_route(
     endpoint = server_control / "s.sock"
     port = find_free_port()
     root.mkdir(parents=True, exist_ok=True)
-    write_auth_store(database)
-
+    if not database.exists():
+        if not args.example_db_seeder:
+            raise CopyPersistenceError("missing database and no approved example database seeder")
+        subprocess.check_call(
+            [args.example_db_seeder, str(database), USER, PUBLIC_TEST_PASSWORD],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     server = subprocess.Popen(
         [
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -252,7 +243,6 @@ def quote_sql_path(path: Path) -> str:
 
 
 def isql_args(args: argparse.Namespace, route: StartedRoute) -> list[str]:
-    evidence = cli_password_evidence(USER, VERIFIER)
     return [
         args.sb_isql,
         str(route.database),
@@ -262,7 +252,7 @@ def isql_args(args: argparse.Namespace, route: StartedRoute) -> list[str]:
         "-U",
         USER,
         "-P",
-        evidence,
+        PUBLIC_TEST_PASSWORD,
     ]
 
 
@@ -452,6 +442,47 @@ def execute_query(
     return sequence, rows, ready_txn
 
 
+def expect_ready_after_bulk_import(
+    sock: ssl.SSLSocket,
+    expected_rows: int,
+) -> tuple[bytes, int]:
+    """Require the exact command-only opcode-775 completion contract."""
+
+    saw_complete = False
+    expected_tag = f"COPY {expected_rows}".encode("ascii")
+    while True:
+        msg_type, payload, _, txn_id = recv_frame(sock)
+        if msg_type in (MSG_ROW_DESCRIPTION, MSG_DATA_ROW):
+            raise RouteError(
+                "opcode-775 COPY fabricated a SQL rowset instead of returning "
+                "its canonical bulk mutation completion"
+            )
+        if msg_type == MSG_COMMAND_COMPLETE:
+            if saw_complete:
+                raise RouteError("opcode-775 COPY emitted duplicate COMMAND_COMPLETE frames")
+            if len(payload) < 21 or payload[:4] != b"\x01\x00\x00\x00":
+                raise RouteError(f"COPY completion carrier header is invalid: {payload!r}")
+            affected_rows = struct.unpack_from("<Q", payload, 4)[0]
+            reserved = struct.unpack_from("<Q", payload, 12)[0]
+            if reserved != 0 or payload[-1] != 0 or b"\x00" in payload[20:-1]:
+                raise RouteError(f"COPY completion carrier shape is invalid: {payload!r}")
+            tag = payload[20:-1]
+            if affected_rows != expected_rows or tag != expected_tag:
+                raise RouteError(
+                    "COPY completion did not preserve the exact affected-row result: "
+                    f"rows={affected_rows} tag={tag!r} expected={expected_tag!r}"
+                )
+            saw_complete = True
+            continue
+        if msg_type == MSG_READY:
+            if not saw_complete:
+                raise RouteError("opcode-775 COPY reached READY without COMMAND_COMPLETE")
+            return payload, txn_id
+        if msg_type == MSG_ERROR:
+            raise RouteError(f"COPY failed with ERROR payload {payload!r}")
+        raise RouteError(f"unexpected COPY frame 0x{msg_type:02x} payload={payload!r}")
+
+
 def commit_txn(sock: ssl.SSLSocket, sequence: int, attachment: bytes, txn_id: int, label: str) -> tuple[int, int]:
     send_frame(sock, MSG_TXN_COMMIT, sequence, b"\x00\x00\x00\x00", attachment=attachment, txn_id=txn_id)
     sequence += 1
@@ -483,6 +514,7 @@ def copy_from_fixture(
     txn_id: int,
     table: str,
     fixture: Path,
+    expected_rows: int,
 ) -> tuple[int, int]:
     send_frame(
         sock,
@@ -494,10 +526,17 @@ def copy_from_fixture(
     )
     sequence += 1
     copy_in_payload, _, _ = expect_frame(sock, MSG_COPY_IN_RESPONSE)
-    if len(copy_in_payload) != 5 or copy_in_payload[0] != 0:
-        raise RouteError(f"COPY_IN_RESPONSE did not advertise canonical row-field text: {copy_in_payload!r}")
-    if struct.unpack_from("<I", copy_in_payload, 1)[0] == 0:
-        raise RouteError("COPY_IN_RESPONSE advertised a zero-byte COPY window")
+    if len(copy_in_payload) != 5 or copy_in_payload[0] != 2:
+        raise RouteError(
+            "COPY_IN_RESPONSE did not advertise opcode-775 "
+            f"canonical_csv_default_v1: {copy_in_payload!r}"
+        )
+    copy_window = struct.unpack_from("<I", copy_in_payload, 1)[0]
+    if copy_window == 0 or copy_window > 8_388_608:
+        raise RouteError(
+            "COPY_IN_RESPONSE advertised an invalid opcode-775 chunk window: "
+            f"{copy_window}"
+        )
     send_frame(
         sock,
         MSG_COPY_DATA,
@@ -509,7 +548,7 @@ def copy_from_fixture(
     sequence += 1
     send_frame(sock, MSG_COPY_DONE, sequence, b"", attachment=attachment, txn_id=txn_id)
     sequence += 1
-    ready_payload, frame_txn = expect_ready_after_copy(sock)
+    ready_payload, frame_txn = expect_ready_after_bulk_import(sock, expected_rows)
     status, ready_txn = decode_ready(ready_payload)
     if status == 0 or ready_txn == 0 or frame_txn == 0:
         raise RouteError("COPY completion did not leave active MGA transaction")
@@ -529,16 +568,10 @@ def authenticate_tls(port: int) -> tuple[ssl.SSLSocket, bytes, int, int]:
 
 
 def tls_password_evidence() -> bytes:
-    return (
-        b"scheme=local_password_v1;principal="
-        + USER.encode("utf-8")
-        + b";principal_uuid="
-        + DEFAULT_PRINCIPAL_UUID.encode("ascii")
-        + b";storage_authority=mga_security_principal_lifecycle"
-        + b";authorization_tags=right:CONNECT"
-        + b";verifier="
-        + BENCHMARK_VERIFIER
-    )
+    # Seeded databases authenticate the bootstrap credential through the
+    # durable PBKDF2 fingerprint path.  Structured evidence is intentionally
+    # rejected there because it would carry a password secret.
+    return VERIFIER.encode("ascii")
 
 
 def byte_rows_to_text(rows: list[list[bytes | None]]) -> list[list[str | None]]:
@@ -615,6 +648,7 @@ def run_tls_copy_lane(args: argparse.Namespace, work: Path, fixtures: Path) -> N
                 txn_id,
                 PERSIST_TABLE_TLS,
                 fixtures / "copy_persist.rows",
+                3,
             )
             sequence, txn_id = commit_txn(sock, sequence, attachment, txn_id, "TLS COPY persist COMMIT")
             sequence, _, txn_id = execute_query(
@@ -633,6 +667,7 @@ def run_tls_copy_lane(args: argparse.Namespace, work: Path, fixtures: Path) -> N
                 txn_id,
                 ROLLBACK_TABLE_TLS,
                 fixtures / "copy_rollback.rows",
+                2,
             )
             sequence, txn_id = rollback_txn(sock, sequence, attachment, txn_id, "TLS COPY rollback ROLLBACK")
             send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
@@ -662,6 +697,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--listener", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--example-db-seeder", required=True)
     parser.add_argument("--fixture-root", required=True)
     parser.add_argument("--openssl", required=True)
     parser.add_argument("--work-dir", required=True)

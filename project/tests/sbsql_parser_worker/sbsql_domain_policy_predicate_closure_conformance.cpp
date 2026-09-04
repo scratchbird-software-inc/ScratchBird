@@ -100,6 +100,7 @@ std::string DomainUuid(unsigned ordinal) {
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
                                         const std::string& database_uuid) {
   api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-domain-policy-predicate-closure";
   context.database_path = path.string();
   context.database_uuid.canonical = database_uuid;
@@ -112,6 +113,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:CATALOG_MUTATE");
+  context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("domain_policy_predicate_closure");
   return context;
 }

@@ -356,6 +356,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("PHASE7M");
   context.trace_tags.push_back("performance-baseline");
@@ -372,6 +376,7 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcod
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "PHASE7M");
   envelope.opcode_code = registry_entry->code;
   envelope.result_shape = registry_entry->result_contract;
+  envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid = "019e07f0-0000-7000-8000-000000000010";
   envelope.registry_snapshot_uuid = "019e07f0-0000-7000-8000-000000000011";
   envelope.contains_sql_text = false;
@@ -486,7 +491,7 @@ BaselineTransaction BeginTransaction(const std::filesystem::path& database_path,
 
   sblr::SblrOperand operand;
   operand.ordinal = 1;
-  operand.type = "transaction.begin.options";
+  operand.type = "transaction.begin_options";
   operand.name = "options";
   operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
   operand.value_body = std::move(body);
@@ -594,6 +599,12 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path,
   table_request.table_columns.push_back(Column(0, "id", "text", "01"));
   table_request.table_columns.push_back(Column(1, "note", "text", "02"));
   const auto table = api::EngineCreateTable(table_request);
+  if (!table.ok) {
+    for (const auto& diagnostic : table.diagnostics) {
+      std::cerr << "table create diagnostic: " << diagnostic.code << ':'
+                << diagnostic.detail << '\n';
+    }
+  }
   Require(table.ok, "engine-owned table create failed");
   Require(table.table_object.uuid.canonical == kTableUuid,
           "table UUID not preserved");

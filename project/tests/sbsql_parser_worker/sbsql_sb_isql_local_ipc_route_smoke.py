@@ -25,10 +25,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from live_auth_fixture import local_password_evidence, write_local_password_auth_fixture
-
-
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+PASSWORD = "ScratchBird-E2E-2026!"
 
 
 class SmokeError(RuntimeError):
@@ -68,7 +65,14 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> None:
 
 
 def dump_logs(work: Path) -> None:
-    for name in ("server.out", "server.err", "sb_isql.out", "sb_isql.err"):
+    for name in (
+        "database-seed.out",
+        "database-seed.err",
+        "server.out",
+        "server.err",
+        "sb_isql.out",
+        "sb_isql.err",
+    ):
         path = work / name
         if path.exists():
             print(f"--- {name} ---", file=sys.stderr)
@@ -79,6 +83,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seeder", required=True)
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args()
 
@@ -89,14 +94,21 @@ def main() -> int:
         server_control = work / "sc"
         server_runtime = work / "sr"
         endpoint = server_control / "s.sock"
-        write_local_password_auth_fixture(database, "alice", VERIFIER)
+
+        seeded = subprocess.run(
+            [args.database_seeder, str(database), "alice", PASSWORD],
+            stdout=(work / "database-seed.out").open("wb"),
+            stderr=(work / "database-seed.err").open("wb"),
+            check=False,
+        )
+        if seeded.returncode != 0 or not database.is_file():
+            raise SmokeError(f"approved database seeder exited {seeded.returncode}")
 
         server = subprocess.Popen(
             [
                 args.server,
                 "--foreground",
                 "--no-listeners",
-                "--create-if-missing",
                 "--control-dir",
                 str(server_control),
                 "--runtime-dir",
@@ -111,7 +123,6 @@ def main() -> int:
         )
         wait_for_path(endpoint)
 
-        evidence = local_password_evidence("alice", VERIFIER)
         completed = subprocess.run(
             [
                 args.sb_isql,
@@ -123,7 +134,7 @@ def main() -> int:
                 "-U",
                 "alice",
                 "-P",
-                evidence,
+                PASSWORD,
                 "-q",
                 "-A",
                 "-t",

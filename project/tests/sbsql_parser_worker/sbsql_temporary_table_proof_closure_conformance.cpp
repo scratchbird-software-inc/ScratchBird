@@ -411,7 +411,7 @@ void RequireRejectedTemporarySql(std::string_view sql) {
           "TEMP-TABLE-GATE-001 unsupported temporary shape was admitted");
 }
 
-void RequireDropTableExactLoweringForTemporaryCleanup() {
+void RequireDropTableExactRefusalWithoutEngineDescriptor() {
   const auto artifacts = RunPipelineWithResolvedObjectUuids(
       "DROP TABLE session_customer;",
       {std::string(kTableUuid), "019f0000-0000-7000-8000-000000440012"});
@@ -426,50 +426,31 @@ void RequireDropTableExactLoweringForTemporaryCleanup() {
           "TEMP-TABLE-GATE-015 DROP TABLE AST failed");
   Require(artifacts.bound.bound,
           "TEMP-TABLE-GATE-015 DROP TABLE bind failed");
-  Require(artifacts.verifier.admitted,
-          "TEMP-TABLE-GATE-015 DROP TABLE verifier rejected exact route");
-  Require(artifacts.envelope.operation_id == "ddl.drop_object",
-          "TEMP-TABLE-GATE-015 DROP TABLE operation id drifted");
-  Require(artifacts.envelope.engine_api_operation_id == "ddl.drop_object",
-          "TEMP-TABLE-GATE-015 DROP TABLE engine API operation id drifted");
-  Require(artifacts.envelope.sblr_opcode == "SBLR_DDL_DROP_OBJECT",
-          "TEMP-TABLE-GATE-015 DROP TABLE opcode drifted");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.ddl_drop_object_api_required"),
-          "TEMP-TABLE-GATE-015 DROP TABLE API authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.name_registry_retirement_required"),
-          "TEMP-TABLE-GATE-015 DROP TABLE name registry authority missing");
+  Require(!artifacts.verifier.admitted &&
+              artifacts.envelope.messages.has_errors(),
+          "TEMP-TABLE-GATE-015 parser-authored DROP TABLE was admitted without an engine descriptor");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal",
+          "TEMP-TABLE-GATE-015 DROP TABLE refusal operation id drifted");
+  Require(artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "TEMP-TABLE-GATE-015 DROP TABLE unexpectedly selected an engine API");
+  Require(artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+          "TEMP-TABLE-GATE-015 DROP TABLE refusal opcode drifted");
+  Require(std::ranges::any_of(
+              artifacts.envelope.messages.diagnostics,
+              [](const auto& diagnostic) {
+                return diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE";
+              }),
+          "TEMP-TABLE-GATE-015 DROP TABLE exact refusal diagnostic missing");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "TEMP-TABLE-GATE-015 DROP TABLE parser no-SQL authority missing");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"catalog_envelope_kind\":\"drop_object_ddl\""),
-          "TEMP-TABLE-GATE-015 DROP TABLE missing drop-object payload");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"catalog_authority\":\"sys.catalog.table\""),
-          "TEMP-TABLE-GATE-015 DROP TABLE missing table catalog authority");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"target_object_kind\":\"table\""),
-          "TEMP-TABLE-GATE-015 DROP TABLE missing target table kind");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"drop_target_uuid\":\"") +
-                       std::string(kTableUuid) + "\""),
-          "TEMP-TABLE-GATE-015 DROP TABLE missing target UUID");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"name_registry_retirement_required\":true"),
-          "TEMP-TABLE-GATE-015 DROP TABLE missing retirement evidence");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"parser_executes_sql\":false"),
-          "TEMP-TABLE-GATE-015 DROP TABLE parser SQL execution drifted");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"target_name_text_included\":false") &&
-              Contains(artifacts.envelope.payload,
-                       "\"sql_text_included\":false"),
-          "TEMP-TABLE-GATE-015 DROP TABLE carried SQL/name text authority");
-  Require(!Contains(artifacts.envelope.payload, "session_customer") &&
-              !Contains(artifacts.envelope.payload, "DROP TABLE"),
-          "TEMP-TABLE-GATE-015 DROP TABLE embedded SQL/name text as authority");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.parser.no_executable_sblr"),
+          "TEMP-TABLE-GATE-015 DROP TABLE executable-SBLR refusal authority missing");
+  Require(artifacts.envelope.payload.empty(),
+          "TEMP-TABLE-GATE-015 DROP TABLE refusal carried parser-authored payload authority");
+  Require(artifacts.envelope.resolved_object_uuids.empty(),
+          "TEMP-TABLE-GATE-015 DROP TABLE refusal retained parser-supplied object UUID authority");
 }
 
 std::filesystem::path TestDatabasePath() {
@@ -2830,7 +2811,7 @@ int main() {
                               "delete_rows",
                               false);
   RequireRejectedTemporarySql("CREATE TEMPORARY TABLE customer (id int) ON COMMIT DROP");
-  RequireDropTableExactLoweringForTemporaryCleanup();
+  RequireDropTableExactRefusalWithoutEngineDescriptor();
 
   const auto recovery_path = TestRecoveryDatabasePath();
   RemoveDatabaseArtifacts(recovery_path);

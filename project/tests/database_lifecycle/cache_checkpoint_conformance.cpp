@@ -23,6 +23,7 @@ namespace {
 
 namespace db = scratchbird::storage::database;
 namespace disk = scratchbird::storage::disk;
+namespace memory = scratchbird::core::memory;
 namespace page = scratchbird::storage::page;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::TypedUuid;
@@ -88,6 +89,18 @@ page::PageCacheEntry Entry(const page::PageCacheLifecycleInput& input,
   return entry;
 }
 
+memory::AllocationPolicy PageCacheMemoryPolicy(std::uint64_t page_count) {
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  const auto budget_bytes = page_count * 16384ull;
+  policy.policy_name = "dblc013i_page_cache_frames";
+  policy.hard_limit_bytes = budget_bytes;
+  policy.soft_limit_bytes = budget_bytes;
+  policy.per_context_limit_bytes = budget_bytes;
+  policy.page_buffer_pool_limit_bytes = budget_bytes;
+  policy.reject_over_soft_limit = false;
+  return policy;
+}
+
 std::filesystem::path TestDatabasePath() {
   return std::filesystem::temp_directory_path() /
          ("sb_dblc013i_cache_checkpoint_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
@@ -121,7 +134,9 @@ void TestActivationRequiredAndAuthorityBoundary() {
 }
 
 void TestPreloadDirtyWritebackCheckpoint() {
+  memory::MemoryManager manager(PageCacheMemoryPolicy(4));
   page::PageCacheLedger ledger;
+  page::BindPageCacheMemoryManager(&ledger, &manager);
   page::PageCachePolicy policy;
   policy.max_resident_pages = 4;
   policy.max_resident_bytes = 4ull * 16384ull;
@@ -166,7 +181,9 @@ void TestPreloadDirtyWritebackCheckpoint() {
 
 void TestMemoryPressureAndPinnedRefusal() {
   auto input = ValidInput();
+  memory::MemoryManager manager(PageCacheMemoryPolicy(8));
   page::PageCacheLedger ledger;
+  page::BindPageCacheMemoryManager(&ledger, &manager);
   page::PageCachePolicy policy;
   policy.max_resident_pages = 3;
   policy.max_resident_bytes = 3ull * 16384ull;
@@ -187,6 +204,7 @@ void TestMemoryPressureAndPinnedRefusal() {
           "memory pressure handling was not published");
 
   page::PageCacheLedger pinned_ledger;
+  page::BindPageCacheMemoryManager(&pinned_ledger, &manager);
   std::vector<page::PageCacheEntry> pinned_entries = {Entry(input, 11), Entry(input, 12)};
   Require(page::StartPageCacheLifecycle(&pinned_ledger, policy, input, pinned_entries).ok(),
           "pinned preload failed");
@@ -203,7 +221,9 @@ void TestMemoryPressureAndPinnedRefusal() {
 
 void TestShutdownFlush() {
   auto input = ValidInput();
+  memory::MemoryManager manager(PageCacheMemoryPolicy(2));
   page::PageCacheLedger ledger;
+  page::BindPageCacheMemoryManager(&ledger, &manager);
   page::PageCachePolicy policy;
   std::vector<page::PageCacheEntry> entries = {Entry(input, 1), Entry(input, 2)};
   Require(page::StartPageCacheLifecycle(&ledger, policy, input, entries).ok(),

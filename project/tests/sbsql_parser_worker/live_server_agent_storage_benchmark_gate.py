@@ -26,12 +26,10 @@ from typing import Any
 import live_auth_fixture
 
 
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+PASSWORD = "ScratchBird-E2E-2026!"
 ALICE_PRINCIPAL_UUID = live_auth_fixture.DEFAULT_PRINCIPAL_UUID
-SYSDBA_PRINCIPAL_UUID = "019f0a11-ce00-7000-8000-000000000002"
 PRINCIPAL_UUIDS = {
     "alice": ALICE_PRINCIPAL_UUID,
-    "sysdba": SYSDBA_PRINCIPAL_UUID,
 }
 
 
@@ -166,6 +164,8 @@ def run_ipc(args: argparse.Namespace,
         scenario,
         "--expect",
         "accept",
+        "--credential-secret",
+        PASSWORD,
         *extra_args,
     ]
     completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
@@ -252,25 +252,8 @@ def start_server(args: argparse.Namespace,
 
 
 def stop_server_via_ipc(args: argparse.Namespace, endpoint: Path, proc: subprocess.Popen[bytes], log_prefix: str) -> None:
-    run_ipc(args, endpoint, "management_stop_server", log_prefix, "--principal", "sysdba")
+    run_ipc(args, endpoint, "management_stop_server", log_prefix, "--principal", "alice")
     wait_for_exit(proc)
-
-
-def write_live_auth_fixture(database: Path) -> None:
-    live_auth_fixture.write_local_password_auth_fixture(
-        database,
-        "alice",
-        VERIFIER,
-        ALICE_PRINCIPAL_UUID,
-        append=False,
-    )
-    live_auth_fixture.write_local_password_auth_fixture(
-        database,
-        "sysdba",
-        VERIFIER,
-        SYSDBA_PRINCIPAL_UUID,
-        append=True,
-    )
 
 
 def run_listener_route(args: argparse.Namespace, database: Path, endpoint: Path) -> None:
@@ -300,7 +283,6 @@ def run_listener_route(args: argparse.Namespace, database: Path, endpoint: Path)
             stderr=(args.work / "listener.err").open("wb"),
         )
         wait_for_tcp(port)
-        evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
         completed = subprocess.run(
             [
                 args.sb_isql,
@@ -311,7 +293,7 @@ def run_listener_route(args: argparse.Namespace, database: Path, endpoint: Path)
                 "-U",
                 "alice",
                 "-P",
-                evidence,
+                PASSWORD,
                 "-q",
                 "-A",
                 "-t",
@@ -336,6 +318,7 @@ def main() -> int:
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
     parser.add_argument("--ipc-tester", required=True)
+    parser.add_argument("--database-seeder", required=True)
     parser.add_argument("--work-dir", required=True)
     parsed = parser.parse_args()
     parsed.work = make_work_dir(Path(parsed.work_dir))
@@ -344,14 +327,20 @@ def main() -> int:
     server2: subprocess.Popen[bytes] | None = None
     try:
         database = parsed.work / "live.sbdb"
-        write_live_auth_fixture(database)
-
+        seeded = subprocess.run(
+            [parsed.database_seeder, str(database), "alice", PASSWORD],
+            stdout=(parsed.work / "database_seed.out").open("wb"),
+            stderr=(parsed.work / "database_seed.err").open("wb"),
+            check=False,
+        )
+        require(seeded.returncode == 0 and database.is_file(),
+                f"approved_database_seed_failed:{seeded.returncode}")
         endpoint1 = parsed.work / "sc1" / "s.sock"
         server1 = start_server(
-            parsed, database, parsed.work / "sc1", parsed.work / "sr1", endpoint1, "first", True
+            parsed, database, parsed.work / "sc1", parsed.work / "sr1", endpoint1, "first", False
         )
         status1 = decode_payload_json(run_ipc(parsed, endpoint1, "database_status", "first"), "database_status")
-        database_uuid = assert_agent_runtime(first_database(status1), expect_created=True, expected_uuid=None)
+        database_uuid = assert_agent_runtime(first_database(status1), expect_created=False, expected_uuid=None)
 
         run_listener_route(parsed, database, endpoint1)
 
@@ -371,8 +360,6 @@ def main() -> int:
             endpoint1,
             "management_export_support_bundle",
             "first",
-            "--principal",
-            "sysdba",
             "--expect-payload-contains",
             "support_bundle",
         )

@@ -53,6 +53,10 @@ class AgentRuntimeServiceStore {
   scratchbird::core::agents::AgentRuntimeServiceResult AcquireLease(
       scratchbird::core::agents::DurableLeaseRequest request,
       bool fsync_or_checkpoint_evidence);
+  scratchbird::core::agents::AgentRuntimeServiceResult AcquireLeaseBatch(
+      std::vector<scratchbird::core::agents::DurableLeaseRequest> requests,
+      const std::string& evidence_uuid,
+      bool fsync_or_checkpoint_evidence);
   scratchbird::core::agents::AgentRuntimeServiceResult HeartbeatLease(
       scratchbird::core::agents::DurableLeaseRequest request,
       bool fsync_or_checkpoint_evidence);

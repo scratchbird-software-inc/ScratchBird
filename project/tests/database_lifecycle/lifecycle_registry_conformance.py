@@ -42,7 +42,6 @@ REQUIRED_LIFECYCLE_OPERATIONS = (
 
 CREATE_DATABASE_OPERATION = "lifecycle.create_database"
 FIREBIRD_CREATE_REFUSAL_DIAGNOSTIC = "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED"
-LOCAL_PROFILE_REFUSAL_OPERATIONS = {"lifecycle.drop_database"}
 
 
 def fail(message: str) -> None:
@@ -208,13 +207,10 @@ def validate_static_sblr_registry(paths: dict[str, Path]) -> None:
     """
     static_registry = paths["sblr_static_registry"].read_text(encoding="utf-8")
     for operation_id, opcode, _function in REQUIRED_LIFECYCLE_OPERATIONS:
-        expected_support = (
-            "local_profile_refusal"
-            if operation_id in LOCAL_PROFILE_REFUSAL_OPERATIONS
-            else "implemented"
-        )
+        expected_support = "implemented"
         entry = re.compile(
-            rf'Entry\("{re.escape(operation_id)}",\s*"{re.escape(opcode)}",\s*'
+            rf'(?:Entry|CanonicalEntry|CanonicalOperationAlias)\('
+            rf'"{re.escape(operation_id)}",\s*"{re.escape(opcode)}",\s*'
             rf'(?:"[^"]+",\s*)?'
             rf'SblrOpcodeCategory::management,\s*'
             rf'SblrOpcodeSupport::{expected_support}',
@@ -225,6 +221,17 @@ def validate_static_sblr_registry(paths: dict[str, Path]) -> None:
                 f"static SBLR registry missing {operation_id} -> {opcode} "
                 f"with support={expected_support}"
             )
+    drop_contract = re.search(
+        r"void ApplyLifecycleDropDatabaseContract\([^)]*\)\{(?P<body>.*?)\}",
+        static_registry,
+        re.DOTALL,
+    )
+    if drop_contract is None or (
+        "executor_evidence_required=true" not in drop_contract.group("body")
+        or "executor_evidence_accepted=false" not in drop_contract.group("body")
+        or "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" not in drop_contract.group("body")
+    ):
+        fail("DROP DATABASE must remain admitted but fail closed without executor evidence")
 
 
 def validate_code_mappings(paths: dict[str, Path]) -> None:
@@ -254,7 +261,11 @@ def validate_code_mappings(paths: dict[str, Path]) -> None:
                 dispatch,
                 re.DOTALL) is None:
             fail(f"dispatch API map missing {operation_id} -> {function}")
-        if f'Entry("{operation_id}", "{opcode}"' not in static_registry:
+        registry_entry = re.compile(
+            rf'(?:Entry|CanonicalEntry|CanonicalOperationAlias)\('
+            rf'"{re.escape(operation_id)}",\s*"{re.escape(opcode)}"'
+        )
+        if registry_entry.search(static_registry) is None:
             fail(f"static SBLR opcode registry missing {operation_id} -> {opcode}")
         if operation_id == CREATE_DATABASE_OPERATION:
             if "CreateDatabaseFile(" not in impl:

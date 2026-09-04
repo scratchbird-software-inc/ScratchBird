@@ -72,6 +72,19 @@ def wait_tcp(port: int, timeout: float = 60.0) -> None:
     raise ProofError(f"timed out waiting for listener port {port}")
 
 
+def wait_unix(path: Path, timeout: float = 60.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.5)
+                sock.connect(str(path))
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise ProofError(f"timed out waiting for Unix listener {path}")
+
+
 def stop(process: subprocess.Popen[bytes] | None) -> None:
     if process is None or process.poll() is not None:
         return
@@ -83,7 +96,9 @@ def stop(process: subprocess.Popen[bytes] | None) -> None:
         process.wait(timeout=3)
 
 
-def seed_database(server: Path, database: Path) -> str:
+def seed_database(
+    server: Path, database: Path, extra_args: tuple[str, ...] = ()
+) -> str:
     """Create the database through the admitted embedded-bootstrap fixture."""
     seeder = server.with_name("public_driver_test_database_seed")
     if not seeder.is_file() or not os.access(seeder, os.X_OK):
@@ -93,7 +108,8 @@ def seed_database(server: Path, database: Path) -> str:
     seeded = subprocess.run(
         [str(seeder), "--output", str(database), "--manifest", str(manifest),
          "--resource-seed-pack-root",
-         str(project_root / "resources" / "seed-packs" / "initial-resource-pack")],
+         str(project_root / "resources" / "seed-packs" / "initial-resource-pack"),
+         *extra_args],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120,
     )
     if seeded.returncode != 0:

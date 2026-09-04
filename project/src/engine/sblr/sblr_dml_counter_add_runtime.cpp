@@ -1,5 +1,7 @@
 #include "sblr_dml_counter_add_runtime.hpp"
+#include "core/hash/hash_digest.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace scratchbird::engine::sblr {
@@ -28,6 +30,7 @@ bool Header(const std::uint8_t* p, std::size_t n, const char* magic,
   }
   return true;
 }
+std::array<std::uint8_t,32> Evidence(const char* domain,const std::uint8_t* p,std::size_t n){std::vector<std::uint8_t>x(domain,domain+std::strlen(domain));x.insert(x.end(),p,p+n);std::array<std::uint8_t,32>e{};auto d=scratchbird::core::hash::ComputeSha256Digest(x);if(d.ok())std::copy(d.digest.begin(),d.digest.end(),e.begin());return e;}
 }
 
 std::vector<std::uint8_t> EncodeSblrDmlCounterAddRequestV1(const SblrDmlCounterAddRequestV1& v) {
@@ -45,23 +48,23 @@ bool DecodeSblrDmlCounterAddRequestV1(const std::uint8_t* p, std::size_t n,
 
 std::vector<std::uint8_t> EncodeSblrDmlCounterAddDescriptorV1(const SblrDmlCounterAddDescriptorV1& v, bool operand) {
   std::vector<std::uint8_t> b(488, 0); std::memcpy(b.data(), operand ? "CAO" : "CARD", 4); b[4] = 1;
-  std::memcpy(b.data() + 16, v.body.data(), 400); std::memcpy(b.data() + 416, v.evidence.data(), 32); PutU64(b, 448, v.availability); return b;
+  std::memcpy(b.data() + 16, v.body.data(), 400); auto e=Evidence("ScratchBird.SblrDmlCounterAddDescriptor.V1",b.data()+16,400); if(NonZero(v.evidence.data(),32)&&v.evidence!=e)return{}; std::memcpy(b.data() + 416, e.data(), 32); PutU64(b, 448, v.availability); return b;
 }
 bool DecodeSblrDmlCounterAddDescriptorV1(const std::uint8_t* p, std::size_t n,
                                          SblrDmlCounterAddDescriptorV1* o, std::string* d, bool operand) {
   if (!o || !Header(p, n, operand ? "CAO" : "CARD", 488, d)) return false;
   if (!GetU64(p, 448) || !NonZero(p + 416, 32)) { if (d) *d = "counter_add_descriptor_evidence_invalid"; return false; }
-  std::memcpy(o->body.data(), p + 16, 400); std::memcpy(o->evidence.data(), p + 416, 32); o->availability = GetU64(p, 448); return true;
+  std::memcpy(o->body.data(), p + 16, 400); std::memcpy(o->evidence.data(), p + 416, 32); o->availability = GetU64(p, 448); return Evidence("ScratchBird.SblrDmlCounterAddDescriptor.V1",p+16,400)==o->evidence;
 }
 
 std::vector<std::uint8_t> EncodeSblrDmlCounterAddResultV1(const SblrDmlCounterAddResultV1& v) {
   std::vector<std::uint8_t> b(320, 0); std::memcpy(b.data(), "CAR", 4); b[4] = 1;
-  std::memcpy(b.data() + 16, v.body.data(), 240); std::memcpy(b.data() + 256, v.evidence.data(), 32); PutU64(b, 288, v.availability); std::memcpy(b.data() + 296, v.publication_barrier.data(), 16); return b;
+  std::memcpy(b.data() + 16, v.body.data(), 240); auto e=Evidence("ScratchBird.SblrDmlCounterResult.V1",b.data()+16,240); if(NonZero(v.evidence.data(),32)&&v.evidence!=e)return{}; std::memcpy(b.data() + 256, e.data(), 32); PutU64(b, 288, v.availability); std::memcpy(b.data() + 296, v.publication_barrier.data(), 16); return b;
 }
 bool DecodeSblrDmlCounterAddResultV1(const std::uint8_t* p, std::size_t n,
                                      SblrDmlCounterAddResultV1* o, std::string* d) {
   if (!o || !Header(p, n, "CAR", 320, d)) return false;
   if (!GetU64(p, 288) || !NonZero(p + 256, 32) || !NonZero(p + 296, 16)) { if (d) *d = "counter_add_result_publication_invalid"; return false; }
-  std::memcpy(o->body.data(), p + 16, 240); std::memcpy(o->evidence.data(), p + 256, 32); o->availability = GetU64(p, 288); std::memcpy(o->publication_barrier.data(), p + 296, 16); return true;
+  std::memcpy(o->body.data(), p + 16, 240); std::memcpy(o->evidence.data(), p + 256, 32); o->availability = GetU64(p, 288); std::memcpy(o->publication_barrier.data(), p + 296, 16); return Evidence("ScratchBird.SblrDmlCounterResult.V1",p+16,240)==o->evidence;
 }
 }  // namespace scratchbird::engine::sblr

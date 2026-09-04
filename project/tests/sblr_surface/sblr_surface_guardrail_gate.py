@@ -124,8 +124,8 @@ FORBIDDEN_REFERENCE_DIALECT_TOKENS = (
     "paste through",
 )
 EXPECTED_RECONCILED_FAMILY_ROWS = 10
-EXPECTED_RECONCILED_SBSQL_ROWS = 2292
-EXPECTED_PRIMARY_SBLR_FAMILY_ROWS = 54
+EXPECTED_RECONCILED_SBSQL_ROWS = 2230
+EXPECTED_PRIMARY_SBLR_FAMILY_ROWS = 61
 RECONCILED_FAMILY_STATUS = "resolved_to_declared_primary_sblr_families"
 DECLARED_PRIMARY_RECONCILIATION_STATUS = "already_declared_primary"
 SBSQL_NATIVE_STYLE = "sbsql_native_normalized"
@@ -741,8 +741,14 @@ def validate_server_admission_family_reconciliation(
         "AdmitFamily must reject non-primary audited families before admission lookup",
         errors,
     )
+    admit_family_block = cpp_function_block(
+        source,
+        "ServerSblrAdmissionResult AdmitFamily",
+        "\n\nServerSblrAdmissionResult AdmitTextOperationEnvelope",
+    )
     require(
-        "if (IsNonPrimarySblrAuditFamily(encoded))" in source,
+        "if (IsNonPrimarySblrAuditFamily(family))" in admit_family_block
+        and "operation_id.empty()" in admit_family_block,
         "direct family envelope admission must fail closed for non-primary audited families",
         errors,
     )

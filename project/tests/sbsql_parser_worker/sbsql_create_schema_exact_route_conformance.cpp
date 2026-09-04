@@ -19,7 +19,9 @@
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
+#include "ddl/create_api.hpp"
 #include "observability/show_api.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -43,7 +45,8 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kSql = "CREATE SCHEMA qa_schema;";
-constexpr std::string_view kOperationId = "ddl.create_schema";
+constexpr std::string_view kOperationId = "engine.op.ddl_create_schema";
+constexpr std::string_view kApiOperationId = "ddl.create_schema";
 constexpr std::string_view kOpcode = "SBLR_DDL_CREATE_SCHEMA";
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
 constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000023306";
@@ -87,14 +90,6 @@ void ConfigureMemoryFixture() {
           "CREATE SCHEMA memory fixture mode was not active");
 }
 
-bool Contains(std::string_view haystack, std::string_view needle) {
-  return haystack.find(needle) != std::string_view::npos;
-}
-
-bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
-  return std::find(values.begin(), values.end(), expected) != values.end();
-}
-
 bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
@@ -102,6 +97,21 @@ bool HasEvidence(const api::EngineApiResult& result,
     if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
   }
   return false;
+}
+
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == name) return field.value;
+  }
+  return {};
+}
+
+bool HasAuthorityStep(const SblrEnvelope& envelope,
+                      std::string_view expected) {
+  return std::find(envelope.required_authority_steps.begin(),
+                   envelope.required_authority_steps.end(), expected) !=
+         envelope.required_authority_steps.end();
 }
 
 bool RowHasFieldValue(const api::EngineRowValue& row,
@@ -196,84 +206,66 @@ void RequireRegistryEvidence() {
   }
 }
 
-void RequireExactLowering(const PipelineArtifacts& artifacts) {
+void RequireExactRefusal(const PipelineArtifacts& artifacts) {
   Require(!artifacts.cst.messages.has_errors(), "CREATE SCHEMA CST failed");
   Require(!artifacts.ast.messages.has_errors(), "CREATE SCHEMA AST failed");
   Require(artifacts.bound.bound, "CREATE SCHEMA bind failed");
-  Require(artifacts.verifier.admitted, "CREATE SCHEMA verifier rejected exact route");
+  Require(!artifacts.verifier.admitted,
+          "CREATE SCHEMA was admitted without the exact engine-bound CSDO carrier");
   Require(artifacts.envelope.operation_family == kFamily,
           "CREATE SCHEMA operation family mismatch");
   Require(artifacts.envelope.sblr_operation_key == kFamily,
           "CREATE SCHEMA SBLR operation key mismatch");
-  Require(artifacts.envelope.operation_id == kOperationId,
-          "CREATE SCHEMA operation id mismatch");
-  Require(artifacts.envelope.engine_api_operation_id == kOperationId,
-          "CREATE SCHEMA engine API operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == kOpcode,
-          "CREATE SCHEMA SBLR opcode mismatch");
-  Require(HasValue(artifacts.envelope.required_rights, "right.catalog_mutate"),
-          "CREATE SCHEMA catalog mutation right missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.ddl_create_schema_api_required"),
-          "CREATE SCHEMA engine DDL authority step missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.mga_catalog_commit_required"),
-          "CREATE SCHEMA MGA catalog authority step missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_sql_text_execution"),
-          "CREATE SCHEMA parser no-SQL-execution authority step missing");
-  Require(!artifacts.envelope.parser_executes_sql,
-          "CREATE SCHEMA lowering allowed parser SQL execution");
-  Require(!artifacts.envelope.real_file_effects,
-          "CREATE SCHEMA lowering allowed reference/file effects");
-  Require(Contains(artifacts.envelope.payload, "\"operation_id\":\"ddl.create_schema\""),
-          "CREATE SCHEMA payload missing exact operation id");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"sblr_operation\":\"SBLR_DDL_CREATE_SCHEMA\""),
-          "CREATE SCHEMA payload missing exact SBLR opcode");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"catalog_envelope_kind\":\"create_schema_ddl\""),
-          "CREATE SCHEMA payload missing catalog envelope kind");
-  Require(Contains(artifacts.envelope.payload, "\"schema_name_parts\":1"),
-          "CREATE SCHEMA payload missing schema name part evidence");
-  Require(Contains(artifacts.envelope.payload, "\"schema_name\":\"qa_schema\""),
-          "CREATE SCHEMA payload missing structured schema name metadata");
-  for (const auto& row : kCreateSchemaRows) {
-    Require(Contains(artifacts.envelope.payload, row.surface_id),
-            "CREATE SCHEMA payload missing row-identifiable surface evidence");
-  }
-  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":true"),
-          "CREATE SCHEMA payload did not carry schema name metadata");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
-          "CREATE SCHEMA payload did not bound name text authority");
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-          "CREATE SCHEMA payload did not prove no SQL text authority");
-  Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
-          "CREATE SCHEMA payload did not prove parser_executes_sql=false");
-  Require(!Contains(artifacts.envelope.payload, kSql),
-          "CREATE SCHEMA payload embedded SQL text as authority");
-  Require(!Contains(artifacts.envelope.payload, "reference"),
-          "CREATE SCHEMA payload carried reference authority");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal") &&
-              !Contains(artifacts.envelope.payload, "recovery"),
-          "CREATE SCHEMA payload carried WAL/recovery authority");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "CREATE SCHEMA did not use the exact non-executable refusal tuple");
+  Require(artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.diagnostic_shape_key ==
+                  "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1",
+          "CREATE SCHEMA refusal contract metadata drifted");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              !artifacts.envelope.parser_executes_sql &&
+              !artifacts.envelope.real_file_effects,
+          "CREATE SCHEMA refusal emitted executable or parser-owned authority");
+  Require(HasAuthorityStep(artifacts.envelope,
+                           "authority.parser.syntax_evidence_only") &&
+              HasAuthorityStep(artifacts.envelope,
+                               "authority.parser.no_executable_sblr") &&
+              HasAuthorityStep(artifacts.envelope,
+                               "authority.parser.no_sql_text_execution") &&
+              HasAuthorityStep(artifacts.envelope,
+                               "authority.parser.no_storage_or_finality"),
+          "CREATE SCHEMA refusal omitted parser non-authority evidence");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "CREATE SCHEMA did not emit one exact refusal diagnostic");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              diagnostic.severity == "ERROR" &&
+              DiagnosticField(diagnostic, "canonical_parent_operation_id") ==
+                  kOperationId &&
+              DiagnosticField(diagnostic, "canonical_parent_sblr_opcode") ==
+                  kOpcode &&
+              DiagnosticField(diagnostic, "recognized_surface_ids") ==
+                  "SBSQL-DE4B8AAF6326,SBSQL-7BA0B928798B" &&
+              DiagnosticField(diagnostic, "executable_sblr_emitted") ==
+                  "false",
+          "CREATE SCHEMA refusal identity or parent mapping drifted");
 }
 
-void RequireServerAdmission(const SblrEnvelope& envelope) {
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
-  Require(admission.admitted, "server admission rejected CREATE SCHEMA exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI dispatch for CREATE SCHEMA");
-  Require(admission.operation_id == kOperationId,
-          "server admission CREATE SCHEMA operation id mismatch");
-  Require(admission.operation_family == kFamily,
-          "server admission CREATE SCHEMA operation family mismatch");
+void RequireOpcodeRegistryContract() {
   const auto* opcode_entry = sblr::LookupSblrOperation(kOperationId);
   Require(opcode_entry != nullptr, "CREATE SCHEMA opcode registry row missing");
   Require(opcode_entry->opcode == kOpcode, "CREATE SCHEMA opcode registry opcode drifted");
+  Require(opcode_entry->code == 1536 &&
+              opcode_entry->operand_contract == "create_schema_descriptor" &&
+              opcode_entry->result_contract == "ddl_result" &&
+              opcode_entry->executor_id == kOperationId,
+          "CREATE SCHEMA exact registry tuple drifted");
   Require(opcode_entry->requires_security_context,
           "CREATE SCHEMA opcode registry security context drifted");
   Require(opcode_entry->requires_transaction_context,
@@ -349,48 +341,35 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
                                                  const std::string& database_uuid) {
   auto context = EngineContext(path, database_uuid);
-  auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
-                                         "SBLR_TRANSACTION_BEGIN",
-                                         "trace.create_schema.exact_route.transaction.begin");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = false;
-  envelope.contains_sql_text = false;
-  const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
-  const auto result = sblr::DispatchSblrOperation(request);
+  api::EngineBeginTransactionRequest request;
+  request.context = context;
+  request.isolation_level = "read_committed";
+  const auto result = api::EngineBeginTransaction(request);
   for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
-  Require(result.envelope_validated, "transaction begin envelope did not validate");
-  Require(result.accepted, "transaction begin dispatch did not accept");
-  Require(result.api_result.ok, "transaction begin did not return success");
-  Require(result.api_result.local_transaction_id != 0,
+  Require(result.ok, "internal API transaction begin did not return success");
+  Require(result.local_transaction_id != 0,
           "transaction begin did not return local transaction id");
-  context.local_transaction_id = result.api_result.local_transaction_id;
-  context.transaction_uuid = result.api_result.transaction_uuid;
+  context.local_transaction_id = result.local_transaction_id;
+  context.transaction_uuid = result.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      result.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = result.isolation_level;
   return context;
 }
 
 void CommitEngineTransaction(api::EngineRequestContext context) {
-  auto envelope = sblr::MakeSblrEnvelope("transaction.commit",
-                                         "SBLR_TRANSACTION_COMMIT",
-                                         "trace.create_schema.exact_route.transaction.commit");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.contains_sql_text = false;
-  const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
-  const auto result = sblr::DispatchSblrOperation(request);
+  api::EngineCommitTransactionRequest request;
+  request.context = std::move(context);
+  const auto result = api::EngineCommitTransaction(request);
   for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
-  Require(result.envelope_validated, "transaction commit envelope did not validate");
-  Require(result.accepted, "transaction commit dispatch did not accept");
-  Require(result.api_result.ok, "transaction commit did not return success");
+  Require(result.ok, "internal API transaction commit did not return success");
+  Require(result.engine_finality_known &&
+              result.commit_finality_state == "committed_by_engine_inventory",
+          "internal API transaction commit did not reach durable finality");
 }
 
 std::string SchemaUuidForPath(const api::EngineRequestContext& context,
@@ -439,105 +418,61 @@ void RequireCatalogReadableNavigatorPath(const api::EngineRequestContext& contex
           "catalog-readable navigator projection omitted created schema path");
 }
 
-api::EngineApiRequest EngineCreateSchemaApiRequest() {
-  api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = "";
+api::EngineCreateSchemaRequest EngineCreateSchemaApiRequest(
+    const api::EngineRequestContext& context,
+    std::string_view schema_uuid,
+    std::string_view schema_name,
+    std::string_view parent_schema_uuid = {},
+    std::string_view full_path = {}) {
+  api::EngineCreateSchemaRequest request;
+  request.context = context;
+  request.target_schema.uuid.canonical = std::string(parent_schema_uuid);
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  request.target_object.uuid.canonical = std::string(schema_uuid);
   request.target_object.object_kind = "schema";
-  request.localized_names.push_back({"en", "primary", "", "qa_schema", true});
+  request.localized_names.push_back(
+      {"en", "primary", std::string(full_path), std::string(schema_name), true});
   return request;
 }
 
-sblr::SblrOperationEnvelope EngineEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope(std::string(kOperationId),
-                                         std::string(kOpcode),
-                                         "trace.create_schema.exact_route.SBSQL-DE4B8AAF6326");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  return envelope;
-}
-
-void AddTextOperand(sblr::SblrOperationEnvelope* envelope,
-                    std::string name,
-                    std::string value) {
-  envelope->operands.push_back({"text", std::move(name), std::move(value)});
-}
-
-void RequireEngineDispatch() {
+void RequireEngineApiPersistence() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   auto context = BeginEngineTransaction(path, database_uuid);
   const std::string public_schema_uuid = SchemaUuidForPath(context, "users.public");
   Require(!public_schema_uuid.empty(), "users.public bootstrap schema was not visible");
-  const sblr::SblrDispatchRequest request{
-      context,
-      EngineEnvelope(),
-      EngineCreateSchemaApiRequest()};
-  const auto result = sblr::DispatchSblrOperation(request);
+  const auto result = api::EngineCreateSchema(EngineCreateSchemaApiRequest(
+      context, kSchemaUuid, "qa_schema"));
   for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
-  Require(result.envelope_validated, "engine SBLR envelope did not validate");
-  Require(result.accepted, "engine SBLR dispatch did not accept CREATE SCHEMA");
-  Require(result.dispatched_to_api, "engine SBLR dispatch did not route to internal API");
-  Require(result.api_result.ok, "EngineCreateSchema did not return success");
-  Require(result.api_result.operation_id == kOperationId,
+  Require(result.ok, "EngineCreateSchema internal API did not return success");
+  Require(result.operation_id == kApiOperationId,
           "EngineCreateSchema returned wrong operation id");
-  Require(result.api_result.primary_object.object_kind == "schema",
+  Require(result.primary_object.object_kind == "schema",
           "EngineCreateSchema did not return schema primary object");
-  Require(result.api_result.primary_object.uuid.canonical == kSchemaUuid,
+  Require(result.primary_object.uuid.canonical == kSchemaUuid,
           "EngineCreateSchema returned wrong schema UUID");
-  Require(HasEvidence(result.api_result, "api_behavior_event", "ddl.create_schema"),
+  Require(HasEvidence(result, "api_behavior_event", kApiOperationId),
           "EngineCreateSchema missing API behavior event evidence");
-  Require(HasEvidence(result.api_result, "schema", kSchemaUuid),
+  Require(HasEvidence(result, "schema", kSchemaUuid),
           "EngineCreateSchema missing schema UUID evidence");
 
-  auto live_route_envelope = EngineEnvelope();
-  AddTextOperand(&live_route_envelope, "principal_name", "alice");
-  AddTextOperand(&live_route_envelope, "requested_role_name", "sysarch");
-  AddTextOperand(&live_route_envelope, "active_role_name", "sysarch");
-  AddTextOperand(&live_route_envelope, "current_role_uuid",
-                 "019f0000-0000-7000-8000-000000023401");
-  AddTextOperand(&live_route_envelope, "effective_role_uuid_set",
-                 "019f0000-0000-7000-8000-000000023401");
-  AddTextOperand(&live_route_envelope, "target_object_uuid",
-                 std::string(kLiveRouteSchemaUuid));
-  AddTextOperand(&live_route_envelope, "target_object_kind", "schema");
-  AddTextOperand(&live_route_envelope, "name", "qa_live_schema");
-  AddTextOperand(&live_route_envelope, "schema_parent_path", "users.public");
-  const sblr::SblrDispatchRequest live_route_request{
-      context,
-      live_route_envelope,
-      api::EngineApiRequest{}};
-  const auto live_route_result = sblr::DispatchSblrOperation(live_route_request);
+  const auto live_route_result = api::EngineCreateSchema(
+      EngineCreateSchemaApiRequest(context, kLiveRouteSchemaUuid,
+                                   "qa_live_schema", public_schema_uuid,
+                                   "users.public.qa_live_schema"));
   for (const auto& diagnostic : live_route_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : live_route_result.api_result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
-  Require(live_route_result.envelope_validated,
-          "live-route CREATE SCHEMA envelope did not validate");
-  Require(live_route_result.accepted,
-          "live-route CREATE SCHEMA dispatch was not accepted");
-  Require(live_route_result.dispatched_to_api,
-          "live-route CREATE SCHEMA did not route to internal API");
-  Require(live_route_result.api_result.ok,
-          "live-route CREATE SCHEMA was rejected by schema option filtering");
-  Require(live_route_result.api_result.primary_object.uuid.canonical ==
+  Require(live_route_result.ok,
+          "EngineCreateSchema component request did not return success");
+  Require(live_route_result.primary_object.uuid.canonical ==
               kLiveRouteSchemaUuid,
-          "live-route CREATE SCHEMA returned wrong schema UUID");
-  Require(HasEvidence(live_route_result.api_result, "schema",
-                      kLiveRouteSchemaUuid),
-          "live-route CREATE SCHEMA missing schema UUID evidence");
+          "EngineCreateSchema component returned wrong schema UUID");
+  Require(HasEvidence(live_route_result, "schema", kLiveRouteSchemaUuid),
+          "EngineCreateSchema component missing schema UUID evidence");
   RequireSchemaPath(context,
                     kLiveRouteSchemaUuid,
                     public_schema_uuid,
@@ -552,6 +487,7 @@ void RequireEngineDispatch() {
                     "qa_live_schema");
   RequireCatalogReadableNavigatorPath(read_context,
                                       "users.public.qa_live_schema");
+  CommitEngineTransaction(read_context);
   RemoveDatabaseArtifacts(path);
 }
 
@@ -561,9 +497,9 @@ int main() {
   ConfigureMemoryFixture();
   RequireRegistryEvidence();
   const auto artifacts = RunPipeline();
-  RequireExactLowering(artifacts);
-  RequireServerAdmission(artifacts.envelope);
-  RequireEngineDispatch();
+  RequireExactRefusal(artifacts);
+  RequireOpcodeRegistryContract();
+  RequireEngineApiPersistence();
   std::cout << "sbsql_create_schema_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

@@ -1,15 +1,14 @@
 {
-  "authenticated_route_pending_rows": 9,
-  "blocked_rows": 9,
+  "authenticated_route_pending_rows": 0,
+  "blocked_rows": 0,
   "cluster_provider_route_rows": 56,
   "declared_rows": 2617,
-  "exact_refused_rows": 1,
+  "exact_refused_rows": 14,
   "expected_total_rows": 2617,
   "final_status_counts": {
     "cluster_provider_route_passed": 56,
-    "e2e_passed": 2551,
-    "exact_refusal_passed": 1,
-    "pending": 9
+    "e2e_passed": 2547,
+    "exact_refusal_passed": 14
   },
   "generated_from": [
     "artifacts/PER_ROW_EVIDENCE_MANIFEST.csv",
@@ -18,20 +17,18 @@
     "artifacts/SBLR_BINARY_ROUND_TRIP_MATRIX.csv",
     "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv"
   ],
-  "implemented_rows": 2551,
-  "notes": "Release declaration is generated honestly with blocked rows. Row-level SBsql implementation evidence is not complete until pending rows are implemented or explicitly refused with final proof.",
+  "implemented_rows": 2547,
+  "notes": "Row-level SBsql implementation evidence is complete. Authenticated-route and SBLR binary round-trip fixture layers are promoted to e2e_passed evidence.",
   "private_gated_rows": 56,
-  "release_claim": "blocked_pending_row_evidence",
+  "release_claim": "release_ready",
   "release_status_counts": {
-    "blocked": 9,
-    "row_evidence_complete": 2608
+    "row_evidence_complete": 2617
   },
-  "remaining_risk_rows": 9,
-  "sblr_round_trip_pending_rows": 9,
+  "remaining_risk_rows": 0,
+  "sblr_round_trip_pending_rows": 0,
   "search_key": "SBSQL-SURFACE-SBLR-RELEASE-DECLARATION",
-  "status": "blocked",
+  "status": "row_evidence_complete",
   "top_remaining_risks": {
-    "authenticated_route_fixture_status=fixture_authored;sblr_round_trip_fixture_status=fixture_authored": 9,
-    "none": 2608
+    "none": 2617
   }
 }

@@ -671,8 +671,12 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "local_transaction_id_required"));
   }
   const std::string requested_result_shape = OptionValue(request, "result_projection:");
+  const bool typed_projection_present =
+      !request.relation_projection.outputs.empty() ||
+      !request.global_aggregate_projection.outputs.empty();
   if (!requested_result_shape.empty() && requested_result_shape != "count" &&
-      !IsRelationDescriptorProjectionSelectRequest(request)) {
+      !IsRelationDescriptorProjectionSelectRequest(request) &&
+      !typed_projection_present) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
         request.context,
         "dml.select_rows",

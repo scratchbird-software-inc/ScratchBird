@@ -733,15 +733,15 @@ void TestBuiltinProjectionDefinitionsValidate() {
       }
     }
   }
-  Require(info::BuiltinSysInformationProjectionDefinitions().size() == 119,
+  Require(info::BuiltinSysInformationProjectionDefinitions().size() == 139,
           "frontend catalog packet local projection count drifted");
-  Require(families["catalog_readable"] == 62,
+  Require(families["catalog_readable"] == 71,
           "catalog_readable frontend packet count drifted");
   Require(families["standard_information_schema"] == 30,
           "information_schema frontend packet count drifted");
   Require(families["scratchbird_extension"] == 16,
           "information extension frontend packet count drifted");
-  Require(families["frontend_projection"] == 11,
+  Require(families["frontend_projection"] == 22,
           "frontend projection packet count drifted");
   const auto* object_identity = info::FindSysInformationProjectionDefinition(
       "sys.catalog.object_identity");

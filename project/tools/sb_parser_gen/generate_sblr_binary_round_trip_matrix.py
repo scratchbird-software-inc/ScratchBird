@@ -267,6 +267,42 @@ def exact_refusal_manifest_phases(operation_id: str, authority_status: str) -> d
     }
 
 
+def pre_sblr_exact_refusal_manifest_phases(
+    authority_status: str,
+    parent_operation_id: str,
+    parent_sblr_operation: str,
+    carrier_name: str,
+) -> dict[str, str]:
+    operation_token = parent_operation_id.replace(".", "_")
+    if parent_operation_id == "engine.op.ddl_create_table":
+        bind_expectation = "bind_constraint_child_syntax_without_parser_owned_execution_authority"
+        render_expectation = "renderer_emit_SBSQL_IMPL_NOT_AVAILABLE_with_canonical_create_table_parent"
+        refusal_notes = "Final per-row exact refusal occurs before executable SBLR because the authenticated engine-bound CREATE TABLE CTDX/CTDO constraint vector is unavailable. The constraint child never owns an executor. No canonical container, verifier admission, binary deserialization, server dispatch, EngineCreateConstraint SQL route, catalog mutation, or MGA finality is claimed. Round-trip authority source=" + authority_status + "."
+    else:
+        bind_expectation = "bind_create_schema_syntax_without_parser_owned_execution_authority"
+        render_expectation = "renderer_emit_SBSQL_IMPL_NOT_AVAILABLE_with_canonical_create_schema_parent"
+        refusal_notes = "Final per-row exact refusal occurs before executable SBLR because the authenticated engine-bound " + carrier_name + " carrier is unavailable. Canonical parent=" + parent_operation_id + "/" + parent_sblr_operation + ". No canonical container, verifier admission, binary deserialization, server dispatch, SQL-route EngineCreateSchema mutation, catalog mutation, or MGA finality is claimed. Round-trip authority source=" + authority_status + "."
+    return {
+        "expected_canonical_function_or_api_operation_id": f"not_admitted_parent_{parent_operation_id}",
+        "parse_phase_expectation": "parse_sbsql_text_to_cst_pass",
+        "bind_phase_expectation": bind_expectation,
+        "lower_phase_expectation": f"lower_refuses_SBSQL_IMPL_NOT_AVAILABLE_with_parent_{operation_token}_no_executable_sblr",
+        "binary_serialize_phase_expectation": "not_applicable_no_sblr_envelope_to_serialize",
+        "verify_phase_expectation": "not_applicable_no_container_to_verify",
+        "binary_deserialize_phase_expectation": "not_applicable_no_container_to_deserialize",
+        "dispatch_phase_expectation": "not_applicable_no_server_or_engine_dispatch",
+        "execute_phase_expectation": "not_applicable_no_catalog_mutation",
+        "render_phase_expectation": render_expectation,
+        "canonical_container_magic": "not_applicable_pre_sblr_exact_refusal",
+        "canonical_container_header_size_bytes": "not_applicable_pre_sblr_exact_refusal",
+        "byte_identical_round_trip_required": "not_applicable_pre_sblr_exact_refusal",
+        "crc32c_check_required": "not_applicable_pre_sblr_exact_refusal",
+        "engine_anchored_uuids_required": "not_applicable_pre_sblr_exact_refusal",
+        "execution_authority_model": "parser_syntax_only;no_executable_sblr;no_engine_execution;no_catalog_mutation;no_wal_authority",
+        "notes": refusal_notes,
+    }
+
+
 def native_future_phases() -> dict[str, str]:
     return {
         "expected_canonical_function_or_api_operation_id": "not_applicable_status_native_future_lower_refuses_before_envelope",
@@ -379,6 +415,24 @@ def main() -> int:
                     and manifest_row and manifest_row.get("final_state") == "e2e_passed"):
                 oracle_status = f"per_row_manifest_{manifest_authority}"
                 phases = lifecycle_create_manifest_phases(oracle_status)
+            elif (manifest_row and manifest_row.get("final_state") == "exact_refusal_passed"
+                    and "pre_sblr_refusal=true" in manifest_row.get("implementation_refs", "")):
+                oracle_status = f"per_row_manifest_{manifest_authority}"
+                implementation_refs = manifest_row.get("implementation_refs", "")
+                if "parent_operation_id=engine.op.ddl_create_schema" in implementation_refs:
+                    phases = pre_sblr_exact_refusal_manifest_phases(
+                        oracle_status,
+                        "engine.op.ddl_create_schema",
+                        "SBLR_DDL_CREATE_SCHEMA",
+                        "CREATE SCHEMA CSDX/CSDO",
+                    )
+                else:
+                    phases = pre_sblr_exact_refusal_manifest_phases(
+                        oracle_status,
+                        "engine.op.ddl_create_table",
+                        "SBLR_DDL_CREATE_TABLE",
+                        "CREATE TABLE CTDX/CTDO constraint-vector",
+                    )
             elif (manifest_row and manifest_row.get("final_state") == "exact_refusal_passed"
                     and manifest_operation_id):
                 oracle_status = f"per_row_manifest_{manifest_authority}"

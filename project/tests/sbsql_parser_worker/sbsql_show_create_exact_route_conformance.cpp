@@ -9,6 +9,7 @@
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
+#include "catalog/schema_tree_api.hpp"
 #include "cst/cst.hpp"
 #include "ddl/create_api.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
@@ -47,6 +48,7 @@ constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000000901";
 constexpr std::string_view kOperationId = "catalog.get_descriptor";
 constexpr std::string_view kOpcode = "SBLR_CATALOG_GET_DESCRIPTOR";
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
+constexpr std::string_view kCanonicalAdmissionFamily = "sblr.catalog.introspect.v3";
 constexpr std::string_view kDatabasePath = "/tmp/sbsql_show_create_exact_route_conformance.sbdb";
 
 struct ShowCreateRowEvidence {
@@ -254,11 +256,16 @@ api::EngineRequestContext SeedEngineTable() {
   api::EngineCreateTableRequest table;
   table.context = context;
   table.requested_table_uuid.canonical = std::string(kTargetUuid);
-  table.target_schema.uuid.canonical = "019f0000-0000-7000-8000-000000000902";
+  const auto visible_schemas = api::VisibleSchemaTreeRecords(
+      context, context.local_transaction_id);
+  Require(!visible_schemas.empty(),
+          "credentialed SHOW CREATE fixture exposed no writable schema");
+  table.target_schema.uuid.canonical = visible_schemas.front().schema_uuid;
   table.target_schema.object_kind = "schema";
   table.table_names.push_back(Name("replay_target"));
   table.table_columns.push_back(Column(0, "id", "int64"));
   const auto created = api::EngineCreateTable(table);
+  if (!created.ok) PrintApiDiagnostics(created, "ddl.create_table");
   Require(created.ok, "ddl.create_table failed while seeding SHOW CREATE fixture");
   return context;
 }
@@ -372,15 +379,15 @@ void RequireParserLoweringAndAdmission() {
           "server admission did not require public ABI dispatch for SHOW CREATE");
   Require(admission.operation_id == kOperationId,
           "server admission SHOW CREATE operation id mismatch");
-  Require(admission.operation_family == kFamily,
+  Require(admission.operation_family == kCanonicalAdmissionFamily,
           "server admission SHOW CREATE family mismatch");
 }
 
 void RequireEngineDispatch() {
   const auto context = SeedEngineTable();
-  auto engine_envelope = sblr::MakeSblrEnvelope(std::string(kOperationId),
-                                                std::string(kOpcode),
-                                                "trace.show_create.exact_route");
+  auto engine_envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          kOperationId, kOpcode, "trace.show_create.exact_route");
   engine_envelope.requires_security_context = true;
   engine_envelope.requires_transaction_context = false;
   engine_envelope.requires_cluster_authority = false;

@@ -62,20 +62,43 @@ def main() -> int:
 
     missing: list[str] = []
     implemented = 0
+    dispatch_readiness = {
+        "mapped_ready",
+        "sblr_callable",
+        "cluster_provider_boundary_mapped",
+        "cluster_fail_closed_mapped",
+    }
     for entry in entries:
         operation = entry.get("sblr_operation", "")
         api_operation = entry.get("api_operation_id", "")
         ready = entry.get("executor_readiness_status", "")
-        status = entry.get("current_implementation_status", "")
-        if ready != "mapped_ready" and status != "behavior_implemented":
+        opcode_status = entry.get("opcode_status", "")
+        if opcode_status == "retired_non_core":
+            if ready != "internal_engine_api_only" or entry.get(
+                "parser_route_status", ""
+            ) != "internal_engine_api_only":
+                missing.append(
+                    f"{api_operation} retired non-Core row is not quarantined as internal-only"
+                )
+            if operation in dispatch or (api_operation and api_operation in dispatch):
+                missing.append(
+                    f"{api_operation} retired non-Core identity leaked into sblr_dispatch.cpp"
+                )
+            continue
+        if ready not in dispatch_readiness:
             continue
         implemented += 1
         if operation not in dispatch:
             missing.append(f"{api_operation} missing opcode {operation} in sblr_dispatch.cpp")
         if api_operation and api_operation not in dispatch:
             missing.append(f"{api_operation} missing dispatch branch")
-        if entry.get("scope_status", "").startswith("cluster") and "cluster_authority_unavailable" not in dispatch:
-            missing.append(f"{api_operation} missing cluster fail-closed dispatch evidence")
+        if entry.get("scope_status", "").startswith("cluster") and (
+            "cluster_gateway_route" not in dispatch
+            or "cluster_provider::ExecuteClusterOperation" not in dispatch
+        ):
+            missing.append(
+                f"{api_operation} missing canonical cluster-provider dispatch evidence"
+            )
     if missing:
         fail("\n".join(missing[:80]))
     if implemented < 100:

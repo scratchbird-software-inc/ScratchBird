@@ -143,6 +143,40 @@ AgentRuntimeServiceResult AgentRuntimeService::AcquireLease(
   return Finish("lease_acquire", status, request.evidence_uuid);
 }
 
+AgentRuntimeServiceResult AgentRuntimeService::AcquireLeaseBatch(
+    std::vector<DurableLeaseRequest> requests,
+    const std::string& evidence_uuid) {
+  if (!opened_ || !started_) {
+    return Finish("lease_acquire_batch",
+                  AgentError("SB_AGENT_SERVICE.NOT_STARTED"),
+                  evidence_uuid);
+  }
+  if (requests.empty() || evidence_uuid.empty()) {
+    return Finish("lease_acquire_batch",
+                  AgentError("SB_AGENT_LEASE.REQUEST_EVIDENCE_REQUIRED"),
+                  evidence_uuid);
+  }
+  if (production_live_path_) {
+    const auto status = ValidateDurableAgentCatalogForProduction(catalog_);
+    if (!status.ok) {
+      return Finish("lease_acquire_batch", status, evidence_uuid);
+    }
+  }
+
+  auto candidate = catalog_;
+  for (const auto& request : requests) {
+    const auto status = AcquireDurableAgentLease(&candidate, request);
+    if (!status.ok) {
+      return Finish("lease_acquire_batch", status, evidence_uuid);
+    }
+  }
+  catalog_ = std::move(candidate);
+  return Finish("lease_acquire_batch",
+                {true, "SB_AGENT_LEASE.ACQUIRED",
+                 std::to_string(requests.size())},
+                evidence_uuid);
+}
+
 AgentRuntimeServiceResult AgentRuntimeService::HeartbeatLease(
     DurableLeaseRequest request) {
   if (!opened_ || !started_) {

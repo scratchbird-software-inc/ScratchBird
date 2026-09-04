@@ -24,11 +24,10 @@ import tempfile
 import time
 from pathlib import Path
 
-from live_auth_fixture import local_password_evidence, write_local_password_auth_fixture
+from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
 
 
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-WRONG_VERIFIER = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+WRONG_PASSWORD = "ScratchBird-E2E-incorrect"
 
 
 class SmokeError(RuntimeError):
@@ -85,9 +84,8 @@ def dump_logs(work: Path) -> None:
 def run_embedded_sb_isql(args: argparse.Namespace,
                          work: Path,
                          database: Path,
-                         verifier: str,
+                         password: str,
                          output_prefix: str) -> subprocess.CompletedProcess[bytes]:
-    evidence = local_password_evidence("alice", verifier)
     return subprocess.run(
         [
             args.sb_isql,
@@ -97,7 +95,7 @@ def run_embedded_sb_isql(args: argparse.Namespace,
             "-U",
             "alice",
             "-P",
-            evidence,
+            password,
             "-q",
             "-A",
             "-t",
@@ -114,6 +112,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--database-seed", required=True)
+    parser.add_argument("--resource-seed-pack-root", required=True)
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args()
 
@@ -124,14 +124,19 @@ def main() -> int:
         server_control = work / "sc"
         server_runtime = work / "sr"
         endpoint = server_control / "s.sock"
-        write_local_password_auth_fixture(database, "alice", VERIFIER)
+        seed_database(
+            database_seed=args.database_seed,
+            resource_seed_pack_root=args.resource_seed_pack_root,
+            database=database,
+            evidence_root=work / "bootstrap",
+            fixture_label="embedded-server-authority",
+        )
 
         server = subprocess.Popen(
             [
                 args.server,
                 "--foreground",
                 "--no-listeners",
-                "--create-if-missing",
                 "--control-dir",
                 str(server_control),
                 "--runtime-dir",
@@ -146,7 +151,8 @@ def main() -> int:
         )
         wait_for_path(endpoint)
 
-        bad = run_embedded_sb_isql(args, work, database, WRONG_VERIFIER, "sb_isql_bad")
+        bad = run_embedded_sb_isql(
+            args, work, database, WRONG_PASSWORD, "sb_isql_bad")
         if bad.returncode == 0:
             output = (work / "sb_isql_bad.out").read_text(encoding="utf-8", errors="replace").strip()
             raise SmokeError(
@@ -154,7 +160,8 @@ def main() -> int:
                 f"unexpected output={output!r}"
             )
 
-        good = run_embedded_sb_isql(args, work, database, VERIFIER, "sb_isql_good")
+        good = run_embedded_sb_isql(
+            args, work, database, PUBLIC_TEST_PASSWORD, "sb_isql_good")
         if good.returncode != 0:
             raise SmokeError(f"server-owned embedded fallback exited {good.returncode}")
         output = (work / "sb_isql_good.out").read_text(encoding="utf-8", errors="replace").strip()

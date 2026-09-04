@@ -399,14 +399,25 @@ Fixture CopyFixtureSidecars(const Fixture& source, std::string name, platform::u
   const std::string source_prefix = source.database_path.filename().string();
   const std::string restore_prefix = restored.database_path.filename().string();
   for (const auto& entry : std::filesystem::directory_iterator(source.dir)) {
-    if (!entry.is_regular_file()) { continue; }
     const std::string filename = entry.path().filename().string();
     if (filename.rfind(source_prefix, 0) != 0) { continue; }
     const auto target = restored.dir /
         (restore_prefix + filename.substr(source_prefix.size()));
-    std::filesystem::copy_file(entry.path(),
-                               target,
-                               std::filesystem::copy_options::overwrite_existing);
+    if (entry.is_directory()) {
+      // Relation-scoped MGA row/index segments are nested beneath a
+      // database-prefixed directory.  Copying only the legacy top-level
+      // sidecars produces a self-inconsistent restore: the delta ledger is
+      // present, but the row version it references is missing.  Preserve the
+      // complete database-owned sidecar hierarchy.
+      std::filesystem::copy(
+          entry.path(), target,
+          std::filesystem::copy_options::recursive |
+              std::filesystem::copy_options::overwrite_existing);
+    } else if (entry.is_regular_file()) {
+      std::filesystem::copy_file(
+          entry.path(), target,
+          std::filesystem::copy_options::overwrite_existing);
+    }
   }
   Require(std::filesystem::exists(restored.database_path),
           "DPC-025 restored database image missing");

@@ -91,7 +91,7 @@ REQUIRED_COVERAGE = {
         "scalar_projection_dispatch",
     },
     "SML-025": {
-        "security_authorization_server_reclassify",
+        "security_authorization_server_canonical_evaluation",
         "protected_material_redacted_projection",
         "security_epoch_prepared_refusal",
     },
@@ -401,10 +401,14 @@ def validate_row(row: dict[str, str], repo_root: Path, errors: list[str]) -> Non
         errors.append(f"{row_id} SML-010 resolver filtering proof missing")
     if sml_id == "SML-011" and row["language_library_authority"] in {"", "none"}:
         errors.append(f"{row_id} SML-011 language authority boundary missing")
-    if sml_id == "SML-025" and row["security_projection_authority"] != (
-        "server_sblr_admission_and_engine_security_api"
-    ):
-        errors.append(f"{row_id} SML-025 security projection authority drifted")
+    if sml_id == "SML-025":
+        expected_security_authority = (
+            "pre_sblr_refusal_and_engine_security_api"
+            if row["coverage_class"] == "protected_material_redacted_projection"
+            else "server_sblr_admission_and_engine_security_api"
+        )
+        if row["security_projection_authority"] != expected_security_authority:
+            errors.append(f"{row_id} SML-025 security projection authority drifted")
     validate_text_values(row, errors)
     validate_evidence_tokens(row, repo_root, errors)
     validate_artifacts(row, repo_root, errors)

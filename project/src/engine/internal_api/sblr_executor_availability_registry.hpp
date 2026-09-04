@@ -3,7 +3,11 @@
 #include "api_types.hpp"
 
 #include <cstdint>
+#include <map>
+#include <memory>
+#include <span>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -244,6 +248,7 @@ inline constexpr const char* kSblrDdlCreatePublicationExecutorId="engine.op.ddl_
 inline constexpr const char* kSblrDdlCreateDomainExecutorId="engine.op.ddl_create_domain";inline constexpr std::uint16_t kSblrDdlCreateDomainOpcodeCode=1542;inline constexpr const char* kSblrDdlCreateDomainOpcodeVersion="1.0";inline constexpr const char* kSblrDdlCreateDomainOperandDescriptorId="create_domain_descriptor";inline constexpr const char* kSblrDdlCreateDomainResultDescriptorId="ddl_result";inline constexpr std::uint16_t kSblrDdlCreateDomainResultDescriptorVersion=1;
 inline constexpr const char* kSblrDdlCreateSchemaExecutorId="engine.op.ddl_create_schema";inline constexpr std::uint16_t kSblrDdlCreateSchemaOpcodeCode=1536;inline constexpr const char* kSblrDdlCreateSchemaOpcodeVersion="1.0";inline constexpr const char* kSblrDdlCreateSchemaOperandDescriptorId="create_schema_descriptor";inline constexpr const char* kSblrDdlCreateSchemaResultDescriptorId="ddl_result";inline constexpr std::uint16_t kSblrDdlCreateSchemaResultDescriptorVersion=1;
 inline constexpr const char* kSblrDdlCreateTableExecutorId="engine.op.ddl_create_table";inline constexpr std::uint16_t kSblrDdlCreateTableOpcodeCode=1537;inline constexpr const char* kSblrDdlCreateTableOpcodeVersion="1.0";inline constexpr const char* kSblrDdlCreateTableOperandDescriptorId="create_table_descriptor";inline constexpr const char* kSblrDdlCreateTableResultDescriptorId="ddl_result";inline constexpr std::uint16_t kSblrDdlCreateTableResultDescriptorVersion=1;
+inline constexpr const char* kSblrDdlDropTableExecutorId="engine.op.ddl_drop_table";inline constexpr std::uint16_t kSblrDdlDropTableOpcodeCode=1539;inline constexpr const char* kSblrDdlDropTableOpcodeVersion="1.0";inline constexpr const char* kSblrDdlDropTableOperandDescriptorId="drop_table_descriptor";inline constexpr const char* kSblrDdlDropTableResultDescriptorId="ddl_result";inline constexpr std::uint16_t kSblrDdlDropTableResultDescriptorVersion=1;
 inline constexpr const char* kSblrDdlCreateIndexExecutorId="engine.op.ddl_create_index";inline constexpr std::uint16_t kSblrDdlCreateIndexOpcodeCode=1540;inline constexpr const char* kSblrDdlCreateIndexOpcodeVersion="1.0";inline constexpr const char* kSblrDdlCreateIndexOperandDescriptorId="create_index_descriptor";inline constexpr const char* kSblrDdlCreateIndexResultDescriptorId="ddl_result";inline constexpr std::uint16_t kSblrDdlCreateIndexResultDescriptorVersion=1;
 inline constexpr const char* kSblrDdlDropIndexExecutorId="engine.op.ddl_drop_index";inline constexpr std::uint16_t kSblrDdlDropIndexOpcodeCode=1541;inline constexpr const char* kSblrDdlDropIndexOpcodeVersion="1.0";inline constexpr const char* kSblrDdlDropIndexOperandDescriptorId="drop_index_descriptor";inline constexpr const char* kSblrDdlDropIndexResultDescriptorId="ddl_result";inline constexpr std::uint16_t kSblrDdlDropIndexResultDescriptorVersion=1;
 inline constexpr const char* kSblrDdlDropSynonymExecutorId="engine.op.ddl_drop_synonym";inline constexpr std::uint16_t kSblrDdlDropSynonymOpcodeCode=1575;inline constexpr const char* kSblrDdlDropSynonymOpcodeVersion="1.0";inline constexpr const char* kSblrDdlDropSynonymOperandDescriptorId="drop_synonym_descriptor";inline constexpr const char* kSblrDdlDropSynonymResultDescriptorId="ddl_result";inline constexpr std::uint16_t kSblrDdlDropSynonymResultDescriptorVersion=1;
@@ -318,6 +323,16 @@ struct SblrExecutorAvailabilityRowIdentity {
   std::string operand_descriptor_id{kSblrLiteralOperandDescriptorId};
   std::string result_descriptor_id{kSblrLiteralResultDescriptorId};
   std::uint16_t result_descriptor_version{kSblrLiteralResultDescriptorVersion};
+
+  friend bool operator<(const SblrExecutorAvailabilityRowIdentity& lhs,
+                        const SblrExecutorAvailabilityRowIdentity& rhs) {
+    return std::tie(lhs.executor_id, lhs.opcode_code, lhs.opcode_version,
+                    lhs.operand_descriptor_id, lhs.result_descriptor_id,
+                    lhs.result_descriptor_version) <
+           std::tie(rhs.executor_id, rhs.opcode_code, rhs.opcode_version,
+                    rhs.operand_descriptor_id, rhs.result_descriptor_id,
+                    rhs.result_descriptor_version);
+  }
 };
 
 bool IsAdmittedExecutorAvailabilityIdentity(const SblrExecutorAvailabilityRowIdentity& identity);
@@ -337,6 +352,28 @@ struct SblrExecutorAvailabilityLoadResult {
   bool ok{false};
   EngineApiDiagnostic diagnostic;
   SblrExecutorAvailabilitySnapshot snapshot;
+};
+
+struct SblrExecutorAvailabilityStatementCohort {
+  std::string database_path;
+  std::string database_uuid;
+  std::string statement_uuid;
+  std::vector<SblrExecutorAvailabilityRowIdentity> identities;
+  std::vector<SblrExecutorAvailabilityLoadResult> rows;
+  std::map<SblrExecutorAvailabilityRowIdentity, std::size_t>
+      row_by_exact_identity;
+};
+
+// One statement-scoped, order-preserving load of exact executor rows.  The
+// registry validates the complete tuple for every requested row before it
+// performs any bootstrap or durable read, then loads the cohort while holding
+// the registry lock once.  Individual row results are retained so callers can
+// preserve operation-specific fail-closed diagnostics.
+struct SblrExecutorAvailabilityBatchLoadResult {
+  bool ok{false};
+  EngineApiDiagnostic diagnostic;
+  std::vector<SblrExecutorAvailabilityLoadResult> rows;
+  std::shared_ptr<const SblrExecutorAvailabilityStatementCohort> cohort;
 };
 
 struct SblrExecutorAvailabilitySetRequest {
@@ -364,6 +401,9 @@ SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
 SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
     const EngineRequestContext& context,
     const SblrExecutorAvailabilityRowIdentity& exact_row_identity);
+SblrExecutorAvailabilityBatchLoadResult LoadSblrExecutorAvailabilitySnapshots(
+    const EngineRequestContext& context,
+    std::span<const SblrExecutorAvailabilityRowIdentity> exact_row_identities);
 
 // Read-only exact-current lookup. Unlike the compatibility loader above this
 // never bootstraps or publishes an absent row; validation-only consumers must

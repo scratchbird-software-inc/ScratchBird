@@ -18,6 +18,7 @@
 #include "uuid.hpp"
 
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
@@ -138,6 +139,10 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.security_epoch = 76;
   context.resource_epoch = 77;
   context.name_resolution_epoch = 78;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   return context;
 }
 
@@ -464,6 +469,8 @@ bool PublishReaderContext(const Fixture& fixture,
                           api::EngineRequestContext* context) {
   if (!Begin(fixture, "rcp075-reader", context)) return false;
   context->statement_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  context->statement_receipt_uuid.canonical =
+      NewUuidText(platform::UuidKind::object);
   context->statement_timestamp = std::string(kStatementTimestamp);
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = *context;
@@ -1439,14 +1446,25 @@ std::string DescriptorField(const std::string& encoded,
 }
 
 std::string CoreTypeUuid(const std::string_view stable_name) {
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
   const auto descriptor = std::ranges::find_if(
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
-  return descriptor == manifest.manifest.descriptor_rows.end()
-             ? std::string{}
-             : uuid::UuidToString(descriptor->descriptor_uuid.value);
+  if (count != 1 || descriptor == manifest.manifest.descriptor_rows.end() ||
+      !descriptor->descriptor_uuid.valid()) {
+    return {};
+  }
+  const auto descriptor_uuid =
+      uuid::UuidToString(descriptor->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      descriptor->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 api::TypedRelationalDag KeyValueDag(
@@ -1490,8 +1508,8 @@ api::TypedRelationalDag KeyValueDag(
   }
   api::RelationalTypeDescriptor boolean;
   boolean.descriptor_id = 104;
-  boolean.descriptor_uuid = CoreTypeUuid("boolean");
-  boolean.type_uuid = boolean.descriptor_uuid;
+  boolean.descriptor_uuid = NewUuidText(platform::UuidKind::object);
+  boolean.type_uuid = CoreTypeUuid("boolean");
   boolean.nullability = api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(boolean));
 
@@ -1886,8 +1904,7 @@ api::TypedRelationalDag KeyValueMixedJoinDag(
     const auto& column = heap_descriptor.columns[ordinal];
     api::RelationalTypeDescriptor type;
     type.descriptor_id = descriptor_id;
-    type.descriptor_uuid =
-        column.value_descriptor.descriptor_uuid.canonical;
+    type.descriptor_uuid = column.value_descriptor.descriptor_uuid.canonical;
     type.type_uuid =
         DescriptorField(column.value_descriptor.encoded_descriptor,
                         "type_uuid");
@@ -2139,6 +2156,56 @@ bool ProductionCanonicalRoute(
       join_complete(full_join, 5, 7) &&
       join_complete(semi_join, 3, 1) &&
       join_complete(anti_join, 3, 5);
+  if (!(complete(exact, 1) && complete(multi, 3) && complete(prefix, 6) &&
+        composition_complete && cte_limit_complete && aggregate_complete &&
+        recursive_complete && set_complete && mixed_joins_complete)) {
+    const auto report = [](const std::string_view name, const auto& execution) {
+      std::cerr << "QOW-CES05-KEY-VALUE summary " << name
+                << " profile=" << execution.profile_matched
+                << " admitted=" << execution.optimizer_admitted
+                << " selected=" << execution.optimizer_selected
+                << " published=" << execution.physical_dag_published
+                << " executed=" << execution.physical_dag_executed
+                << " actuals=" << execution.runtime_actuals_attached
+                << " result=" << execution.canonical_result_published
+                << " ok=" << execution.api_result.ok
+                << " stages=" << execution.optimizer_admission_stage_count
+                << " nodes=" << execution.physical_node_count
+                << " columns=" << execution.canonical_result_column_count
+                << " rows=" << execution.canonical_result_row_count << '\n';
+    };
+    report("exact", exact);
+    report("multi", multi);
+    report("prefix", prefix);
+    report("unary", unary);
+    report("cte_limit", cte_limit);
+    report("counted", counted);
+    report("recursive", recursive);
+    report("set_union", set_union);
+    report("cross_join", cross_join);
+    report("inner_join", inner_join);
+    report("left_join", left_join);
+    report("right_join", right_join);
+    report("full_join", full_join);
+    report("semi_join", semi_join);
+    report("anti_join", anti_join);
+    std::cerr << "QOW-CES05-KEY-VALUE values unary="
+              << ApiRowField(unary.api_result, 0, "key") << ','
+              << ApiRowField(unary.api_result, 1, "key") << ','
+              << ApiRowField(unary.api_result, 2, "key") << ','
+              << ApiRowField(unary.api_result, 3, "key") << " row_numbers="
+              << ApiRowField(unary.api_result, 0, "row_number") << ','
+              << ApiRowField(unary.api_result, 3, "row_number") << ','
+              << ApiRowField(unary.api_result, 5, "row_number")
+              << " count="
+              << ApiRowField(counted.api_result, 0, "key_count")
+              << " recursive="
+              << ApiRowField(recursive.api_result, 0, "key_count") << ','
+              << ApiRowField(recursive.api_result, 1, "key_count") << ','
+              << ApiRowField(recursive.api_result, 2, "key_count")
+              << " set_tail="
+              << ApiRowField(set_union.api_result, 6, "row_uuid") << '\n';
+  }
   return Require(
       complete(exact, 1) && complete(multi, 3) && complete(prefix, 6) &&
           composition_complete && cte_limit_complete && aggregate_complete &&

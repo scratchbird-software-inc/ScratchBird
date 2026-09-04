@@ -16,6 +16,22 @@ std::string EvidenceKey(
   return std::string(reinterpret_cast<const char*>(value.evidence.data()),
                      value.evidence.size());
 }
+
+bool FinalizeDescriptorEvidence(
+    scratchbird::engine::sblr::SblrDmlConditionalMutateDescriptorV1* descriptor) {
+  if (descriptor == nullptr) return false;
+  const auto wire = scratchbird::engine::sblr::
+      EncodeSblrDmlConditionalMutateDescriptorV1(*descriptor, false);
+  std::string detail;
+  scratchbird::engine::sblr::SblrDmlConditionalMutateDescriptorV1 canonical;
+  if (wire.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrDmlConditionalMutateDescriptorV1(
+          wire.data(), wire.size(), &canonical, &detail, false)) {
+    return false;
+  }
+  *descriptor = canonical;
+  return true;
+}
 }
 
 SblrDmlConditionalMutateCoordinationResult
@@ -37,9 +53,13 @@ CompileSblrDmlConditionalMutateDescriptor(const EngineRequestContext& context,
   result.descriptor.body[0] = 1;
   result.descriptor.body[1] = static_cast<std::uint8_t>(structural_occurrence);
   result.descriptor.body[2] = static_cast<std::uint8_t>(mutation_occurrence);
-  result.descriptor.evidence[0] = static_cast<std::uint8_t>(structural_occurrence);
-  result.descriptor.evidence[1] = static_cast<std::uint8_t>(mutation_occurrence);
   result.descriptor.availability = availability_generation;
+  if (!FinalizeDescriptorEvidence(&result.descriptor)) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        "SBLR.OPERAND.INVALID", "sblr.dml_conditional_mutate.descriptor_invalid",
+        {}, false);
+    return result;
+  }
   std::lock_guard lock(g_mutex);
   g_live[EvidenceKey(result.descriptor)] = true;
   result.ok = true;

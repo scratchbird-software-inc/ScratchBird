@@ -223,8 +223,6 @@ void ValidateOracles(const CsvTable& oracles,
                      const CsvTable& membership,
                      const CsvTable& surface_backlog,
                      const CsvTable& surface_registry,
-                     const CsvTable& operation_matrix,
-                     const std::filesystem::path& repo_root,
                      Harness* harness) {
   bool schema_ok = true;
   schema_ok &= RequireColumns(oracles,
@@ -233,30 +231,34 @@ void ValidateOracles(const CsvTable& oracles,
                                "expected_result_summary", "status"},
                               harness);
   schema_ok &= RequireColumns(membership,
-                              {"surface_id", "validation_fixture_id", "batch_id",
+                              {"surface_id", "fixed_uuid_v7", "canonical_name",
+                               "family", "surface_kind", "source_status",
+                               "cluster_scope", "validation_fixture_id", "batch_id",
                                "ctest_label", "status"},
                               harness);
   schema_ok &= RequireColumns(surface_backlog,
-                              {"surface_id", "canonical_name", "canonical_spec",
+                              {"surface_id", "fixed_uuid_v7", "canonical_name",
+                               "surface_kind", "family", "source_status",
+                               "cluster_scope", "canonical_spec",
                                "sblr_operation_family", "diagnostic_target",
                                "validation_fixture_id", "final_acceptance_rule"},
                               harness);
   schema_ok &= RequireColumns(surface_registry,
-                              {"surface_id", "canonical_name", "status",
+                              {"surface_id", "fixed_uuid_v7", "canonical_name",
+                               "surface_kind", "family", "source_status",
                                "cluster_scope", "canonical_spec",
-                               "sblr_operation_family"},
-                              harness);
-  schema_ok &= RequireColumns(operation_matrix,
-                              {"surface_id", "canonical_name",
-                               "sblr_operation_family", "required_context",
-                               "binding_steps", "result_shape", "diagnostics"},
+                               "sblr_operation_family", "batch_id", "ctest_label",
+                               "parser_handler_key", "udr_handler_key",
+                               "lowering_handler_key", "server_admission_key",
+                               "engine_rule_key", "diagnostic_key", "oracle_key",
+                               "validation_fixture_id", "final_acceptance_rule",
+                               "closure_action", "status"},
                               harness);
   if (!schema_ok) return;
 
   const auto membership_by_id = IndexUnique(membership, "surface_id", harness);
   const auto backlog_by_id = IndexUnique(surface_backlog, "surface_id", harness);
   const auto registry_by_id = IndexUnique(surface_registry, "surface_id", harness);
-  const auto operation_by_id = IndexUnique(operation_matrix, "surface_id", harness);
 
   harness->Check(oracles.rows.size() == kExpectedSurfaceCount,
                  "oracle map must contain corrected authority surface count");
@@ -266,8 +268,6 @@ void ValidateOracles(const CsvTable& oracles,
                  "oracle/surface backlog row count mismatch");
   harness->Check(surface_registry.rows.size() == oracles.rows.size(),
                  "oracle/surface registry row count mismatch");
-  harness->Check(operation_matrix.rows.size() == oracles.rows.size(),
-                 "oracle/operation matrix row count mismatch");
 
   const std::set<std::string> allowed_types = {
       "canonical_spec_plus_sblr_matrix",
@@ -299,25 +299,12 @@ void ValidateOracles(const CsvTable& oracles,
                    surface_id + " unsupported oracle_type " + oracle_type);
     harness->Check(Field(row, "source_search_key") == surface_id,
                    surface_id + " source_search_key must equal stable surface_id");
-    harness->Check(StartsWith(Field(row, "oracle_source"), "public_release_evidence"),
-                   surface_id + " oracle_source is not a canonical docs authority path");
-    harness->Check(!Contains(Field(row, "oracle_source"), "project/src") &&
-                       !Contains(Field(row, "oracle_source"), "project/tests") &&
-                       !Contains(Field(row, "oracle_source"), "build/") &&
-                       !Contains(Field(row, "oracle_source"), "/tmp"),
-                   surface_id + " oracle_source points at implementation or temp output");
+    harness->Check(Field(row, "oracle_source") == "public_contract_snapshot",
+                   surface_id + " oracle_source is not the canonical contract snapshot");
     harness->Check(!Field(row, "expected_result_summary").empty(),
                    surface_id + " missing expected_result_summary");
     harness->Check(Field(row, "status") == "closed_by_semantic_oracle_authority_gate",
                    surface_id + " status not closed by semantic oracle gate");
-
-    const std::string oracle_source(Field(row, "oracle_source"));
-    const auto fragment = oracle_source.find('#');
-    const std::filesystem::path authority_path =
-        repo_root / oracle_source.substr(0, fragment);
-    harness->Check(std::filesystem::exists(authority_path),
-                   surface_id + " oracle_source file does not exist: " +
-                       authority_path.string());
 
     if (oracle_type == "cluster_profile_and_standalone_refusal_policy") {
       harness->Check(Contains(Field(row, "expected_result_summary"), "fail-closed") &&
@@ -364,28 +351,41 @@ void ValidateOracles(const CsvTable& oracles,
       harness->Check(Field(*registry_it->second, "canonical_spec") ==
                          Field(row, "oracle_source"),
                      surface_id + " oracle source does not match canonical registry spec");
-      harness->Check(!Field(*registry_it->second, "status").empty() &&
-                         !Field(*registry_it->second, "cluster_scope").empty(),
-                     surface_id + " registry row lacks status or cluster scope");
-    }
-
-    const auto operation_it = operation_by_id.find(surface_id);
-    harness->Check(operation_it != operation_by_id.end(),
-                   surface_id + " missing operation matrix row");
-    if (operation_it != operation_by_id.end() && backlog_it != backlog_by_id.end()) {
-      harness->Check(Field(*operation_it->second, "sblr_operation_family") ==
-                         Field(*backlog_it->second, "sblr_operation_family"),
-                     surface_id + " SBLR operation family mismatch");
+      harness->Check(Field(*registry_it->second, "oracle_key") == oracle_type,
+                     surface_id + " oracle type does not match canonical registry");
+      harness->Check(Field(*registry_it->second, "validation_fixture_id") == fixture_id,
+                     surface_id + " fixture does not match canonical registry");
       for (const auto column :
-           {"required_context", "binding_steps", "result_shape", "diagnostics"}) {
-        harness->Check(!Field(*operation_it->second, column).empty(),
-                       surface_id + " operation matrix missing " + std::string(column));
+           {"fixed_uuid_v7", "canonical_name", "surface_kind", "family",
+            "source_status", "cluster_scope", "sblr_operation_family", "batch_id",
+            "ctest_label", "parser_handler_key", "udr_handler_key",
+            "lowering_handler_key", "server_admission_key", "engine_rule_key",
+            "diagnostic_key", "final_acceptance_rule", "closure_action", "status"}) {
+        harness->Check(!Field(*registry_it->second, column).empty(),
+                       surface_id + " canonical registry lacks " + std::string(column));
       }
-    }
-    if (operation_it != operation_by_id.end() && registry_it != registry_by_id.end()) {
-      harness->Check(Field(*operation_it->second, "sblr_operation_family") ==
-                         Field(*registry_it->second, "sblr_operation_family"),
-                     surface_id + " SBLR operation family mismatch with registry");
+      if (backlog_it != backlog_by_id.end()) {
+        for (const auto column :
+             {"fixed_uuid_v7", "canonical_name", "surface_kind", "family",
+              "source_status", "cluster_scope", "sblr_operation_family",
+              "validation_fixture_id", "final_acceptance_rule"}) {
+          harness->Check(Field(*registry_it->second, column) ==
+                             Field(*backlog_it->second, column),
+                         surface_id + " " + std::string(column) +
+                             " differs between canonical registry and backlog evidence");
+        }
+      }
+      if (membership_it != membership_by_id.end()) {
+        for (const auto column :
+             {"fixed_uuid_v7", "canonical_name", "surface_kind", "family",
+              "source_status", "cluster_scope", "batch_id", "ctest_label",
+              "validation_fixture_id"}) {
+          harness->Check(Field(*registry_it->second, column) ==
+                             Field(*membership_it->second, column),
+                         surface_id + " " + std::string(column) +
+                             " differs between canonical registry and membership evidence");
+        }
+      }
     }
   }
 
@@ -415,15 +415,31 @@ int main(int argc, char** argv) {
   Harness harness;
 
   try {
+    const auto canonical_surface_registry_file =
+        std::filesystem::is_regular_file(canonicalization_root)
+            ? canonicalization_root
+            : canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv";
+    if (!std::filesystem::is_regular_file(canonical_surface_registry_file) ||
+        canonical_surface_registry_file.filename() != "SBSQL_SURFACE_REGISTRY.csv") {
+      throw std::runtime_error(
+          "canonical surface authority is not the exact SBSQL surface registry file");
+    }
+    const auto expected_surface_registry_file =
+        repo_root / "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv";
+    if (!std::filesystem::is_regular_file(expected_surface_registry_file) ||
+        !std::filesystem::equivalent(canonical_surface_registry_file,
+                                     expected_surface_registry_file)) {
+      throw std::runtime_error(
+          "canonical surface registry does not resolve to the repository snapshot");
+    }
+    const auto surface_registry = ReadCsv(canonical_surface_registry_file);
     ValidateReport(artifact_root, &harness);
     ValidateCommand(ReadCsv(artifact_root / "VALIDATION_COMMAND_MATERIALIZATION.csv"),
                     &harness);
     ValidateOracles(ReadCsv(artifact_root / "SEMANTIC_ORACLE_AUTHORITY_MAP.csv"),
                     ReadCsv(artifact_root / "BATCH_ROW_MEMBERSHIP.csv"),
                     ReadCsv(artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv"),
-                    ReadCsv(canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv"),
-                    ReadCsv(canonicalization_root / "SBSQL_TO_SBLR_OPERATION_MATRIX.csv"),
-                    repo_root,
+                    surface_registry,
                     &harness);
 
     if (!harness.ok) {

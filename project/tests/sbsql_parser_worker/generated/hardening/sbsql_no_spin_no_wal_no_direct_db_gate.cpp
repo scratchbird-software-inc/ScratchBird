@@ -84,7 +84,9 @@ bool IsAllowedWalOccurrencePath(const std::filesystem::path& path) {
   const auto generic = GenericPath(path);
   return Contains(generic, "parsers/sbsql_worker/lexer/lexer.cpp") ||
          Contains(generic, "parsers/sbsql_worker/registry/generated/"
-                           "sbsql_generated_registry.cpp");
+                           "sbsql_generated_registry.cpp") ||
+         Contains(generic, "engine/internal_api/catalog/"
+                           "sbsql_language_elements_catalog.cpp");
 }
 
 bool HasWalAuthorityToken(std::string_view lower) {

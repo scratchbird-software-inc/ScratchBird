@@ -53,7 +53,7 @@
         "artifact_id": "CEIC-ART-011",
         "exists": true,
         "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-        "sha256": "sha256:4da7155eb59d615e7321c6d74ec712cf01c9020427465ad1766c7671792ac2b3",
+        "sha256": "sha256:c4e4777f9ef86ff7401e2c3af131ac9895e84a664b6b2462f64528548aae592c",
         "slice_id": "CEIC-024",
         "status": "present"
       },
@@ -61,7 +61,7 @@
         "artifact_id": "CEIC-ART-012",
         "exists": true,
         "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
-        "sha256": "sha256:bbb4eb0d1f52154621e564a2c35b93b8abdd5274ea12655099c5688b13398d75",
+        "sha256": "sha256:69c1f7a4a2e6bfbeda82d0ee9dfb7069f943e250e250f0653048abde6d4fbfbe",
         "slice_id": "CEIC-030",
         "status": "present"
       },
@@ -77,7 +77,7 @@
         "artifact_id": "CEIC-ART-014",
         "exists": true,
         "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST.yaml",
-        "sha256": "sha256:f28acdcd570344fdc69ea5568455da1012d2b473519bc90e3a9b38e095f24901",
+        "sha256": "sha256:52b4fe3a05a73deef51f22de00924f729389ff14777f3d7759a38629fc2b96a7",
         "slice_id": "CEIC-085",
         "status": "present"
       },
@@ -257,18 +257,18 @@
   "schema_version": 1,
   "search_key": "CEIC_095_FINAL_ENTERPRISE_MANIFEST",
   "slice_id": "CEIC-095",
-  "source_branch": "unknown",
-  "source_commit": "unknown",
+  "source_branch": "main",
+  "source_commit": "ed05d82f3469a2f4da69eafafcd22929333f7ed8",
   "source_evidence": [
     {
       "label": "artifact:CEIC-ART-011",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-      "sha256": "sha256:4da7155eb59d615e7321c6d74ec712cf01c9020427465ad1766c7671792ac2b3"
+      "sha256": "sha256:c4e4777f9ef86ff7401e2c3af131ac9895e84a664b6b2462f64528548aae592c"
     },
     {
       "label": "artifact:CEIC-ART-012",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
-      "sha256": "sha256:bbb4eb0d1f52154621e564a2c35b93b8abdd5274ea12655099c5688b13398d75"
+      "sha256": "sha256:69c1f7a4a2e6bfbeda82d0ee9dfb7069f943e250e250f0653048abde6d4fbfbe"
     },
     {
       "label": "artifact:CEIC-ART-013",
@@ -278,7 +278,7 @@
     {
       "label": "artifact:CEIC-ART-014",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST.yaml",
-      "sha256": "sha256:f28acdcd570344fdc69ea5568455da1012d2b473519bc90e3a9b38e095f24901"
+      "sha256": "sha256:52b4fe3a05a73deef51f22de00924f729389ff14777f3d7759a38629fc2b96a7"
     },
     {
       "label": "artifact:CEIC-ART-020",
@@ -736,7 +736,7 @@
       "sha256": "sha256:d5dd7076a64471359c786ce613b6fb4bef4fa3ba4fabedb06eaedce8f4ab92e2"
     }
   ],
-  "source_evidence_digest": "sha256:0871a60a9647ead6d1d12de8e9116ee10ccb960f819eb487f2f68d36915c0cd9",
+  "source_evidence_digest": "sha256:3a6034048292ebce5b4f0ea614c1778a49eebf5492f9da7097bdfe29f258ad6f",
   "static_claim_boundary": {
     "anchor_only_claims_allowed": false,
     "descriptor_only_claims_allowed": false,

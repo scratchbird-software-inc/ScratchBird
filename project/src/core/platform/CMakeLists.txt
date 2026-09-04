@@ -12,8 +12,14 @@ add_library(sb_core_platform
   runtime_topology.cpp
 )
 
+if(DEFINED SB_PROJECT_SOURCE_DIR)
+  set(_sb_platform_project_source_dir "${SB_PROJECT_SOURCE_DIR}")
+else()
+  set(_sb_platform_project_source_dir "${CMAKE_SOURCE_DIR}")
+endif()
+
 include(CheckCXXSourceCompiles)
-include("${CMAKE_SOURCE_DIR}/cmake/ResolveLlvmRuntimeLibrary.cmake")
+include("${_sb_platform_project_source_dir}/cmake/ResolveLlvmRuntimeLibrary.cmake")
 
 set(SB_SAVED_CMAKE_REQUIRED_LIBRARIES "${CMAKE_REQUIRED_LIBRARIES}")
 set(CMAKE_REQUIRED_LIBRARIES quadmath)
@@ -55,7 +61,7 @@ set(SB_LLVM_PROJECT_ROOT "$ENV{HOME}/local workspace/llvm" CACHE PATH
   "Preferred local LLVM source root for ScratchBird LLVM integration")
 set(SB_LLVM_FALLBACK_PROJECT_ROOT "$ENV{HOME}/local workspace/llvm-project" CACHE PATH
   "Compatibility fallback local LLVM source root used when SB_LLVM_PROJECT_ROOT is not present")
-set(SB_LLVM_TOOLS_ROOT "${CMAKE_SOURCE_DIR}/tools/llvm" CACHE PATH
+set(SB_LLVM_TOOLS_ROOT "${_sb_platform_project_source_dir}/tools/llvm" CACHE PATH
   "Private staged LLVM tool dependency root for ScratchBird")
 set(SB_LLVM_MIN_MAJOR 23 CACHE STRING
   "Minimum LLVM major version accepted by release-complete ScratchBird builds")
@@ -369,8 +375,8 @@ target_compile_definitions(sb_core_platform PUBLIC
 add_test(
   NAME llvm_runtime_library_cmake_gate
   COMMAND "${CMAKE_COMMAND}"
-          "-DSB_PROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
-          -P "${CMAKE_SOURCE_DIR}/cmake/LlvmRuntimeLibraryGate.cmake"
+          "-DSB_PROJECT_SOURCE_DIR=${_sb_platform_project_source_dir}"
+          -P "${_sb_platform_project_source_dir}/cmake/LlvmRuntimeLibraryGate.cmake"
 )
 set_tests_properties(llvm_runtime_library_cmake_gate PROPERTIES
   LABELS "public_release_correctness;llvm_runtime_library;cmake_config"
@@ -388,6 +394,8 @@ else()
     SCRATCHBIRD_HAS_LLVM=0
   )
 endif()
+
+unset(_sb_platform_project_source_dir)
 
 if(SB_LLVM_BUILD_FROM_SOURCE_IF_MISSING AND NOT SB_LLVM_LIBRARY)
   if(EXISTS "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/CMakeLists.txt")

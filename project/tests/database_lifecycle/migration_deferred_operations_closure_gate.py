@@ -346,9 +346,11 @@ GROUPS = (
             SourceEvidence(
                 "project/tests/sbsql_parser_worker/sbsql_column_constraint_exact_route_conformance.cpp",
                 (
-                    "SBLR_DDL_CONSTRAINT_CREATE",
-                    "authority.engine.catalog_constraint_descriptor_required",
+                    "SBLR_DIAGNOSTIC_REFUSAL",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "authority.parser.no_executable_sblr",
                     "authority.parser.no_sql_text_execution",
+                    "EngineCreateConstraint component",
                 ),
             ),
             SourceEvidence(
@@ -381,7 +383,11 @@ GROUPS = (
             TestEvidence(
                 SBSQL_CMAKE,
                 "sbsql_column_constraint_exact_route_conformance",
-                ("sbsql_column_constraint_exact_route_conformance", "SBSFC-030"),
+                (
+                    "create_table_constraint_child_refusal",
+                    "constraint_internal_api_component",
+                    "authority_diagnostic_refusal",
+                ),
             ),
             TestEvidence(
                 DATABASE_CMAKE,

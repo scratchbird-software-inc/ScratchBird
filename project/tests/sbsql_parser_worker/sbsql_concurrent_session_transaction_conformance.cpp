@@ -10,9 +10,12 @@
 #include "agent_workload_resource_quota.hpp"
 #include "cache/sblr_template_cache.hpp"
 #include "database_lifecycle.hpp"
+#include "ddl/create_api.hpp"
+#include "dml/select_api.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "memory.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction/savepoint_api.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -205,6 +208,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.trace_tags.push_back("FSPE-011E");
   context.trace_tags.push_back("concurrent-session-transaction");
   return context;
@@ -258,6 +265,10 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
                                   bool requires_transaction = false,
                                   bool require_api_ok = true) {
   const auto* exact = sblr::LookupSblrOpcode(opcode);
+  if (exact == nullptr || exact->code == 0) {
+    std::cerr << "dispatch fixture lacks canonical opcode operation="
+              << operation_id << " opcode=" << opcode << '\n';
+  }
   Require(exact != nullptr && exact->code != 0,
           "dispatch test opcode lacks a canonical identity");
   const std::string canonical_operation_id = exact->operation_id;
@@ -340,46 +351,46 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& database
                                            std::string session_suffix,
                                            std::string isolation = "read_committed") {
   const std::string session_id = session_suffix;
-  auto begin = Dispatch(database_path,
-                        "transaction.begin",
-                        "SBLR_TXN_BEGIN",
-                        BaseContext(database_path, session_id));
-  Require(begin.api_result.local_transaction_id != 0, "transaction begin did not return local transaction id");
+  api::EngineBeginTransactionRequest begin_request;
+  begin_request.context = BaseContext(database_path, session_id);
+  begin_request.isolation_level = isolation;
+  const auto begin = api::EngineBeginTransaction(begin_request);
+  Require(begin.ok && begin.local_transaction_id != 0,
+          "transaction begin did not return local transaction id");
   auto context = BaseContext(database_path, session_id);
-  context.local_transaction_id = begin.api_result.local_transaction_id;
-  context.transaction_uuid = begin.api_result.transaction_uuid;
+  context.local_transaction_id = begin.local_transaction_id;
+  context.transaction_uuid = begin.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
-      EvidenceU64(begin.api_result, "snapshot_visible_through_local_transaction_id");
+      begin.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = std::move(isolation);
   return context;
 }
 
 void Commit(const std::filesystem::path& database_path, const api::EngineRequestContext& context) {
-  auto commit = Dispatch(database_path,
-                         "transaction.commit",
-                         "SBLR_TXN_COMMIT",
-                         context,
-                         {},
-                         true);
-  Require(commit.api_result.ok, "transaction commit failed");
-  Require(HasEvidence(commit.api_result, "transaction_state", "committed"), "commit evidence missing");
+  (void)database_path;
+  api::EngineCommitTransactionRequest commit_request;
+  commit_request.context = context;
+  const auto commit = api::EngineCommitTransaction(commit_request);
+  Require(commit.ok, "transaction commit failed");
+  Require(HasEvidence(commit, "transaction_state", "committed"),
+          "commit evidence missing");
 }
 
 void Rollback(const std::filesystem::path& database_path, const api::EngineRequestContext& context) {
-  auto rollback = Dispatch(database_path,
-                           "transaction.rollback",
-                           "SBLR_TXN_ROLLBACK",
-                           context,
-                           {},
-                           true);
-  Require(rollback.api_result.ok, "transaction rollback failed");
-  Require(HasEvidence(rollback.api_result, "transaction_state", "rolled_back"), "rollback evidence missing");
+  (void)database_path;
+  api::EngineRollbackTransactionRequest rollback_request;
+  rollback_request.context = context;
+  const auto rollback = api::EngineRollbackTransaction(rollback_request);
+  Require(rollback.ok, "transaction rollback failed");
+  Require(HasEvidence(rollback, "transaction_state", "rolled_back"),
+          "rollback evidence missing");
 }
 
 std::size_t SelectByIdFromTable(const std::filesystem::path& database_path,
                                 const api::EngineRequestContext& context,
                                 std::string table_uuid,
                                 std::string id) {
+  (void)database_path;
   api::EngineApiRequest request;
   request.target_object.uuid.canonical = std::move(table_uuid);
   request.target_object.object_kind = "table";
@@ -388,14 +399,12 @@ std::size_t SelectByIdFromTable(const std::filesystem::path& database_path,
   request.predicate.bound_values.push_back(TextValue(std::move(id)));
   request.projection.canonical_projection_envelopes.push_back("id");
   request.projection.canonical_projection_envelopes.push_back("note");
-  auto selected = Dispatch(database_path,
-                           "dml.select_rows",
-                           "SBLR_DML_SELECT_ROWS",
-                           context,
-                           request,
-                           true);
-  Require(selected.api_result.ok, "select by id failed");
-  return selected.api_result.result_shape.rows.size();
+  api::EngineSelectRowsRequest select_request;
+  static_cast<api::EngineApiRequest&>(select_request) = request;
+  select_request.context = context;
+  const auto selected = api::EngineSelectRows(select_request);
+  Require(selected.ok, "select by id failed");
+  return selected.result_shape.rows.size();
 }
 
 std::size_t SelectById(const std::filesystem::path& database_path,
@@ -449,13 +458,12 @@ void CreateSchemaTableAndIndex(const std::filesystem::path& database_path) {
   schema_request.target_object.uuid.canonical = kSchemaUuid;
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("fspe011e_schema"));
-  auto schema = Dispatch(database_path,
-                         "ddl.create_schema",
-                         "SBLR_DDL_CREATE_SCHEMA",
-                         ddl_context,
-                         schema_request,
-                         true);
-  Require(schema.api_result.primary_object.uuid.canonical == kSchemaUuid, "schema create did not preserve UUID");
+  api::EngineCreateSchemaRequest create_schema_request;
+  static_cast<api::EngineApiRequest&>(create_schema_request) = schema_request;
+  create_schema_request.context = ddl_context;
+  const auto schema = api::EngineCreateSchema(create_schema_request);
+  Require(schema.ok && schema.primary_object.uuid.canonical == kSchemaUuid,
+          "schema create did not preserve UUID");
 
   api::EngineApiRequest table_request;
   table_request.target_schema.uuid.canonical = kSchemaUuid;
@@ -465,25 +473,30 @@ void CreateSchemaTableAndIndex(const std::filesystem::path& database_path) {
   table_request.localized_names.push_back(Name("fspe011e_table"));
   table_request.columns.push_back(Column(0, "id", "text"));
   table_request.columns.push_back(Column(1, "note", "text"));
-  auto table = Dispatch(database_path,
-                        "ddl.create_table",
-                        "SBLR_DDL_CREATE_TABLE",
-                        ddl_context,
-                        table_request,
-                        true);
-  Require(table.api_result.primary_object.uuid.canonical == kTableUuid, "table create did not preserve UUID");
+  api::EngineCreateTableRequest create_table_request;
+  static_cast<api::EngineApiRequest&>(create_table_request) = table_request;
+  create_table_request.context = ddl_context;
+  create_table_request.target_schema = table_request.target_schema;
+  create_table_request.requested_table_uuid = table_request.target_object.uuid;
+  create_table_request.table_names = table_request.localized_names;
+  create_table_request.table_columns = table_request.columns;
+  const auto table = api::EngineCreateTable(create_table_request);
+  for (const auto& diagnostic : table.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(table.ok && table.primary_object.uuid.canonical == kTableUuid,
+          "table create did not preserve UUID");
 
   api::EngineApiRequest index_request;
   index_request.target_object.uuid.canonical = kTableUuid;
   index_request.target_object.object_kind = "table";
   index_request.indexes.push_back(BtreeIndex());
-  auto index = Dispatch(database_path,
-                        "ddl.create_index",
-                        "SBLR_DDL_CREATE_INDEX",
-                        ddl_context,
-                        index_request,
-                        true);
-  Require(index.api_result.primary_object.uuid.canonical == kIndexUuid, "index create did not preserve UUID");
+  api::EngineCreateIndexRequest create_index_request;
+  static_cast<api::EngineApiRequest&>(create_index_request) = index_request;
+  create_index_request.context = ddl_context;
+  const auto index = api::EngineCreateIndex(create_index_request);
+  Require(index.ok && index.primary_object.uuid.canonical == kIndexUuid,
+          "index create did not preserve UUID");
 
   Commit(database_path, ddl_context);
 }
@@ -532,25 +545,28 @@ void VerifyTransactionVisibility(const std::filesystem::path& database_path) {
                   "kept");
   api::EngineApiRequest savepoint_request;
   savepoint_request.localized_names.push_back(Name("sp_keep_before"));
-  auto savepoint = Dispatch(database_path,
-                            "transaction.create_savepoint",
-                            "SBLR_TRANSACTION_CREATE_SAVEPOINT",
-                            savepoint_writer,
-                            savepoint_request,
-                            true);
-  Require(savepoint.api_result.ok, "create savepoint failed");
+  api::EngineCreateSavepointRequest create_savepoint_request;
+  static_cast<api::EngineApiRequest&>(create_savepoint_request) =
+      savepoint_request;
+  create_savepoint_request.context = savepoint_writer;
+  create_savepoint_request.option_envelopes.push_back(
+      "savepoint_name:sp_keep_before");
+  const auto savepoint = api::EngineCreateSavepoint(create_savepoint_request);
+  Require(savepoint.ok, "create savepoint failed");
   (void)InsertRow(database_path,
                   savepoint_writer,
                   "019e07be-f11e-7000-8000-000000000304",
                   "savepoint-after",
                   "discarded");
-  auto rollback_to = Dispatch(database_path,
-                              "transaction.rollback_to_savepoint",
-                              "SBLR_TRANSACTION_ROLLBACK_TO_SAVEPOINT",
-                              savepoint_writer,
-                              savepoint_request,
-                              true);
-  Require(rollback_to.api_result.ok, "rollback to savepoint failed");
+  api::EngineRollbackToSavepointRequest rollback_to_request;
+  static_cast<api::EngineApiRequest&>(rollback_to_request) =
+      savepoint_request;
+  rollback_to_request.context = savepoint_writer;
+  rollback_to_request.option_envelopes.push_back(
+      "savepoint_name:sp_keep_before");
+  const auto rollback_to =
+      api::EngineRollbackToSavepoint(rollback_to_request);
+  Require(rollback_to.ok, "rollback to savepoint failed");
   Commit(database_path, savepoint_writer);
 
   auto savepoint_reader = BeginTransaction(database_path, "207");
@@ -572,14 +588,16 @@ void VerifyDdlDmlOverlapPolicy(const std::filesystem::path& database_path) {
   table_request.localized_names.push_back(Name("fspe011e_overlap_table"));
   table_request.columns.push_back(ColumnWithUuidSuffix(0, "id", "text", "211", "311"));
   table_request.columns.push_back(ColumnWithUuidSuffix(1, "note", "text", "212", "312"));
-  auto table = Dispatch(database_path,
-                        "ddl.create_table",
-                        "SBLR_DDL_CREATE_TABLE",
-                        ddl_context,
-                        table_request,
-                        true);
-  Require(table.api_result.ok, "overlap DDL create table failed");
-  Require(table.api_result.primary_object.uuid.canonical == kOverlapTableUuid,
+  api::EngineCreateTableRequest create_table_request;
+  static_cast<api::EngineApiRequest&>(create_table_request) = table_request;
+  create_table_request.context = ddl_context;
+  create_table_request.target_schema = table_request.target_schema;
+  create_table_request.requested_table_uuid = table_request.target_object.uuid;
+  create_table_request.table_names = table_request.localized_names;
+  create_table_request.table_columns = table_request.columns;
+  const auto table = api::EngineCreateTable(create_table_request);
+  Require(table.ok, "overlap DDL create table failed");
+  Require(table.primary_object.uuid.canonical == kOverlapTableUuid,
           "overlap DDL did not preserve table UUID");
 
   auto overlapping_dml = BeginTransaction(database_path, "209");
@@ -989,110 +1007,99 @@ ServerExecuteResultForTest ExecuteServerRoute(ServerRouteForTest* route,
 
 void VerifyCdp032AlwaysActiveServerFinality(const std::filesystem::path& database_path) {
   auto commit_context = BeginTransaction(database_path, "301");
-  const auto old_commit_tx = commit_context.local_transaction_id;
   auto commit_route = MakeServerRoute(database_path, commit_context);
-  const auto commit_result = ExecuteServerRoute(
-      &commit_route,
-      TransactionEnvelope("transaction.commit", "SBLR_TXN_COMMIT"));
+  const auto commit_execute = scratchbird::server::HandleExecuteSblr(
+      &commit_route.registry,
+      commit_route.engine_state,
+      ExecuteFrame(commit_route.session_uuid,
+                   {},
+                   TransactionEnvelope("transaction.commit",
+                                       "SBLR_TXN_COMMIT")));
   const auto& committed_session = commit_route.registry.sessions_by_uuid[
       scratchbird::server::UuidBytesToText(commit_route.session_uuid)];
-  Require(Contains(commit_result.row_packet, "evidence=transaction_state:committed"),
-          "server commit did not expose committed finality evidence");
-  Require(Contains(commit_result.row_packet, "evidence=always_active_transaction_replacement:"),
-          "server commit did not expose replacement transaction evidence");
-  Require(committed_session.local_transaction_id != 0 &&
-              committed_session.local_transaction_id != old_commit_tx,
-          "server commit left session idle or reused finalized transaction");
+  Require(!commit_execute.accepted &&
+              HasDiagnostic(commit_execute, "SBLR.OPERATION.NONCANONICAL"),
+          "retired text commit bypassed canonical server admission");
+  Require(committed_session.local_transaction_id ==
+              commit_context.local_transaction_id &&
+              committed_session.transaction_uuid ==
+                  commit_context.transaction_uuid.canonical,
+          "retired text commit changed server transaction finality");
+  Commit(database_path, commit_context);
 
   auto rollback_context = BeginTransaction(database_path, "302");
-  const auto old_rollback_tx = rollback_context.local_transaction_id;
   auto rollback_route = MakeServerRoute(database_path, rollback_context);
-  const auto rollback_result = ExecuteServerRoute(
-      &rollback_route,
-      TransactionEnvelope("transaction.rollback", "SBLR_TXN_ROLLBACK"));
+  const auto rollback_execute = scratchbird::server::HandleExecuteSblr(
+      &rollback_route.registry,
+      rollback_route.engine_state,
+      ExecuteFrame(rollback_route.session_uuid,
+                   {},
+                   TransactionEnvelope("transaction.rollback",
+                                       "SBLR_TXN_ROLLBACK")));
   const auto& rolled_session = rollback_route.registry.sessions_by_uuid[
       scratchbird::server::UuidBytesToText(rollback_route.session_uuid)];
-  Require(Contains(rollback_result.row_packet, "evidence=transaction_state:rolled_back"),
-          "server rollback did not expose rolled-back finality evidence");
-  Require(Contains(rollback_result.row_packet, "evidence=always_active_transaction_replacement:"),
-          "server rollback did not expose replacement transaction evidence");
-  Require(rolled_session.local_transaction_id != 0 &&
-              rolled_session.local_transaction_id != old_rollback_tx,
-          "server rollback left session idle or reused finalized transaction");
+  Require(!rollback_execute.accepted &&
+              HasDiagnostic(rollback_execute, "SBLR.OPERATION.NONCANONICAL"),
+          "retired text rollback bypassed canonical server admission");
+  Require(rolled_session.local_transaction_id ==
+              rollback_context.local_transaction_id &&
+              rolled_session.transaction_uuid ==
+                  rollback_context.transaction_uuid.canonical,
+          "retired text rollback changed server transaction finality");
+  Rollback(database_path, rollback_context);
 }
 
 void VerifyCdp032AutocommitEmulation(const std::filesystem::path& database_path) {
-  auto success_context = BeginTransaction(database_path, "303");
-  auto success_route = MakeServerRoute(database_path, success_context);
-  const auto success_id = std::string("autocommit-success");
-  const auto success_result = ExecuteServerRoute(
-      &success_route,
-      CopyAutocommitEnvelope(GeneratedUuidText(), success_id, "committed-by-autocommit", true));
-  const auto& success_session = success_route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(success_route.session_uuid)];
-  Require(Contains(success_result.row_packet, "evidence=autocommit_statement_succeeded:committed"),
-          "autocommit success did not commit through engine finality");
-  Require(Contains(success_result.row_packet, "evidence=always_active_transaction_replacement:"),
-          "autocommit success did not expose replacement transaction evidence");
-  Require(success_session.local_transaction_id != 0 &&
-              success_session.local_transaction_id != success_context.local_transaction_id,
-          "autocommit success left the session idle");
-
-  auto success_reader = BeginTransaction(database_path, "304");
-  Require(SelectById(database_path, success_reader, success_id) == 1,
-          "autocommit success row was not visible after engine commit");
-  Commit(database_path, success_reader);
-
-  auto failure_context = BeginTransaction(database_path, "305");
-  auto failure_route = MakeServerRoute(database_path, failure_context);
-  const auto failure_execute = scratchbird::server::HandleExecuteSblr(
-      &failure_route.registry,
-      failure_route.engine_state,
-      ExecuteFrame(failure_route.session_uuid,
+  auto context = BeginTransaction(database_path, "303");
+  auto route = MakeServerRoute(database_path, context);
+  const auto execute = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrame(route.session_uuid,
                    {},
                    CopyAutocommitEnvelope(GeneratedUuidText(),
-                                          "autocommit-failure",
+                                          "autocommit-retired-text",
                                           "must-not-be-visible",
-                                          false)));
-  Require(!failure_execute.accepted,
-          "autocommit refusal unexpectedly accepted malformed COPY-style insert");
-  Require(HasDiagnostic(failure_execute, "SB_ENGINE_API_INVALID_REQUEST") ||
-              HasDiagnostic(failure_execute, "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED"),
-          "autocommit refusal did not expose engine refusal diagnostic");
-  const auto& failure_session = failure_route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(failure_route.session_uuid)];
-  Require(failure_session.local_transaction_id != 0 &&
-              failure_session.local_transaction_id != failure_context.local_transaction_id,
-          "autocommit refusal left the session idle instead of opening replacement");
+                                          true)));
+  Require(!execute.accepted &&
+              HasDiagnostic(execute, "SBLR.OPERATION.NONCANONICAL"),
+          "retired COPY-style autocommit text bypassed canonical admission");
+  const auto& session = route.registry.sessions_by_uuid[
+      scratchbird::server::UuidBytesToText(route.session_uuid)];
+  Require(session.local_transaction_id == context.local_transaction_id &&
+              session.transaction_uuid == context.transaction_uuid.canonical,
+          "retired autocommit text changed transaction finality");
 
-  auto failure_reader = BeginTransaction(database_path, "306");
-  Require(SelectById(database_path, failure_reader, "autocommit-failure") == 0,
-          "autocommit refusal leaked partial COPY-style rows");
-  Commit(database_path, failure_reader);
+  auto reader = BeginTransaction(database_path, "304");
+  Require(SelectById(database_path, reader, "autocommit-retired-text") == 0,
+          "retired autocommit text leaked a row");
+  Commit(database_path, reader);
+  Rollback(database_path, context);
 }
 
 void VerifyCdp032PressureRestartPolicy(const std::filesystem::path& database_path) {
   auto pressure_context = BeginTransaction(database_path, "307");
   std::this_thread::sleep_for(std::chrono::milliseconds(2));
   auto pressure_route = MakeServerRoute(database_path, pressure_context);
-  const auto pressure_result = ExecuteServerRoute(
-      &pressure_route,
-      TransactionEnvelope("transaction.rollback",
-                          "SBLR_TXN_ROLLBACK",
-                          true));
+  const auto pressure_result = scratchbird::server::HandleExecuteSblr(
+      &pressure_route.registry,
+      pressure_route.engine_state,
+      ExecuteFrame(pressure_route.session_uuid,
+                   {},
+                   TransactionEnvelope("transaction.rollback",
+                                       "SBLR_TXN_ROLLBACK",
+                                       true)));
   const auto& pressure_session = pressure_route.registry.sessions_by_uuid[
       scratchbird::server::UuidBytesToText(pressure_route.session_uuid)];
-  Require(Contains(pressure_result.row_packet,
-                   "diagnostic_code=SERVER.TRANSACTION_PRESSURE.RESTART_FORCED"),
-          "transaction pressure restart did not emit exact diagnostic code");
-  Require(Contains(pressure_result.row_packet,
-                   "evidence=transaction_pressure_policy:long_idle_restart"),
-          "transaction pressure restart did not emit policy evidence");
-  Require(Contains(pressure_result.row_packet, "evidence=parser_finality:false"),
-          "transaction pressure restart did not prove parser finality stayed false");
-  Require(pressure_session.local_transaction_id != 0 &&
-              pressure_session.local_transaction_id != pressure_context.local_transaction_id,
-          "transaction pressure restart did not open replacement transaction");
+  Require(!pressure_result.accepted &&
+              HasDiagnostic(pressure_result, "SBLR.OPERATION.NONCANONICAL"),
+          "retired pressure-policy text bypassed canonical admission");
+  Require(pressure_session.local_transaction_id ==
+              pressure_context.local_transaction_id &&
+              pressure_session.transaction_uuid ==
+                  pressure_context.transaction_uuid.canonical,
+          "retired pressure-policy text changed transaction finality");
+  Rollback(database_path, pressure_context);
 }
 
 void VerifyCdp032BackgroundPressureDoesNotStarveForegroundDml(
@@ -1144,7 +1151,8 @@ sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
   frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeFetchPayloadForTest(session_uuid, cursor_uuid, 1);
+  frame.payload = scratchbird::server::EncodeFetchPayloadForTest(
+      session_uuid, cursor_uuid, 1, 65536);
   return frame;
 }
 
@@ -1173,6 +1181,102 @@ std::vector<std::uint8_t> AttachPayloadForBindingTest(
 
 void VerifyNeutralV2MultiTransactionRouting(
     const std::filesystem::path& database_path) {
+  {
+    auto context = BeginTransaction(database_path, "310");
+    auto route = MakeServerRoute(database_path, context);
+    auto& session = route.registry.sessions_by_uuid[
+        scratchbird::server::UuidBytesToText(route.session_uuid)];
+    const auto* default_transaction =
+        scratchbird::server::AdoptAndFindExactActiveDefaultTransaction(
+            &session);
+    Require(default_transaction != nullptr,
+            "V2 refusal fixture did not adopt its exact default transaction");
+    const auto transaction_count = session.transactions_by_local_id.size();
+
+    const auto retired_begin = scratchbird::server::HandleExecuteSblr(
+        &route.registry,
+        route.engine_state,
+        ExecuteFrameV2(route.session_uuid,
+                       TransactionEnvelope("transaction.begin",
+                                           "SBLR_TXN_BEGIN"),
+                       2));
+    Require(!retired_begin.accepted &&
+                retired_begin.response_schema_id == 4012 &&
+                HasDiagnostic(retired_begin, "SBLR.OPERATION.NONCANONICAL") &&
+                session.transactions_by_local_id.size() == transaction_count,
+            "retired V2 begin text created transaction authority");
+
+    auto selected_query = ServerOperationEnvelope("dml.select_rows",
+                                                  "SBLR_DML_SELECT_ROWS",
+                                                  "sblr.query.relational.v3",
+                                                  true);
+    selected_query += "target_object_uuid=";
+    selected_query += kTableUuid;
+    selected_query += "\ntarget_object_kind=table\nlimit=1\n";
+    const auto selected = scratchbird::server::HandleExecuteSblr(
+        &route.registry,
+        route.engine_state,
+        ExecuteFrameV2(route.session_uuid,
+                       selected_query,
+                       1,
+                       default_transaction));
+    Require(!selected.accepted &&
+                selected.response_schema_id == 4012 &&
+                HasDiagnostic(selected, "SBLR.OPERATION.NONCANONICAL") &&
+                selected.transaction_state.has_value() &&
+                selected.transaction_state->selected_present &&
+                selected.transaction_state->selected.local_transaction_id ==
+                    context.local_transaction_id,
+            "retired V2 selected text lost typed selector or bypassed canonical admission");
+
+    auto mismatched_selector = *default_transaction;
+    mismatched_selector.transaction_uuid =
+        "019e07be-f11e-7000-8000-00000000bad1";
+    const auto mismatched = scratchbird::server::HandleExecuteSblr(
+        &route.registry,
+        route.engine_state,
+        ExecuteFrameV2(route.session_uuid,
+                       selected_query,
+                       1,
+                       &mismatched_selector));
+    Require(!mismatched.accepted &&
+                mismatched.response_schema_id == 4012 &&
+                HasDiagnostic(mismatched,
+                              "PARSER_SERVER_IPC.TRANSACTION_SELECTOR_MISMATCH"),
+            "V2 mismatched selector reached SBLR admission");
+
+    std::array<std::uint8_t, 16> zero_prepared{};
+    const auto v1_payload =
+        scratchbird::server::EncodeExecuteSblrPayloadForTest(
+            route.session_uuid,
+            zero_prepared,
+            scratchbird::server::EncodeShowVersionSblrForTest(),
+            false);
+    std::vector<std::uint8_t> expected_v1_payload;
+    PutUuid(&expected_v1_payload, route.session_uuid);
+    PutUuid(&expected_v1_payload, zero_prepared);
+    PutU8(&expected_v1_payload, 0);
+    PutString(&expected_v1_payload,
+              scratchbird::server::EncodeShowVersionSblrForTest());
+    Require(v1_payload == expected_v1_payload,
+            "V1 execute payload bytes changed while adding V2 routing");
+
+    auto zero_header_prepare = PrepareFrame(
+        route.session_uuid,
+        scratchbird::server::EncodeShowVersionSblrForTest());
+    zero_header_prepare.header.session_uuid = {};
+    const auto zero_header_rejected =
+        scratchbird::server::HandlePrepareSblr(
+            &route.registry, route.engine_state, zero_header_prepare);
+    Require(!zero_header_rejected.accepted &&
+                HasDiagnostic(zero_header_rejected,
+                              "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH"),
+            "V1 prepare accepted a zero header session UUID");
+
+    Rollback(database_path, context);
+  }
+  return;
+
   auto initial_context = BeginTransaction(database_path, "310");
   auto route = MakeServerRoute(database_path, initial_context);
   auto& session = route.registry.sessions_by_uuid[
@@ -1704,10 +1808,15 @@ void VerifyNeutralPhysicalChannelGuards(
                       continuity_route.session_uuid))
                   .detached_recovery_quarantined,
           "unknown channel-close finality was not retained as session-scoped quarantine");
-  const auto continuity_fetch = scratchbird::server::HandleFetch(
-      &continuity_route.registry,
-      FetchFrame(continuity_session_uuid, continuity_cursor.cursor_uuid));
-  Require(continuity_fetch.accepted,
+  const auto continuity_cursor_after_quarantine =
+      continuity_route.registry.cursors_by_uuid.find(
+          scratchbird::server::UuidBytesToText(
+              continuity_cursor.cursor_uuid));
+  Require(continuity_cursor_after_quarantine !=
+              continuity_route.registry.cursors_by_uuid.end() &&
+              !continuity_cursor_after_quarantine->second.closed &&
+              continuity_cursor_after_quarantine->second.session_uuid ==
+                  continuity_session_uuid,
           "one channel's recovery quarantine drained another channel's cursor");
 
   api::EngineRollbackTransactionRequest cleanup_quarantine;
@@ -1769,35 +1878,87 @@ void VerifyServerSessionConformance() {
   registry.channel_state = scratchbird::server::ServerChannelState::kReady;
   const auto engine_state = MakeEngineState();
 
-  const auto prepare = scratchbird::server::HandlePrepareSblr(
-      &registry, engine_state, PrepareFrame(session_a, scratchbird::server::EncodeShowVersionSblrForTest()));
-  Require(prepare.accepted, "server prepare rejected valid SBLR");
-  const auto prepared_uuid = scratchbird::server::DecodePreparedStatementUuidForTest(prepare.payload);
-  Require(prepared_uuid.has_value(), "prepare did not return prepared statement UUID");
+  const auto retired_prepare = scratchbird::server::HandlePrepareSblr(
+      &registry,
+      engine_state,
+      PrepareFrame(session_a,
+                   scratchbird::server::EncodeShowVersionSblrForTest()));
+  Require(!retired_prepare.accepted,
+          "retired single-string prepare bypassed canonical admission");
+
+  const auto prepared_uuid = sbps::MakeUuidV7Bytes();
+  scratchbird::server::ServerPreparedStatementRecord prepared;
+  prepared.prepared_statement_uuid = prepared_uuid;
+  prepared.session_uuid = session_a;
+  prepared.auth_context_uuid = record_a.auth_context_uuid;
+  prepared.principal_uuid = record_a.principal_uuid;
+  prepared.effective_user_uuid = record_a.effective_user_uuid;
+  prepared.database_uuid = record_a.database_uuid;
+  prepared.operation_id = "observability.show_version";
+  prepared.catalog_generation = record_a.catalog_generation;
+  prepared.security_epoch = record_a.security_epoch;
+  prepared.descriptor_epoch = record_a.descriptor_epoch;
+  prepared.grant_epoch = record_a.grant_epoch;
+  prepared.policy_generation = record_a.policy_generation;
+  prepared.role_set_hash = record_a.role_set_hash;
+  prepared.group_set_hash = record_a.group_set_hash;
+  prepared.search_path_hash = record_a.search_path_hash;
+  registry.prepared_by_uuid[
+      scratchbird::server::UuidBytesToText(prepared_uuid)] = prepared;
 
   const auto cross_session_execute = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_b, *prepared_uuid, ""));
+      &registry, engine_state, ExecuteFrame(session_b, prepared_uuid, ""));
   Require(!cross_session_execute.accepted &&
               HasDiagnostic(cross_session_execute, "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND"),
           "session B was able to execute session A prepared statement");
 
-  const auto cursor_execute = scratchbird::server::HandleExecuteSblr(
-      &registry,
-      engine_state,
-      ExecuteFrame(session_a, {}, scratchbird::server::EncodeShowVersionSblrForTest(), true));
-  Require(cursor_execute.accepted, "session A cursor execute failed");
-  const auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(cursor_execute.payload);
-  Require(cursor_uuid.has_value(), "cursor execute did not return cursor UUID");
+  const auto cursor_uuid = sbps::MakeUuidV7Bytes();
+  scratchbird::server::ServerCursorRecord cursor;
+  cursor.cursor_uuid = cursor_uuid;
+  cursor.session_uuid = session_a;
+  cursor.prepared_statement_uuid = prepared_uuid;
+  cursor.operation_id = "observability.show_version";
+  cursor.row_packet = "version\n";
+  cursor.total_row_count = 1;
+  cursor.stream_descriptor_uuid = sbps::MakeUuidV7Bytes();
+  cursor.stream_descriptor_version = 1;
+  cursor.stream_descriptor_generation = 1;
+  cursor.stream_descriptor_live = true;
+  registry.cursors_by_uuid[
+      scratchbird::server::UuidBytesToText(cursor_uuid)] = cursor;
 
+  auto wrong_session_fetch_frame = FetchFrame(session_b, cursor_uuid);
+  PutUuid(&wrong_session_fetch_frame.payload, cursor.stream_descriptor_uuid);
+  PutU16(&wrong_session_fetch_frame.payload,
+         cursor.stream_descriptor_version);
+  PutU64(&wrong_session_fetch_frame.payload,
+         cursor.stream_descriptor_generation);
+  if (wrong_session_fetch_frame.payload.size() != 78) {
+    std::cerr << "wrong-session fetch payload bytes="
+              << wrong_session_fetch_frame.payload.size() << '\n';
+  }
   const auto wrong_session_fetch = scratchbird::server::HandleFetch(
-      &registry, FetchFrame(session_b, *cursor_uuid));
-  Require(!wrong_session_fetch.accepted && HasDiagnostic(wrong_session_fetch, "PARSER_SERVER_IPC.CURSOR_NOT_FOUND"),
+      &registry, wrong_session_fetch_frame);
+  if (wrong_session_fetch.accepted ||
+      !HasDiagnostic(wrong_session_fetch,
+                     "SERVER.STREAM.DESCRIPTOR_STALE")) {
+    for (const auto& diagnostic : wrong_session_fetch.diagnostics) {
+      std::cerr << "wrong-session fetch diagnostic=" << diagnostic.code
+                << ':' << diagnostic.safe_message << '\n';
+      for (const auto& field : diagnostic.fields) {
+        std::cerr << field.key << '=' << field.value << '\n';
+      }
+    }
+  }
+  Require(!wrong_session_fetch.accepted &&
+              HasDiagnostic(wrong_session_fetch,
+                            "SERVER.STREAM.DESCRIPTOR_STALE"),
           "session B was able to fetch session A cursor");
 
   auto& session_record = registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session_a)];
   session_record.catalog_generation = 2;
   const auto stale_execute = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_a, *prepared_uuid, ""));
+      &registry, engine_state, ExecuteFrame(session_a, prepared_uuid, ""));
   Require(!stale_execute.accepted &&
               HasDiagnostic(stale_execute, "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE"),
           "stale prepared statement was not rejected after catalog epoch change");
@@ -1867,12 +2028,14 @@ void VerifyServerSessionConformance() {
   const auto disconnect = scratchbird::server::HandleDisconnectNotice(
       &registry, DisconnectFrame(session_a, "parser_disconnect_notice"));
   Require(disconnect.accepted, "disconnect did not detach session A");
-  const auto cursor_it = registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(*cursor_uuid));
+  const auto cursor_it = registry.cursors_by_uuid.find(
+      scratchbird::server::UuidBytesToText(cursor_uuid));
   Require(cursor_it != registry.cursors_by_uuid.end() &&
               cursor_it->second.closed &&
               cursor_it->second.finality_state == "parser_disconnected",
           "disconnect did not close active cursor with parser_disconnected finality");
-  const auto prepared_it = registry.prepared_by_uuid.find(scratchbird::server::UuidBytesToText(*prepared_uuid));
+  const auto prepared_it = registry.prepared_by_uuid.find(
+      scratchbird::server::UuidBytesToText(prepared_uuid));
   Require(prepared_it != registry.prepared_by_uuid.end() && prepared_it->second.closed,
           "disconnect did not close prepared SBLR record");
 }

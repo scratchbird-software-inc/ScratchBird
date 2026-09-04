@@ -37,6 +37,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <ctime>
 #include <cstring>
@@ -81,6 +82,35 @@ namespace {
 namespace engine_api = scratchbird::engine::internal_api;
 
 std::atomic_bool g_stop_requested{false};
+
+// The session registry and server observability projections below still have
+// one serialized mutation boundary.  An ordinary std::mutex is not a fair
+// admission gate: a busy parser channel can repeatedly reacquire it while a
+// second ready channel waits through its complete authentication deadline.
+// Keep the exact single-frame serialization contract, but admit ready client
+// threads in arrival order.
+class FairClientDispatchGate {
+ public:
+  void lock() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const std::uint64_t ticket = next_ticket_++;
+    ready_.wait(lock, [&] { return ticket == serving_ticket_; });
+  }
+
+  void unlock() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      ++serving_ticket_;
+    }
+    ready_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::uint64_t next_ticket_ = 0;
+  std::uint64_t serving_ticket_ = 0;
+};
 
 std::string CurrentUtcTimestampText() {
   const auto now = std::chrono::system_clock::now();
@@ -2056,12 +2086,52 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
     column.identity_column = source.identity_column;
     column.character_length = source.character_length;
 
+    std::string datatype_descriptor_uuid =
+        source.value_descriptor.descriptor_uuid.canonical;
+    bool datatype_descriptor_uuid_seen = false;
+    std::size_t descriptor_field_offset = 0;
+    while (descriptor_field_offset <=
+           source.value_descriptor.encoded_descriptor.size()) {
+      const auto delimiter = source.value_descriptor.encoded_descriptor.find(
+          ';', descriptor_field_offset);
+      const auto field = std::string_view(
+          source.value_descriptor.encoded_descriptor)
+          .substr(descriptor_field_offset,
+                  delimiter == std::string::npos
+                      ? std::string::npos
+                      : delimiter - descriptor_field_offset);
+      constexpr std::string_view prefix = "datatype_descriptor_uuid=";
+      if (field.starts_with(prefix)) {
+        if (datatype_descriptor_uuid_seen || field.size() == prefix.size()) {
+          result.diagnostic = PsRelationProjectionDiagnostic(
+              "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
+              "parser_server_ipc.relation_descriptor_invalid",
+              "A persisted datatype descriptor identity was ambiguous.",
+              "datatype_descriptor_identity_ambiguous");
+          return result;
+        }
+        datatype_descriptor_uuid.assign(field.substr(prefix.size()));
+        datatype_descriptor_uuid_seen = true;
+      }
+      if (delimiter == std::string::npos) break;
+      descriptor_field_offset = delimiter + 1;
+    }
+    const auto canonical_datatype_descriptor =
+        PsNameUuidFromText(datatype_descriptor_uuid);
+    if (!canonical_datatype_descriptor) {
+      result.diagnostic = PsRelationProjectionDiagnostic(
+          "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
+          "parser_server_ipc.relation_descriptor_invalid",
+          "A persisted datatype descriptor identity was malformed.",
+          "datatype_descriptor_identity_invalid");
+      return result;
+    }
     const auto datatype_identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
             std::string(kDatatypeCatalogSnapshotUuid),
             kDatatypeCatalogGeneration,
             kDatatypeRegistryGeneration,
-            source.value_descriptor.descriptor_uuid.canonical,
+            datatype_descriptor_uuid,
             1);
     if (datatype_identity.ok) {
       const bool exact_variable_width_text = scratchbird::core::datatypes::
@@ -3459,6 +3529,9 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateMergeRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateTableTruncateRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateTableAnalyzeRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kBulkImportStreamBind) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kBulkImportStreamChunk) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kBulkImportStreamSeal) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateBulkImportStreamRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateBulkExportStreamRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateStatementBatchRequest) ||
@@ -4178,6 +4251,34 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==100&&frame.header.payload_schema_id==sbps::kSchemaCoordinateMergeRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateMerge(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==102&&frame.header.payload_schema_id==sbps::kSchemaCoordinateTableTruncateRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateTableTruncate(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==104&&frame.header.payload_schema_id==sbps::kSchemaCoordinateTableAnalyzeRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateTableAnalyze(session_registry,engine_state,frame)));return true;}
+  if (frame.header.message_type == static_cast<std::uint16_t>(
+          sbps::MessageType::kBulkImportStreamBind) &&
+      frame.header.payload_schema_id == sbps::kSchemaBulkImportStreamBindV1) {
+    WriteAll(client_fd,
+             SessionOperationFrame(
+                 frame,
+                 HandleBindBulkImportStream(session_registry, engine_state,
+                                            frame)));
+    return true;
+  }
+  if (frame.header.message_type == static_cast<std::uint16_t>(
+          sbps::MessageType::kBulkImportStreamChunk) &&
+      frame.header.payload_schema_id == sbps::kSchemaBulkImportStreamChunkV1) {
+    WriteAll(client_fd,
+             SessionOperationFrame(
+                 frame, HandleAppendBulkImportStream(session_registry,
+                                                     engine_state, frame)));
+    return true;
+  }
+  if (frame.header.message_type == static_cast<std::uint16_t>(
+          sbps::MessageType::kBulkImportStreamSeal) &&
+      frame.header.payload_schema_id == sbps::kSchemaBulkImportStreamSealV1) {
+    WriteAll(client_fd,
+             SessionOperationFrame(
+                 frame, HandleSealBulkImportStream(session_registry,
+                                                   engine_state, frame)));
+    return true;
+  }
   if(frame.header.message_type==106&&frame.header.payload_schema_id==sbps::kSchemaCoordinateBulkImportStreamRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateBulkImportStream(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==108&&frame.header.payload_schema_id==sbps::kSchemaCoordinateBulkExportStreamRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateBulkExportStream(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==110&&frame.header.payload_schema_id==sbps::kSchemaCoordinateStatementBatchRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateStatementBatch(session_registry,engine_state,frame)));return true;}
@@ -4728,7 +4829,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   ServerMaintenanceCoordinator maintenance_coordinator = BuildMaintenanceCoordinator(config, artifacts);
   ServerObservabilityState observability =
       InitializeServerObservability(config, artifacts, engine_state, parser_registry, listener_orchestrator);
-  std::mutex client_dispatch_mutex;
+  FairClientDispatchGate client_dispatch_gate;
   std::vector<std::thread> client_threads;
 
   while (!ParserServerStopRequested()) {
@@ -4803,7 +4904,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                                  &maintenance_coordinator,
                                  &agent_runtime,
                                  &observability,
-                                 &client_dispatch_mutex]() {
+                                 &client_dispatch_gate]() {
       bool release_heap_after_close = false;
       ClientNegotiationState negotiation_state;
       while (!ParserServerStopRequested()) {
@@ -4812,7 +4913,8 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
         }
         bool keep_open = false;
         {
-          std::lock_guard<std::mutex> dispatch_guard(client_dispatch_mutex);
+          std::lock_guard<FairClientDispatchGate> dispatch_guard(
+              client_dispatch_gate);
           keep_open = HandleClientFrame(client_fd,
                                         config,
                                         artifacts,
@@ -4835,7 +4937,8 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
         }
       }
       {
-        std::lock_guard<std::mutex> dispatch_guard(client_dispatch_mutex);
+        std::lock_guard<FairClientDispatchGate> dispatch_guard(
+            client_dispatch_gate);
         const auto channel_cleanup = HandleUnexpectedParserChannelClose(
             &session_registry, negotiation_state.server_channel_uuid);
         if (!channel_cleanup.empty()) {
@@ -4854,7 +4957,8 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
       }
       CloseIpcSocket(client_fd);
       if (release_heap_after_close) {
-        std::lock_guard<std::mutex> dispatch_guard(client_dispatch_mutex);
+        std::lock_guard<FairClientDispatchGate> dispatch_guard(
+            client_dispatch_gate);
         ReleaseIdleConnectionHeap(config, &observability);
       }
     });

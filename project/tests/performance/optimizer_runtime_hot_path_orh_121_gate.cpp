@@ -303,6 +303,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.catalog_generation_id = 121;
   context.security_epoch = 121;
   context.resource_epoch = 121;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 121;
   context.trace_tags.push_back("ORH-121");
   return context;
@@ -364,7 +368,11 @@ void CreateLifecycleSchemaAndTable(const std::filesystem::path& database_path) {
   table_request.table_columns.push_back(Column(0, "id"));
   table_request.table_columns.push_back(Column(1, "note"));
   const auto table = api::EngineCreateTable(table_request);
-  Require(table.ok, "table create failed");
+  std::string table_failure = "table create failed";
+  for (const auto& diagnostic : table.diagnostics) {
+    table_failure += " [" + diagnostic.code + ":" + diagnostic.detail + "]";
+  }
+  Require(table.ok, table_failure);
   Commit(context);
 }
 

@@ -177,6 +177,8 @@ struct ModelFamilyCompositionExecutionResultV1 {
   bool backpressure_complete{false};
   bool cleanup_complete{false};
   std::uint64_t spill_reserved_bytes{0};
+  scratchbird::core::memory::TempWorkspaceBudgetReservationEvidence
+      spill_budget_reservation_evidence;
   std::uint64_t spill_cleanup_count{0};
   std::uint64_t provider_cleanup_count{0};
   std::uint64_t provider_entry_count{0};

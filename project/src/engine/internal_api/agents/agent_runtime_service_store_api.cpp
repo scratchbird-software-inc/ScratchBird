@@ -168,6 +168,14 @@ agents::AgentRuntimeServiceResult AgentRuntimeServiceStore::AcquireLease(
   return PersistResult(std::move(result), fsync_or_checkpoint_evidence);
 }
 
+agents::AgentRuntimeServiceResult AgentRuntimeServiceStore::AcquireLeaseBatch(
+    std::vector<agents::DurableLeaseRequest> requests,
+    const std::string& evidence_uuid,
+    bool fsync_or_checkpoint_evidence) {
+  auto result = service_.AcquireLeaseBatch(std::move(requests), evidence_uuid);
+  return PersistResult(std::move(result), fsync_or_checkpoint_evidence);
+}
+
 agents::AgentRuntimeServiceResult AgentRuntimeServiceStore::HeartbeatLease(
     agents::DurableLeaseRequest request,
     bool fsync_or_checkpoint_evidence) {

@@ -111,6 +111,31 @@ std::string UuidText(const Uuid& value) {
   return out;
 }
 
+std::optional<std::string> ExactEncodedDescriptorField(
+    const std::string_view descriptor,
+    const std::string_view requested_key) {
+  std::optional<std::string> result;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string_view::npos ? std::string_view::npos
+                                             : end - start);
+    const auto equals = field.find('=');
+    if (field.empty() || equals == std::string_view::npos || equals == 0 ||
+        equals + 1 == field.size()) {
+      return std::nullopt;
+    }
+    if (field.substr(0, equals) == requested_key) {
+      if (result.has_value()) return std::nullopt;
+      result = std::string(field.substr(equals + 1));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return result;
+}
+
 bool SameContext(const EngineRequestContext& left,
                  const EngineRequestContext& right) {
   return left.security_context_present && right.security_context_present &&
@@ -465,6 +490,8 @@ bool DecodeProjectionV3(const std::vector<std::uint8_t>& exact,
 bool SameExpectedColumn(const MgaContextualTextProjectedColumnV2& expected,
                         const EnginePublicRelationProjectionColumnV3& projected) {
   const auto& descriptor = expected.expected_text_descriptor;
+  const auto embedded_datatype_descriptor_uuid = ExactEncodedDescriptorField(
+      projected.encoded_type_descriptor, "datatype_descriptor_uuid");
   const bool character_limit_matches =
       descriptor.character_limit == std::numeric_limits<std::uint64_t>::max()
           ? projected.character_length == 0
@@ -474,8 +501,9 @@ bool SameExpectedColumn(const MgaContextualTextProjectedColumnV2& expected,
   return expected.column_ordinal == projected.ordinal &&
          expected.column_uuid == projected.column_uuid &&
          expected.comparable_persisted_text && projected.identity_present &&
-         expected.projected_datatype_descriptor_uuid ==
-             projected.descriptor_uuid &&
+         embedded_datatype_descriptor_uuid.has_value() &&
+         *embedded_datatype_descriptor_uuid ==
+             UuidText(expected.projected_datatype_descriptor_uuid) &&
          expected.projected_datatype_descriptor_generation ==
              projected.descriptor_generation &&
          expected.projected_datatype_catalog_snapshot_uuid ==
@@ -485,7 +513,8 @@ bool SameExpectedColumn(const MgaContextualTextProjectedColumnV2& expected,
          expected.projected_datatype_registry_generation ==
              descriptor.datatype_registry_generation &&
          projected.canonical_type_name == "text" &&
-         projected.descriptor_uuid == descriptor.descriptor_uuid &&
+         descriptor.descriptor_uuid ==
+             expected.projected_datatype_descriptor_uuid &&
          projected.descriptor_generation == descriptor.descriptor_generation &&
          projected.type_uuid == descriptor.type_uuid &&
          projected.type_generation == descriptor.type_generation &&

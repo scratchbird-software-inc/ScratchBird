@@ -310,9 +310,15 @@ BuildCanonicalOptimizerAlternativeProfiles(
     record.maximum_input_count = capability->second->maximum_input_count;
     std::vector<std::string> input_required_property_uuids;
     for (const auto& property_uuid : node->second->required_property_uuids) {
-      if (std::ranges::find(node->second->delivered_property_uuids,
+      // A Window carries its input ordering forward, but does not create that
+      // ordering.  Retain the ordering as an input requirement even though it
+      // is also present in the Window's delivered-property set.  Enforcers
+      // such as Sort continue to remove properties they produce themselves.
+      if (node->second->node_kind ==
+              planner::CanonicalLogicalRelationalNodeKind::kWindow ||
+          std::ranges::find(node->second->delivered_property_uuids,
                             property_uuid) ==
-          node->second->delivered_property_uuids.end()) {
+              node->second->delivered_property_uuids.end()) {
         input_required_property_uuids.push_back(property_uuid);
       }
     }

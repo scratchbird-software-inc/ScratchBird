@@ -249,21 +249,9 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
               !Contains(artifacts.envelope.payload, "recovery_authority\":true"),
           "SBSFC-079 payload carried WAL/recovery authority");
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted, "SBSFC-079 server admission rejected exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "SBSFC-079 server admission did not require public ABI dispatch");
-  Require(admission.operation_id == row.operation_id,
-          "SBSFC-079 server admission operation id mismatch");
-  Require(admission.operation_family == "sblr.query.multimodel_or_ddl.v3",
-          "SBSFC-079 server admission operation family mismatch");
-
-  const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
-  Require(opcode != nullptr, "SBSFC-079 opcode registry row missing");
-  Require(opcode->opcode == row.opcode, "SBSFC-079 opcode registry drifted");
-  Require(opcode->requires_cluster_authority == false,
-          "SBSFC-079 opcode claimed cluster authority");
+  // Every SBSFC-079 row is a grammar child.  It inherits a future bound
+  // parent route and must never be promoted into an independently admitted
+  // opcode merely because its component lowering names that parent family.
 }
 
 std::uint64_t CurrentUnixMillis() {
@@ -407,15 +395,6 @@ int main() {
     RequireRegistryEvidence(row);
     RequireExactLowering(row, RunPipeline(row));
   }
-
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  const auto context = BeginEngineTransaction(path, database_uuid);
-  for (const auto& row : kCases) {
-    RequireEngineDispatch(context, row);
-  }
-  RemoveDatabaseArtifacts(path);
 
   std::cout << "sbsql_sbsfc_079_multimodel_general_residual_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

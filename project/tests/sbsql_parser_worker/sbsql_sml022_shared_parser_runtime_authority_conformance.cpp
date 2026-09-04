@@ -8,6 +8,7 @@
 
 #include "auth/auth_relay.hpp"
 #include "cache/sblr_template_cache.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 #include "sblr_admission.hpp"
 
 #include "sblr_dispatch_server.hpp"
@@ -134,6 +135,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.language_resource_epoch = 19;
   session.localized_name_epoch = 20;
   session.message_resource_epoch = 21;
+  session.admitted_parser_package_version_major = 1;
   session.local_transaction_id = 1001;
   session.snapshot_visible_through_local_transaction_id = 1001;
   session.transaction_uuid = "019f0220-0000-7000-8000-000000000123";
@@ -145,13 +147,33 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
 }
 
 sbps::Frame PrepareFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                         const std::string& encoded) {
+                         const std::string&) {
+  const auto canonical =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION");
   sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr);
+  frame.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kStmtPrepareRequest);
+  frame.header.payload_schema_id = sbps::kSchemaStmtPrepareRequestV1;
   frame.header.session_uuid = session_uuid;
   frame.header.connection_uuid = FixedUuid(0x10);
-  frame.header.request_uuid = {};
-  frame.payload = server::EncodePrepareSblrPayloadForTest(session_uuid, encoded);
+  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.payload.insert(frame.payload.end(), session_uuid.begin(), session_uuid.end());
+  const auto statement_uuid = sbps::MakeUuidV7Bytes();
+  frame.payload.insert(frame.payload.end(), statement_uuid.begin(), statement_uuid.end());
+  scratchbird::engine::SblrAppendU64(frame.payload, 1);
+  scratchbird::engine::SblrAppendU64(frame.payload, 1);
+  scratchbird::engine::SblrAppendU64(frame.payload, 1);
+  scratchbird::engine::SblrAppendU64(
+      frame.payload, canonical.encoded_sblr_container.size());
+  frame.payload.insert(frame.payload.end(),
+                       canonical.encoded_sblr_container.begin(),
+                       canonical.encoded_sblr_container.end());
+  scratchbird::engine::SblrAppendU64(
+      frame.payload, canonical.encoded_execution_envelope.size());
+  frame.payload.insert(frame.payload.end(),
+                       canonical.encoded_execution_envelope.begin(),
+                       canonical.encoded_execution_envelope.end());
   return frame;
 }
 
@@ -159,9 +181,10 @@ sbps::Frame ExecutePreparedFrame(const std::array<std::uint8_t, 16>& session_uui
                                  const std::array<std::uint8_t, 16>& prepared_uuid) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = 4003;
   frame.header.session_uuid = session_uuid;
   frame.header.connection_uuid = FixedUuid(0x10);
-  frame.header.request_uuid = {};
+  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
   frame.payload = server::EncodeExecuteSblrPayloadForTest(session_uuid, prepared_uuid, "");
   return frame;
 }
@@ -301,29 +324,31 @@ void VerifyAuthRelayIsFailClosed() {
 void VerifyServerSblrAdmissionCannotBeBypassed() {
   const auto raw = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{"select * from parser_bypass_attempt", false});
-  Require(!raw.admitted && HasServerDiagnostic(raw.diagnostics, "SBLR.SQL_TEXT_FORBIDDEN"),
+  Require(!raw.admitted &&
+              HasServerDiagnostic(raw.diagnostics, "SBLR.OPERATION.NONCANONICAL"),
           "server admitted raw SQL text as SBLR");
 
   const auto missing_shape = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{TextOperationEnvelope(true, false, true), false});
   Require(!missing_shape.admitted &&
               HasServerDiagnostic(missing_shape.diagnostics,
-                                  "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"),
+                                  "SBLR.OPERATION.NONCANONICAL"),
           "server admitted SBLR without result shape");
   Require(!missing_shape.diagnostics.empty() &&
-              missing_shape.diagnostics.front().fields.front().value == "result_shape_required",
-          "server result-shape diagnostic lost data-shaping detail");
+              missing_shape.diagnostics.front().fields.front().value ==
+                  "retired_sblr_frame_or_text_input",
+          "retired envelope refusal lost its canonical-ingress detail");
 
   const auto unresolved = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{TextOperationEnvelope(false), false});
   Require(!unresolved.admitted &&
               HasServerDiagnostic(unresolved.diagnostics,
-                                  "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"),
+                                  "SBLR.OPERATION.NONCANONICAL"),
           "server admitted parser SBLR without UUID-resolved names");
   Require(!unresolved.diagnostics.empty() &&
               unresolved.diagnostics.front().fields.front().value ==
-                  "names_not_resolved_to_uuids",
-          "server UUID-resolution diagnostic lost mediation detail");
+                  "retired_sblr_frame_or_text_input",
+          "retired unresolved envelope refusal lost canonical-ingress detail");
 
   const auto security = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{TextOperationEnvelope(true), false});
@@ -418,7 +443,7 @@ void VerifyServerOwnsUuidMediationAndPreparedEpochs() {
       registry.finality_by_request_uuid.find(server::UuidBytesToText(request.request_uuid));
   Require(finality_it != registry.finality_by_request_uuid.end(),
           "server did not upsert finality record for prepare request");
-  Require(finality_it->second.operation == "query.evaluate_projection" &&
+  Require(finality_it->second.operation == "observability.show_version" &&
               finality_it->second.state == "completed",
           "server finality record did not preserve completed engine/server authority");
 

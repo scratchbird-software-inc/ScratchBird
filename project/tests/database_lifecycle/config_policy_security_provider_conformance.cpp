@@ -95,20 +95,36 @@ std::filesystem::path MakeTempDir(std::string_view prefix) {
 
 void WriteAuthStore(const std::filesystem::path& database_path,
                     std::string_view verifier = kVerifier) {
+  const auto bootstrap =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          database_path, "DBLC-013J");
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
       kDatabaseUuid,
       kAlicePrincipalUuid,
       "alice",
       verifier,
-      17,
-      "DBLC-013J");
+      bootstrap.local_transaction_id,
+      "DBLC-013J",
+      bootstrap.transaction_uuid.canonical);
+  for (const std::string_view right : {"CONNECT", "OBS_RUNTIME_ALL"}) {
+    scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+        database_path, kDatabaseUuid, kAlicePrincipalUuid, kDatabaseUuid,
+        "database", right, bootstrap.local_transaction_id,
+        std::string("DBLC-013J:") + std::string(right),
+        bootstrap.transaction_uuid.canonical);
+  }
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
+      bootstrap);
 }
 
 void CreateOpenDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
-  create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1779541201000).value;
+  const auto database_uuid =
+      uuid::ParseTypedUuid(UuidKind::database, std::string(kDatabaseUuid));
+  Require(database_uuid.ok(), "DBLC-013J database UUID parsing failed");
+  create.database_uuid = database_uuid.value;
   create.filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779541201001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779541201002;
@@ -157,10 +173,13 @@ bool HasEngineDiagnostic(const engine_api::EngineApiResult& result, std::string_
   return false;
 }
 
-sbps::Frame MakeFrame(sbps::MessageType type, std::vector<std::uint8_t> payload) {
+sbps::Frame MakeFrame(sbps::MessageType type,
+                      const std::array<std::uint8_t, 16>& connection_uuid,
+                      std::vector<std::uint8_t> payload) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(type);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = connection_uuid;
   frame.header.payload_schema_id = type == sbps::MessageType::kAuthHandoff ? 3001 : 3003;
   frame.payload = std::move(payload);
   return frame;
@@ -221,9 +240,11 @@ std::string Evidence(std::string_view verifier = kVerifier) {
       "right:CONNECT,right:OBS_RUNTIME_ALL");
 }
 
-std::vector<std::uint8_t> AuthHandoffPayload(bool credential_valid) {
+std::vector<std::uint8_t> AuthHandoffPayload(
+    const std::array<std::uint8_t, 16>& connection_uuid,
+    bool credential_valid) {
   std::vector<std::uint8_t> out;
-  PutUuid(&out, sbps::MakeUuidV7Bytes());
+  PutUuid(&out, connection_uuid);
   out.push_back(credential_valid ? 1 : 0);
   out.push_back(credential_valid ? 0 : 1);
   out.push_back(0);
@@ -233,6 +254,18 @@ std::vector<std::uint8_t> AuthHandoffPayload(bool credential_valid) {
   PutString(&out, "default");
   PutString(&out, "en");
   PutString(&out, Evidence(credential_valid ? kVerifier : kWrongVerifier));
+  return out;
+}
+
+std::vector<std::uint8_t> AttachPayload(
+    const std::array<std::uint8_t, 16>& connection_uuid,
+    const std::array<std::uint8_t, 16>& auth_context_uuid,
+    std::string_view mode) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, connection_uuid);
+  PutUuid(&out, auth_context_uuid);
+  PutString(&out, "default");
+  PutString(&out, mode);
   return out;
 }
 
@@ -358,6 +391,7 @@ void TestLifecycleStartReloadAndAdmission(const std::filesystem::path& database_
 }
 
 void TestEnginePasswordHashAndPolicyGates(const std::filesystem::path& database_path) {
+  CreateOpenDatabase(database_path);
   WriteAuthStore(database_path);
   auto good = engine_api::EngineAuthenticate(AuthRequest(database_path));
   Require(good.ok && good.authenticated, "engine password-hash verifier path rejected valid hash");
@@ -396,8 +430,10 @@ void TestServerAuthAttachLifecycle(const std::filesystem::path& database_path) {
   CreateOpenDatabase(database_path);
   WriteAuthStore(database_path);
   server::ServerSessionRegistry registry;
+  const auto connection_uuid = sbps::MakeUuidV7Bytes();
   auto auth_frame = MakeFrame(sbps::MessageType::kAuthHandoff,
-                              AuthHandoffPayload(true));
+                              connection_uuid,
+                              AuthHandoffPayload(connection_uuid, true));
   const auto auth = server::HandleAuthHandoff(&registry, MakeEngineState(database_path), auth_frame);
   Require(auth.accepted, "server auth handoff rejected valid lifecycle state");
   const auto auth_context = server::DecodeAuthContextUuidForTest(auth.payload);
@@ -405,7 +441,8 @@ void TestServerAuthAttachLifecycle(const std::filesystem::path& database_path) {
 
   auto stale_attach_frame = MakeFrame(
       sbps::MessageType::kAttachDatabase,
-      server::EncodeAttachPayloadForTest(*auth_context, "read_write"));
+      connection_uuid,
+      AttachPayload(connection_uuid, *auth_context, "read_write"));
   const auto stale_attach = server::HandleAttachDatabase(
       &registry, MakeEngineState(database_path, 2, 2, 2), stale_attach_frame);
   Require(!stale_attach.accepted &&
@@ -413,9 +450,11 @@ void TestServerAuthAttachLifecycle(const std::filesystem::path& database_path) {
           "attach accepted an auth context created under stale policy generation");
 
   server::ServerSessionRegistry current_registry;
+  const auto current_connection_uuid = sbps::MakeUuidV7Bytes();
   auto current_auth_frame = MakeFrame(
       sbps::MessageType::kAuthHandoff,
-      AuthHandoffPayload(true));
+      current_connection_uuid,
+      AuthHandoffPayload(current_connection_uuid, true));
   const auto current_auth = server::HandleAuthHandoff(
       &current_registry, MakeEngineState(database_path, 2, 2, 2), current_auth_frame);
   Require(current_auth.accepted, "server auth handoff rejected current policy generation");
@@ -423,15 +462,19 @@ void TestServerAuthAttachLifecycle(const std::filesystem::path& database_path) {
   Require(current_auth_context.has_value(), "current auth did not return context uuid");
   auto current_attach_frame = MakeFrame(
       sbps::MessageType::kAttachDatabase,
-      server::EncodeAttachPayloadForTest(*current_auth_context, "read_write"));
+      current_connection_uuid,
+      AttachPayload(current_connection_uuid, *current_auth_context, "read_write"));
   const auto current_attach = server::HandleAttachDatabase(
       &current_registry, MakeEngineState(database_path, 2, 2, 2), current_attach_frame);
   Require(current_attach.accepted,
           "attach rejected current policy generation: " + DiagnosticSummary(current_attach));
 
   server::ServerSessionRegistry provider_registry;
-  auto provider_frame = MakeFrame(sbps::MessageType::kAuthHandoff,
-                                  AuthHandoffPayload(true));
+  const auto provider_connection_uuid = sbps::MakeUuidV7Bytes();
+  auto provider_frame = MakeFrame(
+      sbps::MessageType::kAuthHandoff,
+      provider_connection_uuid,
+      AuthHandoffPayload(provider_connection_uuid, true));
   const auto provider = server::HandleAuthHandoff(
       &provider_registry, MakeEngineState(database_path, 1, 1, 1, "quarantined"), provider_frame);
   Require(!provider.accepted &&

@@ -69,8 +69,11 @@ def main(argv: list[str]) -> int:
     require('WriteLifecycleState("running")' in runtime, "listener undrain/reload must publish running lifecycle state")
     require("LISTENER.RELOAD_ACCEPTED" in runtime, "listener reload acknowledgement diagnostic required")
     require("LISTENER.HANDOFF_DRAINING" in pool, "listener handoff must fail closed while draining")
-    require(".sb.local_password_auth" in restart_smoke and "kAliceVerifier" in restart_smoke,
-            "server-management listener restart test must use engine-owned password-verifier auth")
+    require(".sb.local_password_auth" not in restart_smoke and
+            "BeginDurableBootstrapTransaction" in restart_smoke and
+            "bootstrap_credential_fingerprint" in restart_smoke and
+            "kAliceVerifier" in restart_smoke,
+            "server-management listener restart test must use durable engine-owned PBKDF2 auth")
     require("SB_DATABASE_SELECTOR" in authority_generator and "SB_DATABASE_TOKEN" in authority_generator,
             "public authority generator must define listener database selector/token binding")
     require("database isolation" in authority_generator.lower(),

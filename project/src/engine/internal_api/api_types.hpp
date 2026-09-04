@@ -11,11 +11,18 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+namespace scratchbird::storage::database {
+struct LocalTransactionInventorySnapshot;
+}
+
 namespace scratchbird::engine::internal_api {
+
+struct SblrExecutorAvailabilityStatementCohort;
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_BASE_TYPES
 // Engine-owned API types. This API is not SQL authority and is not a parser API.
@@ -418,6 +425,19 @@ struct EngineRequestContext {
   EngineApiU64 catalog_generation_id = 0;
   EngineApiU64 security_epoch = 0;
   EngineApiU64 resource_epoch = 0;
+  // Private, statement-acquisition-only executor registry cohort.  The
+  // engine clears this pointer before publishing the durable statement
+  // receipt so dispatch-time revalidation always reloads current authority.
+  // Parser, client, SBOP, and SBOS inputs can never populate it.
+  std::shared_ptr<const SblrExecutorAvailabilityStatementCohort>
+      statement_executor_availability_cohort;
+  // Strong transaction-inventory authority acquired exactly once for this
+  // statement.  Catalog/MGA/snapshot consumers borrow it; the execution
+  // boundary may cheaply fence its retained file identity without rehashing
+  // the publish journal and inventory root.
+  std::shared_ptr<const scratchbird::storage::database::
+                            LocalTransactionInventorySnapshot>
+      statement_transaction_inventory_snapshot;
   // Engine-issued statement resource-admission identity.  It is not an
   // optimizer/QOW snapshot and callers must leave it empty before receipt
   // acquisition.

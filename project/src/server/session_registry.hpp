@@ -885,7 +885,8 @@ std::vector<std::uint8_t> EncodeAuthHandoffPayloadForTest(const std::string& pri
                                                           bool mfa_required = false,
                                                           bool mfa_present = false,
                                                           const std::string& principal_uuid = "",
-                                                          const std::string& storage_authority = "");
+                                                          const std::string& storage_authority = "",
+                                                          const std::string& credential_secret = "");
 std::vector<std::uint8_t> EncodeAttachPayloadForTest(
     const std::array<std::uint8_t, 16>& auth_context_uuid,
     const std::string& mode = "read_write");
@@ -1049,6 +1050,12 @@ SessionOperationResult HandleCoordinateDelete(ServerSessionRegistry*,const Hoste
 SessionOperationResult HandleCoordinateMerge(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateTableTruncate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateTableAnalyze(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleBindBulkImportStream(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleAppendBulkImportStream(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleSealBulkImportStream(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateBulkImportStream(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateBulkExportStream(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateStatementBatch(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

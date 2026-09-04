@@ -16,15 +16,18 @@ struct RefusalCase {
   std::uint16_t code;
   std::string_view operation_id;
   std::string_view opcode;
+  bool admitted;
 };
 
 constexpr std::array<RefusalCase, 6> kRefusalCases{{
-    {0x0800u, "filespace.create", "SBLR_FILESPACE_CREATE"},
-    {0x0808u, "filespace.drop", "SBLR_FILESPACE_DROP"},
-    {0x1402u, "database.checkpoint", "SBLR_DATABASE_CHECKPOINT"},
-    {0x1404u, "database.alter", "SBLR_DATABASE_ALTER"},
-    {0x1408u, "lifecycle.create_database", "SBLR_LIFECYCLE_CREATE_DATABASE"},
-    {0x1416u, "lifecycle.drop_database", "SBLR_LIFECYCLE_DROP_DATABASE"},
+    {0x0800u, "engine.op.filespace_create", "SBLR_FILESPACE_CREATE", false},
+    {0x0808u, "engine.op.filespace_drop", "SBLR_FILESPACE_DROP", false},
+    {0x1402u, "engine.op.database_checkpoint", "SBLR_DATABASE_CHECKPOINT", false},
+    {0x1404u, "engine.op.database_alter", "SBLR_DATABASE_ALTER", false},
+    // CREATE DATABASE has a local executor contract; retain a positive
+    // admission assertion so this guard cannot regress it to a refusal.
+    {0x1408u, "engine.op.lifecycle_create_database", "SBLR_LIFECYCLE_CREATE_DATABASE", true},
+    {0x1416u, "lifecycle.drop_database", "SBLR_LIFECYCLE_DROP_DATABASE", false},
 }};
 
 bool Require(bool condition, std::string_view detail) {
@@ -37,16 +40,21 @@ bool Require(bool condition, std::string_view detail) {
 
 int main() {
   for (const auto& refusal : kRefusalCases) {
-    const auto* entry = sblr::LookupSblrOperation(refusal.operation_id);
+    // Resolve from the authoritative opcode tuple first.  Legacy registry
+    // aliases are not valid operation identities, so verify the canonical
+    // operation id on the resolved row below.
+    const auto* entry = sblr::LookupSblrOpcode(refusal.opcode);
     if (!Require(entry != nullptr, "operation missing from registry") ||
+        !Require(entry->operation_id == refusal.operation_id,
+                 "canonical operation identity drifted") ||
         !Require(entry->code == refusal.code, "opcode code drifted") ||
         !Require(entry->opcode == refusal.opcode, "opcode identity drifted") ||
-        !Require(entry->support == sblr::SblrOpcodeSupport::local_profile_refusal,
-                 "operation must be refused by the local builtin profile") ||
-        !Require(entry->refusal_diagnostic == "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
-                 "Core profile-unavailable diagnostic drifted") ||
-        !Require(!entry->executor_evidence_required,
-                 "refusal must occur before executor-evidence admission")) {
+        !Require(entry->support == sblr::SblrOpcodeSupport::implemented,
+                 "operation must be a specified implementation surface") ||
+        !Require(entry->executor_evidence_required,
+                 "specified operation must require executor evidence") ||
+        !Require(entry->executor_evidence_accepted == refusal.admitted,
+                 "executor evidence admission drifted")) {
       return EXIT_FAILURE;
     }
 
@@ -58,14 +66,13 @@ int main() {
     envelope.requires_transaction_context = entry->requires_transaction_context;
     envelope.requires_cluster_authority = entry->requires_cluster_authority;
     const auto validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
-    if (!Require(!validation.ok, "pre-dispatch profile refusal was admitted") ||
-        !Require(validation.entry == entry, "refusal did not bind registered identity") ||
-        !Require(validation.diagnostic_id == "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
-                 "pre-dispatch diagnostic drifted") ||
-        !Require(validation.detail ==
-                     "operation_is_refused_by_registered_sblr_profile:" +
-                         std::string(refusal.operation_id),
-                 "refusal detail drifted")) {
+    if (!Require(validation.ok == refusal.admitted,
+                 refusal.admitted ? "implemented operation was refused"
+                                  : "missing executor evidence was admitted") ||
+        !Require(validation.entry == entry, "validation did not bind registered identity") ||
+        !Require(refusal.admitted ||
+                     validation.diagnostic_id == "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                 "executor-evidence diagnostic drifted")) {
       return EXIT_FAILURE;
     }
   }

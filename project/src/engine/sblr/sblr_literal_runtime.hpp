@@ -69,6 +69,44 @@ struct SblrLiteralDescriptorProfileCodecResultV1 {
   std::vector<std::uint8_t> canonical_bytes;
 };
 
+// SBLP v2 carries the receipt-owned relation descriptor handle separately
+// from the canonical datatype descriptor.  V1 remains the wire format for
+// literals which do not require this relation-backed authority.
+struct SblrLiteralStatementDescriptorProfileV2 {
+  std::array<std::uint8_t, 16> profile_uuid{};
+  std::array<std::uint8_t, 16> statement_receipt_uuid{};
+  std::array<std::uint8_t, 16> catalog_snapshot_uuid{};
+  std::uint64_t catalog_generation = 0;
+  std::array<std::uint8_t, 16> descriptor_uuid{};
+  std::uint64_t descriptor_generation = 0;
+  std::array<std::uint8_t, 16> type_uuid{};
+  std::array<std::uint8_t, 16> persisted_descriptor_uuid{};
+  std::uint64_t persisted_descriptor_generation = 0;
+  std::string codec_id;
+  std::uint16_t codec_version = 0;
+  std::uint64_t codec_generation = 0;
+  bool nullable = false;
+  std::array<std::uint8_t, 32> profile_binding_sha256{};
+};
+
+struct SblrLiteralDescriptorProfileCodecResultV2 {
+  bool ok = false;
+  std::string diagnostic_id;
+  std::string detail;
+  SblrLiteralStatementDescriptorProfileV2 profile;
+  std::vector<std::uint8_t> canonical_bytes;
+};
+
+std::array<std::uint8_t, 32> ComputeSblrLiteralDescriptorProfileBindingV2(
+    const SblrLiteralStatementDescriptorProfileV2& profile,
+    std::uint64_t receipt_security_epoch,
+    std::uint64_t receipt_resource_epoch);
+std::vector<std::uint8_t> EncodeSblrLiteralDescriptorProfileV2(
+    const SblrLiteralStatementDescriptorProfileV2& profile);
+SblrLiteralDescriptorProfileCodecResultV2
+DecodeSblrLiteralDescriptorProfileV2(const std::uint8_t* bytes,
+                                     std::size_t size);
+
 struct SblrLiteralDemandV1 {
   std::uint64_t occurrence_id = 0;
   std::uint16_t lexical_class = 0;
@@ -106,6 +144,14 @@ SblrLiteralPrebindRequestCodecResultV1 DecodeSblrLiteralPrebindRequestV1(
 struct SblrLiteralProfileMappingV1 {
   std::uint64_t occurrence_id=0;
   std::vector<std::uint8_t> sblp_bytes;
+};
+// Receipt-owned relation descriptor authority.  The canonical datatype
+// profile remains the V1 source when the persisted handle is identical to
+// that datatype descriptor; a distinct handle requires SBLP v2.
+struct SblrLiteralPersistedDescriptorMappingV1 {
+  std::uint64_t occurrence_id = 0;
+  std::array<std::uint8_t, 16> persisted_descriptor_uuid{};
+  std::uint64_t persisted_descriptor_generation = 0;
 };
 std::array<std::uint8_t,32> ComputeSblrLiteralOrderedProfilesSha256V1(
     const std::vector<SblrLiteralProfileMappingV1>& mappings);

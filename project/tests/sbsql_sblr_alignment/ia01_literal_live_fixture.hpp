@@ -119,7 +119,7 @@ inline Binding FinalizeLiteral(bridge::StatementContextReceiptHandle receipt,
   runtime::SblrExpressionLiteralNodeV1 node;
   node.node_id = 7;
   node.parent_operand_ordinal = 1;
-  node.descriptor_uuid = profile.profile.descriptor_uuid;
+  node.descriptor_uuid = profile.profile.profile_uuid;
   node.descriptor_generation = profile.profile.descriptor_generation;
   const auto literal_body=runtime::EncodeSblrLiteralInt64LeV1(1);
   node.literal_body.assign(literal_body.begin(),literal_body.end());
@@ -133,7 +133,7 @@ inline Binding FinalizeLiteral(bridge::StatementContextReceiptHandle receipt,
   runtime::SblrLiteralBoundAstNodeV1 ast;
   ast.parent_operand_ordinal = 1;
   ast.node_id = 7;
-  ast.descriptor_uuid = profile.profile.descriptor_uuid;
+  ast.descriptor_uuid = profile.profile.profile_uuid;
   ast.descriptor_generation = profile.profile.descriptor_generation;
   ast.type_uuid = profile.profile.type_uuid;
   ast.profile_uuid = profile.profile.profile_uuid;
@@ -160,11 +160,31 @@ inline Binding FinalizeLiteral(bridge::StatementContextReceiptHandle receipt,
   sblf.insert(sblf.end(),sbba.begin(),sbba.end()); sblf.insert(sblf.end(),sbxn.begin(),sbxn.end());
   Bytes sbla;
   result = nullptr;
-  Require(bridge::FinalizeStatementLiteralBindingV1(receipt,sblf,&sbla,&result)==SB_ENGINE_STATUS_OK,
+  const auto finalize_status = bridge::FinalizeStatementLiteralBindingV1(
+      receipt, sblf, &sbla, &result);
+  if (finalize_status != SB_ENGINE_STATUS_OK) {
+    std::cerr << "literal-finalize:" << sb_engine_status_name(finalize_status);
+    if (result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(result, &diagnostics) ==
+              SB_ENGINE_STATUS_OK &&
+          diagnostics.diagnostic_count != 0) {
+        const auto& diagnostic = diagnostics.diagnostics[0];
+        std::cerr << ':'
+                  << std::string(diagnostic.symbolic_code.data,
+                                 diagnostic.symbolic_code.size_bytes)
+                  << ':'
+                  << std::string(diagnostic.message_key.data,
+                                 diagnostic.message_key.size_bytes);
+      }
+    }
+    std::cerr << '\n';
+  }
+  Require(finalize_status == SB_ENGINE_STATUS_OK,
           "live literal binding finalize failed");
   if(result)(void)sb_engine_result_release(result);
   Require(sbla.size()==264,"live literal admission record size differed");
-  Binding binding; binding.sbxn=sbxn; binding.descriptor_uuid=profile.profile.descriptor_uuid;
+  Binding binding; binding.sbxn=sbxn; binding.descriptor_uuid=profile.profile.profile_uuid;
   binding.descriptor_generation=profile.profile.descriptor_generation;
   binding.sbel.assign(176,0); std::copy_n("SBEL",4,binding.sbel.begin());
   auto b16=[&](std::size_t o,std::uint16_t v){binding.sbel[o]=v;binding.sbel[o+1]=v>>8;};

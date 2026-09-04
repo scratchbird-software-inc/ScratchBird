@@ -7,7 +7,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
-#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -17,9 +16,6 @@
 #include "registry/function_seed_registry.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "rendering/rendering.hpp"
-#include "sblr_admission.hpp"
-#include "sblr_dispatch.hpp"
-#include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "transaction/savepoint_api.hpp"
 #include "transaction/transaction_api.hpp"
@@ -166,34 +162,6 @@ PipelineArtifacts RunPipeline(std::string_view sql,
   return artifacts;
 }
 
-sblr::SblrOperationEnvelope EngineEnvelopeFromParser(const SblrEnvelope& parser_envelope) {
-  auto engine_envelope = sblr::MakeSblrEnvelope(
-      parser_envelope.engine_api_operation_id.empty() ? parser_envelope.operation_id
-                                                      : parser_envelope.engine_api_operation_id,
-      parser_envelope.sblr_opcode,
-      parser_envelope.trace_key);
-  engine_envelope.result_shape = parser_envelope.result_shape_key;
-  engine_envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
-  engine_envelope.requires_security_context = true;
-  engine_envelope.requires_transaction_context = true;
-  engine_envelope.requires_cluster_authority = false;
-  engine_envelope.contains_sql_text = false;
-  engine_envelope.parser_resolved_names_to_uuids = true;
-  for (const auto& operand : parser_envelope.operands) {
-    engine_envelope.operands.push_back({operand.type, operand.name, operand.value});
-  }
-  return engine_envelope;
-}
-
-void PrintDispatchDiagnostics(const sblr::SblrDispatchResult& result) {
-  for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << "dispatch " << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
-    std::cerr << "api " << diagnostic.code << ':' << diagnostic.detail << '\n';
-  }
-}
-
 std::uint64_t CurrentUnixMillis() {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -249,12 +217,14 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000011202";
   context.current_schema_uuid.canonical = std::string(kSchemaUuid);
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.cluster_authority_available = false;
   context.catalog_generation_id = 1;
   context.security_epoch = 2;
   context.resource_epoch = 3;
   context.name_resolution_epoch = 4;
   context.trace_tags.push_back("right:TRANSACTION_CONTROL");
+  context.trace_tags.push_back("security.fixture_trace_authority");
   return context;
 }
 
@@ -349,84 +319,48 @@ void RequireGeneratedRegistryRows() {
           "Gate 011 SELECT FOR UPDATE SBLR family drifted");
 }
 
-PipelineArtifacts RequireLockRoute(std::string_view sql,
-                                   std::string_view operation_id,
-                                   std::string_view opcode,
-                                   std::string_view engine_api_function) {
+bool HasEnvelopeDiagnostic(const PipelineArtifacts& artifacts,
+                           std::string_view diagnostic_id) {
+  return std::any_of(
+      artifacts.envelope.messages.diagnostics.begin(),
+      artifacts.envelope.messages.diagnostics.end(),
+      [diagnostic_id](const Diagnostic& diagnostic) {
+        return diagnostic.code == diagnostic_id;
+      });
+}
+
+PipelineArtifacts RequireLockRouteRefusal(std::string_view sql) {
   auto artifacts = RunPipeline(sql);
-  PrintMessages(artifacts);
   Require(!artifacts.cst.messages.has_errors(), "Gate 011 CST failed");
   Require(!artifacts.ast.messages.has_errors(), "Gate 011 AST failed");
   Require(artifacts.bound.bound, "Gate 011 bind failed");
-  Require(artifacts.verifier.admitted, "Gate 011 verifier rejected lock route");
+  Require(!artifacts.verifier.admitted,
+          "Gate 011 admitted an unallocated transaction lock carrier");
   Require(artifacts.envelope.operation_family == "sblr.transaction.control.v3",
-          "Gate 011 lock route family mismatch");
+          "Gate 011 lock refusal family mismatch");
   Require(artifacts.envelope.sblr_operation_key == "sblr.transaction.control.v3",
-          "Gate 011 lock route key mismatch");
-  Require(artifacts.envelope.operation_id == operation_id,
-          "Gate 011 lock route operation mismatch");
-  Require(artifacts.envelope.sblr_opcode == opcode,
-          "Gate 011 lock route opcode mismatch");
-  Require(artifacts.envelope.engine_api_function == engine_api_function,
-          "Gate 011 lock route engine API function mismatch");
+          "Gate 011 lock refusal route key mismatch");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal",
+          "Gate 011 lock refusal operation mismatch");
+  Require(artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+          "Gate 011 lock refusal opcode mismatch");
+  Require(artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "Gate 011 lock refusal claimed an engine executor");
+  Require(HasEnvelopeDiagnostic(artifacts, "SBSQL.IMPL.NOT_AVAILABLE"),
+          "Gate 011 lock refusal diagnostic drifted");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.mga_transaction_control_required"),
-          "Gate 011 lock route MGA authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.transaction_lock_policy_required"),
-          "Gate 011 lock route policy authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_sql_text_execution"),
-          "Gate 011 lock route parser no-SQL authority missing");
+                   "authority.parser.no_executable_sblr"),
+          "Gate 011 lock refusal emitted executable SBLR");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
-          "Gate 011 lock route parser no-finality authority missing");
-  Require(HasValue(artifacts.envelope.policy_refs, "transaction_lock_mga_policy"),
-          "Gate 011 transaction lock policy ref missing");
-  Require(Contains(artifacts.envelope.payload, "\"transaction_lock_route\":true"),
-          "Gate 011 lock payload missing route marker");
-  Require(Contains(artifacts.envelope.payload, "\"mga_visibility_impact\":false"),
-          "Gate 011 lock payload missing no-visibility proof");
-  Require(Contains(artifacts.envelope.payload, "\"transaction_finality_impact\":false"),
-          "Gate 011 lock payload missing no-finality proof");
-  Require(Contains(artifacts.envelope.payload, "\"cleanup_horizon_pinned\":false"),
-          "Gate 011 lock payload missing cleanup proof");
-  Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
-          "Gate 011 lock payload allowed parser SQL execution");
-  Require(!Contains(artifacts.envelope.payload, sql),
-          "Gate 011 lock payload embedded source SQL text");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal"),
-          "Gate 011 lock payload carried WAL authority");
-
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted, "Gate 011 server admission rejected lock route");
-  Require(admission.requires_public_abi_dispatch,
-          "Gate 011 server admission did not require public ABI dispatch");
-  Require(admission.operation_id == operation_id,
-          "Gate 011 server admission operation mismatch");
-
-  const auto* registry_row = sblr::LookupSblrOperation(operation_id);
-  Require(registry_row != nullptr, "Gate 011 opcode registry row missing");
-  Require(registry_row->opcode == opcode, "Gate 011 opcode registry drifted");
-  Require(registry_row->requires_security_context,
-          "Gate 011 opcode registry must require security context");
-  Require(registry_row->requires_transaction_context,
-          "Gate 011 opcode registry must require transaction context");
+          "Gate 011 lock refusal claimed storage or finality authority");
+  Require(artifacts.envelope.operands.empty() &&
+              artifacts.envelope.payload.empty(),
+          "Gate 011 lock refusal retained an executable payload");
+  Require(!artifacts.envelope.parser_executes_sql &&
+              !artifacts.envelope.real_file_effects,
+          "Gate 011 lock refusal claimed parser execution effects");
   return artifacts;
-}
-
-sblr::SblrDispatchResult DispatchLockRoute(
-    const api::EngineRequestContext& context,
-    const PipelineArtifacts& artifacts) {
-  auto result = sblr::DispatchSblrOperation(
-      {context, EngineEnvelopeFromParser(artifacts.envelope), api::EngineApiRequest{}});
-  PrintDispatchDiagnostics(result);
-  Require(result.envelope_validated, "Gate 011 engine envelope rejected");
-  Require(result.accepted, "Gate 011 dispatch refused public lock route");
-  Require(result.dispatched_to_api, "Gate 011 dispatch did not call engine API");
-  return result;
 }
 
 api::EngineLockNamedResult LockNamedDirect(api::EngineRequestContext context,
@@ -468,6 +402,16 @@ api::EngineLockTableResult LockTableDirect(api::EngineRequestContext context,
   return api::EngineLockTable(request);
 }
 
+api::EngineUnlockTableResult UnlockTableDirect(
+    api::EngineRequestContext context,
+    std::string_view target) {
+  api::EngineUnlockTableRequest request;
+  request.context = std::move(context);
+  request.option_envelopes.push_back("lock_surface:UNLOCK TABLE");
+  request.option_envelopes.push_back("lock_descriptor:" + std::string(target));
+  return api::EngineUnlockTable(request);
+}
+
 api::EngineCreateSavepointResult CreateSavepointDirect(
     api::EngineRequestContext context,
     std::string_view name) {
@@ -494,51 +438,40 @@ void RequireTableLockRoutes(const std::filesystem::path& path,
       "sbsql-missing-gate-011-table",
       "019f0000-0000-7000-8000-000000011301");
 
-  const auto share = RequireLockRoute(
-      "LOCK TABLE ONLY accounts, public.orders IN SHARE MODE WAIT 5;",
-      "transaction.lock_table",
-      "SBLR_TXN_LOCK_TABLE",
-      "EngineLockTable");
-  Require(Contains(share.envelope.payload, "\"lock_timeout_millis\":\"5\""),
-          "Gate 011 LOCK TABLE WAIT operand missing");
-  auto share_result = DispatchLockRoute(context, share);
-  Require(share_result.api_result.ok, "Gate 011 share table lock no-op failed");
-  Require(HasEvidence(share_result.api_result, "lock_policy", "compatibility_noop"),
+  RequireLockRouteRefusal(
+      "LOCK TABLE ONLY accounts, public.orders IN SHARE MODE WAIT 5;");
+  auto share_result =
+      LockTableDirect(context, "accounts,public.orders", "read_or_share", false);
+  Require(share_result.ok, "Gate 011 share table lock component failed");
+  Require(HasEvidence(share_result, "lock_policy", "compatibility_noop"),
           "Gate 011 share table lock policy evidence missing");
-  Require(HasEvidence(share_result.api_result, "lock_decision", "granted_noop"),
+  Require(HasEvidence(share_result, "lock_decision", "granted_noop"),
           "Gate 011 share table lock no-op decision missing");
-  Require(HasEvidence(share_result.api_result, "mga_visibility_impact", "false"),
+  Require(HasEvidence(share_result, "mga_visibility_impact", "false"),
           "Gate 011 share table lock changed MGA visibility");
-  Require(HasEvidence(share_result.api_result, "transaction_finality_impact", "false"),
+  Require(HasEvidence(share_result, "transaction_finality_impact", "false"),
           "Gate 011 share table lock changed finality");
-  Require(HasEvidence(share_result.api_result, "cleanup_horizon_pinned", "false"),
+  Require(HasEvidence(share_result, "cleanup_horizon_pinned", "false"),
           "Gate 011 share table lock pinned cleanup horizon");
 
-  const auto skip = RequireLockRoute("LOCK accounts SKIP LOCKED;",
-                                     "transaction.lock_table",
-                                     "SBLR_TXN_LOCK_TABLE",
-                                     "EngineLockTable");
-  Require(Contains(skip.envelope.payload, "\"skip_locked\":true"),
-          "Gate 011 LOCK optional TABLE/SKIP LOCKED payload missing");
-  auto skip_result = DispatchLockRoute(context, skip);
-  Require(skip_result.api_result.ok,
-          "Gate 011 SKIP LOCKED compatibility no-op failed");
-  Require(HasEvidence(skip_result.api_result, "lock_policy", "compatibility_noop"),
+  RequireLockRouteRefusal("LOCK accounts SKIP LOCKED;");
+  auto skip_result =
+      LockTableDirect(context, "accounts", "read_or_share", false);
+  Require(skip_result.ok, "Gate 011 SKIP LOCKED component no-op failed");
+  Require(HasEvidence(skip_result, "lock_policy", "compatibility_noop"),
           "Gate 011 SKIP LOCKED compatibility policy evidence missing");
 
-  const auto exclusive = RequireLockRoute(
-      "LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE NOWAIT;",
-      "transaction.lock_table",
-      "SBLR_TXN_LOCK_TABLE",
-      "EngineLockTable");
-  auto exclusive_result = DispatchLockRoute(context, exclusive);
-  Require(!exclusive_result.api_result.ok,
+  RequireLockRouteRefusal(
+      "LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE NOWAIT;");
+  auto exclusive_result =
+      LockTableDirect(context, "accounts", "write_or_exclusive", false);
+  Require(!exclusive_result.ok,
           "Gate 011 exclusive table lock was not refused by default");
-  Require(HasDiagnostic(exclusive_result.api_result, "TCL.LOCK_NOT_AVAILABLE"),
+  Require(HasDiagnostic(exclusive_result, "TCL.LOCK_NOT_AVAILABLE"),
           "Gate 011 exclusive table lock refusal diagnostic missing");
-  Require(HasEvidence(exclusive_result.api_result, "mga_visibility_impact", "false"),
+  Require(HasEvidence(exclusive_result, "mga_visibility_impact", "false"),
           "Gate 011 refused table lock changed MGA visibility");
-  Require(HasEvidence(exclusive_result.api_result, "transaction_finality_impact", "false"),
+  Require(HasEvidence(exclusive_result, "transaction_finality_impact", "false"),
           "Gate 011 refused table lock changed finality");
 
   auto fence_context = context;
@@ -562,13 +495,10 @@ void RequireTableLockRoutes(const std::filesystem::path& path,
   Require(HasEvidence(fence_result, "mga_cleanup_horizon_impact", "false"),
           "Gate 011 authorized engine-owned fence pinned cleanup horizon");
 
-  const auto unlock = RequireLockRoute("UNLOCK TABLE ONLY accounts;",
-                                       "transaction.unlock_table",
-                                       "SBLR_TXN_UNLOCK_TABLE",
-                                       "EngineUnlockTable");
-  auto unlock_result = DispatchLockRoute(context, unlock);
-  Require(unlock_result.api_result.ok, "Gate 011 unlock table no-op failed");
-  Require(HasEvidence(unlock_result.api_result, "release_outcome",
+  RequireLockRouteRefusal("UNLOCK TABLE ONLY accounts;");
+  auto unlock_result = UnlockTableDirect(context, "accounts");
+  Require(unlock_result.ok, "Gate 011 unlock table component no-op failed");
+  Require(HasEvidence(unlock_result, "release_outcome",
                       "noop_no_table_lock_held"),
           "Gate 011 unlock table no-op evidence missing");
 
@@ -585,28 +515,23 @@ void RequireNamedLockRoutesAndPolicy(const std::filesystem::path& path,
       "sbsql-missing-gate-011-parser-named",
       "019f0000-0000-7000-8000-000000011401");
 
-  const auto parser_lock = RequireLockRoute(
-      "LOCK NAMED 'gate011_parser_named' IN EXCLUSIVE MODE NOWAIT;",
-      "transaction.lock_named",
-      "SBLR_TXN_LOCK_NAMED",
-      "EngineLockNamed");
-  auto parser_lock_result = DispatchLockRoute(parser_context, parser_lock);
-  Require(parser_lock_result.api_result.ok,
-          "Gate 011 parser named lock dispatch failed");
-  Require(HasEvidence(parser_lock_result.api_result, "lock_policy", "advisory_lock"),
+  RequireLockRouteRefusal(
+      "LOCK NAMED 'gate011_parser_named' IN EXCLUSIVE MODE NOWAIT;");
+  auto parser_lock_result =
+      LockNamedDirect(parser_context, "gate011_parser_named");
+  Require(parser_lock_result.ok,
+          "Gate 011 named lock component call failed");
+  Require(HasEvidence(parser_lock_result, "lock_policy", "advisory_lock"),
           "Gate 011 parser named lock policy evidence missing");
-  Require(HasEvidence(parser_lock_result.api_result, "mga_visibility_impact", "false"),
+  Require(HasEvidence(parser_lock_result, "mga_visibility_impact", "false"),
           "Gate 011 parser named lock changed MGA visibility");
 
-  const auto parser_unlock = RequireLockRoute(
-      "UNLOCK NAMED 'gate011_parser_named';",
-      "transaction.unlock_named",
-      "SBLR_TXN_UNLOCK_NAMED",
-      "EngineUnlockNamed");
-  auto parser_unlock_result = DispatchLockRoute(parser_context, parser_unlock);
-  Require(parser_unlock_result.api_result.ok,
-          "Gate 011 parser named unlock dispatch failed");
-  Require(HasEvidence(parser_unlock_result.api_result, "release_outcome", "released"),
+  RequireLockRouteRefusal("UNLOCK NAMED 'gate011_parser_named';");
+  auto parser_unlock_result =
+      UnlockNamedDirect(parser_context, "gate011_parser_named");
+  Require(parser_unlock_result.ok,
+          "Gate 011 named unlock component call failed");
+  Require(HasEvidence(parser_unlock_result, "release_outcome", "released"),
           "Gate 011 parser named unlock release evidence missing");
   CommitEngineTransaction(parser_context);
 
@@ -947,29 +872,29 @@ void RequireSelectForUpdateCompatibilityEvidence() {
   const auto artifacts =
       RunPipeline("SELECT id FROM customer FOR UPDATE;",
                   {"019f0000-0000-7000-8000-000000011701"});
-  PrintMessages(artifacts);
   Require(!artifacts.cst.messages.has_errors(), "Gate 011 FOR UPDATE CST failed");
   Require(!artifacts.ast.messages.has_errors(), "Gate 011 FOR UPDATE AST failed");
   Require(artifacts.bound.bound, "Gate 011 FOR UPDATE bind failed");
-  Require(artifacts.verifier.admitted, "Gate 011 FOR UPDATE verifier rejected route");
+  Require(!artifacts.verifier.admitted,
+          "Gate 011 admitted SELECT FOR UPDATE without an exact MGA carrier");
   Require(artifacts.envelope.operation_family == "sblr.dml.operation.v3",
-          "Gate 011 FOR UPDATE must use DML operation family");
-  Require(artifacts.envelope.operation_id == "dml.update_rows",
-          "Gate 011 FOR UPDATE must lower to MGA update authority");
-  Require(artifacts.envelope.sblr_opcode == "SBLR_DML_UPDATE_ROWS",
-          "Gate 011 FOR UPDATE opcode drifted");
-  Require(Contains(artifacts.envelope.payload, "SBSQL-728CB259DD81"),
-          "Gate 011 FOR UPDATE row evidence missing");
-  Require(Contains(artifacts.envelope.payload, "select_for_update"),
-          "Gate 011 FOR UPDATE compatibility variant missing");
+          "Gate 011 FOR UPDATE refusal family drifted");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal",
+          "Gate 011 FOR UPDATE refusal operation drifted");
+  Require(artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+          "Gate 011 FOR UPDATE refusal opcode drifted");
+  Require(HasEnvelopeDiagnostic(artifacts, "SBSQL.IMPL.NOT_AVAILABLE"),
+          "Gate 011 FOR UPDATE refusal diagnostic missing");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_sql_text_execution"),
-          "Gate 011 FOR UPDATE parser no-SQL authority missing");
+                   "authority.parser.no_executable_sblr"),
+          "Gate 011 FOR UPDATE emitted executable SBLR");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
           "Gate 011 FOR UPDATE parser no-finality authority missing");
-  Require(!artifacts.envelope.parser_executes_sql,
-          "Gate 011 FOR UPDATE allowed parser SQL execution");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              !artifacts.envelope.parser_executes_sql,
+          "Gate 011 FOR UPDATE retained an executable parser carrier");
 }
 
 }  // namespace

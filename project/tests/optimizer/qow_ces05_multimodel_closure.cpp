@@ -57,7 +57,7 @@ const std::array<std::string, 9> kOperations = {
     "SPATIAL_SOURCE", "COLUMNAR_SOURCE"};
 const std::array<std::size_t, 9> kWidths = {1, 1, 1, 3, 1, 3, 5, 3, 1};
 constexpr std::string_view kCanonicalInt64TypeUuid =
-    "019d0000-0000-7000-8000-00000000d711";
+    "019d0000-0000-7000-8000-00000000d712";
 
 optimizer::ModelFamilyDependencyCoordinatorRequestV1 FullNineAdmission() {
   optimizer::ModelFamilyDependencyCoordinatorRequestV1 request;
@@ -755,6 +755,18 @@ bool ExecuteRcp080RelationalContinuationV1(
       aggregate.output_batch.columns.size() != 1 ||
       aggregate.output_batch.rows.front().values.front().encoded_value !=
           "1") {
+    std::cerr << "QOW-CES05 aggregate diagnostic="
+              << aggregate.diagnostic.diagnostic_code << ':'
+              << aggregate.diagnostic.detail
+              << ";rows=" << aggregate.output_batch.rows.size()
+              << ";columns=" << aggregate.output_batch.columns.size();
+    if (!aggregate.output_batch.rows.empty() &&
+        !aggregate.output_batch.rows.front().values.empty()) {
+      std::cerr << ";value="
+                << aggregate.output_batch.rows.front().values.front()
+                       .encoded_value;
+    }
+    std::cerr << '\n';
     return fail("aggregate");
   }
 
@@ -4771,7 +4783,14 @@ bool ProductionMultimodelQueryExecuteV1() {
   graph_write.vertices = {{ProductionUuidV1(platform::UuidKind::object,
                                              fixture.salt + 120),
                            {"P"}, {{"name", "one"}}}};
-  if (!Require(api::EngineGraphWrite(graph_write).ok,
+  const auto graph_persisted = api::EngineGraphWrite(graph_write);
+  if (!graph_persisted.ok) {
+    for (const auto& diagnostic : graph_persisted.diagnostics) {
+      std::cerr << "graph persistence diagnostic=" << diagnostic.code << ':'
+                << diagnostic.detail << '\n';
+    }
+  }
+  if (!Require(graph_persisted.ok,
                "production explicit graph provider persistence failed")) {
     return false;
   }
@@ -6163,9 +6182,7 @@ int main() {
 #else
   const auto plan = optimizer::CoordinateModelFamilyDependencyDagV1(
       FullNineAdmission());
-  const auto root = std::filesystem::temp_directory_path() /
-                    "sb_rcp080_qow_ces05_multimodel_closure";
-  std::filesystem::remove_all(root);
+  const auto root = UniqueTempRoot("sb_rcp080_qow_ces05_multimodel_closure");
   memory::TempWorkspaceLifecycleManager workspace(
       WorkspacePolicy(root, "rcp080_qow_ces05_multimodel_closure"));
   RuntimeCounters counters;

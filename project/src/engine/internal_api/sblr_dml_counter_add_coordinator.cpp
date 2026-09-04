@@ -1,8 +1,117 @@
 #include "sblr_dml_counter_add_coordinator.hpp"
+
 #include "api_diagnostics.hpp"
+
 #include <map>
 #include <mutex>
-namespace scratchbird::engine::internal_api { namespace { std::mutex g; std::map<std::string,bool> live,used; std::string key(const scratchbird::engine::sblr::SblrDmlCounterAddDescriptorV1&d){return std::string(reinterpret_cast<const char*>(d.evidence.data()),d.evidence.size());} }
-SblrDmlCounterAddCoordinationResult CompileSblrDmlCounterAddDescriptor(const EngineRequestContext&c,const std::string&r,std::uint64_t occ,std::uint64_t counter,std::uint64_t av){SblrDmlCounterAddCoordinationResult x;if(!c.security_context_present||!c.statement_metadata_snapshot_engine_owned||r!=c.statement_uuid.canonical||!occ||!counter||!av){x.diagnostic=MakeEngineApiDiagnostic("SBLR.OPERAND.INVALID","sblr.dml_counter_add.coordination_invalid",{},false);return x;}x.descriptor.body[0]=1;x.descriptor.body[1]=std::uint8_t(occ);x.descriptor.body[2]=std::uint8_t(counter);x.descriptor.evidence[0]=std::uint8_t(occ);x.descriptor.evidence[1]=std::uint8_t(counter);x.descriptor.availability=av;std::lock_guard l(g);live[key(x.descriptor)]=true;x.ok=true;return x;}
-SblrDmlCounterAddCoordinationResult ConsumeSblrDmlCounterAddDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDmlCounterAddDescriptorV1&d){SblrDmlCounterAddCoordinationResult x;if(!c.security_context_present){x.diagnostic=MakeEngineApiDiagnostic("SECURITY.ACCESS_DENIED","sblr.dml_counter_add.hidden",{},false);return x;}std::lock_guard l(g);auto k=key(d);if(!live[k]){x.diagnostic=MakeEngineApiDiagnostic(used[k]?"MGA.TRANSACTION.STALE":"SECURITY.ACCESS_DENIED",used[k]?"sblr.dml_counter_add.stale":"sblr.dml_counter_add.hidden",{},false);return x;}if(c.query_cancellation_requested&&c.query_cancellation_requested()){x.diagnostic=MakeEngineApiDiagnostic("PROCESS.CANCELLED","sblr.dml_counter_add.cancelled",{},false);return x;}live.erase(k);used[k]=true;x.ok=true;x.descriptor=d;return x;}
+
+namespace scratchbird::engine::internal_api {
+namespace {
+
+std::mutex g_mutex;
+std::map<std::string, bool> g_live;
+std::map<std::string, bool> g_used;
+
+std::string DescriptorKey(
+    const scratchbird::engine::sblr::SblrDmlCounterAddDescriptorV1& descriptor)
+{
+    return std::string(reinterpret_cast<const char*>(descriptor.evidence.data()),
+                       descriptor.evidence.size());
 }
+
+bool FinalizeDescriptorEvidence(
+    scratchbird::engine::sblr::SblrDmlCounterAddDescriptorV1* descriptor)
+{
+    if (descriptor == nullptr) {
+        return false;
+    }
+    const auto wire =
+        scratchbird::engine::sblr::EncodeSblrDmlCounterAddDescriptorV1(*descriptor, false);
+    std::string detail;
+    scratchbird::engine::sblr::SblrDmlCounterAddDescriptorV1 canonical;
+    if (wire.empty() ||
+        !scratchbird::engine::sblr::DecodeSblrDmlCounterAddDescriptorV1(
+            wire.data(), wire.size(), &canonical, &detail, false)) {
+        return false;
+    }
+    *descriptor = canonical;
+    return true;
+}
+
+}  // namespace
+
+SblrDmlCounterAddCoordinationResult CompileSblrDmlCounterAddDescriptor(
+    const EngineRequestContext& context,
+    const std::string& receipt,
+    std::uint64_t occurrence,
+    std::uint64_t counter_occurrence,
+    std::uint64_t availability)
+{
+    SblrDmlCounterAddCoordinationResult result;
+    if (!context.security_context_present ||
+        !context.statement_metadata_snapshot_engine_owned ||
+        receipt != context.statement_uuid.canonical || occurrence == 0 ||
+        counter_occurrence == 0 || availability == 0) {
+        result.diagnostic = MakeEngineApiDiagnostic(
+            "SBLR.OPERAND.INVALID",
+            "sblr.dml_counter_add.coordination_invalid",
+            {},
+            false);
+        return result;
+    }
+
+    result.descriptor.body[0] = 1;
+    result.descriptor.body[1] = static_cast<std::uint8_t>(occurrence);
+    result.descriptor.body[2] = static_cast<std::uint8_t>(counter_occurrence);
+    result.descriptor.availability = availability;
+    if (!FinalizeDescriptorEvidence(&result.descriptor)) {
+        result.diagnostic = MakeEngineApiDiagnostic(
+            "SBLR.OPERAND.INVALID",
+            "sblr.dml_counter_add.descriptor_invalid",
+            {},
+            false);
+        return result;
+    }
+
+    std::lock_guard lock(g_mutex);
+    g_live[DescriptorKey(result.descriptor)] = true;
+    result.ok = true;
+    return result;
+}
+
+SblrDmlCounterAddCoordinationResult ConsumeSblrDmlCounterAddDescriptor(
+    const EngineRequestContext& context,
+    const scratchbird::engine::sblr::SblrDmlCounterAddDescriptorV1& descriptor)
+{
+    SblrDmlCounterAddCoordinationResult result;
+    if (!context.security_context_present) {
+        result.diagnostic = MakeEngineApiDiagnostic(
+            "SECURITY.ACCESS_DENIED", "sblr.dml_counter_add.hidden", {}, false);
+        return result;
+    }
+
+    std::lock_guard lock(g_mutex);
+    const auto descriptor_key = DescriptorKey(descriptor);
+    if (!g_live[descriptor_key]) {
+        result.diagnostic = MakeEngineApiDiagnostic(
+            g_used[descriptor_key] ? "MGA.TRANSACTION.STALE" : "SECURITY.ACCESS_DENIED",
+            g_used[descriptor_key] ? "sblr.dml_counter_add.stale"
+                                   : "sblr.dml_counter_add.hidden",
+            {},
+            false);
+        return result;
+    }
+    if (context.query_cancellation_requested && context.query_cancellation_requested()) {
+        result.diagnostic = MakeEngineApiDiagnostic(
+            "PROCESS.CANCELLED", "sblr.dml_counter_add.cancelled", {}, false);
+        return result;
+    }
+
+    g_live.erase(descriptor_key);
+    g_used[descriptor_key] = true;
+    result.ok = true;
+    result.descriptor = descriptor;
+    return result;
+}
+
+}  // namespace scratchbird::engine::internal_api

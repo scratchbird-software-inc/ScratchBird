@@ -7,7 +7,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Generate SML-067..SML-081 release-certification proof matrices."""
+"""Generate the SML-067..SML-081 release-certification evidence state.
+
+The active implementation alignment workplan is not release-certified while
+IA-14 full-corpus acceptance and IA-15 owner acceptance remain open.  These
+matrices retain the deterministic evidence inventory without converting
+structural or declarative evidence into implementation/finality claims.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "sbsql.release_certification.sml_067_081.v1"
+SCHEMA_VERSION = "sbsql.release_certification_state.sml_067_081.v2"
 GATE_ID = "SML-GATE-067-081"
 DEFAULT_OUTPUT = (
     "project/tests/sbsql_parser_worker/generated/release_certification/"
@@ -49,28 +55,46 @@ SOURCE_EVIDENCE: list[dict[str, Any]] = [
         "source_id": "enterprise_closure_gate",
         "path": "project/tests/sbsql_parser_worker/final_sblr_sbsql_enterprise_proof_closure_gate.py",
         "required_tokens": [
-            "Final SBLR/SBsql enterprise proof closure gate",
-            "RELEASE_EVIDENCE_RETENTION_MATRIX.csv",
+            "Retain and verify the current SBsql/SBLR enterprise closure evidence",
+            "open_release_blockers",
         ],
-        "purpose": "enterprise proof and release evidence gate source",
+        "purpose": "enterprise evidence-retention and open-finding gate source",
     },
     {
         "source_id": "master_closure_gate",
         "path": "project/tests/sbsql_parser_worker/final_sblr_sbsql_master_closure_gate.py",
         "required_tokens": [
-            "Master gate for the final SBLR/SBsql closure sequence",
-            "MASTER_EXIT_CRITERIA.csv",
+            "Master consistency gate for the current SBsql/SBLR closure sequence",
+            "master gate must not turn structural closure into final workplan acceptance",
         ],
-        "purpose": "integrated final closure sequence gate source",
+        "purpose": "integrated structural-consistency gate source",
     },
     {
         "source_id": "language_closure_gate",
         "path": "project/tests/sbsql_parser_worker/sbsql_final_language_expansion_closure_gate.py",
         "required_tokens": [
-            "Final SBsql language expansion closure gate",
-            "SBSQL_TO_SBLR_PROOF_MATRIX.csv",
+            "Validate the current Core SBsql/SBLR authority and obligation closure",
+            "runtime behavior or final implementation acceptance",
         ],
-        "purpose": "SBsql-to-SBLR integrated proof gate source",
+        "purpose": "Core authority and implementation-obligation inventory gate source",
+    },
+    {
+        "source_id": "alignment_tracker",
+        "path": "../Workplans/sbsql-sblr-implementation-alignment/TRACKER.csv",
+        "required_tokens": [
+            "IA-14,Run full corpus live E2E fault recovery and cross-area regression",
+            "IA-15,Owner acceptance and archive",
+        ],
+        "purpose": "authoritative open full-corpus and owner-acceptance phase state",
+    },
+    {
+        "source_id": "alignment_validation_report",
+        "path": "../Workplans/sbsql-sblr-implementation-alignment/VALIDATION_REPORT.md",
+        "required_tokens": [
+            "Status: in progress",
+            "not final workplan acceptance",
+        ],
+        "purpose": "explicit nonfinal implementation-alignment acceptance state",
     },
     {
         "source_id": "version_manifest",
@@ -291,15 +315,15 @@ MATRIX_SPECS: list[dict[str, Any]] = [
 ROW_KINDS = [
     (
         "deterministic_input",
-        "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+        "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
     ),
     (
-        "closeout_assertion",
-        "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+        "nonfinality_assertion",
+        "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
     ),
     (
         "ctest_execution",
-        "The CTest label set exposes the slice and gate labels required for release certification.",
+        "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
     ),
 ]
 
@@ -331,6 +355,10 @@ def make_rows(spec: dict[str, Any]) -> list[dict[str, Any]]:
     gate_label = f"SML-GATE-{spec['sml_id'].split('-')[1]}"
     for ordinal, (row_kind, closure_rule) in enumerate(ROW_KINDS, start=1):
         row_id = f"{spec['sml_id']}-{spec['matrix_id'].upper()}-{ordinal:02d}"
+        source_ids = sorted(
+            set(spec["source_ids"])
+            | {"alignment_tracker", "alignment_validation_report"}
+        )
         proof = {
             "row_id": row_id,
             "sml_id": spec["sml_id"],
@@ -338,9 +366,9 @@ def make_rows(spec: dict[str, Any]) -> list[dict[str, Any]]:
             "matrix_id": spec["matrix_id"],
             "title": spec["title"],
             "row_kind": row_kind,
-            "status": "closed",
-            "evidence_state": "implemented_and_proven",
-            "closed_by": "sbsql_sml_067_081_release_certification_gate",
+            "status": "acceptance_open",
+            "evidence_state": "structural_and_declarative_evidence_retained",
+            "closed_by": "not_applicable_release_acceptance_open",
             "ctest_labels": [
                 "sbsql_release_certification",
                 "sbsql_parser_worker",
@@ -348,7 +376,7 @@ def make_rows(spec: dict[str, Any]) -> list[dict[str, Any]]:
                 spec["sml_id"],
                 gate_label,
             ],
-            "source_ids": sorted(spec["source_ids"]),
+            "source_ids": source_ids,
             "proof_vectors": sorted(spec["proof_vectors"]),
             "authority": spec["authority"],
             "parser_executes_sql": False,
@@ -356,7 +384,7 @@ def make_rows(spec: dict[str, Any]) -> list[dict[str, Any]]:
             "docs_documentation_draft_required": False,
             "public_tracking_artifact_created": False,
             "exception_count": 0,
-            "open_row_count": 0,
+            "open_row_count": 1,
             "closure_rule": closure_rule,
             "generated_outputs": [
                 DEFAULT_OUTPUT,
@@ -366,7 +394,7 @@ def make_rows(spec: dict[str, Any]) -> list[dict[str, Any]]:
             "evidence_sha256": sha256_text(canonical_json({
                 "matrix_id": spec["matrix_id"],
                 "row_kind": row_kind,
-                "source_ids": sorted(spec["source_ids"]),
+                "source_ids": source_ids,
                 "proof_vectors": sorted(spec["proof_vectors"]),
                 "authority": spec["authority"],
             })),
@@ -384,12 +412,16 @@ def make_payload() -> dict[str, Any]:
 
     matrices = []
     for spec in MATRIX_SPECS:
+        source_ids = sorted(
+            set(spec["source_ids"])
+            | {"alignment_tracker", "alignment_validation_report"}
+        )
         matrix = {
             "sml_id": spec["sml_id"],
             "gate_id": f"SML-GATE-{spec['sml_id'].split('-')[1]}",
             "matrix_id": spec["matrix_id"],
             "title": spec["title"],
-            "required_source_ids": sorted(spec["source_ids"]),
+            "required_source_ids": source_ids,
             "required_proof_vectors": sorted(spec["proof_vectors"]),
             "authority": spec["authority"],
             "rows": make_rows(spec),
@@ -407,7 +439,10 @@ def make_payload() -> dict[str, Any]:
         "source_evidence": source_evidence,
         "matrices": matrices,
         "row_count": sum(len(matrix["rows"]) for matrix in matrices),
-        "rows_not_closed": 0,
+        "rows_not_closed": sum(len(matrix["rows"]) for matrix in matrices),
+        "release_certified": False,
+        "workplan_status": "in_progress",
+        "open_acceptance_phases": ["IA-14", "IA-15"],
         "network_required": False,
         "docs_documentation_draft_created": False,
         "public_workplan_report_audit_note_created": False,

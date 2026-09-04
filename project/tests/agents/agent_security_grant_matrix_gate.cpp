@@ -29,6 +29,7 @@ void Require(bool condition, const std::string& message) {
 agents::AgentRuntimeContext Context(std::vector<std::string> rights = {},
                                     std::vector<std::string> groups = {}) {
   agents::AgentRuntimeContext context;
+  context.fixture_authorization_authority = true;
   context.security_context_present = true;
   context.private_features_available = true;
   context.standalone_edition = true;

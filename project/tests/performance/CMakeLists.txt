@@ -1468,6 +1468,7 @@ if(TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql AND TARGET sb_is
   )
   set_tests_properties(optimizer_runtime_hot_path_orh_125_live_route_gate PROPERTIES
     LABELS "optimizer_runtime_hot_path_orh_125_live_route_gate;ORH-125;ORH-GATE-125;optimizer_runtime_hot_path;performance;cross_route_equivalence;live_route_capture;no_execution_plan_runtime;mga_transaction_regression"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${CMAKE_CURRENT_BINARY_DIR}/pycache"
   )
 endif()
 

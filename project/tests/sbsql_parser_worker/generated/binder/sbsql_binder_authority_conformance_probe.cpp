@@ -9,17 +9,29 @@
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
+#include "database_lifecycle.hpp"
 #include "statement/statement_catalog.hpp"
+#include "uuid.hpp"
+#include "wire/sbsql_test_wire.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 using namespace scratchbird::parser::sbsql;
 
 namespace {
+
+namespace database = scratchbird::storage::database;
+namespace uuid = scratchbird::core::uuid;
+using scratchbird::core::platform::UuidKind;
 
 bool Require(bool condition, const std::string& message) {
   if (!condition) std::cerr << message << "\n";
@@ -32,6 +44,12 @@ bool HasStep(const BoundStatement& bound, std::string_view step) {
                    step) != bound.required_authority_steps.end();
 }
 
+bool HasDiagnostic(const BoundStatement& bound, std::string_view code) {
+  return std::ranges::any_of(bound.messages.diagnostics, [code](const auto& diagnostic) {
+    return diagnostic.code == code;
+  });
+}
+
 SessionContext AuthenticatedSession() {
   SessionContext session;
   session.authenticated = true;
@@ -40,6 +58,44 @@ SessionContext AuthenticatedSession() {
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
   return session;
+}
+
+std::filesystem::path MakeFixtureDatabase() {
+  static std::atomic<std::uint64_t> identity_time{1788201000000ULL};
+  std::string template_path = "/tmp/sbp_sbsql_binder_authority.XXXXXX";
+  std::vector<char> writable(template_path.begin(), template_path.end());
+  writable.push_back('\0');
+  char* directory = ::mkdtemp(writable.data());
+  if (directory == nullptr) return {};
+
+  const auto database_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::database, identity_time.fetch_add(2));
+  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::filespace, identity_time.fetch_add(2));
+  if (!database_uuid.ok() || !filespace_uuid.ok()) {
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+
+  const std::filesystem::path path =
+      std::filesystem::path(directory) / "binder_authority.sbdb";
+  database::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = identity_time.fetch_add(2);
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  const auto created = database::CreateDatabaseFile(create);
+  if (!created.ok() ||
+      created.create_finality != database::DatabaseCreateFinalityClass::committed) {
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+  return path;
 }
 
 BoundStatement BindSql(std::string_view sql,
@@ -61,8 +117,14 @@ bool ValidateMetadataPreservation() {
   bool ok = true;
   const auto* select = FindStatementSurfaceByName("select");
   ok &= Require(select != nullptr, "missing select descriptor");
-  ok &= Require(bound.bound, "SELECT 1 should bind without external name resolution");
-  ok &= Require(!bound.messages.has_errors(), "SELECT 1 produced binder diagnostics");
+  ok &= Require(!bound.bound,
+                "SELECT 1 unexpectedly bound without engine descriptor authority");
+  ok &= Require(bound.messages.has_errors(),
+                "SELECT 1 lacked the engine descriptor authority diagnostic");
+  ok &= Require(HasDiagnostic(bound, "QOW-DIAG-BOUNDAST-SCOPE"),
+                "SELECT 1 did not refuse at the native binding-context boundary");
+  ok &= Require(bound.native_relational_recognized,
+                "SELECT 1 lost native relational recognition before authority refusal");
   ok &= Require(bound.bound_ast_format_version == 1, "BoundAST format version mismatch");
   ok &= Require(bound.parser_api_major == config.parser_api_major, "parser API major not preserved");
   ok &= Require(bound.protocol_version == config.protocol_version, "protocol version not preserved");
@@ -114,7 +176,10 @@ bool ValidateMetadataPreservation() {
                 "granted scope mismatch");
   ok &= Require(!bound.required_rights.empty() && bound.required_rights[0] == "right.read",
                 "required rights mismatch");
-  ok &= Require(!bound.descriptor_refs.empty(), "descriptor refs missing");
+  ok &= Require(bound.descriptor_refs.size() == 1 &&
+                    bound.descriptor_refs[0] ==
+                        "descriptor.pending_server_or_engine_authority",
+                "parser-only SELECT lost the pending engine descriptor marker");
   ok &= Require(HasStep(bound, "authority.parser.syntax_evidence_only"),
                 "syntax evidence authority step missing");
   ok &= Require(HasStep(bound, "authority.parser.surface_descriptor_candidate"),
@@ -162,17 +227,19 @@ bool ValidatePublicResolverGate() {
   ok &= Require(!unresolved.bound, "unresolved FROM query unexpectedly bound");
   ok &= Require(unresolved.messages.has_errors(), "unresolved FROM query lacked diagnostic");
 
-  const auto resolved = BindSql("SELECT * FROM customer",
-                                endpoint_config,
-                                session,
-                                {"00000000-0000-7000-8000-00000000c001"});
-  ok &= Require(resolved.bound, "resolved FROM query did not bind");
-  ok &= Require(!resolved.messages.has_errors(), "resolved FROM query produced diagnostics");
-  ok &= Require(resolved.resolved_object_uuids.size() == 1,
-                "resolved UUID list size mismatch");
-  ok &= Require(resolved.resolved_object_uuids[0] ==
-                    "00000000-0000-7000-8000-00000000c001",
-                "resolved UUID value mismatch");
+  const auto parser_resolved_only = BindSql(
+      "SELECT * FROM customer",
+      endpoint_config,
+      session,
+      {"00000000-0000-7000-8000-00000000c001"});
+  ok &= Require(!parser_resolved_only.bound,
+                "parser-resolved UUID bypassed native descriptor authority");
+  ok &= Require(parser_resolved_only.messages.has_errors(),
+                "parser-resolved native query lacked an authority diagnostic");
+  ok &= Require(HasDiagnostic(parser_resolved_only, "QOW-DIAG-BOUNDAST-SCOPE"),
+                "parser-resolved native query did not fail at the binding-context boundary");
+  ok &= Require(parser_resolved_only.resolved_object_uuids.empty(),
+                "parser-resolved UUID was promoted into engine binding authority");
   return ok;
 }
 
@@ -204,6 +271,42 @@ bool ValidateSecurityAndTransactionAuthorityMetadata() {
                 "SET TRANSACTION authority key mismatch");
   ok &= Require(HasStep(set_transaction, "authority.server.transaction_context_required"),
                 "SET TRANSACTION authority step missing");
+  return ok;
+}
+
+bool ValidateEngineProjectedNativeBindingRoute() {
+  const auto fixture_database = MakeFixtureDatabase();
+  bool ok = Require(!fixture_database.empty(),
+                    "engine-projected binder fixture database creation failed");
+  if (fixture_database.empty()) return false;
+
+  ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = fixture_database.string();
+  ParserMetrics metrics;
+  SblrTemplateCache cache;
+  {
+    SbsqlTestWireSession session(config, &metrics, &cache);
+    const auto authenticated = session.HandleLine("AUTH");
+    ok &= Require(authenticated.text.find("OK AUTHENTICATED") != std::string::npos,
+                  "engine-projected binder fixture did not authenticate");
+    if (authenticated.text.find("OK AUTHENTICATED") != std::string::npos) {
+      const auto result = session.RunPipeline("SELECT 1", true);
+      ok &= Require(result.accepted && !result.messages.has_errors(),
+                    "engine-projected SELECT 1 did not bind and execute");
+      ok &= Require(result.operation_family == "sblr.query.relational.v3" &&
+                        result.server_operation_id == "query.execute",
+                    "engine-projected SELECT 1 lost the canonical query tuple");
+      ok &= Require(!result.sblr_payload.empty(),
+                    "engine-projected SELECT 1 produced no canonical SBLR payload");
+    }
+  }
+
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
   return ok;
 }
 
@@ -249,6 +352,7 @@ int main() {
   ok &= ValidateAuthenticationGate();
   ok &= ValidatePublicResolverGate();
   ok &= ValidateSecurityAndTransactionAuthorityMetadata();
+  ok &= ValidateEngineProjectedNativeBindingRoute();
   ok &= ValidateClusterPrivateFailClosed();
   return ok ? 0 : 1;
 }

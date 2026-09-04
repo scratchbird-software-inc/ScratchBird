@@ -15,6 +15,7 @@
 #include "ipc/sbps_client.hpp"
 #include "lowering/lowering.hpp"
 #include "rendering/rendering.hpp"
+#include "wire/parser_server_ipc/sbps_bulk_import_stream_codec.hpp"
 
 
 #include "scratchbird/engine/sblr/lowering.hpp"
@@ -211,10 +212,10 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <iterator>
 #include <limits>
 #include <mutex>
@@ -222,6 +223,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <tuple>
 #include <utility>
 #include <unordered_map>
 #include <unordered_set>
@@ -266,7 +268,6 @@ thread_local std::string g_authoritative_multi_source_projection_proof_detail;
 // Legacy engine identity payload reused as the opaque descriptor body for the
 // canonical numeric observability envelope.  The definition lives below the
 // submission helpers, so keep the declaration here for the canonical builder.
-std::string EngineShowVersionOperationEnvelope();
 
 std::optional<std::array<std::uint8_t, 16>> CanonicalUuidBytes(
     std::string_view text);
@@ -342,18 +343,18 @@ void WriteParserPipelinePhaseTrace(
     const std::vector<std::pair<std::string, std::uint64_t>>& phase_micros) {
   const char* path = std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE");
   if (path == nullptr || *path == '\0') return;
-  std::ofstream out(path, std::ios::app);
-  if (!out) return;
-  out << "layer=sbsql_pipeline"
-      << "\toperation=" << result.operation_family
-      << "\tfamily=" << result.statement_family
-      << "\taccepted=" << (result.accepted ? "true" : "false")
-      << "\tsql_bytes=" << sql.size()
-      << "\tstatement_hash=" << result.statement_hash;
+  std::ostringstream trace;
+  trace << "layer=sbsql_pipeline"
+        << "\toperation=" << result.operation_family
+        << "\tfamily=" << result.statement_family
+        << "\taccepted=" << (result.accepted ? "true" : "false")
+        << "\tsql_bytes=" << sql.size()
+        << "\tstatement_hash=" << result.statement_hash;
   for (const auto& [phase, micros] : phase_micros) {
-    out << '\t' << phase << "_us=" << micros;
+    trace << '\t' << phase << "_us=" << micros;
   }
-  out << '\n';
+  ipc::AppendNonAuthoritativeDiagnosticTraceLine(
+      "SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE", trace.str());
 }
 
 std::string NewRowUuid() {
@@ -762,6 +763,7 @@ std::optional<std::string_view> EngineIssuedAggregateFunctionUuid(
 }
 
 struct ExactProjectedDescriptorFields {
+  std::optional<std::string> datatype_descriptor_uuid;
   std::string type_uuid;
   std::optional<std::string> collation_uuid;
   std::optional<std::string> timezone_profile_id;
@@ -779,6 +781,7 @@ std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
   std::optional<bool> canonical_nullable;
   std::optional<bool> storage_nullable;
   bool type_seen = false;
+  bool datatype_descriptor_seen = false;
   bool collation_seen = false;
   bool timezone_seen = false;
   bool width_seen = false;
@@ -800,6 +803,15 @@ std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
     };
     if (!assign_text("type_uuid=", &type_seen, &fields.type_uuid)) {
       return std::nullopt;
+    }
+    std::string datatype_descriptor_uuid;
+    if (field.starts_with("datatype_descriptor_uuid=")) {
+      if (!assign_text("datatype_descriptor_uuid=", &datatype_descriptor_seen,
+                       &datatype_descriptor_uuid) ||
+          !CanonicalUuidBytes(datatype_descriptor_uuid).has_value()) {
+        return std::nullopt;
+      }
+      fields.datatype_descriptor_uuid = std::move(datatype_descriptor_uuid);
     }
     std::string collation_uuid;
     if (field.starts_with("collation_uuid=")) {
@@ -1254,6 +1266,9 @@ BuildEngineProjectedNativeBindingContext(
     MessageVectorSet* messages) {
   const auto fail = [&](std::string detail)
       -> std::optional<NativeRelationalBindingContext> {
+    ipc::AppendNonAuthoritativeDiagnosticTraceLine(
+        "SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE",
+        "layer=native_binding\taccepted=false\tdetail=" + detail);
     messages->diagnostics.push_back(MakeDiagnostic(
         "SBSQL.NATIVE_BINDING.CONTEXT_INVALID", "ERROR",
         "The engine-issued native binding cohort cannot cover this typed AST.",
@@ -1780,12 +1795,15 @@ BuildEngineProjectedNativeBindingContext(
             "spatial/columnar canonical TEXT identity is unavailable");
       }
       if (column.datatype_identity_present) {
+        const auto canonical_datatype_descriptor_uuid =
+            fields->datatype_descriptor_uuid.value_or(
+                column.type_descriptor_uuid);
         const auto datatype_identity = scratchbird::core::datatypes::
             LookupDatatypeTypeCodecIdentityV1(
                 projection.datatype_catalog_snapshot_uuid,
                 projection.datatype_catalog_generation,
                 projection.datatype_registry_generation,
-                column.type_descriptor_uuid,
+                canonical_datatype_descriptor_uuid,
                 column.datatype_descriptor_generation);
         if (statement_context.literal_preliminary_receipt_uuid.empty() ||
             !CanonicalUuidBytes(
@@ -1809,7 +1827,7 @@ BuildEngineProjectedNativeBindingContext(
             column.datatype_codec_generation == 0 ||
             !datatype_identity.ok ||
             datatype_identity.row.descriptor_uuid !=
-                column.type_descriptor_uuid ||
+                canonical_datatype_descriptor_uuid ||
             datatype_identity.row.descriptor_generation !=
                 column.datatype_descriptor_generation ||
             datatype_identity.row.type_uuid != column.datatype_type_uuid ||
@@ -6699,7 +6717,8 @@ BuildEngineProjectedNativeBindingContext(
                   projection.datatype_catalog_snapshot_uuid,
                   projection.datatype_catalog_generation,
                   projection.datatype_registry_generation,
-                  column.type_descriptor_uuid,
+                  descriptor_fields->datatype_descriptor_uuid.value_or(
+                      column.type_descriptor_uuid),
                   column.datatype_descriptor_generation);
           if (statement_context.literal_preliminary_receipt_uuid.empty() ||
               !CanonicalUuidBytes(
@@ -6723,7 +6742,8 @@ BuildEngineProjectedNativeBindingContext(
               column.datatype_codec_generation == 0 ||
               !datatype_identity.ok ||
               datatype_identity.row.descriptor_uuid !=
-                  column.type_descriptor_uuid ||
+                  descriptor_fields->datatype_descriptor_uuid.value_or(
+                      column.type_descriptor_uuid) ||
               datatype_identity.row.descriptor_generation !=
                   column.datatype_descriptor_generation ||
               datatype_identity.row.type_uuid != column.datatype_type_uuid ||
@@ -7848,6 +7868,7 @@ BuildEngineProjectedNativeBindingContext(
     // relation projection; never map canonical type names or use descriptor
     // UUIDs as type fallbacks.
     struct ExactProjectedDescriptorFields {
+      std::optional<std::string> datatype_descriptor_uuid;
       std::string type_uuid;
       std::optional<std::string> collation_uuid;
       std::optional<std::string> timezone_profile_id;
@@ -7862,6 +7883,7 @@ BuildEngineProjectedNativeBindingContext(
       std::optional<bool> canonical_nullable;
       std::optional<bool> storage_nullable;
       bool type_seen = false;
+      bool datatype_descriptor_seen = false;
       bool collation_seen = false;
       bool timezone_seen = false;
       std::size_t offset = 0;
@@ -7882,6 +7904,17 @@ BuildEngineProjectedNativeBindingContext(
         };
         if (!assign_text("type_uuid=", &type_seen, &fields.type_uuid)) {
           return std::nullopt;
+        }
+        std::string datatype_descriptor_uuid;
+        if (field.starts_with("datatype_descriptor_uuid=")) {
+          if (!assign_text("datatype_descriptor_uuid=",
+                           &datatype_descriptor_seen,
+                           &datatype_descriptor_uuid) ||
+              !CanonicalUuidBytes(datatype_descriptor_uuid).has_value()) {
+            return std::nullopt;
+          }
+          fields.datatype_descriptor_uuid =
+              std::move(datatype_descriptor_uuid);
         }
         std::string collation_uuid;
         if (field.starts_with("collation_uuid=")) {
@@ -7942,6 +7975,8 @@ BuildEngineProjectedNativeBindingContext(
       }
       return fields;
     };
+    std::vector<std::string> source_datatype_descriptor_uuids;
+    source_datatype_descriptor_uuids.reserve(source_column_indexes.size());
     for (std::size_t ordinal = 0; ordinal < source_column_indexes.size();
          ++ordinal) {
       const auto selected_index = source_column_indexes[ordinal];
@@ -7959,6 +7994,9 @@ BuildEngineProjectedNativeBindingContext(
       if (!descriptor_fields.has_value()) {
         return fail("catalog_source_column_descriptor_carrier_invalid");
       }
+      source_datatype_descriptor_uuids.push_back(
+          descriptor_fields->datatype_descriptor_uuid.value_or(
+              column.type_descriptor_uuid));
       NativeDescriptorBindingInput descriptor;
       descriptor.descriptor_id = binding_id;
       descriptor.descriptor_uuid = column.type_descriptor_uuid;
@@ -8028,14 +8066,21 @@ BuildEngineProjectedNativeBindingContext(
       if (source_column_indexes.size() != 2 ||
           relation.output_expression_ids.size() != 2 ||
           context.descriptors.size() != 2 ||
-          context.descriptors[0].descriptor_uuid != kBigintDescriptorUuid ||
+          source_datatype_descriptor_uuids.size() != 2 ||
+          source_datatype_descriptor_uuids[0] != kBigintDescriptorUuid ||
+          source_datatype_descriptor_uuids[1] != kBigintDescriptorUuid ||
+          context.descriptors[0].descriptor_uuid !=
+              projection.columns[source_column_indexes[0]]
+                  .type_descriptor_uuid ||
           context.descriptors[0].descriptor_generation != 1 ||
           context.descriptors[0].type_uuid != kBigintTypeUuid ||
           context.descriptors[0].type_generation != 1 ||
           context.descriptors[0].codec_id != "datatype.int64.le.v1" ||
           context.descriptors[0].codec_version != 1 ||
           context.descriptors[0].codec_generation != 1 ||
-          context.descriptors[1].descriptor_uuid != kBigintDescriptorUuid ||
+          context.descriptors[1].descriptor_uuid !=
+              projection.columns[source_column_indexes[1]]
+                  .type_descriptor_uuid ||
           context.descriptors[1].descriptor_generation != 1 ||
           context.descriptors[1].type_uuid != kBigintTypeUuid ||
           context.descriptors[1].type_generation != 1 ||
@@ -8739,6 +8784,32 @@ BuildEngineProjectedNativeBindingContext(
     return context;
   }
 
+  std::vector<std::uint64_t> numeric_literal_occurrences;
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind == NativeExpressionAstKind::kLiteral &&
+        expression.literal_kind == NativeLiteralAstKind::kNumeric) {
+      if (expression.structural_literal_occurrence_id == 0) {
+        return fail("numeric_literal_occurrence_missing");
+      }
+      numeric_literal_occurrences.push_back(
+          expression.structural_literal_occurrence_id);
+    }
+  }
+  std::ranges::sort(numeric_literal_occurrences);
+  if (std::ranges::adjacent_find(numeric_literal_occurrences) !=
+          numeric_literal_occurrences.end() ||
+      numeric_literal_occurrences.size() !=
+          statement_context.literal_statement_descriptor_profiles.size()) {
+    return fail("numeric_literal_profile_bijection_invalid");
+  }
+  std::unordered_map<std::uint64_t, std::size_t>
+      numeric_profile_index_by_occurrence;
+  for (std::size_t index = 0; index < numeric_literal_occurrences.size();
+       ++index) {
+    numeric_profile_index_by_occurrence.emplace(
+        numeric_literal_occurrences[index], index);
+  }
+
   std::array<std::uint16_t, 7> next_profile_slot{};
   // Literal admission owns one non-null numeric descriptor identity per
   // structural occurrence.  Keep the corresponding statement-profile slots
@@ -8780,16 +8851,17 @@ BuildEngineProjectedNativeBindingContext(
   const auto allocate_literal_descriptor =
       [&](const NativeExpressionAstNode& expression)
           -> std::optional<std::uint32_t> {
+    const auto profile_index = numeric_profile_index_by_occurrence.find(
+        expression.structural_literal_occurrence_id);
     if (expression.expression_kind != NativeExpressionAstKind::kLiteral ||
         expression.literal_kind != NativeLiteralAstKind::kNumeric ||
         expression.structural_literal_occurrence_id == 0 ||
-        expression.structural_literal_occurrence_id >
-            statement_context.literal_statement_descriptor_profiles.size()) {
+        profile_index == numeric_profile_index_by_occurrence.end()) {
       return std::nullopt;
     }
     const auto& profile =
         statement_context.literal_statement_descriptor_profiles[
-            expression.structural_literal_occurrence_id - 1];
+            profile_index->second];
     const bool bigint_codec =
         profile.codec_id == scratchbird::engine::sblr::
                                 kSblrLiteralInt64LeCodecId;
@@ -9165,6 +9237,7 @@ struct ContextualTextPrebindOccurrenceV2 {
   std::uint64_t relation_descriptor_generation{0};
   std::string column_uuid;
   std::uint32_t column_ordinal{0};
+  std::string target_datatype_descriptor_uuid;
   std::string target_collation_uuid;
   std::uint32_t target_character_length{0};
   std::vector<std::uint8_t> raw_token;
@@ -9668,6 +9741,11 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
     ParserStatementContext::LiteralStatementDescriptorProfileV1 profile;
     profile.profile_version = 1;
     profile.profile_uuid = LiteralReadUuid(profile_uuid_bytes, 0);
+    // SBLP descriptor_uuid identifies the canonical datatype row.  The
+    // engine-issued profile UUID is the distinct statement-local descriptor
+    // handle for this literal occurrence and is what the relational DAG,
+    // SBBA, and SBXN carry.  Relation-backed literals use the separately
+    // authenticated persisted handle in SBLP v2.
     profile.binding_descriptor_uuid = profile.profile_uuid;
     profile.statement_receipt_uuid = LiteralReadUuid(receipt_uuid_bytes, 0);
     profile.catalog_snapshot_uuid = LiteralReadUuid(catalog_uuid_bytes, 0);
@@ -10710,6 +10788,19 @@ EncodeContextualTextPrebindRequestV2(
         binding_context.descriptors, [&](const auto& candidate) {
           return candidate.descriptor_id == target->result_descriptor_id;
         });
+    const auto projected_descriptor_fields =
+        projected_column == projection.columns.end()
+            ? std::optional<ExactProjectedDescriptorFields>{}
+            : ParseExactProjectedDescriptor(
+                  projected_column->encoded_type_descriptor,
+                  projected_column->collation_uuid,
+                  projected_column->nullable);
+    const auto canonical_datatype_descriptor_uuid =
+        projected_column == projection.columns.end() ||
+                !projected_descriptor_fields.has_value()
+            ? std::string{}
+            : projected_descriptor_fields->datatype_descriptor_uuid.value_or(
+                  projected_column->type_descriptor_uuid);
     const auto datatype_identity =
         projected_column == projection.columns.end()
             ? scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1{}
@@ -10717,7 +10808,7 @@ EncodeContextualTextPrebindRequestV2(
                   projection.datatype_catalog_snapshot_uuid,
                   projection.datatype_catalog_generation,
                   projection.datatype_registry_generation,
-                  projected_column->type_descriptor_uuid,
+                  canonical_datatype_descriptor_uuid,
                   projected_column->datatype_descriptor_generation);
     const auto expected_target_width =
         projected_column == projection.columns.end() ||
@@ -10729,6 +10820,7 @@ EncodeContextualTextPrebindRequestV2(
         target_descriptor == bound.native_relational.descriptors.end() ||
         target_binding == binding_context.descriptors.end() ||
         target_binding_count != 1 ||
+        !projected_descriptor_fields.has_value() ||
         !ExactNativeBoundDescriptorBindingV2(*target_binding,
                                              *target_descriptor) ||
         projected_column->canonical_type_name != "text" ||
@@ -10747,7 +10839,7 @@ EncodeContextualTextPrebindRequestV2(
         !scratchbird::core::datatypes::
             IsExactCanonicalTextTypeCodecIdentityV1(datatype_identity.row) ||
         datatype_identity.row.descriptor_uuid !=
-            projected_column->type_descriptor_uuid ||
+            canonical_datatype_descriptor_uuid ||
         datatype_identity.row.descriptor_generation != 1 ||
         datatype_identity.row.type_uuid !=
             projected_column->datatype_type_uuid ||
@@ -10863,6 +10955,8 @@ EncodeContextualTextPrebindRequestV2(
         projection.descriptor_generation;
     occurrence.column_uuid = projected_column->column_uuid;
     occurrence.column_ordinal = projected_column->ordinal;
+    occurrence.target_datatype_descriptor_uuid =
+        canonical_datatype_descriptor_uuid;
     occurrence.target_collation_uuid = projected_column->collation_uuid;
     occurrence.target_character_length = projected_column->character_length;
     occurrence.raw_token = raw;
@@ -10921,6 +11015,7 @@ EncodeContextualTextPrebindRequestV2(
   std::unordered_set<std::uint32_t> contextual_handles;
   for (const auto& occurrence : state.occurrences) {
     contextual_handles.insert(occurrence.literal_descriptor_handle);
+    contextual_handles.insert(occurrence.target_descriptor_handle);
   }
   auto immutable_reservation_skeleton =
       FreezeContextualReservationSkeletonV2(bound, lowered,
@@ -11085,7 +11180,8 @@ bool ConsumeContextualTextPrebindResultV2(
         !literal_descriptor->datatype_catalog_snapshot_uuid.empty() ||
         literal_descriptor->datatype_catalog_generation != 0 ||
         literal_descriptor->datatype_registry_generation != 0 ||
-        target_descriptor->descriptor_uuid != profile_descriptor_uuid ||
+        occurrence.target_datatype_descriptor_uuid !=
+            profile_descriptor_uuid ||
         target_descriptor->type_uuid != profile_type_uuid ||
         target_descriptor->descriptor_generation != profile.descriptor_generation ||
         target_descriptor->type_generation != profile.type_generation ||
@@ -11156,6 +11252,48 @@ bool ConsumeContextualTextPrebindResultV2(
         std::move(patch.value);
   }
   state->profile_set = std::move(profile_set);
+  return true;
+}
+
+bool PatchContextualTargetDescriptorOperandsV2(
+    SblrEnvelope* lowered, const ContextualTextPrebindStateV2& state) {
+  if (lowered == nullptr ||
+      state.profile_set.mappings.size() != state.occurrences.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index != state.occurrences.size(); ++index) {
+    const auto& occurrence = state.occurrences[index];
+    const auto& profile = state.profile_set.mappings[index].profile;
+    const auto canonical_uuid = LiteralReadUuid(
+        CanonicalBytes(profile.descriptor_uuid.begin(),
+                       profile.descriptor_uuid.end()),
+        0);
+    if (canonical_uuid.empty() ||
+        canonical_uuid != occurrence.target_datatype_descriptor_uuid) {
+      return false;
+    }
+    const std::string handle =
+        std::to_string(occurrence.target_descriptor_handle);
+    auto operand = std::ranges::find_if(
+        lowered->operands, [&](const auto& candidate) {
+          return candidate.type == "relational_descriptor_v2" &&
+                 candidate.name == handle;
+        });
+    if (operand == lowered->operands.end() ||
+        std::ranges::count_if(lowered->operands, [&](const auto& candidate) {
+          return candidate.type == "relational_descriptor_v2" &&
+                 candidate.name == handle;
+        }) != 1) {
+      return false;
+    }
+    const auto fields = SplitCanonicalFields(operand->value);
+    const auto separator = operand->value.find('|');
+    if (fields.size() != 17 || separator == std::string::npos ||
+        fields[0] != occurrence.target_descriptor.descriptor_uuid) {
+      return false;
+    }
+    operand->value = canonical_uuid + operand->value.substr(separator);
+  }
   return true;
 }
 
@@ -11598,22 +11736,27 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
     if (operand.type != "relational_expression_v1") continue;
     const auto fields = SplitCanonicalFields(operand.value);
     if (fields.size() != 8 || fields[0] != "1") continue;
-    if (fields[1] != "-" || (fields[5] != "1" && fields[5] != "2")) {
-      return std::nullopt;
-    }
     std::uint32_t node_id = 0;
     const auto [node_end, node_error] = std::from_chars(
         operand.name.data(), operand.name.data() + operand.name.size(), node_id);
-    const auto literal = DecodeCanonicalHexBytes(fields[7]);
-    const auto descriptor = descriptors.find(std::string(fields[2]));
+    if (node_error != std::errc{} ||
+        node_end != operand.name.data() + operand.name.size() || node_id == 0) {
+      return std::nullopt;
+    }
     const auto bound_literal = bound_literals.find(node_id);
-    if (fields[5] == "2" && bound_literal == bound_literals.end()) {
+    // SBXN is the exact proof table for negotiated numeric literals and
+    // contextual TEXT equality literals.  Other typed literals (for example
+    // NULL, BOOLEAN, or a non-contextual VALUES string) remain ordinary DAG
+    // nodes and must not be interpreted as malformed SBXN members.
+    if (bound_literal == bound_literals.end()) {
       continue;
     }
-    if (node_error != std::errc{} ||
-        node_end != operand.name.data() + operand.name.size() || node_id == 0 ||
-        !literal.has_value() || descriptor == descriptors.end() ||
-        bound_literal == bound_literals.end() ||
+    if (fields[1] != "-" || (fields[5] != "1" && fields[5] != "2")) {
+      return std::nullopt;
+    }
+    const auto literal = DecodeCanonicalHexBytes(fields[7]);
+    const auto descriptor = descriptors.find(std::string(fields[2]));
+    if (!literal.has_value() || descriptor == descriptors.end() ||
         ((fields[5] == "1") !=
          (bound_literal->second->literal_kind ==
           NativeLiteralAstKind::kNumeric)) ||
@@ -11873,6 +12016,33 @@ bool FinalizeLiteralSubmission(
         descriptor->descriptor_uuid!=profile.binding_descriptor_uuid||
         descriptor->type_uuid!=profile.type_uuid||!descriptor_uuid||
         !type_uuid||!profile_uuid) {
+      std::string issued_profile_bindings;
+      for (const auto& issued_profile :
+           context.literal_statement_descriptor_profiles) {
+        if (!issued_profile_bindings.empty()) issued_profile_bindings.push_back(',');
+        issued_profile_bindings.append(issued_profile.binding_descriptor_uuid);
+      }
+      std::string bound_literal_bindings;
+      for (const auto* bound_expression : expressions) {
+        const auto bound_descriptor = std::ranges::find_if(
+            bound.native_relational.descriptors, [&](const auto& candidate) {
+              return candidate.descriptor_id ==
+                     bound_expression->result_descriptor_id;
+            });
+        if (!bound_literal_bindings.empty()) bound_literal_bindings.push_back(',');
+        bound_literal_bindings.append(std::to_string(bound_expression->expression_id));
+        bound_literal_bindings.push_back('/');
+        bound_literal_bindings.append(
+            std::to_string(bound_expression->structural_literal_occurrence_id));
+        bound_literal_bindings.push_back('/');
+        bound_literal_bindings.append(
+            std::to_string(bound_expression->result_descriptor_id));
+        bound_literal_bindings.push_back('/');
+        bound_literal_bindings.append(
+            bound_descriptor == bound.native_relational.descriptors.end()
+                ? std::string{"absent"}
+                : bound_descriptor->descriptor_uuid);
+      }
       return refuse(
           "The bound literal descriptor differs from its engine-issued "
           "profile:occurrence=" +
@@ -11895,7 +12065,21 @@ bool FinalizeLiteralSubmission(
                ? "1"
                : "0") +
           ":profile-identities=" +
-          (descriptor_uuid && type_uuid && profile_uuid ? "1" : "0"));
+          (descriptor_uuid && type_uuid && profile_uuid ? "1" : "0") +
+          ":expression-id=" + std::to_string(expression->expression_id) +
+          ":descriptor-id=" +
+          std::to_string(expression->result_descriptor_id) +
+          ":occurrence-id=" +
+          std::to_string(expression->structural_literal_occurrence_id) +
+          ":bound-uuid=" +
+          (descriptor == bound.native_relational.descriptors.end()
+               ? std::string{"absent"}
+               : descriptor->descriptor_uuid) +
+          ":profile-binding-uuid=" + profile.binding_descriptor_uuid +
+          ":profile-datatype-uuid=" + profile.descriptor_uuid +
+          ":profile-uuid=" + profile.profile_uuid +
+          ":issued-profile-bindings=" + issued_profile_bindings +
+          ":bound-literal-bindings=" + bound_literal_bindings);
     }
     CanonicalBytes record(120,0);CanonicalStoreU32(&record,0,120);
     CanonicalStoreU32(&record,4,
@@ -11962,11 +12146,12 @@ std::optional<CanonicalBytes> EncodePreparedParameterTemplate(
     const CanonicalBytes& canonical_sbpa,
     const std::array<std::uint8_t, 32>& sbpn_sha256);
 
+template <typename NativeRouteClient>
 bool FinalizeParameterSubmission(
     const BoundStatement& bound, const ParameterPrebindState& prebind,
     const std::vector<PreparedParameterWireValue>& parameter_values,
     const ParserStatementContext& statement_context,
-    const SessionContext& session, SbpsClient* client,
+    const SessionContext& session, NativeRouteClient* client,
     ParserCanonicalSblrSubmission* submission,
     MessageVectorSet* messages,
     const ipc::ParameterExecutionCoordination* coordination,
@@ -12089,20 +12274,33 @@ bool FinalizeParameterSubmission(
       }
       return false;
     }
-    auto sealed = client->FinalizePreparedParameterSubmission(
-        session, *coordination, *sbpt, statement_context);
-    if (!sealed.accepted) {
-      if (messages) *messages = std::move(sealed.messages);
-      if (messages != nullptr && !messages->has_errors()) {
+    if constexpr (requires {
+                    client->FinalizePreparedParameterSubmission(
+                        session, *coordination, *sbpt, statement_context);
+                  }) {
+      auto sealed = client->FinalizePreparedParameterSubmission(
+          session, *coordination, *sbpt, statement_context);
+      if (!sealed.accepted) {
+        if (messages) *messages = std::move(sealed.messages);
+        if (messages != nullptr && !messages->has_errors()) {
+          messages->diagnostics.push_back(MakeDiagnostic(
+              "SBLR.PREPARED.STALE", "ERROR",
+              "The authenticated value-free prepared parameter template seal was refused without a typed diagnostic.",
+              "sbp_sbsql.wire"));
+        }
+        return false;
+      }
+      *prepared_output = std::move(sealed.prepared);
+      return true;
+    } else {
+      if (messages != nullptr) {
         messages->diagnostics.push_back(MakeDiagnostic(
             "SBLR.PREPARED.STALE", "ERROR",
-            "The authenticated value-free prepared parameter template seal was refused without a typed diagnostic.",
+            "Prepared parameter publication is unavailable on this execution route.",
             "sbp_sbsql.wire"));
       }
       return false;
     }
-    *prepared_output = std::move(sealed.prepared);
-    return true;
   }
   scratchbird::engine::sblr::SblrParameterValueSetV1 value_set;
   value_set.parameter_set_descriptor_uuid =
@@ -12330,6 +12528,7 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
   if (lowered.operation_id != "query.execute" ||
       lowered.sblr_opcode != "SBLR_QUERY_EXECUTE" ||
       lowered.result_shape_key != "query_execute_result" ||
+      lowered.diagnostic_shape_key != "diagnostic_vector" ||
       !parser_uuid.has_value() || !registry_uuid.has_value() ||
       statement_context.descriptor_profiles.empty()) {
     return std::nullopt;
@@ -12782,6 +12981,17 @@ std::optional<CanonicalBytes> EncodeNativeTxnSavepointOperationBinary(
   return CanonicalBytes(encoded.begin(), encoded.end());
 }
 
+std::string SavepointIdentityKey(
+    const scratchbird::engine::sblr::SpUuid& savepoint_uuid) {
+  return std::string(
+      reinterpret_cast<const char*>(savepoint_uuid.data()),
+      savepoint_uuid.size());
+}
+
+thread_local std::uint64_t g_refreshed_savepoint_stack_generation = 0;
+thread_local const std::vector<std::uint8_t>*
+    g_refreshed_savepoint_evidence = nullptr;
+
 std::optional<CanonicalBytes> EncodeNativeTxnReleaseSavepointOperationBinary(
     const ParserStatementContext& context, const SessionContext& session,
     const std::vector<std::uint8_t>& admitted_handle,
@@ -12803,8 +13013,19 @@ std::optional<CanonicalBytes> EncodeNativeTxnReleaseSavepointOperationBinary(
     operand.transaction_uuid = handle.transaction_uuid;
     operand.local_transaction_id = handle.local_transaction_id;
     operand.transaction_ordinal = handle.transaction_ordinal;
-    operand.admitted_stack_generation = handle.stack_generation;
-    operand.admitted_savepoint_evidence_sha256 = handle.savepoint_evidence_sha256;
+    operand.admitted_stack_generation =
+        g_refreshed_savepoint_stack_generation == 0
+        ? handle.stack_generation
+        : g_refreshed_savepoint_stack_generation;
+    if (g_refreshed_savepoint_evidence != nullptr &&
+        g_refreshed_savepoint_evidence->size() == 32) {
+      std::copy(g_refreshed_savepoint_evidence->begin(),
+                g_refreshed_savepoint_evidence->end(),
+                operand.admitted_savepoint_evidence_sha256.begin());
+    } else {
+      operand.admitted_savepoint_evidence_sha256 =
+          handle.savepoint_evidence_sha256;
+    }
     operand.executor_availability_generation =
         context.preliminary_transaction_release_savepoint_executor_availability_generation;
     body = sp::EncodeSblrSavepointReleaseOperandV1(operand);
@@ -12846,8 +13067,10 @@ std::optional<CanonicalBytes> EncodeNativeTxnRollbackToSavepointOperationBinary(
     sp::SblrSavepointRollbackOperandV1 operand;
     operand.savepoint_uuid=handle.savepoint_uuid; operand.savepoint_generation=handle.savepoint_generation;
     operand.transaction_uuid=handle.transaction_uuid; operand.local_transaction_id=handle.local_transaction_id;
-    operand.transaction_ordinal=handle.transaction_ordinal; operand.admitted_stack_generation=handle.stack_generation;
-    operand.admitted_savepoint_evidence_sha256=handle.savepoint_evidence_sha256;
+    operand.transaction_ordinal=handle.transaction_ordinal;
+    operand.admitted_stack_generation=g_refreshed_savepoint_stack_generation==0?handle.stack_generation:g_refreshed_savepoint_stack_generation;
+    if(g_refreshed_savepoint_evidence!=nullptr&&g_refreshed_savepoint_evidence->size()==32)std::copy(g_refreshed_savepoint_evidence->begin(),g_refreshed_savepoint_evidence->end(),operand.admitted_savepoint_evidence_sha256.begin());
+    else operand.admitted_savepoint_evidence_sha256=handle.savepoint_evidence_sha256;
     operand.executor_availability_generation=context.preliminary_transaction_rollback_to_savepoint_executor_availability_generation;
     body=sp::EncodeSblrSavepointRollbackOperandV1(operand);
   }
@@ -13567,7 +13790,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
       : lowered.operation_id == "engine.op.system_config_set" && admitted_system_config_set_operand != nullptr
             ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.system_config_set","SBLR_SYSTEM_CONFIG_SET","system.config.set.native");e.opcode_code=5125;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="system_config_set_descriptor";o.name="system_config";o.value_kind=c::SblrValueKind::system_config_set_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_create_materialized_view" && g_ddl_create_materialized_view_operand != nullptr
-            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_materialized_view","SBLR_DDL_CREATE_MATERIALIZED_VIEW","ddl.create.materialized_view.native");e.opcode_code=1566;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_materialized_view_descriptor";o.name="view";o.value_kind=c::SblrValueKind::create_materialized_view_descriptor;o.value_body=*g_ddl_create_materialized_view_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_materialized_view","SBLR_DDL_CREATE_MATERIALIZED_VIEW","ddl.create.materialized_view.native");e.opcode_code=1566;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="ddl_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_materialized_view_descriptor";o.name="view";o.value_kind=c::SblrValueKind::create_materialized_view_descriptor;o.value_body=*g_ddl_create_materialized_view_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_create_view" && admitted_system_config_set_operand != nullptr
             ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_view","SBLR_DDL_CREATE_VIEW","ddl.create.domain.native");e.opcode_code=1548;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_view_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::create_view_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_create_table_as_query_with_data" && admitted_system_config_set_operand != nullptr
@@ -13585,7 +13808,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
       : lowered.operation_id == "engine.op.ddl_drop_view" && admitted_system_config_set_operand != nullptr
             ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_view","SBLR_DDL_DROP_VIEW","ddl.drop.view.native");e.opcode_code=1550;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_view_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::drop_view_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_create_trigger" && admitted_ddl_create_trigger_operand != nullptr
-            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_trigger","SBLR_DDL_CREATE_TRIGGER","ddl.create.trigger.native");e.opcode_code=1551;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_trigger_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::create_trigger_descriptor;o.value_body=*admitted_ddl_create_trigger_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_trigger","SBLR_DDL_CREATE_TRIGGER","ddl.create.trigger.native");e.opcode_code=1551;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="ddl_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_trigger_descriptor";o.name="trigger";o.value_kind=c::SblrValueKind::create_trigger_descriptor;o.value_body=*admitted_ddl_create_trigger_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_alter_domain" && admitted_system_config_set_operand != nullptr
             ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_alter_domain","SBLR_DDL_ALTER_DOMAIN","ddl.create.domain.native");e.opcode_code=1547;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="alter_domain_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::alter_domain_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_create_domain" && admitted_system_config_set_operand != nullptr
@@ -13608,7 +13831,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     namespace c = scratchbird::engine::sblr;
     auto e = c::MakeSblrEnvelope("engine.op.ddl_alter_publication", "SBLR_DDL_ALTER_PUBLICATION", "ddl.alter.publication.native");
     e.opcode_code = 1583; e.requires_transaction_context = true; e.requires_security_context = true;
-    e.result_shape = "management_result"; e.diagnostic_shape = "diagnostic_vector";
+    e.result_shape = "ddl_result"; e.diagnostic_shape = "diagnostic_vector";
     e.parser_package_uuid = session.admitted_parser_package_uuid;
     e.parser_package_version_major = session.admitted_parser_package_version_major;
     e.parser_package_version_minor = session.admitted_parser_package_version_minor;
@@ -13663,13 +13886,13 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     namespace c = scratchbird::engine::sblr;
     auto e = c::MakeSblrEnvelope("engine.op.ddl_alter_trigger", "SBLR_DDL_ALTER_TRIGGER", "ddl.alter.trigger.native");
     e.opcode_code = 1552; e.requires_transaction_context = true; e.requires_security_context = true;
-    e.result_shape = "management_result"; e.diagnostic_shape = "diagnostic_vector";
+    e.result_shape = "ddl_result"; e.diagnostic_shape = "diagnostic_vector";
     e.parser_package_uuid = session.admitted_parser_package_uuid;
     e.parser_package_version_major = session.admitted_parser_package_version_major;
     e.parser_package_version_minor = session.admitted_parser_package_version_minor;
     e.parser_package_version_patch = session.admitted_parser_package_version_patch;
     e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids = true;
-    c::SblrOperand o; o.ordinal = 1; o.type = "alter_trigger_descriptor"; o.name = "domain";
+    c::SblrOperand o; o.ordinal = 1; o.type = "alter_trigger_descriptor"; o.name = "trigger";
     o.value_kind = c::SblrValueKind::alter_trigger_descriptor; o.value_body = *admitted_ddl_alter_trigger_operand;
     e.operands.push_back(std::move(o));
     auto bytes = c::EncodeSblrEnvelope(e);
@@ -13733,13 +13956,13 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     namespace c = scratchbird::engine::sblr;
     auto e = c::MakeSblrEnvelope("engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "ddl.drop.trigger.native");
     e.opcode_code = 1553; e.requires_transaction_context = true; e.requires_security_context = true;
-    e.result_shape = "management_result"; e.diagnostic_shape = "diagnostic_vector";
+    e.result_shape = "ddl_result"; e.diagnostic_shape = "diagnostic_vector";
     e.parser_package_uuid = session.admitted_parser_package_uuid;
     e.parser_package_version_major = session.admitted_parser_package_version_major;
     e.parser_package_version_minor = session.admitted_parser_package_version_minor;
     e.parser_package_version_patch = session.admitted_parser_package_version_patch;
     e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids = true;
-    c::SblrOperand o; o.ordinal = 1; o.type = "drop_trigger_descriptor"; o.name = "domain";
+    c::SblrOperand o; o.ordinal = 1; o.type = "drop_trigger_descriptor"; o.name = "trigger";
     o.value_kind = c::SblrValueKind::drop_trigger_descriptor; o.value_body = *admitted_ddl_drop_trigger_operand;
     e.operands.push_back(std::move(o));
     auto bytes = c::EncodeSblrEnvelope(e);
@@ -13749,7 +13972,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     namespace c = scratchbird::engine::sblr;
     auto e = c::MakeSblrEnvelope("engine.op.ddl_create_procedure", "SBLR_DDL_CREATE_PROCEDURE", "ddl.create.procedure.native");
     e.opcode_code = 1554; e.requires_transaction_context = true; e.requires_security_context = true;
-    e.result_shape = "management_result"; e.diagnostic_shape = "diagnostic_vector";
+    e.result_shape = "ddl_result"; e.diagnostic_shape = "diagnostic_vector";
     e.parser_package_uuid = session.admitted_parser_package_uuid;
     e.parser_package_version_major = session.admitted_parser_package_version_major;
     e.parser_package_version_minor = session.admitted_parser_package_version_minor;
@@ -13767,7 +13990,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_procedure","SBLR_DDL_DROP_PROCEDURE","ddl.drop.procedure.native"); e.opcode_code=1556;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_procedure_descriptor";o.name="procedure";o.value_kind=c::SblrValueKind::drop_procedure_descriptor;o.value_body=*admitted_ddl_drop_procedure_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
   }
   if (lowered.operation_id == "engine.op.ddl_create_function" && admitted_ddl_create_function_operand != nullptr) {
-    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_create_function","SBLR_DDL_CREATE_FUNCTION","ddl.create.function.native"); e.opcode_code=1557;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_function_descriptor";o.name="function";o.value_kind=c::SblrValueKind::create_function_descriptor;o.value_body=*admitted_ddl_create_function_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_create_function","SBLR_DDL_CREATE_FUNCTION","ddl.create.function.native"); e.opcode_code=1557;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="ddl_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_function_descriptor";o.name="function";o.value_kind=c::SblrValueKind::create_function_descriptor;o.value_body=*admitted_ddl_create_function_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
   }
   if (lowered.operation_id == "engine.op.ddl_alter_function" && admitted_ddl_alter_function_operand != nullptr) {
     namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_alter_function","SBLR_DDL_ALTER_FUNCTION","ddl.create.package.native"); e.opcode_code=1558;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="alter_function_descriptor";o.name="function";o.value_kind=c::SblrValueKind::alter_function_descriptor;o.value_body=*admitted_ddl_alter_function_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
@@ -13795,7 +14018,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_create_synonym","SBLR_DDL_CREATE_SYNONYM","ddl.create.synonym.native"); e.opcode_code=1574;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="ddl_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_synonym_descriptor";o.name="synonym";o.value_kind=c::SblrValueKind::create_synonym_descriptor;o.value_body=*admitted_ddl_create_synonym_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
   }
   if (lowered.operation_id == "engine.op.ddl_drop_synonym" && g_ddl_drop_synonym_operand != nullptr) {
-    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_synonym","SBLR_DDL_DROP_SYNONYM","ddl.drop.synonym.native"); e.opcode_code=1575;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="ddl_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_synonym_descriptor";o.name="synonym";o.value_kind=c::SblrValueKind::drop_package_descriptor;o.value_body=*g_ddl_drop_synonym_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_synonym","SBLR_DDL_DROP_SYNONYM","ddl.drop.synonym.native"); e.opcode_code=1575;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="ddl_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_synonym_descriptor";o.name="synonym";o.value_kind=c::SblrValueKind::drop_synonym_descriptor;o.value_body=*g_ddl_drop_synonym_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
   }
   if (lowered.operation_id == "engine.op.ddl_drop_foreign_table" && g_ddl_drop_foreign_table_operand != nullptr) {
     namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_foreign_table","SBLR_DDL_DROP_FOREIGN_TABLE","ddl.drop.foreign_table.native"); e.opcode_code=1577;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="ddl_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_foreign_table_descriptor";o.name="foreign_table";o.value_kind=c::SblrValueKind::drop_foreign_table_descriptor;o.value_body=*g_ddl_drop_foreign_table_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
@@ -14875,11 +15098,32 @@ std::optional<std::string> DdlResultRowField(std::string_view payload,
 bool IsNameNotFoundDiagnostic(const MessageVectorSet& messages) {
   if (messages.diagnostics.empty()) return false;
   for (const auto& diagnostic : messages.diagnostics) {
-    if (diagnostic.code == "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE") {
+    if (diagnostic.code == "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE" ||
+        diagnostic.code ==
+            "PARSER_SERVER_IPC.NAME_NOT_FOUND_OR_NOT_VISIBLE" ||
+        diagnostic.code ==
+            "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE") {
       return true;
     }
   }
   return false;
+}
+
+void NormalizeNameNotFoundDiagnostic(
+    PublicNameResolutionResult* resolution) {
+  if (resolution == nullptr || resolution->resolved) return;
+  // The SBPS client and embedded bridge use transport-local spellings for
+  // the same deliberately non-disclosing outcome. Project both onto the Core
+  // catalog diagnostic before the SBSQL pipeline publishes it; absent and
+  // hidden names must remain indistinguishable at this boundary.
+  for (auto& diagnostic : resolution->messages.diagnostics) {
+    if (diagnostic.code ==
+            "PARSER_SERVER_IPC.NAME_NOT_FOUND_OR_NOT_VISIBLE" ||
+        diagnostic.code ==
+            "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE") {
+      diagnostic.code = "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE";
+    }
+  }
 }
 
 PipelineResult PipelineResultFromCacheEntry(const CacheEntry& entry) {
@@ -16868,8 +17112,17 @@ BuildCanonicalRegistryEnvelope(
     const SessionContext& session) {
   namespace sblr = scratchbird::engine::sblr;
   const auto* entry = sblr::LookupSblrOperation(operation_id);
+  const bool exact_cluster_provider_refusal =
+      entry != nullptr && operation_id == "cluster.inspect_provider" &&
+      entry->operation_id == operation_id &&
+      entry->opcode == "SBLR_CLUSTER_INSPECT_PROVIDER" &&
+      entry->code == 2877 && entry->operand_contract == "none" &&
+      entry->result_contract == "cluster_provider_inspection_result" &&
+      entry->support == sblr::SblrOpcodeSupport::cluster_refusal &&
+      entry->requires_cluster_authority;
   if (entry == nullptr || entry->code == 0 ||
-      entry->support != sblr::SblrOpcodeSupport::implemented ||
+      (entry->support != sblr::SblrOpcodeSupport::implemented &&
+       !exact_cluster_provider_refusal) ||
       entry->operation_id != operation_id || entry->opcode.empty()) {
     return std::nullopt;
   }
@@ -17463,6 +17716,73 @@ BuildCanonicalRouteTextSubmission(
                                                     session);
 }
 
+std::optional<ParserCanonicalSblrSubmission>
+BuildCanonicalTransactionCharacteristicsSubmission(
+    const SblrEnvelope& lowered,
+    const ParserStatementContext& statement_context,
+    const SessionContext& session) {
+  if (lowered.operation_family != "sblr.transaction.control.v3" ||
+      lowered.operation_id != "transaction.set_characteristics" ||
+      lowered.sblr_opcode != "SBLR_TRANSACTION_SET_CHARACTERISTICS") {
+    return std::nullopt;
+  }
+
+  const auto read_mode =
+      ReadLoweredJsonStringField(lowered.payload, "transaction_read_mode");
+  const auto read_only =
+      ReadLoweredJsonStringField(lowered.payload, "transaction_read_only");
+  const auto isolation = ReadLoweredJsonStringField(
+      lowered.payload, "transaction_isolation_level");
+  const bool read_mode_valid =
+      read_mode.present && read_mode.valid &&
+      (read_mode.value == "read_write" || read_mode.value == "read_only");
+  const bool read_only_valid =
+      read_only.present && read_only.valid &&
+      (read_only.value == "true" || read_only.value == "false") &&
+      ((read_mode.value == "read_only") == (read_only.value == "true"));
+  const bool isolation_valid =
+      isolation.present && isolation.valid &&
+      (isolation.value == "read_committed" ||
+       isolation.value == "read_consistency" ||
+       isolation.value == "repeatable_read" ||
+       isolation.value == "serializable" || isolation.value == "snapshot");
+  if (!read_mode_valid || !read_only_valid || !isolation_valid ||
+      lowered.payload.find(
+          "\"transaction_envelope_kind\":\"transaction_characteristics\"") ==
+          std::string::npos ||
+      lowered.payload.find(
+          "\"transaction_characteristics_kind\":\"session_defaults\"") ==
+          std::string::npos ||
+      lowered.payload.find("\"mga_transaction_context_required\":false") ==
+          std::string::npos ||
+      lowered.payload.find("\"parser_updates_session_state\":false") ==
+          std::string::npos) {
+    return std::nullopt;
+  }
+
+  auto envelope = BuildCanonicalRegistryEnvelope(
+      "transaction.set_characteristics", statement_context, session);
+  if (!envelope ||
+      envelope->opcode != "SBLR_TRANSACTION_SET_CHARACTERISTICS" ||
+      envelope->opcode_code != 265 || !envelope->operands.empty()) {
+    return std::nullopt;
+  }
+  if (!AppendCanonicalRouteTextOperand(&*envelope, statement_context, "text",
+                                       "transaction_read_mode",
+                                       read_mode.value) ||
+      !AppendCanonicalRouteTextOperand(&*envelope, statement_context, "text",
+                                       "transaction_read_only",
+                                       read_only.value) ||
+      !AppendCanonicalRouteTextOperand(&*envelope, statement_context, "text",
+                                       "transaction_isolation_level",
+                                       isolation.value)) {
+    return std::nullopt;
+  }
+  return BuildCanonicalRegistryOperationSubmission(*envelope,
+                                                    statement_context,
+                                                    session);
+}
+
 void AppendRouteTextOperand(std::string* out, std::string_view name, std::string_view value) {
   if (out == nullptr) return;
   *out += "operand=text\t";
@@ -17470,6 +17790,246 @@ void AppendRouteTextOperand(std::string* out, std::string_view name, std::string
   *out += "\t";
   *out += EscapeRouteOperandField(value);
   *out += "\n";
+}
+
+struct LoweredJsonBooleanField {
+  bool present{false};
+  bool valid{true};
+  bool value{false};
+};
+
+LoweredJsonBooleanField ReadLoweredJsonBooleanField(
+    std::string_view encoded, std::string_view key) {
+  LoweredJsonBooleanField field;
+  const std::string prefix = "\"" + std::string(key) + "\":";
+  std::size_t search = 0;
+  while (search < encoded.size()) {
+    const auto found = encoded.find(prefix, search);
+    if (found == std::string_view::npos) break;
+    if (field.present ||
+        (found != 0 && encoded[found - 1] != '{' &&
+         encoded[found - 1] != ',')) {
+      field.valid = false;
+      return field;
+    }
+    field.present = true;
+    const auto value_begin = found + prefix.size();
+    std::size_t value_end = value_begin;
+    if (encoded.substr(value_begin).starts_with("true")) {
+      field.value = true;
+      value_end += 4;
+    } else if (encoded.substr(value_begin).starts_with("false")) {
+      field.value = false;
+      value_end += 5;
+    } else {
+      field.valid = false;
+      return field;
+    }
+    if (value_end >= encoded.size() ||
+        (encoded[value_end] != ',' && encoded[value_end] != '}')) {
+      field.valid = false;
+      return field;
+    }
+    search = value_end + 1;
+  }
+  return field;
+}
+
+struct ExactAnonymousParameterProjectionRoute {
+  std::string output_name;
+};
+
+std::optional<ExactAnonymousParameterProjectionRoute>
+DecodeExactAnonymousParameterProjectionRoute(const SblrEnvelope& lowered) {
+  if (lowered.operation_id != "query.evaluate_projection" ||
+      lowered.sblr_opcode != "SBLR_QUERY_EVALUATE_PROJECTION" ||
+      lowered.operation_family != "sblr.query.relational.v3") {
+    return std::nullopt;
+  }
+
+  const auto envelope_kind =
+      ReadLoweredJsonStringField(lowered.payload, "query_envelope_kind");
+  const auto projection_count =
+      ReadLoweredJsonStringField(lowered.payload, "projection_count");
+  const auto name =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_name");
+  const auto expression_kind = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_expr_kind");
+  const auto expression_opcode = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_expr_opcode");
+  const auto lowered_type =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_type");
+  const auto lowered_value =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_value");
+  const auto is_null =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_is_null");
+  const auto literal_family = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_literal_family");
+  const auto descriptor_kind = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_parameter_descriptor_kind");
+  const auto marker_kind = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_parameter_marker_kind");
+  const auto parameter_ordinal = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_parameter_ordinal");
+  const auto parameter_type = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_parameter_type");
+  const auto value_embedded = ReadLoweredJsonBooleanField(
+      lowered.payload, "projection_0_parameter_value_embedded");
+  const auto parser_bound = ReadLoweredJsonBooleanField(
+      lowered.payload, "projection_0_parser_bound_parameter_value");
+  const auto name_text = ReadLoweredJsonBooleanField(
+      lowered.payload, "projection_0_parameter_name_text_included");
+  const auto all_strings_valid =
+      envelope_kind.valid && projection_count.valid && name.valid &&
+      expression_kind.valid && expression_opcode.valid &&
+      lowered_type.valid && lowered_value.valid && is_null.valid &&
+      literal_family.valid && descriptor_kind.valid && marker_kind.valid &&
+      parameter_ordinal.valid && parameter_type.valid;
+  if (!all_strings_valid || !value_embedded.valid || !parser_bound.valid ||
+      !name_text.valid || !envelope_kind.present ||
+      envelope_kind.value != "scalar_projection" ||
+      !projection_count.present || projection_count.value != "1" ||
+      !name.present || name.value.empty() ||
+      !expression_kind.present || expression_kind.value != "parameter" ||
+      !expression_opcode.present ||
+      expression_opcode.value != "SBLR_PARAMETER_DESCRIPTOR" ||
+      !lowered_type.present || lowered_type.value != "unknown" ||
+      !lowered_value.present || !lowered_value.value.empty() ||
+      !is_null.present || is_null.value != "false" ||
+      !literal_family.present ||
+      literal_family.value != "anonymous_parameter" ||
+      !descriptor_kind.present || descriptor_kind.value != "input" ||
+      !marker_kind.present || marker_kind.value != "anonymous" ||
+      !parameter_ordinal.present || parameter_ordinal.value != "1" ||
+      !parameter_type.present || parameter_type.value != "unknown" ||
+      !value_embedded.present || value_embedded.value ||
+      !parser_bound.present || parser_bound.value ||
+      !name_text.present || name_text.value) {
+    return std::nullopt;
+  }
+  return ExactAnonymousParameterProjectionRoute{name.value};
+}
+
+std::optional<std::string>
+BuildCanonicalParameterProjectionRouteTextEnvelope(
+    const SblrEnvelope& lowered,
+    const ParameterPrebindState& parameter_prebind) {
+  if (lowered.operation_id != "query.evaluate_projection" ||
+      lowered.sblr_opcode != "SBLR_QUERY_EVALUATE_PROJECTION" ||
+      lowered.operation_family != "sblr.query.relational.v3" ||
+      parameter_prebind.demand.demands.size() != 1 ||
+      parameter_prebind.mapping.mappings.size() != 1) {
+    return std::nullopt;
+  }
+
+  const auto envelope_kind =
+      ReadLoweredJsonStringField(lowered.payload, "query_envelope_kind");
+  const auto projection_count =
+      ReadLoweredJsonStringField(lowered.payload, "projection_count");
+  const auto name =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_name");
+  const auto expression_kind = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_expr_kind");
+  const auto expression_opcode = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_expr_opcode");
+  const auto lowered_type =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_type");
+  const auto lowered_value =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_value");
+  const auto is_null =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_is_null");
+  const auto literal_family = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_literal_family");
+  const auto descriptor_kind = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_parameter_descriptor_kind");
+  const auto marker_kind = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_parameter_marker_kind");
+  const auto parameter_ordinal = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_parameter_ordinal");
+  const auto parameter_type = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_parameter_type");
+  const auto value_embedded = ReadLoweredJsonBooleanField(
+      lowered.payload, "projection_0_parameter_value_embedded");
+  const auto parser_bound = ReadLoweredJsonBooleanField(
+      lowered.payload, "projection_0_parser_bound_parameter_value");
+  const auto name_text = ReadLoweredJsonBooleanField(
+      lowered.payload, "projection_0_parameter_name_text_included");
+  const auto all_strings_valid =
+      envelope_kind.valid && projection_count.valid && name.valid &&
+      expression_kind.valid && expression_opcode.valid &&
+      lowered_type.valid && lowered_value.valid && is_null.valid &&
+      literal_family.valid && descriptor_kind.valid && marker_kind.valid &&
+      parameter_ordinal.valid && parameter_type.valid;
+  if (!all_strings_valid || !value_embedded.valid || !parser_bound.valid ||
+      !name_text.valid || !envelope_kind.present ||
+      envelope_kind.value != "scalar_projection" ||
+      !projection_count.present || projection_count.value != "1" ||
+      !name.present || name.value.empty() ||
+      !expression_kind.present || expression_kind.value != "parameter" ||
+      !expression_opcode.present ||
+      expression_opcode.value != "SBLR_PARAMETER_DESCRIPTOR" ||
+      !lowered_type.present || lowered_type.value != "unknown" ||
+      !lowered_value.present || !lowered_value.value.empty() ||
+      !is_null.present || is_null.value != "false" ||
+      !literal_family.present ||
+      literal_family.value != "anonymous_parameter" ||
+      !descriptor_kind.present || descriptor_kind.value != "input" ||
+      !marker_kind.present || marker_kind.value != "anonymous" ||
+      !parameter_ordinal.present || parameter_ordinal.value != "1" ||
+      !parameter_type.present || parameter_type.value != "unknown" ||
+      !value_embedded.present || value_embedded.value ||
+      !parser_bound.present || parser_bound.value ||
+      !name_text.present || name_text.value) {
+    return std::nullopt;
+  }
+
+  const auto& demand = parameter_prebind.demand.demands.front();
+  const auto& mapping = parameter_prebind.mapping.mappings.front();
+  const auto int64_type =
+      CanonicalUuidBytes("019d0000-0000-7000-8000-00000000d712");
+  if (!int64_type || demand.occurrence_id != 1 ||
+      demand.marker_ordinal != 1 || demand.context_code != 1 ||
+      demand.requested_direction != 1 || demand.nullable_demand != 0 ||
+      mapping.occurrence_id != demand.occurrence_id ||
+      mapping.slot_ordinal != 0 ||
+      mapping.datatype_type_uuid != *int64_type ||
+      mapping.datatype_descriptor_generation == 0 ||
+      mapping.direction != demand.requested_direction ||
+      mapping.nullable != demand.nullable_demand) {
+    return std::nullopt;
+  }
+
+  std::string route =
+      "operation_id=query.evaluate_projection\n"
+      "opcode=SBLR_QUERY_EVALUATE_PROJECTION\n";
+  AppendRouteTextOperand(&route, "projection_count", "1");
+  AppendRouteTextOperand(&route, "projection_0_name", name.value);
+  AppendRouteTextOperand(&route, "projection_0_expr_kind", "parameter");
+  AppendRouteTextOperand(&route, "projection_0_expr_opcode",
+                         "SBLR_PARAMETER_DESCRIPTOR");
+  // Context code 1 is the engine-owned non-null int64 parameter profile.
+  // The parser's pre-negotiation `unknown` marker is not executable type
+  // authority and is replaced only after the returned type UUID is checked.
+  AppendRouteTextOperand(&route, "projection_0_type", "int64");
+  AppendRouteTextOperand(&route, "projection_0_value", "");
+  AppendRouteTextOperand(&route, "projection_0_is_null", "false");
+  AppendRouteTextOperand(&route, "projection_0_literal_family",
+                         "anonymous_parameter");
+  AppendRouteTextOperand(&route, "projection_0_parameter_descriptor_kind",
+                         "input");
+  AppendRouteTextOperand(&route, "projection_0_parameter_marker_kind",
+                         "anonymous");
+  AppendRouteTextOperand(&route, "projection_0_parameter_ordinal", "1");
+  AppendRouteTextOperand(&route, "projection_0_parameter_type", "int64");
+  AppendRouteTextOperand(&route, "projection_0_parameter_value_embedded",
+                         "false");
+  AppendRouteTextOperand(&route,
+                         "projection_0_parser_bound_parameter_value",
+                         "false");
+  AppendRouteTextOperand(&route,
+                         "projection_0_parameter_name_text_included",
+                         "false");
+  return route;
 }
 
 std::string HexEncodeRouteText(std::string_view value) {
@@ -17498,6 +18058,7 @@ struct FastInsertValuesRoutePlan {
 
 struct FastCopyFromStdinRoutePlan {
   ObjectReference target;
+  std::vector<std::pair<std::string, bool>> target_name_atoms;
   std::string format_family{"csv"};
   bool copy_options_present{false};
   bool copy_header_option{false};
@@ -17514,12 +18075,16 @@ public:
 
     std::vector<std::string> target_parts;
     bool target_quoted = false;
-    if (!ConsumeQualifiedNameParts(&target_parts, &target_quoted)) return std::nullopt;
+    if (!ConsumeQualifiedNameParts(&target_parts, &target_quoted,
+                                   &plan_target_name_atoms_)) {
+      return std::nullopt;
+    }
 
     if (!ConsumeKeyword("FROM")) return std::nullopt;
     if (!ConsumeKeyword("STDIN")) return std::nullopt;
 
     FastCopyFromStdinRoutePlan plan;
+    plan.target_name_atoms = std::move(plan_target_name_atoms_);
     plan.target.presented_name = JoinRouteNameParts(target_parts, 0, target_parts.size());
     plan.target.quoted = target_quoted;
     plan.target.object_class = "relation";
@@ -17631,15 +18196,20 @@ private:
     return true;
   }
 
-  bool ConsumeQualifiedNameParts(std::vector<std::string>* parts, bool* quoted) {
-    if (parts == nullptr || quoted == nullptr) return false;
+  bool ConsumeQualifiedNameParts(
+      std::vector<std::string>* parts,
+      bool* quoted,
+      std::vector<std::pair<std::string, bool>>* atoms) {
+    if (parts == nullptr || quoted == nullptr || atoms == nullptr) return false;
     parts->clear();
+    atoms->clear();
     *quoted = false;
     for (;;) {
       std::string part;
       bool part_quoted = false;
       if (!ConsumeIdentifier(&part, &part_quoted)) return false;
       *quoted = *quoted || part_quoted;
+      atoms->emplace_back(part, part_quoted);
       parts->push_back(std::move(part));
       SkipTrivia();
       if (pos_ >= sql_.size() || sql_[pos_] != '.') break;
@@ -17647,6 +18217,8 @@ private:
     }
     return !parts->empty();
   }
+
+  std::vector<std::pair<std::string, bool>> plan_target_name_atoms_;
 
   bool ConsumeSingleQuoted(std::string* out) {
     if (out == nullptr) return false;
@@ -18453,21 +19025,20 @@ std::string BuildFastInsertNativeBulkEnvelope(
 
 std::string BuildFastCopyPlanJsonPayload(
     const FastCopyFromStdinRoutePlan& plan,
-    std::string_view target_object_uuid,
     std::uint64_t statement_hash) {
   std::string out = "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
   out += "\"operation_family\":\"sblr.dml.operation.v3\",";
   out += "\"surface_key\":\"copy_import_export\",";
   out += "\"command_family\":\"dml\",";
-  out += "\"operation_id\":\"dml.plan_import_rows\",";
-  out += "\"engine_api_operation_id\":\"dml.plan_import_rows\",";
-  out += "\"sblr_operation\":\"SBLR_DML_PLAN_IMPORT_ROWS\",";
+  out += "\"operation_id\":\"engine.op.bulk_import_stream\",";
+  out += "\"engine_api_operation_id\":\"engine.op.bulk_import_stream\",";
+  out += "\"sblr_operation\":\"SBLR_BULK_IMPORT_STREAM\",";
   out += "\"statement_surface_name\":\"copy_import_export\",";
   out += "\"sblr_operation_key\":\"sblr.dml.operation.v3\",";
-  out += "\"result_shape\":\"engine.api.result.v1\",";
-  out += "\"diagnostic_shape\":\"engine.diagnostic.v1\",";
+  out += "\"result_shape\":\"bulk_mutation_result\",";
+  out += "\"diagnostic_shape\":\"diagnostic_vector\",";
   out += "\"resource_contract\":\"resource.contract.dml.import.v1\",";
-  out += "\"trace_key\":\"sbsql.parser.fast_copy.plan_import\",";
+  out += "\"trace_key\":\"sbsql.parser.fast_copy.stream\",";
   out += "\"statement_hash\":";
   out += std::to_string(statement_hash);
   out += ",\"catalog_epoch\":0,\"security_policy_epoch\":0,\"descriptor_epoch\":0,";
@@ -18475,11 +19046,9 @@ std::string BuildFastCopyPlanJsonPayload(
   out += "\"source_payload_embedded\":false,";
   out += "\"real_file_effects\":false,";
   out += "\"parser_executes_sql\":false,";
-  out += "\"import_execution_deferred\":true,";
+  out += "\"import_execution_deferred\":false,";
   out += "\"target_object_kind\":\"table\",";
-  out += "\"target_object_uuid\":\"";
-  out += EscapeJson(target_object_uuid);
-  out += "\",\"source_kind\":\"native_sbsql_import\",";
+  out += "\"source_kind\":\"native_sbsql_import\",";
   out += "\"format_family\":\"";
   out += EscapeJson(plan.format_family);
   out += "\",\"copy_options_present\":";
@@ -18492,19 +19061,17 @@ std::string BuildFastCopyPlanJsonPayload(
   out += "\"parser_authorizes\":false,";
   out += "\"name_text_included\":false,";
   out += "\"sql_text_included\":false,";
-  out += "\"resolved_object_uuids\":[\"";
-  out += EscapeJson(target_object_uuid);
-  out += "\"],";
-  out += "\"descriptor_refs\":[\"sys.storage.row_descriptor\",\"sys.import.plan_descriptor\"],";
+  out += "\"resolved_object_uuids\":[],";
+  out += "\"descriptor_refs\":[\"sys.storage.row_descriptor\",\"sys.import.stream_descriptor\"],";
   out += "\"policy_refs\":[\"import_planning_authorization_policy\"],";
   out += "\"required_rights\":[\"right.write\"],";
   out += "\"required_authority_steps\":[";
   out += "\"authority.parser.syntax_evidence_only\",";
-  out += "\"authority.server.resolve_name_registry_public\",";
+  out += "\"authority.engine.bind_statement_bulk_import_v1\",";
   out += "\"authority.server.security_policy_context_required\",";
   out += "\"authority.server.transaction_context_required\",";
-  out += "\"authority.engine.import_planning_api_required\",";
-  out += "\"authority.parser.no_storage_or_finality\",";
+  out += "\"authority.engine.import_stream_api_required\",";
+  out += "\"authority.parser.opaque_durable_chunks_before_copy_done\",";
   out += "\"authority.parser.no_sql_text_execution\"]}";
   return out;
 }
@@ -18900,26 +19467,6 @@ std::optional<ServerManagementCommand> ParseServerManagementCommand(std::string_
   return command;
 }
 
-std::string ChunkedParserJsonEnvelope(std::size_t parameter_bytes,
-                                      std::uint64_t result_rows) {
-  std::string out = "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
-  out += "\"operation_family\":\"sblr.query.relational.v3\",";
-  out += "\"surface_key\":\"fspe010b4.chunked_payload\",";
-  out += "\"sblr_operation_key\":\"op.fspe010b4.chunked_payload\",";
-  out += "\"result_shape\":\"rs.fspe010b4.large_result.v1\",";
-  out += "\"diagnostic_shape\":\"diag.fspe010b4.v1\",";
-  out += "\"resource_contract\":\"resource.fspe010b4.v1\",";
-  out += "\"trace_key\":\"FSPE-010B4\",";
-  out += "\"stream_row_count\":";
-  out += std::to_string(result_rows);
-  out += ",\"source_payload_embedded\":false,";
-  out += "\"resolved_object_uuids\":[],\"descriptor_refs\":[],\"policy_refs\":[],";
-  out += "\"parameter_packet\":\"";
-  out.append(parameter_bytes, 'x');
-  out += "\"}";
-  return out;
-}
-
 std::string CopyStreamParserJsonEnvelope(std::string_view kind,
                                          std::uint64_t total_rows,
                                          std::uint64_t reject_rows) {
@@ -19040,26 +19587,6 @@ std::string RoutineCursorArgumentJsonEnvelope(std::string_view cursor_uuid) {
   out += "\"policy_refs\":[\"routine_cursor_session_registry_policy\",";
   out += "\"routine_cursor_security_recheck_policy\"]}";
   return out;
-}
-
-std::string EngineShowVersionOperationEnvelope() {
-  std::string out;
-  out += "operation_id=observability.show_version\n";
-  out += "opcode=SBLR_OBSERVABILITY_SHOW_VERSION\n";
-  out += "sblr_operation_family=sblr.observability.inspect.v3\n";
-  out += "result_shape=engine.api.result.v1\n";
-  out += "diagnostic_shape=engine.diagnostic.v1\n";
-  out += "trace_key=FSPE-010B3\n";
-  out += "contains_sql_text=false\n";
-  out += "parser_resolved_names_to_uuids=true\n";
-  out += "requires_security_context=true\n";
-  out += "requires_transaction_context=false\n";
-  out += "requires_cluster_authority=false\n";
-  const auto binary = scratchbird::engine::sblr::EnvelopeBuilder()
-                          .operation(scratchbird::engine::SblrOperationFamily::management_inspect, 1)
-                          .append_bytes(reinterpret_cast<const std::uint8_t*>(out.data()), out.size())
-                          .encode();
-  return std::string(reinterpret_cast<const char*>(binary.data()), binary.size());
 }
 
 std::string ExactOperationEnvelope(std::string_view operation_id,
@@ -20691,6 +21218,8 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
     occurrence.relation_descriptor_generation = 1;
     occurrence.column_uuid = column;
     occurrence.column_ordinal = 2;
+    occurrence.target_datatype_descriptor_uuid =
+        std::string(kTextDescriptorUuid);
     occurrence.target_collation_uuid = collation;
     occurrence.target_character_length = 256;
     occurrence.raw_token = {'\'', 'x', '\''};
@@ -21851,6 +22380,175 @@ std::string AuthoritativeMultiSourceProjectionProofDetailForTest() {
   return g_authoritative_multi_source_projection_proof_detail;
 }
 
+struct SbsqlTestWireSession::HeldBulkImportStream {
+  enum class Phase : std::uint8_t {
+    binding = 0,
+    coordinating = 1,
+    ready = 2,
+    streaming = 3,
+    seal_pending = 4,
+    sealed = 5,
+    result_recorded = 6,
+  };
+
+  ipc::ParserStatementContext statement_context;
+  ipc::ParserCanonicalSblrSubmission submission;
+  scratchbird::engine::sblr::SblrBulkImportStreamDescriptorV1 descriptor;
+  scratchbird::wire::sbps_bulk_import::Bind bind_request;
+  scratchbird::wire::sbps_bulk_import::BindAck binding;
+  std::vector<std::uint8_t> canonical_birq;
+  std::vector<std::uint8_t> canonical_bird;
+  std::vector<std::uint8_t> canonical_biro;
+  scratchbird::wire::sbps_bulk_import::Uuid receipt_uuid{};
+  scratchbird::wire::sbps_bulk_import::Uuid stream_uuid{};
+  std::uint64_t stream_generation{0};
+  std::uint64_t structural_occurrence{1};
+  std::uint32_t import_occurrence{1};
+  scratchbird::wire::sbps_bulk_import::Hash256 descriptor_evidence{};
+  scratchbird::wire::sbps_bulk_import::Hash256 previous_chain_sha256{};
+  std::uint64_t next_chunk_sequence{1};
+  std::uint64_t accepted_total_bytes{0};
+  std::uint64_t accepted_chunk_count{0};
+  std::uint64_t durable_spool_generation{0};
+  std::FILE* content_spool{nullptr};
+  std::optional<scratchbird::wire::sbps_bulk_import::Chunk> pending_chunk;
+  std::optional<scratchbird::wire::sbps_bulk_import::ChunkAck>
+      pending_chunk_ack;
+  std::optional<scratchbird::wire::sbps_bulk_import::Seal> pending_seal;
+  std::optional<PipelineResult> terminal_result;
+  Phase phase{Phase::binding};
+  bool autocommit_emulation{false};
+  bool autocommit_complete{false};
+  bool definitively_refused{false};
+
+  ~HeldBulkImportStream() {
+    if (content_spool != nullptr) {
+      std::fclose(content_spool);
+    }
+  }
+};
+
+namespace {
+
+template <std::size_t N>
+std::uint64_t BulkImportReadU64(const std::array<std::uint8_t, N>& body,
+                                std::size_t offset) {
+  if (offset > N || N - offset < 8) {
+    return 0;
+  }
+  std::uint64_t value = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    value |= static_cast<std::uint64_t>(body[offset + index]) <<
+             (index * 8U);
+  }
+  return value;
+}
+
+template <std::size_t Extent, std::size_t BodyExtent>
+std::array<std::uint8_t, Extent> BulkImportReadFixed(
+    const std::array<std::uint8_t, BodyExtent>& body,
+    std::size_t offset) {
+  std::array<std::uint8_t, Extent> value{};
+  if (offset > BodyExtent || BodyExtent - offset < Extent) {
+    return value;
+  }
+  std::copy_n(body.begin() + offset, Extent, value.begin());
+  return value;
+}
+
+PipelineResult BulkImportLifecycleRefusal(std::string code,
+                                          std::string detail) {
+  PipelineResult result;
+  result.statement_family = "dml.import";
+  result.operation_family = "sblr.dml.operation.v3";
+  result.server_operation_id = "engine.op.bulk_import_stream";
+  result.messages.diagnostics.push_back(MakeDiagnostic(
+      std::move(code), "ERROR", std::move(detail), "sbp_sbsql.wire"));
+  return result;
+}
+
+bool AppendBulkImportContentSpool(std::FILE* spool,
+                                  std::uint64_t byte_offset,
+                                  const std::vector<std::uint8_t>& payload) {
+  if (spool == nullptr || payload.empty() ||
+      byte_offset > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max())) {
+    return false;
+  }
+#ifdef _WIN32
+  if (_fseeki64(spool, static_cast<__int64>(byte_offset), SEEK_SET) != 0) {
+    return false;
+  }
+#else
+  if (fseeko(spool, static_cast<off_t>(byte_offset), SEEK_SET) != 0) {
+    return false;
+  }
+#endif
+  std::size_t written = 0;
+  while (written < payload.size()) {
+    const auto count = std::fwrite(payload.data() + written, 1,
+                                   payload.size() - written, spool);
+    if (count == 0) {
+      return false;
+    }
+    written += count;
+  }
+  return std::fflush(spool) == 0;
+}
+
+std::optional<scratchbird::wire::sbps_bulk_import::Hash256>
+HashBulkImportContentSpool(std::FILE* spool, std::uint64_t total_bytes) {
+  using Hash = scratchbird::wire::sbps_bulk_import::Hash256;
+  if (spool == nullptr || total_bytes == 0 ||
+      std::fflush(spool) != 0 || std::fseek(spool, 0, SEEK_SET) != 0) {
+    return std::nullopt;
+  }
+  EVP_MD_CTX* context = EVP_MD_CTX_new();
+  if (context == nullptr) {
+    return std::nullopt;
+  }
+  const auto free_context = [&]() { EVP_MD_CTX_free(context); };
+  static constexpr char kDomain[] =
+      "ScratchBird.BulkImportStreamContent.V1";
+  std::array<std::uint8_t, 8> total_le{};
+  for (std::size_t index = 0; index < total_le.size(); ++index) {
+    total_le[index] =
+        static_cast<std::uint8_t>(total_bytes >> (index * 8U));
+  }
+  if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1 ||
+      EVP_DigestUpdate(context, kDomain, sizeof(kDomain) - 1) != 1 ||
+      EVP_DigestUpdate(context, total_le.data(), total_le.size()) != 1) {
+    free_context();
+    return std::nullopt;
+  }
+  std::vector<std::uint8_t> buffer(1024U * 1024U);
+  std::uint64_t consumed = 0;
+  while (consumed < total_bytes) {
+    const auto requested = static_cast<std::size_t>(std::min<std::uint64_t>(
+        buffer.size(), total_bytes - consumed));
+    const auto read = std::fread(buffer.data(), 1, requested, spool);
+    if (read != requested ||
+        EVP_DigestUpdate(context, buffer.data(), read) != 1) {
+      free_context();
+      return std::nullopt;
+    }
+    consumed += read;
+  }
+  if (std::fgetc(spool) != EOF) {
+    free_context();
+    return std::nullopt;
+  }
+  Hash digest{};
+  unsigned int digest_size = 0;
+  const bool finalized =
+      EVP_DigestFinal_ex(context, digest.data(), &digest_size) == 1 &&
+      digest_size == digest.size();
+  free_context();
+  return finalized ? std::optional<Hash>(digest) : std::nullopt;
+}
+
+}  // namespace
+
 SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache)
     : config_(std::move(config)), metrics_(metrics), cache_(cache) {
   if (config_.embedded_engine_direct) {
@@ -21863,6 +22561,688 @@ SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* m
 }
 
 SbsqlTestWireSession::~SbsqlTestWireSession() = default;
+
+bool SbsqlTestWireSession::HasHeldBulkImportStreamForWire() const {
+  return held_bulk_import_stream_ != nullptr;
+}
+
+void SbsqlTestWireSession::AbandonBulkImportStreamForWire() {
+  held_bulk_import_stream_.reset();
+}
+
+PipelineResult SbsqlTestWireSession::BeginBulkImportStreamForWire(
+    std::string_view command_surface_id,
+    const std::vector<std::pair<std::string, bool>>& target_name_atoms,
+    bool autocommit_emulation) {
+  namespace bulk = scratchbird::wire::sbps_bulk_import;
+  namespace sblr = scratchbird::engine::sblr;
+
+  if (!session_.authenticated || !HasExecutionRoute()) {
+    return BulkImportLifecycleRefusal(
+        "SECURITY.ACCESS_DENIED",
+        "COPY stream binding requires an authenticated engine route");
+  }
+  if (command_surface_id != "SBSQL-465931ED7427" &&
+      command_surface_id != "SBSQL-4F912014EA85") {
+    return BulkImportLifecycleRefusal(
+        "SBLR.OPERAND_INVALID",
+        "COPY stream binding requires one admitted central command identity");
+  }
+
+  std::vector<bulk::BindTargetNameAtom> atoms;
+  atoms.reserve(target_name_atoms.size());
+  for (const auto& [raw_utf8, quoted] : target_name_atoms) {
+    atoms.push_back({raw_utf8, quoted});
+  }
+  std::vector<std::uint8_t> encoded_atoms;
+  std::string detail;
+  if (!bulk::EncodeBindTargetNameAtoms(atoms, &encoded_atoms, &detail)) {
+    return BulkImportLifecycleRefusal(
+        "SBLR.OPERAND_INVALID",
+        detail.empty() ? "COPY target-name atoms are malformed" : detail);
+  }
+
+  const bool embedded_route =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!embedded_route && server_client_ == nullptr) {
+    return BulkImportLifecycleRefusal(
+        "SECURITY.ACCESS_DENIED",
+        "COPY stream binding requires one live engine route");
+  }
+
+  if (held_bulk_import_stream_ != nullptr) {
+    const auto& held = *held_bulk_import_stream_;
+    if (held.bind_request.command_surface_id != command_surface_id ||
+        held.bind_request.target_name_atom_vector != encoded_atoms ||
+        held.autocommit_emulation != autocommit_emulation ||
+        held.definitively_refused ||
+        held.phase > HeldBulkImportStream::Phase::ready) {
+      return BulkImportLifecycleRefusal(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "a held COPY lifecycle may only resume its exact bind/allocation demand");
+    }
+    if (held.phase == HeldBulkImportStream::Phase::ready) {
+      PipelineResult result;
+      result.accepted = true;
+      result.statement_family = "dml.import";
+      result.operation_family = "sblr.dml.operation.v3";
+      result.server_operation_id = "engine.op.bulk_import_stream";
+      return result;
+    }
+  } else {
+    ParserTransactionSelector selector{session_.local_transaction_id,
+                                       session_.transaction_uuid};
+    ipc::ServerStatementContextResult acquired;
+    if (embedded_route) {
+      acquired =
+          embedded_client_->AcquireNativeStatementContext(session_, selector);
+    } else {
+      acquired =
+          server_client_->AcquireNativeStatementContext(session_, selector);
+    }
+    if (!acquired.accepted) {
+      PipelineResult result = BulkImportLifecycleRefusal(
+          "MGA.TRANSACTION_INVALID",
+          "COPY stream binding requires one live engine statement context");
+      result.messages = std::move(acquired.messages);
+      if (!result.messages.has_errors()) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "MGA.TRANSACTION_INVALID", "ERROR",
+            "COPY stream binding requires one live engine statement context",
+            "sbp_sbsql.wire"));
+      }
+      return result;
+    }
+
+    const auto receipt =
+        CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+    if (!receipt.has_value() ||
+        acquired.context
+                .preliminary_bulk_import_stream_executor_availability_generation ==
+            0) {
+      return BulkImportLifecycleRefusal(
+          "MGA.AUTHORITY_MISMATCH",
+          "the engine statement context lacks exact COPY stream authority");
+    }
+
+    bulk::Bind bind;
+    bind.authenticated_receipt_uuid = *receipt;
+    bind.command_surface_id = std::string(command_surface_id);
+    bind.structural_occurrence = 1;
+    bind.import_occurrence = 1;
+    bind.target_name_atom_vector = std::move(encoded_atoms);
+    bind.input_format_demand = 1;
+    bind.character_encoding_demand = 1;
+    bind.conversion_policy_demand = 1;
+    bind.null_default_policy_demand = 1;
+    bind.reject_policy_demand = 1;
+    bind.maximum_rejected_rows = 0;
+    bind.syntax_demand_sha256 = bulk::BindDemandEvidence(bind);
+
+    sblr::SblrBulkImportStreamRequestV1 request;
+    request.receipt = *receipt;
+    request.occurrence = bind.structural_occurrence;
+    request.import_occurrence = bind.import_occurrence;
+    auto canonical_birq =
+        sblr::EncodeSblrBulkImportStreamRequestV1(request);
+    if (canonical_birq.size() != sblr::BulkImportWireLayout::request_size) {
+      return BulkImportLifecycleRefusal(
+          "SBLR.OPERAND_INVALID",
+          "the canonical COPY allocation request could not be encoded");
+    }
+
+    auto pending_held = std::make_unique<HeldBulkImportStream>();
+    pending_held->content_spool = std::tmpfile();
+    if (pending_held->content_spool == nullptr) {
+      return BulkImportLifecycleRefusal(
+          "RESOURCE.BUDGET_EXCEEDED",
+          "the parser could not allocate its opaque COPY content-hash spool");
+    }
+    pending_held->statement_context = acquired.context;
+    pending_held->bind_request = std::move(bind);
+    pending_held->canonical_birq = std::move(canonical_birq);
+    pending_held->receipt_uuid = *receipt;
+    pending_held->structural_occurrence =
+        pending_held->bind_request.structural_occurrence;
+    pending_held->import_occurrence =
+        pending_held->bind_request.import_occurrence;
+    pending_held->autocommit_emulation = autocommit_emulation;
+    pending_held->autocommit_complete = !autocommit_emulation;
+    held_bulk_import_stream_ = std::move(pending_held);
+  }
+
+  auto& held = *held_bulk_import_stream_;
+  if (held.phase == HeldBulkImportStream::Phase::binding) {
+    auto bound = embedded_route
+                     ? embedded_client_->BindBulkImportStream(
+                           session_, held.bind_request)
+                     : server_client_->BindBulkImportStream(
+                           session_, held.bind_request);
+    if (!bound.accepted) {
+      PipelineResult result = BulkImportLifecycleRefusal(
+          bound.outcome_unknown ? "BULK.IMPORT.RECOVERY_CONFLICT"
+                                : "BULK.IMPORT.ABORTED",
+          bound.outcome_unknown
+              ? "the COPY bind outcome is unknown; retry the exact bind demand"
+              : "the engine refused the COPY bind demand");
+      result.outcome_unknown = bound.outcome_unknown;
+      result.messages = std::move(bound.messages);
+      if (!result.messages.has_errors()) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            bound.outcome_unknown ? "BULK.IMPORT.RECOVERY_CONFLICT"
+                                  : "BULK.IMPORT.ABORTED",
+            "ERROR",
+            bound.outcome_unknown
+                ? "the COPY bind outcome is unknown; retry the exact bind demand"
+                : "the engine refused the COPY bind demand",
+            "sbp_sbsql.wire"));
+      }
+      if (!bound.outcome_unknown) {
+        held_bulk_import_stream_.reset();
+      }
+      return result;
+    }
+    held.binding = bound.binding;
+    held.phase = HeldBulkImportStream::Phase::coordinating;
+  }
+
+  auto coordinated = embedded_route
+                         ? embedded_client_->CoordinateBulkImportStream(
+                               session_, held.canonical_birq)
+                         : server_client_->CoordinateBulkImportStream(
+                               session_, held.canonical_birq);
+  if (!coordinated.accepted) {
+    PipelineResult result = BulkImportLifecycleRefusal(
+        coordinated.outcome_unknown ? "BULK.IMPORT.RECOVERY_CONFLICT"
+                                    : "BULK.IMPORT.ABORTED",
+        coordinated.outcome_unknown
+            ? "the COPY allocation outcome is unknown; retry the exact BIRQ"
+            : "the engine refused durable COPY stream allocation");
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          coordinated.outcome_unknown ? "BULK.IMPORT.RECOVERY_CONFLICT"
+                                      : "BULK.IMPORT.ABORTED",
+          "ERROR",
+          coordinated.outcome_unknown
+              ? "the COPY allocation outcome is unknown; retry the exact BIRQ"
+              : "the engine refused durable COPY stream allocation",
+          "sbp_sbsql.wire"));
+    }
+    if (!coordinated.outcome_unknown) {
+      held_bulk_import_stream_.reset();
+    }
+    return result;
+  }
+
+  sblr::SblrBulkImportStreamDescriptorV1 descriptor;
+  if (!sblr::DecodeSblrBulkImportStreamDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail,
+          false)) {
+    PipelineResult result = BulkImportLifecycleRefusal(
+        "SBLR.OPERAND_INVALID",
+        detail.empty() ? "the engine returned a malformed BIRD" : detail);
+    result.outcome_unknown = true;
+    return result;
+  }
+  const auto descriptor_receipt =
+      BulkImportReadFixed<16>(descriptor.canonical_body, 0);
+  const auto descriptor_stream =
+      BulkImportReadFixed<16>(descriptor.canonical_body, 32);
+  const auto descriptor_generation =
+      BulkImportReadU64(descriptor.canonical_body, 48);
+  const auto context_transaction = CanonicalUuidBytes(
+      held.statement_context.transaction.transaction_uuid);
+  const auto context_snapshot =
+      CanonicalUuidBytes(held.statement_context.statement_snapshot_uuid);
+  const auto context_catalog =
+      CanonicalUuidBytes(held.statement_context.catalog_epoch_uuid);
+  const auto context_security =
+      CanonicalUuidBytes(held.statement_context.security_context_uuid);
+  // preliminary_catalog_generation is the fixed datatype/literal registry
+  // generation, not the statement-visible catalog generation carried by
+  // BIRD. The parser proves receipt/catalog UUID correlation and requires the
+  // engine-private BIRD generation to be non-zero; it never substitutes one
+  // generation family for the other.
+  if (!context_transaction.has_value() || !context_snapshot.has_value() ||
+      !context_catalog.has_value() || !context_security.has_value() ||
+      descriptor_receipt != held.receipt_uuid ||
+      BulkImportReadU64(descriptor.canonical_body, 16) !=
+          held.structural_occurrence ||
+      descriptor.canonical_body[24] !=
+          static_cast<std::uint8_t>(held.import_occurrence) ||
+      descriptor.canonical_body[25] != 0 || descriptor.canonical_body[26] != 0 ||
+      descriptor.canonical_body[27] != 0 || descriptor_generation == 0 ||
+      std::all_of(descriptor_stream.begin(), descriptor_stream.end(),
+                  [](std::uint8_t byte) { return byte == 0; }) ||
+      BulkImportReadFixed<16>(descriptor.canonical_body, 80) !=
+          *context_transaction ||
+      BulkImportReadU64(descriptor.canonical_body, 96) !=
+          held.statement_context.transaction.local_transaction_id ||
+      BulkImportReadFixed<16>(descriptor.canonical_body, 104) !=
+          *context_snapshot ||
+      BulkImportReadFixed<16>(descriptor.canonical_body, 120) !=
+          *context_catalog ||
+      BulkImportReadU64(descriptor.canonical_body, 136) == 0 ||
+      BulkImportReadFixed<16>(descriptor.canonical_body, 144) !=
+          *context_security ||
+      BulkImportReadU64(descriptor.canonical_body, 160) !=
+          held.statement_context.preliminary_security_epoch ||
+      descriptor.availability_generation !=
+          held.statement_context
+              .preliminary_bulk_import_stream_executor_availability_generation) {
+    PipelineResult result = BulkImportLifecycleRefusal(
+        "MGA.AUTHORITY_MISMATCH",
+        "the engine COPY descriptor does not exactly match its statement receipt");
+    result.outcome_unknown = true;
+    return result;
+  }
+
+  held.canonical_bird = coordinated.canonical_payload;
+  held.canonical_biro = held.canonical_bird;
+  std::copy_n("BIRO", 4, held.canonical_biro.begin());
+  sblr::SblrBulkImportStreamDescriptorV1 operation_descriptor;
+  if (!sblr::DecodeSblrBulkImportStreamDescriptorV1(
+          held.canonical_biro.data(), held.canonical_biro.size(),
+          &operation_descriptor, &detail, true) ||
+      !std::equal(held.canonical_bird.begin() + 4,
+                  held.canonical_bird.end(), held.canonical_biro.begin() + 4)) {
+    PipelineResult result = BulkImportLifecycleRefusal(
+        "SBLR.OPERAND_INVALID",
+        "the canonical BIRD could not be preserved as a magic-only BIRO copy");
+    result.outcome_unknown = true;
+    return result;
+  }
+  BoundStatement empty_bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.bulk_import_stream";
+  const auto submission = BuildCanonicalNativeSubmission(
+      empty_bound, lowered, held.statement_context, session_, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &held.canonical_biro);
+  if (!submission.has_value()) {
+    PipelineResult result = BulkImportLifecycleRefusal(
+        "SBLR.OPERAND_INVALID",
+        "the canonical receipt-bound opcode-775 submission could not be built");
+    result.outcome_unknown = true;
+    return result;
+  }
+
+  held.submission = *submission;
+  held.descriptor = descriptor;
+  held.stream_uuid = descriptor_stream;
+  held.stream_generation = descriptor_generation;
+  held.descriptor_evidence = descriptor.evidence;
+  held.previous_chain_sha256 = bulk::ChainStart(
+      held.stream_uuid, held.stream_generation, held.descriptor_evidence);
+  held.phase = HeldBulkImportStream::Phase::ready;
+
+  PipelineResult result;
+  result.accepted = true;
+  result.statement_family = "dml.import";
+  result.operation_family = "sblr.dml.operation.v3";
+  result.server_operation_id = "engine.op.bulk_import_stream";
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::AppendBulkImportStreamChunkForWire(
+    const std::vector<std::uint8_t>& payload) {
+  namespace bulk = scratchbird::wire::sbps_bulk_import;
+  if (held_bulk_import_stream_ == nullptr) {
+    return BulkImportLifecycleRefusal(
+        "BULK.IMPORT.STREAM_IDENTITY_MISMATCH",
+        "CopyData has no engine-issued held COPY stream");
+  }
+  auto& held = *held_bulk_import_stream_;
+  if ((held.phase != HeldBulkImportStream::Phase::ready &&
+       held.phase != HeldBulkImportStream::Phase::streaming) ||
+      held.pending_seal.has_value() || held.definitively_refused ||
+      payload.empty() ||
+      payload.size() > 8'388'608U ||
+      held.accepted_total_bytes > 17'179'869'184ULL - payload.size() ||
+      held.accepted_chunk_count >= 262'144ULL) {
+    return BulkImportLifecycleRefusal(
+        "BULK.IMPORT.STREAM_PACKET_INVALID",
+        "CopyData violates the held stream phase or effective resource limits");
+  }
+
+  if (held.pending_chunk.has_value()) {
+    if (held.pending_chunk->chunk_payload != payload) {
+      return BulkImportLifecycleRefusal(
+          "BULK.IMPORT.CHUNK_CONFLICT",
+          "an unknown-outcome COPY chunk may only be retried byte-identically");
+    }
+  } else {
+    bulk::Chunk chunk;
+    chunk.authenticated_receipt_uuid = held.receipt_uuid;
+    chunk.stream_uuid = held.stream_uuid;
+    chunk.stream_generation = held.stream_generation;
+    chunk.structural_occurrence = held.structural_occurrence;
+    chunk.import_occurrence = held.import_occurrence;
+    chunk.descriptor_evidence = held.descriptor_evidence;
+    chunk.chunk_sequence = held.next_chunk_sequence;
+    chunk.byte_offset = held.accepted_total_bytes;
+    chunk.previous_chain_sha256 = held.previous_chain_sha256;
+    chunk.chunk_payload = payload;
+    chunk.payload_sha256 = bulk::PayloadSha256(chunk.chunk_payload);
+    chunk.chunk_chain_sha256 = bulk::ChainStep(
+        chunk.previous_chain_sha256, chunk.chunk_sequence,
+        chunk.byte_offset, chunk.payload_sha256,
+        static_cast<std::uint32_t>(chunk.chunk_payload.size()));
+    held.pending_chunk = std::move(chunk);
+  }
+
+  if (!held.pending_chunk_ack.has_value()) {
+    const bool embedded_route =
+        config_.embedded_engine_direct && embedded_client_ != nullptr;
+    auto appended = embedded_route
+                        ? embedded_client_->AppendBulkImportStream(
+                              session_, *held.pending_chunk)
+                        : server_client_->AppendBulkImportStream(
+                              session_, *held.pending_chunk);
+    if (!appended.accepted) {
+      if (!appended.outcome_unknown) {
+        held.definitively_refused = true;
+        held.pending_chunk.reset();
+      }
+      PipelineResult result = BulkImportLifecycleRefusal(
+          appended.outcome_unknown ? "BULK.IMPORT.RECOVERY_CONFLICT"
+                                   : "BULK.IMPORT.ABORTED",
+          appended.outcome_unknown
+              ? "the durable COPY append outcome is unknown; retry only the same chunk"
+              : "the engine refused the durable COPY append");
+      result.outcome_unknown = appended.outcome_unknown;
+      result.messages = std::move(appended.messages);
+      if (!result.messages.has_errors()) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            appended.outcome_unknown ? "BULK.IMPORT.RECOVERY_CONFLICT"
+                                     : "BULK.IMPORT.ABORTED",
+            "ERROR",
+            appended.outcome_unknown
+                ? "the durable COPY append outcome is unknown; retry only the same chunk"
+                : "the engine refused the durable COPY append",
+            "sbp_sbsql.wire"));
+      }
+      return result;
+    }
+    const auto& acknowledgement = appended.acknowledgement;
+    if (acknowledgement.durable_spool_generation == 0 ||
+        (held.durable_spool_generation != 0 &&
+         held.durable_spool_generation !=
+             acknowledgement.durable_spool_generation)) {
+      held.definitively_refused = true;
+      return BulkImportLifecycleRefusal(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "the durable COPY spool generation drifted across chunk acknowledgements");
+    }
+    held.pending_chunk_ack = acknowledgement;
+  }
+
+  const auto& acknowledged = *held.pending_chunk_ack;
+  if (!AppendBulkImportContentSpool(held.content_spool,
+                                    held.pending_chunk->byte_offset,
+                                    payload)) {
+    PipelineResult result = BulkImportLifecycleRefusal(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        "the engine durably accepted CopyData but the parser content-hash spool failed");
+    result.outcome_unknown = true;
+    return result;
+  }
+  held.durable_spool_generation = acknowledged.durable_spool_generation;
+  held.accepted_total_bytes = acknowledged.accepted_total_bytes;
+  held.accepted_chunk_count = acknowledged.accepted_sequence;
+  held.next_chunk_sequence = held.accepted_chunk_count + 1;
+  held.previous_chain_sha256 = acknowledged.accepted_chain_sha256;
+  held.pending_chunk_ack.reset();
+  held.pending_chunk.reset();
+  held.phase = HeldBulkImportStream::Phase::streaming;
+
+  PipelineResult result;
+  result.accepted = true;
+  result.statement_family = "dml.import";
+  result.operation_family = "sblr.dml.operation.v3";
+  result.server_operation_id = "engine.op.bulk_import_stream";
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::SealAndExecuteBulkImportStreamForWire() {
+  namespace bulk = scratchbird::wire::sbps_bulk_import;
+  namespace sblr = scratchbird::engine::sblr;
+  if (held_bulk_import_stream_ == nullptr) {
+    return BulkImportLifecycleRefusal(
+        "BULK.IMPORT.STREAM_IDENTITY_MISMATCH",
+        "CopyDone has no engine-issued held COPY stream");
+  }
+  auto& held = *held_bulk_import_stream_;
+  if (held.terminal_result.has_value()) {
+    PipelineResult result = *held.terminal_result;
+    if (held.autocommit_emulation && !held.autocommit_complete) {
+      if (!FinalizeSuccessfulAutocommitForWire(&result)) {
+        return result;
+      }
+      held.autocommit_complete = true;
+    }
+    return result;
+  }
+  if (held.definitively_refused || held.pending_chunk.has_value() ||
+      held.pending_chunk_ack.has_value() ||
+      held.accepted_chunk_count == 0 || held.accepted_total_bytes == 0) {
+    return BulkImportLifecycleRefusal(
+        "BULK.IMPORT.STREAM_NOT_SEALED",
+        "CopyDone requires at least one durably acknowledged chunk and no unknown append");
+  }
+
+  if (!held.pending_seal.has_value()) {
+    bulk::Seal seal;
+    seal.authenticated_receipt_uuid = held.receipt_uuid;
+    seal.stream_uuid = held.stream_uuid;
+    seal.stream_generation = held.stream_generation;
+    seal.descriptor_evidence = held.descriptor_evidence;
+    seal.final_chunk_count = held.accepted_chunk_count;
+    seal.total_stream_bytes = held.accepted_total_bytes;
+    seal.final_chain_sha256 = held.previous_chain_sha256;
+    const auto content_sha = HashBulkImportContentSpool(
+        held.content_spool, held.accepted_total_bytes);
+    if (!content_sha.has_value()) {
+      return BulkImportLifecycleRefusal(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "the parser could not reproduce the exact acknowledged COPY content hash");
+    }
+    seal.content_sha256 = *content_sha;
+    seal.seal_request_evidence_sha256 = bulk::SealRequestEvidence(seal);
+    held.pending_seal = std::move(seal);
+    held.phase = HeldBulkImportStream::Phase::seal_pending;
+  }
+
+  const bool embedded_route =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (held.phase == HeldBulkImportStream::Phase::seal_pending) {
+    auto sealed = embedded_route
+                      ? embedded_client_->SealBulkImportStream(
+                            session_, *held.pending_seal)
+                      : server_client_->SealBulkImportStream(
+                            session_, *held.pending_seal);
+    if (!sealed.accepted) {
+      if (!sealed.outcome_unknown) {
+        held.definitively_refused = true;
+      }
+      PipelineResult result = BulkImportLifecycleRefusal(
+          sealed.outcome_unknown ? "BULK.IMPORT.RECOVERY_CONFLICT"
+                                 : "BULK.IMPORT.ABORTED",
+          sealed.outcome_unknown
+              ? "the durable COPY seal outcome is unknown; retry only the same seal"
+              : "the engine refused the durable COPY seal");
+      result.outcome_unknown = sealed.outcome_unknown;
+      result.messages = std::move(sealed.messages);
+      if (!result.messages.has_errors()) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            sealed.outcome_unknown ? "BULK.IMPORT.RECOVERY_CONFLICT"
+                                   : "BULK.IMPORT.ABORTED",
+            "ERROR",
+            sealed.outcome_unknown
+                ? "the durable COPY seal outcome is unknown; retry only the same seal"
+                : "the engine refused the durable COPY seal",
+            "sbp_sbsql.wire"));
+      }
+      return result;
+    }
+    if (sealed.acknowledgement.content_sha256 !=
+            held.pending_seal->content_sha256 ||
+        sealed.acknowledgement.final_chain_sha256 !=
+            held.pending_seal->final_chain_sha256 ||
+        sealed.acknowledgement.chunk_count !=
+            held.pending_seal->final_chunk_count ||
+        sealed.acknowledgement.total_stream_bytes !=
+            held.pending_seal->total_stream_bytes ||
+        sealed.acknowledgement.durable_spool_generation == 0 ||
+        sealed.acknowledgement.durable_spool_generation !=
+            held.durable_spool_generation ||
+        std::all_of(sealed.acknowledgement.durable_spool_uuid.begin(),
+                    sealed.acknowledgement.durable_spool_uuid.end(),
+                    [](std::uint8_t byte) { return byte == 0; })) {
+      held.definitively_refused = true;
+      return BulkImportLifecycleRefusal(
+          "BULK.IMPORT.RECOVERY_CONFLICT",
+          "the durable COPY seal acknowledgement drifted from the held stream");
+    }
+    held.phase = HeldBulkImportStream::Phase::sealed;
+  }
+
+  auto executed = embedded_route
+                      ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, held.statement_context, held.submission,
+                            {}, false)
+                      : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, held.statement_context, held.submission,
+                            {}, false);
+  if (!executed.accepted) {
+    PipelineResult result = BulkImportLifecycleRefusal(
+        "BULK.IMPORT.ABORTED",
+        "the sealed COPY stream did not publish an exact terminal result");
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    result.messages = std::move(executed.messages);
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "BULK.IMPORT.ABORTED", "ERROR",
+          "the sealed COPY stream did not publish an exact terminal result",
+          "sbp_sbsql.wire"));
+    }
+    return result;
+  }
+
+  sblr::SblrBulkImportStreamResultV1 decoded_result;
+  std::string detail;
+  const auto* result_bytes = reinterpret_cast<const std::uint8_t*>(
+      executed.row_packet.data());
+  const bool canonical_result =
+      sblr::DecodeSblrBulkImportStreamResultV1(
+          result_bytes, executed.row_packet.size(), &decoded_result, &detail);
+  const auto reencoded_result = canonical_result
+                                    ? sblr::EncodeSblrBulkImportStreamResultV1(
+                                          decoded_result)
+                                    : std::vector<std::uint8_t>{};
+  const auto result_stream =
+      BulkImportReadFixed<16>(decoded_result.canonical_body, 0);
+  const auto publication_uuid =
+      BulkImportReadFixed<16>(decoded_result.canonical_body, 24);
+  const auto result_transaction =
+      BulkImportReadFixed<16>(decoded_result.canonical_body, 80);
+  const auto result_content =
+      BulkImportReadFixed<32>(decoded_result.canonical_body, 104);
+  const auto descriptor_transaction =
+      BulkImportReadFixed<16>(held.descriptor.canonical_body, 80);
+  const auto recovery_operation =
+      BulkImportReadFixed<16>(held.descriptor.canonical_body, 216);
+  const auto result_generation =
+      BulkImportReadU64(decoded_result.canonical_body, 16);
+  const auto publication_generation =
+      BulkImportReadU64(decoded_result.canonical_body, 40);
+  const auto affected_rows =
+      BulkImportReadU64(decoded_result.canonical_body, 48);
+  const auto rejected_rows =
+      BulkImportReadU64(decoded_result.canonical_body, 56);
+  const auto input_bytes =
+      BulkImportReadU64(decoded_result.canonical_body, 64);
+  const auto chunk_count =
+      BulkImportReadU64(decoded_result.canonical_body, 72);
+  const auto result_local_transaction_id =
+      BulkImportReadU64(decoded_result.canonical_body, 96);
+  const auto descriptor_local_transaction_id =
+      BulkImportReadU64(held.descriptor.canonical_body, 96);
+  const bool publication_present =
+      std::any_of(publication_uuid.begin(), publication_uuid.end(),
+                  [](std::uint8_t byte) { return byte != 0; });
+  if (!canonical_result ||
+      reencoded_result !=
+          std::vector<std::uint8_t>(result_bytes,
+                                    result_bytes + executed.row_packet.size()) ||
+      executed.operation_id != "engine.op.bulk_import_stream" ||
+      !executed.cursor_uuid.empty() || executed.messages.has_errors() ||
+      result_stream != held.stream_uuid ||
+      result_generation != held.stream_generation || !publication_present ||
+      publication_generation == 0 || publication_uuid == held.stream_uuid ||
+      publication_uuid == recovery_operation || affected_rows == 0 ||
+      rejected_rows != 0 || input_bytes != held.accepted_total_bytes ||
+      chunk_count != held.accepted_chunk_count ||
+      result_transaction != descriptor_transaction ||
+      result_local_transaction_id != descriptor_local_transaction_id ||
+      result_content != held.pending_seal->content_sha256 ||
+      decoded_result.availability_generation !=
+          held.descriptor.availability_generation ||
+      (executed.affected_rows_present &&
+       executed.affected_rows != affected_rows)) {
+    PipelineResult result = BulkImportLifecycleRefusal(
+        "BULK.IMPORT.RECOVERY_CONFLICT",
+        detail.empty() ? "the terminal opcode-775 BIRS is not canonical"
+                       : detail);
+    result.outcome_unknown = true;
+    result.messages = executed.messages;
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "BULK.IMPORT.RECOVERY_CONFLICT", "ERROR",
+          "the terminal opcode-775 BIRS does not match the held stream authority",
+          "sbp_sbsql.wire"));
+    }
+    return result;
+  }
+
+  PipelineResult result;
+  result.accepted = true;
+  result.statement_family = "dml.import";
+  result.operation_family = "sblr.dml.operation.v3";
+  result.server_operation_id = "engine.op.bulk_import_stream";
+  result.server_result_payload = executed.row_packet;
+  result.server_row_count = 0;
+  result.server_affected_rows = affected_rows;
+  result.server_affected_rows_present = true;
+  result.messages = executed.messages;
+  ApplyExecutedTransactionState(executed, &session_);
+  held.phase = HeldBulkImportStream::Phase::result_recorded;
+  held.terminal_result = result;
+  if (held.autocommit_emulation && !held.autocommit_complete) {
+    if (!FinalizeSuccessfulAutocommitForWire(&result)) {
+      return result;
+    }
+    held.autocommit_complete = true;
+  }
+  return result;
+}
+
+void SbsqlTestWireSession::AcknowledgeBulkImportStreamCompletionForWire() {
+  if (held_bulk_import_stream_ == nullptr) {
+    return;
+  }
+  const auto& held = *held_bulk_import_stream_;
+  if (held.phase == HeldBulkImportStream::Phase::result_recorded &&
+      held.terminal_result.has_value() && held.autocommit_complete) {
+    held_bulk_import_stream_.reset();
+  }
+}
 
 bool SbsqlTestWireSession::HasExecutionRoute() const {
   return config_.embedded_engine_direct || !config_.server_endpoint.empty();
@@ -22129,6 +23509,7 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRouteUncached(
           session_, presented_name, quoted, lookup_object_class, config_);
     }
   }
+  NormalizeNameNotFoundDiagnostic(&resolved);
   if (resolved.resolved) {
     session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
     session_.security_policy_epoch =
@@ -22295,6 +23676,7 @@ bool SbsqlTestWireSession::FinalizeSuccessfulAutocommitForWire(
   auto committed = RunPipeline("COMMIT TRANSACTION", true, false, 0, false);
   if (!committed.accepted || committed.messages.has_errors()) {
     statement_result->accepted = false;
+    statement_result->outcome_unknown = committed.outcome_unknown;
     statement_result->messages = std::move(committed.messages);
     if (!statement_result->messages.has_errors()) {
       statement_result->messages.diagnostics.push_back(MakeDiagnostic(
@@ -22325,7 +23707,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  const ipc::VariableFrameCoordination*
                                                      variable_coordination,
                                                  const scratchbird::engine::sblr::SblrVariableFrameBeginResultV1*
-                                                     variable_frame) {
+                                                     variable_frame,
+                                                 SbsqlPipelineConformanceSummary*
+                                                     conformance_summary) {
+  if (conformance_summary != nullptr) {
+    *conformance_summary = {};
+  }
   const bool phase_trace =
       std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE") != nullptr;
   std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
@@ -22337,6 +23724,28 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         {std::move(phase), ParserPipelineElapsedMicros(phase_start, now)});
     phase_start = now;
   };
+  const auto central_import_refusal_result =
+      [&](const CstDocument& cst, const AstDocument& ast,
+          const CentralImportCommandRoute& route) {
+        PipelineResult result;
+        result.accepted = false;
+        result.statement_family = StatementFamilyName(ast.family);
+        result.operation_family = ast.operation_family;
+        result.statement_hash = Fnv1a64(cst.source);
+        result.parser_executes_sql = false;
+        result.cached_storage_authority = false;
+        result.cached_authorization_authority = false;
+        result.cached_finality_authority = false;
+        result.messages = ast.messages;
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            std::string(route.diagnostic_id), "ERROR",
+            "The recognized SBsql import surface is not admitted for execution.",
+            "sbp_sbsql.wire",
+            {{"surface_id", std::string(route.surface_id)},
+             {"canonical_name", std::string(route.canonical_name)},
+             {"executable_sblr_emitted", "false"}}));
+        return result;
+      };
 
   if (metrics_) metrics_->Increment("sys.metrics.parsers.parse_pipeline.attempts_total");
   ScopedParserState active(metrics_,
@@ -22362,6 +23771,21 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         "statement exceeds parser resource budget",
         "sbp_sbsql.wire"));
     mark_phase("resource_budget");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
+  if (submit && !session_.authenticated) {
+    PipelineResult result;
+    result.accepted = false;
+    result.parser_executes_sql = false;
+    result.cached_storage_authority = false;
+    result.cached_authorization_authority = false;
+    result.cached_finality_authority = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.AUTH.REQUIRED", "ERROR",
+        "SBLR submission requires an authenticated server session",
+        "sbp_sbsql.wire"));
+    mark_phase("authentication_required");
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
@@ -22435,6 +23859,25 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         return result;
       }
     }
+    if (uppercase_sql.find("COPY") != std::string::npos ||
+        uppercase_sql.find("LOAD") != std::string::npos ||
+        uppercase_sql.find("GPU") != std::string::npos ||
+        uppercase_sql.find("BULK") != std::string::npos ||
+        uppercase_sql.find("INGEST") != std::string::npos) {
+      const auto import_cst = BuildCst(sql);
+      const auto import_ast = BuildAst(import_cst);
+      const auto import_route = AnalyzeCentralImportCommandRoute(import_cst);
+      if (!import_cst.messages.has_errors() &&
+          !import_ast.messages.has_errors() &&
+          import_route.disposition ==
+              CentralImportCommandDisposition::kExactRefusal) {
+        auto result = central_import_refusal_result(
+            import_cst, import_ast, import_route);
+        mark_phase("central_import_exact_refusal");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+    }
   }
   if (submit && !cursor_requested && session_.authenticated && HasExecutionRoute() &&
       LooksLikeFastCopyFromStdinCandidate(sql)) {
@@ -22446,114 +23889,22 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       if (metrics_) {
         metrics_->Increment("sys.metrics.parsers.fast_copy_from_stdin.attempts_total");
       }
-      PipelineResult result;
-      result.statement_family = "dml.import";
-      result.operation_family = "sblr.dml.operation.v3";
+      auto result = BeginBulkImportStreamForWire(
+          "SBSQL-465931ED7427", fast_copy->target_name_atoms,
+          autocommit_emulation);
       result.statement_hash = fast_statement_hash;
       result.parser_executes_sql = false;
       result.cached_storage_authority = false;
       result.cached_authorization_authority = false;
       result.cached_finality_authority = false;
-
-      auto resolved = ResolveNameOnRoute(fast_copy->target.presented_name,
-                                         fast_copy->target.quoted,
-                                         fast_copy->target.object_class);
-      mark_phase("fast_copy_resolve_target");
-      if (!resolved.resolved) {
-        result.messages = std::move(resolved.messages);
-        result.accepted = false;
-        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
-        return result;
-      }
-      session_.catalog_epoch =
-          std::max(session_.catalog_epoch, resolved.catalog_epoch);
-      session_.security_policy_epoch =
-          std::max(session_.security_policy_epoch, resolved.security_epoch);
-
-      result.sblr_payload = BuildFastCopyPlanJsonPayload(*fast_copy,
-                                                         resolved.object_uuid,
-                                                         fast_statement_hash);
-      mark_phase("fast_copy_build_sblr");
-      const bool embedded_native_route =
-          config_.embedded_engine_direct && embedded_client_ != nullptr;
-      ParserTransactionSelector selector{session_.local_transaction_id,
-                                         session_.transaction_uuid};
-      ipc::ServerStatementContextResult acquired;
-      if (embedded_native_route) {
-        acquired = embedded_client_->AcquireNativeStatementContext(
-            session_, selector);
-      } else if (server_client_ != nullptr) {
-        acquired = server_client_->AcquireNativeStatementContext(
-            session_, selector);
-      }
-      if (!acquired.accepted) {
-        result.accepted = false;
-        result.messages = std::move(acquired.messages);
-        if (!result.messages.has_errors()) {
-          result.messages.diagnostics.push_back(MakeDiagnostic(
-              "SBSQL.NATIVE_BINDING.SERVER_ROUTE_REQUIRED", "ERROR",
-              "Canonical COPY planning requires an authenticated statement context.",
-              "sbp_sbsql.wire"));
+      if (result.accepted) {
+        result.sblr_payload =
+            BuildFastCopyPlanJsonPayload(*fast_copy, fast_statement_hash);
+        mark_phase("fast_copy_bind_allocate_hold");
+        if (metrics_) {
+          metrics_->Increment(
+              "sys.metrics.parsers.fast_copy_from_stdin.held_streams_total");
         }
-        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
-        return result;
-      }
-      const auto bind_demand = BuildDmlPlanImportRowsBindDemand(
-          acquired.context, resolved.object_uuid, "native_sbsql_import",
-          fast_copy->format_family);
-      if (!bind_demand.has_value()) {
-        result.accepted = false;
-        result.messages.diagnostics.push_back(MakeDiagnostic(
-            "SBLR.OPERAND_INVALID", "ERROR",
-            "The COPY planning demand could not be encoded for authenticated engine binding.",
-            "sbp_sbsql.wire"));
-        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
-        return result;
-      }
-      auto coordinated = embedded_native_route
-          ? embedded_client_->CoordinateDmlPlanImportRowsBind(session_,
-                                                              *bind_demand)
-          : server_client_->CoordinateDmlPlanImportRowsBind(session_,
-                                                            *bind_demand);
-      mark_phase("fast_copy_bind_plan_import_descriptor");
-      if (!coordinated.accepted) {
-        result.accepted = false;
-        result.messages = std::move(coordinated.messages);
-        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
-        return result;
-      }
-      auto submission = BuildCanonicalDmlPlanImportRowsSubmission(
-          acquired.context, session_, coordinated.canonical_payload);
-      if (!submission) {
-        result.accepted = false;
-        result.messages.diagnostics.push_back(MakeDiagnostic(
-            "SBSQL.NATIVE_SBLR.CANONICAL_ENCODING_FAILED", "ERROR",
-            "The COPY plan descriptor could not be encoded as canonical SBLR/SBEE/SBOP.",
-            "sbp_sbsql.wire"));
-        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
-        return result;
-      }
-      const auto executed = embedded_native_route
-          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
-                session_, acquired.context, *submission, {}, false)
-          : server_client_->ExecuteCanonicalSblrWithDataPacket(
-                session_, acquired.context, *submission, {}, false);
-      mark_phase("fast_copy_execute_sblr_route");
-      if (!executed.accepted) {
-        result.accepted = false;
-        result.messages = executed.messages;
-      } else {
-        // dml.plan_import_rows is validation-only.  COPY is an execution
-        // surface, so its planning result cannot be reported as command
-        // completion.  Until a separately bound and revalidated
-        // dml.execute_import_rows continuation is available, retain the
-        // authenticated planning phase but fail the command closed.
-        result.accepted = false;
-        result.messages = executed.messages;
-        result.messages.diagnostics.push_back(MakeDiagnostic(
-            "SBLR.OPERATION_UNSUPPORTED", "ERROR",
-            "COPY planning completed, but row execution requires a separately bound dml.execute_import_rows descriptor.",
-            "sbp_sbsql.wire"));
       }
       WriteParserPipelinePhaseTrace(sql, result, phase_micros);
       return result;
@@ -22767,6 +24118,15 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   result.operation_family = ast.operation_family;
   result.statement_hash = Fnv1a64(cst.source);
   result.messages = ast.messages;
+  const auto central_import_route = AnalyzeCentralImportCommandRoute(cst);
+  if (!result.messages.has_errors() &&
+      central_import_route.disposition ==
+          CentralImportCommandDisposition::kExactRefusal) {
+    result = central_import_refusal_result(cst, ast, central_import_route);
+    mark_phase("central_import_exact_refusal");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
   if (!result.messages.has_errors() &&
       !ExactTimeSeriesPreResolutionAst(ast.native_relational)) {
     result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -22780,7 +24140,77 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     const bool native_catalog_projection_required =
         !ast.native_relational.catalog_relation_sources.empty();
     mark_phase("extract_object_references");
-    for (const auto& ref : refs) {
+    const auto relation_transport_class = [](const ObjectReference& ref) {
+      if (ref.object_class == "document_collection" ||
+          ref.object_class == "graph" || ref.object_class == "search" ||
+          ref.object_class == "spatial_collection" ||
+          ref.object_class == "logical_relation") {
+        return std::string{"relation"};
+      }
+      return ref.object_class;
+    };
+    std::vector<std::optional<PublicNameResolutionResult>>
+        exact_v3_relation_results(refs.size());
+    if (native_catalog_projection_required) {
+      std::vector<ipc::PublicRelationResolutionRequest> batch_requests;
+      std::vector<std::vector<std::size_t>> batch_ref_indices;
+      std::map<std::tuple<std::string, bool, std::string>, std::size_t>
+          unique_requests;
+      for (std::size_t ref_index = 0; ref_index < refs.size(); ++ref_index) {
+        const auto& ref = refs[ref_index];
+        if (ref.create_reservation || IsEngineOwnedProjectionReference(ref)) {
+          continue;
+        }
+        const auto transport_class = relation_transport_class(ref);
+        if (transport_class != "relation" && transport_class != "table") {
+          continue;
+        }
+        const auto key =
+            std::make_tuple(ref.presented_name, ref.quoted, transport_class);
+        const auto [found, inserted] =
+            unique_requests.emplace(key, batch_requests.size());
+        if (inserted) {
+          batch_requests.push_back(
+              {ref.presented_name, ref.quoted, transport_class});
+          batch_ref_indices.push_back({ref_index});
+        } else {
+          batch_ref_indices[found->second].push_back(ref_index);
+        }
+      }
+      if (!batch_requests.empty()) {
+        std::vector<PublicNameResolutionResult> batch_results;
+        if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
+          batch_results = embedded_client_->ResolveRelationDescriptorsPublic(
+              session_, batch_requests, config_);
+        } else {
+          ParserTransactionSelector transaction;
+          transaction.local_transaction_id = session_.local_transaction_id;
+          transaction.transaction_uuid = session_.transaction_uuid;
+          if (transaction.present()) {
+            batch_results =
+                server_client_->ResolveRelationDescriptorsPublicOnTransaction(
+                    session_, batch_requests, config_, transaction);
+          }
+        }
+        if (!batch_results.empty() &&
+            batch_results.size() != batch_requests.size()) {
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_BATCH_INVALID", "ERROR",
+              "The exact V3 relation-projection cohort returned an invalid result count.",
+              "sbp_sbsql.wire"));
+        } else if (batch_results.size() == batch_requests.size()) {
+          for (std::size_t batch_index = 0;
+               batch_index < batch_results.size(); ++batch_index) {
+            for (const auto ref_index : batch_ref_indices[batch_index]) {
+              exact_v3_relation_results[ref_index] =
+                  batch_results[batch_index];
+            }
+          }
+        }
+      }
+    }
+    for (std::size_t ref_index = 0; ref_index < refs.size(); ++ref_index) {
+      const auto& ref = refs[ref_index];
       if (IsEngineOwnedProjectionReference(ref)) {
         continue;
       }
@@ -22825,19 +24255,21 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         // ResolveNameOnRouteUncached maps only those two classes to the
         // transaction-scoped relation descriptor transport.
         const auto legacy_model_transport_class =
-            ref.object_class == "document_collection" ||
-                    ref.object_class == "graph" ||
-                    ref.object_class == "search"
-                ? std::string_view{"relation"}
-                : std::string_view{ref.object_class};
-        resolved = native_catalog_projection_required
-                       ? ResolveNameOnRouteUncached(
-                             ref.presented_name, ref.quoted,
-                             legacy_model_transport_class)
-                       : ResolveNameOnRoute(
-                             ref.presented_name, ref.quoted,
-                             legacy_model_transport_class);
+            relation_transport_class(ref);
+        if (native_catalog_projection_required &&
+            exact_v3_relation_results[ref_index].has_value()) {
+          resolved = std::move(*exact_v3_relation_results[ref_index]);
+        } else {
+          resolved = native_catalog_projection_required
+                         ? ResolveNameOnRouteUncached(
+                               ref.presented_name, ref.quoted,
+                               legacy_model_transport_class)
+                         : ResolveNameOnRoute(
+                               ref.presented_name, ref.quoted,
+                               legacy_model_transport_class);
+        }
       }
+      NormalizeNameNotFoundDiagnostic(&resolved);
       if (!resolved.resolved) {
         if (ref.object_class == "procedure") {
           auto relation_probe = ResolveNameOnRoute(ref.presented_name, ref.quoted, "relation");
@@ -22971,6 +24403,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   const bool canonical_txn_rollback =
       ast.statement_surface_name == "rollback" ||
       ast.statement_surface_name == "rollback_stmt";
+  const bool canonical_txn_set_characteristics =
+      ast.statement_surface_name == "set_transaction_stmt";
   const bool canonical_txn_savepoint =
       ast.statement_surface_name == "savepoint" ||
       ast.statement_surface_name == "savepoint_stmt";
@@ -22979,6 +24413,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   const bool canonical_txn_rollback_to_savepoint =
       ast.statement_surface_name == "rollback_to_savepoint_stmt";
   if (submit && (ast.native_relational.recognized() || canonical_txn_begin ||
+                 canonical_txn_set_characteristics ||
                  canonical_txn_commit || canonical_txn_rollback ||
                  canonical_txn_savepoint || canonical_txn_release_savepoint ||
                  canonical_txn_rollback_to_savepoint)) {
@@ -23218,8 +24653,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 "The structural parameter demand sequence was malformed.",
                 "sbp_sbsql.wire"));
           } else {
-            auto negotiated = server_client_->NegotiateParameterDescriptors(
-                session_, prebind->first);
+            auto negotiated = embedded_native_route
+                ? embedded_client_->NegotiateParameterDescriptors(
+                      session_, prebind->first)
+                : server_client_->NegotiateParameterDescriptors(
+                      session_, prebind->first);
             if (!negotiated.accepted) {
               result.messages = std::move(negotiated.messages);
             } else {
@@ -23241,7 +24679,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           WriteParserPipelinePhaseTrace(sql, result, phase_micros);
           return result;
         }
-        if (!canonical_txn_begin && !canonical_txn_commit &&
+        if (!canonical_txn_begin && !canonical_txn_set_characteristics &&
+            !canonical_txn_commit &&
             !canonical_txn_rollback && !canonical_txn_savepoint &&
             !canonical_txn_release_savepoint &&
             !canonical_txn_rollback_to_savepoint) {
@@ -24096,8 +25535,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             const auto authoritative_descriptor = std::ranges::find_if(
                 native_binding_context->descriptors,
                 [&](const auto& candidate) {
-                  return candidate.descriptor_uuid == descriptor_uuid &&
-                         candidate.type_uuid == type_uuid &&
+                  return candidate.type_uuid == type_uuid &&
                          candidate.descriptor_generation ==
                              mapping.datatype_descriptor_generation &&
                          candidate.type_generation != 0 &&
@@ -24116,7 +25554,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 });
             const auto carries_same_immutable_authority =
                 [&](const auto& candidate) {
-                  if (candidate.descriptor_uuid != descriptor_uuid) return true;
+                  // Relation descriptors carry an occurrence-owned outer UUID.
+                  // Match the embedded canonical datatype authority instead of
+                  // requiring that outer handle to equal the registry UUID.
+                  if (candidate.type_uuid != type_uuid ||
+                      candidate.descriptor_generation !=
+                          mapping.datatype_descriptor_generation) {
+                    return true;
+                  }
                   if (authoritative_descriptor ==
                       native_binding_context->descriptors.end()) {
                     return false;
@@ -24207,8 +25652,13 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
+  ParserConfig binding_config = config_;
+  if (native_statement_context.has_value() &&
+      !session_.admitted_parser_package_uuid.empty()) {
+    binding_config.parser_uuid = session_.admitted_parser_package_uuid;
+  }
   auto bound = BindAst(
-      ast, cst, config_, session_, resolved_object_uuids,
+      ast, cst, binding_config, session_, resolved_object_uuids,
       native_binding_context.has_value() ? &*native_binding_context : nullptr);
   if (native_statement_context.has_value()) {
     bound.command_registry_snapshot_uuid =
@@ -24305,7 +25755,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                   "exact bijection over the reserved occurrences.",
                   "sbp_sbsql.wire.contextual_text"));
             } else {
-              auto rebound = BindAst(ast, cst, config_, session_,
+              auto rebound = BindAst(ast, cst, binding_config, session_,
                                      resolved_object_uuids,
                                      &*native_binding_context);
               rebound.command_registry_snapshot_uuid =
@@ -24315,6 +25765,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               for (const auto& occurrence :
                    contextual_text_prebind_state->occurrences) {
                 contextual_handles.insert(occurrence.literal_descriptor_handle);
+                contextual_handles.insert(occurrence.target_descriptor_handle);
               }
               const auto rebound_contextual_count = std::ranges::count_if(
                   rebound.native_relational.expressions,
@@ -24339,7 +25790,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                   *rebound_reservation_skeleton ==
                       contextual_text_prebind_state
                           ->immutable_reservation_skeleton;
-              if (!exact_reservation) {
+              if (!exact_reservation ||
+                  !PatchContextualTargetDescriptorOperandsV2(
+                      &relowered, *contextual_text_prebind_state)) {
                 lowered.messages.diagnostics.push_back(MakeDiagnostic(
                     "SBLR.CONTEXTUAL_TEXT_LITERAL.NON_CANONICAL", "ERROR",
                     "The final binding/lowering pass changed the immutable "
@@ -24367,6 +25820,49 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         {{"sblr_envelope_bytes", std::to_string(lowered.payload.size())},
          {"max_sblr_envelope_bytes",
           std::to_string(config_.resource_budget.max_sblr_envelope_bytes)}}));
+  }
+  if (conformance_summary != nullptr) {
+    const auto verified = VerifySblrEnvelope(lowered);
+    conformance_summary->captured = true;
+    conformance_summary->bound = bound.bound;
+    conformance_summary->bound_has_errors = bound.messages.has_errors();
+    conformance_summary->payload_nonempty = !lowered.payload.empty();
+    conformance_summary->verifier_admitted = verified.admitted;
+    conformance_summary->verifier_has_errors = verified.messages.has_errors();
+    conformance_summary->has_descriptor_refs =
+        !lowered.descriptor_refs.empty();
+    conformance_summary->has_read_right =
+        std::ranges::find(lowered.required_rights, "right.read") !=
+        lowered.required_rights.end();
+    conformance_summary->has_syntax_authority =
+        std::ranges::find(lowered.required_authority_steps,
+                          "authority.parser.syntax_evidence_only") !=
+        lowered.required_authority_steps.end();
+    conformance_summary->has_resolver_authority =
+        std::ranges::find(
+            lowered.required_authority_steps,
+            "authority.server.resolve_name_registry_public") !=
+        lowered.required_authority_steps.end();
+    conformance_summary->envelope_version = lowered.envelope_version;
+    conformance_summary->catalog_epoch = lowered.catalog_epoch;
+    conformance_summary->security_policy_epoch =
+        lowered.security_policy_epoch;
+    conformance_summary->descriptor_epoch = lowered.descriptor_epoch;
+    conformance_summary->bound_operation_family = bound.operation_family;
+    conformance_summary->bound_sblr_operation_key = bound.sblr_operation_key;
+    conformance_summary->bound_surface_key = bound.surface_key;
+    conformance_summary->operation_family = lowered.operation_family;
+    conformance_summary->operation_id = lowered.operation_id;
+    conformance_summary->sblr_operation_key = lowered.sblr_operation_key;
+    conformance_summary->sblr_opcode = lowered.sblr_opcode;
+    conformance_summary->surface_key = lowered.surface_key;
+    conformance_summary->command_family = lowered.command_family;
+    conformance_summary->result_shape_key = lowered.result_shape_key;
+    conformance_summary->diagnostic_shape_key = lowered.diagnostic_shape_key;
+    conformance_summary->resource_contract_key =
+        lowered.resource_contract_key;
+    conformance_summary->resolved_object_uuids =
+        lowered.resolved_object_uuids;
   }
   result.accepted = !lowered.messages.has_errors() && !lowered.payload.empty();
   result.parser_executes_sql = false;
@@ -24399,13 +25895,39 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       lowered.operation_family == "sblr.dml.operation.v3" &&
       lowered.operation_id == "dml.plan_import_rows" &&
       lowered.sblr_opcode == "SBLR_DML_PLAN_IMPORT_ROWS";
-  const bool canonical_zero_operand_observability_route =
-      lowered.operation_id == "observability.show_management";
+  const bool canonical_copy_stream_route =
+      canonical_dml_plan_import_rows_route &&
+      LooksLikeFastCopyFromStdinCandidate(sql);
+  const bool canonical_show_version_direct_route =
+      lowered.operation_family == "sblr.observability.inspect.v3" &&
+      lowered.operation_id == "observability.show_version" &&
+      lowered.sblr_opcode == "SBLR_OBSERVABILITY_SHOW_VERSION";
+  const bool canonical_show_database_direct_route =
+      lowered.operation_family == "sblr.observability.inspect.v3" &&
+      lowered.operation_id == "observability.show_database" &&
+      lowered.sblr_opcode == "SBLR_OBSERVABILITY_SHOW_DATABASE";
+  const bool canonical_zero_operand_direct_route =
+      canonical_show_database_direct_route ||
+      lowered.operation_id == "observability.show_management" ||
+      lowered.operation_id == "observability.show_agents_extended" ||
+      (lowered.operation_id == "cluster.inspect_provider" &&
+       lowered.sblr_opcode == "SBLR_CLUSTER_INSPECT_PROVIDER");
+  const auto exact_parameter_projection_route =
+      DecodeExactAnonymousParameterProjectionRoute(lowered);
+  const auto structural_parameter_count = std::ranges::count_if(
+      cst.tokens, [](const Token& token) {
+        return token.kind == TokenKind::kParameter;
+      });
+  const bool canonical_parameter_projection_route =
+      exact_parameter_projection_route.has_value() &&
+      structural_parameter_count == 1;
   if (submit && result.accepted && !native_statement_context.has_value() &&
       (canonical_create_table_route.has_value() ||
        canonical_dml_update_route ||
-       canonical_dml_plan_import_rows_route ||
-       canonical_zero_operand_observability_route)) {
+       (canonical_dml_plan_import_rows_route && !canonical_copy_stream_route) ||
+       canonical_show_version_direct_route ||
+       canonical_zero_operand_direct_route ||
+       canonical_parameter_projection_route)) {
     const bool embedded_native_route =
         config_.embedded_engine_direct && embedded_client_ != nullptr;
     ParserTransactionSelector selector{session_.local_transaction_id,
@@ -24434,6 +25956,61 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         admitted_transaction_handle_ =
             native_statement_context->preliminary_active_transaction_handle;
       }
+      if (canonical_parameter_projection_route &&
+          !parameter_prebind_state.has_value()) {
+        NativeRelationalAstDocument structural_parameter_ast;
+        NativeExpressionAstNode structural_parameter;
+        structural_parameter.expression_id = 1;
+        structural_parameter.expression_kind =
+            NativeExpressionAstKind::kParameter;
+        structural_parameter.structural_parameter_occurrence_id = 1;
+        structural_parameter_ast.expressions.push_back(
+            std::move(structural_parameter));
+        const auto prebind = EncodeParameterPrebindRequest(
+            structural_parameter_ast, *native_statement_context);
+        if (!prebind.has_value()) {
+          result.accepted = false;
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBLR.OPERAND_INVALID", "ERROR",
+              "The exact scalar parameter demand could not be encoded.",
+              "sbp_sbsql.wire"));
+        } else {
+          auto negotiated = embedded_native_route
+              ? embedded_client_->NegotiateParameterDescriptors(
+                    session_, prebind->first)
+              : server_client_->NegotiateParameterDescriptors(
+                    session_, prebind->first);
+          if (!negotiated.accepted) {
+            result.accepted = false;
+            result.messages = std::move(negotiated.messages);
+          } else {
+            parameter_prebind_state = prebind->second;
+            if (!ConsumeParameterPrebindResult(
+                    negotiated.canonical_payload,
+                    &*parameter_prebind_state)) {
+              result.accepted = false;
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "SBLR.OPERAND_INVALID", "ERROR",
+                  "The exact scalar parameter descriptor mapping was malformed.",
+                  "sbp_sbsql.wire"));
+            } else if (!bound.native_relational.expressions.empty()) {
+              result.accepted = false;
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "SBLR.OPERAND_INVALID", "ERROR",
+                  "The scalar parameter route contains conflicting native expression authority.",
+                  "sbp_sbsql.wire"));
+            } else {
+              BoundExpressionAstRecord bound_parameter;
+              bound_parameter.expression_id = 1;
+              bound_parameter.expression_kind =
+                  NativeExpressionAstKind::kParameter;
+              bound_parameter.structural_parameter_occurrence_id = 1;
+              bound.native_relational.expressions.push_back(
+                  std::move(bound_parameter));
+            }
+          }
+        }
+      }
     }
     mark_phase("acquire_canonical_statement_context");
   }
@@ -24441,7 +26018,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   if (submit && result.accepted && native_statement_context.has_value()) {
     const bool embedded_native_route =
         config_.embedded_engine_direct && embedded_client_ != nullptr;
-    if (canonical_create_table_route.has_value()) {
+    if (canonical_txn_set_characteristics) {
+      native_submission = BuildCanonicalTransactionCharacteristicsSubmission(
+          lowered, *native_statement_context, session_);
+    } else if (canonical_create_table_route.has_value()) {
       native_submission = BuildCanonicalRouteTextSubmission(
           *canonical_create_table_route, *native_statement_context, session_);
     } else if (canonical_dml_update_route) {
@@ -24474,7 +26054,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               coordinated.canonical_payload);
         }
       }
-    } else if (canonical_dml_plan_import_rows_route) {
+    } else if (canonical_dml_plan_import_rows_route && !canonical_copy_stream_route) {
       const auto bind_demand = BuildDmlPlanImportRowsBindDemand(
           lowered, *native_statement_context);
       if (!bind_demand.has_value()) {
@@ -24504,25 +26084,66 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               coordinated.canonical_payload);
         }
       }
-    } else if (canonical_zero_operand_observability_route) {
+    } else if (canonical_zero_operand_direct_route) {
       auto envelope = BuildCanonicalRegistryEnvelope(
           lowered.operation_id, *native_statement_context, session_);
       if (envelope) {
         native_submission = BuildCanonicalRegistryOperationSubmission(
             *envelope, *native_statement_context, session_);
       }
+    } else if (canonical_parameter_projection_route) {
+      const auto route = BuildCanonicalParameterProjectionRouteTextEnvelope(
+          lowered, *parameter_prebind_state);
+      if (route) {
+        native_submission = BuildCanonicalRouteTextSubmission(
+            *route, *native_statement_context, session_);
+      }
     } else {
-      if (g_contextual_text_prebind_v2 != nullptr) {
+      if ((canonical_txn_release_savepoint ||
+           canonical_txn_rollback_to_savepoint) &&
+          admitted_savepoint_handle_.empty() &&
+          !replaying_savepoint_release_ &&
+          !replaying_savepoint_rollback_) {
+        result.accepted = false;
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.OPERAND_INVALID", "ERROR",
+            "No engine-issued savepoint handle is available for the requested transaction operation.",
+            "sbp_sbsql.wire"));
+      } else if (g_contextual_text_prebind_v2 != nullptr) {
         result.accepted = false;
         result.messages.diagnostics.push_back(MakeDiagnostic(
             "SBLR.CONTEXTUAL_TEXT_LITERAL.REPLAY", "ERROR",
             "A contextual TEXT literal packaging scope was already active.",
             "sbp_sbsql.wire.contextual_text"));
       } else {
+        std::uint64_t refreshed_savepoint_stack_generation = 0;
+        const std::vector<std::uint8_t>* refreshed_savepoint_evidence =
+            nullptr;
+        if (!admitted_savepoint_handle_.empty() &&
+            (lowered.operation_id == "engine.op.txn_release_savepoint" ||
+             lowered.operation_id ==
+                 "engine.op.txn_rollback_to_savepoint")) {
+          namespace sp = scratchbird::engine::sblr;
+          sp::SblrSavepointHandleV1 handle;
+          std::string detail;
+          if (sp::DecodeSblrSavepointHandleV1(
+                  admitted_savepoint_handle_.data(),
+                  admitted_savepoint_handle_.size(), &handle, &detail)) {
+            const auto refresh = savepoint_refresh_authorities_.find(
+                SavepointIdentityKey(handle.savepoint_uuid));
+            if (refresh != savepoint_refresh_authorities_.end()) {
+              refreshed_savepoint_stack_generation = refresh->second.first;
+              refreshed_savepoint_evidence = &refresh->second.second;
+            }
+          }
+        }
         ScopedContextualTextPrebindPackagingV2 packaging_scope(
             contextual_text_prebind_state.has_value()
                 ? &*contextual_text_prebind_state
                 : nullptr);
+        g_refreshed_savepoint_stack_generation =
+            refreshed_savepoint_stack_generation;
+        g_refreshed_savepoint_evidence = refreshed_savepoint_evidence;
         native_submission = BuildCanonicalNativeSubmission(
             bound, lowered, *native_statement_context, session_,
             parameter_prebind_state.has_value() ? &*parameter_prebind_state
@@ -24544,6 +26165,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 ? &retired_savepoint_rollback_operand_
                 : nullptr,
             nullptr);
+        g_refreshed_savepoint_stack_generation = 0;
+        g_refreshed_savepoint_evidence = nullptr;
       }
     }
     if (!result.accepted) {
@@ -24601,12 +26224,20 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             "sbp_sbsql.wire"));
       }
     } else if (parameter_prebind_state.has_value() &&
-               !FinalizeParameterSubmission(
-                   bound, *parameter_prebind_state, parameter_values,
-                   *native_statement_context, session_,
-                   server_client_.get(), &*native_submission,
-                   &result.messages, parameter_coordination,
-                   parameter_prepare_only, prepared_parameter_output)) {
+               !(embedded_native_route
+                     ? FinalizeParameterSubmission(
+                           bound, *parameter_prebind_state, parameter_values,
+                           *native_statement_context, session_,
+                           embedded_client_.get(), &*native_submission,
+                           &result.messages, parameter_coordination,
+                           parameter_prepare_only, prepared_parameter_output)
+                     : FinalizeParameterSubmission(
+                           bound, *parameter_prebind_state, parameter_values,
+                           *native_statement_context, session_,
+                           server_client_.get(), &*native_submission,
+                           &result.messages, parameter_coordination,
+                           parameter_prepare_only,
+                           prepared_parameter_output))) {
       result.accepted = false;
       if (!result.messages.has_errors()) {
         result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -24674,6 +26305,31 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
   };
   if (submit && result.accepted && !parameter_prepare_only) {
+    if (canonical_copy_stream_route) {
+      const auto copy_plan = TryParseFastCopyFromStdinRoutePlan(sql);
+      if (!copy_plan.has_value()) {
+        result.accepted = false;
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.OPERAND_INVALID", "ERROR",
+            "COPY FROM STDIN could not preserve its exact target-name atoms",
+            "sbp_sbsql.wire"));
+      } else if (!HasHeldBulkImportStreamForWire()) {
+        auto held = BeginBulkImportStreamForWire(
+            "SBSQL-465931ED7427", copy_plan->target_name_atoms,
+            autocommit_emulation);
+        if (!held.accepted) {
+          result.accepted = false;
+          result.messages = std::move(held.messages);
+        } else {
+          result.server_operation_id = "engine.op.bulk_import_stream";
+        }
+      } else {
+        result.server_operation_id = "engine.op.bulk_import_stream";
+      }
+      mark_phase("copy_stream_ready");
+      WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+      return result;
+    }
     if (!HasExecutionRoute()) {
       result.accepted = false;
       result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -24694,6 +26350,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       if (autocommit_emulation && !cursor_requested) {
         InjectAutocommitEmulation(&execution_payload);
       }
+      result.server_request_payload_bytes = native_submission.has_value()
+          ? native_submission->canonical_container_bytes.size()
+          : execution_payload.size();
       mark_phase("prepare_execution_payload");
       const auto executed = native_submission.has_value()
           ? (config_.embedded_engine_direct && embedded_client_ != nullptr
@@ -24715,6 +26374,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           ApplyExecutedTransactionState(executed, &session_);
         }
         result.accepted = false;
+        result.outcome_unknown =
+            executed.finality_state ==
+            ipc::ParserTransactionFinality::kUnknown;
         result.messages = executed.messages;
       } else if (lowered.operation_id == "dml.plan_import_rows") {
         // All SQL import spellings routed here are command-execution
@@ -24770,6 +26432,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           }
           retired_transaction_handle_ = admitted_transaction_handle_;
           admitted_transaction_handle_.clear();
+          admitted_savepoint_descriptor_.clear();
+          admitted_savepoint_handle_.clear();
+          parent_savepoint_handle_.clear();
+          descendant_savepoint_handle_.clear();
+          savepoint_refresh_authorities_.clear();
         } else if (lowered.operation_id == "engine.op.txn_rollback") {
           scratchbird::engine::sblr::SblrTransactionRollbackResultV1 rolled_back;
           std::string detail;
@@ -24785,6 +26452,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           }
           retired_transaction_handle_ = admitted_transaction_handle_;
           admitted_transaction_handle_.clear();
+          admitted_savepoint_descriptor_.clear();
+          admitted_savepoint_handle_.clear();
+          parent_savepoint_handle_.clear();
+          descendant_savepoint_handle_.clear();
+          savepoint_refresh_authorities_.clear();
         } else if (lowered.operation_id == "engine.op.txn_savepoint") {
           scratchbird::engine::sblr::SblrSavepointHandleV1 savepoint;
           std::string detail;
@@ -24805,6 +26477,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           admitted_savepoint_handle_.assign(
               canonical_result_bytes,
               canonical_result_bytes + executed.row_packet.size());
+          savepoint_refresh_authorities_.erase(
+              SavepointIdentityKey(savepoint.savepoint_uuid));
         } else if (lowered.operation_id ==
                    "engine.op.txn_release_savepoint") {
           scratchbird::engine::sblr::SblrSavepointReleaseResultV1 released;
@@ -24830,14 +26504,28 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           operand.transaction_uuid = handle.transaction_uuid;
           operand.local_transaction_id = handle.local_transaction_id;
           operand.transaction_ordinal = handle.transaction_ordinal;
-          operand.admitted_stack_generation = handle.stack_generation;
-          operand.admitted_savepoint_evidence_sha256 =
-              handle.savepoint_evidence_sha256;
+          const auto refresh_key = SavepointIdentityKey(handle.savepoint_uuid);
+          const auto refresh =
+              savepoint_refresh_authorities_.find(refresh_key);
+          operand.admitted_stack_generation =
+              refresh == savepoint_refresh_authorities_.end()
+                  ? handle.stack_generation
+                  : refresh->second.first;
+          if (refresh != savepoint_refresh_authorities_.end() &&
+              refresh->second.second.size() == 32) {
+            std::copy(refresh->second.second.begin(),
+                      refresh->second.second.end(),
+                      operand.admitted_savepoint_evidence_sha256.begin());
+          } else {
+            operand.admitted_savepoint_evidence_sha256 =
+                handle.savepoint_evidence_sha256;
+          }
           operand.executor_availability_generation =
               native_statement_context->preliminary_transaction_release_savepoint_executor_availability_generation;
           retired_savepoint_release_operand_ =
               scratchbird::engine::sblr::EncodeSblrSavepointReleaseOperandV1(
                   operand);
+          savepoint_refresh_authorities_.erase(refresh_key);
           admitted_savepoint_handle_.clear();
         } else if (lowered.operation_id ==
                    "engine.op.txn_rollback_to_savepoint") {
@@ -24846,13 +26534,20 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           if(!sp::DecodeSblrSavepointRollbackResultV1(canonical_result_bytes,executed.row_packet.size(),&rolled,&detail)||
              !sp::DecodeSblrSavepointHandleV1(admitted_savepoint_handle_.data(),admitted_savepoint_handle_.size(),&handle,&detail)||
              !native_statement_context){result.accepted=false;result.messages.diagnostics.push_back(MakeDiagnostic("MGA.SAVEPOINT.ROLLBACK_RESULT_INVALID","ERROR","The engine returned a malformed savepoint rollback result projection.","sbp_sbsql.wire"));return result;}
+          const auto refresh_key=SavepointIdentityKey(handle.savepoint_uuid);
+          const auto refresh=savepoint_refresh_authorities_.find(refresh_key);
           sp::SblrSavepointRollbackOperandV1 operand; operand.savepoint_uuid=handle.savepoint_uuid;operand.savepoint_generation=handle.savepoint_generation;
           operand.transaction_uuid=handle.transaction_uuid;operand.local_transaction_id=handle.local_transaction_id;operand.transaction_ordinal=handle.transaction_ordinal;
-          operand.admitted_stack_generation=handle.stack_generation;operand.admitted_savepoint_evidence_sha256=handle.savepoint_evidence_sha256;
+          operand.admitted_stack_generation=refresh==savepoint_refresh_authorities_.end()?handle.stack_generation:refresh->second.first;
+          if(refresh!=savepoint_refresh_authorities_.end()&&refresh->second.second.size()==32)std::copy(refresh->second.second.begin(),refresh->second.second.end(),operand.admitted_savepoint_evidence_sha256.begin());
+          else operand.admitted_savepoint_evidence_sha256=handle.savepoint_evidence_sha256;
           operand.executor_availability_generation=native_statement_context->preliminary_transaction_rollback_to_savepoint_executor_availability_generation;
           retired_savepoint_rollback_operand_=sp::EncodeSblrSavepointRollbackOperandV1(operand);
-          handle.stack_generation=rolled.resulting_stack_generation;handle.savepoint_evidence_sha256=rolled.refreshed_savepoint_evidence_sha256;
-          admitted_savepoint_handle_=sp::EncodeSblrSavepointHandleV1(handle);
+          savepoint_refresh_authorities_[refresh_key]={
+              rolled.resulting_stack_generation,
+              std::vector<std::uint8_t>(
+                  rolled.refreshed_savepoint_evidence_sha256.begin(),
+                  rolled.refreshed_savepoint_evidence_sha256.end())};
         }
         ApplyExecutedTransactionState(executed, &session_);
         if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
@@ -24869,7 +26564,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
   }
   if (submit && autocommit_emulation && !cursor_requested && result.accepted &&
-      !canonical_txn_begin && !canonical_txn_commit &&
+      !canonical_txn_begin && !canonical_txn_set_characteristics &&
+      !canonical_txn_commit &&
       !canonical_txn_rollback && !canonical_txn_savepoint &&
       !canonical_txn_release_savepoint &&
       !canonical_txn_rollback_to_savepoint) {
@@ -25527,35 +27223,26 @@ PipelineResult SbsqlTestWireSession::RunTableAnalyzeForWire() {
 }
 
 PipelineResult SbsqlTestWireSession::RunBulkImportStreamForWire() {
-  PipelineResult result;
-  if (server_client_ == nullptr || !session_.authenticated) return result;
-  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
-  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
-  if (!acquired.accepted) { result.messages = std::move(acquired.messages); if (result.messages.diagnostics.empty()) result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.ACQUIRE_FAILED","ERROR","bulk import acquire failed","sbsql_sblr_alignment")); return result; }
-  namespace bi = scratchbird::engine::sblr;
-  bi::SblrBulkImportStreamRequestV1 request;
-  const auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
-  if (!receipt || !acquired.context.preliminary_bulk_import_stream_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.PROJECTION_MISSING","ERROR","bulk import availability projection missing","sbsql_sblr_alignment")); return result; }
-  request.receipt = *receipt; request.occurrence = 1; request.import_occurrence = 1;
-  auto coordinated = server_client_->CoordinateBulkImportStream(session_, bi::EncodeSblrBulkImportStreamRequestV1(request));
-  result.messages = coordinated.messages;
-  if (!coordinated.accepted) { if (result.messages.diagnostics.empty()) result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.COORDINATION_FAILED","ERROR","bulk import coordination failed","sbsql_sblr_alignment")); return result; }
-  bi::SblrBulkImportStreamDescriptorV1 descriptor; std::string detail;
-  if (!bi::DecodeSblrBulkImportStreamDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &descriptor, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.DESCRIPTOR_INVALID","ERROR",detail,"sbsql_sblr_alignment")); return result; }
-  const auto operand = bi::EncodeSblrBulkImportStreamDescriptorV1(descriptor, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.ENCODE_FAILED","ERROR","bulk import operand encoding failed","sbsql_sblr_alignment")); return result; }
-  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.bulk_import_stream";
-  const auto submission = BuildCanonicalNativeSubmission(
-      bound, lowered, acquired.context, session_,
-      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &operand);
-  if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.SUBMISSION_FAILED","ERROR","bulk import canonical submission failed","sbsql_sblr_alignment")); return result; }
-  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
-  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
-  if (!result.accepted && result.messages.diagnostics.empty()) result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.EXECUTION_FAILED","ERROR","bulk import execution failed","sbsql_sblr_alignment"));
-  if (result.accepted) { bi::SblrBulkImportStreamResultV1 rr; if (!bi::DecodeSblrBulkImportStreamResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) { result.accepted = false; result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.RESULT_INVALID","ERROR",detail,"sbsql_sblr_alignment")); } }
-  return result;
+  auto begun = BeginBulkImportStreamForWire(
+      "SBSQL-465931ED7427", {{"app", false}, {"bulk_import_v1", false}});
+  if (!begun.accepted) {
+    return begun;
+  }
+
+  static constexpr std::string_view kCanonicalCsvRow =
+      "900000000,bulk-import-stream-process,active\n";
+  const std::vector<std::uint8_t> payload(kCanonicalCsvRow.begin(),
+                                          kCanonicalCsvRow.end());
+  auto appended = AppendBulkImportStreamChunkForWire(payload);
+  if (!appended.accepted) {
+    return appended;
+  }
+
+  auto executed = SealAndExecuteBulkImportStreamForWire();
+  if (executed.accepted) {
+    AcknowledgeBulkImportStreamCompletionForWire();
+  }
+  return executed;
 }
 
 PipelineResult SbsqlTestWireSession::RunBulkExportStreamForWire() {
@@ -26680,11 +28367,24 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
           "sbp_sbsql.wire"));
       return {false, RenderMessageVectorSet(messages)};
     }
-    const auto executed = ExecuteSblrOnRoute(EngineShowVersionOperationEnvelope(), true);
-    if (!executed.accepted) return {false, RenderMessageVectorSet(executed.messages)};
-    last_cursor_uuid_ = executed.cursor_uuid;
+    // The canonical cursor-stream descriptor is a query.execute result
+    // carrier: it is bound to the four UUIDs published by
+    // query_execute_result_v1.  Observability results are ordinary engine
+    // row batches and cannot manufacture that query authority.  Exercise the
+    // engine-backed stream through the same closed source-free query profile
+    // used by the public route smoke instead.
+    const auto executed = RunPipeline(
+        "SELECT key_a, COUNT(*), SUM(amount) FROM "
+        "(VALUES (0, 10), (1, 11), (2, 12), (3, 13), (4, 14)) "
+        "AS input(key_a, amount) GROUP BY key_a",
+        true, true, 5);
+    if (!executed.accepted || executed.server_cursor_uuid.empty()) {
+      return {false, RenderMessageVectorSet(executed.messages)};
+    }
+    last_cursor_uuid_ = executed.server_cursor_uuid;
     std::ostringstream out;
-    out << "CURSOR " << executed.cursor_uuid << ' ' << executed.row_count << " source=engine\n";
+    out << "CURSOR " << executed.server_cursor_uuid << ' '
+        << executed.server_row_count << " source=engine\n";
     return {false, out.str()};
   }
   if (upper == "SBPS CHUNKED EXECUTE") {
@@ -26705,18 +28405,40 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
           "sbp_sbsql.wire"));
       return {false, RenderMessageVectorSet(messages)};
     }
-    constexpr std::size_t kParameterBytes = 1100 * 1024;
-    constexpr std::uint64_t kResultRows = 24000;
-    const auto envelope = ChunkedParserJsonEnvelope(kParameterBytes, kResultRows);
-    const auto executed = ExecuteSblrOnRoute(envelope, false);
-    if (!executed.accepted) return {false, RenderMessageVectorSet(executed.messages)};
-    const bool saw_last_row =
-        executed.row_packet.find("\"row_index\":23999") != std::string::npos;
+    // The seed fixture stores 300 inline, bounded TEXT rows through one
+    // engine-owned batch.  A single ordinary query therefore exercises the
+    // real multi-frame response path without inflating the logical request or
+    // paying the unrelated three-relation optimizer cost.
+    constexpr std::uint64_t kResultRows = 300;
+    const auto executed = RunPipeline(
+        "SELECT payload FROM users.public.benchmark_public_items",
+        true);
+    if (!executed.accepted) {
+      auto detail = RenderMessageVectorSet(executed.messages);
+      if (detail.empty()) {
+        std::ostringstream refusal;
+        refusal << "MESSAGE ERROR SBSQL.CHUNKED_RESPONSE.EXECUTION_INVALID "
+                << "operation=" << executed.server_operation_id
+                << " outcome_unknown="
+                << (executed.outcome_unknown ? "true" : "false")
+                << " row_count=" << executed.server_row_count
+                << " result_bytes=" << executed.server_result_payload.size()
+                << '\n';
+        detail = refusal.str();
+      }
+      return {false, std::move(detail)};
+    }
+    const bool canonical_chunked_response =
+        executed.server_request_payload_bytes != 0 &&
+        executed.server_result_payload.size() > 1024 * 1024 &&
+        executed.server_row_count == kResultRows;
     std::ostringstream out;
-    out << "CHUNKED_EXECUTE accepted request_bytes=" << envelope.size()
-        << " result_bytes=" << executed.row_packet.size()
-        << " row_count=" << executed.row_count
-        << " last_row=" << (saw_last_row ? "true" : "false") << '\n';
+    out << "CHUNKED_EXECUTE accepted request_bytes="
+        << executed.server_request_payload_bytes
+        << " result_bytes=" << executed.server_result_payload.size()
+        << " row_count=" << executed.server_row_count
+        << " canonical_response_chunked="
+        << (canonical_chunked_response ? "true" : "false") << '\n';
     return {false, out.str()};
   }
   if (upper == "COPY STREAM") {
@@ -26737,35 +28459,31 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
           "sbp_sbsql.wire"));
       return {false, RenderMessageVectorSet(messages)};
     }
-    auto resolved = ResolveNameOnRoute("users.public.sbsfc021_stream_table", false, "relation");
-    if (!resolved.resolved) {
-      return {false, RenderMessageVectorSet(resolved.messages)};
+    auto begun = BeginBulkImportStreamForWire(
+        "SBSQL-465931ED7427",
+        {{"users", false}, {"public", false},
+         {"benchmark_public_items", false}},
+        true);
+    if (!begun.accepted) {
+      return {false, RenderMessageVectorSet(begun.messages)};
     }
-    session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
-    session_.security_policy_epoch = std::max(session_.security_policy_epoch, resolved.security_epoch);
-
-    const auto begun = ExecuteSblrOnRoute(TransactionBeginOperationEnvelope(), false);
-    if (!begun.accepted) return {false, RenderMessageVectorSet(begun.messages)};
-    const auto executed =
-        ExecuteSblrOnRoute(EngineBackedCopyStreamImportEnvelope(resolved.object_uuid), true);
+    static constexpr std::string_view kCanonicalCsvRow =
+        "copy-stream-row,stream-valid\n";
+    const std::vector<std::uint8_t> payload(kCanonicalCsvRow.begin(),
+                                            kCanonicalCsvRow.end());
+    auto appended = AppendBulkImportStreamChunkForWire(payload);
+    if (!appended.accepted) {
+      return {false, RenderMessageVectorSet(appended.messages)};
+    }
+    auto executed = SealAndExecuteBulkImportStreamForWire();
     if (!executed.accepted) {
-      const auto rolled_back =
-          ExecuteSblrOnRoute(TransactionRollbackOperationEnvelope(), false);
-      (void)rolled_back;
       return {false, RenderMessageVectorSet(executed.messages)};
     }
-    const auto committed = ExecuteSblrOnRoute(TransactionCommitOperationEnvelope(), false);
-    if (!committed.accepted) {
-      const auto rolled_back =
-          ExecuteSblrOnRoute(TransactionRollbackOperationEnvelope(), false);
-      (void)rolled_back;
-      return {false, RenderMessageVectorSet(committed.messages)};
-    }
-    last_cursor_uuid_ = executed.cursor_uuid;
     std::ostringstream out;
-    out << "COPY_CURSOR " << executed.cursor_uuid << " events=" << executed.row_count
-        << " source=engine operation_id=" << executed.operation_id
-        << " committed=true commit_operation_id=" << committed.operation_id << '\n';
+    out << "COPY_RESULT affected_rows=" << executed.server_affected_rows
+        << " source=engine operation_id=" << executed.server_operation_id
+        << " committed=true\n";
+    AcknowledgeBulkImportStreamCompletionForWire();
     return {false, out.str()};
   }
   if (upper == "MULTI RESULT") {
@@ -27348,7 +29066,81 @@ PipelineResult SbsqlTestWireSession::RunFulltextPrefixMatchForWire(){return RunS
 PipelineResult SbsqlTestWireSession::RunFulltextAnalyzerApplyForWire(){return RunShowObjectDetailForWire();}
 PipelineResult SbsqlTestWireSession::RunDdlAlterDictionaryForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDdlAlterDictionaryRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.dictionary_occurrence=1;auto coordinated=server_client_->CoordinateDdlAlterDictionary(session_,c::EncodeSblrDdlAlterDictionaryRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlAlterDictionaryDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlAlterDictionaryDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlAlterDictionaryDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_alter_dictionary";g_ddl_alter_dictionary_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_alter_dictionary_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunDdlCreateContinuousViewForWire(){PipelineResult result;if(!server_client_||!session_.authenticated){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.CLIENT_UNAVAILABLE","ERROR","authenticated parser IPC client unavailable","sbsql_sblr_alignment"});return result;}ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.RECEIPT_INVALID","ERROR","statement context receipt was not canonical UUID bytes","sbsql_sblr_alignment"});return result;}c::SblrDdlCreateContinuousViewRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.view_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreateContinuousView(session_,c::EncodeSblrDdlCreateContinuousViewRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.COORDINATION_FAILED","ERROR","continuous-view coordination request failed","sbsql_sblr_alignment"});return result;}c::SblrDdlCreateContinuousViewDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateContinuousViewDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false)){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.DESCRIPTOR_INVALID","ERROR",detail,"sbsql_sblr_alignment"});return result;}auto operand=c::EncodeSblrDdlCreateContinuousViewDescriptorV1(d,true);if(operand.empty()){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.OPERAND_ENCODE_FAILED","ERROR","continuous-view operand encoding failed","sbsql_sblr_alignment"});return result;}BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_continuous_view";g_ddl_create_continuous_view_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_continuous_view_operand=nullptr;if(!submission){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.SUBMISSION_FAILED","ERROR","canonical continuous-view submission construction failed","sbsql_sblr_alignment"});return result;}auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
-PipelineResult SbsqlTestWireSession::RunDdlAlterContinuousViewForWire(){PipelineResult result;if(!server_client_||!session_.authenticated){result.messages.diagnostics.push_back({"SBLR.DDL_ALTER_CONTINUOUS_VIEW.CLIENT_UNAVAILABLE","ERROR","authenticated parser IPC client unavailable","sbsql_sblr_alignment"});return result;}ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDdlAlterContinuousViewRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.view_occurrence=1;auto coordinated=server_client_->CoordinateDdlAlterContinuousView(session_,c::EncodeSblrDdlAlterContinuousViewRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlAlterContinuousViewDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlAlterContinuousViewDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlAlterContinuousViewDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_alter_continuous_view";g_ddl_alter_continuous_view_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_alter_continuous_view_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
+PipelineResult SbsqlTestWireSession::RunDdlAlterContinuousViewForWire() {
+  PipelineResult result;
+  const auto fail_local = [&](std::string code, std::string message) {
+    result.messages.diagnostics.push_back(
+        {std::move(code), "ERROR", std::move(message),
+         "sbsql_sblr_alignment"});
+    return result;
+  };
+  if (!server_client_ || !session_.authenticated) {
+    return fail_local(
+        "SBLR.DDL_ALTER_CONTINUOUS_VIEW.CLIENT_UNAVAILABLE",
+        "authenticated parser IPC client unavailable");
+  }
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired =
+      server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  namespace c = scratchbird::engine::sblr;
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt) {
+    return fail_local(
+        "SBLR.DDL_ALTER_CONTINUOUS_VIEW.RECEIPT_INVALID",
+        "statement context receipt was not canonical UUID bytes");
+  }
+  c::SblrDdlAlterContinuousViewRequestV1 request;
+  request.receipt = *receipt;
+  request.occurrence = 1;
+  request.view_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlAlterContinuousView(
+      session_, c::EncodeSblrDdlAlterContinuousViewRequestV1(request));
+  result.messages = coordinated.messages;
+  if (!coordinated.accepted) return result;
+
+  c::SblrDdlAlterContinuousViewDescriptorV1 descriptor;
+  std::string detail;
+  if (!c::DecodeSblrDdlAlterContinuousViewDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail,
+          false)) {
+    return fail_local(
+        "SBLR.DDL_ALTER_CONTINUOUS_VIEW.DESCRIPTOR_INVALID",
+        detail.empty() ? "continuous-view alter descriptor was invalid"
+                       : std::move(detail));
+  }
+  auto operand =
+      c::EncodeSblrDdlAlterContinuousViewDescriptorV1(descriptor, true);
+  if (operand.empty()) {
+    return fail_local(
+        "SBLR.DDL_ALTER_CONTINUOUS_VIEW.OPERAND_ENCODE_FAILED",
+        "continuous-view alter operand encoding failed");
+  }
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.ddl_alter_continuous_view";
+  g_ddl_alter_continuous_view_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr);
+  g_ddl_alter_continuous_view_operand = nullptr;
+  if (!submission) {
+    return fail_local(
+        "SBLR.DDL_ALTER_CONTINUOUS_VIEW.SUBMISSION_FAILED",
+        "canonical continuous-view alter submission construction failed");
+  }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = std::move(executed.messages);
+  return result;
+}
 PipelineResult SbsqlTestWireSession::RunDdlDropContinuousViewForWire(){PipelineResult result;if(!server_client_||!session_.authenticated){result.messages.diagnostics.push_back({"SBLR.DDL_DROP_CONTINUOUS_VIEW.CLIENT_UNAVAILABLE","ERROR","authenticated parser IPC client unavailable","sbsql_sblr_alignment"});return result;}ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDdlDropContinuousViewRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.view_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropContinuousView(session_,c::EncodeSblrDdlDropContinuousViewRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropContinuousViewDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropContinuousViewDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropContinuousViewDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_continuous_view";g_ddl_drop_continuous_view_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_drop_continuous_view_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunDmlAsyncInsertSubmitForWire(){PipelineResult result;if(!server_client_||!session_.authenticated){result.messages.diagnostics.push_back({"SBLR.DML_ASYNC_INSERT_SUBMIT.CLIENT_UNAVAILABLE","ERROR","authenticated parser IPC client unavailable","sbsql_sblr_alignment"});return result;}ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDmlAsyncInsertSubmitRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.submission_occurrence=1;auto coordinated=server_client_->CoordinateDmlAsyncInsertSubmit(session_,c::EncodeSblrDmlAsyncInsertSubmitRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDmlAsyncInsertSubmitDescriptorV1 d;std::string detail;if(!c::DecodeSblrDmlAsyncInsertSubmitDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDmlAsyncInsertSubmitDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.dml_async_insert_submit";g_dml_async_insert_submit_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_dml_async_insert_submit_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunDmlAsyncInsertStatusForWire(){PipelineResult result;if(!server_client_||!session_.authenticated){result.messages.diagnostics.push_back({"SBLR.DML_ASYNC_INSERT_STATUS.CLIENT_UNAVAILABLE","ERROR","authenticated parser IPC client unavailable","sbsql_sblr_alignment"});return result;}ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDmlAsyncInsertStatusRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.status_occurrence=1;auto coordinated=server_client_->CoordinateDmlAsyncInsertStatus(session_,c::EncodeSblrDmlAsyncInsertStatusRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDmlAsyncInsertStatusDescriptorV1 d;std::string detail;if(!c::DecodeSblrDmlAsyncInsertStatusDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDmlAsyncInsertStatusDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.dml_async_insert_status";g_dml_async_insert_status_operand=&operand;auto status=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_dml_async_insert_status_operand=nullptr;if(!status)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*status,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
@@ -27636,7 +29428,44 @@ PipelineResult SbsqlTestWireSession::RunStmtPrepareCanonicalForWire() {
   return RunStmtPrepareForWire();
 }
 
-PipelineResult SbsqlTestWireSession::RunStmtExecuteForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="observability.show_version";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(executed.accepted){result.server_operation_id=executed.operation_id;result.server_result_payload=executed.row_packet;result.server_row_count=executed.row_count;result.server_affected_rows=executed.affected_rows;result.server_affected_rows_present=executed.affected_rows_present;ApplyExecutedTransactionState(executed,&session_);}return result;}
+PipelineResult SbsqlTestWireSession::RunStmtExecuteForWire(
+    bool cursor_requested) {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired =
+      server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "observability.show_version";
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr);
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, cursor_requested);
+  result.accepted = executed.accepted;
+  result.messages = std::move(executed.messages);
+  if (executed.accepted) {
+    result.server_operation_id = executed.operation_id;
+    result.server_cursor_uuid = executed.cursor_uuid;
+    if (executed.cursor_stream_descriptor.complete()) {
+      cursor_stream_descriptors_[executed.cursor_uuid] =
+          executed.cursor_stream_descriptor;
+    }
+    result.server_result_payload = executed.row_packet;
+    result.server_row_count = executed.row_count;
+    result.server_affected_rows = executed.affected_rows;
+    result.server_affected_rows_present = executed.affected_rows_present;
+    ApplyExecutedTransactionState(executed, &session_);
+  }
+  return result;
+}
 
 PipelineResult SbsqlTestWireSession::RunStmtExecuteDirectForWire(){return RunStmtExecuteForWire();}
 

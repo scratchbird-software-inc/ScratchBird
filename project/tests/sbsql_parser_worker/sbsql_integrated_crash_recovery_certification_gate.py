@@ -64,7 +64,7 @@ REQUIRED_SOURCE_TOKENS = {
         "parser_resolved_names_to_uuids=true",
     ),
     Path("project/tests/sbsql_parser_worker/sbsql_stream_finality_conformance.cpp"): (
-        "stream_finality_mode",
+        "cursor.finality_kind = std::string(mode)",
         "timed_out",
         "cancelled",
         "parser_killed",
@@ -72,11 +72,11 @@ REQUIRED_SOURCE_TOKENS = {
     ),
     Path("project/tests/sbsql_parser_worker/sbsql_concurrent_session_transaction_conformance.cpp"): (
         "target_table_not_visible",
-        "transaction.create_savepoint",
-        "transaction.rollback_to_savepoint",
+        "EngineCreateSavepoint",
+        "EngineRollbackToSavepoint",
         "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
-        "PARSER_SERVER_IPC.CURSOR_NOT_FOUND",
-        "parser_finality:false",
+        "SERVER.STREAM.DESCRIPTOR_STALE",
+        "transaction_finality_preserved",
     ),
     Path("project/src/engine/internal_api/catalog/descriptor_api.cpp"): (
         "catalog_object_fallback",
@@ -105,6 +105,27 @@ REQUIRED_SURFACE_TOKENS = (
     "canonical_message_vector_set",
 )
 
+CLOSED_SURFACE_STATES = {
+    "e2e_passed",
+    "cluster_provider_route_passed",
+    "exact_refusal_passed",
+}
+EXACT_REFUSAL_EXECUTION_MARKERS = (
+    "executable_sblr_emitted=false",
+    "private_cluster_execution=false",
+)
+EXACT_REFUSAL_RESULT_MARKERS = (
+    "result_published=false",
+    "engine_dispatch_not_reached=true",
+    "engine_result_retained=false",
+)
+EXACT_REFUSAL_MUTATION_MARKERS = (
+    "catalog_mutation=false",
+    "row_mutation=false",
+    "no_mutation",
+    "private_cluster_execution=false",
+)
+
 
 def read_text(path: Path) -> str:
     try:
@@ -116,6 +137,34 @@ def read_text(path: Path) -> str:
 def read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def validate_exact_refusal(
+    row: dict[str, str],
+    index: int,
+    row_kind: str,
+    diagnostic_column: str,
+    result_column: str,
+) -> list[str]:
+    errors: list[str] = []
+    diagnostic_proof = row.get(diagnostic_column, "")
+    joined = ";".join(row.values())
+    diagnostic_tokens = (token.strip() for token in diagnostic_proof.split(";"))
+    if not any(
+        token
+        and "=" not in token
+        and "." in token
+        and token == token.upper()
+        for token in diagnostic_tokens
+    ):
+        errors.append(f"{row_kind} row {index}: exact refusal lacks a concrete diagnostic")
+    if not any(marker in joined for marker in EXACT_REFUSAL_EXECUTION_MARKERS):
+        errors.append(f"{row_kind} row {index}: exact refusal lacks no-execution proof")
+    if not any(marker in row.get(result_column, "") for marker in EXACT_REFUSAL_RESULT_MARKERS):
+        errors.append(f"{row_kind} row {index}: exact refusal lacks no-result proof")
+    if not any(marker in joined for marker in EXACT_REFUSAL_MUTATION_MARKERS):
+        errors.append(f"{row_kind} row {index}: exact refusal lacks no-mutation proof")
+    return errors
 
 
 def validate_ctest_registration(repo: Path) -> list[str]:
@@ -177,10 +226,19 @@ def validate_surface_evidence(repo: Path) -> tuple[list[str], int]:
             f"missing_release={len(evidence_ids - release_ids)} missing_evidence={len(release_ids - evidence_ids)}"
         )
 
-    allowed_states = {"e2e_passed", "cluster_provider_route_passed"}
     for index, row in enumerate(evidence_rows, start=2):
-        if row["final_state"] not in allowed_states:
+        if row["final_state"] not in CLOSED_SURFACE_STATES:
             errors.append(f"evidence row {index}: final_state not closed: {row['final_state']}")
+        elif row["final_state"] == "exact_refusal_passed":
+            errors.extend(
+                validate_exact_refusal(
+                    row,
+                    index,
+                    "evidence",
+                    "diagnostic_proof",
+                    "result_proof",
+                )
+            )
         joined = ";".join(row.get(column, "") for column in row)
         if row.get("category") == "transaction":
             for token in REQUIRED_SURFACE_TOKENS:
@@ -188,8 +246,22 @@ def validate_surface_evidence(repo: Path) -> tuple[list[str], int]:
                     errors.append(f"transaction evidence row {index}: missing {token}")
 
     for index, row in enumerate(release_rows, start=2):
-        if row["final_status"] not in allowed_states:
+        if row["final_status"] not in CLOSED_SURFACE_STATES:
             errors.append(f"release row {index}: final_status not closed: {row['final_status']}")
+        elif row["final_status"] == "exact_refusal_passed":
+            errors.extend(
+                validate_exact_refusal(
+                    row,
+                    index,
+                    "release",
+                    "diagnostic_refs",
+                    "result_refs",
+                )
+            )
+            if not row["auth_route_ref"].endswith("#exact_refusal_passed"):
+                errors.append(f"release row {index}: authenticated route is not refusal-scoped")
+            if not row["sblr_round_trip_ref"].endswith("#exact_refusal_passed"):
+                errors.append(f"release row {index}: round-trip evidence is not refusal-scoped")
         if row["release_status"] != "row_evidence_complete":
             errors.append(f"release row {index}: release_status not complete: {row['release_status']}")
         if row["remaining_risk"] != "none":

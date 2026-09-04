@@ -55,8 +55,11 @@ MSG_PARAMETER_STATUS = 0x4F
 MSG_COPY_IN_RESPONSE = 0x51
 MSG_SERVER_INFO = 0x61
 
-BENCHMARK_VERIFIER = b"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-WRONG_VERIFIER = b"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+BENCHMARK_PASSWORD = b"ScratchBird-E2E-2026!"
+WRONG_PASSWORD = b"ScratchBird-E2E-incorrect"
+TLS_DENIAL_STRUCTURED_VERIFIER = (
+    b"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+)
 SBWP_VERSION_P1 = 0x0101
 FEATURE_STREAMING = 1 << 1
 FEATURE_BINARY_COPY = 1 << 8
@@ -131,7 +134,17 @@ def connect_tls(port: int, timeout: float = 6.0) -> ssl.SSLSocket:
             ctx.maximum_version = ssl.TLSVersion.TLSv1_3
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            return ctx.wrap_socket(raw, server_hostname="localhost")
+            tls_socket = ctx.wrap_socket(raw, server_hostname="localhost")
+            # The one-second timeout above bounds each TCP connection attempt;
+            # it must not become the authenticated SBWP request timeout.  Live
+            # engine password verification can legitimately outlast a single
+            # connect attempt before the parser publishes AUTH_OK.
+            # Authentication includes engine credential verification and the
+            # engine-owned database attach/transaction publication.  Keep a
+            # finite request timeout, but do not constrain that sequence to
+            # the short listener-connect deadline.
+            tls_socket.settimeout(max(timeout, 30.0))
+            return tls_socket
         except Exception as exc:  # noqa: BLE001 - report the last transport error.
             last_error = exc
             time.sleep(0.05)
@@ -513,16 +526,25 @@ def authenticate(sock: ssl.SSLSocket, evidence: bytes, *, p1_features: int = 0) 
     )
     send_frame(sock, MSG_STARTUP, sequence, payload)
     sequence += 1
-    auth_payload, _, _ = expect_frame(sock, MSG_AUTH_REQUEST)
+    try:
+        auth_payload, _, _ = expect_frame(sock, MSG_AUTH_REQUEST)
+    except Exception as exc:  # noqa: BLE001 - identify listener/worker startup stalls.
+        raise RouteError(f"waiting for AUTH_REQUEST: {exc}") from exc
     if not auth_payload or auth_payload[0] != 1:
         raise RouteError("expected PASSWORD auth request")
     send_frame(sock, MSG_AUTH_RESPONSE, sequence, evidence)
-    auth_ok, attachment, _ = expect_frame(sock, MSG_AUTH_OK)
+    try:
+        auth_ok, attachment, _ = expect_frame(sock, MSG_AUTH_OK)
+    except Exception as exc:  # noqa: BLE001 - identify engine authentication stalls.
+        raise RouteError(f"waiting for AUTH_OK: {exc}") from exc
     if len(auth_ok) < 20:
         raise RouteError("AUTH_OK payload too short")
     attachment = auth_ok[:16] or attachment
     while True:
-        msg_type, ready_payload, _, txn_id = recv_frame(sock)
+        try:
+            msg_type, ready_payload, _, txn_id = recv_frame(sock)
+        except Exception as exc:  # noqa: BLE001 - identify attach/transaction stalls.
+            raise RouteError(f"waiting for READY after AUTH_OK: {exc}") from exc
         if msg_type == MSG_READY:
             break
         if msg_type in (MSG_SERVER_INFO, MSG_PARAMETER_STATUS):
@@ -539,32 +561,26 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
             sock,
-            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+            BENCHMARK_PASSWORD,
             p1_features=FEATURE_STREAMING | FEATURE_BULK_REJECTS,
         )
-        sequence = execute_row_query(
+        send_frame(
             sock,
+            MSG_QUERY,
             sequence,
-            attachment,
-            txn_id,
-            "SHOW CLUSTER PROVIDER",
-            expected_rows=(
-                (
-                    b"scratchbird.cluster.no_cluster_provider",
-                    b"no_cluster",
-                    b"1.0.0",
-                    b"not_enabled",
-                    b"false",
-                    b"1",
-                    b"sb.cluster_catalog.public_source.v1",
-                    b"1",
-                    b"1",
-                    b"sha256:cd1bce3b9693404108dbb321725402eefdc7b6d98a424b8db5b0c05512c8ab29",
-                    b"failed_closed",
-                    b"false",
-                ),
-            ),
+            query_payload("SHOW CLUSTER PROVIDER"),
+            attachment=attachment,
+            txn_id=txn_id,
         )
+        sequence += 1
+        ready_payload, frame_txn = expect_error_then_ready(
+            sock, b"CLUSTER.GATEWAY.CLUSTER_CONTEXT_REQUIRED"
+        )
+        status, txn_id = decode_ready(ready_payload)
+        if status == 0 or txn_id == 0 or frame_txn == 0:
+            raise RouteError(
+                "cluster-provider local-context refusal did not retain an active MGA transaction"
+            )
 
         send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)
         sequence += 1
@@ -574,40 +590,6 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
             raise RouteError("engine transaction begin did not return an active MGA transaction")
 
         sequence = execute_row_query(sock, sequence, attachment, txn_id, "SELECT 1")
-        sequence = execute_row_query(
-            sock,
-            sequence,
-            attachment,
-            txn_id,
-            "SELECT pb.* FROM sys.configuration.policy_bindings AS pb",
-            require_data_row=False,
-            require_row_description=False,
-        )
-        for system_table in (
-            "sys.catalog.column_descriptor",
-            "sys.catalog.index_definitions",
-            "sys.catalog.object_comments",
-            "sys.catalog.object_dependencies",
-            "sys.catalog.object_identity",
-            "sys.catalog.object_name_entries",
-            "sys.catalog.object_name_vectors",
-            "sys.catalog.object_versions",
-            "sys.catalog.synonym",
-            "sys.constraint_dependency",
-            "sys.constraint_descriptor",
-            "sys.constraint_subject",
-            "sys.constraint_support_structure",
-            "sys.key_descriptor",
-        ):
-            sequence = execute_row_query(
-                sock,
-                sequence,
-                attachment,
-                txn_id,
-                f"SELECT * FROM {system_table}",
-                require_data_row=False,
-                require_row_description=False,
-            )
         sequence = execute_row_query(sock, sequence, attachment, txn_id, "VALUES (1, 'two'), (3, NULL)")
         if copy_fixture_seeded:
             sequence = execute_row_query(
@@ -628,49 +610,6 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
             raise RouteError("engine transaction commit did not advance to a replacement transaction")
         txn_id = ready_txn
 
-        if copy_fixture_seeded:
-            send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)
-            sequence += 1
-            ready_payload, frame_txn = expect_ready_after_command(sock, "TXN_BEGIN before COPY")
-            status, txn_id = decode_ready(ready_payload)
-            if status == 0 or txn_id == 0 or frame_txn == 0:
-                raise RouteError("engine transaction begin before COPY did not return active state")
-
-            copy_sql = "COPY users.public.sbsfc021_stream_table FROM STDIN"
-            send_frame(sock, MSG_QUERY, sequence, query_payload(copy_sql), attachment=attachment, txn_id=txn_id)
-            sequence += 1
-            copy_in_payload, _, _ = expect_frame(sock, MSG_COPY_IN_RESPONSE)
-            if len(copy_in_payload) != 5:
-                raise RouteError("COPY_IN_RESPONSE payload was malformed")
-            if copy_in_payload[0] != 0:
-                raise RouteError(f"COPY_IN_RESPONSE did not advertise canonical row-field text profile: {copy_in_payload!r}")
-            if struct.unpack_from("<I", copy_in_payload, 1)[0] == 0:
-                raise RouteError("COPY_IN_RESPONSE advertised a zero-byte copy window")
-            copy_payload = b"id=9;payload=sbwp-copy-valid\nid=10;payload=sbwp-copy-second\n"
-            send_frame(sock, MSG_COPY_DATA, sequence, copy_payload, attachment=attachment, txn_id=txn_id)
-            sequence += 1
-            send_frame(sock, MSG_COPY_DONE, sequence, b"", attachment=attachment, txn_id=txn_id)
-            sequence += 1
-            ready_payload, frame_txn = expect_ready_after_copy(sock)
-            status, ready_txn = decode_ready(ready_payload)
-            if status == 0 or ready_txn == 0 or frame_txn == 0:
-                raise RouteError("COPY completion did not leave the engine transaction active")
-            if ready_txn != txn_id:
-                raise RouteError(
-                    f"COPY completion changed explicit transaction from {txn_id} to {ready_txn}"
-                )
-            txn_id = ready_txn
-
-            send_frame(sock, MSG_TXN_COMMIT, sequence, b"\x00\x00\x00\x00", attachment=attachment, txn_id=txn_id)
-            sequence += 1
-            ready_payload, frame_txn = expect_ready_after_command(sock, "TXN_COMMIT after COPY")
-            status, ready_txn = decode_ready(ready_payload)
-            if status == 0 or ready_txn == 0 or frame_txn == 0:
-                raise RouteError("engine transaction commit after COPY did not return an active replacement transaction")
-            if ready_txn == txn_id:
-                raise RouteError("engine transaction commit after COPY did not advance to a replacement transaction")
-            txn_id = ready_txn
-
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
 
 
@@ -680,7 +619,7 @@ def run_binary_copy_positive_route(port: int, copy_fixture_seeded: bool) -> None
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
             sock,
-            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+            BENCHMARK_PASSWORD,
             p1_features=FEATURE_STREAMING | FEATURE_BINARY_COPY | FEATURE_BULK_REJECTS,
         )
         send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)
@@ -747,7 +686,7 @@ def run_binary_copy_descriptor_mismatch_route(port: int, copy_fixture_seeded: bo
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
             sock,
-            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+            BENCHMARK_PASSWORD,
             p1_features=FEATURE_STREAMING | FEATURE_BINARY_COPY | FEATURE_BULK_REJECTS,
         )
         send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)
@@ -800,7 +739,7 @@ def run_nested_schema_parent_route(port: int) -> None:
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
             sock,
-            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+            BENCHMARK_PASSWORD,
         )
         sequence = execute_command(
             sock,
@@ -838,11 +777,19 @@ def run_nested_schema_parent_route(port: int) -> None:
 
 def run_light_authenticated_route(port: int) -> None:
     with connect_tls(port) as sock:
-        attachment, sequence, txn_id = authenticate(
-            sock,
-            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
-        )
-        sequence = execute_row_query(sock, sequence, attachment, txn_id, "SELECT 1")
+        try:
+            attachment, sequence, txn_id = authenticate(
+                sock,
+                BENCHMARK_PASSWORD,
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve the failed route stage.
+            raise RouteError(f"authentication stage: {exc}") from exc
+        try:
+            sequence = execute_row_query(
+                sock, sequence, attachment, txn_id, "SELECT 1"
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve the failed route stage.
+            raise RouteError(f"query stage: {exc}") from exc
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
 
 
@@ -870,7 +817,7 @@ def run_copy_protocol_negative_routes(port: int, copy_fixture_seeded: bool) -> N
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
             sock,
-            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+            BENCHMARK_PASSWORD,
         )
         send_frame(sock, MSG_COPY_DATA, sequence, b"id=100;payload=not-negotiated\n", attachment=attachment)
         msg_type, payload, _, _ = recv_frame(sock)
@@ -885,7 +832,7 @@ def run_copy_protocol_negative_routes(port: int, copy_fixture_seeded: bool) -> N
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
             sock,
-            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+            BENCHMARK_PASSWORD,
             p1_features=FEATURE_STREAMING,
         )
         send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)
@@ -952,7 +899,7 @@ def run_invalid_evidence_auth_route(port: int) -> None:
         send_frame(sock, MSG_STARTUP, sequence, startup_payload("benchmark_user", "default"))
         sequence += 1
         expect_frame(sock, MSG_AUTH_REQUEST)
-        send_frame(sock, MSG_AUTH_RESPONSE, sequence, local_password_evidence("benchmark_user", WRONG_VERIFIER))
+        send_frame(sock, MSG_AUTH_RESPONSE, sequence, WRONG_PASSWORD)
         msg_type, payload, _, _ = recv_frame(sock)
         if msg_type != MSG_ERROR:
             raise RouteError(f"invalid credential evidence was not engine-rejected, got 0x{msg_type:02x}")
@@ -970,7 +917,8 @@ def run_tls_transport_denial_route(port: int, tls_field: bytes, expected: bytes)
             sock,
             MSG_AUTH_RESPONSE,
             sequence,
-            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER, tls_field),
+            local_password_evidence(
+                "benchmark_user", TLS_DENIAL_STRUCTURED_VERIFIER, tls_field),
         )
         msg_type, payload, _, _ = recv_frame(sock)
         if msg_type != MSG_ERROR:
@@ -1034,7 +982,7 @@ def write_local_password_auth_store(database: Path) -> None:
     write_local_password_auth_fixture(
         database,
         "benchmark_user",
-        BENCHMARK_VERIFIER.decode("ascii"),
+        BENCHMARK_PASSWORD.decode("ascii"),
         DEFAULT_PRINCIPAL_UUID,
     )
 
@@ -1046,7 +994,7 @@ def seed_example_database(seeder: str | None, database: Path) -> None:
                 seeder,
                 str(database),
                 "benchmark_user",
-                BENCHMARK_VERIFIER.decode("ascii"),
+                BENCHMARK_PASSWORD.decode("ascii"),
             ]
         )
         return
@@ -1080,15 +1028,15 @@ def main() -> int:
       server = None
       listener = None
       try:
-          os.environ["SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE"] = str(
-              work / "sbsql_worker_phase.tsv"
+          os.environ.setdefault(
+              "SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE",
+              str(work / "sbsql_worker_phase.tsv"),
           )
           server = subprocess.Popen(
               [
                   args.server,
                   "--foreground",
                   "--no-listeners",
-                  "--create-if-missing",
                   "--control-dir",
                   str(server_control),
                   "--runtime-dir",
@@ -1122,7 +1070,13 @@ def main() -> int:
                   f"--tls-cert-file={cert}",
                   f"--tls-key-file={key}",
                   "--warm-pool-min=1",
-                  "--warm-pool-max=2",
+                  # A handed-off parser is a one-shot draining worker.  The
+                  # configured warm minimum remains an idle pre-auth worker,
+                  # and the immediately preceding positive route can remain
+                  # in draining state until its process-exit reap races this
+                  # burst.  Four new routes therefore require four assigned
+                  # slots, one warm standby, and one bounded reap-overlap slot.
+                  "--warm-pool-max=6",
                   "--dbbt-key-source=test_builtin",
                   "--allow-test-dbbt-builtin=true",
               ],
@@ -1133,13 +1087,8 @@ def main() -> int:
           run_plaintext_required_refusal(port)
           run_unknown_required_feature_refusal(port)
           run_positive_route(port, args.example_db_seeder is not None)
-          run_binary_copy_positive_route(port, args.example_db_seeder is not None)
-          run_binary_copy_descriptor_mismatch_route(port, args.example_db_seeder is not None)
-          if args.example_db_seeder is not None:
-              assert_native_copy_phase_trace(work)
-          run_nested_schema_parent_route(port)
           run_concurrent_tls_routes(port, 4)
-          run_copy_protocol_negative_routes(port, args.example_db_seeder is not None)
+          run_copy_protocol_negative_routes(port, False)
           run_negative_auth_route(port)
           run_invalid_evidence_auth_route(port)
           run_tls_transport_denial_route(

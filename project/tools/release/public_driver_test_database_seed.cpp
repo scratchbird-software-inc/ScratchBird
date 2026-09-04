@@ -147,6 +147,7 @@ struct Args {
   std::filesystem::path resource_seed_pack_root;
   scratchbird::core::platform::u32 page_size = kDriverFixturePageSize;
   bool overwrite = false;
+  bool bulk_import_fixture = false;
 };
 
 struct FixtureTable {
@@ -160,7 +161,8 @@ struct FixtureTable {
 
 void Usage() {
   std::cerr << "usage: public_driver_test_database_seed --output PATH --manifest PATH "
-               "--resource-seed-pack-root PATH [--page-size BYTES] [--overwrite]\n";
+               "--resource-seed-pack-root PATH [--page-size BYTES] [--overwrite] "
+               "[--bulk-import-fixture]\n";
 }
 
 bool ParsePageSize(const std::string& value, scratchbird::core::platform::u32* out) {
@@ -182,6 +184,10 @@ bool ParseArgs(int argc, char** argv, Args* args) {
     const std::string key = argv[i];
     if (key == "--overwrite") {
       args->overwrite = true;
+      continue;
+    }
+    if (key == "--bulk-import-fixture") {
+      args->bulk_import_fixture = true;
       continue;
     }
     if (i + 1 >= argc) {
@@ -520,8 +526,8 @@ void InsertRows(const api::EngineRequestContext& context,
   }
 }
 
-std::vector<FixtureTable> FixtureTables() {
-  return {
+std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture) {
+  std::vector<FixtureTable> fixtures{
       {
           "app.customers",
           "app",
@@ -556,11 +562,25 @@ std::vector<FixtureTable> FixtureTables() {
           {{{"principal_uuid", std::string(kAlicePrincipalUuid)}, {"principal_name", "alice"}, {"principal_state", "active"}}},
       },
   };
+  if (include_bulk_import_fixture) {
+    fixtures.push_back({
+        "app.bulk_import_v1",
+        "app",
+        "bulk_import_v1",
+        "018f0a2b-0000-7000-9000-000000000501",
+        {{"id", "int32"},
+         {"item_name", "text"},
+         {"item_state", "text"}},
+        {},
+    });
+  }
+  return fixtures;
 }
 
-void SeedFixtureObjects(const api::EngineRequestContext& context) {
+void SeedFixtureObjects(const api::EngineRequestContext& context,
+                        bool include_bulk_import_fixture) {
   CreateAppSchema(context);
-  for (const auto& fixture : FixtureTables()) {
+  for (const auto& fixture : FixtureTables(include_bulk_import_fixture)) {
     const std::string schema_uuid = SchemaUuidForPath(context, fixture.schema_path);
     if (schema_uuid.empty()) {
       std::cerr << "schema_not_visible=" << fixture.schema_path << '\n';
@@ -662,7 +682,7 @@ void WriteManifest(const Args& args,
   out << "  \"minimal_resource_bootstrap\": false,\n";
   WriteResourceSeedCatalogJson(out, state.resource_seed_catalog);
   out << "  \"fixture_objects_seeded\": [\n";
-  const auto tables = FixtureTables();
+  const auto tables = FixtureTables(args.bulk_import_fixture);
   for (std::size_t index = 0; index < tables.size(); ++index) {
     out << "    {\"path\": \"" << tables[index].path << "\", \"uuid\": \"" << tables[index].uuid << "\"}";
     out << (index + 1 == tables.size() ? "\n" : ",\n");
@@ -703,7 +723,7 @@ int main(int argc, char** argv) {
   ConfigureMemory();
   const CreatedDatabaseFixture fixture = CreateDatabase(args);
   const auto context = Begin(BaseContext(args, fixture.database_uuid));
-  SeedFixtureObjects(context);
+  SeedFixtureObjects(context, args.bulk_import_fixture);
   Commit(context);
   const auto bootstrap_security = db::ReadDatabaseBootstrapSecurityCatalog(
       args.output.string());
@@ -721,6 +741,6 @@ int main(int argc, char** argv) {
   std::cout << "public_driver_test_database_seed=passed database="
             << args.output.filename().string()
             << " full_create_database=true fixture_objects="
-            << FixtureTables().size() << '\n';
+            << FixtureTables(args.bulk_import_fixture).size() << '\n';
   return EXIT_SUCCESS;
 }

@@ -53,6 +53,46 @@ MgaIndexEntryAppendBatch EmptyLike(const MgaIndexEntryAppendBatch& source) {
   return batch;
 }
 
+MgaExactIndexEntryAppendBatch EmptyLike(
+    const MgaExactIndexEntryAppendBatch& source) {
+  MgaExactIndexEntryAppendBatch batch;
+  batch.index = source.index;
+  batch.table_uuid = source.table_uuid;
+  return batch;
+}
+
+void AddLocalityAwareIndexApplyEvidence(
+    const idx::CommitGroupLocalityIndexApplyPlan& core_plan,
+    std::size_t output_batch_count,
+    std::vector<EngineEvidenceReference>* evidence) {
+  if (evidence == nullptr || !core_plan.accepted) {
+    return;
+  }
+  evidence->push_back({"index_apply_planner",
+                       "commit_group_locality_aware_v1"});
+  evidence->push_back({"index_apply_grouping_before_append",
+                       core_plan.planned_before_append ? "true" : "false"});
+  evidence->push_back({"index_apply_grouped_family_count",
+                       std::to_string(core_plan.grouped_family_count)});
+  evidence->push_back({"index_apply_locality_group_count",
+                       std::to_string(core_plan.locality_group_count)});
+  evidence->push_back({"index_apply_pending_item_count",
+                       std::to_string(core_plan.pending_item_count)});
+  evidence->push_back({"index_apply_output_batch_count",
+                       std::to_string(output_batch_count)});
+  evidence->push_back({"index_apply_unique_order_preserved",
+                       core_plan.unique_order_preserved ? "true" : "false"});
+  evidence->push_back({"mga_finality_authority",
+                       "engine_transaction_inventory"});
+  for (const auto& family : core_plan.family_profile_keys) {
+    evidence->push_back({"index_apply_family_profile_key", family});
+  }
+  for (const auto& locality : core_plan.target_leaf_page_locality_keys) {
+    evidence->push_back({"index_apply_target_leaf_page_locality_key",
+                         locality});
+  }
+}
+
 }  // namespace
 
 LocalityAwareIndexApplyBatchPlan PlanLocalityAwareIndexApplyBatches(
@@ -123,36 +163,88 @@ LocalityAwareIndexApplyBatchPlan PlanLocalityAwareIndexApplyBatches(
   return result;
 }
 
+LocalityAwareExactIndexApplyBatchPlan PlanLocalityAwareExactIndexApplyBatches(
+    const std::vector<MgaExactIndexEntryAppendBatch>& batches) {
+  LocalityAwareExactIndexApplyBatchPlan result;
+  result.diagnostic = Ok();
+  std::vector<idx::CommitGroupLocalityIndexApplyItem> items;
+  for (std::size_t batch_ordinal = 0; batch_ordinal < batches.size();
+       ++batch_ordinal) {
+    const auto& batch = batches[batch_ordinal];
+    const bool unique = IndexIsUnique(batch.index);
+    for (std::size_t entry_ordinal = 0;
+         entry_ordinal < batch.entries.size();
+         ++entry_ordinal) {
+      const auto& entry = batch.entries[entry_ordinal];
+      if (entry.encoded_key.empty()) {
+        continue;
+      }
+      idx::CommitGroupLocalityIndexApplyItem item;
+      item.source_batch_ordinal = batch_ordinal;
+      item.source_row_ordinal = entry_ordinal;
+      item.index_uuid = batch.index.index_uuid;
+      item.family = NormalizedFamily(batch.index);
+      item.profile = NormalizedProfile(batch.index);
+      item.unique = unique;
+      item.target_keys.push_back(entry.encoded_key);
+      items.push_back(std::move(item));
+    }
+  }
+
+  result.core_plan = idx::PlanCommitGroupLocalityIndexApply(items);
+  if (!result.core_plan.accepted) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "dml.index_apply_locality",
+        result.core_plan.refusal_reason.empty()
+            ? "index_apply_locality_plan_refused"
+            : result.core_plan.refusal_reason);
+    return result;
+  }
+
+  for (const auto& group : result.core_plan.groups) {
+    std::optional<std::size_t> current_batch_ordinal;
+    MgaExactIndexEntryAppendBatch current;
+    bool current_active = false;
+    auto flush_current = [&]() {
+      if (current_active && !current.entries.empty()) {
+        result.batches.push_back(std::move(current));
+      }
+      current = {};
+      current_active = false;
+      current_batch_ordinal.reset();
+    };
+
+    for (const auto item_ordinal : group.item_ordinals) {
+      const auto& item = items[item_ordinal];
+      if (!current_batch_ordinal.has_value() ||
+          *current_batch_ordinal != item.source_batch_ordinal) {
+        flush_current();
+        current_batch_ordinal = item.source_batch_ordinal;
+        current = EmptyLike(batches[item.source_batch_ordinal]);
+        current_active = true;
+      }
+      current.entries.push_back(
+          batches[item.source_batch_ordinal].entries[item.source_row_ordinal]);
+    }
+    flush_current();
+  }
+  return result;
+}
+
 void AddLocalityAwareIndexApplyEvidence(
     const LocalityAwareIndexApplyBatchPlan& plan,
     std::vector<EngineEvidenceReference>* evidence) {
-  if (evidence == nullptr || !plan.core_plan.accepted) {
-    return;
-  }
-  evidence->push_back({"index_apply_planner",
-                       "commit_group_locality_aware_v1"});
-  evidence->push_back({"index_apply_grouping_before_append",
-                       plan.core_plan.planned_before_append ? "true" : "false"});
-  evidence->push_back({"index_apply_grouped_family_count",
-                       std::to_string(plan.core_plan.grouped_family_count)});
-  evidence->push_back({"index_apply_locality_group_count",
-                       std::to_string(plan.core_plan.locality_group_count)});
-  evidence->push_back({"index_apply_pending_item_count",
-                       std::to_string(plan.core_plan.pending_item_count)});
-  evidence->push_back({"index_apply_output_batch_count",
-                       std::to_string(plan.batches.size())});
-  evidence->push_back({"index_apply_unique_order_preserved",
-                       plan.core_plan.unique_order_preserved ? "true" : "false"});
-  evidence->push_back({"mga_finality_authority",
-                       "engine_transaction_inventory"});
-  for (const auto& family : plan.core_plan.family_profile_keys) {
-    evidence->push_back({"index_apply_family_profile_key", family});
-  }
-  for (const auto& locality :
-       plan.core_plan.target_leaf_page_locality_keys) {
-    evidence->push_back({"index_apply_target_leaf_page_locality_key",
-                         locality});
-  }
+  AddLocalityAwareIndexApplyEvidence(plan.core_plan,
+                                     plan.batches.size(),
+                                     evidence);
+}
+
+void AddLocalityAwareIndexApplyEvidence(
+    const LocalityAwareExactIndexApplyBatchPlan& plan,
+    std::vector<EngineEvidenceReference>* evidence) {
+  AddLocalityAwareIndexApplyEvidence(plan.core_plan,
+                                     plan.batches.size(),
+                                     evidence);
 }
 
 }  // namespace scratchbird::engine::internal_api

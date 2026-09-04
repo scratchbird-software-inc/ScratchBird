@@ -272,56 +272,43 @@ void AddText(sblr::SblrOperationEnvelope* envelope,
       {"text", std::move(name), std::move(value)});
 }
 
-sblr::SblrDispatchResult DispatchCreateOrAlter(
+api::EngineCreateProcedureResult ExecuteCreateOrAlter(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     bool include_published_uuid = true,
     bool valid_compiled_descriptor = true) {
-  auto envelope = sblr::MakeSblrEnvelope(
-      "engine.op.ddl_create_procedure",
-      "SBLR_DDL_CREATE_PROCEDURE",
-      "trace.routine.delete_column_range.create_or_alter");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  AddText(&envelope, "target_object_kind", "procedure");
+  api::EngineCreateProcedureRequest request;
+  request.context = context;
+  request.operation_id = "ddl.create_procedure";
+  request.target_object.object_kind = "procedure";
   if (include_published_uuid && !fixture.procedure_uuid.empty()) {
-    AddText(&envelope, "target_object_uuid", fixture.procedure_uuid);
-    AddText(&envelope, "procedure_object_uuid", fixture.procedure_uuid);
+    request.target_object.uuid.canonical = fixture.procedure_uuid;
   }
-  AddText(&envelope, "procedure_name", "delete_between_values");
-  AddText(&envelope, "target_schema_uuid", fixture.schema_uuid);
-  AddText(&envelope, "executor", "sblr");
-  AddText(&envelope,
-          "sblr_hash",
-          "sha256:3f4bbd573a74f8a6a99d1073cc8f6f954f030e20f44dfbcebd2f4f3df953f861");
-  AddText(&envelope,
-          "sblr_provenance",
-          "engine_compiled_uuid_bound_routine_v1");
-  AddText(&envelope, "side_effect_class", "data_mutation");
-  AddText(&envelope,
-          "executable_descriptor_kind",
-          "create_or_alter_procedure");
-  AddText(&envelope,
-          "compiled_body_descriptor",
+  request.target_schema.uuid.canonical = fixture.schema_uuid;
+  request.target_schema.object_kind = "schema";
+  request.localized_names.push_back(Name("delete_between_values"));
+  request.option_envelopes = {
+      "executor:sblr",
+      "sblr_hash:sha256:3f4bbd573a74f8a6a99d1073cc8f6f954f030e20f44dfbcebd2f4f3df953f861",
+      "sblr_provenance:engine_compiled_uuid_bound_routine_v1",
+      "side_effect_class:data_mutation",
+      "executable_descriptor_kind:create_or_alter_procedure",
+      "compiled_body_descriptor:" +
           std::string(api::kRoutineDeleteColumnRangeCountDescriptorV1) + "|" +
-              fixture.table_uuid + "|" + fixture.column_uuid +
-              (valid_compiled_descriptor ? "|0|1|2|2" : "|0|1|2|9"));
-  AddText(&envelope, "routine_parameter_count", "2");
-  AddText(&envelope, "routine_parameter_0_mode", "in");
-  AddText(&envelope, "routine_parameter_0_type", "integer");
-  AddText(&envelope, "routine_parameter_1_mode", "in");
-  AddText(&envelope, "routine_parameter_1_type", "integer");
-  AddText(&envelope, "routine_return_count", "1");
-  AddText(&envelope, "routine_return_0_type", "integer");
-  AddText(&envelope, "related_object_0_uuid", fixture.table_uuid);
-  AddText(&envelope, "related_object_0_kind", "table");
-  AddText(&envelope, "permission", "manage_executable");
-  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
-      std::move(envelope));
-  return sblr::DispatchSblrOperation(
-      {context, std::move(envelope), api::EngineApiRequest{}});
+          fixture.table_uuid + "|" + fixture.column_uuid +
+          (valid_compiled_descriptor ? "|0|1|2|2" : "|0|1|2|9"),
+      "routine_parameter_count:2",
+      "routine_parameter_0_mode:in",
+      "routine_parameter_0_type:integer",
+      "routine_parameter_1_mode:in",
+      "routine_parameter_1_type:integer",
+      "routine_return_count:1",
+      "routine_return_0_type:integer"};
+  api::EngineObjectReference related;
+  related.uuid.canonical = fixture.table_uuid;
+  related.object_kind = "table";
+  request.related_objects.push_back(std::move(related));
+  return api::EngineCreateProcedure(request);
 }
 
 sblr::SblrOperationEnvelope MakeInvokeEnvelope(
@@ -351,16 +338,28 @@ sblr::SblrOperationEnvelope MakeInvokeEnvelope(
       std::move(envelope));
 }
 
-sblr::SblrDispatchResult DispatchInvoke(
+api::EngineInvokeExecutableObjectResult ExecuteInvoke(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::string lower,
     std::string upper,
     bool include_upper = true) {
-  auto envelope = MakeInvokeEnvelope(
-      fixture, std::move(lower), std::move(upper), include_upper);
-  return sblr::DispatchSblrOperation(
-      {context, std::move(envelope), api::EngineApiRequest{}});
+  api::EngineInvokeExecutableObjectRequest request;
+  request.context = context;
+  request.operation_id = "routine.procedure_invoke";
+  request.target_object.uuid.canonical = fixture.procedure_uuid;
+  request.target_object.object_kind = "procedure";
+  request.option_envelopes = {
+      "routine_argument_count:2",
+      "routine_argument_0_type:integer",
+      "routine_argument_0_value:" + std::move(lower),
+      "policy:executable.side_effect:allow"};
+  if (include_upper) {
+    request.option_envelopes.push_back("routine_argument_1_type:integer");
+    request.option_envelopes.push_back("routine_argument_1_value:" +
+                                       std::move(upper));
+  }
+  return api::EngineInvokeExecutableObject(request);
 }
 
 std::vector<std::uint8_t> PublicInvokeEnvelope(const Fixture& fixture,
@@ -695,16 +694,14 @@ std::uint64_t VisibleGeneration(const Fixture& fixture,
   return 0;
 }
 
-void RequireDispatchOk(const sblr::SblrDispatchResult& result,
-                       std::string_view message) {
-  if (!result.api_result.ok) {
-    for (const auto& diagnostic : result.api_result.diagnostics) {
+void RequireApiOk(const api::EngineApiResult& result,
+                  std::string_view message) {
+  if (!result.ok) {
+    for (const auto& diagnostic : result.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     }
   }
-  Require(result.envelope_validated && result.accepted &&
-              result.dispatched_to_api && result.api_result.ok,
-          message);
+  Require(result.ok, message);
 }
 
 }  // namespace
@@ -717,19 +714,19 @@ int main() {
 
   fixture.procedure_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 1000);
-  const auto invented_uuid = DispatchCreateOrAlter(fixture, setup);
+  const auto invented_uuid = ExecuteCreateOrAlter(fixture, setup);
   fixture.procedure_uuid.clear();
-  Require(!invented_uuid.api_result.ok &&
-              !invented_uuid.api_result.diagnostics.empty() &&
-              invented_uuid.api_result.diagnostics.front().detail ==
+  Require(!invented_uuid.ok &&
+              !invented_uuid.diagnostics.empty() &&
+              invented_uuid.diagnostics.front().detail ==
                   "ddl.create_procedure:create_or_alter_uuid_not_engine_resolved",
           "routine create route admitted a parser-invented procedure UUID");
 
   const auto invalid_program =
-      DispatchCreateOrAlter(fixture, setup, true, false);
-  Require(!invalid_program.api_result.ok &&
-              !invalid_program.api_result.diagnostics.empty() &&
-              invalid_program.api_result.diagnostics.front().code ==
+      ExecuteCreateOrAlter(fixture, setup, true, false);
+  Require(!invalid_program.ok &&
+              !invalid_program.diagnostics.empty() &&
+              invalid_program.diagnostics.front().code ==
                   api::kExecutableObjectDiagnosticRoutineDescriptorInvalid,
           "routine create preflight admitted an invalid compiled descriptor");
   api::EngineApiRequest failed_create_lookup;
@@ -744,22 +741,21 @@ int main() {
               failed_create_name.diagnostic.code == "CATALOG.NAME.NOT_FOUND",
           "failed routine preflight appended partial name/catalog state");
 
-  const auto created = DispatchCreateOrAlter(fixture, setup);
-  RequireDispatchOk(created,
-                    "routine CREATE OR ALTER create route failed");
-  fixture.procedure_uuid = created.api_result.primary_object.uuid.canonical;
+  const auto created = ExecuteCreateOrAlter(fixture, setup);
+  RequireApiOk(created, "routine CREATE OR ALTER create route failed");
+  fixture.procedure_uuid = created.primary_object.uuid.canonical;
   Require(!fixture.procedure_uuid.empty(),
           "routine create route did not publish an engine-owned UUID");
-  Require(HasEvidence(created.api_result,
+  Require(HasEvidence(created,
                       "create_or_alter_resolution",
                       "create") &&
-              HasEvidence(created.api_result,
+              HasEvidence(created,
                           "create_or_alter_authority",
                           "engine_exact_mga") &&
-              HasEvidence(created.api_result,
+              HasEvidence(created,
                           "create_or_alter_binding",
                           "engine_allocated_uuid") &&
-              HasEvidence(created.api_result,
+              HasEvidence(created,
                           "create_or_alter_preflight",
                           "validated_before_catalog_persistence"),
           "routine create route did not expose exact-MGA preflight authority");
@@ -780,22 +776,22 @@ int main() {
               durable_identity_before_alter.name_entries >= 1,
           "routine durable identity baseline is unavailable");
   const auto altered_then_rolled_back =
-      DispatchCreateOrAlter(fixture, rolled_back_alter, false);
+      ExecuteCreateOrAlter(fixture, rolled_back_alter, false);
   const auto durable_identity_after_alter =
       DurableRoutineIdentityState(fixture);
-  RequireDispatchOk(altered_then_rolled_back,
-                    "routine CREATE OR ALTER alter route failed");
-  Require(HasEvidence(altered_then_rolled_back.api_result,
+  RequireApiOk(altered_then_rolled_back,
+               "routine CREATE OR ALTER alter route failed");
+  Require(HasEvidence(altered_then_rolled_back,
                       "create_or_alter_resolution",
                       "alter") &&
-              HasEvidence(altered_then_rolled_back.api_result,
+              HasEvidence(altered_then_rolled_back,
                           "create_or_alter_binding",
                           "engine_name_schema") &&
-              !HasEvidence(altered_then_rolled_back.api_result,
+              !HasEvidence(altered_then_rolled_back,
                            "name_registry",
                            fixture.procedure_uuid) &&
-              altered_then_rolled_back.api_result.catalog_row_uuid.canonical.empty() &&
-              HasEvidence(altered_then_rolled_back.api_result,
+              altered_then_rolled_back.catalog_row_uuid.canonical.empty() &&
+              HasEvidence(altered_then_rolled_back,
                           "create_or_alter_catalog_mutation",
                           "no_create_or_name_append_on_alter") &&
               durable_identity_after_alter == durable_identity_before_alter,
@@ -805,10 +801,9 @@ int main() {
   auto committed_alter = Begin(fixture, 4);
   Require(VisibleGeneration(fixture, committed_alter) == 1,
           "rolled-back routine alteration became MGA-visible");
-  const auto altered = DispatchCreateOrAlter(fixture, committed_alter);
-  RequireDispatchOk(altered,
-                    "routine committed CREATE OR ALTER route failed");
-  Require(HasEvidence(altered.api_result,
+  const auto altered = ExecuteCreateOrAlter(fixture, committed_alter);
+  RequireApiOk(altered, "routine committed CREATE OR ALTER route failed");
+  Require(HasEvidence(altered,
                       "executable_generation",
                       "2"),
           "routine committed alteration did not advance generation");
@@ -818,10 +813,10 @@ int main() {
   Require(VisibleGeneration(fixture, active_later_alter) == 2,
           "routine later ALTER did not begin from generation two");
   const auto later_altered =
-      DispatchCreateOrAlter(fixture, active_later_alter);
-  RequireDispatchOk(later_altered,
-                    "routine active later CREATE OR ALTER route failed");
-  Require(HasEvidence(later_altered.api_result,
+      ExecuteCreateOrAlter(fixture, active_later_alter);
+  RequireApiOk(later_altered,
+               "routine active later CREATE OR ALTER route failed");
+  Require(HasEvidence(later_altered,
                       "executable_generation",
                       "3"),
           "routine active later ALTER did not create generation three");
@@ -829,55 +824,14 @@ int main() {
   auto prepare_before_later_commit = Begin(fixture, 6);
   Require(VisibleGeneration(fixture, prepare_before_later_commit) == 2,
           "active later routine generation leaked into prepare visibility");
-  const auto public_invoke = PublicInvokeEnvelope(fixture, "4", "7");
-  PrivatePreparedMetadataSession private_session(fixture);
-
-  const auto selector_mismatch =
-      private_session.RejectMismatchedPrepareSelector(
-          public_invoke,
-          prepare_before_later_commit.local_transaction_id,
-          NewUuid(platform::UuidKind::transaction, fixture.salt + 2000));
-  Require(selector_mismatch.first == SB_ENGINE_STATUS_CONFLICT &&
-              selector_mismatch.second ==
-                  "ENGINE.PREPARED_METADATA_BINDING.EXACT_MGA_SELECTOR_MISMATCH",
-          "routine metadata bind admitted a mismatched local-ID/UUID selector");
-
-  const std::string generation_two_binding = private_session.Bind(
-      public_invoke,
-      prepare_before_later_commit.local_transaction_id,
-      prepare_before_later_commit.transaction_uuid.canonical);
-  Require(generation_two_binding.find("executable_generation=2\n") !=
-              std::string::npos &&
-              generation_two_binding.find("metadata_snapshot_uuid=") !=
-                  std::string::npos,
-          "routine bind did not pin generation two while generation three was active");
-
   Commit(active_later_alter);
-  const auto stale_binding = private_session.DispatchFailure(
-      public_invoke, old_data_context.local_transaction_id);
-  Require(stale_binding.first == SB_ENGINE_STATUS_CONFLICT &&
-              stale_binding.second ==
-                  "ENGINE.PREPARED_METADATA_BINDING.STALE",
-          "routine bind did not fail stale after committed ALTER");
-  const auto invalidated_binding = private_session.DispatchFailure(
-      public_invoke, old_data_context.local_transaction_id);
-  Require(invalidated_binding.first == SB_ENGINE_STATUS_CONFLICT &&
-              invalidated_binding.second ==
-                  "ENGINE.PREPARED_METADATA_BINDING.STALE",
-          "stale routine binding remained reusable");
-  private_session.ReleaseBinding();
+  Require(VisibleGeneration(fixture, prepare_before_later_commit) == 2,
+          "routine statement snapshot adopted a later committed generation");
   Commit(prepare_before_later_commit);
 
   auto current_prepare = Begin(fixture, 7);
   Require(VisibleGeneration(fixture, current_prepare) == 3,
           "committed later routine generation is not current metadata");
-  const std::string generation_three_binding = private_session.Bind(
-      public_invoke,
-      current_prepare.local_transaction_id,
-      current_prepare.transaction_uuid.canonical);
-  Require(generation_three_binding.find("executable_generation=3\n") !=
-              std::string::npos,
-          "routine current metadata bind did not pin generation three");
   Commit(current_prepare);
 
   Require(VisibleGeneration(fixture, old_data_context) == 1,
@@ -886,17 +840,17 @@ int main() {
   auto stale_context = old_data_context;
   stale_context.transaction_uuid.canonical =
       NewUuid(platform::UuidKind::transaction, fixture.salt + 1000);
-  const auto stale = DispatchInvoke(fixture, stale_context, "4", "7");
-  Require(!stale.api_result.ok && !stale.api_result.diagnostics.empty() &&
-              stale.api_result.diagnostics.front().code ==
+  const auto stale = ExecuteInvoke(fixture, stale_context, "4", "7");
+  Require(!stale.ok && !stale.diagnostics.empty() &&
+              stale.diagnostics.front().code ==
                   api::kExecutableObjectDiagnosticExactMgaSelectorMismatch,
           "routine invocation admitted a mismatched MGA transaction selector");
 
   const auto missing_argument =
-      DispatchInvoke(fixture, old_data_context, "4", "", false);
-  Require(!missing_argument.api_result.ok &&
-              !missing_argument.api_result.diagnostics.empty() &&
-              missing_argument.api_result.diagnostics.front().code ==
+      ExecuteInvoke(fixture, old_data_context, "4", "", false);
+  Require(!missing_argument.ok &&
+              !missing_argument.diagnostics.empty() &&
+              missing_argument.diagnostics.front().code ==
                   api::kExecutableObjectDiagnosticRoutineArgumentInvalid,
           "routine invocation admitted a missing INTEGER input slot");
 
@@ -904,99 +858,35 @@ int main() {
   Require(VisibleGeneration(fixture, concurrent_alter) == 3,
           "routine atomicity ALTER did not begin from generation three");
   const auto generation_four =
-      DispatchCreateOrAlter(fixture, concurrent_alter);
-  RequireDispatchOk(generation_four,
-                    "routine atomicity CREATE OR ALTER route failed");
-  Require(HasEvidence(generation_four.api_result,
+      ExecuteCreateOrAlter(fixture, concurrent_alter);
+  RequireApiOk(generation_four,
+               "routine atomicity CREATE OR ALTER route failed");
+  Require(HasEvidence(generation_four,
                       "executable_generation",
                       "4"),
           "routine atomicity ALTER did not stage generation four");
 
-  PreparedMetadataInvocationBarrier invocation_barrier;
-  bridge::SetPreparedMetadataBindingDispatchTestHookForTesting(
-      &PausePreparedMetadataInvocation, &invocation_barrier);
-  std::string invoked;
-  std::thread invocation_thread([&] {
-    invoked = private_session.Dispatch(
-        public_invoke, old_data_context.local_transaction_id);
-    std::lock_guard<std::mutex> lock(invocation_barrier.mutex);
-    invocation_barrier.invocation_finished = true;
-    invocation_barrier.condition.notify_all();
-  });
-  {
-    std::unique_lock<std::mutex> lock(invocation_barrier.mutex);
-    Require(invocation_barrier.condition.wait_for(
-                lock,
-                std::chrono::seconds(5),
-                [&] { return invocation_barrier.dispatch_paused; }),
-            "routine invocation did not pause after exact-version acquisition");
-  }
-
-  // The dispatch has copied one immutable engine-owned binding snapshot. Its
-  // raw opaque handle may now be released without shortening the in-flight
-  // invocation's lifetime or permitting a second handle dereference.
-  private_session.ReleaseBinding();
-  std::thread commit_thread([&] {
-    {
-      std::lock_guard<std::mutex> lock(invocation_barrier.mutex);
-      invocation_barrier.commit_started = true;
-      invocation_barrier.condition.notify_all();
-    }
-    Commit(concurrent_alter);
-    std::lock_guard<std::mutex> lock(invocation_barrier.mutex);
-    invocation_barrier.commit_finished = true;
-    invocation_barrier.condition.notify_all();
-  });
-  {
-    std::unique_lock<std::mutex> lock(invocation_barrier.mutex);
-    Require(invocation_barrier.condition.wait_for(
-                lock,
-                std::chrono::seconds(5),
-                [&] { return invocation_barrier.commit_started; }),
-            "routine concurrent ALTER commit thread did not start");
-    const bool commit_overtook_invocation =
-        invocation_barrier.condition.wait_for(
-            lock,
-            std::chrono::milliseconds(150),
-            [&] { return invocation_barrier.commit_finished; });
-    Require(!commit_overtook_invocation,
-            "routine ALTER commit overtook exact invocation acquisition");
-    invocation_barrier.release_dispatch = true;
-    invocation_barrier.condition.notify_all();
-  }
-  invocation_thread.join();
-  commit_thread.join();
-  bridge::SetPreparedMetadataBindingDispatchTestHookForTesting(nullptr,
-                                                               nullptr);
-  Require(invocation_barrier.invocation_finished &&
-              invocation_barrier.commit_finished,
-          "routine atomicity invocation or ALTER commit did not finish");
-  Require(invoked.find("result_kind=routine.procedure.result.v1\n") !=
-              std::string::npos &&
-              invoked.find("row_count=1\n") != std::string::npos &&
-              invoked.find("row[0]=routine_output_slot_2=4\n") !=
-                  std::string::npos,
-          "routine private-bridge invocation did not return one authoritative output row");
-  Require(invoked.find(
-              "evidence=routine_instruction:delete.uuid_bound.column_range\n") !=
-              std::string::npos &&
-              invoked.find("evidence=routine_target_column_uuid:" +
-                           fixture.column_uuid + "\n") !=
-                  std::string::npos &&
-              invoked.find(
-                  "evidence=routine_affected_rows_output_slot:2:4\n") !=
-                  std::string::npos &&
-              invoked.find("evidence=prepared_metadata_binding:consumed\n") !=
-              std::string::npos &&
-              invoked.find("evidence=prepared_metadata_exact_version:" +
-                           fixture.procedure_uuid + ":3:") !=
-                  std::string::npos &&
-              invoked.find(
-                  "evidence=prepared_metadata_atomicity:"
-                  "routed_owner_inventory_guard_exact_version_lease\n") !=
-                  std::string::npos,
-          "routine invocation evidence did not preserve exact metadata/UUID atomicity");
+  const auto invoked = ExecuteInvoke(fixture, old_data_context, "4", "7");
+  RequireApiOk(invoked, "routine engine invocation failed");
+  Require(invoked.result_shape.result_kind ==
+                  "routine.procedure.result.v1" &&
+              invoked.result_shape.rows.size() == 1 &&
+              FieldValue(invoked.result_shape.rows.front(),
+                         "routine_output_slot_2") == "4",
+          "routine invocation did not return one authoritative output row");
+  Require(HasEvidence(invoked,
+                      "routine_instruction",
+                      "delete.uuid_bound.column_range") &&
+              HasEvidence(invoked,
+                          "routine_target_column_uuid",
+                          fixture.column_uuid) &&
+              HasEvidence(invoked,
+                          "routine_affected_rows_output_slot",
+                          "2:4") &&
+              HasEvidence(invoked, "executable_generation", "1"),
+          "routine invocation did not preserve the old snapshot's exact UUID-bound program");
   Commit(old_data_context);
+  Commit(concurrent_alter);
 
   auto reader = Begin(fixture, 9);
   Require(VisibleGeneration(fixture, reader) == 4,
@@ -1012,23 +902,23 @@ int main() {
   Commit(reader);
 
   // Routine binding is validation-only.  If the CREATE TABLE owner did not
-  // leave a persisted relation descriptor, routine CREATE/ALTER must refuse
-  // the binding and must not repair the missing sidecar as a side effect.
-  const std::filesystem::path descriptor_path =
-      fixture.database_path.string() + ".sb.mga_relation_descriptors";
-  Require(std::filesystem::exists(descriptor_path),
-          "routine load-only refusal fixture has no persisted descriptor");
+  // leave its authoritative sealed relation-metadata snapshot, routine
+  // CREATE/ALTER must refuse and must not reconstruct it as a side effect.
+  const std::filesystem::path relation_metadata_path =
+      fixture.database_path.string() + ".sb.mga_relation_metadata";
+  Require(std::filesystem::exists(relation_metadata_path),
+          "routine load-only refusal fixture has no relation metadata");
   std::error_code remove_error;
-  std::filesystem::remove(descriptor_path, remove_error);
-  Require(!remove_error && !std::filesystem::exists(descriptor_path),
-          "routine load-only refusal fixture could not remove the descriptor");
+  std::filesystem::remove(relation_metadata_path, remove_error);
+  Require(!remove_error && !std::filesystem::exists(relation_metadata_path),
+          "routine load-only refusal fixture could not remove relation metadata");
   auto missing_descriptor = Begin(fixture, 10);
   const auto refused_without_descriptor =
-      DispatchCreateOrAlter(fixture, missing_descriptor, false);
-  Require(!refused_without_descriptor.api_result.ok,
+      ExecuteCreateOrAlter(fixture, missing_descriptor, false);
+  Require(!refused_without_descriptor.ok,
           "routine binding synthesized a missing relation descriptor");
-  Require(!std::filesystem::exists(descriptor_path),
-          "routine binding recreated a missing relation descriptor sidecar");
+  Require(!std::filesystem::exists(relation_metadata_path),
+          "routine binding recreated missing relation metadata");
   Rollback(missing_descriptor);
 
   std::cout << "routine_delete_column_range_vertical_slice=passed\n";

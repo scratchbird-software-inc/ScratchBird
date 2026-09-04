@@ -1226,8 +1226,13 @@ ScenarioEvidence ProofValidationRefusalScenario() {
   Require(!duplicate.ok, "ODF-112 duplicate proof batch was accepted");
   Require(!duplicate.diagnostics.empty(),
           "ODF-112 duplicate proof batch lacked diagnostic");
+  if (duplicate.diagnostics.front().code !=
+      "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION") {
+    std::cerr << duplicate.diagnostics.front().code << ':'
+              << duplicate.diagnostics.front().detail << '\n';
+  }
   Require(duplicate.diagnostics.front().code ==
-              "SB-BULK-CONSTRAINT-UNIQUE-DUPLICATE-BATCH",
+              "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
           "ODF-112 duplicate proof diagnostic drifted");
   Require(HasEvidence(duplicate.evidence,
                       "bulk_constraint_proof_conflict_reason",
@@ -1277,7 +1282,7 @@ ScenarioEvidence ProofValidationRefusalScenario() {
   scenario.visible_rows = 0;
   AddProof(&scenario,
            "duplicate_diagnostic",
-           "SB-BULK-CONSTRAINT-UNIQUE-DUPLICATE-BATCH");
+           "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION");
   AddProof(&scenario,
            "duplicate_conflict_reason",
            "bulk_unique_proof_duplicate_in_batch");

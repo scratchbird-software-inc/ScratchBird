@@ -21,6 +21,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -28,6 +29,12 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#ifdef NDEBUG
+#undef assert
+#define assert(condition) \
+  ((condition) ? static_cast<void>(0) : std::abort())
+#endif
 
 namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
@@ -1006,6 +1013,14 @@ void RequireProjectionKindRefusal(const std::uint64_t ordinal,
   FakeTargetResolver resolver(context, 0, descriptor_kind);
   sblr::ContextualTextLiteralNegotiationRequestV2 decoded_request;
   auto issued = Issue(context, &resolver, &decoded_request);
+  if (!issued.ok || issued.profile_set.mappings.size() != 1) {
+    std::cerr << "projection-kind authority issue failed: code="
+              << issued.diagnostic.code << " key="
+              << issued.diagnostic.message_key << " detail="
+              << issued.diagnostic.detail << " mappings="
+              << issued.profile_set.mappings.size() << '\n';
+    std::exit(EXIT_FAILURE);
+  }
   assert(issued.ok && issued.authority.valid());
   const auto sbxn = ContextualSbxn(issued.profile_set);
   api::EngineApiDiagnostic diagnostic;

@@ -82,7 +82,7 @@ if(TARGET sb_single_node_transaction_probe)
       --path "${CMAKE_CURRENT_BINARY_DIR}/mga_transaction_regression_single_node.sbdb"
       --seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
       --creation-ms 1779000000200
-      --overwrite
+      --isolated-run
   )
   set_tests_properties(mga_transaction_regression_single_node_inventory PROPERTIES
     LABELS "mga;transaction;regression;single_node"

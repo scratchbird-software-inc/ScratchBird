@@ -58,6 +58,8 @@ constexpr std::array<PairV1, kRequiredPairCountV1> kRequiredPairs{{
     {72, 1072},  {73, 1073},  {74, 1074},  {694, 7707},
     {695, 7708}, {696, 7709}, {697, 7710}, {698, 7711},
     {699, 7712},
+    {702, 7715}, {703, 7716}, {704, 7717}, {705, 7718},
+    {706, 7719}, {707, 7720},
 }};
 
 constexpr std::array<PairV1, kForbiddenPairCountV1> kForbiddenPairs{{
@@ -70,18 +72,21 @@ constexpr std::array<PairV1, kForbiddenPairCountV1> kForbiddenPairs{{
 constexpr std::array<PairV1, kSuccessOnlyPairCountV1> kSuccessOnlyPairs{{
     {43, 1043}, {45, 1045}, {47, 1047}, {51, 1051}, {61, 1061},
     {71, 1071}, {73, 1073}, {695, 7708}, {697, 7710}, {699, 7712},
+    {703, 7716}, {705, 7718},
+    {707, 7720},
 }};
 
 constexpr std::array<std::string_view, 3> kRequiredRoles{{
     "sb_server", "sb_listener", "parser_worker"}};
 
-constexpr std::array<std::string_view, 6> kRequiredCorpora{{
+constexpr std::array<std::string_view, 7> kRequiredCorpora{{
     "SBPS-AUTH-METADATA-PAYLOAD-CONFORMANCE-MANIFEST-V1",
     "SBPS-EXECUTION-EVENT-PAYLOAD-CONFORMANCE-MANIFEST-V1",
     "SBPS-NARROW-PRIVATE-PROFILE-CONFORMANCE-MANIFEST-V1",
     "CONTEXTUAL-TEXT-LITERAL-PROFILE-CONFORMANCE-MANIFEST-V2",
     "SBPS-PROFILE-ACTIVATION-LIFECYCLE-CONFORMANCE-MANIFEST-V1",
     "LISTENER-ENGINE-IPC-ADAPTER-CONFORMANCE-MANIFEST-V1",
+    "SBLR-BULK-IMPORT-STREAM-TRANSPORT-CONFORMANCE-V1",
 }};
 
 ProfileDiagnosticV1 Ok() {
@@ -206,6 +211,14 @@ std::pair<std::string_view, std::string_view> AuthorityFor(PairV1 pair) {
   }
   if (pair.payload_schema_id == 7711 || pair.payload_schema_id == 7712) {
     return {kContextualTextLayout, kContextualTextCorpus};
+  }
+  if (pair.payload_schema_id >= 7715 && pair.payload_schema_id <= 7718) {
+    return {"SBPS-BULK-IMPORT-STREAM-PAYLOAD-LAYOUT-V1",
+            "SBLR-BULK-IMPORT-STREAM-TRANSPORT-CONFORMANCE-V1"};
+  }
+  if (pair.payload_schema_id == 7719 || pair.payload_schema_id == 7720) {
+    return {"SBPS-BULK-IMPORT-STREAM-PAYLOAD-LAYOUT-V1",
+            "SBLR-BULK-IMPORT-STREAM-TRANSPORT-CONFORMANCE-V1"};
   }
   if ((pair.payload_schema_id >= 1042 && pair.payload_schema_id <= 1074) &&
       pair.payload_schema_id != 2001) {

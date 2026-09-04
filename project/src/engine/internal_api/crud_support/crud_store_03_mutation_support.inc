@@ -242,6 +242,8 @@ std::string CrudColumnDescriptorForName(const std::vector<std::pair<std::string,
 
 bool CrudColumnDescriptorIsOpaqueRenderOnly(const std::string& descriptor) {
   return descriptor == "opaque_extension" || StartsWith(descriptor, "opaque_extension;") ||
+         descriptor == "type=opaque_extension" ||
+         StartsWith(descriptor, "type=opaque_extension;") ||
          descriptor.find("canonical=opaque_extension") != std::string::npos ||
          descriptor.find("canonical_type=opaque_extension") != std::string::npos ||
          descriptor.find("base_type=opaque_extension") != std::string::npos;

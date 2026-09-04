@@ -900,35 +900,46 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
   std::uint64_t expected_security_context_generation = 0;
 
   if (database_exists) {
-    const auto catalog =
-        scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
-            context.database_path);
-    if (!catalog.ok()) {
-      result.diagnostic = PrincipalDiagnostic(
-          kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
-          catalog.diagnostic.diagnostic_code.empty()
-              ? "bootstrap_security_catalog_unavailable"
-              : catalog.diagnostic.diagnostic_code);
+    EngineRequestContext provider_context = context;
+    if (!HasTraceTag(
+            provider_context,
+            std::string(kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1))) {
+      provider_context.trace_tags.emplace_back(
+          kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1);
+    }
+    const auto visibility =
+        provider_context.local_transaction_id == 0
+            ? DatabaseLocalSecurityEventVisibilityV1::latest_committed
+            : DatabaseLocalSecurityEventVisibilityV1::
+                  include_reader_own_uncommitted;
+    auto loaded = LoadDatabaseLocalSecurityEventStoreV1(provider_context,
+                                                        visibility);
+    if (!loaded.ok) {
+      result.diagnostic = loaded.diagnostic;
       return result;
     }
-    const auto& state = catalog.state;
-    if (state.sysarch_role_uuid.valid()) {
+    const auto& state = loaded.state.bootstrap_authority;
+    if (!state.authenticated || state.security_context_generation == 0) {
+      result.diagnostic = PrincipalDiagnostic(
+          kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+          "bootstrap_security_authority_missing");
+      return result;
+    }
+    if (!state.sysarch_role_uuid.empty()) {
       EngineSecurityRoleRecord role;
       role.creator_tx = state.creator_tx;
       role.event_sequence = 1;
-      role.role_uuid = scratchbird::core::uuid::UuidToString(
-          state.sysarch_role_uuid.value);
+      role.role_uuid = state.sysarch_role_uuid;
       role.role_name = "ROLE_SYSARCH";
       role.lifecycle_state = "active";
       role.security_generation = state.policy_generation;
       roles.emplace(role.role_uuid, std::move(role));
     }
-    if (state.present) {
+    if (state.principal_present) {
       EngineSecurityPrincipalRecord principal;
       principal.creator_tx = state.creator_tx;
       principal.event_sequence = 1;
-      principal.principal_uuid = scratchbird::core::uuid::UuidToString(
-          state.principal_uuid.value);
+      principal.principal_uuid = state.principal_uuid;
       principal.principal_name = state.principal_name;
       principal.principal_kind = "user";
       principal.lifecycle_state = "active";
@@ -939,10 +950,8 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityMembershipRecord membership;
       membership.creator_tx = state.creator_tx;
       membership.event_sequence = 1;
-      membership.membership_uuid = scratchbird::core::uuid::UuidToString(
-          state.membership_uuid.value);
-      membership.member_principal_uuid =
-          scratchbird::core::uuid::UuidToString(state.principal_uuid.value);
+      membership.membership_uuid = state.membership_uuid;
+      membership.member_principal_uuid = state.principal_uuid;
       membership.container_uuid =
           scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid;
       membership.container_kind = "role";
@@ -969,25 +978,6 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
     result.state.cache_invalidation_epoch = result.state.security_generation;
     initial_security_context_generation =
         result.state.security_context_generation;
-
-    EngineRequestContext provider_context = context;
-    if (!HasTraceTag(
-            provider_context,
-            std::string(kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1))) {
-      provider_context.trace_tags.emplace_back(
-          kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1);
-    }
-    const auto visibility =
-        provider_context.local_transaction_id == 0
-            ? DatabaseLocalSecurityEventVisibilityV1::latest_committed
-            : DatabaseLocalSecurityEventVisibilityV1::
-                  include_reader_own_uncommitted;
-    auto loaded = LoadDatabaseLocalSecurityEventStoreV1(provider_context,
-                                                        visibility);
-    if (!loaded.ok) {
-      result.diagnostic = loaded.diagnostic;
-      return result;
-    }
     if (loaded.state.security_context_generation <
         initial_security_context_generation) {
       result.diagnostic = PrincipalDiagnostic(

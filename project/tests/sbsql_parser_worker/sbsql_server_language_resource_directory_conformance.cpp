@@ -8,6 +8,7 @@
 
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
+#include "canonical_sblr_admission_test_helper.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -34,6 +35,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   server::ServerSessionRegistry registry;
   server::ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = session.session_uuid;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
@@ -46,6 +48,11 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.descriptor_epoch = 24;
   session.grant_epoch = 23;
   session.policy_generation = 25;
+  session.admitted_parser_package_version_major = 1;
+  session.local_transaction_id = 1;
+  session.snapshot_visible_through_local_transaction_id = 1;
+  session.transaction_uuid = "019e0a8c-f015-7000-8000-000000000018";
+  session.transaction_timestamp = "2026-09-02T00:00:00Z";
   server::ApplyRequestedLanguageProfile(&session, "en");
   *session_uuid = session.session_uuid;
   registry.sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
@@ -174,12 +181,33 @@ std::string ShowDirectoryEnvelope() {
 }
 
 sbps::Frame PrepareFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                         const std::string& encoded) {
+                         const std::string&) {
+  const auto canonical =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION");
   sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr);
+  frame.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kStmtPrepareRequest);
+  frame.header.payload_schema_id = sbps::kSchemaStmtPrepareRequestV1;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
-  frame.payload = server::EncodePrepareSblrPayloadForTest(session_uuid, encoded);
+  frame.payload.insert(frame.payload.end(), session_uuid.begin(), session_uuid.end());
+  const auto statement_uuid = sbps::MakeUuidV7Bytes();
+  frame.payload.insert(frame.payload.end(), statement_uuid.begin(), statement_uuid.end());
+  scratchbird::engine::SblrAppendU64(frame.payload, 21);
+  scratchbird::engine::SblrAppendU64(frame.payload, 22);
+  scratchbird::engine::SblrAppendU64(frame.payload, 25);
+  scratchbird::engine::SblrAppendU64(
+      frame.payload, canonical.encoded_sblr_container.size());
+  frame.payload.insert(frame.payload.end(),
+                       canonical.encoded_sblr_container.begin(),
+                       canonical.encoded_sblr_container.end());
+  scratchbird::engine::SblrAppendU64(
+      frame.payload, canonical.encoded_execution_envelope.size());
+  frame.payload.insert(frame.payload.end(),
+                       canonical.encoded_execution_envelope.begin(),
+                       canonical.encoded_execution_envelope.end());
   return frame;
 }
 
@@ -188,7 +216,9 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
                          const std::string& encoded) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = 4003;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload =
       server::EncodeExecuteSblrPayloadForTest(session_uuid, prepared_uuid, encoded);
@@ -228,87 +258,41 @@ void VerifyServerLanguageResourceDirectoryAdmission() {
   const auto prepared_uuid = server::DecodePreparedStatementUuidForTest(prepare.payload);
   Require(prepared_uuid.has_value(), "baseline prepare did not return prepared UUID");
 
-  const auto missing_admission = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   LanguageResourceDirectoryEnvelope(
-                       "language.resource_directory.scan",
-                       "sha256:sml015-manifest-a",
-                       false)));
-  Require(!missing_admission.accepted &&
-              HasDiagnostic(missing_admission,
-                            "PARSER_SERVER_IPC.LANGUAGE_RESOURCE_DIRECTORY_ADMISSION_REQUIRED"),
-          "directory scan without admitted manifest did not fail closed");
+  const std::array<std::string, 5> envelopes{{
+      LanguageResourceDirectoryEnvelope("language.resource_directory.scan",
+                                        "sha256:sml015-manifest-a", false),
+      IncompleteDirectoryEnvelope(),
+      LanguageResourceDirectoryEnvelope("language.resource_directory.scan",
+                                        "sha256:sml015-manifest-a"),
+      ShowDirectoryEnvelope(),
+      LanguageResourceDirectoryEnvelope("language.resource_directory.reload",
+                                        "sha256:sml015-manifest-b"),
+  }};
+  for (const auto& envelope : envelopes) {
+    const auto result = server::HandleExecuteSblr(
+        &registry, engine_state, ExecuteFrame(session_uuid, envelope));
+    Require(!result.accepted &&
+                HasDiagnostic(result, "SBLR.OPERATION.NONCANONICAL"),
+            "retired language-resource-directory envelope bypassed canonical admission");
+  }
+  Require(registry.language_resource_directories_by_id.empty(),
+          "refused language-resource-directory envelopes mutated server state");
 
-  const auto incomplete = server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, IncompleteDirectoryEnvelope()));
-  Require(!incomplete.accepted &&
-              HasDiagnostic(incomplete,
-                            "PARSER_SERVER_IPC.LANGUAGE_RESOURCE_DIRECTORY_MANIFEST_INCOMPLETE"),
-          "incomplete directory manifest did not fail closed");
-
-  const auto scan = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   LanguageResourceDirectoryEnvelope(
-                       "language.resource_directory.scan",
-                       "sha256:sml015-manifest-a")));
-  Require(scan.accepted, "admitted directory scan was not accepted");
-  Require(PayloadContains(scan, "server_language_resource_directory_authority=true"),
-          "directory scan did not use server directory authority");
-  Require(PayloadContains(scan, "parser_language_library_admission=false"),
-          "directory scan claimed parser-side library admission");
-  Require(PayloadContains(scan, "load_or_reload_effects_executed_by_parser=false"),
-          "directory scan claimed parser-side reload effects");
-  Require(PayloadContains(scan, "cache_invalidated=true"),
-          "directory scan did not invalidate language caches");
-  Require(PayloadContains(scan, "directory_path_state=redacted"),
-          "directory scan did not redact local path state");
-  Require(!PayloadContains(scan, "/srv/scratchbird/language-resources"),
-          "directory scan leaked the local resource path");
-  Require(PayloadContains(scan, "mga_finality_claimed=false"),
-          "directory scan claimed MGA transaction finality");
-  Require(registry.language_resource_directories_by_id.count(
-              "sbsql.language.resources.primary") == 1,
-          "directory scan did not register server resource directory");
-
+  // Until a canonical directory-control opcode and descriptor are allocated,
+  // directory activation remains non-executable.  Still prove that a
+  // server-owned language-resource epoch transition invalidates prepared
+  // statements without reinterpreting their canonical bytes.
+  auto& session = registry.sessions_by_uuid.at(server::UuidBytesToText(session_uuid));
+  ++session.language_resource_epoch;
+  ++session.localized_name_epoch;
+  ++session.message_resource_epoch;
+  ++session.resource_epoch;
+  ++session.name_resolution_epoch;
   const auto stale = server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, *prepared_uuid, ""));
   Require(!stale.accepted &&
               HasDiagnostic(stale, "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE"),
-          "prepared statement was not invalidated after directory scan");
-
-  const auto show = server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, ShowDirectoryEnvelope()));
-  Require(show.accepted, "directory show was not accepted");
-  Require(PayloadContains(show, "result_kind=language.resource_directory_registry.v1"),
-          "directory show did not return registry packet");
-  Require(PayloadContains(show, "mutated_language_resource_directory=false"),
-          "directory show mutated registry state");
-  Require(PayloadContains(show, "manifest_hash=sha256:sml015-manifest-a"),
-          "directory show did not report the admitted manifest hash");
-  Require(!PayloadContains(show, "/srv/scratchbird/language-resources"),
-          "directory show leaked the local resource path");
-
-  const auto before_reload =
-      registry.sessions_by_uuid[server::UuidBytesToText(session_uuid)]
-          .language_resource_epoch;
-  const auto reload = server::HandleExecuteSblr(
-      &registry, engine_state,
-      ExecuteFrame(session_uuid,
-                   LanguageResourceDirectoryEnvelope(
-                       "language.resource_directory.reload",
-                       "sha256:sml015-manifest-b")));
-  Require(reload.accepted, "admitted directory reload was not accepted");
-  Require(PayloadContains(reload, "language_resource_directory_reloaded"),
-          "directory reload did not report reloaded outcome");
-  Require(PayloadContains(reload, "manifest_hash=sha256:sml015-manifest-b"),
-          "directory reload did not update manifest hash");
-  const auto after_reload =
-      registry.sessions_by_uuid[server::UuidBytesToText(session_uuid)]
-          .language_resource_epoch;
-  Require(after_reload > before_reload,
-          "directory reload did not advance the language resource epoch");
+          "prepared statement was not invalidated by a resource epoch change");
 }
 
 }  // namespace

@@ -11,12 +11,19 @@
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
+#include "database_lifecycle.hpp"
+#include "uuid.hpp"
+#include "wire/sbsql_test_wire.hpp"
 
+#include <atomic>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 
@@ -237,23 +244,88 @@ bool ValidateReferenceAlias(const std::vector<CsvRow>& reference_aliases) {
   return ok;
 }
 
+std::filesystem::path MakeMinimalRouteFixture() {
+  namespace database = scratchbird::storage::database;
+  namespace uuid = scratchbird::core::uuid;
+  using scratchbird::core::platform::UuidKind;
+
+  static std::atomic<std::uint64_t> identity_time{1788201000000ULL};
+  std::string template_path = "/tmp/sbp_sbsql_canary.XXXXXX";
+  std::vector<char> writable(template_path.begin(), template_path.end());
+  writable.push_back('\0');
+  char* directory = ::mkdtemp(writable.data());
+  if (directory == nullptr) return {};
+
+  const auto database_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::database, identity_time.fetch_add(2));
+  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::filespace, identity_time.fetch_add(2));
+  if (!database_uuid.ok() || !filespace_uuid.ok()) {
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+
+  const std::filesystem::path path =
+      std::filesystem::path(directory) / "canary.sbdb";
+  database::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = identity_time.fetch_add(2);
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  const auto created = database::CreateDatabaseFile(create);
+  if (!created.ok() ||
+      created.create_finality != database::DatabaseCreateFinalityClass::committed) {
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    return {};
+  }
+  return path;
+}
+
 bool ValidateMinimalParserRoute() {
   using namespace scratchbird::parser::sbsql;
+  const auto fixture_database = MakeMinimalRouteFixture();
+  if (!Require(!fixture_database.empty(),
+               "minimal full-route canary database creation failed")) {
+    return false;
+  }
+
   ParserConfig config;
   config.probe_mode = true;
-  SessionContext session;
-  session.authenticated = true;
-  session.session_uuid = "00000000-0000-7000-8000-000000000001";
-  session.catalog_epoch = 1;
-  session.security_policy_epoch = 1;
-  session.descriptor_epoch = 1;
-
-  auto cst = BuildCst("select 1");
-  auto ast = BuildAst(cst);
-  auto bound = BindAst(ast, cst, config, session);
-  auto lowered = LowerToSblr(bound, cst, session);
-  return Require(!lowered.payload.empty(), "minimal parser route produced empty SBLR") &&
-         Require(!lowered.messages.has_errors(), "minimal parser route produced errors");
+  config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = fixture_database.string();
+  ParserMetrics metrics;
+  SblrTemplateCache cache;
+  bool ok = true;
+  {
+    SbsqlTestWireSession session(config, &metrics, &cache);
+    const auto authenticated = session.HandleLine("AUTH");
+    ok &= Require(authenticated.text.find("OK AUTHENTICATED") != std::string::npos,
+                  "minimal full-route canary authentication failed");
+    if (ok) {
+      const auto result = session.RunPipeline("select 1", true);
+      ok &= Require(result.accepted,
+                    "minimal full-route canary query was rejected");
+      ok &= Require(!result.sblr_payload.empty(),
+                    "minimal full-route canary produced empty SBLR");
+      ok &= Require(!result.messages.has_errors(),
+                    "minimal full-route canary produced errors");
+      ok &= Require(result.operation_family == "sblr.query.relational.v3" &&
+                        result.server_operation_id == "query.execute",
+                    "minimal full-route canary did not use canonical query.execute");
+      ok &= Require(!result.parser_executes_sql,
+                    "minimal full-route canary gave SQL execution authority to the parser");
+    }
+  }
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
+  return ok;
 }
 
 } // namespace

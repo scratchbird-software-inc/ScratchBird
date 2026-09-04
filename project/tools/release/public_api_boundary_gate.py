@@ -230,6 +230,11 @@ def check_public_tools(repo_root: Path, project_root: Path) -> dict[str, Any]:
     for path in files:
         path_text = rel(path, repo_root)
         reject_private_reference(path_text, "public_tool_path")
+        # The workflow-policy validator must name the Git identity check it
+        # enforces; that policy string is not a private Git-history read by
+        # the public release tooling itself.
+        if path.name == "github_actions_static_gate.py":
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:

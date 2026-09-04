@@ -232,6 +232,8 @@ sblr::SblrOperationEnvelope QueryEnvelope(std::string operation_id,
                                          registry_entry->opcode,
                                          std::move(trace_key));
   envelope.opcode_code = registry_entry->code;
+  envelope.result_shape = registry_entry->result_contract;
+  envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid = std::string(kSblrProducerUuid);
   envelope.registry_snapshot_uuid = std::string(kSblrRegistryUuid);
   envelope.requires_security_context = true;
@@ -357,8 +359,9 @@ void RequireAdvancedFamilies(const api::EngineRequestContext& context) {
           "unsupported advanced index diagnostic drifted");
 }
 
-void RequireSblrApiDispatchRoutes(const api::EngineRequestContext& context) {
-  auto numeric = QueryEnvelope("query.apply_numeric_operation",
+void RequireSblrDescriptorAuthorityBoundary(
+    const api::EngineRequestContext& context) {
+  auto numeric = QueryEnvelope("engine.op.query_apply_numeric_operation",
                                "trace.cbq008.query.apply_numeric_operation");
   AddOptionOperand(&numeric, "numeric_operation", "add");
   AddOptionOperand(&numeric, "rounding_mode", "half_even");
@@ -369,17 +372,14 @@ void RequireSblrApiDispatchRoutes(const api::EngineRequestContext& context) {
   AddOptionOperand(&numeric, "right_type", "decimal");
   AddOptionOperand(&numeric, "right_value", "2");
   auto dispatched = sblr::DispatchSblrOperation({context, numeric, api::EngineApiRequest{}});
-  if (!dispatched.api_result.ok) { PrintDispatchDiagnostics(dispatched); }
-  Require(dispatched.envelope_validated, "numeric SBLR/API envelope did not validate");
-  Require(dispatched.accepted && dispatched.dispatched_to_api,
-          "numeric SBLR/API route did not dispatch to the internal API");
-  Require(dispatched.api_result.ok &&
-              dispatched.api_result.operation_id == "query.apply_numeric_operation",
-          "numeric SBLR/API route failed");
-  Require(HasEvidence(dispatched.api_result, "datatype_numeric_operation", "add"),
-          "numeric SBLR/API route evidence drifted");
+  Require(!dispatched.envelope_validated && !dispatched.accepted &&
+              !dispatched.dispatched_to_api &&
+              !dispatched.diagnostics.empty() &&
+              dispatched.diagnostics.front().code == "SBLR.OPERAND_INVALID",
+          "parser-authored numeric options bypassed the engine-bound descriptor");
 
-  auto advanced = QueryEnvelope("query.evaluate_advanced_datatype_family",
+  auto advanced = QueryEnvelope(
+      "engine.op.query_evaluate_advanced_datatype_family",
                                 "trace.cbq008.query.evaluate_advanced_datatype_family");
   AddOptionOperand(&advanced, "descriptor_type", "graph_path");
   AddOptionOperand(&advanced, "operation_kind", "graph.traverse");
@@ -388,17 +388,12 @@ void RequireSblrApiDispatchRoutes(const api::EngineRequestContext& context) {
                    "descriptor_profile",
                    "direction=directed;schema_uuid=019f0000-0000-7000-8000-000000080801");
   dispatched = sblr::DispatchSblrOperation({context, advanced, api::EngineApiRequest{}});
-  if (!dispatched.api_result.ok) { PrintDispatchDiagnostics(dispatched); }
-  Require(dispatched.envelope_validated, "advanced datatype SBLR/API envelope did not validate");
-  Require(dispatched.accepted && dispatched.dispatched_to_api,
-          "advanced datatype SBLR/API route did not dispatch to the internal API");
-  Require(dispatched.api_result.ok &&
-              dispatched.api_result.operation_id == "query.evaluate_advanced_datatype_family",
-          "advanced datatype SBLR/API route failed");
-  Require(HasEvidence(dispatched.api_result, "advanced_family", "graph"),
-          "advanced datatype SBLR/API family evidence drifted");
-  Require(HasEvidence(dispatched.api_result, "advanced_index", "adjacency"),
-          "advanced datatype SBLR/API adjacency evidence drifted");
+  Require(!dispatched.envelope_validated && !dispatched.accepted &&
+              !dispatched.dispatched_to_api &&
+              !dispatched.diagnostics.empty() &&
+              dispatched.diagnostics.front().code == "SBLR.OPERAND_INVALID",
+          "parser-authored advanced datatype options bypassed the engine-bound "
+          "descriptor");
 }
 
 sblr::SblrExecutionContext SblrContext() {
@@ -788,7 +783,7 @@ int main(int argc, char** argv) {
 
   RequireNumericOperations(api_context);
   RequireAdvancedFamilies(api_context);
-  RequireSblrApiDispatchRoutes(api_context);
+  RequireSblrDescriptorAuthorityBoundary(api_context);
   RequireSblrCollectionVectorSpecializedOperators();
   RequireDescriptorRuntimeDatatypeSlice();
 

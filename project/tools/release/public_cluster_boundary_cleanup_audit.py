@@ -583,8 +583,8 @@ def check_sblr_guards(repo_root: Path, project_root: Path) -> dict[str, Any]:
                             repo_root)
     validation = function_body(envelope, "ValidateSblrEnvelope")
     for token in (
-        "SB_SBLR_SQL_TEXT_FORBIDDEN",
-        "SB_SBLR_NAMES_NOT_RESOLVED_TO_UUIDS",
+        "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY",
+        "parser_resolved_names_to_uuids",
     ):
         require_contains(validation, token, "sblr_envelope_validation")
     registry = require_file(project_root / "src" / "engine" / "sblr" / "sblr_opcode_registry.cpp",

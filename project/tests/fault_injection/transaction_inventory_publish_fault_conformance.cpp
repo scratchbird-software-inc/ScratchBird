@@ -475,6 +475,63 @@ bool TestChecksumTamperFailsClosed() {
   return ok;
 }
 
+bool TestStatementInventoryFenceIgnoresUnrelatedDatabaseGrowth() {
+  bool ok = true;
+  auto fixture = CreateFixture("statement_fence", 6000);
+  const auto inventory = InventoryWithCommittedTransactions(6100, 1);
+  ok = PersistInventory(fixture, inventory) && ok;
+
+  const auto acquired = database::AcquireStrongLocalTransactionInventorySnapshot(
+      fixture.database_path.string());
+  if (!acquired.ok()) {
+    PrintDiagnostic(acquired.diagnostic);
+  }
+  ok = Require(acquired.ok(),
+               "statement inventory authority was not acquired") && ok;
+  if (!acquired.ok()) {
+    return false;
+  }
+
+  // Relation/catalog publication can extend the shared database file without
+  // changing the transaction inventory. That must not invalidate a retained
+  // statement authority merely because the database-wide size/mtime changed.
+  {
+    std::ofstream out(fixture.database_path,
+                      std::ios::binary | std::ios::app);
+    const std::vector<char> unrelated_page(fixture.page_size, 0);
+    out.write(unrelated_page.data(),
+              static_cast<std::streamsize>(unrelated_page.size()));
+    out.close();
+    ok = Require(static_cast<bool>(out),
+                 "unrelated database growth write failed") && ok;
+  }
+  const auto database_sync =
+      disk::SyncFilesystemPath(fixture.database_path.string(), true);
+  if (!database_sync.ok()) {
+    PrintDiagnostic(database_sync.diagnostic);
+  }
+  ok = Require(database_sync.ok(),
+               "unrelated database growth sync failed") && ok;
+
+  const auto after_growth =
+      database::RevalidateLocalTransactionInventorySnapshot(
+          *acquired.snapshot);
+  ok = Require(after_growth.ok(),
+               "unrelated database growth invalidated transaction inventory") &&
+       ok;
+
+  // The inventory-owned publish-journal identity remains the cheap TOCTOU
+  // fence. Any change there must invalidate the retained statement authority.
+  AppendTextAndSync(JournalPath(fixture), "statement_fence_change\n");
+  const auto after_journal_change =
+      database::RevalidateLocalTransactionInventorySnapshot(
+          *acquired.snapshot);
+  ok = Require(!after_journal_change.ok(),
+               "transaction journal change did not invalidate inventory") &&
+       ok;
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -488,6 +545,7 @@ int main() {
   ok = TestCommittedJournalIgnoresStaleTail() && ok;
   ok = TestPartialJournalRequiresRecovery() && ok;
   ok = TestChecksumTamperFailsClosed() && ok;
+  ok = TestStatementInventoryFenceIgnoresUnrelatedDatabaseGrowth() && ok;
   if (!ok) {
     return EXIT_FAILURE;
   }

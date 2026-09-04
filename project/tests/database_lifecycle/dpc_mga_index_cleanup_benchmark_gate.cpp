@@ -8,6 +8,7 @@
 
 #include "agents/index_garbage_cleanup_agent.hpp"
 #include "agents/storage_version_cleanup_agent.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "observability/cleanup_diagnostics_api.hpp"
 #include "secondary_index_delta_ledger.hpp"
 #include "transaction_cleanup_horizon_service.hpp"
@@ -683,6 +684,10 @@ api::EngineRequestContext DiagnosticsContext() {
       uuid::UuidToString(NewUuid(platform::UuidKind::transaction).value);
   context.local_transaction_id = 35;
   context.trace_tags.push_back("right:MGA_CLEANUP_INSPECT");
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context,
+      "dpc_mga_index_cleanup_benchmark_gate",
+      {"MGA_CLEANUP_INSPECT", "OBS_MANAGEMENT_INSPECT"});
   return context;
 }
 

@@ -12,11 +12,21 @@ int main() {
   auto compiled = CompileSblrDmlConditionalMutateDescriptor(
       context, "conditional-receipt", 7, 9, 1);
   assert(compiled.ok);
+  const auto descriptor_wire =
+      scratchbird::engine::sblr::EncodeSblrDmlConditionalMutateDescriptorV1(
+          compiled.descriptor, false);
+  scratchbird::engine::sblr::SblrDmlConditionalMutateDescriptorV1
+      transported_descriptor;
+  assert(scratchbird::engine::sblr::DecodeSblrDmlConditionalMutateDescriptorV1(
+      descriptor_wire.data(), descriptor_wire.size(), &transported_descriptor,
+      nullptr, false));
   context.trace_tags.clear();
   context.trace_tags.push_back("private_dml_conditional_mutate");
-  auto consumed = ConsumeSblrDmlConditionalMutateDescriptor(context, compiled.descriptor);
+  auto consumed =
+      ConsumeSblrDmlConditionalMutateDescriptor(context, transported_descriptor);
   assert(consumed.ok);
-  auto replay = ConsumeSblrDmlConditionalMutateDescriptor(context, compiled.descriptor);
+  auto replay =
+      ConsumeSblrDmlConditionalMutateDescriptor(context, transported_descriptor);
   assert(!replay.ok && replay.diagnostic.code == "MGA.TRANSACTION.STALE");
   return 0;
 }

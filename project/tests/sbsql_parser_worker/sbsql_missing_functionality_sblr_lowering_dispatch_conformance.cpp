@@ -10,11 +10,15 @@
 #include "bound_ast_model.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "sblr_admission.hpp"
+#include "engine/sblr/sblr_bulk_export_stream_runtime.hpp"
+#include "engine/sblr/sblr_bulk_import_stream_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
 #include "sblr_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "sbsql_v3_binding_catalog.hpp"
 #include "sbsql_v3_sblr_catalog.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -81,6 +85,61 @@ std::string DescriptorProfileFor(std::string_view command_family) {
   const auto profile = v3_binding::BindingProfileForCommandFamily(command_family);
   if (!profile.descriptor_binding_profile.empty()) return profile.descriptor_binding_profile;
   return "compatibility_descriptor_profile";
+}
+
+engine_sblr::SblrOperationEnvelope BuildAdmissionOperation(
+    const v3_sblr::CommandFamilySblrRoute& route,
+    const engine_sblr::SblrOpcodeEntry& registry) {
+  auto operation = engine_sblr::MakeSblrEnvelope(
+      route.operation_id, route.sblr_opcode,
+      "missing-functionality-central-route");
+  operation.result_shape = registry.result_contract;
+  operation.diagnostic_shape = "diagnostic_vector";
+
+  engine_sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  if (route.operation_id == "engine.op.ddl_create_type") {
+    engine_sblr::SblrDdlCreateTypeDescriptorV1 descriptor;
+    descriptor.body[0] = 1;
+    descriptor.availability = 1;
+    operand.type = "create_type_descriptor";
+    operand.name = "type";
+    operand.value_kind = engine_sblr::SblrValueKind::create_type_descriptor;
+    operand.value_body =
+        engine_sblr::EncodeSblrDdlCreateTypeDescriptorV1(descriptor, true);
+  } else if (route.operation_id == "engine.op.bulk_import_stream") {
+    engine_sblr::SblrBulkImportStreamDescriptorV1 descriptor;
+    descriptor.canonical_body.fill(1);
+    std::fill(descriptor.canonical_body.begin() + 28,
+              descriptor.canonical_body.begin() + 32, 0);
+    std::fill(descriptor.canonical_body.begin() + 352,
+              descriptor.canonical_body.end(), 0);
+    descriptor.availability_generation = 1;
+    operand.type = "bulk_import_stream_descriptor";
+    operand.name = "bulk_import";
+    operand.value_kind =
+        engine_sblr::SblrValueKind::bulk_import_stream_descriptor;
+    operand.value_body =
+        engine_sblr::EncodeSblrBulkImportStreamDescriptorV1(descriptor, true);
+  } else if (route.operation_id == "bulk.export") {
+    engine_sblr::SblrBulkExportStreamDescriptorV1 descriptor;
+    descriptor.canonical_body[0] = 1;
+    descriptor.availability_generation = 1;
+    operand.type = "bulk_export_stream_descriptor";
+    operand.name = "bulk_export";
+    operand.value_kind =
+        engine_sblr::SblrValueKind::bulk_export_stream_descriptor;
+    operand.value_body =
+        engine_sblr::EncodeSblrBulkExportStreamDescriptorV1(descriptor, true);
+  }
+  if (!operand.type.empty()) {
+    if (operand.value_body.empty()) {
+      throw std::runtime_error("canonical route descriptor encoding failed for " +
+                               route.operation_id);
+    }
+    operation.operands.push_back(std::move(operand));
+  }
+  return operation;
 }
 
 bool ValidateRoute(const v3_sblr::CommandFamilySblrRoute& route) {
@@ -167,12 +226,21 @@ bool ValidateRoute(const v3_sblr::CommandFamilySblrRoute& route) {
                   std::string("engine opcode mismatch for ") + route.operation_id);
     ok &= Require(engine_entry->support == engine_sblr::SblrOpcodeSupport::implemented,
                   std::string("engine opcode is not implemented for ") + route.operation_id);
+    ok &= Require(engine_entry->operand_contract == route.payload_class,
+                  std::string("engine operand contract mismatch for ") +
+                      route.operation_id);
+    ok &= Require(engine_entry->result_contract == route.result_shape,
+                  std::string("engine result contract mismatch for ") +
+                      route.operation_id);
   }
 
   try {
+    if (engine_entry == nullptr) {
+      throw std::runtime_error("canonical route registry entry is unavailable");
+    }
     const auto request =
         scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
-            route.operation_id, route.sblr_opcode);
+            BuildAdmissionOperation(route, *engine_entry));
     const auto admission = server::AdmitServerSblrEnvelope(request);
     ok &= Require(admission.admitted,
                   std::string("server rejected lowered route for ") +
@@ -187,6 +255,11 @@ bool ValidateRoute(const v3_sblr::CommandFamilySblrRoute& route) {
                     "server admission family mismatch");
       ok &= Require(admission.operation_id == route.operation_id,
                     "server admission operation id mismatch");
+      ok &= Require(admission.requires_public_abi_dispatch ==
+                        route.requires_public_abi_dispatch,
+                    std::string(
+                        "server public ABI dispatch classification mismatch for ") +
+                        route.operation_id);
     }
   } catch (const std::exception& error) {
     ok &= Require(false, error.what());

@@ -56,6 +56,7 @@ std::string PolicyFieldForGate(const std::string& policy_gate) {
 
 agents::AgentRuntimeContext ValidContext() {
   agents::AgentRuntimeContext context;
+  context.fixture_authorization_authority = true;
   context.security_context_present = true;
   context.database_uuid = "019f006b-0000-7000-8000-000000000001";
   context.principal_uuid = "019f006b-0000-7000-8000-000000000002";

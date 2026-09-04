@@ -8,6 +8,7 @@
 
 #include "scratchbird/engine/engine.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -38,7 +39,26 @@ enum class SblrValueKind : std::uint16_t {
   list = 13,
   map = 14,
   null_value = 15,
+  transaction_begin_options = 22,
 };
+
+using SblrTxnUuidV1 = std::array<std::uint8_t, 16>;
+using SblrTxnShaV1 = std::array<std::uint8_t, 32>;
+
+struct SblrTransactionBeginOptionsV1 {
+  SblrTxnUuidV1 isolation_profile_uuid{};
+  SblrTxnUuidV1 transaction_policy_snapshot_uuid{};
+  std::uint64_t isolation_profile_generation = 0;
+  std::uint64_t transaction_policy_generation = 0;
+  std::uint64_t deadline_monotonic_ns = 0;
+  std::uint8_t read_mode = 0;
+  std::uint8_t authority_scope = 0;
+  std::uint8_t wait_policy = 0;
+  SblrTxnShaV1 options_sha256{};
+};
+
+std::vector<std::uint8_t> EncodeSblrTransactionBeginOptionsV1(
+    SblrTransactionBeginOptionsV1* options);
 
 struct SblrOperand {
   std::string type;
@@ -242,10 +262,30 @@ std::string CanonicalOperationBytes() {
       "engine.op.txn_begin", "SBLR_TXN_BEGIN",
       "public-abi-canonical-codec-structure");
   envelope.opcode_code = 0x0100u;
+  envelope.result_shape = "transaction_handle";
+  envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
       "019e05b1-f009-7000-8000-000000000020";
   envelope.registry_snapshot_uuid =
       "019e05b1-f009-7000-8000-000000000021";
+
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+
+  sblr::SblrOperand operand;
+  operand.type = "transaction.begin_options";
+  operand.name = "options";
+  operand.ordinal = 1;
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body =
+      sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  envelope.operands.push_back(std::move(operand));
   return sblr::EncodeSblrEnvelope(envelope);
 }
 

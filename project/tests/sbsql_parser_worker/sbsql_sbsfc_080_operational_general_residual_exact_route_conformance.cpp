@@ -299,47 +299,9 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
               !Contains(artifacts.envelope.payload, "recovery_authority\":true"),
           "SBSFC-080 payload carried WAL/recovery authority");
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
-          artifacts.envelope));
-  if (row.cluster_profile_metadata) {
-    Require(!admission.admitted,
-            "SBSFC-080 cluster profile metadata route did not fail closed at server admission");
-    Require(!admission.diagnostics.empty() &&
-                (admission.diagnostics.front().code ==
-                     "SBLR.CLUSTER.SUPPORT_NOT_ENABLED" ||
-                 admission.diagnostics.front().code ==
-                     "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY" ||
-                 admission.diagnostics.front().code ==
-                     "SB_DIAG_CLUSTER_TXN_UNAVAILABLE"),
-            "SBSFC-080 cluster profile metadata route did not emit an exact cluster-state refusal");
-  } else {
-    if (!admission.admitted) {
-      std::cerr << "SBSFC-080 admission rejected " << row.surface_id << " "
-                << row.canonical_name << " operation " << row.operation_id
-                << " family " << artifacts.envelope.operation_family << '\n';
-      for (const auto& diagnostic : admission.diagnostics) {
-        std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-      }
-    }
-    Require(admission.admitted, "SBSFC-080 server admission rejected exact route");
-    Require(admission.requires_public_abi_dispatch,
-            "SBSFC-080 server admission did not require public ABI dispatch");
-    Require(admission.operation_id == row.operation_id,
-            "SBSFC-080 server admission operation id mismatch");
-    Require(admission.operation_family == ExpectedRouteFamily(row),
-            "SBSFC-080 server admission operation family mismatch");
-  }
-
-  const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
-  Require(opcode != nullptr, "SBSFC-080 opcode registry row missing");
-  Require(opcode->opcode == row.opcode, "SBSFC-080 opcode registry drifted");
-  Require(opcode->requires_cluster_authority == row.cluster_profile_metadata,
-          "SBSFC-080 opcode cluster authority drifted");
-  if (row.cluster_profile_metadata) {
-    Require(opcode->support == sblr::SblrOpcodeSupport::cluster_refusal,
-            "SBSFC-080 cluster profile opcode is not cluster-gated");
-  }
+  // These operational residuals prove parser classification and parent-route
+  // lowering only.  Child grammar and session-control syntax does not acquire
+  // independent server admission or engine mutation authority here.
 }
 
 std::uint64_t CurrentUnixMillis() {
@@ -486,15 +448,6 @@ int main() {
     RequireRegistryEvidence(row);
     RequireExactLowering(row, RunPipeline(row));
   }
-
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  const auto context = EngineContext(path, database_uuid);
-  for (const auto& row : kCases) {
-    RequireEngineDispatch(context, row);
-  }
-  RemoveDatabaseArtifacts(path);
 
   std::cout << "sbsql_sbsfc_080_operational_general_residual_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

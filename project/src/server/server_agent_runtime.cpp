@@ -968,6 +968,74 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       }
       return false;
     }
+
+    auto lease_batch_tx = BeginServerAgentTransaction(database_path_,
+                                                       database_uuid_,
+                                                       authority_epochs,
+                                                       6,
+                                                       "initial-worker-leases");
+    if (!lease_batch_tx.ok) {
+      if (diagnostics != nullptr) {
+        diagnostics->push_back(RuntimeDiagnostic(
+            lease_batch_tx.diagnostic_code,
+            "The server agent runtime could not begin an MGA transaction for initial worker leases.",
+            {{"detail", lease_batch_tx.diagnostic_detail}}));
+      }
+      return false;
+    }
+    std::vector<agents::DurableLeaseRequest> initial_leases;
+    const auto lease_now_microseconds = CurrentUnixMillis() * 1000;
+    {
+      std::lock_guard<std::mutex> guard(state_mutex_);
+      initial_leases.reserve(worker_evidence_.size());
+      for (std::size_t i = 0; i < worker_evidence_.size(); ++i) {
+        agents::DurableLeaseRequest lease;
+        lease.lease_uuid = worker_evidence_[i].lease_uuid;
+        lease.instance_uuid = worker_evidence_[i].instance_uuid;
+        lease.owner_uuid = worker_evidence_[i].lease_owner_uuid;
+        lease.now_microseconds = lease_now_microseconds;
+        lease.lease_duration_microseconds = kWorkerLeaseDurationMicroseconds;
+        lease.evidence_uuid = ServerAgentRuntimeUuid(
+            database_uuid_,
+            "worker_lease|" + std::to_string(i) + "|1",
+            2201 + i);
+        initial_leases.push_back(std::move(lease));
+      }
+    }
+    runtime_service_.SetContext(lease_batch_tx.context);
+    auto initial_leases_acquired = runtime_service_.AcquireLeaseBatch(
+        std::move(initial_leases),
+        ServerAgentRuntimeUuid(database_uuid_, "initial_worker_leases", 2190),
+        true);
+    if (!initial_leases_acquired.status.ok) {
+      RollbackServerAgentTransaction(lease_batch_tx.context);
+      if (diagnostics != nullptr) {
+        diagnostics->push_back(RuntimeDiagnostic(
+            initial_leases_acquired.status.diagnostic_code,
+            "The server agent runtime initial worker leases could not be acquired atomically.",
+            {{"detail", initial_leases_acquired.status.detail}}));
+      }
+      return false;
+    }
+    if (!CommitServerAgentTransaction(lease_batch_tx.context,
+                                      &tx_diagnostic,
+                                      &tx_detail)) {
+      if (diagnostics != nullptr) {
+        diagnostics->push_back(RuntimeDiagnostic(
+            tx_diagnostic,
+            "The server agent runtime initial worker lease batch could not be committed.",
+            {{"detail", tx_detail}}));
+      }
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> guard(state_mutex_);
+      for (auto& evidence : worker_evidence_) {
+        evidence.durable_lease_acquired = true;
+        evidence.last_lease_heartbeat_generation = 1;
+      }
+    }
+    service_started = std::move(initial_leases_acquired);
   }
   {
     std::lock_guard<std::mutex> guard(state_mutex_);

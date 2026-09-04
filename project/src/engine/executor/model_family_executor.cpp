@@ -900,6 +900,8 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     }
     result.spill_reserved = true;
     result.spill_reserved_bytes = reserved.record->reserved_bytes;
+    result.spill_budget_reservation_evidence =
+        reserved.record->budget_reservation_evidence;
     spill_directory = reserved.record->path.parent_path();
   }
 
@@ -1983,8 +1985,13 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
   const auto expected_implementation = request.left_outer
                                            ? "join.asof.left.typed.v1"
                                            : "join.asof.inner.typed.v1";
-  const auto expected_transformation_rule =
+  const auto expected_semantic_receipt =
       CanonicalTimeSeriesAsofTransformationReceiptV1(request);
+  const auto expected_transformation_rule =
+      request.bound_transformation_receipt.empty()
+          ? expected_semantic_receipt
+          : std::string("canonical.optimizer.join.") +
+                expected_implementation;
   if (root == nullptr || request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id ||
@@ -1993,9 +2000,15 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
       root->logical_semantic_variant_id != expected_semantic ||
       root->implementation_id != expected_implementation ||
       !CanonicalUuid(root->transformation_uuid) ||
+      (!request.bound_transformation_receipt.empty() &&
+       request.bound_transformation_receipt != expected_semantic_receipt) ||
       root->transformation_rule_id != expected_transformation_rule) {
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                  "ASOF direction, tolerance, or disposition differs from the selected root receipt");
+                  "ASOF direction, tolerance, or disposition differs from "
+                  "the selected root receipt:actual=" +
+                      (root == nullptr ? std::string("<missing>")
+                                       : root->transformation_rule_id) +
+                      ":expected=" + expected_transformation_rule);
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id == root->input_physical_node_ids[0]) {

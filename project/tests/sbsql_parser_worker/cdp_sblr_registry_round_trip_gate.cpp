@@ -55,18 +55,22 @@ struct UuidFactory {
 struct OperationRow {
   std::string_view operation_id;
   std::string_view opcode;
+  std::string_view executor_id;
   bool executor_evidence_accepted;
 };
 
 constexpr std::array<OperationRow, 8> kRepresentativeOperations{{
-    {"engine.op.txn_commit", "SBLR_TXN_COMMIT", false},
-    {"engine.op.insert", "SBLR_INSERT", false},
-    {"engine.op.update", "SBLR_UPDATE", false},
-    {"engine.op.delete", "SBLR_DELETE", false},
-    {"engine.op.bulk_import_stream", "SBLR_BULK_IMPORT_STREAM", true},
-    {"engine.op.query_execute", "SBLR_QUERY_EXECUTE", false},
-    {"engine.op.query_explain", "SBLR_QUERY_EXPLAIN", false},
-    {"engine.op.cluster_write_admission", "SBLR_CLUSTER_WRITE_ADMISSION", true},
+    {"engine.op.txn_commit", "SBLR_TXN_COMMIT", "engine.op.txn_commit", false},
+    {"engine.op.insert", "SBLR_INSERT", "engine.op.insert", false},
+    {"engine.op.update", "SBLR_UPDATE", "engine.op.update", false},
+    {"engine.op.delete", "SBLR_DELETE", "engine.op.delete", false},
+    {"engine.op.bulk_import_stream", "SBLR_BULK_IMPORT_STREAM",
+     "engine.op.bulk_import_stream", true},
+    {"query.execute", "SBLR_QUERY_EXECUTE", "engine.op.query_execute", true},
+    {"engine.op.query_explain", "SBLR_QUERY_EXPLAIN",
+     "engine.op.query_explain", false},
+    {"engine.op.cluster_write_admission", "SBLR_CLUSTER_WRITE_ADMISSION",
+     "engine.op.cluster_write_admission", true},
 }};
 
 sblr::SblrOperand Operand(std::string name, std::string value) {
@@ -200,7 +204,7 @@ void CheckRegistryAdmission() {
             "CDP-025 registry operation id drifted");
     Require(by_operation->opcode == row.opcode,
             "CDP-025 registry opcode drifted");
-    Require(by_operation->executor_id == row.operation_id,
+    Require(by_operation->executor_id == row.executor_id,
             "CDP-025 Core executor binding drifted");
     Require(by_operation->executor_evidence_required,
             "CDP-025 Core executor evidence gate is not required");

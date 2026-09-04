@@ -119,6 +119,14 @@ bool HasValue(const std::vector<std::string>& values, std::string_view expected)
   return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view expected_name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == expected_name) return field.value;
+  }
+  return {};
+}
+
 bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
@@ -191,25 +199,41 @@ void RequireRegistryEvidence() {
   }
 }
 
-void RequireExactLowering(const MultiModelCase& test_case,
-                          const PipelineArtifacts& artifacts) {
+void RequireExactRefusal(const MultiModelCase& test_case,
+                         const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
   if (!artifacts.verifier.admitted) std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-074 CST failed");
   Require(!artifacts.ast.messages.has_errors(), "SBSFC-074 AST failed");
-  Require(artifacts.bound.bound, "SBSFC-074 bind failed");
-  Require(artifacts.verifier.admitted, "SBSFC-074 verifier rejected exact route");
-  Require(artifacts.envelope.operation_id == test_case.operation_id,
-          "SBSFC-074 operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == test_case.opcode,
-          "SBSFC-074 SBLR opcode mismatch");
-  Require(artifacts.envelope.operation_family == "sblr.query.multimodel_or_ddl.v3",
-          "SBSFC-074 operation family mismatch");
+  Require(artifacts.bound.bound && !artifacts.bound.messages.has_errors(),
+          "SBSFC-074 component binding failed");
+  Require(!artifacts.verifier.admitted && artifacts.verifier.messages.has_errors(),
+          "SBSFC-074 unavailable multimodel route was admitted");
+  Require(artifacts.envelope.operation_id ==
+                  "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "SBSFC-074 exact refusal tuple mismatch");
+  Require(artifacts.envelope.operation_family ==
+                  "sblr.query.multimodel_or_ddl.v3" &&
+              artifacts.envelope.sblr_operation_key ==
+                  "sblr.query.multimodel_or_ddl.v3" &&
+              artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.diagnostic_shape_key ==
+                  "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1" &&
+              artifacts.envelope.trace_key ==
+                  "trace.sbsql.multimodel_exact_refusal",
+          "SBSFC-074 exact refusal metadata drifted");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.nosql_multimodel_api_required"),
-          "SBSFC-074 missing engine NoSQL authority");
+                   "authority.parser.syntax_evidence_only"),
+          "SBSFC-074 missing syntax-only authority");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.parser.no_executable_sblr"),
+          "SBSFC-074 missing no-SBLR authority");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "SBSFC-074 missing parser no-SQL-execution authority");
@@ -218,34 +242,30 @@ void RequireExactLowering(const MultiModelCase& test_case,
           "SBSFC-074 missing parser no-finality authority");
   Require(!artifacts.envelope.parser_executes_sql,
           "SBSFC-074 lowering allowed parser SQL execution");
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-          "SBSFC-074 payload did not prove no SQL text authority");
-  Require(!Contains(artifacts.envelope.payload, test_case.sql),
-          "SBSFC-074 payload embedded source SQL text");
-  Require(!Contains(artifacts.envelope.payload, "SBSQL_SURFACE_REPLAY") &&
-              !Contains(artifacts.envelope.payload, "replay") &&
-              !Contains(artifacts.envelope.payload, "refusal"),
-          "SBSFC-074 payload used forbidden replay/refusal evidence");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal") &&
-              !Contains(artifacts.envelope.payload, "recovery"),
-          "SBSFC-074 payload carried WAL/recovery authority");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              !artifacts.envelope.real_file_effects,
+          "SBSFC-074 refusal retained executable or parser-owned authority");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "SBSFC-074 did not emit one exact diagnostic");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              diagnostic.severity == "ERROR" &&
+              DiagnosticField(diagnostic, "attempted_operation_id") ==
+                  test_case.operation_id &&
+              DiagnosticField(diagnostic, "executor_operation_id") ==
+                  "not_admitted" &&
+              DiagnosticField(diagnostic, "executable_sblr_emitted") ==
+                  "false",
+          "SBSFC-074 exact refusal diagnostic drifted");
+  const auto recognized =
+      DiagnosticField(diagnostic, "recognized_surface_ids");
   for (const auto surface_id : test_case.surface_ids) {
-    Require(Contains(artifacts.envelope.payload, surface_id),
-            std::string("SBSFC-074 payload missing row marker ") +
+    Require(Contains(recognized, surface_id),
+            std::string("SBSFC-074 refusal missing row marker ") +
                 std::string(surface_id));
   }
-}
-
-void RequireServerAdmission(const MultiModelCase& test_case,
-                            const SblrEnvelope& envelope) {
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope));
-  Require(admission.admitted, "server admission rejected SBSFC-074 exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI dispatch for SBSFC-074");
-  Require(admission.operation_id == test_case.operation_id,
-          "server admission SBSFC-074 operation id mismatch");
 }
 
 std::uint64_t CurrentUnixMillis() {
@@ -532,16 +552,8 @@ int main() {
   };
   for (const auto& test_case : cases) {
     const auto artifacts = RunPipeline(test_case);
-    RequireExactLowering(test_case, artifacts);
-    RequireServerAdmission(test_case, artifacts.envelope);
+    RequireExactRefusal(test_case, artifacts);
   }
-
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  const auto context = BeginEngineTransaction(path, database_uuid);
-  RequireNoSqlDispatches(context);
-  RemoveDatabaseArtifacts(path);
 
   std::cout << "sbsql_sbsfc_074_multimodel_grammar_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

@@ -58,6 +58,10 @@ sblr::SblrDispatchResult DispatchSystemVariable(std::string_view variable_id,
       "expression.system_variable_read",
       "SBLR_SYSTEM_VARIABLE_READ",
       "sbsql-missing-functionality-system-variable-contract");
+  request.envelope.parser_package_uuid =
+      "019f1000-0000-7000-8000-000000000008";
+  request.envelope.registry_snapshot_uuid =
+      "019f1000-0000-7000-8000-000000000009";
   request.envelope.requires_transaction_context = false;
   if (!variable_id.empty()) {
     request.envelope.operands.push_back(
@@ -79,6 +83,10 @@ sblr::SblrDispatchResult DispatchReferenceVariable(std::string_view reference_sp
       binding.sblr_operation_id,
       binding.sblr_opcode,
       "sbsql-missing-functionality-reference-variable-lowering-contract");
+  request.envelope.parser_package_uuid =
+      "019f1000-0000-7000-8000-000000000008";
+  request.envelope.registry_snapshot_uuid =
+      "019f1000-0000-7000-8000-000000000009";
   request.envelope.requires_transaction_context = false;
   for (const auto& operand : binding.operands) {
     request.envelope.operands.push_back(
@@ -88,6 +96,14 @@ sblr::SblrDispatchResult DispatchReferenceVariable(std::string_view reference_sp
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
+bool HasEnvelopeDiagnostic(const sblr::SblrDispatchResult& result,
+                           std::string_view code) {
   for (const auto& diagnostic : result.diagnostics) {
     if (diagnostic.code == code) return true;
   }
@@ -132,6 +148,8 @@ bool ValidateOpcodeContract() {
   if (entry != nullptr) {
     ok &= Require(entry->opcode == "SBLR_SYSTEM_VARIABLE_READ",
                   "system variable opcode mismatch");
+    ok &= Require(entry->code == 0,
+                  "system variable expression child acquired a standalone opcode");
     ok &= Require(entry->support == sblr::SblrOpcodeSupport::implemented,
                   "system variable opcode is not implemented");
     ok &= Require(entry->transaction_effect ==
@@ -275,112 +293,69 @@ bool ValidateContextVariableResolver() {
                     engine_version.scalar_values.front().text_value ==
                         "ScratchBird 0.1.0",
                 "ctx_current_engine_version mismatch");
+
+  const auto session = sblr::ResolveSblrContextVariable(
+      "ctx_current_session_uuid", sblr_context);
+  ok &= Require(session.ok() && session.scalar_values.size() == 1 &&
+                    session.scalar_values.front().text_value ==
+                        "019f1000-0000-7000-8000-000000000003",
+                "ctx_current_session_uuid mismatch");
+
+  const auto timezone = sblr::ResolveSblrContextVariable(
+      "ctx_current_timezone", sblr_context);
+  ok &= Require(timezone.ok() && timezone.scalar_values.size() == 1 &&
+                    timezone.scalar_values.front().text_value == "UTC",
+                "ctx_current_timezone mismatch");
+
+  const auto isolation = sblr::ResolveSblrContextVariable(
+      "ctx_current_transaction_isolation", sblr_context);
+  ok &= Require(isolation.ok() && isolation.scalar_values.size() == 1 &&
+                    isolation.scalar_values.front().text_value == "snapshot",
+                "ctx_current_transaction_isolation mismatch");
+
+  const auto unknown =
+      sblr::ResolveSblrContextVariable("ctx_not_registered", sblr_context);
+  ok &= Require(!unknown.ok() && unknown.diagnostics.size() == 1 &&
+                    unknown.diagnostics.front().diagnostic_id ==
+                        "SB_DIAG_CONTEXT_VARIABLE_UNKNOWN",
+                "unknown context variable did not fail closed");
   return ok;
 }
 
-bool ValidateDispatchRoute() {
+bool ValidateStandaloneSblrRefusal() {
   bool ok = true;
   const auto rowcount = DispatchSystemVariable("ctx_last_row_count",
                                                "@@ROWCOUNT");
-  ok &= Require(rowcount.envelope_validated,
-                "rowcount envelope failed validation");
-  ok &= Require(rowcount.accepted, "rowcount dispatch was not accepted");
-  ok &= Require(rowcount.dispatched_to_api,
-                "rowcount dispatch did not reach API");
-  ok &= Require(rowcount.api_result.ok, "rowcount API result failed");
-  ok &= Require(ReadSingleType(rowcount.api_result) == "uint64",
-                "rowcount descriptor mismatch");
-  ok &= Require(ReadSingleValue(rowcount.api_result) == "7",
-                "rowcount value mismatch");
-  ok &= Require(HasEvidence(rowcount.api_result,
-                            "sblr_opcode",
-                            "SBLR_SYSTEM_VARIABLE_READ"),
-                "rowcount SBLR opcode evidence missing");
-  ok &= Require(HasEvidence(rowcount.api_result,
-                            "reference_source_spelling",
-                            "@@ROWCOUNT"),
-                "rowcount reference source evidence missing");
-  ok &= Require(HasEvidence(rowcount.api_result,
-                            "mga_visibility_authority",
-                            "unchanged_context_read_no_lock_no_snapshot_mutation"),
-                "rowcount MGA authority evidence missing");
-
-  const auto session = DispatchSystemVariable("ctx_current_session_uuid",
-                                              "@@SPID");
-  ok &= Require(session.api_result.ok, "session variable API result failed");
-  ok &= Require(ReadSingleType(session.api_result) == "uuid",
-                "session variable descriptor mismatch");
-  ok &= Require(ReadSingleValue(session.api_result) ==
-                    "019f1000-0000-7000-8000-000000000003",
-                "session variable value mismatch");
-
-  const auto version =
-      DispatchSystemVariable("ctx_current_engine_version", "@@VERSION");
-  ok &= Require(version.api_result.ok, "engine version API result failed");
-  ok &= Require(ReadSingleValue(version.api_result) == "ScratchBird 0.1.0",
-                "engine version value mismatch");
-
-  const auto timezone =
-      DispatchSystemVariable("ctx_current_timezone", "@@time_zone");
-  ok &= Require(timezone.api_result.ok, "timezone API result failed");
-  ok &= Require(ReadSingleValue(timezone.api_result) == "UTC",
-                "timezone value mismatch");
-
-  const auto isolation = DispatchSystemVariable(
-      "ctx_current_transaction_isolation", "@@tx_isolation");
-  ok &= Require(isolation.api_result.ok, "isolation API result failed");
-  ok &= Require(ReadSingleValue(isolation.api_result) == "snapshot",
-                "isolation value mismatch");
-
-  const auto missing = DispatchSystemVariable("");
-  ok &= Require(!missing.api_result.ok,
-                "missing variable id should fail closed");
-  ok &= Require(HasDiagnostic(missing.api_result,
-                              "SB_DIAG_SYSTEM_VARIABLE_ID_REQUIRED"),
-                "missing variable id diagnostic mismatch");
-
-  const auto unknown = DispatchSystemVariable("ctx_not_registered");
-  ok &= Require(!unknown.api_result.ok,
-                "unknown variable id should fail closed");
-  ok &= Require(HasDiagnostic(unknown.api_result,
-                              "SB_DIAG_CONTEXT_VARIABLE_UNKNOWN"),
-                "unknown variable diagnostic mismatch");
+  ok &= Require(!rowcount.envelope_validated && !rowcount.accepted &&
+                    !rowcount.dispatched_to_api && !rowcount.api_result.ok,
+                "standalone system-variable expression reached API dispatch");
+  ok &= Require(HasEnvelopeDiagnostic(
+                    rowcount, "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+                "standalone system-variable expression refusal mismatch");
 
   const auto lowered_rowcount = DispatchReferenceVariable("@@ROWCOUNT");
-  ok &= Require(lowered_rowcount.envelope_validated,
-                "lowered @@ROWCOUNT envelope failed validation");
-  ok &= Require(lowered_rowcount.accepted,
-                "lowered @@ROWCOUNT dispatch was not accepted");
-  ok &= Require(lowered_rowcount.api_result.ok,
-                "lowered @@ROWCOUNT API result failed");
-  ok &= Require(ReadSingleValue(lowered_rowcount.api_result) == "7",
-                "lowered @@ROWCOUNT value mismatch");
-  ok &= Require(HasEvidence(lowered_rowcount.api_result,
-                            "reference_source_spelling",
-                            "@@ROWCOUNT"),
-                "lowered @@ROWCOUNT reference source evidence missing");
+  ok &= Require(!lowered_rowcount.envelope_validated &&
+                    !lowered_rowcount.accepted &&
+                    !lowered_rowcount.dispatched_to_api &&
+                    !lowered_rowcount.api_result.ok,
+                "lowered @@ROWCOUNT escaped its parent expression route");
+  ok &= Require(HasEnvelopeDiagnostic(
+                    lowered_rowcount,
+                    "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+                "lowered @@ROWCOUNT standalone refusal mismatch");
 
   const auto lowered_spid = DispatchReferenceVariable("@@SPID");
-  ok &= Require(lowered_spid.api_result.ok,
-                "lowered @@SPID API result failed");
-  ok &= Require(ReadSingleValue(lowered_spid.api_result) ==
-                    "019f1000-0000-7000-8000-000000000003",
-                "lowered @@SPID value mismatch");
+  ok &= Require(!lowered_spid.envelope_validated && !lowered_spid.accepted &&
+                    !lowered_spid.dispatched_to_api &&
+                    !lowered_spid.api_result.ok,
+                "lowered @@SPID escaped its parent expression route");
 
   const auto lowered_autocommit = DispatchReferenceVariable("@@autocommit");
-  ok &= Require(lowered_autocommit.envelope_validated,
-                "lowered @@autocommit envelope failed validation");
-  ok &= Require(lowered_autocommit.accepted,
-                "lowered @@autocommit dispatch was not accepted");
-  ok &= Require(!lowered_autocommit.api_result.ok,
-                "lowered @@autocommit should fail closed");
-  ok &= Require(HasDiagnostic(lowered_autocommit.api_result,
-                              "SB_DIAG_FUNCTION_RUNTIME_REFUSAL"),
-                "lowered @@autocommit diagnostic mismatch");
-  ok &= Require(HasEvidence(lowered_autocommit.api_result,
-                            "exact_refusal",
-                            "true"),
-                "lowered @@autocommit exact refusal evidence missing");
+  ok &= Require(!lowered_autocommit.envelope_validated &&
+                    !lowered_autocommit.accepted &&
+                    !lowered_autocommit.dispatched_to_api &&
+                    !lowered_autocommit.api_result.ok,
+                "lowered @@autocommit escaped its parent expression route");
   return ok;
 }
 
@@ -391,6 +366,6 @@ int main() {
   ok &= ValidateOpcodeContract();
   ok &= ValidateParserCompatibilityContract();
   ok &= ValidateContextVariableResolver();
-  ok &= ValidateDispatchRoute();
+  ok &= ValidateStandaloneSblrRefusal();
   return ok ? 0 : 1;
 }

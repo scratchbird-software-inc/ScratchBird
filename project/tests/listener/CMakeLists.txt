@@ -350,6 +350,12 @@ if(TARGET sb_server)
 
   add_executable(sb_server_managed_listener_smoke server_managed_listener_smoke.cpp)
   target_compile_features(sb_server_managed_listener_smoke PRIVATE cxx_std_23)
+  target_link_libraries(sb_server_managed_listener_smoke PRIVATE
+    sb_storage_database
+    sb_engine_internal_api
+    sb_core_uuid
+    sb_core_memory
+  )
   add_dependencies(sb_server_managed_listener_smoke sb_server sb_listener sb_parser_dummy)
   add_test(
     NAME sb_server_managed_listener_smoke
@@ -364,6 +370,12 @@ if(TARGET sb_server)
 
   add_executable(sb_server_shutdown_stops_listener_smoke server_shutdown_stops_listener_smoke.cpp)
   target_compile_features(sb_server_shutdown_stops_listener_smoke PRIVATE cxx_std_23)
+  target_link_libraries(sb_server_shutdown_stops_listener_smoke PRIVATE
+    sb_storage_database
+    sb_engine_internal_api
+    sb_core_uuid
+    sb_core_memory
+  )
   add_dependencies(sb_server_shutdown_stops_listener_smoke sb_server sb_listener sb_parser_dummy)
   add_test(
     NAME sb_server_shutdown_stops_listener_smoke

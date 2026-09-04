@@ -28,7 +28,7 @@ int main() {
   envelope.parser_resolved_names_to_uuids = true;
   sblr::SblrOperand operand;
   operand.ordinal = 1;
-  operand.type = "transaction.begin.options";
+  operand.type = "transaction.begin_options";
   operand.name = "options";
   operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
   operand.value_body = std::move(body);

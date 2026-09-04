@@ -8,6 +8,7 @@
 namespace scratchbird::parser::sbsql {
 using ipc::AuthCredentialEnvelope;
 using ipc::PublicNameResolutionResult;
+using ipc::PublicRelationResolutionRequest;
 using ipc::SbpsClient;
 using ipc::ServerCloseCursorResult;
 using ipc::ServerExecutionResult;

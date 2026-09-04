@@ -14,7 +14,12 @@
 (def lib 'scratchbird/metabase-driver)
 (def version "0.1.0")
 (def class-dir "target/classes")
-(def basis (b/create-basis {:project "deps.edn"}))
+(def local-maven-repo (System/getenv "SCRATCHBIRD_MAVEN_LOCAL_REPO"))
+(def basis
+  (b/create-basis
+    (cond-> {:project "deps.edn"}
+      (not (str/blank? local-maven-repo))
+      (assoc :extra {:mvn/local-repo local-maven-repo}))))
 
 (defn validate-package-contract! []
   (let [contract (slurp "package_contract.json")

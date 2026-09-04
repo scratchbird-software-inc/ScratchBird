@@ -15,6 +15,13 @@
 #include "uuid.hpp"
 
 #include "canonical_sblr_admission_test_helper.hpp"
+#include "engine/sblr/sblr_cast_runtime.hpp"
+#include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
+#include "engine/sblr/sblr_compare_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_type_runtime.hpp"
+#include "engine/sblr/sblr_domain_operation_runtime.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -278,6 +285,84 @@ void ValidateAdmissionAndRegistry() {
        "SBLR_DOMAIN_OPERATION", "sblr.query.relational.v3",
        "domain_operation_descriptor", "typed_value", true},
   };
+  const auto build_admission_operation = [](const Route& route) {
+    auto operation = sblr::MakeSblrEnvelope(
+        route.operation_id, route.opcode,
+        "structured-type-central-route");
+    operation.result_shape = route.result_contract;
+    operation.diagnostic_shape = "diagnostic_vector";
+
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    if (route.operation_id == "engine.op.ddl_create_type") {
+      sblr::SblrDdlCreateTypeDescriptorV1 descriptor;
+      descriptor.body[0] = 1;
+      descriptor.availability = 1;
+      operand.type = "create_type_descriptor";
+      operand.name = "type";
+      operand.value_kind = sblr::SblrValueKind::create_type_descriptor;
+      operand.value_body =
+          sblr::EncodeSblrDdlCreateTypeDescriptorV1(descriptor, true);
+    } else if (route.operation_id == "engine.op.ddl_alter_type") {
+      sblr::SblrDdlAlterTypeDescriptorV1 descriptor;
+      descriptor.body[0] = 1;
+      descriptor.availability = 1;
+      operand.type = "alter_type_descriptor";
+      operand.name = "type";
+      operand.value_kind = sblr::SblrValueKind::alter_type_descriptor;
+      operand.value_body =
+          sblr::EncodeSblrDdlAlterTypeDescriptorV1(descriptor, true);
+    } else if (route.operation_id == "engine.op.ddl_drop_type") {
+      sblr::SblrDdlDropTypeDescriptorV1 descriptor;
+      descriptor.body[0] = 1;
+      descriptor.availability = 1;
+      operand.type = "drop_type_descriptor";
+      operand.name = "type";
+      operand.value_kind = sblr::SblrValueKind::drop_type_descriptor;
+      operand.value_body =
+          sblr::EncodeSblrDdlDropTypeDescriptorV1(descriptor, true);
+    } else if (route.operation_id == "engine.op.catalog_introspect") {
+      sblr::SblrCatalogIntrospectDescriptorV1 descriptor;
+      descriptor.body[0] = 1;
+      descriptor.availability = 1;
+      operand.type = "catalog_introspect_descriptor";
+      operand.name = "object_detail";
+      operand.value_kind = sblr::SblrValueKind::catalog_introspect_descriptor;
+      operand.value_body =
+          sblr::EncodeSblrCatalogIntrospectDescriptorV1(descriptor, true);
+    } else if (route.operation_id == "engine.op.domain_operation") {
+      sblr::SblrDomainOperationDescriptorV1 descriptor;
+      descriptor.canonical_body[0] = 1;
+      descriptor.availability_generation = 1;
+      operand.type = "domain_operation_descriptor";
+      operand.name = "domain_operation";
+      operand.value_kind = sblr::SblrValueKind::domain_operation_descriptor;
+      operand.value_body =
+          sblr::EncodeSblrDomainOperationDescriptorV1(descriptor, true);
+    } else if (route.operation_id == "engine.op.cast") {
+      sblr::SblrCastDescriptorV1 descriptor;
+      descriptor.canonical_body[0] = 1;
+      descriptor.availability_generation = 1;
+      operand.type = "cast_descriptor";
+      operand.name = "cast";
+      operand.value_kind = sblr::SblrValueKind::cast_descriptor;
+      operand.value_body =
+          sblr::EncodeSblrCastDescriptorV1(descriptor, true);
+    } else if (route.operation_id == "engine.op.compare") {
+      sblr::SblrCompareDescriptorV1 descriptor;
+      descriptor.canonical_body[0] = 1;
+      descriptor.availability_generation = 1;
+      operand.type = "comparison_descriptor";
+      operand.name = "compare";
+      operand.value_kind = sblr::SblrValueKind::comparison_descriptor;
+      operand.value_body =
+          sblr::EncodeSblrCompareDescriptorV1(descriptor, true);
+    }
+    Require(!operand.type.empty() && !operand.value_body.empty(),
+            "structured type admission carrier construction failed");
+    operation.operands.push_back(std::move(operand));
+    return operation;
+  };
   for (const auto& route : routes) {
     Require(sblr::LookupSblrOperation(route.retired_operation_id) == nullptr,
             "retired structured type synthetic SBLR identity remained admitted");
@@ -294,7 +379,7 @@ void ValidateAdmissionAndRegistry() {
             "structured type opcode transaction requirement drifted");
     const auto admission = server::AdmitServerSblrEnvelope(
         scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
-            route.operation_id, route.opcode));
+            build_admission_operation(route)));
     if (!admission.admitted) {
       std::cerr << "route=" << route.operation_id << " family="
                 << route.family << "\n";

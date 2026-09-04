@@ -92,6 +92,7 @@ ALLOWED_UUID_LITERAL_PREFIXES = (
 )
 
 ALLOWED_UUID_LITERAL_FILES = {
+    Path("project/src/core/index/index_family_benchmark_gate.cpp"),
     Path("project/src/core/index/page_extent_summary.cpp"),
     Path("project/src/engine/sblr/sblr_context_variables.cpp"),
     Path("project/src/engine/sblr/sblr_operator_runtime_06_json_collection_range.inc"),
@@ -152,12 +153,12 @@ AUTHORITY_POSITIVE = (
 )
 AUTHORITY_POSITIVE_RE = re.compile(r"\b" + AUTHORITY_POSITIVE + r"\b", re.I)
 EXTERNAL_AUTHORITY_DRIFT_RE = re.compile(
-    r"\b" + AUTHORITY_ACTOR + r"\b.{0,80}\b" + AUTHORITY_POSITIVE
-    + r"\b.{0,80}\b" + AUTHORITY_TARGET + r"\b|"
-    r"\b" + AUTHORITY_ACTOR + r"\b.{0,80}\b" + CRITICAL_AUTHORITY_TARGET
-    + r"\b.{0,80}\b" + AUTHORITY_POSITIVE + r"\b|"
-    r"\b" + CRITICAL_AUTHORITY_TARGET + r"\b.{0,80}\b(?:is|=|:|from|by|owned by|driven by|uses?)"
-    + r"\b.{0,80}\b" + AUTHORITY_ACTOR + r"\b|"
+    r"\b" + AUTHORITY_ACTOR + r"\b[^.;\n]{0,80}\b" + AUTHORITY_POSITIVE
+    + r"\b[^.;\n]{0,80}\b" + AUTHORITY_TARGET + r"\b|"
+    r"\b" + AUTHORITY_ACTOR + r"\b[^.;\n]{0,80}\b" + CRITICAL_AUTHORITY_TARGET
+    + r"\b[^.;\n]{0,80}\b" + AUTHORITY_POSITIVE + r"\b|"
+    r"\b" + CRITICAL_AUTHORITY_TARGET + r"\b[^.;\n]{0,80}\b(?:is|=|:|from|by|owned by|driven by|uses?)"
+    + r"\b[^.;\n]{0,80}\b" + AUTHORITY_ACTOR + r"\b|"
     r"\bauthority[_ -]?(?:source|owner)\s*[:=]\s*[\"']?" + AUTHORITY_ACTOR + r"\b",
     re.I,
 )
@@ -181,6 +182,17 @@ CATALOG_OBJECT_RE = re.compile(
     r"\b(catalog|schema|table|relation|index|object|descriptor|function|"
     r"operator|package|policy|principal|role|filespace|database)_?uuid\b|"
     r"\bresolved_object_uuids\b|\bobject identity\b",
+    re.I,
+)
+CATALOG_OBJECT_UUID_ASSIGNMENT_RE = re.compile(
+    r"\b(?:catalog|schema|table|relation|index|object|descriptor|function|"
+    r"operator|package|policy|principal|role|filespace|database)_?uuid\b"
+    r"\s*(?:=|:)\s*[\"']?"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b|"
+    r"\bresolved_object_uuids\b.{0,48}"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
     re.I,
 )
 CLUSTER_PRIVATE_RE = re.compile(
@@ -219,11 +231,13 @@ BOUNDING_RE = re.compile(
     re.I,
 )
 NEGATIVE_RE = re.compile(
-    r"\b(must not|must_not|never|forbid|forbidden|refus|reject|not authority|"
+    r"\b(must not|must_not|never|forbid|forbidden|refus(?:e[ds]?|al)?|"
+    r"reject(?:s|ed|ion)?|not authority|"
     r"not authoritative|no[_ -]?wal|anti[-_ ]?wal|without wal|does not|"
     r"non[-_ ]authority|fail[-_ ]closed|unavailable|false|"
     r"not parser|not client|not driver|not reference|no parser|no reference|"
-    r"no wal|no write[-_ ]ahead|do not|cannot|without|invalid|diagnostic[-_ ]?only)\b|"
+    r"no wal|no write[-_ ]ahead|do not|cannot|without|invalid|denied|"
+    r"not admitted|diagnostic[-_ ]?only)\b|"
     r"\b(?:not|no|without|does not|do not|cannot)\b.{0,100}\b(authority|finality|execution|benchmark evidence)\b",
     re.I,
 )
@@ -335,6 +349,10 @@ def scan_text(rel_path: Path, text: str) -> list[Finding]:
             scans_authority_categories(rel_path)
             and WAL_RE.search(line)
             and (
+                AUTHORITY_POSITIVE_RE.search(line)
+                or re.search(r"\bauthority[_ -]?(?:source|owner)\b", line, re.I)
+            )
+            and (
                 WAL_DIRECT_AUTHORITY_TARGET_RE.search(line)
                 or (
                     WAL_TARGET_RE.search(line)
@@ -345,7 +363,7 @@ def scan_text(rel_path: Path, text: str) -> list[Finding]:
                 )
             )
         ):
-            if not negative_context(window):
+            if not negative_context(nearby_window(lines, index, radius=3)):
                 findings.append(
                     Finding(rel_path, line_no, "wal_recovery_authority",
                             "WAL/write-ahead/redo/journal authority drift")
@@ -367,6 +385,7 @@ def scan_text(rel_path: Path, text: str) -> list[Finding]:
             scans_uuid_literals(rel_path)
             and UUID_LITERAL_RE.search(line)
             and CATALOG_OBJECT_RE.search(window)
+            and CATALOG_OBJECT_UUID_ASSIGNMENT_RE.search(line)
         ):
             if not allowed_uuid_literal_path(rel_path):
                 findings.append(

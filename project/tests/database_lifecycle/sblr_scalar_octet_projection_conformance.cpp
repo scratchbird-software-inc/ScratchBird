@@ -78,24 +78,51 @@ Expression Function(std::string type,
                     std::move(arguments)};
 }
 
+void AppendTextOperand(sblr::SblrOperationEnvelope* envelope,
+                       std::string name,
+                       std::string value) {
+  Require(envelope != nullptr, "projection envelope is required");
+  sblr::SblrOperand operand;
+  operand.ordinal =
+      static_cast<std::uint32_t>(envelope->operands.size() + 1u);
+  operand.type = "text";
+  operand.name = std::move(name);
+  operand.value_kind = sblr::SblrValueKind::literal_typed;
+  operand.value_body.assign(24, 0);
+  // Exact statement-owned scalar text descriptor identity for this component
+  // carrier. The projection evaluator consumes the canonical value bytes only
+  // after SBOP validation.
+  operand.value_body[0] = 0x01;
+  operand.value_body[1] = 0x9f;
+  operand.value_body[6] = 0x70;
+  operand.value_body[8] = 0x80;
+  operand.value_body[15] = 0x01;
+  const auto size = static_cast<std::uint64_t>(value.size());
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    operand.value_body[16 + byte] =
+        static_cast<std::uint8_t>(size >> (byte * 8u));
+  }
+  operand.value_body.insert(operand.value_body.end(), value.begin(),
+                            value.end());
+  envelope->operands.push_back(std::move(operand));
+}
+
 void AppendExpression(sblr::SblrOperationEnvelope* envelope,
                       const std::string& prefix,
                       const Expression& expression) {
   Require(envelope != nullptr, "projection envelope is required");
   const bool is_function = !expression.function_id.empty();
-  envelope->operands.push_back(
-      {"text", prefix + "expr_kind", is_function ? "function" : "literal"});
-  envelope->operands.push_back({"text", prefix + "type", expression.type});
-  envelope->operands.push_back({"text", prefix + "value", expression.value});
-  envelope->operands.push_back(
-      {"text", prefix + "is_null", expression.is_null ? "true" : "false"});
+  AppendTextOperand(envelope, prefix + "expr_kind",
+                    is_function ? "function" : "literal");
+  AppendTextOperand(envelope, prefix + "type", expression.type);
+  AppendTextOperand(envelope, prefix + "value", expression.value);
+  AppendTextOperand(envelope, prefix + "is_null",
+                    expression.is_null ? "true" : "false");
   if (!is_function) return;
 
-  envelope->operands.push_back(
-      {"text", prefix + "function_id", expression.function_id});
-  envelope->operands.push_back(
-      {"text", prefix + "function_arg_count",
-       std::to_string(expression.arguments.size())});
+  AppendTextOperand(envelope, prefix + "function_id", expression.function_id);
+  AppendTextOperand(envelope, prefix + "function_arg_count",
+                    std::to_string(expression.arguments.size()));
   for (std::size_t index = 0; index < expression.arguments.size(); ++index) {
     AppendExpression(envelope,
                      prefix + "arg_" + std::to_string(index) + "_",
@@ -130,17 +157,23 @@ sblr::SblrDispatchResult Dispatch(
   auto envelope = sblr::MakeSblrEnvelope(
       "query.evaluate_projection", "SBLR_QUERY_EVALUATE_PROJECTION",
       "SBLR-SCALAR-OCTET-PROJECTION-CONFORMANCE");
+  envelope.opcode_code = 0x040eu;
+  envelope.result_shape = "scalar_projection_row_v1";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid =
+      "019f0000-0000-70c1-8a00-00000000b101";
+  envelope.registry_snapshot_uuid =
+      "019f0000-0000-70c1-8a00-00000000b102";
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back(
-      {"text", "projection_count", std::to_string(projections.size())});
+  AppendTextOperand(&envelope, "projection_count",
+                    std::to_string(projections.size()));
   for (std::size_t index = 0; index < projections.size(); ++index) {
     const std::string prefix = "projection_" + std::to_string(index) + "_";
-    envelope.operands.push_back(
-        {"text", prefix + "name", projections[index].first});
+    AppendTextOperand(&envelope, prefix + "name", projections[index].first);
     AppendExpression(&envelope, prefix, projections[index].second);
   }
 
@@ -197,6 +230,13 @@ void RequireFailedBeforeRow(
               result.dispatched_to_api && !result.api_result.ok,
           "invalid neutral scalar projection did not fail in engine execution");
   if (!HasApiDiagnostic(result, expected_diagnostic)) {
+    std::cerr << "projection expression type=" << expression.type
+              << " function=" << expression.function_id << '\n';
+    for (std::size_t index = 0; index < expression.arguments.size(); ++index) {
+      std::cerr << "argument[" << index << "] type="
+                << expression.arguments[index].type << " value="
+                << expression.arguments[index].value << '\n';
+    }
     for (const auto& diagnostic : result.api_result.diagnostics) {
       std::cerr << "unexpected diagnostic " << diagnostic.code << ':'
                 << diagnostic.detail << '\n';
@@ -1241,7 +1281,8 @@ int main() {
                {Literal("int64", "256")}));
   RequireFailedBeforeRow(
       Function("binary", std::string(kOctetFromInt64),
-               {Literal("int64", "not-an-integer")}));
+               {Literal("int64", "not-an-integer")}),
+      "SB_DIAG_FUNCTION_ARGUMENT_INVALID");
   RequireFailedBeforeRow(
       Function("int64", std::string(kInt64FromFirstOctet),
                {Literal("int64", "65")}));
@@ -1304,6 +1345,6 @@ int main() {
   RequireFailedBeforeRow(
       Function("real64", std::string(kCot),
                {Literal("real64", "nan")}),
-      "SB_DIAG_FUNCTION_NUMERIC_OVERFLOW");
+      "SB_DIAG_FUNCTION_ARGUMENT_INVALID");
   return EXIT_SUCCESS;
 }

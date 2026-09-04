@@ -6,6 +6,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "database_lifecycle.hpp"
+#include "uuid.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
+
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
@@ -28,6 +32,73 @@
 #include <vector>
 
 namespace {
+
+namespace db = scratchbird::storage::database;
+namespace uuid = scratchbird::core::uuid;
+using scratchbird::core::platform::UuidKind;
+
+constexpr char kVerifier[] =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+constexpr std::string_view kAliceUuid =
+    "019f0a22-ce00-7000-8000-000000000101";
+constexpr std::string_view kSysdbaUuid =
+    "019f0a22-ce00-7000-8000-000000000102";
+
+bool CreateFixtureDatabase(const std::filesystem::path& path) {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "server_shutdown_stops_listener_smoke");
+
+  db::DatabaseCreateConfig create;
+  create.path = path.string();
+  const auto database_uuid =
+      uuid::GenerateEngineIdentityV7(UuidKind::database, 1780700000000);
+  const auto filespace_uuid =
+      uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1780700000001);
+  if (!database_uuid.ok() || !filespace_uuid.ok()) return false;
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = 1780700000000;
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  create.bootstrap_principal_name = "fixture_sysarch";
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=0358b60b6875c81e17d3e0ab67f8b785f49d4146547c79da401f21dc641c2c16";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  create.allow_overwrite = true;
+  if (!db::CreateDatabaseFile(create).ok()) return false;
+
+  const auto database_uuid_text = uuid::UuidToString(create.database_uuid.value);
+  const auto bootstrap =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          path, "server_shutdown_stops_listener_smoke");
+  const auto transaction_uuid = bootstrap.transaction_uuid.canonical;
+  const auto transaction_id = bootstrap.local_transaction_id;
+  scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
+      path, database_uuid_text, kAliceUuid, "alice", kVerifier, transaction_id,
+      "server_shutdown_stops_listener_smoke:alice", transaction_uuid);
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      path, database_uuid_text, kAliceUuid, database_uuid_text, "database",
+      "CONNECT", transaction_id,
+      "server_shutdown_stops_listener_smoke:alice-connect", transaction_uuid);
+  scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
+      path, database_uuid_text, kSysdbaUuid, "sysdba", kVerifier, transaction_id,
+      "server_shutdown_stops_listener_smoke:sysdba", transaction_uuid);
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      path, database_uuid_text, kSysdbaUuid, database_uuid_text, "database",
+      "CONNECT", transaction_id,
+      "server_shutdown_stops_listener_smoke:sysdba-connect", transaction_uuid);
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      path, database_uuid_text, kSysdbaUuid, "", "server_management",
+      "OBS_MANAGEMENT_CONTROL", transaction_id,
+      "server_shutdown_stops_listener_smoke:sysdba-management", transaction_uuid);
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
+      bootstrap);
+  return true;
+}
 
 int FindFreePort() {
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -156,7 +227,7 @@ bool WriteConfig(const std::filesystem::path& config_path,
   out << "control_dir=" << control_dir.string() << "\n\n";
   out << "[server.database]\n";
   out << "default_path=" << (work / "t.sbdb").string() << "\n";
-  out << "auto_create=true\n";
+  out << "auto_create=false\n";
   out << "open_mode=normal\n\n";
   out << "[server.parser]\n";
   out << "sbps_enabled=true\n";
@@ -293,6 +364,8 @@ int main(int argc, char** argv) {
 
   const auto config_path = work / "sb_server.conf";
   Require(WriteConfig(config_path, work, listener, parser, port), "could not write server config");
+  Require(CreateFixtureDatabase(work / "t.sbdb"),
+          "could not create durable-auth shutdown smoke database");
   const auto listener_control_dir = work / "lc";
   const auto stdout_path = work / "server.out";
   const auto stderr_path = work / "server.err";

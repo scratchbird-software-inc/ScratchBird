@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/sys_information_projection.hpp"
+#include "observability/show_api.hpp"
+#include "sblr_admission.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "server_observability.hpp"
 #include "session_registry.hpp"
@@ -69,6 +71,19 @@ bool HasRowValue(const info::SysInformationProjectionResult& result,
   for (const auto& row : result.rows) {
     if (Field(row, field_name) == expected_value) {
       return true;
+    }
+  }
+  return false;
+}
+
+bool HasApiRowValue(const info::EngineApiResult& result,
+                    std::string_view field_name,
+                    std::string_view expected_value) {
+  for (const auto& row : result.result_shape.rows) {
+    for (const auto& [name, value] : row.fields) {
+      if (name == field_name && value.encoded_value == expected_value) {
+        return true;
+      }
     }
   }
   return false;
@@ -252,20 +267,6 @@ void TestSlowPathSeriesLimitBoundsHotPathCardinality() {
           "aggregate dropped metric count did not include bounded slow-path drop");
 }
 
-server::HostedEngineState MakeEngineState() {
-  server::HostedEngineState state;
-  state.engine_context_active = true;
-  server::HostedDatabaseSnapshot database;
-  database.state = server::HostedDatabaseState::kOpen;
-  database.database_open = true;
-  database.database_path = "/tmp/ipar_server_observability_projection_gate.sbdb";
-  database.database_uuid = "database-ipar-server-observability";
-  database.read_only = false;
-  database.write_admission_fenced = false;
-  state.databases.push_back(std::move(database));
-  return state;
-}
-
 server::ServerSessionRecord MakeSession() {
   server::ServerSessionRecord session;
   session.connection_uuid = Uuid(0x10);
@@ -315,38 +316,59 @@ std::string SelectTelemetryControlsEnvelope() {
          "target_name=sys.ipar.telemetry_controls\n";
 }
 
-void TestSelectRowsUsesLiveIparProjectionSources() {
+void TestCatalogUsesLiveIparProjectionSources() {
   server::ServerObservabilityState observability;
   observability.metrics_enabled = true;
   observability.metric_persist_stride = 16;
   observability.audit_persist_stride = 16;
 
-  server::ServerSessionRegistry registry;
   const auto session = MakeSession();
-  registry.sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
-
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session.session_uuid;
-  frame.payload = server::EncodeExecuteSblrPayloadForTest(
-      session.session_uuid, {}, SelectTelemetryControlsEnvelope());
 
   server::ServerIparProjectionSourceFactory factory;
   factory.context = &observability;
   factory.build = &BuildTestIparSources;
 
-  const auto result = server::HandleExecuteSblr(
-      &registry, MakeEngineState(), frame, &factory);
-  Require(result.accepted,
-          "dml.select_rows sys.ipar.telemetry_controls route was rejected");
-  const std::string payload(result.payload.begin(), result.payload.end());
-  Require(payload.find("observability.show_catalog") != std::string::npos,
-          "sys.ipar select did not dispatch through catalog observability");
-  Require(payload.find("sys.metrics.ipar.telemetry.metrics_enabled") != std::string::npos,
-          "sys.ipar select did not include live telemetry metric path");
-  Require(payload.find("metric_persist_stride") != std::string::npos,
-          "sys.ipar select did not include live telemetry control row");
+  server::ServerSblrAdmissionRequest retired_input;
+  retired_input.encoded_sblr_envelope = SelectTelemetryControlsEnvelope();
+  const auto refused = server::AdmitServerSblrEnvelope(retired_input);
+  Require(!refused.admitted && !refused.diagnostics.empty() &&
+              refused.diagnostics.front().code ==
+                  "SBLR.OPERATION.NONCANONICAL",
+          "retired text SBLR observability input did not fail closed");
+
+  const auto sources = factory.build(factory.context);
+  info::EngineShowCatalogRequest request;
+  request.context.trust_mode = info::EngineTrustMode::server_isolated;
+  request.context.request_id = "ipar.server.live_projection.select";
+  request.context.database_path = session.database_path;
+  request.context.database_uuid.canonical = session.database_uuid;
+  request.context.principal_uuid.canonical =
+      server::UuidBytesToText(session.principal_uuid);
+  request.context.session_uuid.canonical =
+      server::UuidBytesToText(session.session_uuid);
+  request.context.local_transaction_id = session.local_transaction_id;
+  request.context.catalog_generation_id = session.catalog_generation;
+  request.context.security_epoch = session.security_epoch;
+  request.context.resource_epoch = session.grant_epoch;
+  request.context.security_context_present = true;
+  request.context.language_context.language_tag = "en";
+  request.context.language_context.default_language_tag = "en";
+  request.option_envelopes.push_back(
+      "projection:sys.ipar.telemetry_controls");
+  request.ipar_metric_counters = sources.metric_counters;
+  request.ipar_telemetry_controls = sources.telemetry_controls;
+  request.ipar_slow_path_reasons = sources.slow_path_reasons;
+  const auto projected = info::EngineShowCatalog(request);
+  Require(projected.ok,
+          "live sys.ipar telemetry projection was rejected");
+  Require(HasApiRowValue(projected,
+                         "metric_path",
+                         "sys.metrics.ipar.telemetry.metrics_enabled"),
+          "sys.ipar projection did not include live telemetry metric path");
+  Require(HasApiRowValue(projected,
+                         "control_name",
+                         "metric_persist_stride"),
+          "sys.ipar projection did not include live telemetry control row");
 }
 
 }  // namespace
@@ -356,6 +378,6 @@ int main() {
   TestEmptyMetricsDoNotFabricateRows();
   TestTelemetryControlsExposeBoundedBudget();
   TestSlowPathSeriesLimitBoundsHotPathCardinality();
-  TestSelectRowsUsesLiveIparProjectionSources();
+  TestCatalogUsesLiveIparProjectionSources();
   return EXIT_SUCCESS;
 }

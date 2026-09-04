@@ -22,11 +22,24 @@ struct LocalityAwareIndexApplyBatchPlan {
   scratchbird::core::index::CommitGroupLocalityIndexApplyPlan core_plan;
 };
 
+struct LocalityAwareExactIndexApplyBatchPlan {
+  EngineApiDiagnostic diagnostic;
+  std::vector<MgaExactIndexEntryAppendBatch> batches;
+  scratchbird::core::index::CommitGroupLocalityIndexApplyPlan core_plan;
+};
+
 LocalityAwareIndexApplyBatchPlan PlanLocalityAwareIndexApplyBatches(
     const std::vector<MgaIndexEntryAppendBatch>& batches);
 
+LocalityAwareExactIndexApplyBatchPlan PlanLocalityAwareExactIndexApplyBatches(
+    const std::vector<MgaExactIndexEntryAppendBatch>& batches);
+
 void AddLocalityAwareIndexApplyEvidence(
     const LocalityAwareIndexApplyBatchPlan& plan,
+    std::vector<EngineEvidenceReference>* evidence);
+
+void AddLocalityAwareIndexApplyEvidence(
+    const LocalityAwareExactIndexApplyBatchPlan& plan,
     std::vector<EngineEvidenceReference>* evidence);
 
 }  // namespace scratchbird::engine::internal_api

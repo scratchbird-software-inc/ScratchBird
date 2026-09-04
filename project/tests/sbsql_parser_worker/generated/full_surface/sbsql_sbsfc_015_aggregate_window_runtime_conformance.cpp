@@ -241,8 +241,16 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
   const auto found = std::ranges::find_if(
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
-  if (found == manifest.manifest.descriptor_rows.end()) std::abort();
-  return uuid::UuidToString(found->descriptor_uuid.value);
+  if (found == manifest.manifest.descriptor_rows.end() ||
+      !found->descriptor_uuid.valid()) {
+    std::abort();
+  }
+  const auto descriptor_uuid = uuid::UuidToString(found->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      found->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 std::string CoreAggregateTypeUuid(const std::string_view stable_name) {

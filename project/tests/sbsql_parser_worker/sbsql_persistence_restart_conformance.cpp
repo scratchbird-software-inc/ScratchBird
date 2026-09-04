@@ -9,8 +9,13 @@
 #include "api_types.hpp"
 #include "catalog/catalog_lookup_api.hpp"
 #include "database_lifecycle.hpp"
+#include "ddl/create_api.hpp"
+#include "dml/select_api.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
+#include "management/config_api.hpp"
 #include "memory.hpp"
+#include "notification/notification_api.hpp"
+#include "security/identity_api.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -18,6 +23,7 @@
 #include "canonical_sblr_admission_test_helper.hpp"
 
 #include "../database_lifecycle/credentialed_database_fixture.hpp"
+#include "../release/public_release_authz_fixture.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -111,6 +117,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.trace_tags.push_back("FSPE-011D");
   context.trace_tags.push_back("security.bootstrap");
   context.trace_tags.push_back("right:OBS_AGENT_STATE_READ");
@@ -141,9 +151,9 @@ api::EngineRequestContext GrantAdminContext(api::EngineRequestContext context) {
 }
 
 sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcode) {
-  auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "FSPE-011D");
-  envelope.parser_package_uuid = "019e078d-f11d-7000-8000-000000000010";
-  envelope.registry_snapshot_uuid = "019e078d-f11d-7000-8000-000000000011";
+  auto envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          operation_id, opcode, "FSPE-011D");
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
@@ -358,7 +368,7 @@ int main() {
 
   auto begin_write = Dispatch(database_path,
                               "transaction.begin",
-                              "SBLR_TRANSACTION_BEGIN",
+                              "SBLR_TXN_BEGIN",
                               BaseContext(database_path));
   Require(begin_write.api_result.local_transaction_id != 0, "write transaction did not return local transaction id");
 
@@ -417,14 +427,14 @@ int main() {
   index_request.target_object.uuid.canonical = kTableUuid;
   index_request.target_object.object_kind = "table";
   index_request.indexes.push_back(BtreeIndex(kIndexUuid, "fspe011d_table_id_idx", "id"));
-  auto index = Dispatch(database_path,
-                        "ddl.create_index",
-                        "SBLR_DDL_CREATE_INDEX",
-                        write_context,
-                        index_request,
-                        true);
-  Require(index.api_result.primary_object.uuid.canonical == kIndexUuid, "index create did not use server UUID");
-  Require(HasEvidence(index.api_result, "mga_relation_metadata", "index_create"), "index MGA evidence missing");
+  api::EngineCreateIndexRequest create_index_request;
+  static_cast<api::EngineApiRequest&>(create_index_request) = index_request;
+  create_index_request.context = write_context;
+  const auto index = api::EngineCreateIndex(create_index_request);
+  Require(index.ok && index.primary_object.uuid.canonical == kIndexUuid,
+          "index create did not use server UUID");
+  Require(HasEvidence(index, "mga_relation_metadata", "index_create"),
+          "index MGA evidence missing");
 
   api::EngineApiRequest indexed_insert_request;
   indexed_insert_request.target_object.uuid.canonical = kTableUuid;
@@ -449,14 +459,14 @@ int main() {
   domain_request.descriptors.push_back(ScalarDescriptor("019e078d-f11d-7000-8000-000000000204", "text"));
   domain_request.policy_profile.encoded_profiles.push_back("domain_visibility_policy:fspe011d_visible");
   domain_request.option_envelopes.push_back("check_constraint:not_empty");
-  auto domain = Dispatch(database_path,
-                         "ddl.create_domain",
-                         "SBLR_DDL_CREATE_DOMAIN",
-                         write_context,
-                         domain_request,
-                         true);
-  Require(domain.api_result.primary_object.uuid.canonical == kDomainUuid, "domain create did not use server UUID");
-  Require(HasEvidence(domain.api_result, "domain_event", "domain_create"), "domain persistence evidence missing");
+  api::EngineCreateDomainRequest create_domain_request;
+  static_cast<api::EngineApiRequest&>(create_domain_request) = domain_request;
+  create_domain_request.context = write_context;
+  const auto domain = api::EngineCreateDomain(create_domain_request);
+  Require(domain.ok && domain.primary_object.uuid.canonical == kDomainUuid,
+          "domain create did not use server UUID");
+  Require(HasEvidence(domain, "domain_event", "domain_create"),
+          "domain persistence evidence missing");
 
   constexpr const char* kFunctionUuid = "019e078d-f11d-7000-8000-000000000105";
   api::EngineApiRequest function_request;
@@ -466,14 +476,21 @@ int main() {
   function_request.target_object.object_kind = "function";
   function_request.localized_names.push_back(Name("fspe011d_function"));
   function_request.option_envelopes.push_back("permission:manage_executable");
-  auto function = Dispatch(database_path,
-                           "ddl.create_function",
-                           "SBLR_DDL_CREATE_FUNCTION",
-                           write_context,
-                           function_request,
-                           true);
-  Require(function.api_result.primary_object.uuid.canonical == kFunctionUuid, "function create did not use server UUID");
-  Require(HasEvidence(function.api_result, "function", kFunctionUuid), "function persistence evidence missing");
+  api::EngineCreateFunctionRequest create_function_request;
+  static_cast<api::EngineApiRequest&>(create_function_request) =
+      function_request;
+  auto function_context = write_context;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &function_context, {"CATALOG_MUTATE"});
+  create_function_request.context = std::move(function_context);
+  const auto function = api::EngineCreateFunction(create_function_request);
+  for (const auto& diagnostic : function.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(function.ok && function.primary_object.uuid.canonical == kFunctionUuid,
+          "function create did not use server UUID");
+  Require(HasEvidence(function, "function", kFunctionUuid),
+          "function persistence evidence missing");
 
   constexpr const char* kIdentityUuid = "019e078d-f11d-7000-8000-000000000106";
   api::EngineApiRequest identity_request;
@@ -481,14 +498,21 @@ int main() {
   identity_request.target_object.object_kind = "security_identity";
   identity_request.localized_names.push_back(Name("fspe011d_user"));
   identity_request.option_envelopes.push_back("identity_kind:user");
-  auto identity = Dispatch(database_path,
-                           "security.create_identity",
-                           "SBLR_SECURITY_CREATE_IDENTITY",
-                           write_context,
-                           identity_request,
-                           true);
-  Require(identity.api_result.primary_object.uuid.canonical == kIdentityUuid, "security identity create did not use server UUID");
-  Require(HasEvidence(identity.api_result, "security_user", kIdentityUuid), "security identity persistence evidence missing");
+  api::EngineCreateIdentityRequest create_identity_request;
+  static_cast<api::EngineApiRequest&>(create_identity_request) =
+      identity_request;
+  auto identity_context = write_context;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &identity_context, {"SEC_IDENTITY_ADMIN"});
+  create_identity_request.context = std::move(identity_context);
+  const auto identity = api::EngineCreateIdentity(create_identity_request);
+  for (const auto& diagnostic : identity.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(identity.ok && identity.primary_object.uuid.canonical == kIdentityUuid,
+          "security identity create did not use server UUID");
+  Require(HasEvidence(identity, "security_user", kIdentityUuid),
+          "security identity persistence evidence missing");
 
   constexpr const char* kGrantUuid = "019e078d-f11d-7000-8000-000000000107";
   api::EngineApiRequest grant_request;
@@ -512,14 +536,14 @@ int main() {
   config_request.target_object.object_kind = "config";
   config_request.localized_names.push_back(Name("fspe011d.metrics.enabled"));
   config_request.option_envelopes.push_back("value:true");
-  auto config = Dispatch(database_path,
-                         "management.set_config",
-                         "SBLR_MANAGEMENT_SET_CONFIG",
-                         write_context,
-                         config_request,
-                         false);
-  Require(config.api_result.primary_object.uuid.canonical == kConfigUuid, "config set did not use server UUID");
-  Require(HasEvidence(config.api_result, "config", kConfigUuid), "config persistence evidence missing");
+  api::EngineSetConfigRequest set_config_request;
+  static_cast<api::EngineApiRequest&>(set_config_request) = config_request;
+  set_config_request.context = write_context;
+  const auto config = api::EngineSetConfig(set_config_request);
+  Require(config.ok && config.primary_object.uuid.canonical == kConfigUuid,
+          "config set did not use server UUID");
+  Require(HasEvidence(config, "config", kConfigUuid),
+          "config persistence evidence missing");
 
   constexpr const char* kParserPackageUuid = "019e078d-f11d-7000-8000-000000000109";
   api::EngineApiRequest parser_package_request;
@@ -545,41 +569,50 @@ int main() {
   channel_request.target_object.object_kind = "event_channel";
   channel_request.localized_names.push_back(Name("fspe011d_channel"));
   channel_request.option_envelopes.push_back("queue_policy_uuid:event.queue.durable_local.fspe011d");
-  auto channel = Dispatch(database_path,
-                          "event.channel.create",
-                          "SBLR_EVENT_CHANNEL_CREATE",
-                          write_context,
-                          channel_request,
-                          true);
-  Require(channel.api_result.primary_object.uuid.canonical == kEventChannelUuid, "event channel create did not use server UUID");
-  Require(HasEvidence(channel.api_result, "event_channel", kEventChannelUuid), "event channel persistence evidence missing");
+  api::EngineCreateEventChannelRequest create_channel_request;
+  static_cast<api::EngineApiRequest&>(create_channel_request) = channel_request;
+  auto event_create_context = write_context;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &event_create_context, {"EVENT_CREATE"});
+  create_channel_request.context = std::move(event_create_context);
+  const auto channel = api::EngineCreateEventChannel(create_channel_request);
+  Require(channel.ok && channel.primary_object.uuid.canonical == kEventChannelUuid,
+          "event channel create did not use server UUID");
+  Require(HasEvidence(channel, "event_channel", kEventChannelUuid),
+          "event channel persistence evidence missing");
 
   api::EngineApiRequest listen_request;
   listen_request.target_object.uuid.canonical = kEventChannelUuid;
   listen_request.target_object.object_kind = "event_channel";
   listen_request.option_envelopes.push_back(std::string("subscription_uuid:") + kSubscriptionUuid);
   listen_request.option_envelopes.push_back("delivery_profile:durable_local");
-  auto listen = Dispatch(database_path,
-                         "event.channel.listen",
-                         "SBLR_EVENT_CHANNEL_LISTEN",
-                         write_context,
-                         listen_request,
-                         true);
-  Require(listen.api_result.primary_object.uuid.canonical == kSubscriptionUuid, "event listen did not use subscription UUID");
-  Require(HasEvidence(listen.api_result, "event_subscription", kSubscriptionUuid), "event subscription persistence evidence missing");
+  api::EngineListenNotificationRequest listen_notification_request;
+  static_cast<api::EngineApiRequest&>(listen_notification_request) =
+      listen_request;
+  auto event_listen_context = write_context;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &event_listen_context, {"EVENT_SUBSCRIBE"});
+  listen_notification_request.context = std::move(event_listen_context);
+  const auto listen = api::EngineListenNotification(listen_notification_request);
+  Require(listen.ok && listen.primary_object.uuid.canonical == kSubscriptionUuid,
+          "event listen did not use subscription UUID");
+  Require(HasEvidence(listen, "event_subscription", kSubscriptionUuid),
+          "event subscription persistence evidence missing");
 
   api::EngineApiRequest notify_request;
   notify_request.target_object.uuid.canonical = kEventChannelUuid;
   notify_request.target_object.object_kind = "event_channel";
   notify_request.rows.push_back(Row("event", "persisted-event"));
   notify_request.option_envelopes.push_back("payload:persisted-event");
-  auto notify = Dispatch(database_path,
-                         "event.channel.notify",
-                         "SBLR_EVENT_CHANNEL_NOTIFY",
-                         write_context,
-                         notify_request,
-                         true);
-  Require(HasEvidence(notify.api_result, "event_publication"), "event publication persistence evidence missing");
+  api::EngineNotifyEventChannelRequest notify_channel_request;
+  static_cast<api::EngineApiRequest&>(notify_channel_request) = notify_request;
+  auto event_notify_context = write_context;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &event_notify_context, {"EVENT_PUBLISH"});
+  notify_channel_request.context = std::move(event_notify_context);
+  const auto notify = api::EngineNotifyEventChannel(notify_channel_request);
+  Require(notify.ok && HasEvidence(notify, "event_publication"),
+          "event publication persistence evidence missing");
 
   api::EngineApiRequest page_agent_request;
   page_agent_request.related_objects.push_back({{created_filespace_uuid}, "filespace"});
@@ -616,10 +649,13 @@ int main() {
   page_agent_request.option_envelopes.push_back("safety_fence_result:passed");
   page_agent_request.option_envelopes.push_back("wall_now_us:1");
   page_agent_request.option_envelopes.push_back("monotonic_now_us:1");
+  auto page_agent_context = write_context;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &page_agent_context, {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL"});
   auto page_agent = Dispatch(database_path,
                              "agents.request_page_preallocation",
                              "SBLR_AGENT_REQUEST_PAGE_PREALLOCATION",
-                             write_context,
+                             std::move(page_agent_context),
                              page_agent_request,
                              true);
   Require(HasEvidence(page_agent.api_result, "agent_hook", "agents.request_page_preallocation"),
@@ -627,7 +663,7 @@ int main() {
 
   auto commit_write = Dispatch(database_path,
                                "transaction.commit",
-                               "SBLR_TRANSACTION_COMMIT",
+                               "SBLR_TXN_COMMIT",
                                write_context,
                                {},
                                true);
@@ -656,7 +692,7 @@ int main() {
 
   auto begin_read = Dispatch(database_path,
                              "transaction.begin",
-                             "SBLR_TRANSACTION_BEGIN",
+                             "SBLR_TXN_BEGIN",
                              BaseContext(database_path));
   Require(begin_read.api_result.local_transaction_id != 0, "read transaction did not return local transaction id");
   auto read_context = BaseContext(database_path);
@@ -693,44 +729,43 @@ int main() {
   select_request.predicate.bound_values.push_back(TextValue("2"));
   select_request.projection.canonical_projection_envelopes.push_back("id");
   select_request.projection.canonical_projection_envelopes.push_back("note");
-  auto selected = Dispatch(database_path,
-                           "dml.select_rows",
-                           "SBLR_DML_SELECT_ROWS",
-                           read_context,
-                           select_request,
-                           true);
-  Require(selected.api_result.result_shape.rows.size() == 1, "select did not see persisted row after restart");
-  Require(FieldValue(selected.api_result, "id") == "2", "persisted row id mismatch after restart");
-  Require(FieldValue(selected.api_result, "note") == "persisted-through-index",
+  api::EngineSelectRowsRequest select_rows_request;
+  static_cast<api::EngineApiRequest&>(select_rows_request) = select_request;
+  select_rows_request.context = read_context;
+  const auto selected = api::EngineSelectRows(select_rows_request);
+  Require(selected.ok && selected.result_shape.rows.size() == 1,
+          "select did not see persisted row after restart");
+  Require(FieldValue(selected, "id") == "2", "persisted row id mismatch after restart");
+  Require(FieldValue(selected, "note") == "persisted-through-index",
           "persisted row payload mismatch after restart");
-  Require(HasEvidence(selected.api_result, "index_lookup"), "post-restart select did not use persisted index");
+  Require(HasEvidence(selected, "index_lookup"),
+          "post-restart select did not use persisted index");
 
-  api::EngineApiRequest poll_request;
-  auto polled = Dispatch(database_path,
-                         "event.delivery.poll",
-                         "SBLR_EVENT_DELIVERY_POLL",
-                         read_context,
-                         poll_request,
-                         true);
-  Require(HasFieldValue(polled.api_result, "payload", "persisted-event"),
+  api::EnginePollEventDeliveryRequest poll_request;
+  auto event_poll_context = read_context;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &event_poll_context, {"EVENT_DELIVERY_READ"});
+  poll_request.context = std::move(event_poll_context);
+  const auto polled = api::EnginePollEventDelivery(poll_request);
+  Require(polled.ok && HasFieldValue(polled, "payload", "persisted-event"),
           "durable event publication did not survive restart");
 
-  api::EngineApiRequest inspect_config_request;
-  auto inspected_config = Dispatch(database_path,
-                                   "management.inspect_config",
-                                   "SBLR_MANAGEMENT_INSPECT_CONFIG",
-                                   read_context,
-                                   inspect_config_request,
-                                   false);
-  Require(HasFieldValue(inspected_config.api_result, "config_uuid", kConfigUuid),
+  api::EngineInspectConfigRequest inspect_config_request;
+  inspect_config_request.context = read_context;
+  const auto inspected_config = api::EngineInspectConfig(inspect_config_request);
+  Require(inspected_config.ok &&
+              HasFieldValue(inspected_config, "config_uuid", kConfigUuid),
           "metrics/config record did not survive restart");
 
   api::EngineApiRequest agent_show_request;
   agent_show_request.option_envelopes.push_back("agent_type:job_control_manager");
+  auto agent_show_context = read_context;
+  scratchbird::tests::release::GrantMaterializedRights(
+      &agent_show_context, {"OBS_AGENT_STATE_READ"});
   auto job_agent = Dispatch(database_path,
                             "agents.show",
                             "SBLR_AGENTS_SHOW",
-                            read_context,
+                            std::move(agent_show_context),
                             agent_show_request,
                             false);
   Require(HasFieldValue(job_agent.api_result, "agent_type", "job_control_manager"),
@@ -738,7 +773,7 @@ int main() {
 
   auto commit_read = Dispatch(database_path,
                               "transaction.commit",
-                              "SBLR_TRANSACTION_COMMIT",
+                              "SBLR_TXN_COMMIT",
                               read_context,
                               {},
                               true);

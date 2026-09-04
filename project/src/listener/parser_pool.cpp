@@ -72,7 +72,7 @@ using ParserEnvironment =
 // storage, and locale data.  In particular, HOME, shell startup state,
 // test-harness controls, compatibility aliases, cloud credentials, and arbitrary SB_*
 // variables are deliberately absent.
-constexpr std::array<const char*, 18> kInheritedRuntimeEnvironment = {
+constexpr std::array<const char*, 20> kInheritedRuntimeEnvironment = {
     "PATH",
     "LD_LIBRARY_PATH",
     "DYLD_LIBRARY_PATH",
@@ -91,6 +91,11 @@ constexpr std::array<const char*, 18> kInheritedRuntimeEnvironment = {
     "LC_TIME",
     "LC_PAPER",
     "LC_MEASUREMENT",
+    // Explicit opt-in, non-authoritative diagnostic sinks.  Parser workers
+    // otherwise receive a closed environment and these existing phase traces
+    // would be unusable on the real listener handoff route.
+    "SCRATCHBIRD_SBPS_CLIENT_PHASE_TRACE_FILE",
+    "SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE",
 };
 
 std::string ReadEnvironmentValue(const char* name) {

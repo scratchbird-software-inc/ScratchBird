@@ -12,6 +12,7 @@
 #include "registry/generated/sbsql_generated_registry.hpp"
 
 #include <array>
+#include <stdexcept>
 #include <string_view>
 #include <string>
 #include <vector>
@@ -140,13 +141,22 @@ bool RequiresExactRefusal(const GeneratedSurfaceRegistryRow& row) {
          Contains(row.engine_rule_key, "fail_closed");
 }
 
+StatementParserCategory RequireStatementParserCategory(const GeneratedSurfaceRegistryRow& row) {
+  const auto category = ParseStatementParserCategory(row.family);
+  if (!category.has_value()) {
+    throw std::logic_error("generated SBSQL surface has an unknown statement family: " +
+                           std::string(row.family));
+  }
+  return category.value();
+}
+
 StatementSurfaceDescriptor MakeDescriptor(const GeneratedSurfaceRegistryRow& row) {
   return {
       row.surface_id,
       row.fixed_uuid_v7,
       row.canonical_name,
       ParseStatementSurfaceKind(row.surface_kind).value_or(StatementSurfaceKind::kGrammarProduction),
-      ParseStatementParserCategory(row.family).value_or(StatementParserCategory::kGeneral),
+      RequireStatementParserCategory(row),
       row.family,
       row.source_status,
       row.cluster_scope,
@@ -910,6 +920,7 @@ std::optional<StatementParserCategory> ParseStatementParserCategory(std::string_
   if (family == "jobs_scheduler") return StatementParserCategory::kJobsScheduler;
   if (family == "archive_replication") return StatementParserCategory::kArchiveReplication;
   if (family == "acceleration") return StatementParserCategory::kAcceleration;
+  if (family == "bridge") return StatementParserCategory::kBridge;
   if (family == "multi_model") return StatementParserCategory::kMultiModel;
   if (family == "migration") return StatementParserCategory::kMigration;
   if (family == "cluster_private") return StatementParserCategory::kClusterPrivate;
@@ -938,6 +949,7 @@ std::string_view StatementParserCategoryName(StatementParserCategory category) {
     case StatementParserCategory::kJobsScheduler: return "jobs_scheduler";
     case StatementParserCategory::kArchiveReplication: return "archive_replication";
     case StatementParserCategory::kAcceleration: return "acceleration";
+    case StatementParserCategory::kBridge: return "bridge";
     case StatementParserCategory::kMultiModel: return "multi_model";
     case StatementParserCategory::kMigration: return "migration";
     case StatementParserCategory::kClusterPrivate: return "cluster_private";

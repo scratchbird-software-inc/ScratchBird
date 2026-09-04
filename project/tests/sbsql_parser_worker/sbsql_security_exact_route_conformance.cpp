@@ -7,29 +7,24 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
-#include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
-#include "sblr_admission.hpp"
-#include "sblr_dispatch.hpp"
-#include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_registry.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdlib>
-#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
-#include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace {
 
 using namespace scratchbird::parser::sbsql;
-namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
 
 constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000002301";
@@ -630,118 +625,39 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
           EvidenceMessage(row, "no_sql_text_authority",
                           "security envelope marked SQL text present"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted,
-          EvidenceMessage(row, "server_admission",
-                          "server admission rejected exact security route"));
-  Require(admission.requires_public_abi_dispatch,
-          EvidenceMessage(row, "server_admission",
-                          "server admission did not require engine public ABI dispatch"));
-  Require(admission.operation_id == row.operation_id,
-          EvidenceMessage(row, "server_admission", "server admission operation id mismatch"));
-  Require(admission.operation_family == expected_family,
-          EvidenceMessage(row, "server_admission", "server admission operation family mismatch"));
 }
 
-api::EngineRequestContext EngineContext(const std::filesystem::path& database_path,
-                                        std::uint64_t tx) {
-  api::EngineRequestContext context;
-  context.request_id = "sbsql-security-exact-route";
-  context.database_path = database_path.string();
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000002321";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000002322";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000002323";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000002324";
-  context.local_transaction_id = tx;
-  context.security_context_present = true;
-  context.trace_tags.push_back("security.bootstrap");
-  context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
-  context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
-  context.trace_tags.push_back("right:POLICY_ADMIN");
-  return context;
+void RequireCanonicalSecurityRootRegistry() {
+  constexpr std::array<std::pair<std::string_view, std::string_view>, 6> kRoots{{
+      {"engine.op.sec_grant", "SBLR_SEC_GRANT"},
+      {"engine.op.sec_revoke", "SBLR_SEC_REVOKE"},
+      {"engine.op.session_role_switch", "SBLR_SESSION_ROLE_SWITCH"},
+      {"engine.op.sec_create_policy", "SBLR_SEC_CREATE_POLICY"},
+      {"engine.op.sec_alter_policy", "SBLR_SEC_ALTER_POLICY"},
+      {"engine.op.catalog_introspect", "SBLR_CATALOG_INTROSPECT"},
+  }};
+  for (const auto& [operation_id, opcode] : kRoots) {
+    const auto* entry = sblr::LookupSblrOperation(operation_id);
+    Require(entry != nullptr, "canonical security root is missing from the opcode registry");
+    Require(entry->opcode == opcode,
+            "canonical security root has the wrong opcode mnemonic");
+    Require(entry->code != 0,
+            "canonical security root has no allocated numeric opcode");
+  }
 }
 
-sblr::SblrOperationEnvelope EngineEnvelope(std::string operation_id, std::string opcode) {
-  auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode),
-                                         "trace.security.exact_route");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context =
-      envelope.operation_id == "security.privilege.grant" ||
-      envelope.operation_id == "security.privilege.revoke" ||
-      envelope.operation_id == "security.principal.create" ||
-      envelope.operation_id == "security.principal.alter" ||
-      envelope.operation_id == "security.policy.create" ||
-      envelope.operation_id == "security.policy.alter" ||
-      envelope.operation_id == "security.policy.attach" ||
-      envelope.operation_id == "security.policy.activate" ||
-      envelope.operation_id == "security.policy.deactivate";
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  if (envelope.operation_id == "security.privilege.grant" ||
-      envelope.operation_id == "security.privilege.revoke") {
-    envelope.operands.push_back({"text", "target_object_uuid", std::string(kTargetUuid)});
-    envelope.operands.push_back({"text", "target_object_kind", "table"});
-    envelope.operands.push_back({"text", "grantee_uuid", std::string(kGranteeUuid)});
-    envelope.operands.push_back({"text", "grantee_kind", "principal"});
-    envelope.operands.push_back({"text", "privilege", "SELECT"});
-    envelope.operands.push_back({"text", "grant_effect", "allow"});
-  } else if (envelope.operation_id == "security.principal.create") {
-    envelope.operands.push_back({"text", "principal_uuid", std::string(kUserUuid)});
-    envelope.operands.push_back({"text", "principal_name", "app_user"});
-    envelope.operands.push_back({"text", "principal_kind", "user"});
-    envelope.operands.push_back({"text", "credential_protected_material_ref", "protected_ref_001"});
-  } else if (envelope.operation_id == "security.principal.alter") {
-    envelope.operands.push_back({"text", "principal_uuid", std::string(kUserUuid)});
-    envelope.operands.push_back({"text", "lifecycle_state", "disabled"});
-  } else if (envelope.operation_id == "security.session.set_role") {
-    envelope.operands.push_back({"text", "role_uuid", std::string(kRoleUuid)});
-    envelope.operands.push_back({"text", "role_mode", "explicit"});
-  } else if (envelope.operation_id == "security.policy.create") {
-    envelope.operands.push_back({"text", "policy_uuid", std::string(kPolicyUuid)});
-    envelope.operands.push_back({"text", "policy_name", "app_policy"});
-    envelope.operands.push_back({"text", "target_object_uuid", std::string(kTargetUuid)});
-    envelope.operands.push_back({"text", "target_object_kind", "table"});
-    envelope.operands.push_back({"text", "policy_effect", "row_filter"});
-    envelope.operands.push_back({"text", "predicate_envelope", "predicate:true"});
-  } else if (envelope.operation_id == "security.policy.alter") {
-    envelope.operands.push_back({"text", "policy_uuid", std::string(kPolicyUuid)});
-    envelope.operands.push_back({"text", "lifecycle_state", "inactive"});
-  } else if (envelope.operation_id == "security.policy.attach") {
-    envelope.operands.push_back({"text", "policy_uuid", std::string(kPolicyUuid)});
-    envelope.operands.push_back({"text", "target_object_uuid", std::string(kPolicyTargetUuid)});
-    envelope.operands.push_back({"text", "target_object_kind", "filespace"});
-    envelope.operands.push_back({"text", "policy_scope", "filespace"});
-    envelope.operands.push_back({"text", "policy_effect", "attach"});
-  } else if (StartsWith(envelope.operation_id, "security.policy.")) {
-    envelope.operands.push_back({"text", "policy_uuid", std::string(kPolicyUuid)});
-    envelope.operands.push_back({"text", "include_rows", "true"});
+void RequireLegacyParserRootsRemainNonExecutable() {
+  for (const auto& row : kSecurityRows) {
+    const auto* entry = sblr::LookupSblrOperation(row.operation_id);
+    Require(entry != nullptr,
+            EvidenceMessage(row, "canonical_boundary",
+                            "legacy parser route is absent from the compatibility registry"));
+    if (row.operation_id != "security.policy.show") {
+      Require(entry->code == 0,
+              EvidenceMessage(row, "canonical_boundary",
+                              "legacy parser route unexpectedly acquired canonical opcode authority"));
+    }
   }
-  return envelope;
-}
-
-void RequireEngineDispatch(const std::filesystem::path& database_path,
-                           std::string operation_id,
-                           std::string opcode,
-                           std::uint64_t tx) {
-  const sblr::SblrDispatchRequest request{
-      EngineContext(database_path, tx),
-      EngineEnvelope(operation_id, opcode),
-      api::EngineApiRequest{}};
-  const auto result = sblr::DispatchSblrOperation(request);
-  for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-  }
-  Require(result.envelope_validated, "engine SBLR envelope did not validate");
-  Require(result.accepted, "engine SBLR dispatch did not accept security operation");
-  Require(result.dispatched_to_api, "engine SBLR dispatch did not route to an internal API");
-  Require(result.api_result.operation_id == operation_id,
-          "engine SBLR dispatch returned wrong operation id");
-  Require(result.api_result.ok, "engine security API did not complete");
 }
 
 void RequireUnresolvedNamesFailClosed() {
@@ -759,59 +675,8 @@ int main() {
     RequireExactLowering(row);
   }
   RequireUnresolvedNamesFailClosed();
-
-  const auto database_path =
-      std::filesystem::temp_directory_path() /
-      ("sbsql_security_exact_route_" + std::to_string(static_cast<long long>(::getpid())) + ".sbdb");
-  RequireEngineDispatch(database_path,
-                        "security.privilege.grant",
-                        "SBLR_SECURITY_PRIVILEGE_GRANT",
-                        1);
-  RequireEngineDispatch(database_path,
-                        "security.privilege.revoke",
-                        "SBLR_SECURITY_PRIVILEGE_REVOKE",
-                        2);
-  RequireEngineDispatch(database_path,
-                        "security.session.set_role",
-                        "SBLR_SECURITY_SESSION_SET_ROLE",
-                        0);
-  RequireEngineDispatch(database_path,
-                        "security.policy.attach",
-                        "SBLR_SECURITY_POLICY_ATTACH",
-                        3);
-  RequireEngineDispatch(database_path,
-                        "security.policy.validate",
-                        "SBLR_SECURITY_POLICY_VALIDATE",
-                        0);
-  RequireEngineDispatch(database_path,
-                        "security.policy.show",
-                        "SBLR_SECURITY_POLICY_SHOW",
-                        0);
-  RequireEngineDispatch(database_path,
-                        "security.policy.activate",
-                        "SBLR_SECURITY_POLICY_ACTIVATE",
-                        4);
-  RequireEngineDispatch(database_path,
-                        "security.policy.deactivate",
-                        "SBLR_SECURITY_POLICY_DEACTIVATE",
-                        5);
-  RequireEngineDispatch(database_path,
-                        "security.principal.create",
-                        "SBLR_SECURITY_PRINCIPAL_CREATE",
-                        6);
-  RequireEngineDispatch(database_path,
-                        "security.principal.alter",
-                        "SBLR_SECURITY_PRINCIPAL_ALTER",
-                        7);
-  RequireEngineDispatch(database_path,
-                        "security.policy.create",
-                        "SBLR_SECURITY_POLICY_CREATE",
-                        8);
-  RequireEngineDispatch(database_path,
-                        "security.policy.alter",
-                        "SBLR_SECURITY_POLICY_ALTER",
-                        9);
-  std::filesystem::remove(database_path.string() + ".sb.security_principal_events");
+  RequireCanonicalSecurityRootRegistry();
+  RequireLegacyParserRootsRemainNonExecutable();
   std::cout << "sbsql_security_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

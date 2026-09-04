@@ -29,7 +29,6 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
-#include <fstream>
 #include <iomanip>
 #include <initializer_list>
 #include <limits>
@@ -220,8 +219,10 @@ constexpr std::uint64_t kFeatureFailoverHints = FeatureBit(23);
 constexpr std::uint64_t kFeatureTraceContext = FeatureBit(24);
 constexpr std::uint8_t kCopyFormatCanonicalRowFieldsText = 0x00;
 constexpr std::uint8_t kCopyFormatBinaryRowsetV1 = 0x01;
+constexpr std::uint8_t kCopyFormatCanonicalCsvDefaultV1 = 0x02;
 constexpr std::uint32_t kCopyDefaultWindowBytes = 1024u * 1024u;
 constexpr std::uint32_t kCopyBinaryWindowBytes = 32u * 1024u * 1024u;
+constexpr std::uint32_t kCopyCanonicalCsvWindowBytes = 8u * 1024u * 1024u;
 constexpr std::size_t kCopyExecuteRowsPerSblrEnvelope = 50000;
 constexpr std::size_t kScriptInsertGroupFlushRows = kCopyExecuteRowsPerSblrEnvelope;
 constexpr std::uint64_t kAutoCursorFetchRows = 1024;
@@ -321,6 +322,9 @@ struct NativeCopyPacket {
 
 struct CopyImportState {
   bool active{false};
+  bool opcode775_held{false};
+  std::uint64_t durable_chunk_count{0};
+  std::uint64_t durable_byte_count{0};
   bool native_bulk_ingest{false};
   bool native_bulk_ingest_enabled{true};
   std::string sql;
@@ -561,30 +565,29 @@ void WriteParserPhaseTrace(std::string_view event,
                            std::string_view detail = {}) {
   const char* trace_path = std::getenv("SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE");
   if (trace_path == nullptr || *trace_path == '\0') return;
-  static std::mutex trace_mutex;
-  std::lock_guard<std::mutex> guard(trace_mutex);
-  std::ofstream out(trace_path, std::ios::app);
-  if (!out) return;
   const char* run_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_RUN_ID");
   const char* script_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_SCRIPT_ID");
   const char* statement_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_STATEMENT_ID");
   const char* element_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_ELEMENT_ID");
   const char* command_group = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_COMMAND_GROUP");
   const char* execution_mode = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_EXECUTION_MODE");
-  out << "{\"event\":\"" << ParserPhaseJsonEscape(event)
-      << "\",\"phase\":\"" << ParserPhaseJsonEscape(phase)
-      << "\",\"run_id\":\"" << ParserPhaseJsonEscape(run_id ? run_id : "")
-      << "\",\"script_id\":\"" << ParserPhaseJsonEscape(script_id ? script_id : "")
-      << "\",\"statement_id\":\"" << ParserPhaseJsonEscape(statement_id ? statement_id : "")
-      << "\",\"element_id\":\"" << ParserPhaseJsonEscape(element_id ? element_id : "")
-      << "\",\"command_group\":\"" << ParserPhaseJsonEscape(command_group ? command_group : "")
-      << "\",\"execution_mode\":\"" << ParserPhaseJsonEscape(execution_mode ? execution_mode : "")
-      << "\",\"elapsed_us\":"
-      << (static_cast<double>(elapsed_ns) / 1000.0)
-      << ",\"bytes\":" << static_cast<unsigned long long>(bytes)
-      << ",\"count\":" << static_cast<unsigned long long>(count)
-      << ",\"rows\":" << static_cast<unsigned long long>(rows)
-      << ",\"detail\":\"" << ParserPhaseJsonEscape(detail) << "\"}\n";
+  std::ostringstream trace;
+  trace << "{\"event\":\"" << ParserPhaseJsonEscape(event)
+        << "\",\"phase\":\"" << ParserPhaseJsonEscape(phase)
+        << "\",\"run_id\":\"" << ParserPhaseJsonEscape(run_id ? run_id : "")
+        << "\",\"script_id\":\"" << ParserPhaseJsonEscape(script_id ? script_id : "")
+        << "\",\"statement_id\":\"" << ParserPhaseJsonEscape(statement_id ? statement_id : "")
+        << "\",\"element_id\":\"" << ParserPhaseJsonEscape(element_id ? element_id : "")
+        << "\",\"command_group\":\"" << ParserPhaseJsonEscape(command_group ? command_group : "")
+        << "\",\"execution_mode\":\"" << ParserPhaseJsonEscape(execution_mode ? execution_mode : "")
+        << "\",\"elapsed_us\":"
+        << (static_cast<double>(elapsed_ns) / 1000.0)
+        << ",\"bytes\":" << static_cast<unsigned long long>(bytes)
+        << ",\"count\":" << static_cast<unsigned long long>(count)
+        << ",\"rows\":" << static_cast<unsigned long long>(rows)
+        << ",\"detail\":\"" << ParserPhaseJsonEscape(detail) << "\"}";
+  ipc::AppendNonAuthoritativeDiagnosticTraceLine(
+      "SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE", trace.str());
 }
 
 void WriteParserPhaseTraceIfEnabled(bool enabled,
@@ -2278,6 +2281,38 @@ std::string FirstDiagnosticCode(const MessageVectorSet& messages, std::string fa
   return fallback;
 }
 
+std::string BulkImportSqlState(std::string_view diagnostic_code) {
+  if (diagnostic_code == "BULK.IMPORT.STREAM_PACKET_INVALID" ||
+      diagnostic_code == "BULK.IMPORT.CHUNK_SEQUENCE_INVALID" ||
+      diagnostic_code == "BULK.IMPORT.CONTENT_HASH_MISMATCH" ||
+      diagnostic_code == "BULK.IMPORT.REJECT_LIMIT_EXCEEDED") {
+    return "22000";
+  }
+  if (diagnostic_code == "BULK.IMPORT.STREAM_IDENTITY_MISMATCH" ||
+      diagnostic_code == "MGA.AUTHORITY_MISMATCH") {
+    return "22023";
+  }
+  if (diagnostic_code == "BULK.IMPORT.CHUNK_CONFLICT" ||
+      diagnostic_code == "BULK.IMPORT.GENERATION_CONFLICT" ||
+      diagnostic_code == "BULK.IMPORT.RECOVERY_CONFLICT") {
+    return "40001";
+  }
+  if (diagnostic_code == "BULK.IMPORT.STREAM_NOT_SEALED" ||
+      diagnostic_code == "BULK.IMPORT.TARGET_NOT_ELIGIBLE") {
+    return "55000";
+  }
+  if (diagnostic_code == "CLUSTER.WRITE_AUTHORITY_REQUIRED") {
+    return "0A000";
+  }
+  if (diagnostic_code == "RESOURCE.BUDGET_EXCEEDED") {
+    return "54000";
+  }
+  if (diagnostic_code == "MGA.TRANSACTION_INVALID") {
+    return "25000";
+  }
+  return "58000";
+}
+
 std::string DiagnosticFieldValue(const MessageVectorSet& messages, std::string_view field_name) {
   for (const auto& diagnostic : messages.diagnostics) {
     for (const auto& field : diagnostic.fields) {
@@ -3489,12 +3524,19 @@ bool PrepareCopyNativeBulkHandle(SbsqlTestWireSession* session,
 
 std::uint32_t CopyWindowBytesForSession(const SbwpSessionState& state, std::uint8_t format) {
   const std::uint32_t base =
-      format == kCopyFormatBinaryRowsetV1 ? kCopyBinaryWindowBytes : kCopyDefaultWindowBytes;
+      format == kCopyFormatCanonicalCsvDefaultV1
+          ? kCopyCanonicalCsvWindowBytes
+          : (format == kCopyFormatBinaryRowsetV1 ? kCopyBinaryWindowBytes
+                                                 : kCopyDefaultWindowBytes);
+  const std::uint32_t maximum =
+      format == kCopyFormatCanonicalCsvDefaultV1
+          ? kCopyCanonicalCsvWindowBytes
+          : 64u * 1024u * 1024u;
   if (const auto found = state.session_parameters.find("copy_window_bytes");
       found != state.session_parameters.end()) {
     try {
       const auto parsed = static_cast<std::uint64_t>(std::stoull(found->second));
-      if (parsed >= 16u * 1024u && parsed <= 64u * 1024u * 1024u) {
+      if (parsed >= 16u * 1024u && parsed <= maximum) {
         return static_cast<std::uint32_t>(parsed);
       }
     } catch (...) {
@@ -3522,17 +3564,24 @@ std::uint64_t CopyU64ParameterForSession(const SbwpSessionState& state,
 }
 
 std::vector<std::uint8_t> CopyInResponsePayload(SbwpSessionState* state) {
-  const bool binary_copy =
+  const bool durable_opcode775 =
+      state != nullptr && state->copy_import.opcode775_held;
+  const bool binary_copy = !durable_opcode775 &&
       state != nullptr && FeatureNegotiated(*state, kFeatureBinaryCopy);
   const std::uint8_t format =
-      binary_copy ? kCopyFormatBinaryRowsetV1 : kCopyFormatCanonicalRowFieldsText;
+      durable_opcode775
+          ? kCopyFormatCanonicalCsvDefaultV1
+          : (binary_copy ? kCopyFormatBinaryRowsetV1
+                         : kCopyFormatCanonicalRowFieldsText);
   const std::uint32_t window_bytes =
       state == nullptr ? kCopyDefaultWindowBytes : CopyWindowBytesForSession(*state, format);
   if (state != nullptr) {
     state->copy_import.copy_data_format = format;
     state->copy_import.window_bytes = window_bytes;
-    state->copy_import.format_family =
-        binary_copy ? "binary_rowset_v1" : "canonical_row_fields";
+    state->copy_import.format_family = durable_opcode775
+                                           ? "canonical_csv_default_v1"
+                                           : (binary_copy ? "binary_rowset_v1"
+                                                          : "canonical_row_fields");
     state->copy_import.source_size_bytes =
         CopyU64ParameterForSession(*state,
                                    {"copy.source_size_bytes",
@@ -4235,6 +4284,8 @@ bool HandleResetSession(SbsqlTestWireSession* session,
     }
     return SendReady(io, state, ReadyReason::kErrorRecovered);
   }
+  session->AbandonBulkImportStreamForWire();
+  state->copy_import = CopyImportState{};
   if (frame.payload.size() <= 18 || frame.payload[18] != 0) {
     state->statements.clear();
     state->portals.clear();
@@ -4524,7 +4575,8 @@ std::string CommandTagFor(std::string_view sql, const PipelineResult& result) {
     if (result.server_operation_id == "transaction.commit") return "COMMIT";
     if (result.server_operation_id == "transaction.rollback") return "ROLLBACK";
     if (sql_surface_is_copy &&
-        (result.server_operation_id == "dml.execute_native_bulk_ingest" ||
+        (result.server_operation_id == "engine.op.bulk_import_stream" ||
+         result.server_operation_id == "dml.execute_native_bulk_ingest" ||
          result.server_operation_id == "dml.execute_import_rows" ||
          result.server_operation_id == "dml.insert_rows")) {
       return "COPY " + std::to_string(completion_count);
@@ -4571,7 +4623,8 @@ bool IsCommandCompletionOnlyDml(std::string_view sql) {
   const bool mutation = StartsWithWord(normalized, "INSERT") ||
                         StartsWithWord(normalized, "UPDATE") ||
                         StartsWithWord(normalized, "DELETE") ||
-                        StartsWithWord(normalized, "MERGE");
+                        StartsWithWord(normalized, "MERGE") ||
+                        StartsWithWord(normalized, "COPY");
   if (!mutation) return false;
   return FindKeywordOutsideSql(normalized, "RETURNING") ==
          std::string::npos;
@@ -4617,6 +4670,72 @@ bool NativeBulkIngestEnabledRequested(std::string_view sql) {
          upper.find("NATIVE_BULK_INGEST_ENABLED FALSE") == std::string::npos &&
          upper.find("NATIVE_BULK_INGEST_DISABLED") == std::string::npos &&
          upper.find(" DISABLED") == std::string::npos;
+}
+
+struct NativeBulkIngestWireCommand {
+  std::string target_name;
+  bool target_quoted{false};
+  bool enabled{true};
+};
+
+std::optional<NativeBulkIngestWireCommand>
+ParseNativeBulkIngestWireCommand(std::string_view sql) {
+  constexpr std::string_view kPrefix = "NATIVE_BULK_INGEST ";
+  constexpr std::string_view kSource = " FROM STDIN ";
+  const std::string text = StripSqlTerminator(std::string(sql));
+  const std::string upper = Upper(text);
+  if (!upper.starts_with(kPrefix)) return std::nullopt;
+
+  const auto source = upper.find(kSource, kPrefix.size());
+  if (source == std::string::npos) return std::nullopt;
+  std::string target = text.substr(kPrefix.size(), source - kPrefix.size());
+  while (!target.empty() &&
+         std::isspace(static_cast<unsigned char>(target.front()))) {
+    target.erase(target.begin());
+  }
+  while (!target.empty() &&
+         std::isspace(static_cast<unsigned char>(target.back()))) {
+    target.pop_back();
+  }
+  if (target.empty()) return std::nullopt;
+
+  NativeBulkIngestWireCommand command;
+  const std::string mode =
+      upper.substr(source + kSource.size());
+  if (mode == "ENABLED") {
+    command.enabled = true;
+  } else if (mode == "DISABLED") {
+    command.enabled = false;
+  } else {
+    return std::nullopt;
+  }
+
+  if (target.size() >= 2 && target.front() == '"' &&
+      target.back() == '"') {
+    command.target_quoted = true;
+    target = target.substr(1, target.size() - 2);
+    std::string decoded;
+    decoded.reserve(target.size());
+    for (std::size_t index = 0; index < target.size(); ++index) {
+      if (target[index] == '"') {
+        if (index + 1 >= target.size() || target[index + 1] != '"') {
+          return std::nullopt;
+        }
+        ++index;
+      }
+      decoded.push_back(target[index]);
+    }
+    target = std::move(decoded);
+  } else if (std::ranges::any_of(target, [](char ch) {
+               const auto byte = static_cast<unsigned char>(ch);
+               return !(std::isalnum(byte) || ch == '_' || ch == '$' ||
+                        ch == '.');
+             })) {
+    return std::nullopt;
+  }
+  if (target.empty()) return std::nullopt;
+  command.target_name = std::move(target);
+  return command;
 }
 
 bool IsZeroUuidText(std::string_view value) {
@@ -5608,6 +5727,78 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                                    "empty");
     return !send_ready || SendReady(io, state);
   }
+  if (state->copy_import.active) {
+    if (command_accepted != nullptr) {
+      *command_accepted = false;
+    }
+    return SendError(
+               io, state, "55000", "BULK.IMPORT.STREAM_NOT_SEALED",
+               "the active COPY stream must reach CopyDone or CopyFail before another SQL command") &&
+           (!send_ready ||
+            SendReady(io, state, ReadyReason::kErrorRecovered));
+  }
+  if (session != nullptr && session->HasHeldBulkImportStreamForWire()) {
+    const auto normalized = Upper(sql);
+    const bool exact_copy_resume = normalized.starts_with("COPY") &&
+                                   normalized.find("FROM STDIN") !=
+                                       std::string::npos;
+    if (!exact_copy_resume) {
+      if (command_accepted != nullptr) {
+        *command_accepted = false;
+      }
+      return SendError(
+                 io, state, "40001", "BULK.IMPORT.RECOVERY_CONFLICT",
+                 "a pending COPY bind/allocation outcome must be resumed before another command") &&
+             (!send_ready ||
+              SendReady(io, state, ReadyReason::kErrorRecovered));
+    }
+  }
+  if (const auto native_bulk = ParseNativeBulkIngestWireCommand(sql)) {
+    if (session == nullptr || !state->authenticated) {
+      if (command_accepted != nullptr) *command_accepted = false;
+      return SendError(io, state, "28000", "SECURITY.ACCESS_DENIED",
+                       "native bulk ingest requires an authenticated engine session") &&
+             (!send_ready || SendReady(io, state, ReadyReason::kErrorRecovered));
+    }
+    auto resolved = session->ResolvePublicNameForWire(
+        native_bulk->target_name, native_bulk->target_quoted, "relation");
+    if (!resolved.resolved || resolved.object_uuid.empty()) {
+      if (command_accepted != nullptr) *command_accepted = false;
+      return SendError(
+                 io, state, "42000",
+                 FirstDiagnosticCode(
+                     resolved.messages,
+                     "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE"),
+                 FirstDiagnosticText(resolved.messages).empty()
+                     ? "native bulk ingest target could not be resolved"
+                     : FirstDiagnosticText(resolved.messages)) &&
+             (!send_ready || SendReady(io, state, ReadyReason::kErrorRecovered));
+    }
+
+    state->copy_import = CopyImportState{};
+    state->copy_import.active = true;
+    state->copy_import.native_bulk_ingest = true;
+    state->copy_import.native_bulk_ingest_enabled = native_bulk->enabled;
+    state->copy_import.sql = sql;
+    state->copy_import.target_object_uuid = std::move(resolved.object_uuid);
+    std::string prepare_code;
+    std::string prepare_detail;
+    if (!PrepareCopyNativeBulkHandle(session, state, &state->copy_import,
+                                     &prepare_code, &prepare_detail)) {
+      state->copy_import = CopyImportState{};
+      if (command_accepted != nullptr) *command_accepted = false;
+      return SendError(io, state, "42000",
+                       prepare_code.empty()
+                           ? "SBSQL.COPY.PREPARED_HANDLE_REFUSED"
+                           : prepare_code,
+                       prepare_detail.empty()
+                           ? "native bulk ingest preparation was refused"
+                           : prepare_detail) &&
+             (!send_ready || SendReady(io, state, ReadyReason::kErrorRecovered));
+    }
+    const auto copy_in_response = CopyInResponsePayload(state);
+    return SendFrame(io, state, kCopyInResponse, copy_in_response);
+  }
   if (auto fast_insert =
           TryExecuteSimpleInsertRowsetFastPath(session,
                                               io,
@@ -5737,52 +5928,23 @@ bool ExecuteSql(SbsqlTestWireSession* session,
   }
   if (result.server_operation_id == "engine.op.bulk_import_stream" &&
       Upper(sql).find("FROM STDIN") != std::string::npos) {
-    const auto target_uuid = JsonObjectTextField(result.sblr_payload, "target_object_uuid");
-    if (!target_uuid.has_value() || target_uuid->empty()) {
+    if (session == nullptr || !session->HasHeldBulkImportStreamForWire()) {
       if (!SendError(io,
                      state,
                      "42000",
-                     "SBSQL.COPY.TARGET_UUID_MISSING",
-                     "COPY FROM STDIN requires a UUID-bound target before CopyData")) {
+                     "BULK.IMPORT.STREAM_IDENTITY_MISMATCH",
+                     "COPY FROM STDIN requires an engine-bound held opcode-775 stream before CopyData")) {
         return false;
       }
       return !send_ready || SendReady(io, state);
     }
     state->copy_import = CopyImportState{};
     state->copy_import.active = true;
-    const bool native_bulk_ingest_requested = NativeBulkIngestRequested(sql);
-    const bool native_bulk_ingest_enabled = NativeBulkIngestEnabledRequested(sql);
-    state->copy_import.native_bulk_ingest_enabled = native_bulk_ingest_enabled;
-    state->copy_import.native_bulk_ingest =
-        native_bulk_ingest_enabled || native_bulk_ingest_requested;
+    state->copy_import.opcode775_held = true;
+    state->copy_import.native_bulk_ingest_enabled = false;
+    state->copy_import.native_bulk_ingest = false;
     state->copy_import.sql = sql;
-    state->copy_import.target_object_uuid = *target_uuid;
     const auto copy_in_response = CopyInResponsePayload(state);
-    std::string prepare_code;
-    std::string prepare_detail;
-    if (!PrepareCopyNativeBulkHandle(session,
-                                     state,
-                                     &state->copy_import,
-                                     &prepare_code,
-                                     &prepare_detail)) {
-      if (prepare_code != "SBSQL.PREPARE.UNAVAILABLE" &&
-          !IsTriggerAwarePathRequiredDiagnostic(prepare_code,
-                                                prepare_detail,
-                                                prepare_detail)) {
-        state->copy_import = CopyImportState{};
-        if (!SendError(io,
-                       state,
-                       "42000",
-                       prepare_code.empty() ? "SBSQL.COPY.PREPARED_HANDLE_REFUSED"
-                                            : prepare_code,
-                       prepare_detail.empty()
-                           ? "COPY native bulk path requires a server-owned prepared SBLR handle"
-                           : prepare_detail)) {
-          return false;
-        }
-        return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
-      }
-    }
     if (!SendFrame(io, state, kCopyInResponse, copy_in_response)) return false;
     return true;
   }
@@ -6369,6 +6531,35 @@ bool HandleCopyData(SbsqlTestWireSession* session,
                      "COPY_DATA arrived without a prior accepted COPY initiation") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
+  if (state->copy_import.opcode775_held) {
+    const auto appended =
+        session->AppendBulkImportStreamChunkForWire(frame.payload);
+    if (!appended.accepted) {
+      const auto code = FirstDiagnosticCode(
+          appended.messages, "BULK.IMPORT.ABORTED");
+      const auto detail = FirstDiagnosticText(appended.messages);
+      const bool outcome_unknown = appended.outcome_unknown;
+      if (!outcome_unknown) {
+        session->AbandonBulkImportStreamForWire();
+        state->copy_import = CopyImportState{};
+      }
+      return SendError(io,
+                       state,
+                       BulkImportSqlState(code),
+                       code,
+                       detail.empty()
+                           ? "the engine refused the durable COPY chunk"
+                           : detail) &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    state->copy_import.durable_chunk_count += 1;
+    state->copy_import.durable_byte_count += frame.payload.size();
+    WriteParserPhaseTraceIfEnabled(
+        phase_trace, "copy_data", "durable_opcode775_append", parse_started,
+        frame.payload.size(), state->copy_import.durable_chunk_count, 0,
+        "opaque_payload_acknowledged");
+    return true;
+  }
   if (state->copy_import.native_bulk_ingest &&
       state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1 &&
       frame.payload.size() >= 4 &&
@@ -6458,7 +6649,10 @@ bool HandleCopyData(SbsqlTestWireSession* session,
   return true;
 }
 
-bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionState* state) {
+bool HandleCopyDone(SbsqlTestWireSession* session,
+                    ClientIo* io,
+                    SbwpSessionState* state,
+                    const Frame& frame) {
   const bool phase_trace = ParserPhaseTraceEnabled();
   const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   if (!state->authenticated || !state->copy_import.active) {
@@ -6468,6 +6662,50 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
                      "ASYNC-011",
                      "COPY_DONE arrived without a prior accepted COPY initiation") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  if (!frame.payload.empty()) {
+    return SendError(io, state, "22000",
+                     "BULK.IMPORT.STREAM_PACKET_INVALID",
+                     "CopyDone must carry an empty payload") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  if (state->copy_import.opcode775_held) {
+    const std::string copy_sql = state->copy_import.sql;
+    const auto chunk_count = state->copy_import.durable_chunk_count;
+    const auto byte_count = state->copy_import.durable_byte_count;
+    auto result = session->SealAndExecuteBulkImportStreamForWire();
+    if (!result.accepted) {
+      const auto code = FirstDiagnosticCode(
+          result.messages, "BULK.IMPORT.ABORTED");
+      const auto detail = FirstDiagnosticText(result.messages);
+      const bool recoverable_unknown = result.outcome_unknown;
+      if (!recoverable_unknown) {
+        session->AbandonBulkImportStreamForWire();
+        state->copy_import = CopyImportState{};
+      }
+      return SendError(io,
+                       state,
+                       BulkImportSqlState(code),
+                       code,
+                       detail.empty()
+                           ? "the sealed COPY stream did not reach a terminal result"
+                           : detail) &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    RefreshWireTransactionStateFromSession(*session, state);
+    if (!SendPipelineResult(io, session, state, copy_sql, result)) {
+      return false;
+    }
+    WriteParserPhaseTraceIfEnabled(
+        phase_trace, "copy_done", "durable_opcode775_terminal", total_started,
+        byte_count, chunk_count, result.server_affected_rows,
+        "exact_birs_published");
+    if (!SendReady(io, state, ReadyReason::kCommandComplete)) {
+      return false;
+    }
+    session->AcknowledgeBulkImportStreamCompletionForWire();
+    state->copy_import = CopyImportState{};
+    return true;
   }
   if (state->copy_import.rows.empty() && state->copy_import.native_packets.empty() &&
       !state->copy_import.aggregate_result_active) {
@@ -6895,8 +7133,14 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
   return SendReady(io, state, ReadyReason::kCommandComplete);
 }
 
-bool HandleCopyFail(ClientIo* io, SbwpSessionState* state, const Frame& frame) {
+bool HandleCopyFail(SbsqlTestWireSession* session,
+                    ClientIo* io,
+                    SbwpSessionState* state,
+                    const Frame& frame) {
   (void)frame;
+  if (session != nullptr) {
+    session->AbandonBulkImportStreamForWire();
+  }
   state->copy_import = CopyImportState{};
   return SendError(io,
                    state,
@@ -7136,6 +7380,23 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
                       "SBWP frame flags failed closed before payload dispatch");
       rc = 1;
       break;
+    }
+    if (state.copy_import.active &&
+        IsKnownSbwpMessage(frame.header.msg_type) &&
+        frame.header.msg_type != kCopyData &&
+        frame.header.msg_type != kCopyDone &&
+        frame.header.msg_type != kCopyFail &&
+        frame.header.msg_type != kStreamControl &&
+        frame.header.msg_type != kCancel &&
+        frame.header.msg_type != kPing &&
+        frame.header.msg_type != kTerminate) {
+      if (!SendError(&io, &state, "08P01",
+                     "NATIVE_WIRE.PROTOCOL_VIOLATION",
+                     "the frame is not admitted while the session is in COPY_IN state")) {
+        rc = 1;
+        break;
+      }
+      continue;
     }
     if (frame_partial || frame_final || state.partial_query_active) {
       if (frame.header.msg_type != kQuery) {
@@ -7513,10 +7774,13 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
         if (!AdmitFrameTransaction(&io, &state, frame, "COPY_DONE")) {
           break;
         }
-        if (!HandleCopyDone(this, &io, &state)) rc = 1;
+        if (!HandleCopyDone(this, &io, &state, frame)) rc = 1;
         break;
       case kCopyFail:
-        if (!HandleCopyFail(&io, &state, frame)) rc = 1;
+        if (!AdmitFrameTransaction(&io, &state, frame, "COPY_FAIL")) {
+          break;
+        }
+        if (!HandleCopyFail(this, &io, &state, frame)) rc = 1;
         break;
       case kSblrExecute:
         if (!state.authenticated) {
@@ -7547,6 +7811,7 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
   }
 
 done:
+  AbandonBulkImportStreamForWire();
   if (session_.authenticated && HasExecutionRoute()) {
     MessageVectorSet disconnect_messages;
     (void)DisconnectExecutionRoute(&disconnect_messages);

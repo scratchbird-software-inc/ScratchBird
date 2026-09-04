@@ -66,7 +66,7 @@ FINAL_STATES = {
     "private_profile_implemented",
 }
 ALLOWED_FINAL_STATES_BY_STATUS = {
-    "native_now": {"pending", "e2e_passed"},
+    "native_now": {"pending", "e2e_passed", "exact_refusal_passed"},
     "native_future": {"pending"},
     "cluster_private": {
         "pending",
@@ -90,6 +90,22 @@ BLOCKED_TOKENS_FOR_FINAL_ROWS = {
     "covered_by_sblr_operation_matrix_family_only",
     "covered_by_sblr_admission_family_only",
 }
+EXACT_REFUSAL_EXECUTION_MARKERS = (
+    "executable_sblr_emitted=false",
+    "private_cluster_execution=false",
+)
+EXACT_REFUSAL_RESULT_MARKERS = (
+    "result_published=false",
+    "engine_dispatch_not_reached=true",
+    "engine_result_retained=false",
+)
+EXACT_REFUSAL_MUTATION_MARKERS = (
+    "catalog_mutation=false",
+    "row_mutation=false",
+    "no_catalog_mutation",
+    "no_mutation",
+    "private_cluster_execution=false",
+)
 
 
 def fail(message: str) -> None:
@@ -247,10 +263,14 @@ def main() -> int:
             ]:
                 if not row.get(field, ""):
                     errors.append(f"{sid} final row missing {field}")
-            if final_state != "cluster_provider_route_passed" and (
-                "sbsql_surface_to_sblr_full_implementation_closure" not in row.get("ctest_label", "")
+            if final_state == "e2e_passed" and not any(
+                label in row.get("ctest_label", "")
+                for label in (
+                    "sbsql_surface_to_sblr_full_implementation_closure",
+                    "sbsql_e2e_passed",
+                )
             ):
-                errors.append(f"{sid} final row ctest_label missing execution_plan label")
+                errors.append(f"{sid} e2e row ctest_label missing full-route evidence label")
             if final_state == "cluster_provider_route_passed" and (
                 "sbsql_cluster_provider_split" not in row.get("ctest_label", "")
             ):
@@ -261,10 +281,27 @@ def main() -> int:
                 row.get("status") != "native_now" or row.get("cluster_scope") == "cluster_private"
             ):
                 errors.append(f"{sid} e2e_passed requires noncluster native_now status")
-            if final_state == "exact_refusal_passed" and row.get("cluster_scope") != "cluster_private":
-                errors.append(
-                    f"{sid} exact_refusal_passed is only accepted for cluster_scope=cluster_private public fail-closed rows"
+            if final_state == "exact_refusal_passed":
+                diagnostic = row.get("diagnostic_proof", "")
+                result = row.get("result_proof", "")
+                diagnostic_tokens = (token.strip() for token in diagnostic.split(";"))
+                has_concrete_diagnostic = any(
+                    token
+                    and "=" not in token
+                    and "." in token
+                    and token == token.upper()
+                    for token in diagnostic_tokens
                 )
+                required_refusal_proofs = (
+                    has_concrete_diagnostic,
+                    "canonical_message_vector_set" in diagnostic,
+                    any(marker in final_text for marker in EXACT_REFUSAL_EXECUTION_MARKERS),
+                    "exact_refusal=true" in final_text or "accepted=false" in final_text,
+                    any(marker in result for marker in EXACT_REFUSAL_RESULT_MARKERS),
+                    any(marker in final_text for marker in EXACT_REFUSAL_MUTATION_MARKERS),
+                )
+                if not all(required_refusal_proofs):
+                    errors.append(f"{sid} exact_refusal_passed lacks closed refusal evidence")
             if final_state == "cluster_provider_route_passed":
                 final_text = ";".join(row.get(field, "") for field in REQUIRED_COLUMNS)
                 required_tokens = [

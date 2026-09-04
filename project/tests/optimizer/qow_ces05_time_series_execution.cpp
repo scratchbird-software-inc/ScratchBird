@@ -143,6 +143,18 @@ std::string NewUuidText(const platform::UuidKind kind) {
   return uuid::UuidToString(NewUuid(kind).value);
 }
 
+std::string StatementDescriptorUuid(const api::EngineRequestContext& context,
+                                    const std::string_view purpose) {
+  using Key = std::pair<std::string, std::string>;
+  static std::map<Key, std::string> identities;
+  const Key key{context.statement_uuid.canonical, std::string(purpose)};
+  const auto [found, inserted] = identities.try_emplace(key);
+  if (inserted) {
+    found->second = NewUuidText(platform::UuidKind::object);
+  }
+  return found->second;
+}
+
 api::EngineNoSqlProviderGenerationMetadata TimeSeriesProviderGeneration(
     const api::EngineRequestContext& context,
     const std::string_view provider_uuid,
@@ -293,6 +305,10 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.security_epoch = 77;
   context.resource_epoch = 78;
   context.name_resolution_epoch = 79;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   return context;
 }
 
@@ -451,6 +467,13 @@ bool MakeFixture(Fixture* fixture) {
     }
     const auto created = api::EngineCreateTable(table);
     if (!created.ok) {
+      for (const auto& diagnostic : created.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.message_key;
+        if (!diagnostic.detail.empty()) {
+          std::cerr << " (" << diagnostic.detail << ')';
+        }
+        std::cerr << '\n';
+      }
       Rollback(context);
       return Require(false, "time-series fixture table creation failed");
     }
@@ -983,14 +1006,25 @@ plan::CanonicalMgaStatementContext LogicalMga(
 }
 
 std::string CoreTypeUuid(const std::string_view stable_name) {
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
   const auto descriptor = std::ranges::find_if(
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
-  return descriptor == manifest.manifest.descriptor_rows.end()
-             ? std::string{}
-             : uuid::UuidToString(descriptor->descriptor_uuid.value);
+  if (count != 1 || descriptor == manifest.manifest.descriptor_rows.end() ||
+      !descriptor->descriptor_uuid.valid()) {
+    return {};
+  }
+  const auto descriptor_uuid =
+      uuid::UuidToString(descriptor->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      descriptor->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 std::vector<opt::MultilegDescriptorProfileV1>
@@ -2140,7 +2174,9 @@ api::TypedRelationalDag TimeSeriesDag(
         DagDescriptor(106,
                       storage.columns[3].value_descriptor.descriptor_uuid.canonical,
                       "real64"),
-        DagDescriptor(107, CoreTypeUuid("boolean"), "boolean"),
+        DagDescriptor(107,
+                      StatementDescriptorUuid(context, "raw.range.truth"),
+                      "boolean"),
     };
   } else {
     dag.descriptors = {
@@ -2157,9 +2193,15 @@ api::TypedRelationalDag TimeSeriesDag(
         DagDescriptor(205,
                       storage.columns[2].value_descriptor.descriptor_uuid.canonical,
                       "character"),
-        DagDescriptor(206, CoreTypeUuid("int64"), "int64"),
-        DagDescriptor(208, CoreTypeUuid("interval"), "interval"),
-        DagDescriptor(209, CoreTypeUuid("boolean"), "boolean"),
+        DagDescriptor(
+            206, StatementDescriptorUuid(context, "downsample.sample-count"),
+            "int64"),
+        DagDescriptor(
+            208, StatementDescriptorUuid(context, "downsample.interval"),
+            "interval"),
+        DagDescriptor(
+            209, StatementDescriptorUuid(context, "downsample.range.truth"),
+            "boolean"),
         DagDescriptor(212,
                       storage.columns[3].value_descriptor.descriptor_uuid.canonical,
                       "real64"),
@@ -2338,8 +2380,8 @@ api::TypedRelationalDag TimeSeriesBucketDag(
   if (end != dag.expressions.end()) {
     end->literal_or_parameter_ref = std::string(range_end);
   }
-  dag.descriptors.push_back(
-      DagDescriptor(110, CoreTypeUuid("interval"), "interval"));
+  dag.descriptors.push_back(DagDescriptor(
+      110, StatementDescriptorUuid(context, "bucket.interval"), "interval"));
   api::RelationalExpressionRecord interval;
   interval.expression_id = 29;
   interval.expression_kind = api::RelationalExpressionKind::kLiteral;
@@ -2461,7 +2503,7 @@ api::TypedRelationalDag TimeSeriesUnaryCompositionDag(
   dag.nodes.push_back(std::move(sort));
 
   dag.descriptors.push_back(DagDescriptor(
-      110, NewUuidText(platform::UuidKind::object), "int64"));
+      110, StatementDescriptorUuid(context, "window.row-number"), "int64"));
   constexpr std::string_view kRowNumberFunctionUuid =
       "019de5fc-2400-7539-bcce-00eef3ae7220";
   api::RelationalExpressionRecord row_number;
@@ -2803,8 +2845,8 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
   dag.nodes.push_back(std::move(heap));
 
   if (!downsample) {
-    dag.descriptors.push_back(
-        DagDescriptor(306, CoreTypeUuid("int64"), "int64"));
+    dag.descriptors.push_back(DagDescriptor(
+        306, StatementDescriptorUuid(context, "asof.tolerance"), "int64"));
   }
   api::RelationalExpressionRecord tolerance;
   tolerance.expression_id = 60;

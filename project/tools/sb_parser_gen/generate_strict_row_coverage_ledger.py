@@ -552,10 +552,10 @@ COLUMN_CONSTRAINT_EXACT_ROUTE_ROW_EVIDENCE = {
         "canonical_name": "column_constraint",
         "canonical_sblr_operation_family": "sblr.general.operation.v3",
         "route_operation_family": "sblr.catalog.mutation.v3",
-        "operation_id": "ddl.constraint.create",
-        "sblr_operation": "SBLR_DDL_CONSTRAINT_CREATE",
-        "constraint_kind": "not_null_constraint",
-        "constraint_uuid": "constraint-customer-id-not-null",
+        "operation_id": "engine.op.diagnostic_refusal",
+        "sblr_operation": "SBLR_DIAGNOSTIC_REFUSAL",
+        "parent_operation_id": "engine.op.ddl_create_table",
+        "parent_sblr_operation": "SBLR_DDL_CREATE_TABLE",
         "sql_fixture": "CREATE TABLE customer (id int NOT NULL)",
     },
 }
@@ -17799,11 +17799,11 @@ def classify_row(
 
         operation_id = column_constraint_evidence["operation_id"]
         sblr_operation = column_constraint_evidence["sblr_operation"]
-        constraint_kind = column_constraint_evidence["constraint_kind"]
-        constraint_uuid = column_constraint_evidence["constraint_uuid"]
+        parent_operation_id = column_constraint_evidence["parent_operation_id"]
+        parent_sblr_operation = column_constraint_evidence["parent_sblr_operation"]
         sql_fixture = column_constraint_evidence["sql_fixture"]
         return {
-            "current_state": "e2e_passed",
+            "current_state": "exact_refusal_passed",
             "parser_evidence": (
                 f"{COLUMN_CONSTRAINT_EXACT_ROUTE_TEST_SOURCE};sql={sql_fixture};"
                 f"registry_surface_id={surface['surface_id']};row_label=column_constraint;"
@@ -17811,38 +17811,42 @@ def classify_row(
             ),
             "binder_evidence": (
                 f"{COLUMN_CONSTRAINT_EXACT_ROUTE_TEST_SOURCE};bound_statement=true;"
-                "right.catalog_mutate;authority.parser.no_security_authorization;"
+                "authority.parser.syntax_evidence_only;authority.parser.no_executable_sblr;"
                 "authority.parser.no_storage_or_finality;authority.parser.no_sql_text_execution"
             ),
             "lowering_evidence": (
                 f"{COLUMN_CONSTRAINT_EXACT_ROUTE_TEST_SOURCE};operation_id={operation_id};"
                 f"sblr_operation={sblr_operation};canonical_surface_family={canonical_family};"
-                f"route_operation_family={route_family};catalog_envelope_kind=constraint_ddl;"
-                f"constraint_surface_id={surface['surface_id']};constraint_kind={constraint_kind};"
-                "parser_executes_sql=false;sql_text_included=false;no_source_sql_text"
+                f"route_operation_family={route_family};constraint_surface_id={surface['surface_id']};"
+                f"canonical_parent_operation_id={parent_operation_id};"
+                f"canonical_parent_sblr_opcode={parent_sblr_operation};"
+                "executable_sblr_emitted=false;parser_executes_sql=false;"
+                "sql_text_included=false;no_source_sql_text"
             ),
             "server_admission_evidence": (
                 f"ctest:{COLUMN_CONSTRAINT_EXACT_ROUTE_CTEST};"
-                f"AdmitServerSblrEnvelope.admitted;operation_id={operation_id};"
-                f"operation_family={route_family};requires_public_abi_dispatch=true"
+                "pre_sblr_refusal=true;server_admission_not_reached=true;"
+                "requires_public_abi_dispatch=false"
             ),
             "engine_runtime_evidence": (
                 f"ctest:{COLUMN_CONSTRAINT_EXACT_ROUTE_CTEST};"
-                f"DispatchSblrOperation.accepted;dispatched_to_internal_api;"
-                f"api_result.operation_id={operation_id};api=EngineCreateConstraint;"
-                f"constraint_uuid={constraint_uuid};constraint_catalog_route=sys.constraint_descriptor;"
-                "catalog_constraint_descriptor_persisted=true;catalog_constraint_subject_persisted=true;"
+                "engine_dispatch_not_reached=true;catalog_mutation=false;"
+                "EngineCreateConstraint_component_excluded_from_SQL_route_evidence=true;"
                 "contains_sql_text=false;no_generic_sql_execution;no_wal_authority"
             ),
-            "function_or_api_operation_id": f"{operation_id};opcode={sblr_operation};api=EngineCreateConstraint",
-            "diagnostic_evidence": "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;CATALOG.CONSTRAINT_*;SECURITY.AUTHORIZATION.FORBIDDEN_refusal_contract_in_route_matrix",
+            "function_or_api_operation_id": (
+                f"{operation_id};opcode={sblr_operation};"
+                f"parent_operation_id={parent_operation_id};"
+                f"parent_opcode={parent_sblr_operation};not_admitted"
+            ),
+            "diagnostic_evidence": "SBSQL.IMPL.NOT_AVAILABLE;executable_sblr_emitted=false;canonical_message_vector_set",
             "fixture_evidence": (
                 f"ctest:{COLUMN_CONSTRAINT_EXACT_ROUTE_CTEST};"
                 f"source={COLUMN_CONSTRAINT_EXACT_ROUTE_TEST_SOURCE};fixture={sql_fixture};"
-                f"constraint_kind={constraint_kind};constraint_uuid={constraint_uuid}"
+                f"surface_id={surface['surface_id']};exact_refusal=true;no_catalog_mutation"
             ),
             "evidence_complete": "yes",
-            "notes": "SBSFC-021R-X/SBSFC-030 bounded column_constraint exact-route evidence override; exactly SBSQL-A57CFDE0BBA9 column_constraint is published as e2e_passed using CREATE TABLE customer (id int NOT NULL) parser/CST/AST/bound lowering to ddl.constraint.create/SBLR_DDL_CONSTRAINT_CREATE, server admission, and EngineCreateConstraint dispatch that persists sys.constraint_descriptor and sys.constraint_subject catalog rows through MGA catalog lifecycle events. No broad CREATE TABLE constraint closure, multi-column/table constraint closure, foreign-key enforcement, check-expression runtime evaluation, deferrable runtime, constraint drop/rename/validation lifecycle, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed.",
+            "notes": "Corrected column_constraint evidence: SBSQL-A57CFDE0BBA9 is a structural child of CREATE TABLE and never owns an executor. Until the authenticated engine binder freezes the complete table, columns, and constraints into CTDX/CTDO, the fixture is exact_refusal_passed with SBSQL.IMPL.NOT_AVAILABLE, canonical parent engine.op.ddl_create_table/SBLR_DDL_CREATE_TABLE, no executable SBLR, no server dispatch, and no catalog mutation. The separate EngineCreateConstraint call is internal-API component coverage only and is excluded from this SQL-route evidence.",
         }
 
     table_constraint_evidence = TABLE_CONSTRAINT_EXACT_ROUTE_ROW_EVIDENCE.get(surface["surface_id"])
@@ -17866,14 +17870,14 @@ def classify_row(
         if op_row["sblr_operation_family"] != canonical_family:
             fail(f"{surface['surface_id']} operation matrix family drift for table_constraint exact-route override")
 
-        operation_id = "ddl.constraint.create"
-        sblr_operation = "SBLR_DDL_CONSTRAINT_CREATE"
+        operation_id = "engine.op.diagnostic_refusal"
+        sblr_operation = "SBLR_DIAGNOSTIC_REFUSAL"
+        parent_operation_id = "engine.op.ddl_create_table"
+        parent_sblr_operation = "SBLR_DDL_CREATE_TABLE"
         sql_fixture = "CREATE TABLE customer (id int, CONSTRAINT customer_pk PRIMARY KEY (id))"
-        constraint_kind = "primary_key"
-        constraint_uuid = "constraint-customer-pk"
         row_label = table_constraint_evidence["row_label"]
         return {
-            "current_state": "e2e_passed",
+            "current_state": "exact_refusal_passed",
             "parser_evidence": (
                 f"{COLUMN_CONSTRAINT_EXACT_ROUTE_TEST_SOURCE};sql={sql_fixture};"
                 f"registry_surface_id={surface['surface_id']};row_label={row_label};"
@@ -17881,39 +17885,42 @@ def classify_row(
             ),
             "binder_evidence": (
                 f"{COLUMN_CONSTRAINT_EXACT_ROUTE_TEST_SOURCE};bound_statement=true;"
-                "right.catalog_mutate;authority.parser.no_security_authorization;"
+                "authority.parser.syntax_evidence_only;authority.parser.no_executable_sblr;"
                 "authority.parser.no_storage_or_finality;authority.parser.no_sql_text_execution"
             ),
             "lowering_evidence": (
                 f"{COLUMN_CONSTRAINT_EXACT_ROUTE_TEST_SOURCE};operation_id={operation_id};"
                 f"sblr_operation={sblr_operation};canonical_surface_family={canonical_family};"
-                f"route_operation_family={route_family};catalog_envelope_kind=constraint_ddl;"
-                f"constraint_surface_id={surface['surface_id']};constraint_kind={constraint_kind};"
-                "parser_executes_sql=false;sql_text_included=false;no_source_sql_text"
+                f"route_operation_family={route_family};constraint_surface_id={surface['surface_id']};"
+                f"canonical_parent_operation_id={parent_operation_id};"
+                f"canonical_parent_sblr_opcode={parent_sblr_operation};"
+                "executable_sblr_emitted=false;parser_executes_sql=false;"
+                "sql_text_included=false;no_source_sql_text"
             ),
             "server_admission_evidence": (
                 f"ctest:{COLUMN_CONSTRAINT_EXACT_ROUTE_CTEST};"
-                f"AdmitServerSblrEnvelope.admitted;operation_id={operation_id};"
-                f"operation_family={route_family};requires_public_abi_dispatch=true"
+                "pre_sblr_refusal=true;server_admission_not_reached=true;"
+                "requires_public_abi_dispatch=false"
             ),
             "engine_runtime_evidence": (
                 f"ctest:{COLUMN_CONSTRAINT_EXACT_ROUTE_CTEST};"
-                "DispatchSblrOperation.accepted;dispatched_to_internal_api;"
-                f"api_result.operation_id={operation_id};api=EngineCreateConstraint;"
-                f"constraint_uuid={constraint_uuid};constraint_catalog_route=sys.constraint_descriptor;"
-                "catalog_constraint_descriptor_persisted=true;catalog_constraint_subject_persisted=true;"
-                "catalog_key_descriptor_persisted=true;catalog_constraint_support_persisted=true;"
+                "engine_dispatch_not_reached=true;catalog_mutation=false;"
+                "EngineCreateConstraint_component_excluded_from_SQL_route_evidence=true;"
                 "contains_sql_text=false;no_generic_sql_execution;no_wal_authority"
             ),
-            "function_or_api_operation_id": f"{operation_id};opcode={sblr_operation};api=EngineCreateConstraint",
-            "diagnostic_evidence": "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;CATALOG.CONSTRAINT_*;SECURITY.AUTHORIZATION.FORBIDDEN_refusal_contract_in_route_matrix",
+            "function_or_api_operation_id": (
+                f"{operation_id};opcode={sblr_operation};"
+                f"parent_operation_id={parent_operation_id};"
+                f"parent_opcode={parent_sblr_operation};not_admitted"
+            ),
+            "diagnostic_evidence": "SBSQL.IMPL.NOT_AVAILABLE;executable_sblr_emitted=false;canonical_message_vector_set",
             "fixture_evidence": (
                 f"ctest:{COLUMN_CONSTRAINT_EXACT_ROUTE_CTEST};"
                 f"source={COLUMN_CONSTRAINT_EXACT_ROUTE_TEST_SOURCE};fixture={sql_fixture};"
-                f"constraint_kind={constraint_kind};constraint_uuid={constraint_uuid}"
+                f"surface_id={surface['surface_id']};exact_refusal=true;no_catalog_mutation"
             ),
             "evidence_complete": "yes",
-            "notes": "SBSFC-021R-Y/SBSFC-030 bounded table-level constraint exact-route evidence override; exactly SBSQL-28F16A4C7DD0 table_constraint, SBSQL-B1816929AD45 constraint_name, and SBSQL-5CC9FDFFE6F7 constraint_body are published as e2e_passed using CREATE TABLE customer (id int, CONSTRAINT customer_pk PRIMARY KEY (id)) parser/CST/AST/bound lowering to ddl.constraint.create/SBLR_DDL_CONSTRAINT_CREATE, server admission, and EngineCreateConstraint dispatch that persists sys.constraint_descriptor, sys.constraint_subject, sys.key_descriptor, and sys.constraint_support_structure rows through MGA catalog lifecycle events. No broad CREATE TABLE constraint closure, foreign-key enforcement, check-expression runtime evaluation, deferrable runtime, constraint drop/rename/validation lifecycle, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed.",
+            "notes": "Corrected table-constraint child evidence: SBSQL-28F16A4C7DD0, SBSQL-B1816929AD45, and SBSQL-5CC9FDFFE6F7 are structural children of CREATE TABLE and never own executors. Until the authenticated engine binder freezes the complete table and constraint vector into CTDX/CTDO, each fixture row is exact_refusal_passed with SBSQL.IMPL.NOT_AVAILABLE, canonical parent engine.op.ddl_create_table/SBLR_DDL_CREATE_TABLE, no executable SBLR, no server dispatch, and no catalog mutation. The separate EngineCreateConstraint call is internal-API component coverage only and is excluded from SQL-route evidence.",
         }
 
     cast_value_evidence = CAST_VALUE_EXACT_ROUTE_ROW_EVIDENCE.get(surface["surface_id"])
@@ -21316,46 +21323,57 @@ def classify_row(
         if op_row["sblr_operation_family"] != expected_family:
             fail(f"{surface['surface_id']} operation matrix family drift for CREATE SCHEMA exact-route override")
 
-        operation_id = "ddl.create_schema"
-        sblr_operation = "SBLR_DDL_CREATE_SCHEMA"
+        operation_id = "engine.op.diagnostic_refusal"
+        sblr_operation = "SBLR_DIAGNOSTIC_REFUSAL"
+        parent_operation_id = "engine.op.ddl_create_schema"
+        parent_sblr_operation = "SBLR_DDL_CREATE_SCHEMA"
         fixture = "CREATE SCHEMA qa_schema"
         return {
-            "current_state": "e2e_passed",
+            "current_state": "exact_refusal_passed",
             "parser_evidence": (
                 f"{CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};sql={fixture};"
                 f"registry_surface_id={surface['surface_id']};row_label={surface['canonical_name']}"
             ),
             "binder_evidence": (
                 f"{CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};bound_statement=true;"
-                "right.catalog_mutate;authority.parser.no_storage_or_finality;"
-                "authority.parser.no_sql_text_execution"
+                "authority.parser.syntax_evidence_only;authority.parser.no_executable_sblr;"
+                "authority.parser.no_storage_or_finality;authority.parser.no_sql_text_execution"
             ),
             "lowering_evidence": (
                 f"{CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};operation_id={operation_id};"
-                f"sblr_operation={sblr_operation};catalog_envelope_kind=create_schema_ddl;"
-                f"row_surface_id={surface['surface_id']};schema_name_parts=1;"
-                "parser_executes_sql=false;sql_text_included=false;name_text_included=false"
+                f"sblr_operation={sblr_operation};row_surface_id={surface['surface_id']};"
+                f"canonical_parent_operation_id={parent_operation_id};"
+                f"canonical_parent_sblr_opcode={parent_sblr_operation};"
+                "executable_sblr_emitted=false;parser_executes_sql=false;"
+                "sql_text_included=false;name_text_included=false"
             ),
             "server_admission_evidence": (
                 f"ctest:{CREATE_SCHEMA_EXACT_ROUTE_CTEST};"
-                f"AdmitServerSblrEnvelope.admitted;operation_id={operation_id};"
-                "operation_family=sblr.catalog.mutation.v3;requires_public_abi_dispatch=true"
+                "pre_sblr_refusal=true;server_admission_not_reached=true;"
+                "requires_public_abi_dispatch=false"
             ),
             "engine_runtime_evidence": (
                 f"ctest:{CREATE_SCHEMA_EXACT_ROUTE_CTEST};"
-                f"DispatchSblrOperation.accepted;api_result.operation_id={operation_id};"
-                "api=EngineCreateSchema;schema_tree_record_persisted=true;"
-                "name_registry_persisted=true;contains_sql_text=false;no_generic_sql_execution;no_wal_authority"
+                "engine_dispatch_not_reached=true;catalog_mutation=false;"
+                "EngineCreateSchema_component_excluded_from_SQL_route_evidence=true;"
+                "contains_sql_text=false;no_generic_sql_execution;no_wal_authority"
             ),
-            "function_or_api_operation_id": f"{operation_id};opcode={sblr_operation};api=EngineCreateSchema",
-            "diagnostic_evidence": "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;SBSQL.CREATE_SCHEMA_DDL.UNSUPPORTED_SHAPE_for_out_of_slice_shapes",
+            "function_or_api_operation_id": (
+                f"{operation_id};opcode={sblr_operation};"
+                f"parent_operation_id={parent_operation_id};"
+                f"parent_opcode={parent_sblr_operation};not_admitted"
+            ),
+            "diagnostic_evidence": (
+                "SBSQL.IMPL.NOT_AVAILABLE;executable_sblr_emitted=false;"
+                "canonical_message_vector_set"
+            ),
             "fixture_evidence": (
                 f"ctest:{CREATE_SCHEMA_EXACT_ROUTE_CTEST};"
                 f"source={CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};fixture={fixture};"
-                "schema_name_parts=1"
+                f"surface_id={surface['surface_id']};exact_refusal=true;no_catalog_mutation"
             ),
             "evidence_complete": "yes",
-            "notes": "SBSFC-020R-G/SBSFC-030 bounded CREATE SCHEMA exact-route evidence override; exactly SBSQL-DE4B8AAF6326 create_schema_stmt and SBSQL-7BA0B928798B schema_name are published as e2e_passed using CREATE SCHEMA qa_schema parser/CST/AST/bound lowering to ddl.create_schema/SBLR_DDL_CREATE_SCHEMA, server public ABI admission, and EngineCreateSchema dispatch that persists schema-tree and name-registry catalog evidence through MGA catalog lifecycle. No broad schema option closure, nested schema hierarchy semantics, catalog bootstrap/restart/upgrade, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed.",
+            "notes": "Corrected CREATE SCHEMA evidence: SBSQL-DE4B8AAF6326 create_schema_stmt and SBSQL-7BA0B928798B schema_name are exact_refusal_passed with SBSQL.IMPL.NOT_AVAILABLE before executable SBLR because the authenticated engine-bound CSDX/CSDO carrier is unavailable. The canonical parent remains engine.op.ddl_create_schema/SBLR_DDL_CREATE_SCHEMA; no server admission, engine dispatch, or catalog mutation is claimed. The separate EngineCreateSchema call is internal-API component coverage only and is excluded from this SQL-route evidence.",
         }
 
     create_table_evidence = CREATE_TABLE_EXACT_ROUTE_ROW_EVIDENCE.get(surface["surface_id"])

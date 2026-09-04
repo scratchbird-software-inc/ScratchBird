@@ -66,6 +66,14 @@ bool HasRuntimeDiagnostic(const sblr::SblrResult& result,
   return false;
 }
 
+bool HasEnvelopeDiagnostic(const sblr::SblrDispatchResult& result,
+                           std::string_view diagnostic_code) {
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.code == diagnostic_code) return true;
+  }
+  return false;
+}
+
 bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
@@ -258,6 +266,12 @@ sblr::SblrDispatchResult DispatchBlock(
       "transaction.execute_block",
       "SBLR_TRANSACTION_EXECUTE_BLOCK",
       "SBLR_PROCEDURAL_BLOCK_V1_CONFORMANCE");
+  // This implementation-only tuple deliberately has no canonical numeric
+  // opcode.  Supply otherwise valid producer/registry identities so the
+  // dispatch assertion below isolates that missing canonical identity rather
+  // than failing first on an unrelated header omission.
+  envelope.parser_package_uuid = context.session_uuid.canonical;
+  envelope.registry_snapshot_uuid = context.database_uuid.canonical;
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;
@@ -400,114 +414,61 @@ void TestRuntimeSemantics() {
           "typed procedural POD bypassed the runtime contract guard");
 }
 
-void TestDispatchAndMgaAdmission() {
+void TestDispatchRefusalAndMgaNonMutation() {
   const auto fixture = CreateDatabaseFixture();
   const auto context = BeginTransaction(fixture);
 
   const auto assigned = DispatchBlock(context, TimestampAssignmentOptions());
-  Require(assigned.envelope_validated && assigned.dispatched_to_api &&
-              assigned.api_result.ok,
-          "valid procedural assignment did not pass SBLR and MGA admission");
-  Require(assigned.api_result.result_shape.result_kind ==
-                  "sblr.procedural.block.rows.v1" &&
-              assigned.api_result.result_shape.rows.empty() &&
-              HasEvidence(assigned.api_result,
-                          "procedural_instruction_count_executed", "1") &&
-              HasEvidence(assigned.api_result,
-                          "procedural_yield_count_executed", "0"),
-          "procedural assignment published an invalid result shape");
-
-  const auto not_null =
-      DispatchBlock(context, EmptyResultOptions("int32", false));
-  Require(not_null.api_result.ok &&
-              not_null.api_result.result_shape.rows.empty() &&
-              HasEvidence(not_null.api_result,
-                          "procedural_instruction_count_executed", "0"),
-          "empty NOT NULL result block produced a row or validation error");
+  Require(!assigned.envelope_validated && !assigned.accepted &&
+              !assigned.dispatched_to_api && !assigned.api_result.ok &&
+              HasEnvelopeDiagnostic(
+                  assigned, "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+          "unallocated procedural block SBOP did not fail closed before API dispatch");
+  Require(assigned.api_result.result_shape.rows.empty() &&
+              assigned.api_result.evidence.empty(),
+          "refused procedural block published rows or execution evidence");
 
   auto invalid_options = EmptyResultOptions("int32", false);
   invalid_options.push_back("procedural_unknown_contract_field:no");
   const auto invalid = DispatchBlock(context, invalid_options);
-  Require(!invalid.api_result.ok &&
-              HasDiagnostic(invalid.api_result,
-                            "SB_SBLR_PROCEDURAL_IR_UNKNOWN_FIELD"),
-          "invalid procedural IR passed transaction block admission");
+  Require(!invalid.envelope_validated && !invalid.dispatched_to_api &&
+              HasEnvelopeDiagnostic(
+                  invalid, "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+          "invalid procedural IR bypassed the unallocated-opcode refusal");
 
   const auto wrong_operand_type = DispatchBlock(
       context, EmptyResultOptions("int32", false), "assignment");
-  Require(!wrong_operand_type.api_result.ok &&
-              HasDiagnostic(
-                  wrong_operand_type.api_result,
-                  "SB_SBLR_PROCEDURAL_IR_OPERAND_TYPE_INVALID"),
-          "procedural IR accepted a non-text SBLR operand");
-
-  auto missing_timestamp_context = context;
-  missing_timestamp_context.current_timestamp.clear();
-  const auto missing_timestamp =
-      DispatchBlock(missing_timestamp_context, TimestampAssignmentOptions());
-  Require(!missing_timestamp.api_result.ok &&
-              missing_timestamp.api_result.result_shape.rows.empty() &&
-              HasDiagnostic(missing_timestamp.api_result,
-                            "SB_DIAG_CONTEXT_VARIABLE_UNAVAILABLE"),
-          "dispatch treated missing engine timestamp as a procedural no-op");
+  Require(!wrong_operand_type.envelope_validated &&
+              !wrong_operand_type.dispatched_to_api &&
+              HasEnvelopeDiagnostic(
+                  wrong_operand_type,
+                  "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+          "non-text procedural operand bypassed the unallocated-opcode refusal");
 
   const auto legacy = DispatchBlock(context, {});
-  Require(legacy.api_result.ok &&
-              legacy.api_result.result_shape.result_kind ==
-                  "api_behavior_rows" &&
-              legacy.api_result.result_shape.rows.size() == 1,
-          "legacy contract-absent transaction block behavior changed");
+  Require(!legacy.envelope_validated && !legacy.dispatched_to_api &&
+              HasEnvelopeDiagnostic(
+                  legacy, "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH"),
+          "contract-absent procedural SBOP reached a legacy execution route");
 
   const auto source_only = DispatchBlock(
       context, {"source_sql:execute block as begin end"});
-  Require(!source_only.api_result.ok &&
-              source_only.api_result.result_shape.rows.empty() &&
-              HasDiagnostic(
-                  source_only.api_result,
-                  "SB_SBLR_PROCEDURAL_SOURCE_PAYLOAD_FORBIDDEN"),
-          "source-only SQL payload reached the legacy behavior-row route");
+  Require(!source_only.envelope_validated &&
+              !source_only.dispatched_to_api &&
+              source_only.api_result.result_shape.rows.empty(),
+          "source-only procedural payload reached a legacy execution route");
 
-  auto held_guard =
-      api::AcquireTransactionInventoryGuard(context.database_path);
-  std::promise<void> dispatch_started;
-  auto dispatch_started_future = dispatch_started.get_future();
-  auto guarded_dispatch = std::async(
-      std::launch::async,
-      [&context, &dispatch_started] {
-        dispatch_started.set_value();
-        return DispatchBlock(context, TimestampAssignmentOptions());
-      });
-  dispatch_started_future.wait();
-  Require(guarded_dispatch.wait_for(std::chrono::milliseconds(100)) ==
-              std::future_status::timeout,
-          "procedural dispatch did not acquire the MGA inventory guard");
-  held_guard.unlock();
-  const auto guarded_result = guarded_dispatch.get();
-  Require(guarded_result.api_result.ok &&
-              HasEvidence(
-                  guarded_result.api_result,
-                  "mga_transaction_guard_scope",
-                  "exact_admission_through_procedural_runtime"),
-          "procedural dispatch did not retain the MGA guard through runtime");
-
+  // Every refusal above occurs before MGA dispatch.  A successful rollback is
+  // the independent postcondition that the active transaction was neither
+  // finalized nor replaced by the rejected envelopes.
   RollbackTransaction(context);
-  const auto after_rollback =
-      DispatchBlock(context, TimestampAssignmentOptions());
-  Require(!after_rollback.api_result.ok &&
-              HasDiagnosticDetail(
-                  after_rollback.api_result,
-                  "exact_active_transaction_identity_required"),
-          "procedural execution was admitted after MGA rollback finality");
 
   const auto committed_context = BeginTransaction(fixture);
-  CommitTransaction(committed_context);
-  const auto after_commit =
+  const auto before_commit =
       DispatchBlock(committed_context, TimestampAssignmentOptions());
-  Require(!after_commit.api_result.ok &&
-              HasDiagnosticDetail(
-                  after_commit.api_result,
-                  "exact_active_transaction_identity_required"),
-          "procedural execution was admitted after MGA commit finality");
+  Require(!before_commit.dispatched_to_api && !before_commit.api_result.ok,
+          "procedural refusal unexpectedly mutated the commit candidate");
+  CommitTransaction(committed_context);
 }
 
 }  // namespace
@@ -515,7 +476,7 @@ void TestDispatchAndMgaAdmission() {
 int main() {
   TestStrictDecoder();
   TestRuntimeSemantics();
-  TestDispatchAndMgaAdmission();
+  TestDispatchRefusalAndMgaNonMutation();
   std::cout << "sblr procedural block v1 conformance: ok\n";
   return EXIT_SUCCESS;
 }

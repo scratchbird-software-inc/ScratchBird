@@ -9,6 +9,7 @@
 #include "api_types.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_registry.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -25,6 +26,7 @@ struct MatrixRow {
   std::string api_operation_id;
   std::string scope_status;
   std::string executor_readiness_status;
+  std::string required_descriptor_inputs;
   bool required_transaction_context = false;
   bool required_security_context = true;
   bool requires_cluster_authority = false;
@@ -83,6 +85,8 @@ std::vector<MatrixRow> LoadMatrix(const std::string& path) {
       row.scope_status = FieldValue(trimmed);
     } else if (StartsWith(trimmed, "executor_readiness_status:")) {
       row.executor_readiness_status = FieldValue(trimmed);
+    } else if (StartsWith(trimmed, "required_descriptor_inputs:")) {
+      row.required_descriptor_inputs = FieldValue(trimmed);
     } else if (StartsWith(trimmed, "required_transaction_context:")) {
       row.required_transaction_context = ParseBool(FieldValue(trimmed));
     } else if (StartsWith(trimmed, "required_security_context:")) {
@@ -98,7 +102,7 @@ std::vector<MatrixRow> LoadMatrix(const std::string& path) {
 scratchbird::engine::internal_api::EngineRequestContext ContextFor(const MatrixRow& row,
                                                                    const std::string& database_path) {
   scratchbird::engine::internal_api::EngineRequestContext context;
-  context.trust_mode = scratchbird::engine::internal_api::EngineTrustMode::server_isolated;
+  context.trust_mode = scratchbird::engine::internal_api::EngineTrustMode::embedded_in_process;
   context.request_id = "fspe009-sbsql-behavior";
   context.database_path = database_path;
   context.database_uuid.canonical = "019e05b1-f009-7000-8000-000000000001";
@@ -114,6 +118,7 @@ scratchbird::engine::internal_api::EngineRequestContext ContextFor(const MatrixR
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("FSPE-009");
+  context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("right:OBS_AGENT_STATE_READ");
   context.trace_tags.push_back("right:OBS_AGENT_CONTROL");
   context.trace_tags.push_back("right:OBS_CLUSTER_HEALTH_INSPECT");
@@ -155,6 +160,11 @@ scratchbird::engine::internal_api::EngineApiRequest ApiRequestFor(
 
 scratchbird::engine::sblr::SblrOperationEnvelope EnvelopeFor(const MatrixRow& row) {
   auto envelope = scratchbird::engine::sblr::MakeSblrEnvelope(row.api_operation_id, row.sblr_operation, "FSPE-009");
+  const auto* registry =
+      scratchbird::engine::sblr::LookupSblrOperation(row.api_operation_id);
+  if (registry != nullptr && registry->opcode == row.sblr_operation) {
+    envelope.opcode_code = registry->code;
+  }
   envelope.parser_package_uuid = "019e05b1-f009-7000-8000-000000000020";
   envelope.registry_snapshot_uuid = "019e05b1-f009-7000-8000-000000000021";
   envelope.contains_sql_text = false;
@@ -162,11 +172,6 @@ scratchbird::engine::sblr::SblrOperationEnvelope EnvelopeFor(const MatrixRow& ro
   envelope.requires_security_context = row.required_security_context;
   envelope.requires_transaction_context = row.required_transaction_context;
   envelope.requires_cluster_authority = row.requires_cluster_authority || StartsWith(row.scope_status, "cluster_only");
-  envelope.operands.push_back({"option", "name", "fspe009_object"});
-  envelope.operands.push_back({"option", "policy_authorized", "true"});
-  envelope.operands.push_back({"option", "evidence_sink_available", "true"});
-  envelope.operands.push_back({"option", "metrics_fresh", "true"});
-  envelope.operands.push_back({"uuid", "target_object", "019e05b1-f009-7000-8000-000000000011"});
   return envelope;
 }
 
@@ -190,6 +195,11 @@ bool HasDispatchDiagnostic(const scratchbird::engine::sblr::SblrDispatchResult& 
 
 bool IsCallableStatus(const MatrixRow& row) {
   return row.executor_readiness_status == "mapped_ready" || row.executor_readiness_status == "sblr_callable";
+}
+
+bool RequiresExactDescriptorAuthority(const MatrixRow& row) {
+  return !row.required_descriptor_inputs.empty() &&
+         row.required_descriptor_inputs != "none";
 }
 
 bool IsClusterFailClosedStatus(const MatrixRow& row) {
@@ -228,6 +238,9 @@ int main(int argc, char** argv) {
   std::remove((database_path + ".sb.api_events").c_str());
 
   std::size_t callable_rows = 0;
+  std::size_t unallocated_carrier_rows = 0;
+  std::size_t executor_evidence_gated_rows = 0;
+  std::size_t descriptor_authority_gated_rows = 0;
   std::size_t cluster_boundary_rows = 0;
   std::size_t skipped_rows = 0;
 
@@ -239,21 +252,84 @@ int main(int argc, char** argv) {
 
     const auto context = ContextFor(row, database_path);
     const auto request = ApiRequestFor(row, context);
-    const auto encoded = scratchbird::engine::sblr::EncodeSblrEnvelope(EnvelopeFor(row));
-    const auto result = scratchbird::engine::sblr::DecodeAndDispatchSblrOperation(encoded, context, request);
+    const auto* registry =
+        scratchbird::engine::sblr::LookupSblrOperation(row.api_operation_id);
+    if (registry == nullptr || registry->opcode != row.sblr_operation ||
+        registry->code == 0) {
+      if (row.executor_readiness_status == "sblr_callable") {
+        std::cerr << "SBLR-callable row has no exact canonical opcode identity: "
+                  << row.api_operation_id << '\n';
+        return 4;
+      }
+      ++unallocated_carrier_rows;
+      const auto refused = scratchbird::engine::sblr::DispatchSblrOperation(
+          {context, EnvelopeFor(row), request});
+      if (refused.envelope_validated || refused.accepted ||
+          refused.dispatched_to_api ||
+          !HasDispatchDiagnostic(
+              refused, "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH")) {
+        std::cerr << "unallocated matrix carrier did not fail closed: "
+                  << row.api_operation_id << "\n"
+                  << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(refused);
+        return 5;
+      }
+      continue;
+    }
+    const auto result = scratchbird::engine::sblr::DispatchSblrOperation(
+        {context, EnvelopeFor(row), request});
 
     if (IsCallableStatus(row)) {
       ++callable_rows;
+      if (registry->executor_evidence_required &&
+          !registry->executor_evidence_accepted && !result.accepted &&
+          HasDispatchDiagnostic(
+              result, "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING")) {
+        ++executor_evidence_gated_rows;
+        if (!result.envelope_validated || result.dispatched_to_api) {
+          std::cerr << "evidence-gated row did not fail closed: "
+                    << row.api_operation_id << "\n"
+                    << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
+          return 6;
+        }
+        continue;
+      }
+      if (!result.envelope_validated &&
+          HasDispatchDiagnostic(result, "SBLR.OPERAND_INVALID")) {
+        ++descriptor_authority_gated_rows;
+        if (result.accepted || result.dispatched_to_api ||
+            result.api_result.ok) {
+          std::cerr << "descriptor-authority-gated row did not fail closed: "
+                    << row.api_operation_id << "\n"
+                    << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
+          return 7;
+        }
+        continue;
+      }
+      if (RequiresExactDescriptorAuthority(row) &&
+          result.envelope_validated && !result.dispatched_to_api) {
+        ++descriptor_authority_gated_rows;
+        if (result.accepted ||
+            (!HasDispatchDiagnostic(result, "SB_SBLR_DISPATCH_UNKNOWN_OPERATION") &&
+             !HasDispatchDiagnostic(
+                 result, "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING"))) {
+          std::cerr << "descriptor lifecycle row did not remain behind its "
+                       "dedicated route: "
+                    << row.api_operation_id << "\n"
+                    << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
+          return 8;
+        }
+        continue;
+      }
       if (!result.envelope_validated || !result.accepted || !result.dispatched_to_api) {
         std::cerr << "callable row did not dispatch: " << row.api_operation_id << "\n"
                   << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
-        return 4;
+        return 9;
       }
       if (HasDispatchDiagnostic(result, "SB_SBLR_DISPATCH_UNKNOWN_OPERATION") ||
           HasApiDiagnostic(result.api_result, "SB_ENGINE_API_NOT_IMPLEMENTED")) {
         std::cerr << "callable row used unknown/not-implemented path: " << row.api_operation_id << "\n"
                   << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
-        return 5;
+        return 10;
       }
       continue;
     }
@@ -271,7 +347,7 @@ int main(int argc, char** argv) {
           (!has_old_dispatch_refusal && !has_provider_refusal && !has_provider_execution)) {
         std::cerr << "cluster row did not reach a valid cluster boundary result: " << row.api_operation_id << "\n"
                   << scratchbird::engine::sblr::SerializeSblrDispatchResultToJson(result);
-        return 6;
+        return 11;
       }
       continue;
     }
@@ -279,11 +355,17 @@ int main(int argc, char** argv) {
     ++skipped_rows;
   }
 
-  if (callable_rows < 80 || cluster_boundary_rows < 5 || skipped_rows == 0) {
+  if (callable_rows < 80 || unallocated_carrier_rows == 0 ||
+      executor_evidence_gated_rows == 0 ||
+      descriptor_authority_gated_rows == 0 ||
+      cluster_boundary_rows < 5 || skipped_rows == 0) {
     std::cerr << "unexpected matrix coverage callable=" << callable_rows
+              << " unallocated_carrier=" << unallocated_carrier_rows
+              << " executor_evidence_gated=" << executor_evidence_gated_rows
+              << " descriptor_authority_gated=" << descriptor_authority_gated_rows
               << " cluster_boundary=" << cluster_boundary_rows
               << " skipped=" << skipped_rows << "\n";
-    return 7;
+    return 12;
   }
 
   std::remove(database_path.c_str());

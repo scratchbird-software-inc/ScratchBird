@@ -13,6 +13,7 @@
 #include "config_policy_security_lifecycle.hpp"
 #include "database_ownership.hpp"
 #include "database_lifecycle.hpp"
+#include "sblr_bulk_import_stream_registry.hpp"
 #include "scratchbird/engine/engine.h"
 #include "uuid.hpp"
 
@@ -88,6 +89,28 @@ const char* HostedDatabaseStateName(HostedDatabaseState state) {
       return "quarantined";
   }
   return "failed";
+}
+
+std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
+    const HostedEngineState& state,
+    std::string_view database_uuid,
+    std::string_view canonical_database_path) {
+  for (const auto& runtime : state.database_runtimes) {
+    if (!runtime) {
+      continue;
+    }
+    if (!database_uuid.empty() && runtime->database_uuid != database_uuid) {
+      continue;
+    }
+    if (!canonical_database_path.empty() &&
+        runtime->canonical_database_path != canonical_database_path) {
+      continue;
+    }
+    if (!database_uuid.empty() || !canonical_database_path.empty()) {
+      return runtime;
+    }
+  }
+  return {};
 }
 
 HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
@@ -256,6 +279,89 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
       lifecycle_open.state.startup_recovery_classification.empty()
           ? "public_abi_hosted_open"
           : lifecycle_open.state.startup_recovery_classification;
+
+  std::error_code database_path_error;
+  const auto database_path_status =
+      std::filesystem::symlink_status(config.database_default_path,
+                                      database_path_error);
+  if (database_path_error || std::filesystem::is_symlink(database_path_status)) {
+    if (engine != nullptr) {
+      (void)sb_engine_close(engine, nullptr);
+      engine = nullptr;
+    }
+    snapshot.state = HostedDatabaseState::kQuarantined;
+    snapshot.database_open = false;
+    snapshot.write_admission_fenced = true;
+    snapshot.diagnostic_code = "BULK.IMPORT.RECOVERY_CONFLICT";
+    snapshot.diagnostic_message_key = "bulk.import.recovery_conflict";
+    result.diagnostics.push_back(ServerDiagnostic{
+        snapshot.diagnostic_code,
+        snapshot.diagnostic_message_key,
+        ServerDiagnosticSeverity::kError,
+        "The database path cannot own the durable bulk-import stream registry.",
+        {{"database_path", snapshot.database_path},
+         {"detail", database_path_error ? "database_path_status_failed"
+                                         : "database_path_symlink_forbidden"}}});
+    result.state.databases.push_back(snapshot);
+    return result;
+  }
+  database_path_error.clear();
+  const auto canonical_database_path =
+      std::filesystem::canonical(config.database_default_path,
+                                 database_path_error);
+  if (database_path_error || canonical_database_path.empty()) {
+    if (engine != nullptr) {
+      (void)sb_engine_close(engine, nullptr);
+      engine = nullptr;
+    }
+    snapshot.state = HostedDatabaseState::kQuarantined;
+    snapshot.database_open = false;
+    snapshot.write_admission_fenced = true;
+    snapshot.diagnostic_code = "BULK.IMPORT.RECOVERY_CONFLICT";
+    snapshot.diagnostic_message_key = "bulk.import.recovery_conflict";
+    result.diagnostics.push_back(ServerDiagnostic{
+        snapshot.diagnostic_code,
+        snapshot.diagnostic_message_key,
+        ServerDiagnosticSeverity::kError,
+        "The canonical database path for the durable bulk-import stream registry is unavailable.",
+        {{"database_path", snapshot.database_path},
+         {"detail", "database_path_canonicalization_failed"}}});
+    result.state.databases.push_back(snapshot);
+    return result;
+  }
+
+  auto database_runtime = std::make_shared<HostedDatabaseRuntime>();
+  database_runtime->canonical_database_path = canonical_database_path.string();
+  database_runtime->database_uuid = snapshot.database_uuid;
+  std::filesystem::path bulk_import_registry_root = canonical_database_path;
+  bulk_import_registry_root += ".bulk_import_streams.v1";
+  database_runtime->bulk_import_stream_registry =
+      std::make_shared<engine::internal_api::SblrBulkImportStreamRegistry>(
+          bulk_import_registry_root);
+  if (!database_runtime->bulk_import_stream_registry->healthy()) {
+    const auto detail =
+        database_runtime->bulk_import_stream_registry->startup_error();
+    database_runtime.reset();
+    if (engine != nullptr) {
+      (void)sb_engine_close(engine, nullptr);
+      engine = nullptr;
+    }
+    snapshot.state = HostedDatabaseState::kQuarantined;
+    snapshot.database_open = false;
+    snapshot.write_admission_fenced = true;
+    snapshot.diagnostic_code = "BULK.IMPORT.RECOVERY_CONFLICT";
+    snapshot.diagnostic_message_key = "bulk.import.recovery_conflict";
+    result.diagnostics.push_back(ServerDiagnostic{
+        snapshot.diagnostic_code,
+        snapshot.diagnostic_message_key,
+        ServerDiagnosticSeverity::kError,
+        "The durable bulk-import stream registry could not be opened or recovered.",
+        {{"database_path", snapshot.database_path},
+         {"registry_root", bulk_import_registry_root.string()},
+         {"detail", detail}}});
+    result.state.databases.push_back(snapshot);
+    return result;
+  }
   if (lifecycle_open.state.engine_agent_health_present) {
     snapshot.database_engine_agent_instance_uuid =
         lifecycle_open.state.engine_agent_health.engine_instance_uuid;
@@ -318,6 +424,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
   if (database_ownership_lock) {
     result.state.database_ownership_locks.push_back(std::move(database_ownership_lock));
   }
+  result.state.database_runtimes.push_back(std::move(database_runtime));
   result.state.databases.push_back(snapshot);
   return result;
 }

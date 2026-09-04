@@ -10,6 +10,7 @@
 #include "agents/agent_management_api.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "sblr_dispatch.hpp"
+#include "sblr_opcode_registry.hpp"
 #include "storage/storage_management_api.hpp"
 #include "uuid.hpp"
 
@@ -277,6 +278,14 @@ sblr::SblrDispatchResult DispatchClusterAgentList(const Fixture& fixture,
       : Context(fixture, {"OBS_AGENT_STATE_READ"});
   request.envelope = sblr::MakeSblrEnvelope(
       "cluster.agent.list", "SBLR_CLUSTER_AGENT_LIST", "pfar-014-cluster");
+  const auto* registry = sblr::LookupSblrOperation("cluster.agent.list");
+  Require(registry != nullptr && registry->opcode == "SBLR_CLUSTER_AGENT_LIST",
+          "cluster agent list canonical registry row missing");
+  request.envelope.opcode_code = registry->code;
+  request.envelope.parser_package_uuid =
+      "019f0914-0000-7000-8000-000000000104";
+  request.envelope.registry_snapshot_uuid =
+      "019f0914-0000-7000-8000-000000000106";
   request.envelope.requires_security_context = true;
   request.envelope.requires_cluster_authority = true;
   request.envelope.result_shape = "cluster.provider.stub.v1";

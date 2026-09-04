@@ -246,14 +246,27 @@ std::string CreateOpenCleanDatabase(const std::filesystem::path& path) {
 
 void WriteAuthStore(const std::filesystem::path& database_path,
                     const std::string& database_uuid) {
+  const auto bootstrap =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          database_path, "DBLC-013H");
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
       database_uuid,
       kAlicePrincipalUuid,
       "alice",
       kVerifier,
-      17,
-      "DBLC-013H");
+      bootstrap.local_transaction_id,
+      "DBLC-013H",
+      bootstrap.transaction_uuid.canonical);
+  for (const std::string_view right : {"CONNECT", "OBS_RUNTIME_ALL"}) {
+    scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+        database_path, database_uuid, kAlicePrincipalUuid, database_uuid,
+        "database", right, bootstrap.local_transaction_id,
+        std::string("DBLC-013H:") + std::string(right),
+        bootstrap.transaction_uuid.canonical);
+  }
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
+      bootstrap);
 }
 
 std::string Evidence() {
@@ -264,9 +277,10 @@ std::string Evidence() {
       "right:CONNECT,right:OBS_RUNTIME_ALL");
 }
 
-std::vector<std::uint8_t> AuthPayload() {
+std::vector<std::uint8_t> AuthPayload(
+    const std::array<std::uint8_t, 16>& connection_uuid) {
   std::vector<std::uint8_t> out;
-  PutUuid(&out, sbps::MakeUuidV7Bytes());
+  PutUuid(&out, connection_uuid);
   out.push_back(1);
   out.push_back(0);
   out.push_back(0);
@@ -279,11 +293,26 @@ std::vector<std::uint8_t> AuthPayload() {
   return out;
 }
 
-sbps::Frame Frame(sbps::MessageType type, std::vector<std::uint8_t> payload) {
+std::vector<std::uint8_t> AttachPayload(
+    const std::array<std::uint8_t, 16>& connection_uuid,
+    const std::array<std::uint8_t, 16>& auth_context_uuid) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, connection_uuid);
+  PutUuid(&out, auth_context_uuid);
+  PutString(&out, "default");
+  PutString(&out, "read_write");
+  return out;
+}
+
+sbps::Frame Frame(
+    sbps::MessageType type,
+    std::vector<std::uint8_t> payload,
+    const std::array<std::uint8_t, 16>& connection_uuid = {}) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(type);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
   frame.header.payload_schema_id = sbps::kSchemaNone;
+  frame.header.connection_uuid = connection_uuid;
   frame.payload = std::move(payload);
   return frame;
 }
@@ -315,10 +344,13 @@ void TestHostedEngineAndSessionHealthPublication(const std::filesystem::path& pa
           "hosted engine status JSON omitted lifecycle health");
 
   scratchbird::server::ServerSessionRegistry registry;
+  const auto connection_uuid = sbps::MakeUuidV7Bytes();
   auto auth = scratchbird::server::HandleAuthHandoff(
       &registry,
       hosted.state,
-      Frame(sbps::MessageType::kAuthHandoff, AuthPayload()));
+      Frame(sbps::MessageType::kAuthHandoff,
+            AuthPayload(connection_uuid),
+            connection_uuid));
   Require(auth.accepted, "DBLC-013H auth handoff failed");
   const auto auth_context =
       scratchbird::server::DecodeAuthContextUuidForTest(auth.payload);
@@ -331,7 +363,13 @@ void TestHostedEngineAndSessionHealthPublication(const std::filesystem::path& pa
       &registry,
       hosted.state,
       Frame(sbps::MessageType::kAttachDatabase,
-            scratchbird::server::EncodeAttachPayloadForTest(*auth_context, "read_write")));
+            AttachPayload(connection_uuid, *auth_context),
+            connection_uuid));
+  if (!attach.accepted) {
+    for (const auto& diagnostic : attach.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+    }
+  }
   Require(attach.accepted, "DBLC-013H attach failed");
   Require(Contains(std::string(attach.payload.begin(), attach.payload.end()),
                    "\"database_engine_agent\""),

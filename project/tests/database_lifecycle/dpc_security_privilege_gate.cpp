@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "database_lifecycle_test_memory.hpp"
 #include "management/index_management_api.hpp"
 #include "observability/cleanup_diagnostics_api.hpp"
 #include "observability/performance_optimization_surface.hpp"
@@ -14,6 +15,7 @@
 #include "sblr_opcode_registry.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -110,6 +112,23 @@ api::EngineRequestContext Context(const TestIds& ids,
   context.name_resolution_epoch = 4066;
   context.trace_tags = std::move(tags);
   context.trace_tags.push_back(std::string(kGateSearchKey));
+  if (security_context_present) {
+    for (const auto& tag : context.trace_tags) {
+      constexpr std::string_view kRightPrefix = "right:";
+      if (tag.starts_with(kRightPrefix) && tag.size() > kRightPrefix.size()) {
+        scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+            &context,
+            "dpc_security_privilege_gate",
+            {std::string_view(tag).substr(kRightPrefix.size())});
+        break;
+      }
+    }
+    if (std::find(context.trace_tags.begin(),
+                  context.trace_tags.end(),
+                  "security_context:expired") != context.trace_tags.end()) {
+      ++context.security_epoch;
+    }
+  }
   return context;
 }
 
@@ -176,6 +195,34 @@ engine_sblr::SblrOperationEnvelope IndexEnvelope(const TestIds& ids,
              "validation_family",
              operation_id == "index.repair" ? "secondary_delta_ledger"
                                              : "ordered_table_candidate_set");
+  const auto* registry = engine_sblr::LookupSblrOperation(operation_id);
+  Require(registry != nullptr,
+          "DPC-066 SBLR registry operation is unavailable");
+  envelope.opcode_code = registry->code;
+  envelope.parser_package_uuid =
+      "12345678-1234-7000-8000-000000000031";
+  envelope.registry_snapshot_uuid =
+      "12345678-1234-7000-8000-000000000032";
+  envelope.parser_resolved_names_to_uuids = true;
+  const auto literal_type_uuid =
+      uuid::ParseUuid("12345678-1234-7000-8000-000000000051");
+  Require(literal_type_uuid.ok(),
+          "DPC-066 canonical test literal type UUID is invalid");
+  for (std::size_t index = 0; index < envelope.operands.size(); ++index) {
+    auto& operand = envelope.operands[index];
+    operand.ordinal = static_cast<std::uint32_t>(index + 1);
+    operand.value_kind = engine_sblr::SblrValueKind::literal_typed;
+    operand.value_body.assign(literal_type_uuid.value.bytes.begin(),
+                              literal_type_uuid.value.bytes.end());
+    const std::uint64_t value_size = operand.value.size();
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      operand.value_body.push_back(static_cast<std::uint8_t>(
+          (value_size >> shift) & 0xffu));
+    }
+    operand.value_body.insert(operand.value_body.end(),
+                              operand.value.begin(), operand.value.end());
+    operand.value.clear();
+  }
   return envelope;
 }
 
@@ -310,23 +357,18 @@ void RequireDenied(const api::EngineApiResult& result,
           "DPC-066 denied result missing exact authorization audit row");
 }
 
-void RequireSblrAllowed(const engine_sblr::SblrDispatchResult& result,
-                        std::string_view right_fragment,
-                        std::string_view message) {
-  Require(result.envelope_validated, "DPC-066 SBLR envelope did not validate");
-  Require(result.accepted && result.dispatched_to_api,
-          "DPC-066 SBLR route did not dispatch to engine API");
-  RequireAllowed(result.api_result, right_fragment, message);
-}
-
-void RequireSblrDenied(const engine_sblr::SblrDispatchResult& result,
-                       std::string_view code,
-                       std::string_view right_fragment,
-                       std::string_view message) {
-  Require(result.envelope_validated, "DPC-066 SBLR denial envelope did not validate");
-  Require(result.accepted && result.dispatched_to_api,
-          "DPC-066 SBLR denial did not reach engine API");
-  RequireDenied(result.api_result, code, right_fragment, message);
+void RequireSblrUnavailable(const engine_sblr::SblrDispatchResult& result,
+                            std::string_view message) {
+  Require(!result.envelope_validated && !result.accepted &&
+              !result.dispatched_to_api,
+          message);
+  const auto diagnostic = std::find_if(
+      result.diagnostics.begin(), result.diagnostics.end(),
+      [](const engine_sblr::SblrEnvelopeDiagnostic& candidate) {
+        return candidate.code == "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
+      });
+  Require(diagnostic != result.diagnostics.end(),
+          "DPC-066 unallocated SBLR route diagnostic mismatch");
 }
 
 void TestIndexPrivilegeMatrix(const TestIds& ids) {
@@ -437,31 +479,19 @@ void TestBacklogAndCleanupSurfacePrivileges(const TestIds& ids) {
 }
 
 void TestSblrRoutePrivileges(const TestIds& ids) {
-  RequireSblrAllowed(DispatchIndexSblr(ids,
-                                       "index.validate",
-                                       {"right:OBS_INDEX_PROFILE_READ"}),
-                     "OBS_INDEX_PROFILE_READ",
-                     "DPC-066 SBLR validate with profile-read right was denied");
-  RequireSblrAllowed(DispatchIndexSblr(ids,
-                                       "index.repair",
-                                       {"right:OBS_MANAGEMENT_CONTROL"}),
-                     "OBS_MANAGEMENT_CONTROL",
-                     "DPC-066 SBLR repair with management-control right was denied");
-  RequireSblrDenied(DispatchIndexSblr(ids,
-                                      "index.repair",
-                                      {"right:OBS_MANAGEMENT_INSPECT"}),
-                    "SECURITY.AUTHORIZATION.DENIED",
-                    "OBS_MANAGEMENT_CONTROL",
-                    "DPC-066 SBLR repair with inspect-only right was admitted");
-
-  const auto missing_context = DispatchIndexSblr(ids, "index.validate", {}, false);
-  Require(missing_context.envelope_validated,
-          "DPC-066 SBLR missing-context envelope did not validate");
-  Require(!missing_context.accepted && !missing_context.dispatched_to_api,
-          "DPC-066 SBLR missing-context request reached engine API");
-  Require(HasDiagnostic(missing_context.api_result,
-                        "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED"),
-          "DPC-066 SBLR missing-context diagnostic mismatch");
+  RequireSblrUnavailable(
+      DispatchIndexSblr(ids,
+                        "index.validate",
+                        {"right:OBS_INDEX_PROFILE_READ"}),
+      "DPC-066 unallocated index.validate SBLR route was admitted");
+  RequireSblrUnavailable(
+      DispatchIndexSblr(ids,
+                        "index.repair",
+                        {"right:OBS_MANAGEMENT_CONTROL"}),
+      "DPC-066 unallocated index.repair SBLR route was admitted");
+  RequireSblrUnavailable(
+      DispatchIndexSblr(ids, "index.validate", {}, false),
+      "DPC-066 unallocated SBLR route bypassed structural admission");
 }
 
 }  // namespace

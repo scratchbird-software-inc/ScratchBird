@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -110,9 +111,26 @@ std::string NameRegistryLoadCacheKey(const EngineRequestContext& context,
       << "|mga_meta=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_metadata")
       << "|mga_desc=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_descriptors")
       << "|mga_scope=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_scope")
+      << "|mga_savepoints=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_savepoints")
       << "|domains=" << NameRegistryFileFingerprint(context.database_path + ".sb.domain_catalog")
       << "|domain_events=" << NameRegistryFileFingerprint(context.database_path + ".sb.domain_events")
       << "|catalog_objects=" << NameRegistryFileFingerprint(context.database_path + ".sb.catalog_object_events");
+  if (context.statement_transaction_inventory_snapshot != nullptr) {
+    const auto& inventory =
+        *context.statement_transaction_inventory_snapshot;
+    key << "|txn_snapshot_db_size=" << inventory.database_file_size
+        << "|txn_snapshot_db_mtime=" << inventory.database_write_time_count
+        << "|txn_snapshot_journal_present="
+        << (inventory.publish_journal_present ? 1 : 0)
+        << "|txn_snapshot_journal_size=" << inventory.publish_journal_size
+        << "|txn_snapshot_journal_mtime="
+        << inventory.publish_journal_write_time_count;
+  } else {
+    key << "|txn_db=" << NameRegistryFileFingerprint(context.database_path)
+        << "|txn_publish="
+        << NameRegistryFileFingerprint(context.database_path +
+                                       ".sb.txn_publish");
+  }
   return key.str();
 }
 
@@ -121,16 +139,18 @@ std::mutex& NameRegistryLoadCacheMutex() {
   return mutex;
 }
 
-std::map<std::string, NameRegistryLoadResult>& NameRegistryLoadCache() {
-  static std::map<std::string, NameRegistryLoadResult> cache;
+std::map<std::string, std::shared_ptr<const NameRegistryLoadResult>>&
+NameRegistryLoadCache() {
+  static std::map<std::string,
+                  std::shared_ptr<const NameRegistryLoadResult>> cache;
   return cache;
 }
 
-std::optional<NameRegistryLoadResult> LookupNameRegistryLoadCache(
+std::shared_ptr<const NameRegistryLoadResult> LookupNameRegistryLoadCache(
     const std::string& cache_key) {
   std::lock_guard<std::mutex> guard(NameRegistryLoadCacheMutex());
   const auto found = NameRegistryLoadCache().find(cache_key);
-  if (found == NameRegistryLoadCache().end()) return std::nullopt;
+  if (found == NameRegistryLoadCache().end()) return {};
   return found->second;
 }
 
@@ -139,7 +159,8 @@ void StoreNameRegistryLoadCache(const std::string& cache_key,
   if (cache_key.empty() || !result.ok) return;
   std::lock_guard<std::mutex> guard(NameRegistryLoadCacheMutex());
   auto& cache = NameRegistryLoadCache();
-  cache[cache_key] = result;
+  cache[cache_key] =
+      std::make_shared<const NameRegistryLoadResult>(result);
   constexpr std::size_t kMaxNameRegistryLoadCacheEntries = 64;
   while (cache.size() > kMaxNameRegistryLoadCacheEntries) {
     cache.erase(cache.begin());
@@ -786,12 +807,33 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
   return result;
 }
 
+std::shared_ptr<const NameRegistryLoadResult>
+LoadNameRegistryStateSnapshot(const EngineRequestContext& context,
+                              const std::uint64_t observer_tx) {
+  const std::string cache_key =
+      NameRegistryLoadCacheKey(context, observer_tx);
+  if (auto cached = LookupNameRegistryLoadCache(cache_key)) {
+    return cached;
+  }
+  auto loaded = LoadNameRegistryState(context, observer_tx);
+  if (!loaded.ok) {
+    return std::make_shared<const NameRegistryLoadResult>(
+        std::move(loaded));
+  }
+  if (auto cached = LookupNameRegistryLoadCache(cache_key)) {
+    return cached;
+  }
+  return std::make_shared<const NameRegistryLoadResult>(
+      std::move(loaded));
+}
+
 NameRegistryResolveResult ResolveNameRegistryPrivate(const EngineApiRequest& request,
                                                      const std::string& requested_object_class) {
   NameRegistryResolveResult result;
-  const auto loaded = LoadNameRegistryState(request.context, request.context.local_transaction_id);
-  if (!loaded.ok) {
-    result.diagnostic = loaded.diagnostic;
+  const auto loaded = LoadNameRegistryStateSnapshot(
+      request.context, request.context.local_transaction_id);
+  if (loaded == nullptr || !loaded->ok) {
+    if (loaded != nullptr) result.diagnostic = loaded->diagnostic;
     return result;
   }
   std::vector<EngineLocalizedName> wanted_names = request.localized_names;
@@ -818,7 +860,8 @@ NameRegistryResolveResult ResolveNameRegistryPrivate(const EngineApiRequest& req
     return result;
   }
   const auto languages = LanguageCandidates(request.context);
-  const auto scopes = ResolveQualifiedNameRegistryScopes(request, loaded.state, languages);
+  const auto scopes = ResolveQualifiedNameRegistryScopes(
+      request, loaded->state, languages);
   std::set<std::string> seen_objects;
   for (const auto& wanted : wanted_names) {
     const std::string raw_name = !wanted.raw_name_text.empty() ? wanted.raw_name_text : wanted.name;
@@ -831,7 +874,7 @@ NameRegistryResolveResult ResolveNameRegistryPrivate(const EngineApiRequest& req
                                          : NameRegistryLookupKey(raw_name, profile, false);
     for (const auto& language : languages) {
       for (const auto& scope : scopes) {
-        for (const auto& entry : loaded.state.entries) {
+        for (const auto& entry : loaded->state.entries) {
           if (!ObjectClassMatchesRequest(entry.object_class, requested_object_class)) { continue; }
           if (entry.scope_uuid != scope) { continue; }
           if (entry.language_tag != language) { continue; }

@@ -6,7 +6,7 @@ int main() {
   const auto* op = LookupSblrOperation("op.gpu.profile_disable");
   assert(op != nullptr);
   assert(op->support == SblrOpcodeSupport::implemented);
-  const auto* refusal = LookupSblrOperation("diagnostic.refusal");
+  const auto* refusal = LookupSblrOperation("engine.op.diagnostic_refusal");
   assert(refusal != nullptr);
   assert(refusal->opcode == "SBLR_DIAGNOSTIC_REFUSAL");
   return 0;

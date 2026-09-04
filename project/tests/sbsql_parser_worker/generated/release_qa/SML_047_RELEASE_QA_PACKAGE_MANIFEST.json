@@ -11,19 +11,19 @@
       ],
       "evidence_files": [
         {
-          "bytes": 238033,
+          "bytes": 240381,
           "path": "project/tests/sbsql_parser_worker/generated/product_regression/sml_041_046/SML_041_046_PRODUCT_QA_MANIFEST.json",
-          "sha256": "460a4a83717da4e0a407d4da3b8d2651bb9de427a7e340e9f68d70d0e4f31341"
+          "sha256": "a36513958daf514a8016677aa4c1ed82901b41122c47bd17ee8bc7cf507cbea4"
         },
         {
-          "bytes": 17298,
+          "bytes": 18611,
           "path": "project/tests/sbsql_parser_worker/generated/product_regression/sml_041_046/sbsql_sml_041_046_product_qa_manifest_gate.py",
-          "sha256": "b395f91f83337f650e49bf492da7db6f6ecdb5299fedaf5c4eba0b9f382a4ec1"
+          "sha256": "ab0407aaf070770703694bb59ca15ac3d38e5549ba1a8ad5b41f8a783a1e3a1d"
         },
         {
           "bytes": 12621,
           "path": "project/tests/sbsql_parser_worker/generated/hardening/sml_041_046/SML_044_046_HARDENING_ORACLE.json",
-          "sha256": "a41ec822f4ae510c4d77f06277cf76c806013107b7a83f65a64393946d5b0a13"
+          "sha256": "07ea03088a660219a10614eca50a52f2fd2e8a9a8dfd19ba49e615d9fd6fa2da"
         },
         {
           "bytes": 10971,
@@ -31,23 +31,23 @@
           "sha256": "6048e81fe4442deee6fdab16dfc877851652318484078a6c9f6a3c4880c4abf8"
         },
         {
-          "bytes": 2369,
+          "bytes": 2358,
           "path": "project/tests/sbsql_parser_worker/generated/hardening/MALICIOUS_INPUT_FIXTURES.csv",
-          "sha256": "642e19301418c1cf061f4a43fdd7a55e1b29aceca23148219c32b93f0735a151"
+          "sha256": "024b56a4ea516e2b9d395df5681c745d37f688f33746f3f54aab029107e23260"
         },
         {
-          "bytes": 20367,
+          "bytes": 20447,
           "path": "project/tests/sbsql_parser_worker/generated/hardening/sbsql_fuzz_malicious_input_gate.cpp",
-          "sha256": "bb55c432a68358a2941b11b9b3c0715acef20c88426595717f5a3f1621bd66ef"
+          "sha256": "34e6026ffbbf811fc986b8d2eb7f928d9657d29a4a6453d588733dba83dc5274"
         },
         {
-          "bytes": 13479,
+          "bytes": 13606,
           "path": "project/tests/sbsql_parser_worker/generated/hardening/sbsql_no_spin_no_wal_no_direct_db_gate.cpp",
-          "sha256": "5543e347c70aee6e0423375e0b28f726e43067b67e3e387edef9a51712bd2501"
+          "sha256": "e79de03d2fd38e01296971f4d70df5e138f8aca9a65627737b173022986a1fbd"
         }
       ],
       "group_id": "SML-041-046",
-      "group_sha256": "6ed2d2937486e237f1ca6ed57b70efca460a32413e630e0f746a53195e40c5b5",
+      "group_sha256": "1d97a3fa6e4d23ac0207049c859cb64fa4702625e7250b78eb95f117539a6b25",
       "parser_executes_sql": false,
       "parser_owns_finality": false,
       "private_workplan_dependency": false,
@@ -203,7 +203,7 @@
   ],
   "gate_id": "SML-GATE-047",
   "generated_from_tracked_project_files": true,
-  "manifest_sha256": "21c0010233891b7606a3fb7a1df430f71788499a1696c47f28e9dd67f69acaad",
+  "manifest_sha256": "0deaceba08242cf324300759c3cd18b4f454afa5d750986adfbcc1d977803ccf",
   "network_dependency": false,
   "private_workplan_dependency": false,
   "reference_tree_dependency": false,

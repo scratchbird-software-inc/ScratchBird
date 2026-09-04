@@ -33,6 +33,7 @@ enum class StatementParserCategory {
   kJobsScheduler,
   kArchiveReplication,
   kAcceleration,
+  kBridge,
   kMultiModel,
   kMigration,
   kClusterPrivate,

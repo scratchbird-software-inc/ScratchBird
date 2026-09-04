@@ -45,6 +45,7 @@ struct Options {
   std::string fixture;
   std::string principal = "alice";
   std::string principal_uuid;
+  std::string credential_secret;
 };
 
 std::string JsonEscape(const std::string& value) {
@@ -52,7 +53,7 @@ std::string JsonEscape(const std::string& value) {
 }
 
 void Usage() {
-  std::cout << "Usage: sb_ipc_tester --endpoint PATH [--scenario hello|malformed_magic|unsupported_message|version_mismatch|payload_crc_mismatch|database_status|session_registry_status|parser_registry_status|notification_router_status|listener_orchestrator_status|server_management_rights|hello_disabled_package|hello_quarantined_package|hello_retired_package|hello_hash_failure|hello_dev_warning|hello_udr_missing|auth_success|auth_failure|auth_challenge|attach_without_auth|auth_then_attach|auth_attach_detach|detach_unknown|sblr_prepare_execute_show_version|sblr_raw_sql_rejected|sblr_fetch_close_show_version|sblr_cluster_refused|sblr_crud_insert|sblr_crud_select|sblr_crud_update|sblr_crud_delete|sblr_catalog_create_table|sblr_catalog_get_descriptor|sblr_index_create|sblr_datatype_cast|sblr_datatype_extract|sblr_datatype_set|sblr_optimizer_explain|sblr_optimizer_plan|sblr_llvm_compile|event_subscribe_unsubscribe|event_notify_delivery|management_show_server_status|management_show_listeners|management_show_metrics|management_export_support_bundle|management_start_listener|management_restart_listener|management_listener_proxy_refused|management_unauthorized_start_listener|management_show_server_lifecycle|management_reload_server_config|management_reload_invalid|management_drain_server|management_set_maintenance|management_clear_maintenance|management_begin_backup_fence|management_end_backup_fence|management_begin_restore_fence|management_end_restore_fence|management_cancel_unknown|management_stop_server|management_restart_server] [--principal PRINCIPAL] [--principal-uuid UUID] [--expect accept|error] [--expect-code CODE] [--expect-payload-contains TEXT]\n"
+  std::cout << "Usage: sb_ipc_tester --endpoint PATH [--scenario hello|malformed_magic|unsupported_message|version_mismatch|payload_crc_mismatch|database_status|session_registry_status|parser_registry_status|notification_router_status|listener_orchestrator_status|server_management_rights|hello_disabled_package|hello_quarantined_package|hello_retired_package|hello_hash_failure|hello_dev_warning|hello_udr_missing|auth_success|auth_failure|auth_challenge|attach_without_auth|auth_then_attach|auth_attach_detach|detach_unknown|sblr_prepare_execute_show_version|sblr_raw_sql_rejected|sblr_fetch_close_show_version|sblr_cluster_refused|sblr_crud_insert|sblr_crud_select|sblr_crud_update|sblr_crud_delete|sblr_catalog_create_table|sblr_catalog_get_descriptor|sblr_index_create|sblr_datatype_cast|sblr_datatype_extract|sblr_datatype_set|sblr_optimizer_explain|sblr_optimizer_plan|sblr_llvm_compile|event_subscribe_unsubscribe|event_notify_delivery|management_show_server_status|management_show_listeners|management_show_metrics|management_export_support_bundle|management_start_listener|management_restart_listener|management_listener_proxy_refused|management_unauthorized_start_listener|management_show_server_lifecycle|management_reload_server_config|management_reload_invalid|management_drain_server|management_set_maintenance|management_clear_maintenance|management_begin_backup_fence|management_end_backup_fence|management_begin_restore_fence|management_end_restore_fence|management_cancel_unknown|management_stop_server|management_restart_server] [--principal PRINCIPAL] [--principal-uuid UUID] [--credential-secret TEXT] [--expect accept|error] [--expect-code CODE] [--expect-payload-contains TEXT]\n"
                "       sb_ipc_tester --fixture PATH\n";
 }
 
@@ -109,6 +110,7 @@ Options Parse(int argc, char** argv) {
     else if (arg == "--expect-payload-contains") options.expected_payload_contains = value("--expect-payload-contains");
     else if (arg == "--principal") options.principal = value("--principal");
     else if (arg == "--principal-uuid") options.principal_uuid = value("--principal-uuid");
+    else if (arg == "--credential-secret") options.credential_secret = value("--credential-secret");
     else if (arg == "--fixture") options.fixture = value("--fixture");
     else if (arg == "--help") {
       Usage();
@@ -127,6 +129,7 @@ Options Parse(int argc, char** argv) {
     if (values.contains("expected_payload_contains")) options.expected_payload_contains = values.at("expected_payload_contains");
     if (values.contains("principal")) options.principal = values.at("principal");
     if (values.contains("principal_uuid")) options.principal_uuid = values.at("principal_uuid");
+    if (values.contains("credential_secret")) options.credential_secret = values.at("credential_secret");
   }
   return options;
 }
@@ -138,7 +141,8 @@ std::vector<std::uint8_t> BuildRequest(
     const std::optional<std::array<std::uint8_t, 16>>& prepared_statement_uuid = std::nullopt,
     const std::optional<std::array<std::uint8_t, 16>>& cursor_uuid = std::nullopt,
     const std::string& principal = "alice",
-    const std::string& principal_uuid = "") {
+    const std::string& principal_uuid = "",
+    const std::string& credential_secret = "") {
   std::vector<std::uint8_t> payload = scratchbird::server::sbps::EncodeHelloRequestForTest();
   FrameHeader header;
   header.message_type = static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kHello);
@@ -169,19 +173,19 @@ std::vector<std::uint8_t> BuildRequest(
   } else if (scenario == "auth_success" || scenario == "auth_then_attach" ||
              scenario == "auth_attach_detach") {
     payload = scratchbird::server::EncodeAuthHandoffPayloadForTest(
-        principal, true, false, false, principal_uuid);
+        principal, true, false, false, principal_uuid, "", credential_secret);
     header.message_type =
         static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kAuthHandoff);
     header.payload_schema_id = 3001;
   } else if (scenario == "auth_failure") {
     payload = scratchbird::server::EncodeAuthHandoffPayloadForTest(
-        principal, false, false, false, principal_uuid);
+        principal, false, false, false, principal_uuid, "", credential_secret);
     header.message_type =
         static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kAuthHandoff);
     header.payload_schema_id = 3001;
   } else if (scenario == "auth_challenge") {
     payload = scratchbird::server::EncodeAuthHandoffPayloadForTest(
-        principal, true, true, false, principal_uuid);
+        principal, true, true, false, principal_uuid, "", credential_secret);
     header.message_type =
         static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kAuthHandoff);
     header.payload_schema_id = 3001;
@@ -531,7 +535,12 @@ int main(int argc, char** argv) {
   std::cerr << "POSIX AF_UNIX tester transport is required in this SIF stage\n";
   return 2;
 #else
-  if (options.scenario == "management_restart_listener") {
+  const bool stateful_management_scenario =
+      options.scenario == "management_restart_listener" ||
+      options.scenario == "management_show_metrics" ||
+      options.scenario == "management_export_support_bundle" ||
+      options.scenario == "management_stop_server";
+  if (stateful_management_scenario) {
     if (options.principal_uuid.empty()) {
       std::cerr << "management_restart_listener requires an exact durable principal UUID\n";
       return 2;
@@ -547,11 +556,11 @@ int main(int argc, char** argv) {
     credentials.requested_database = "default";
     credentials.requested_language = "en";
     credentials.credential_evidence_present = true;
-    credentials.credential_evidence =
-        "scheme=local_password_v1;principal=" + options.principal +
-        ";principal_uuid=" + options.principal_uuid +
-        ";storage_authority=mga_security_principal_lifecycle;verifier="
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    // Unstructured evidence is the password secret; the engine performs the
+    // canonical PBKDF2 comparison against the durable principal fingerprint.
+    credentials.credential_evidence = options.credential_secret.empty()
+        ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        : options.credential_secret;
 
     scratchbird::parser::ipc::ParserSessionContext session;
     scratchbird::parser::ipc::MessageVectorSet auth_messages;
@@ -564,14 +573,22 @@ int main(int argc, char** argv) {
       return 2;
     }
 
+    const std::string operation_key =
+        options.scenario == "management_restart_listener"
+            ? "restart_listener"
+            : options.scenario == "management_show_metrics"
+                  ? "show_server_metrics"
+                  : options.scenario == "management_export_support_bundle"
+                        ? "export_server_support_bundle"
+                        : "stop_server";
     auto management = client.Manage(session,
-                                    "restart_listener",
+                                    operation_key,
                                     {},
                                     "graceful",
                                     "ipc_tester");
     scratchbird::parser::ipc::MessageVectorSet disconnect_messages;
-    const bool disconnected =
-        client.DisconnectSession(session, &disconnect_messages);
+    const bool disconnected = options.scenario == "management_stop_server" ||
+                              client.DisconnectSession(session, &disconnect_messages);
 
     bool code_match = options.expected_code.empty();
     for (const auto& diagnostic : management.messages.diagnostics) {
@@ -626,9 +643,20 @@ int main(int argc, char** argv) {
                                       std::nullopt,
                                       std::nullopt,
                                       principal,
-                                      principal_uuid),
+                                      principal_uuid,
+                                      options.credential_secret),
                          &exchange_error);
     if (!auth) return false;
+    if ((auth->header.flags & scratchbird::server::sbps::kFlagError) != 0) {
+      const auto codes =
+          scratchbird::server::sbps::DecodeMessageVectorDiagnosticCodes(
+              auth->payload);
+      exchange_error = "authentication refused";
+      for (const auto& code : codes) {
+        exchange_error += ":" + code;
+      }
+      return false;
+    }
     const auto auth_context = scratchbird::server::DecodeAuthContextUuidForTest(auth->payload);
     if (!auth_context) {
       exchange_error = "auth context decode failed";
@@ -655,7 +683,8 @@ int main(int argc, char** argv) {
                                      std::nullopt,
                                      std::nullopt,
                                      options.principal,
-                                     options.principal_uuid),
+                                     options.principal_uuid,
+                                     options.credential_secret),
                         &exchange_error);
     if (!response) {
       std::cerr << exchange_error << "\n";
@@ -843,7 +872,17 @@ int main(int argc, char** argv) {
       std::cerr << (exchange_error.empty() ? "maintenance set failed" : exchange_error) << "\n";
       return 2;
     }
-    auto blocked_auth = Exchange(options.endpoint, BuildRequest("auth_then_attach"), &exchange_error);
+    auto blocked_auth = Exchange(
+        options.endpoint,
+        BuildRequest("auth_then_attach",
+                     std::nullopt,
+                     std::nullopt,
+                     std::nullopt,
+                     std::nullopt,
+                     options.principal,
+                     options.principal_uuid,
+                     options.credential_secret),
+        &exchange_error);
     if (!blocked_auth) {
       std::cerr << exchange_error << "\n";
       return 2;

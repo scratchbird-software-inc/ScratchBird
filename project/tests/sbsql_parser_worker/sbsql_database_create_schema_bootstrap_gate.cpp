@@ -10,8 +10,8 @@
 #include "catalog/schema_tree_api.hpp"
 #include "database_lifecycle.hpp"
 #include "memory.hpp"
-#include "sblr_dispatch.hpp"
-#include "sblr_engine_envelope.hpp"
+#include "security/identity_api.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
@@ -31,7 +31,6 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace memory = scratchbird::core::memory;
-namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
@@ -124,38 +123,6 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
   context.trace_tags.push_back("group:SEC");
   ConfigureAuthorizationContext(&context);
   return context;
-}
-
-sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcode) {
-  auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "sbsql.schema_bootstrap_gate");
-  envelope.parser_package_uuid = "019e0b21-5eed-7000-8000-000000000010";
-  envelope.registry_snapshot_uuid = "019e0b21-5eed-7000-8000-000000000011";
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.requires_security_context = true;
-  return envelope;
-}
-
-sblr::SblrDispatchResult Dispatch(std::string operation_id,
-                                  std::string opcode,
-                                  api::EngineRequestContext context,
-                                  api::EngineApiRequest request = {},
-                                  bool requires_transaction = false) {
-  auto envelope = Envelope(operation_id, std::move(opcode));
-  envelope.requires_transaction_context = requires_transaction;
-  request.context = context;
-  request.operation_id = operation_id;
-  sblr::SblrDispatchRequest dispatch;
-  dispatch.context = std::move(context);
-  dispatch.envelope = std::move(envelope);
-  dispatch.api_request = std::move(request);
-  auto result = sblr::DispatchSblrOperation(dispatch);
-  if (!result.accepted || !result.envelope_validated || !result.dispatched_to_api || !result.api_result.ok) {
-    std::cerr << "dispatch failed for " << operation_id << '\n'
-              << sblr::SerializeSblrDispatchResultToJson(result);
-    std::exit(EXIT_FAILURE);
-  }
-  return result;
 }
 
 std::filesystem::path TestDatabasePath() {
@@ -309,29 +276,38 @@ void RequireBootstrapSchemas(const std::set<std::string>& paths) {
 
 void CreateUserThroughEnginePolicy(const std::filesystem::path& database_path,
                                    const std::string& database_uuid) {
-  const auto begin = Dispatch("transaction.begin", "SBLR_TRANSACTION_BEGIN", Context(database_path, database_uuid));
-  Require(begin.api_result.local_transaction_id == 3,
+  api::EngineBeginTransactionRequest begin_request;
+  begin_request.context = Context(database_path, database_uuid);
+  const auto begin = api::EngineBeginTransaction(begin_request);
+  if (!begin.ok && !begin.diagnostics.empty()) {
+    std::cerr << begin.diagnostics.front().code << ": "
+              << begin.diagnostics.front().detail << '\n';
+  }
+  Require(begin.ok, "first user transaction did not begin through engine MGA authority");
+  Require(begin.local_transaction_id == 3,
           "first user transaction did not begin after bootstrap tx1 and activation tx2");
   auto context = Context(database_path, database_uuid);
-  context.local_transaction_id = begin.api_result.local_transaction_id;
-  context.transaction_uuid = begin.api_result.transaction_uuid;
-  context.snapshot_visible_through_local_transaction_id = begin.api_result.local_transaction_id;
+  context.local_transaction_id = begin.local_transaction_id;
+  context.transaction_uuid = begin.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id = begin.local_transaction_id;
 
-  api::EngineApiRequest identity;
+  api::EngineCreateIdentityRequest identity;
+  identity.context = context;
   identity.target_object.uuid.canonical = NewUuid(UuidKind::principal);
   identity.target_object.object_kind = "security_identity";
   identity.localized_names.push_back(Name("benchmark_user"));
   identity.option_envelopes.push_back("identity_kind:user");
   identity.option_envelopes.push_back("principal_name:benchmark_user");
-  auto created = Dispatch("security.create_identity",
-                          "SBLR_SECURITY_CREATE_IDENTITY",
-                          context,
-                          std::move(identity),
-                          true);
+  auto created = api::EngineCreateIdentity(identity);
+  if (!created.ok && !created.diagnostics.empty()) {
+    std::cerr << created.diagnostics.front().code << ": "
+              << created.diagnostics.front().detail << '\n';
+  }
+  Require(created.ok, "engine identity policy did not create the test user");
   bool saw_home_schema = false;
   bool saw_home_schema_path = false;
   std::string home_schema_uuid;
-  for (const auto& evidence : created.api_result.evidence) {
+  for (const auto& evidence : created.evidence) {
     if (evidence.evidence_kind == "home_schema" && !evidence.evidence_id.empty()) {
       saw_home_schema = true;
       home_schema_uuid = evidence.evidence_id;
@@ -343,11 +319,19 @@ void CreateUserThroughEnginePolicy(const std::filesystem::path& database_path,
   Require(saw_home_schema, "security.create_identity did not return generated home schema UUID evidence");
   Require(saw_home_schema_path, "security.create_identity did not return home schema path evidence");
 
-  (void)Dispatch("transaction.commit", "SBLR_TRANSACTION_COMMIT", context, {}, true);
+  api::EngineCommitTransactionRequest commit_request;
+  commit_request.context = context;
+  const auto committed = api::EngineCommitTransaction(commit_request);
+  if (!committed.ok && !committed.diagnostics.empty()) {
+    std::cerr << committed.diagnostics.front().code << ": "
+              << committed.diagnostics.front().detail << '\n';
+  }
+  Require(committed.ok, "engine MGA transaction did not commit the identity policy mutation");
 
-  const auto paths = VisibleSchemaPaths(context);
+  const auto observer = Context(database_path, database_uuid);
+  const auto paths = VisibleSchemaPaths(observer);
   Require(paths.count("users.benchmark_user") == 1, "adduser policy did not create users.benchmark_user home schema");
-  const auto home_schema = api::FindVisibleSchemaTreeRecord(context, home_schema_uuid, context.local_transaction_id);
+  const auto home_schema = api::FindVisibleSchemaTreeRecord(observer, home_schema_uuid, 0);
   Require(home_schema.has_value(), "returned home schema UUID was not visible after commit");
 }
 

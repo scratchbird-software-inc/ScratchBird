@@ -120,7 +120,7 @@ inline void AppendIparFaultEvidence(std::vector<EngineEvidenceReference>* eviden
   evidence->push_back({"ipar_fault_injection_recovery_action",
                        std::string(recovery_action)});
   evidence->push_back({"ipar_fault_injection_parser_finality", "false"});
-  evidence->push_back({"ipar_fault_injection_wal_authority", "false"});
+  evidence->push_back({"ipar_fault_injection_wal_authority", "false"});  // no_wal
 }
 
 }  // namespace scratchbird::engine::internal_api

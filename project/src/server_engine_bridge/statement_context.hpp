@@ -19,6 +19,10 @@
 #include <string_view>
 #include <vector>
 
+namespace scratchbird::engine::internal_api {
+class SblrBulkImportStreamRegistry;
+}
+
 namespace scratchbird::server_engine_bridge {
 
 // Private server-to-engine handle. The monotonically issued value is opaque to
@@ -143,6 +147,98 @@ struct StatementWindowFunctionProfile {
   bool executable = false;
 };
 
+// Engine-issued relation authority for one structural occurrence.  This is
+// private bridge state; parser text, AST fields, and generic descriptor
+// profiles must never populate it.
+struct StatementRelationOccurrenceMappingV1 {
+  std::uint64_t occurrence_id = 0;
+  std::string persisted_descriptor_uuid;
+  std::uint64_t persisted_descriptor_generation = 0;
+};
+
+// Syntax-only COPY selector admitted by the private statement bridge.  None of
+// these fields is object, descriptor, MGA, policy, route, or resource
+// authority.  The exact request bytes are retained solely for canonical replay
+// comparison after the engine has independently derived the authority row.
+struct StatementBulkImportNameAtomV1 {
+  std::string raw_text;
+  bool quoted = false;
+};
+
+struct StatementBulkImportBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::string command_surface_id;
+  std::uint64_t structural_occurrence = 0;
+  std::uint32_t import_occurrence = 0;
+  std::vector<StatementBulkImportNameAtomV1> target_name_atoms;
+  std::uint8_t input_format_demand = 0;
+  std::uint8_t character_encoding_demand = 0;
+  std::uint8_t conversion_policy_demand = 0;
+  std::uint8_t null_default_policy_demand = 0;
+  std::uint8_t reject_policy_demand = 0;
+  std::uint64_t maximum_rejected_rows = 0;
+  std::array<std::uint8_t, 32> syntax_demand_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementBulkImportBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::uint64_t structural_occurrence = 0;
+  std::uint32_t import_occurrence = 0;
+  std::array<std::uint8_t, 32> syntax_demand_sha256{};
+  std::array<std::uint8_t, 32> binding_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  // Private bridge diagnostics are retained directly because the C result
+  // handle may cross a static/shared engine boundary before the server reads
+  // it.  Success leaves these fields empty; no diagnostic data is serialized
+  // into the canonical BindAck payload.
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+// Complete engine-produced COPY authority.  This type is available only to
+// authenticated in-process bridge coordinators and is never projected through
+// StatementContextReceiptView, SBPS, SBOP, or SBLR.
+struct StatementBulkImportAuthorityV1 {
+  StatementBulkImportBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::vector<StatementBulkImportNameAtomV1> target_name_atoms;
+  std::string admitted_command_surface_id;
+  std::string target_relation_uuid;
+  std::uint64_t target_relation_generation = 0;
+  std::string owning_transaction_uuid;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::string statement_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::string security_context_uuid;
+  std::uint64_t security_epoch = 0;
+  std::string row_shape_uuid;
+  std::uint64_t row_shape_generation = 0;
+  std::array<std::uint8_t, 32> column_descriptor_set_sha256{};
+  std::string import_policy_snapshot_uuid;
+  std::uint64_t import_policy_generation = 0;
+  std::array<std::uint8_t, 32> import_policy_bundle_sha256{};
+  std::string import_route_snapshot_uuid;
+  std::uint64_t import_route_generation = 0;
+  std::string resource_grant_uuid;
+  std::uint64_t resource_grant_generation = 0;
+  std::uint64_t executor_availability_generation = 0;
+  std::uint64_t maximum_stream_bytes = 0;
+  std::uint64_t maximum_chunk_count = 0;
+  std::uint32_t maximum_chunk_bytes = 0;
+  std::uint64_t maximum_affected_plus_rejected_rows = 0;
+  std::uint32_t maximum_target_columns = 0;
+  bool cluster_bound = false;
+  std::uint64_t cluster_epoch = 0;
+  std::string cluster_fence_uuid;
+  scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
+      authorization_observation;
+};
+
 // Exact engine-issued view returned at acquisition. Later Packet 7 stages may
 // project the bounded parser fields from this value, but the opaque receipt
 // remains the authority presented back to the engine.
@@ -173,6 +269,8 @@ struct StatementContextReceiptView {
   std::vector<StatementAggregateFunctionProfile> aggregate_function_profiles;
   std::vector<StatementWindowFunctionProfile> window_function_profiles;
   std::vector<StatementDescriptorProfile> descriptor_profiles;
+  std::vector<StatementRelationOccurrenceMappingV1>
+      relation_occurrence_mappings;
 
   // V11 literal prebind bootstrap. These are engine-issued receipt values;
   // the parser may echo them only in SBLN/SBLF and never selects them.
@@ -485,6 +583,12 @@ struct StatementContextDispatchRequest {
   std::vector<std::uint8_t> parameter_execution_binding;
   std::vector<std::uint8_t> parameter_value_set;
   std::vector<std::uint8_t> variable_execution_binding;
+  // Database-owned durable executor state for the exact opcode-775 route.
+  // The server may project this private pointer only after selecting the
+  // hosted database for the authenticated receipt. It is never serialized,
+  // accepted from a parser, or used by any other opcode.
+  scratchbird::engine::internal_api::SblrBulkImportStreamRegistry*
+      bulk_import_stream_registry = nullptr;
 };
 
 sb_engine_status_t AcquireStatementPackageAdmissionReservation(
@@ -519,6 +623,35 @@ sb_engine_status_t ReleaseStatementContextReceipt(
 sb_engine_status_t CopyStatementContextEngineContextV1(
     StatementContextReceiptHandle receipt,
     scratchbird::engine::internal_api::EngineRequestContext* out_context,
+    sb_engine_result_t* out_result);
+
+// Attaches an engine-resolved relation mapping to a live receipt.  This is
+// callable only by the engine binder; the parser/SBPS layers have no route to
+// manufacture or replace these values.  Mappings are immutable once literal
+// negotiation begins.
+sb_engine_status_t AttachStatementRelationOccurrenceMappingsV1(
+    StatementContextReceiptHandle receipt,
+    const std::vector<StatementRelationOccurrenceMappingV1>& mappings,
+    sb_engine_result_t* out_result);
+
+// Resolves and authorizes one canonical COPY bind demand against the exact live
+// receipt, then atomically attaches an immutable private authority row.  Exact
+// replay returns the byte-identical ACK; either occurrence colliding with a
+// different demand is a recovery conflict.
+sb_engine_status_t BindStatementBulkImportAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementBulkImportBindRequestV1* request,
+    StatementBulkImportBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+
+// Copies one already-attached private authority for an authenticated engine
+// coordinator.  It never derives, defaults, or refreshes authority and exposes
+// nothing through the public receipt projection.
+sb_engine_status_t CopyStatementBulkImportAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    std::uint64_t structural_occurrence,
+    std::uint32_t import_occurrence,
+    StatementBulkImportAuthorityV1* out_authority,
     sb_engine_result_t* out_result);
 
 sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(

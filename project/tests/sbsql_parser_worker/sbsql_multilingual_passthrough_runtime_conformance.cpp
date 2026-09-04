@@ -102,13 +102,22 @@ void SeedAuthenticatedContext(sbsql::SbsqlTestWireSession* session,
 }
 
 void VerifyStandardEnglishFallbackPassThrough() {
+  constexpr std::string_view kParserOnlyQueryCarrier =
+      "ENGINE QUERY BIND EXPRESSION";
+  const auto is_exact_query_carrier = [](const sbsql::PipelineResult& result) {
+    return Contains(result.sblr_payload,
+                    "\"operation_id\":\"query.bind_expression\"") &&
+           Contains(result.sblr_payload,
+                    "\"sblr_operation\":\"SBLR_QUERY_BIND_EXPRESSION\"");
+  };
   sbsql::SblrTemplateCache cache(16);
   sbsql::ParserMetrics metrics;
   const auto config = Config();
   sbsql::SbsqlTestWireSession preferred_session(config, &metrics, &cache);
   SeedAuthenticatedContext(&preferred_session, "fr-CA");
 
-  const auto first = preferred_session.RunPipeline("select 1", false);
+  const auto first =
+      preferred_session.RunPipeline(kParserOnlyQueryCarrier, false);
   Require(first.accepted,
           std::string("standard English SBsql was not accepted under fr-CA "
                       "preferred language diagnostics=") +
@@ -125,6 +134,8 @@ void VerifyStandardEnglishFallbackPassThrough() {
           "pass-through parse did not retain query statement family");
   Require(!first.operation_family.empty(),
           "pass-through parse lost operation family evidence");
+  Require(is_exact_query_carrier(first),
+          "pass-through payload lost exact query.bind_expression carrier identity");
   Require(Contains(first.sblr_payload, "\"parser_executes_sql\":false"),
           "pass-through SBLR payload lost parser authority boundary");
 
@@ -140,7 +151,8 @@ void VerifyStandardEnglishFallbackPassThrough() {
   Require(session.input_language_fallback_tag == "en",
           "preferred-language session did not advertise standard English fallback");
 
-  const auto second = preferred_session.RunPipeline("select 1", false);
+  const auto second =
+      preferred_session.RunPipeline(kParserOnlyQueryCarrier, false);
   Require(second.accepted, "cached fallback parse was not accepted");
   Require(second.frontdoor_cache_hit,
           "second fr-CA standard English fallback parse did not hit cache");
@@ -150,12 +162,14 @@ void VerifyStandardEnglishFallbackPassThrough() {
   sbsql::ParserMetrics english_metrics;
   sbsql::SbsqlTestWireSession english_session(config, &english_metrics, &cache);
   SeedAuthenticatedContext(&english_session, "en");
-  const auto english = english_session.RunPipeline("select 1", false);
+  const auto english = english_session.RunPipeline(kParserOnlyQueryCarrier, false);
   Require(english.accepted,
           std::string("standard English session was not accepted diagnostics=") +
               DiagnosticCodes(english.messages));
   Require(!english.frontdoor_cache_hit,
           "canonical English session reused preferred-language fallback cache entry");
+  Require(is_exact_query_carrier(english),
+          "canonical English payload lost exact query.bind_expression carrier identity");
 
   const auto snapshot = cache.SnapshotJson();
   Require(Contains(snapshot, "\"language_profile\"") &&

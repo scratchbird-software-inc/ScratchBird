@@ -339,7 +339,15 @@ class NativeRelationalParser final {
     const Token& relation_end = Previous();
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
-      Refuse("trailing_input", "unexpected input follows the VALUES relation");
+      if (IsWord(Current(), "UNION") || IsWord(Current(), "INTERSECT") ||
+          IsWord(Current(), "EXCEPT")) {
+        RefuseExact(
+            "SBSQL.IMPL.NOT_AVAILABLE",
+            "VALUES set operations require an engine-bound set-operation "
+            "descriptor and accepted executor evidence");
+      } else {
+        Refuse("trailing_input", "unexpected input follows the VALUES relation");
+      }
       return FinishRefusal();
     }
 
@@ -5442,6 +5450,15 @@ class NativeRelationalParser final {
     // exact global COUNT(*) projection. Other computed projections and
     // aggregates remain available to their established parser routes.
     if (tokens_.size() < 3) return false;
+    for (std::size_t index = 0; index + 1 < tokens_.size(); ++index) {
+      if (IsWord(*tokens_[index], "FOR") &&
+          IsWord(*tokens_[index + 1], "UPDATE")) {
+        // FOR UPDATE is a gated DML command subform, not part of the bounded
+        // read-only catalog-query profile.  Leave it to the command lowering
+        // stage so that stage can publish the exact non-executable refusal.
+        return false;
+      }
+    }
     std::size_t cursor = 1;
     if (tokens_[cursor]->text == "*") {
       ++cursor;

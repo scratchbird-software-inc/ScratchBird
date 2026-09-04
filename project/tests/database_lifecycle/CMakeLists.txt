@@ -186,7 +186,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr AND
     COMMAND database_lifecycle_sblr_procedural_block_v1_conformance
   )
   set_tests_properties(database_lifecycle_sblr_procedural_block_v1_conformance PROPERTIES
-    LABELS "database_lifecycle_sblr_procedural_block_v1_conformance;sblr_procedural_block_v1;transaction_execute_block;zero_yield;engine_context_runtime;database_lifecycle;mga_transaction_regression;standalone_parser_authority"
+    LABELS "database_lifecycle_sblr_procedural_block_v1_conformance;sblr_procedural_block_v1;procedural_runtime_component;noncanonical_sblr_refusal;zero_yield;database_lifecycle;mga_transaction_regression;standalone_parser_authority"
   )
 
   add_executable(database_lifecycle_sblr_composite_key_authority_gate
@@ -212,7 +212,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr AND
     COMMAND database_lifecycle_sblr_composite_key_authority_gate
   )
   set_tests_properties(database_lifecycle_sblr_composite_key_authority_gate PROPERTIES
-    LABELS "database_lifecycle_sblr_composite_key_authority_gate;SBLR_COMPOSITE_KEY_AUTHORITY;composite_primary_key;composite_unique_key;engine_uuid_authority;database_lifecycle;mga_transaction_regression"
+    LABELS "database_lifecycle_sblr_composite_key_authority_gate;ENGINE_CREATE_TABLE_COMPOSITE_KEY_COMPONENT;composite_primary_key;composite_unique_key;engine_uuid_authority;database_lifecycle;mga_transaction_regression"
   )
 
   if(TARGET sbu_firebird_parser_support)
@@ -1929,7 +1929,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       COMMAND dpc_route_surface_completion_gate
     )
     set_tests_properties(dpc_route_surface_completion_gate PROPERTIES
-      LABELS "dpc_route_surface_completion_gate;DPC-060;DPC_P6_ROUTE_SURFACE_READY;DPC_TEST_ROUTE_SURFACE;index_validation_repair;sblr_route;server_admission;public_abi;driver_capability;executor_batch_internal_only;mga_transaction_regression;database_lifecycle"
+      LABELS "dpc_route_surface_completion_gate;DPC-060;index_validation_repair;executor_evidence_refusal;driver_capability;executor_batch_internal_only;mga_transaction_regression;database_lifecycle"
     )
 
     add_executable(dpc_sblr_api_abi_compatibility_gate
@@ -3450,7 +3450,7 @@ if(TARGET sb_core_datatypes)
   COMMAND database_lifecycle_current_core_datatype_comparison_cast_gate
 )
 set_tests_properties(database_lifecycle_current_core_datatype_comparison_cast_gate PROPERTIES
-  LABELS "database_lifecycle_current_core_datatype_comparison_cast_gate;MDF-014;MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS;CURRENT-CORE-DATATYPE-COMPARISON-KEYS;CURRENT-CORE-DATATYPE-CAST-STORAGE;CURRENT-CORE-DATATYPE-DISPLAY-BOUNDARY;CURRENT-CORE-DATATYPE-LOCALE-COLLATION;CURRENT-CORE-DATATYPE-NONSCALAR-OPERATORS;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  LABELS "database_lifecycle_current_core_datatype_comparison_cast_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-014;MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS;DEFER-DPE-COMPARISON-KEYS;DEFER-DPE-CAST-STORAGE;CURRENT-CORE-DATATYPE-COMPARISON-KEYS;CURRENT-CORE-DATATYPE-CAST-STORAGE;CURRENT-CORE-DATATYPE-DISPLAY-BOUNDARY;CURRENT-CORE-DATATYPE-LOCALE-COLLATION;CURRENT-CORE-DATATYPE-NONSCALAR-OPERATORS;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
 )
 
   add_executable(database_lifecycle_current_core_datatype_metrics_redaction_gate
@@ -5196,7 +5196,7 @@ if(TARGET sb_server_core)
     LABELS "database_lifecycle_capability_profile_conformance;database_lifecycle_capability_profile;database_lifecycle;database_lifecycle_config_policy_security_provider;database_lifecycle_cluster_boundary;mga_transaction_regression"
   )
 
-  if(TARGET sb_engine_internal_api AND TARGET sbu_firebird_parser_support)
+  if(TARGET sb_engine_internal_api AND TARGET sbu_sbsql_parser_support)
     add_executable(database_lifecycle_udr_extension_conformance
       udr_extension_conformance.cpp
     )
@@ -5208,7 +5208,6 @@ if(TARGET sb_server_core)
         sb_udr_runtime
         sb_storage_database
         sb_core_uuid
-        sbu_firebird_parser_support
         sbu_sbsql_parser_support
     )
 
@@ -5332,7 +5331,7 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
 endif()
 
 if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_disk AND TARGET sb_storage_page AND TARGET sb_transaction_mga)
-  if(TARGET sbl_sbsql_parser_worker_core AND TARGET sbl_firebird_parser_pipeline)
+  if(TARGET sbl_sbsql_parser_worker_core)
     add_executable(database_lifecycle_reference_mapping_conformance
       reference_mapping_conformance.cpp
     )
@@ -5340,8 +5339,16 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
     target_link_libraries(database_lifecycle_reference_mapping_conformance
       PRIVATE
         sbl_sbsql_parser_worker_core
-        sbl_firebird_parser_pipeline
     )
+    if(TARGET sbl_firebird_parser_pipeline)
+      target_compile_definitions(database_lifecycle_reference_mapping_conformance
+        PRIVATE SB_DBLC_HAVE_FIREBIRD_PARSER=1)
+      target_link_libraries(database_lifecycle_reference_mapping_conformance
+        PRIVATE sbl_firebird_parser_pipeline)
+    else()
+      target_compile_definitions(database_lifecycle_reference_mapping_conformance
+        PRIVATE SB_DBLC_HAVE_FIREBIRD_PARSER=0)
+    endif()
 
     add_test(
       NAME database_lifecycle_reference_mapping_conformance
@@ -5452,6 +5459,7 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
   target_compile_features(database_lifecycle_transaction_admission_conformance PRIVATE cxx_std_23)
   target_link_libraries(database_lifecycle_transaction_admission_conformance
     PRIVATE
+      sbl_sbsql_embedded_client_bridge
       sb_core_platform
       sb_core_uuid
       sb_server_core

@@ -1333,7 +1333,10 @@ TagParseStatus CanonicalizeTimeSeriesTags(const std::string_view input,
 
 bool ExactTimeSeriesValueDescriptor(
     const EngineDescriptor& descriptor, const std::string_view expected_type,
-    const std::string_view expected_type_uuid) {
+    const std::string_view expected_type_uuid,
+    const std::string_view expected_column_uuid,
+    const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1*
+        expected_registry_identity) {
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
       descriptor.descriptor_kind != "canonical_type_descriptor" ||
       descriptor.canonical_type_name != expected_type) {
@@ -1356,7 +1359,13 @@ bool ExactTimeSeriesValueDescriptor(
     if (end == std::string_view::npos) break;
     offset = end + 1;
   }
-  if (fields.size() < 3 || fields.size() > 4 ||
+  const bool contextual_text = expected_type == "text";
+  if (fields.size() != (contextual_text ? 12U :
+                       expected_type == "timestamp_tz" ? 3U : 3U) &&
+      !(expected_type == "timestamp_tz" && fields.size() == 4U)) {
+    return false;
+  }
+  if (
       !fields.contains("canonical") || !fields.contains("type_uuid") ||
       !fields.contains("nullable") ||
       fields.at("canonical") != expected_type ||
@@ -1365,12 +1374,44 @@ bool ExactTimeSeriesValueDescriptor(
     return false;
   }
   const auto timezone = fields.find("timezone_profile_id");
+  const auto column_uuid = fields.find("column_uuid");
   if (expected_type == "timestamp_tz") {
-    return fields.size() == 3 ||
+    return column_uuid == fields.end() && (fields.size() == 3 ||
            (fields.size() == 4 && timezone != fields.end() &&
-            timezone->second == "UTC");
+            timezone->second == "UTC"));
   }
-  return fields.size() == 3 && timezone == fields.end();
+  if (expected_type == "text") {
+    return expected_registry_identity != nullptr && timezone == fields.end() &&
+           column_uuid != fields.end() &&
+           column_uuid->second == expected_column_uuid &&
+           descriptor.descriptor_uuid.canonical ==
+               expected_column_uuid &&
+           fields.contains("datatype_descriptor_uuid") &&
+           fields.at("datatype_descriptor_uuid") ==
+               expected_registry_identity->descriptor_uuid &&
+           fields.contains("datatype_descriptor_generation") &&
+           fields.at("datatype_descriptor_generation") ==
+               std::to_string(
+                   expected_registry_identity->descriptor_generation) &&
+           fields.contains("type_generation") &&
+           fields.at("type_generation") ==
+               std::to_string(expected_registry_identity->type_generation) &&
+           fields.contains("codec_uuid") &&
+           fields.at("codec_uuid") == expected_registry_identity->codec_uuid &&
+           fields.contains("codec_id") &&
+           fields.at("codec_id") == expected_registry_identity->codec_id &&
+           fields.contains("codec_version") &&
+           fields.at("codec_version") ==
+               std::to_string(expected_registry_identity->codec_version) &&
+           fields.contains("codec_generation") &&
+           fields.at("codec_generation") ==
+               std::to_string(expected_registry_identity->codec_generation) &&
+           fields.contains("null_encoding") &&
+           fields.at("null_encoding") ==
+               std::to_string(expected_registry_identity->null_encoding_code);
+  }
+  return fields.size() == 3 && timezone == fields.end() &&
+         column_uuid == fields.end();
 }
 
 bool ExactTimeSeriesStorageDescriptorImpl(
@@ -1398,8 +1439,22 @@ bool ExactTimeSeriesStorageDescriptorImpl(
         !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
       return false;
     }
-    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
-        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    const auto& descriptor_row =
+        type_row.manifest.descriptor_rows.front();
+    const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
+        descriptor_row.descriptor_uuid.value);
+    const auto codec_identity =
+        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+            "019d0000-0000-7000-8000-00000000d701",
+            manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+            descriptor_row.descriptor_epoch);
+    const auto expected_type_uuid =
+        codec_identity.ok ? codec_identity.row.type_uuid : descriptor_uuid;
+    const auto* expected_registry_identity =
+        codec_identity.ok ? &codec_identity.row : nullptr;
+    if (kTypes[ordinal] == "text" && expected_registry_identity == nullptr) {
+      return false;
+    }
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] || column.nullable ||
         column.generated || column.identity_column ||
@@ -1418,7 +1473,9 @@ bool ExactTimeSeriesStorageDescriptorImpl(
         column.character_length != 0 ||
         !ExactTimeSeriesValueDescriptor(column.value_descriptor,
                                         kTypes[ordinal],
-                                        expected_type_uuid)) {
+                                        expected_type_uuid,
+                                        column.column_uuid.canonical,
+                                        expected_registry_identity)) {
       return false;
     }
   }

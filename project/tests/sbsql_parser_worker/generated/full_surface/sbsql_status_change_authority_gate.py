@@ -60,6 +60,22 @@ PER_ROW_MANIFEST_NAME = "PER_ROW_EVIDENCE_MANIFEST.csv"
 PROMOTION_MATRIX_NAME = "NATIVE_FUTURE_PROMOTION_MATRIX.csv"
 GENERATED_MANIFEST = "project/src/parsers/sbsql_worker/registry/generated/sbsql_generated_registry.manifest"
 EXPRESSION_RUNTIME_KINDS = {"function", "operator", "variable"}
+CANONICAL_PRE_SBLR_REFUSAL_SURFACES = {
+    "SBSQL-28F16A4C7DD0",  # table_constraint
+    "SBSQL-5CC9FDFFE6F7",  # constraint_body
+    "SBSQL-7BA0B928798B",  # schema_name
+    "SBSQL-A57CFDE0BBA9",  # column_constraint
+    "SBSQL-B1816929AD45",  # constraint_name
+    "SBSQL-DE4B8AAF6326",  # create_schema_stmt
+}
+CANONICAL_PRE_SBLR_REFUSAL_PROOFS = {
+    "SBSQL.IMPL.NOT_AVAILABLE",
+    "executable_sblr_emitted=false",
+    "canonical_message_vector_set",
+    "engine_dispatch_not_reached=true",
+    "catalog_mutation=false",
+    "no_wal_authority",
+}
 
 # Allowed strict-ledger current_states per canonical status.
 ALLOWED_LEDGER_STATES = {
@@ -127,6 +143,13 @@ def main() -> int:
     parser.add_argument("--artifact-root", default=DEFAULT_ARTIFACT_ROOT)
     args = parser.parse_args()
     root = Path(args.repo_root).resolve()
+    generator_root = root / "project/tools/sb_parser_gen"
+    sys.path.insert(0, str(generator_root))
+    from plan_import_rows_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        is_central_import_refusal_surface,
+        load_central_import_command_rows,
+    )
+
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
@@ -140,6 +163,10 @@ def main() -> int:
     per_row = read_csv(artifact_root / PER_ROW_MANIFEST_NAME)
     promotion = read_csv(artifact_root / PROMOTION_MATRIX_NAME)
     manifest_counts = parse_manifest(root / GENERATED_MANIFEST)
+    try:
+        load_central_import_command_rows(root.parent / "Specifications/Core")
+    except ValueError as exc:
+        fail(f"central-import Core authority validation failed: {exc}")
 
     canonical_by_id = {
         r["surface_id"]: (r.get("source_status") or r["status"])
@@ -184,7 +211,41 @@ def main() -> int:
             continue
         state = row.get("current_state", "")
         cluster_scope = row.get("cluster_scope", "")
-        allowed = allowed_ledger_states(canonical, cluster_scope)
+        if is_central_import_refusal_surface(sid):
+            if (
+                canonical == "native_now"
+                and cluster_scope == "noncluster_or_profile_scoped"
+            ):
+                allowed = {"exact_refusal_passed"}
+            else:
+                allowed = set()
+                errors.append(
+                    f"STRICT_ROW_COVERAGE_LEDGER row {sid} central-import "
+                    f"refusal authority drift: canonical={canonical} "
+                    f"cluster_scope={cluster_scope}"
+                )
+        elif sid in CANONICAL_PRE_SBLR_REFUSAL_SURFACES:
+            if (
+                canonical == "native_now"
+                and cluster_scope == "noncluster_or_profile_scoped"
+            ):
+                allowed = {"exact_refusal_passed"}
+                evidence = ";".join(row.values())
+                for token in sorted(CANONICAL_PRE_SBLR_REFUSAL_PROOFS):
+                    if token not in evidence:
+                        errors.append(
+                            f"STRICT_ROW_COVERAGE_LEDGER row {sid} canonical "
+                            f"pre-SBLR refusal missing proof token {token}"
+                        )
+            else:
+                allowed = set()
+                errors.append(
+                    f"STRICT_ROW_COVERAGE_LEDGER row {sid} canonical pre-SBLR "
+                    f"refusal authority drift: canonical={canonical} "
+                    f"cluster_scope={cluster_scope}"
+                )
+        else:
+            allowed = allowed_ledger_states(canonical, cluster_scope)
         if state and state not in allowed:
             errors.append(
                 f"STRICT_ROW_COVERAGE_LEDGER row {sid} current_state={state} not allowed for canonical status={canonical} cluster_scope={cluster_scope}"

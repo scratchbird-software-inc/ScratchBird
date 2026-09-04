@@ -36,7 +36,13 @@ def read(path: Path) -> str:
         fail(f"read_failed:{path}:{exc}")
 
 
-def compile_windows_object(compiler: str, project_root: Path, source: Path, output: Path) -> None:
+def compile_windows_object(
+    compiler: str,
+    project_root: Path,
+    source: Path,
+    output: Path,
+    dependency_include: Path,
+) -> None:
     command = [
         compiler,
         "-std=c++23",
@@ -46,12 +52,15 @@ def compile_windows_object(compiler: str, project_root: Path, source: Path, outp
         f"-I{project_root / 'src/manager/protocol'}",
         f"-I{project_root / 'src/manager/node'}",
         f"-I{project_root / 'src/server'}",
+        f"-I{project_root / 'src/engine/internal_api'}",
+        f"-I{project_root / 'src/core/datatypes'}",
         f"-I{project_root / 'src/core/memory'}",
         f"-I{project_root / 'src/core/platform'}",
         f"-I{project_root / 'src/core/uuid'}",
         f"-I{project_root / 'src/core/agents'}",
         f"-I{project_root / 'src/core/metrics'}",
         f"-I{project_root / 'src/wire/parser_server_ipc'}",
+        f"-I{dependency_include}",
         f"-I{project_root / 'include'}",
         f"-I{project_root / 'src'}",
         "-c",
@@ -67,6 +76,38 @@ def compile_windows_object(compiler: str, project_root: Path, source: Path, outp
             + ":"
             + (result.stderr.strip() or result.stdout.strip())
         )
+
+
+def write_dependency_compile_stubs(root: Path) -> None:
+    """Provide declarations for link-time dependencies absent from the MinGW SDK.
+
+    This gate compiles transport objects but deliberately does not link them. The
+    release build resolves these declarations through the configured Windows
+    OpenSSL package; the stub keeps this source-only platform proof independent
+    of a host-specific third-party SDK layout.
+    """
+    openssl = root / "openssl"
+    openssl.mkdir(parents=True, exist_ok=True)
+    (openssl / "evp.h").write_text(
+        """#pragma once
+#include <stddef.h>
+#ifdef __cplusplus
+extern \"C\" {
+#endif
+typedef struct evp_md_ctx_st EVP_MD_CTX;
+typedef struct evp_md_st EVP_MD;
+EVP_MD_CTX* EVP_MD_CTX_new(void);
+void EVP_MD_CTX_free(EVP_MD_CTX* context);
+const EVP_MD* EVP_sha256(void);
+int EVP_DigestInit_ex(EVP_MD_CTX* context, const EVP_MD* type, void* engine);
+int EVP_DigestUpdate(EVP_MD_CTX* context, const void* data, size_t count);
+int EVP_DigestFinal_ex(EVP_MD_CTX* context, unsigned char* output, unsigned int* size);
+#ifdef __cplusplus
+}
+#endif
+""",
+        encoding="utf-8",
+    )
 
 
 def compile_windows_x64_probe(compiler: str, source: Path, output: Path) -> None:
@@ -299,14 +340,16 @@ def main() -> None:
     require(compiler is not None, "mingw_windows_x64_cross_compiler_missing")
     with tempfile.TemporaryDirectory(prefix="sb_listener_windows_transport_") as tmp:
         tmp_path = Path(tmp)
+        dependency_include = tmp_path / "dependency-include"
+        write_dependency_compile_stubs(dependency_include)
         compile_windows_x64_probe(compiler, tmp_path / "windows_x64_probe.cpp", tmp_path / "windows_x64_probe.o")
-        compile_windows_object(compiler, project_root, control_plane_cpp, tmp_path / "control_plane.o")
-        compile_windows_object(compiler, project_root, listener_runtime, tmp_path / "listener_runtime.o")
-        compile_windows_object(compiler, project_root, parser_pool, tmp_path / "parser_pool.o")
-        compile_windows_object(compiler, project_root, sbsql_parser_runtime, tmp_path / "sbsql_parser_runtime.o")
-        compile_windows_object(compiler, project_root, sbsql_test_wire, tmp_path / "sbsql_test_wire.o")
-        compile_windows_object(compiler, project_root, manager_listener_control, tmp_path / "manager_listener_control.o")
-        compile_windows_object(compiler, project_root, server_listener_orchestrator, tmp_path / "server_listener_orchestrator.o")
+        compile_windows_object(compiler, project_root, control_plane_cpp, tmp_path / "control_plane.o", dependency_include)
+        compile_windows_object(compiler, project_root, listener_runtime, tmp_path / "listener_runtime.o", dependency_include)
+        compile_windows_object(compiler, project_root, parser_pool, tmp_path / "parser_pool.o", dependency_include)
+        compile_windows_object(compiler, project_root, sbsql_parser_runtime, tmp_path / "sbsql_parser_runtime.o", dependency_include)
+        compile_windows_object(compiler, project_root, sbsql_test_wire, tmp_path / "sbsql_test_wire.o", dependency_include)
+        compile_windows_object(compiler, project_root, manager_listener_control, tmp_path / "manager_listener_control.o", dependency_include)
+        compile_windows_object(compiler, project_root, server_listener_orchestrator, tmp_path / "server_listener_orchestrator.o", dependency_include)
 
     print("engine_listener_windows_transport_source_gate=passed")
 

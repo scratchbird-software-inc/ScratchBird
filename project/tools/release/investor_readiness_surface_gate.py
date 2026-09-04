@@ -61,6 +61,19 @@ SKIP_SUFFIXES = {
     ".zip",
 }
 
+# The Core contract uses "donor" in exact machine identities (for example,
+# opcode mnemonics, profile keys, and descriptor field names).  Those tokens
+# are not public-facing terminology and renaming them here would break the
+# canonical contract.  Keep the stale-terminology scan on narrative material;
+# source/fixture identities remain covered by the path and raw-payload checks
+# below.
+PUBLIC_NARRATIVE_SUFFIXES = {
+    ".adoc",
+    ".md",
+    ".rst",
+    ".txt",
+}
+
 REQUIRED_TEXT_SNIPPETS = {
     "REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md": (
         "Raw upstream regression payloads",
@@ -231,6 +244,9 @@ def validate_reference_payload_boundary(repo_root: Path, paths: list[str], exclu
         if excluded(rel_path, excludes):
             continue
         if Path(rel_path).suffix in SKIP_SUFFIXES:
+            continue
+        if (Path(rel_path).name == "CMakeLists.txt" or
+                Path(rel_path).suffix.lower() not in PUBLIC_NARRATIVE_SUFFIXES):
             continue
         path = repo_root / rel_path
         if not path.is_file():

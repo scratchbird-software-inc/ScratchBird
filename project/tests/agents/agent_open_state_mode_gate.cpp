@@ -10,6 +10,7 @@
 #include "agents/agent_management_api.hpp"
 #include "agent_runtime_manager.hpp"
 #include "sblr_dispatch.hpp"
+#include "sblr_opcode_registry.hpp"
 #include "storage/storage_management_api.hpp"
 #include "uuid.hpp"
 
@@ -254,9 +255,15 @@ sblr::SblrDispatchResult DispatchCommand(const Fixture& fixture,
                                          std::string operation_id,
                                          std::string opcode,
                                          std::string lifecycle_option) {
+  const auto* registry = sblr::LookupSblrOperation(operation_id);
+  Require(registry != nullptr && registry->opcode == opcode,
+          "open-state command canonical registry row missing");
   api::EngineApiRequest api_request;
   api_request.option_envelopes.push_back(std::move(lifecycle_option));
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "pfar-017a");
+  envelope.opcode_code = registry->code;
+  envelope.parser_package_uuid = Id(platform::UuidKind::object, 13);
+  envelope.registry_snapshot_uuid = Id(platform::UuidKind::object, 14);
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;

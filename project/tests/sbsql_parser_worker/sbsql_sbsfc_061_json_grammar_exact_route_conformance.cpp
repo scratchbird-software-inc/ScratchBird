@@ -312,7 +312,8 @@ sblr::SblrOperationEnvelope EngineEnvelope(const JsonCase& test_case) {
                                         arg.value);
     }
   }
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 void RequireEngineDispatch(const JsonCase& test_case) {

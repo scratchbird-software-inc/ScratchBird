@@ -90,6 +90,7 @@ exec::ExecutorBatchDmlRequest UpdateRequest() {
   request.batch_request = BatchRequest();
   request.operation = exec::ExecutorBatchDmlOperation::kUpdateReturning;
   request.returning_descriptor_digest = "dpc_executor_batch_dml_update_returning_v1";
+  request.returning_column_count = 3;
   request.row_step =
       [](const exec::Tuple& row,
          std::size_t row_index) -> exec::ExecutorBatchDmlRowStepResult {
@@ -110,6 +111,7 @@ exec::ExecutorBatchDmlRequest DeleteRequest() {
   request.batch_request = BatchRequest();
   request.operation = exec::ExecutorBatchDmlOperation::kDeleteReturning;
   request.returning_descriptor_digest = "dpc_executor_batch_dml_delete_returning_v1";
+  request.returning_column_count = 3;
   request.row_step =
       [](const exec::Tuple& row,
          std::size_t row_index) -> exec::ExecutorBatchDmlRowStepResult {
@@ -200,7 +202,7 @@ void JoinEnabledDisabledEquivalenceAndOrdering() {
           "join deterministic ordering evidence drifted");
   RequireSameJoinSignature(row_by_row, batched, "join enabled/disabled");
   Require(batched.evidence.deterministic_result_signature ==
-              "dpc_executor_batch_join_output_v1|"
+              "dpc_executor_batch_join_output_v1|4|"
               "[1,100,1,10][1,100,1,11]"
               "[2,200,2,20][2,200,2,21]"
               "[1,101,1,10][1,101,1,11]"
@@ -282,7 +284,7 @@ void DmlUpdateDeleteReturningEquivalence() {
   Require(update_batched.evidence.no_partial_success,
           "DML update success evidence drifted");
   Require(update_batched.evidence.deterministic_result_signature ==
-              "dpc_executor_batch_dml_update_returning_v1|"
+              "dpc_executor_batch_dml_update_returning_v1|3|"
               "[10,11,0][11,12,1][12,13,2][13,14,3]",
           "DML update returning signature drifted");
   Require(update_batched.intents.size() == 4,
@@ -306,7 +308,7 @@ void DmlUpdateDeleteReturningEquivalence() {
                           delete_batched,
                           "DML delete enabled/disabled");
   Require(delete_batched.evidence.deterministic_result_signature ==
-              "dpc_executor_batch_dml_delete_returning_v1|"
+              "dpc_executor_batch_dml_delete_returning_v1|3|"
               "[10,1,0][11,2,1][12,3,2][13,4,3]",
           "DML delete returning signature drifted");
   Require(delete_batched.evidence.counters.delete_intents == 4,

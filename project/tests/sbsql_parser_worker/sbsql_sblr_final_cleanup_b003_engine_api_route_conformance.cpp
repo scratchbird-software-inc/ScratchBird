@@ -128,6 +128,19 @@ bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
 
+std::string_view EngineBoundDescriptorOperationId(const B003Row& row) {
+  if (row.operation_id == "query.apply_numeric_operation") {
+    return "engine.op.query_apply_numeric_operation";
+  }
+  if (row.operation_id == "query.evaluate_advanced_datatype_family") {
+    return "engine.op.query_evaluate_advanced_datatype_family";
+  }
+  if (row.operation_id == "session.notification.unlisten_all") {
+    return "engine.op.event_channel_unlisten_all";
+  }
+  return {};
+}
+
 ExternalAdmission AdmissionFor(const B003Row& row) {
   if (StartsWith(row.operation_id, "artifact.external_git.")) {
     return ExternalAdmission::not_manifest_listed;
@@ -699,6 +712,52 @@ void RequireDispatch(const B003Row& row) {
           EvidenceMessage(row, "engine_dispatch", "cluster authority was required"));
 }
 
+void RequireEngineBoundDescriptorRefusal(const B003Row& row) {
+  const auto canonical_operation_id = EngineBoundDescriptorOperationId(row);
+  Require(!canonical_operation_id.empty(),
+          EvidenceMessage(row, "descriptor_authority", "canonical operation id missing"));
+
+  const auto artifacts = RunPipeline(row.sql);
+  Require(artifacts.bound.bound,
+          EvidenceMessage(row, "parser_component", "engine API command did not bind"));
+  Require(artifacts.envelope.engine_api_operation_id == row.operation_id,
+          EvidenceMessage(row, "parser_component", "engine API operation id mismatch"));
+  const auto* legacy_entry = sblr::LookupSblrOperation(row.operation_id);
+  Require(legacy_entry == nullptr || legacy_entry->code == 0,
+          EvidenceMessage(row, "descriptor_authority",
+                          "parser API operation became an executable SBLR identity"));
+
+  const auto* canonical_entry = sblr::LookupSblrOperation(canonical_operation_id);
+  Require(canonical_entry != nullptr && canonical_entry->code != 0 &&
+              canonical_entry->opcode == row.opcode,
+          EvidenceMessage(row, "descriptor_authority",
+                          "exact engine-bound opcode identity is unavailable"));
+  if (row.operation_id == "session.notification.unlisten_all") {
+    Require(canonical_entry->operand_contract ==
+                "event_session_unlisten_all_request",
+            EvidenceMessage(row, "descriptor_authority",
+                            "exact event request contract drifted"));
+    return;
+  }
+  auto envelope =
+      scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+          canonical_operation_id, row.opcode,
+          std::string("trace.b003.descriptor_authority.") +
+              std::string(row.audit_id));
+  envelope.result_shape = row.result_shape;
+  envelope.requires_security_context = true;
+  envelope.contains_sql_text = false;
+  envelope.parser_resolved_names_to_uuids = true;
+
+  const auto dispatched = sblr::DispatchSblrOperation(
+      {EngineContext(), std::move(envelope), ApiRequestForRow(row)});
+  Require(!dispatched.envelope_validated && !dispatched.accepted &&
+              !dispatched.dispatched_to_api && !dispatched.diagnostics.empty() &&
+              dispatched.diagnostics.front().code == "SBLR.OPERAND_INVALID",
+          EvidenceMessage(row, "descriptor_authority",
+                          "descriptor-less canonical opcode reached execution"));
+}
+
 void RequireInvalidSyntaxDiagnostics() {
   const auto artifacts = RunPipeline("ENGINE QUERY APPLY NUMERIC");
   Require(artifacts.envelope.messages.has_errors(),
@@ -813,6 +872,10 @@ void RequireProductionSourceIntegrity() {
 int main() {
   RequireProductionSourceIntegrity();
   for (const auto& row : kRows) {
+    if (!EngineBoundDescriptorOperationId(row).empty()) {
+      RequireEngineBoundDescriptorRefusal(row);
+      continue;
+    }
     RequireLowering(row);
     RequireDispatch(row);
   }

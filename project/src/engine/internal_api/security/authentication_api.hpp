@@ -11,7 +11,11 @@
 #include "api_types.hpp"
 #include "security/security_model.hpp"
 
+#include <memory>
+
 namespace scratchbird::engine::internal_api {
+
+struct EngineSecurityPrincipalLifecycleState;
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_AUTHENTICATION_API
 struct EngineAuthenticateRequest : EngineApiRequest {
@@ -24,6 +28,13 @@ struct EngineAuthenticateRequest : EngineApiRequest {
 };
 struct EngineAuthenticateResult : EngineApiResult {
   ConnectionSecurityContextRecord connection_security_context;
+  // One immutable view loaded by the authentication authority.  Server-side
+  // role/group projection for this same handoff may consume it, avoiding a
+  // second and third traversal of the identical durable security chain.  It
+  // is never retained as statement authority or reused across authentication
+  // attempts.
+  std::shared_ptr<const EngineSecurityPrincipalLifecycleState>
+      durable_security_state;
   bool authenticated = false;
 };
 EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& request);

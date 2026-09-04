@@ -127,8 +127,7 @@ bool ValidConfigBuildsAllocationPolicy() {
 
 bool DefaultPolicyPackMemoryPolicyLoads() {
   SetPolicyRootEnv();
-  server::ServerCliOptions cli;
-  const auto loaded = server::ResolveServerBootstrapConfig(cli);
+  const auto loaded = Load("policy_pack_defaults.conf", "");
   if (!Expect(loaded.ok(), "default server config should load policy-pack memory defaults")) {
     return false;
   }

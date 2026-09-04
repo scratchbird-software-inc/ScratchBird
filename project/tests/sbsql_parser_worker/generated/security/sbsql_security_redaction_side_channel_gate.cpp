@@ -9,6 +9,7 @@
 #include "cache/sblr_template_cache.hpp"
 #include "common/common.hpp"
 #include "diagnostics.hpp"
+#include "hash_digest.hpp"
 #include "rendering/rendering.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
@@ -267,35 +268,11 @@ void ValidateServerDiagnosticRedaction(Harness* harness) {
                  "SBPS message-vector payload leaked sensitive authority detail");
 }
 
-std::string BaseEnvelope(std::string_view operation_family,
-                         std::string_view result_shape,
-                         std::string_view trace_key) {
-  std::string out = "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
-  out += "\"operation_family\":\"";
-  out += operation_family;
-  out += "\",\"surface_key\":\"fspe012g.fixture\",";
-  out += "\"sblr_operation_key\":\"op.fspe012g.fixture\",";
-  out += "\"result_shape\":\"";
-  out += result_shape;
-  out += "\",\"diagnostic_shape\":\"diag.fspe012g.v1\",";
-  out += "\"resource_contract\":\"resource.fspe012g.v1\",";
-  out += "\"trace_key\":\"";
-  out += trace_key;
-  out += "\",\"source_payload_embedded\":false,";
-  out += "\"resolved_object_uuids\":[\"019e05df-f012-7000-8000-0000000000ff\"],";
-  out += "\"descriptor_refs\":[\"descriptor.fspe012g.security\"],";
-  out += "\"policy_refs\":[\"policy.fspe012g.redaction\"]";
-  return out;
-}
-
 std::string SyntheticRowsetEnvelope(std::uint64_t stream_rows) {
-  std::string out = BaseEnvelope("sblr.query.relational.v3",
-                                 "result.shape.rowset",
-                                 "FSPE-012G-ROWSET");
-  out += ",\"stream_row_count\":";
-  out += std::to_string(stream_rows);
-  out += "}";
-  return out;
+  return "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
+         "\"operation_family\":\"sblr.query.relational.v3\","
+         "\"stream_row_count\":" +
+         std::to_string(stream_rows) + "}";
 }
 
 scratchbird::server::HostedEngineState MakeEngineState() {
@@ -314,6 +291,7 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
     std::array<std::uint8_t, 16>* session_uuid) {
   scratchbird::server::ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = session.session_uuid;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
@@ -340,48 +318,109 @@ sbps::Frame PrepareFrame(const std::array<std::uint8_t, 16>& session_uuid,
                          const std::string& encoded) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr);
+  frame.header.payload_schema_id = 4001;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodePrepareSblrPayloadForTest(session_uuid, encoded);
   return frame;
 }
 
-sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                         const std::array<std::uint8_t, 16>& prepared_uuid,
-                         const std::string& encoded,
-                         bool cursor_requested = false) {
-  sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
-  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.session_uuid = session_uuid;
-  frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
-      session_uuid, prepared_uuid, encoded, cursor_requested);
-  return frame;
+void PutU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
+  out->push_back(static_cast<std::uint8_t>(value));
+  out->push_back(static_cast<std::uint8_t>(value >> 8));
+}
+
+void PutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
+  for (unsigned shift = 0; shift != 64; shift += 8) {
+    out->push_back(static_cast<std::uint8_t>(value >> shift));
+  }
+}
+
+void PutUuid(std::vector<std::uint8_t>* out,
+             const std::array<std::uint8_t, 16>& value) {
+  out->insert(out->end(), value.begin(), value.end());
 }
 
 sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                       const std::array<std::uint8_t, 16>& cursor_uuid,
+                       const scratchbird::server::ServerCursorRecord& cursor,
                        std::uint64_t max_rows) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kFetch);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodeFetchPayloadForTest(
-      session_uuid, cursor_uuid, max_rows, 0);
+      session_uuid, cursor.cursor_uuid, max_rows, 65536);
+  frame.payload.insert(frame.payload.end(), cursor.stream_descriptor_uuid.begin(),
+                       cursor.stream_descriptor_uuid.end());
+  PutU16(&frame.payload, cursor.stream_descriptor_version);
+  PutU64(&frame.payload, cursor.stream_descriptor_generation);
   return frame;
+}
+
+std::array<std::uint8_t, 16> InstallMetadataCursor(
+    scratchbird::server::ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid) {
+  scratchbird::server::ServerCursorRecord cursor;
+  cursor.cursor_uuid = sbps::MakeUuidV7Bytes();
+  cursor.request_uuid = sbps::MakeUuidV7Bytes();
+  cursor.session_uuid = session_uuid;
+  cursor.operation_id = "query.execute";
+  cursor.total_row_count = 1;
+  cursor.max_chunk_rows = 4;
+  cursor.max_chunk_bytes = 65536;
+  cursor.stream_descriptor_uuid = sbps::MakeUuidV7Bytes();
+  cursor.stream_descriptor_version = 1;
+  cursor.stream_descriptor_generation = 1;
+  cursor.execution_uuid = sbps::MakeUuidV7Bytes();
+  cursor.result_set_uuid = sbps::MakeUuidV7Bytes();
+  cursor.row_descriptor_uuid = sbps::MakeUuidV7Bytes();
+  cursor.snapshot_uuid = sbps::MakeUuidV7Bytes();
+  cursor.statement_context_statement_uuid =
+      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+
+  scratchbird::server::ServerStatementContextRecord statement_context;
+  statement_context.session_uuid = session_uuid;
+  statement_context.statement_uuid = cursor.statement_context_statement_uuid;
+  statement_context.receipt.opaque_id = 43;
+  registry->statement_contexts_by_statement_uuid.emplace(
+      statement_context.statement_uuid, statement_context);
+
+  std::vector<std::uint8_t> binding;
+  constexpr std::string_view kDomain =
+      "ScratchBird.CursorStreamDescriptor.ReceiptBinding.V1";
+  binding.insert(binding.end(), kDomain.begin(), kDomain.end());
+  PutU64(&binding, statement_context.receipt.opaque_id);
+  PutUuid(&binding, cursor.stream_descriptor_uuid);
+  PutU16(&binding, cursor.stream_descriptor_version);
+  PutU64(&binding, cursor.stream_descriptor_generation);
+  PutUuid(&binding, cursor.cursor_uuid);
+  PutUuid(&binding, cursor.execution_uuid);
+  PutUuid(&binding, cursor.result_set_uuid);
+  PutUuid(&binding, cursor.row_descriptor_uuid);
+  PutUuid(&binding, cursor.snapshot_uuid);
+  PutU64(&binding, cursor.max_chunk_rows);
+  PutU64(&binding, cursor.max_chunk_bytes);
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(binding);
+  if (!digest.ok()) return {};
+  cursor.stream_descriptor_receipt_binding_sha256 = digest.digest;
+  cursor.stream_descriptor_live = true;
+  const auto cursor_uuid = cursor.cursor_uuid;
+  registry->cursors_by_uuid.emplace(
+      scratchbird::server::UuidBytesToText(cursor_uuid), std::move(cursor));
+  return cursor_uuid;
 }
 
 void ValidatePublicMetadataProjection(Harness* harness) {
   std::array<std::uint8_t, 16> session_uuid{};
   auto registry = MakeRegistry(&session_uuid);
-  const auto engine_state = MakeEngineState();
-  const auto execute = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, {}, SyntheticRowsetEnvelope(1), true));
-  harness->Check(execute.accepted, "server execute rejected metadata projection fixture");
-  const auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(execute.payload);
-  harness->Check(cursor_uuid.has_value(), "metadata projection fixture did not return cursor");
+  const auto cursor_uuid = InstallMetadataCursor(&registry, session_uuid);
+  harness->Check(!sbps::IsZeroUuid(cursor_uuid),
+                 "descriptor-bound metadata cursor fixture was not installed");
+  const auto cursor = registry.cursors_by_uuid.at(
+      scratchbird::server::UuidBytesToText(cursor_uuid));
   const auto fetch = scratchbird::server::HandleFetch(
-      &registry, FetchFrame(session_uuid, cursor_uuid.value_or(std::array<std::uint8_t, 16>{}), 1));
+      &registry, FetchFrame(session_uuid, cursor, 1));
   harness->Check(fetch.accepted, "server fetch rejected metadata projection fixture");
   const auto decoded = scratchbird::server::DecodeFetchResultForTest(fetch.payload);
   harness->Check(decoded.has_value(), "server fetch result did not decode");
@@ -500,62 +539,41 @@ void ValidateCacheSideChannelDimensions(Harness* harness) {
   });
 }
 
-void ValidatePreparedAuthorityStaleChecks(Harness* harness) {
-  const auto engine_state = MakeEngineState();
+void ValidateRetiredPreparedIngressRefusal(Harness* harness) {
   const auto encoded = SyntheticRowsetEnvelope(1);
-
-  auto CheckStale = [&](std::string_view label,
-                        const std::function<void(scratchbird::server::ServerSessionRecord*)>& mutate) {
-    std::array<std::uint8_t, 16> session_uuid{};
-    auto registry = MakeRegistry(&session_uuid);
-    const auto prepare = scratchbird::server::HandlePrepareSblr(
-        &registry, engine_state, PrepareFrame(session_uuid, encoded));
-    harness->Check(prepare.accepted,
-                   std::string("prepare failed for stale-check case: ") + std::string(label));
-    const auto prepared_uuid =
-        scratchbird::server::DecodePreparedStatementUuidForTest(prepare.payload);
-    harness->Check(prepared_uuid.has_value(),
-                   std::string("prepared UUID missing for stale-check case: ") + std::string(label));
-
-    auto& session =
-        registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session_uuid)];
-    mutate(&session);
-
-    const auto execute = scratchbird::server::HandleExecuteSblr(
-        &registry,
-        engine_state,
-        ExecuteFrame(session_uuid,
-                     prepared_uuid.value_or(std::array<std::uint8_t, 16>{}),
-                     "",
-                     false));
-    harness->Check(!execute.accepted,
-                   std::string("stale prepared statement was accepted for: ") + std::string(label));
-    harness->Check(!execute.diagnostics.empty() &&
-                       execute.diagnostics.front().code ==
-                           "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-                   std::string("stale prepared statement diagnostic mismatch for: ") +
-                       std::string(label));
-  };
-
-  CheckStale("descriptor_epoch",
-             [](scratchbird::server::ServerSessionRecord* session) {
-               session->descriptor_epoch += 1;
-             });
-  CheckStale("grant_epoch", [](scratchbird::server::ServerSessionRecord* session) {
-    session->grant_epoch += 1;
-  });
-  CheckStale("role_set_hash", [](scratchbird::server::ServerSessionRecord* session) {
-    session->role_set_hash = "roles/app_writer";
-  });
-  CheckStale("group_set_hash", [](scratchbird::server::ServerSessionRecord* session) {
-    session->group_set_hash = "groups/admin";
-  });
-  CheckStale("search_path_hash", [](scratchbird::server::ServerSessionRecord* session) {
-    session->search_path_hash = "search_path/private";
-  });
-  CheckStale("language_profile", [](scratchbird::server::ServerSessionRecord* session) {
-    session->language_profile = "fr-CA";
-  });
+  std::array<std::uint8_t, 16> session_uuid{};
+  auto registry = MakeRegistry(&session_uuid);
+  auto& session = registry.sessions_by_uuid.at(
+      scratchbird::server::UuidBytesToText(session_uuid));
+  session.local_transaction_id = 1;
+  session.default_local_transaction_id = 1;
+  session.snapshot_visible_through_local_transaction_id = 1;
+  session.transaction_uuid = "019e05df-f012-7000-8000-000000000001";
+  scratchbird::server::ServerTransactionState transaction;
+  transaction.local_transaction_id = session.local_transaction_id;
+  transaction.snapshot_visible_through_local_transaction_id =
+      session.snapshot_visible_through_local_transaction_id;
+  transaction.transaction_uuid = session.transaction_uuid;
+  session.transactions_by_local_id.emplace(transaction.local_transaction_id,
+                                           transaction);
+  const auto engine_state = MakeEngineState();
+  const auto prepare = scratchbird::server::HandlePrepareSblr(
+      &registry, engine_state, PrepareFrame(session_uuid, encoded));
+  if (prepare.accepted || prepare.diagnostics.empty() ||
+      prepare.diagnostics.front().code != "SBLR.OPERATION.NONCANONICAL") {
+    for (const auto& diagnostic : prepare.diagnostics) {
+      std::cerr << "prepare diagnostic: " << diagnostic.code;
+      for (const auto& field : diagnostic.fields) {
+        std::cerr << ' ' << field.key << '=' << field.value;
+      }
+      std::cerr << '\n';
+    }
+  }
+  harness->Check(!prepare.accepted && !prepare.diagnostics.empty() &&
+                     prepare.diagnostics.front().code ==
+                         "SBLR.OPERATION.NONCANONICAL",
+                 "retired prepared text ingress was not refused before it "
+                 "could grant reusable execution authority");
 }
 
 void ValidateHiddenAsMissingSourceContract(const std::filesystem::path& repo_root,
@@ -592,7 +610,7 @@ int main(int argc, char** argv) {
   ValidateServerDiagnosticRedaction(&harness);
   ValidatePublicMetadataProjection(&harness);
   ValidateCacheSideChannelDimensions(&harness);
-  ValidatePreparedAuthorityStaleChecks(&harness);
+  ValidateRetiredPreparedIngressRefusal(&harness);
   ValidateHiddenAsMissingSourceContract(repo_root, &harness);
 
   if (!harness.ok) {

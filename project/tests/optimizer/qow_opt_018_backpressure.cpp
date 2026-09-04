@@ -7,9 +7,7 @@
 int main() {
   const auto plan = optimizer::CoordinateModelFamilyDependencyDagV1(
       AdmissionForProfile("COMP-3-FANIN-V1"));
-  const auto root = std::filesystem::temp_directory_path() /
-                    "sb_rcp080_qow_opt_018_backpressure";
-  std::filesystem::remove_all(root);
+  const auto root = UniqueTempRoot("sb_rcp080_qow_opt_018_backpressure");
   memory::TempWorkspaceLifecycleManager workspace(
       WorkspacePolicy(root, "rcp080_qow_opt_018_backpressure"));
   RuntimeCounters counters;

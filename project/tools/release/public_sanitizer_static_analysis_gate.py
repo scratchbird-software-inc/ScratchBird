@@ -268,7 +268,11 @@ def source_hygiene_scan(repo_root: Path, project_root: Path) -> dict[str, Any]:
         for needle in banned_substrings:
             if needle in text:
                 findings.append(f"{path_text}: warning_or_sanitizer_suppression:{needle}")
-        if any(needle in text for needle in warning_disable_needles):
+        # `cygpath -w` is a path-format conversion flag, not a compiler
+        # warning suppression.  Do not classify that legitimate command as
+        # a global warning-disable option.
+        warning_text = text.replace("cygpath -w", "")
+        if any(needle in warning_text for needle in warning_disable_needles):
             findings.append(f"{path_text}: global_warning_disable:{dash_w}")
     if findings:
         for finding in findings[:100]:

@@ -45,11 +45,30 @@ enum class DatabaseLocalSecurityEventVisibilityV1 : std::uint8_t {
   include_reader_own_uncommitted,
 };
 
+// Authenticated create-time security authority returned by the same database
+// read that validates the page-backed lifecycle chain.  Keeping this neutral
+// projection with the load result prevents a lifecycle consumer from opening
+// and validating the bootstrap catalog a second time.  It is never accepted as
+// input and therefore cannot be parser- or caller-authored authority.
+struct DatabaseLocalSecurityBootstrapAuthorityV1 {
+  bool authenticated = false;
+  bool principal_present = false;
+  std::string principal_uuid;
+  std::string principal_name;
+  std::string credential_fingerprint;
+  std::string sysarch_role_uuid;
+  std::string membership_uuid;
+  std::uint64_t creator_tx = 0;
+  std::uint64_t policy_generation = 0;
+  std::uint64_t security_context_generation = 0;
+};
+
 struct DatabaseLocalSecurityEventStoreStateV1 {
   // These are only the page-backed SBSECPL1 lifecycle rows. Bootstrap catalog
   // rows remain owned by ReadDatabaseBootstrapSecurityCatalog and are not
   // synthesized into this vector. AUTH_CONTEXT_SUCCESSOR rows are included.
   std::vector<std::string> events;
+  DatabaseLocalSecurityBootstrapAuthorityV1 bootstrap_authority;
   std::uint64_t security_context_generation = 0;
   std::vector<std::uint64_t> page_numbers;
   bool database_identity_authenticated = false;

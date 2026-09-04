@@ -99,16 +99,16 @@
       "sml_id": "SML-023"
     },
     {
-      "coverage_class": "security_authorization_server_reclassify",
-      "oracle_hash": "be65f7d2b78a7d82eb11bd64a3de6acc8ef44731ccc1e4449629a538750d66f1",
-      "oracle_id": "SML-ORACLE-025-SECURITY-AUTHORIZATION-SERVER-RECLASSIFY",
+      "coverage_class": "security_authorization_server_canonical_evaluation",
+      "oracle_hash": "c7214e41dc0a7fa81070459d9901800f1cc32305cb9ecfe08d9a39e2f3b5a5b9",
+      "oracle_id": "SML-ORACLE-025-SECURITY-AUTHORIZATION-SERVER-CANONICAL-EVALUATION",
       "proof_domain": "legacy_security_projection_server_evaluated",
-      "row_id": "SML-025-SECURITY-AUTHORIZATION-SERVER-RECLASSIFY",
+      "row_id": "SML-025-SECURITY-AUTHORIZATION-SERVER-CANONICAL-EVALUATION",
       "sml_id": "SML-025"
     },
     {
       "coverage_class": "protected_material_redacted_projection",
-      "oracle_hash": "b19ce9ee452682a453ae8d50c43cc7bddff887d226d2f22eea751603434c4d03",
+      "oracle_hash": "2aa6352a7dd3578238d501641d9a6d2921c4b7910ed821d1d6498ac396f6802f",
       "oracle_id": "SML-ORACLE-025-PROTECTED-MATERIAL-REDACTED-PROJECTION",
       "proof_domain": "legacy_security_projection_server_evaluated",
       "row_id": "SML-025-PROTECTED-MATERIAL-REDACTED-PROJECTION",

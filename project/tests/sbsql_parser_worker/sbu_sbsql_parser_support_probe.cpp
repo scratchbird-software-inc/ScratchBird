@@ -244,11 +244,19 @@ void CheckRuntimeRegistrationAndEntrypoints() {
                                "UDR.SBSQL.CONTEXT_MISSING",
                                "runtime parse_to_sblr missing context"),
           "runtime parse_to_sblr missing context did not refuse");
-  Require(ExpectRuntimeOk(runtime::InvokePackage(Input("sbu_sbsql_parse_to_sblr",
-                                                       "select 1",
-                                                       "engine_context=trusted;resolver=public")),
-                          "runtime parse_to_sblr trusted"),
-          "runtime parse_to_sblr trusted failed");
+  Require(ExpectRuntimeRefusal(
+              runtime::InvokePackage(Input("sbu_sbsql_parse_to_sblr",
+                                           "select 1",
+                                           "engine_context=trusted;resolver=public")),
+              "QOW-DIAG-BOUNDAST-SCOPE",
+              "runtime native parse_to_sblr without receipt"),
+          "runtime native parse_to_sblr accepted caller-authored context");
+  Require(ExpectRuntimeOk(
+              runtime::InvokePackage(Input("sbu_sbsql_parse_to_sblr",
+                                           "ENGINE QUERY BIND EXPRESSION",
+                                           "engine_context=trusted")),
+              "runtime parser-only parse_to_sblr"),
+          "runtime parser-only parse_to_sblr failed");
   Require(ExpectRuntimeRefusal(runtime::InvokePackage(Input("sbu_sbsql_parse_expression", "1 + 1")),
                                "UDR.SBSQL.CONTEXT_MISSING",
                                "runtime parse_expression missing context"),
@@ -311,28 +319,11 @@ void CheckRuntimeRegistrationAndEntrypoints() {
   runtime::ResetRuntimeForTest();
 }
 
-void CheckSourcePreservingDecompile() {
+void CheckLegacyEmbeddedSourceArtifactRefusal() {
   using namespace scratchbird::udr::sbsql_parser_support;
   const auto encoded = sblr::EncodeSblrEnvelope(BuildSourcePreservingEnvelope());
-  const auto decompiled = sbu_sbsql_decompile_sblr(encoded, kSourcePreservingPolicy);
-  Require(ExpectOk(decompiled, "source_preserving_decompile"),
-          "source preserving decompile failed");
-  Require(Contains(decompiled.payload, "DECLARE VARIABLE v_udr_ready INT;"),
-          "source preserving decompile did not preserve variable name");
-  Require(Contains(decompiled.payload, "PARAM LIST p_udr_id;"),
-          "source preserving decompile did not preserve parameter name");
-  Require(Contains(decompiled.payload, "DECLARE udr_scan CURSOR;"),
-          "source preserving decompile did not preserve cursor name");
-  Require(Contains(decompiled.payload, "PSQL LEAVE udr_ready_loop;"),
-          "source preserving decompile did not preserve label name");
-  Require(Contains(decompiled.payload, "EXCEPTION HANDLER WHEN udr_not_found;"),
-          "source preserving decompile did not preserve exception handler name");
-  Require(Contains(decompiled.payload, "FROM udr_ready AS u"),
-          "source preserving decompile did not preserve relation alias");
-  Require(Contains(decompiled.payload, "AS udr_id"),
-          "source preserving decompile did not preserve column alias");
-  Require(!Contains(decompiled.payload, "<sblr-debug-text-redacted>"),
-          "source preserving decompile returned debug redaction placeholder");
+  Require(encoded.empty(),
+          "legacy source-artifact metadata was serialized inside SBOP");
 }
 
 void CheckUniversalBridgeContract() {
@@ -468,7 +459,7 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  const auto sblr = sbu_sbsql_parse_to_sblr(
+  const auto native_without_receipt = sbu_sbsql_parse_to_sblr(
       "select 1",
       "engine_context=trusted;resolver=public;"
       "session_uuid=019e13c0-0000-7000-8000-00000000a008;"
@@ -477,10 +468,27 @@ int main() {
       "parser_uuid=019e13c0-0000-7000-8000-00000000a308;"
       "catalog_epoch=77;security_policy_epoch=78;descriptor_epoch=79;"
       "transaction_context=udr.test.engine_context");
-  if (!ExpectOk(sblr, "parse_to_sblr_trusted")) return EXIT_FAILURE;
+  if (!ExpectRefusal(native_without_receipt,
+                     "QOW-DIAG-BOUNDAST-SCOPE",
+                     "parse_to_sblr_native_without_receipt")) {
+    return EXIT_FAILURE;
+  }
+
+  const auto sblr = sbu_sbsql_parse_to_sblr(
+      "ENGINE QUERY BIND EXPRESSION",
+      "engine_context=trusted;"
+      "session_uuid=019e13c0-0000-7000-8000-00000000a008;"
+      "connection_uuid=019e13c0-0000-7000-8000-00000000a108;"
+      "database_uuid=019e13c0-0000-7000-8000-00000000a208;"
+      "parser_uuid=019e13c0-0000-7000-8000-00000000a308;"
+      "catalog_epoch=77;security_policy_epoch=78;descriptor_epoch=79;"
+      "transaction_context=udr.test.engine_context");
+  if (!ExpectOk(sblr, "parse_to_sblr_parser_only")) return EXIT_FAILURE;
   if (!Contains(sblr.payload, "SBLRExecutionEnvelope.v3") ||
-      Contains(sblr.payload, "select 1")) {
-    std::cerr << "parse_to_sblr trusted payload violated SBLR/no-SQL expectations: "
+      !Contains(sblr.payload, "\"operation_id\":\"query.bind_expression\"") ||
+      !Contains(sblr.payload, "\"sql_text_included\":false") ||
+      !Contains(sblr.payload, "\"source_payload_embedded\":false")) {
+    std::cerr << "parse_to_sblr parser-only payload violated SBLR/no-SQL expectations: "
               << sblr.payload << '\n';
     return EXIT_FAILURE;
   }
@@ -535,7 +543,7 @@ int main() {
               << decompiled.payload << '\n';
     return EXIT_FAILURE;
   }
-  CheckSourcePreservingDecompile();
+  CheckLegacyEmbeddedSourceArtifactRefusal();
 
   if (!ExpectRefusal(sbu_sbsql_debug_capabilities("normal"),
                      "SBU_SBSQL.DEBUG_POLICY_REFUSED",

@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -1496,6 +1497,46 @@ std::string ProductionUuidText(const platform::UuidKind kind) {
   return uuid::UuidToString(ProductionUuid(kind).value);
 }
 
+std::string ProductionExactCoreTypeUuid(const std::string_view stable_name) {
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (count != 1 || found == manifest.manifest.descriptor_rows.end() ||
+      !found->descriptor_uuid.valid()) {
+    return {};
+  }
+  const auto descriptor_uuid = uuid::UuidToString(found->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      found->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+}
+
+std::optional<std::string> ProductionDescriptorField(
+    const api::EngineDescriptor& descriptor, const std::string_view key) {
+  const auto prefix = std::string(key) + "=";
+  std::optional<std::string> value;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
+        begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (field.starts_with(prefix)) {
+      if (value.has_value()) return std::nullopt;
+      value = std::string(field.substr(prefix.size()));
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return value;
+}
+
 struct ProductionFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
@@ -1559,6 +1600,10 @@ api::EngineRequestContext ProductionBaseContext(
   context.catalog_generation_id = 73;
   context.security_epoch = 74;
   context.resource_epoch = 75;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 76;
   return context;
 }
@@ -1647,7 +1692,12 @@ bool CreateProductionCollections(
   schema.target_object.uuid.canonical = fixture->schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(ProductionName("document_schema"));
-  if (!api::EngineCreateSchema(schema).ok) {
+  const auto schema_created = api::EngineCreateSchema(schema);
+  if (!schema_created.ok) {
+    for (const auto& diagnostic : schema_created.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail << '\n';
+    }
     return Require(false, "production document schema creation failed");
   }
   const auto create_collection = [&](const std::string& relation_uuid,
@@ -1667,7 +1717,13 @@ bool CreateProductionCollections(
     table.table_columns.push_back(
         ProductionTextColumn(2, "required_shadow", false));
     const auto created = api::EngineCreateTable(table);
-    if (!created.ok) return false;
+    if (!created.ok) {
+      for (const auto& diagnostic : created.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                  << diagnostic.detail << '\n';
+      }
+      return false;
+    }
     const auto loaded =
         api::LoadMgaRelationStorageDescriptor(context, relation_uuid);
     if (!loaded.ok || loaded.descriptor.columns.size() != 3 ||
@@ -1675,6 +1731,9 @@ bool CreateProductionCollections(
             "text" ||
         loaded.descriptor.columns[1].value_descriptor.canonical_type_name !=
             "text") {
+      std::cerr << loaded.diagnostic.code << ':'
+                << loaded.diagnostic.message_key << ':'
+                << loaded.diagnostic.detail << '\n';
       return false;
     }
     *out = loaded.descriptor;
@@ -1704,9 +1763,22 @@ bool InsertProductionDocument(const api::EngineRequestContext& context,
   request.localized_names.push_back(
       {"en", "primary", "", std::move(name), true});
   request.assignments.push_back(
-      {"payload", ProductionText(std::move(payload))});
-  return Require(api::EngineDocumentInsert(request).ok,
-                 "production route document insert failed");
+      {"payload", ProductionText(payload)});
+  if (!Require(api::EngineDocumentInsert(request).ok,
+               "production route document insert failed")) {
+    return false;
+  }
+  api::CrudRowVersionRecord row;
+  row.creator_tx = context.local_transaction_id;
+  row.table_uuid = collection_uuid;
+  row.row_uuid = row_uuid;
+  row.version_uuid = ProductionUuidText(platform::UuidKind::object);
+  row.values.push_back({"payload", std::move(payload)});
+  std::uint64_t event_sequence = 0;
+  const auto appended = api::AppendMgaRowVersion(
+      context, row, &event_sequence);
+  return Require(!appended.error && event_sequence != 0,
+                 "production route document MGA row persistence failed");
 }
 
 void AppendLittleEndianU64(std::vector<std::uint8_t>* output,
@@ -1924,20 +1996,8 @@ sblr::SblrOperationEnvelope ProductionDocumentUnnestEnvelope(
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
 
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  const auto type_uuid = [&](const std::string_view stable_name) {
-    const auto found = std::ranges::find_if(
-        manifest.manifest.descriptor_rows, [&](const auto& row) {
-          return row.stable_name == stable_name;
-        });
-    return found == manifest.manifest.descriptor_rows.end()
-               ? std::string{}
-               : uuid::UuidToString(found->descriptor_uuid.value);
-  };
-  const auto json_type_uuid = manifest.ok() ? type_uuid("json_document")
-                                            : std::string{};
-  const auto character_type_uuid = manifest.ok() ? type_uuid("character")
-                                                 : std::string{};
+  const auto json_type_uuid = ProductionExactCoreTypeUuid("json_document");
+  const auto character_type_uuid = ProductionExactCoreTypeUuid("character");
   const auto bound_tree_uuid =
       ProductionUuidText(platform::UuidKind::object);
   const auto document_descriptor_uuid =
@@ -2065,25 +2125,8 @@ sblr::SblrOperationEnvelope ProductionDocumentUnnestFilterProjectLimitEnvelope(
     const ProductionUnnestCompositionMutation mutation =
         ProductionUnnestCompositionMutation::none) {
   auto envelope = ProductionDocumentUnnestEnvelope(context);
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  const auto int64_row =
-      std::ranges::find_if(manifest.manifest.descriptor_rows,
-                          [](const auto& row) {
-                            return row.stable_name == "int64";
-                          });
-  const auto int64_type_uuid =
-      manifest.ok() && int64_row != manifest.manifest.descriptor_rows.end()
-          ? uuid::UuidToString(int64_row->descriptor_uuid.value)
-          : std::string{};
-  const auto boolean_row =
-      std::ranges::find_if(manifest.manifest.descriptor_rows,
-                          [](const auto& row) {
-                            return row.stable_name == "boolean";
-                          });
-  const auto boolean_type_uuid =
-      manifest.ok() && boolean_row != manifest.manifest.descriptor_rows.end()
-          ? uuid::UuidToString(boolean_row->descriptor_uuid.value)
-          : std::string{};
+  const auto int64_type_uuid = ProductionExactCoreTypeUuid("int64");
+  const auto boolean_type_uuid = ProductionExactCoreTypeUuid("boolean");
   std::string producer_descriptor_uuid;
   for (auto& operand : envelope.operands) {
     if (operand.type == "uint32" &&
@@ -2168,19 +2211,9 @@ api::TypedRelationalDag ProductionDocumentUnnestSortLimitDag(
       context.snapshot_visible_through_local_transaction_id;
   dag.root_node_id = 3;
 
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  const auto type_uuid = [&](const std::string_view stable_name) {
-    const auto row = std::ranges::find_if(
-        manifest.manifest.descriptor_rows, [&](const auto& candidate) {
-          return candidate.stable_name == stable_name;
-        });
-    return row == manifest.manifest.descriptor_rows.end()
-               ? std::string{}
-               : uuid::UuidToString(row->descriptor_uuid.value);
-  };
-  const auto json_type_uuid = type_uuid("json_document");
-  const auto character_type_uuid = type_uuid("character");
-  const auto int64_type_uuid = type_uuid("int64");
+  const auto json_type_uuid = ProductionExactCoreTypeUuid("json_document");
+  const auto character_type_uuid = ProductionExactCoreTypeUuid("character");
+  const auto int64_type_uuid = ProductionExactCoreTypeUuid("int64");
   dag.descriptors = {
       {1, ProductionUuidText(platform::UuidKind::object), json_type_uuid,
        api::RelationalNullability::kNonNull},
@@ -2583,11 +2616,11 @@ exec::CanonicalRecursiveCteWorkingRequest
 ProductionRecursiveAggregateAnchorRequest() {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_uuid.canonical =
-      "019f0730-0000-7000-8000-000000000301";
+      "019d0000-0000-7000-8000-00000000d711";
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
   descriptor.encoded_descriptor =
-      "type_uuid=019f0730-0000-7000-8000-000000000302;"
+      "type_uuid=019d0000-0000-7000-8000-00000000d712;"
       "nullability=non_null";
   api::EngineTypedValue anchor_value;
   anchor_value.descriptor = descriptor;
@@ -2761,7 +2794,9 @@ bool ValidateProductionRecursiveAggregateAnchorAdmission() {
           positive.output_batch.rows[0].values[0].encoded_value == "3" &&
           positive.output_batch.rows[2].values[0].encoded_value == "5" &&
           positive.executed_physical_node_id == 303,
-      "direct materialized COUNT(*) recursive anchor was not admitted exactly");
+      "direct materialized COUNT(*) recursive anchor was not admitted exactly: " +
+          positive.diagnostic.diagnostic_code + ":" +
+          positive.diagnostic.detail);
   passed &= refused(
       [](auto& request) {
         request.physical_dag.nodes[1].node_kind =
@@ -2878,18 +2913,18 @@ bool ProductionCanonicalQueryExecuteRoute() {
                              fixture.other_collection_uuid);
   if (!InsertProductionDocument(
           writer, fixture.collection_uuid,
-          "00000000-0000-4000-8000-000000000013",
-          "00000000-0000-4000-8000-000000000113", "document-one",
+          ProductionUuidText(platform::UuidKind::object),
+          ProductionUuidText(platform::UuidKind::row), "document-one",
           "document-one") ||
       !InsertProductionDocument(
           writer, fixture.collection_uuid,
-          "00000000-0000-4000-8000-000000000014",
-          "00000000-0000-4000-8000-000000000114", "document-two",
+          ProductionUuidText(platform::UuidKind::object),
+          ProductionUuidText(platform::UuidKind::row), "document-two",
           "document-two") ||
       !InsertProductionDocument(
           writer, fixture.other_collection_uuid,
-          "00000000-0000-4000-8000-000000000015",
-          "00000000-0000-4000-8000-000000000115", "document-other",
+          ProductionUuidText(platform::UuidKind::object),
+          ProductionUuidText(platform::UuidKind::row), "document-other",
           "other-collection-document") ||
       !CommitProductionTransaction(writer)) {
     return false;
@@ -2957,14 +2992,42 @@ bool ProductionCanonicalQueryExecuteRoute() {
     api::EngineDocumentFindRequest request;
     request.context = context;
     request.target_object.uuid.canonical = collection.relation_uuid.canonical;
+    request.expected_descriptor_uuid =
+        collection.descriptor_uuid.canonical;
+    request.expected_descriptor_generation =
+        collection.descriptor_generation;
     request.exact_collection_fallback = true;
     request.maximum_rows = 16;
     request.maximum_cells = 16;
     request.maximum_memory_bytes = 1024 * 1024;
+    request.maximum_scanned_row_versions = 16;
+    request.maximum_decoded_bytes = 1024 * 1024;
     request.projected_paths = {path};
     if (column != collection.columns.end()) {
+      const auto type_uuid =
+          ProductionDescriptorField(column->value_descriptor, "type_uuid");
+      if (!type_uuid.has_value()) return api::EngineDocumentFindResult{};
+      auto runtime_descriptor = column->value_descriptor;
+      runtime_descriptor.descriptor_kind = "scalar";
+      runtime_descriptor.encoded_descriptor =
+          "type_uuid=" + *type_uuid + ";nullability=" +
+          (column->nullable ? "nullable" : "non_null");
+      const auto append_optional_field = [&](const std::string_view key) {
+        const auto value =
+            ProductionDescriptorField(column->value_descriptor, key);
+        if (value.has_value()) {
+          runtime_descriptor.encoded_descriptor +=
+              ";" + std::string(key) + "=" + *value;
+        }
+      };
+      append_optional_field("collation_uuid");
+      append_optional_field("timezone_profile_id");
+      append_optional_field("width");
+      append_optional_field("precision");
+      append_optional_field("scale");
+      request.projected_column_uuids = {column->column_uuid.canonical};
       request.projected_path_nullable = {column->nullable};
-      request.descriptors = {column->value_descriptor};
+      request.descriptors = {std::move(runtime_descriptor)};
     }
     return api::EngineDocumentFind(request);
   };

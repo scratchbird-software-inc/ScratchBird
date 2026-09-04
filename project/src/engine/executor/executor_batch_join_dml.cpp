@@ -252,6 +252,11 @@ ExecutorBatchDmlResult ExecuteBatchedDmlReturning(
   };
 
   auto primitive = ExecuteScopedExecutorBatch(input, request.batch_request, row_step);
+  if (request.returning_column_count != 0) {
+    primitive.output.column_count = request.returning_column_count;
+  } else if (!primitive.output.rows.empty()) {
+    primitive.output.column_count = primitive.output.rows.front().values.size();
+  }
   primitive.output =
       WithDescriptor(std::move(primitive.output), request.returning_descriptor_digest);
 

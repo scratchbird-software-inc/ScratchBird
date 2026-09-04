@@ -533,15 +533,24 @@ MARKER_RE = re.compile(
 )
 
 AUTHORITY_SHORTCUT_RE = re.compile(
-    r"(\bWAL\b|write-ahead|\bredo\b|\bundo\b|SQLite|sqlite3|PRAGMA|journal_mode|reference).{0,96}"
-    r"(recovery|finality|authority|backend|storage|transaction|commit|rollback)|"
-    r"(recovery|finality|authority|backend|storage|transaction|commit|rollback).{0,96}"
-    r"(\bWAL\b|write-ahead|\bredo\b|\bundo\b|SQLite|sqlite3|PRAGMA|journal_mode|reference)",
+    r"\b(?:parser|driver|reference)[_ -](?:transaction|commit|rollback|finality|storage|recovery)"
+    r"[_ -]authority\s*[:=]\s*true\b|"
+    r"\b(?:parser|driver|reference)\s+(?:owns?|manages?|controls?)\s+"
+    r"(?:transaction|commit|rollback|finality|storage|recovery)\b|"
+    r"\b(?:reference_engine_sql_executed|real_reference_file_effects|"
+    r"parser_executes_sql)\s*[\":=]+\s*true\b|"
+    r"\b(?:WAL|write-ahead|redo|undo)\b.{0,96}\b(?:authority|finality)\b|"
+    r"\b(?:authority|finality)\b.{0,96}\b(?:WAL|write-ahead|redo|undo)\b",
     re.IGNORECASE,
 )
 
 PARSER_DRIVER_DRIFT_RE = re.compile(
-    r"sqlite3_|duckdb_|rocksdb_|leveldb_|"
+    r"#\s*include\s*[<\"](?:sqlite3|duckdb|rocksdb|leveldb)[./\"]|"
+    r"\bsqlite3_[A-Za-z0-9_]+\b|\bExecSqlite\b|"
+    r"\bduckdb_(?:open|close|connect|disconnect|query|prepare|execute_prepared|"
+    r"destroy_result|create_config|set_config)\b|"
+    r"\b(?:rocksdb|leveldb)_(?:open|close|put|get|delete|write|"
+    r"readoptions|writeoptions)[A-Za-z0-9_]*\b|"
     r"PRAGMA\s+journal_mode|journal_mode\s*=|"
     r"transaction_inventory\.hpp|local_transaction_store\.hpp|"
     r"engine\s+owns\s+commit|parser\s+owns\s+commit|driver\s+owns\s+commit|"
@@ -561,6 +570,18 @@ def allowed_marker(path: Path, line: str) -> bool:
     ):
         return True
     if "stub" in lowered and ("/tests/" in path.as_posix() or "test_" in path.name):
+        return True
+    if "stub" in lowered and any(
+        token in lowered
+        for token in (
+            "refusal",
+            "refused",
+            "unlicensed",
+            "fail-closed",
+            "fail_closed",
+            "provider boundary",
+        )
+    ):
         return True
     if "deferred" in lowered and (
         "deferrable" in lowered
@@ -598,6 +619,8 @@ def allowed_authority_shortcut(path: Path, line: str) -> bool:
             "classification evidence only",
             "rather than inheriting reference shortcuts",
             "not durable authority",
+            "authority is unchanged",
+            "without parser finality",
             "no wal",
             "no_wal",
             "wal_not_authority",

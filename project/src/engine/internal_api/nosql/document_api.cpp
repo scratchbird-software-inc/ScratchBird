@@ -1154,20 +1154,25 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       return false;
     }
     std::unordered_set<std::string> column_uuids;
-    std::unordered_set<std::string> descriptor_uuids;
     for (std::size_t ordinal = 0; ordinal < relation.columns.size();
          ++ordinal) {
       const auto& column = relation.columns[ordinal];
+      const auto fields = descriptor_fields(column.value_descriptor);
       if (column.ordinal != ordinal ||
           !IsEngineUuidText(column.column_uuid.canonical) ||
           !column_uuids.insert(column.column_uuid.canonical).second ||
           !QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
           column.value_descriptor.descriptor_kind !=
               "canonical_type_descriptor" ||
-          !descriptor_uuids
-               .insert(column.value_descriptor.descriptor_uuid.canonical)
-               .second ||
-          !descriptor_fields(column.value_descriptor).has_value()) {
+          !fields.has_value()) {
+        return false;
+      }
+      const auto occurrence = fields->find("column_uuid");
+      if ((column.value_descriptor.canonical_type_name == "text" &&
+           (occurrence == fields->end() ||
+            occurrence->second != column.column_uuid.canonical)) ||
+          (column.value_descriptor.canonical_type_name != "text" &&
+           occurrence != fields->end())) {
         return false;
       }
     }
@@ -1544,16 +1549,6 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
         return access_failure("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                               "document reconstruction size overflowed");
       }
-    }
-    if (std::ranges::any_of(read.descriptor.columns, [&](const auto& column) {
-          return !column.nullable && std::ranges::none_of(
-              row.values, [&](const auto& value) {
-                return value.first == column.canonical_name_key;
-              });
-        })) {
-      return access_failure(
-          "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-          "visible document row omits a non-null persisted column");
     }
     if (retained_memory_bytes > request.maximum_memory_bytes ||
         record_transient_bytes >

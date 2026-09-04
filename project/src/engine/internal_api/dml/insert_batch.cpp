@@ -1234,7 +1234,7 @@ void CaptureInsertMemoryArenaProof(const EngineInsertRowsRequest& request,
   memory_context.parser_or_reference_finality_or_visibility_authority = false;
   memory_context.client_finality_or_visibility_authority = false;
   memory_context.provider_finality_or_visibility_authority = false;
-  memory_context.wal_recovery_or_finality_authority = false;
+  memory_context.wal_recovery_or_finality_authority = false;  // no_wal authority
 
   mem::QueryMemoryArenaLimits limits;
   limits.hard_limit_bytes = std::max<std::uint64_t>(budget, grant_bytes);

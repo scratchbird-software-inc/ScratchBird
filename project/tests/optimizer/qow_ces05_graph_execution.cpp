@@ -807,6 +807,10 @@ api::EngineRequestContext ProductionBaseContext(
   context.catalog_generation_id = 74;
   context.security_epoch = 75;
   context.resource_epoch = 76;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 77;
   return context;
 }
@@ -927,7 +931,13 @@ bool CreateProductionGraph(ProductionFixture* fixture,
       ProductionColumn(7, "depth", "uint64", false));
   table.table_columns.push_back(
       ProductionColumn(8, "cycle_policy", "text", false));
-  if (!api::EngineCreateTable(table).ok) {
+  const auto created = api::EngineCreateTable(table);
+  if (!created.ok) {
+    for (const auto& diagnostic : created.diagnostics) {
+      std::cerr << "QOW-CES05-GRAPH create relation: " << diagnostic.code
+                << ' ' << diagnostic.message_key << ' '
+                << diagnostic.detail << '\n';
+    }
     return Require(false, "production graph relation creation failed");
   }
   const auto loaded =
@@ -935,6 +945,16 @@ bool CreateProductionGraph(ProductionFixture* fixture,
   if (!loaded.ok || loaded.descriptor.columns.size() != 9 ||
       loaded.descriptor.descriptor_generation == 0) {
     return Require(false, "production graph descriptor load failed");
+  }
+  if (!api::EngineGraphDescriptorCohortExact(loaded.descriptor)) {
+    for (const auto& column : loaded.descriptor.columns) {
+      std::cerr << "QOW-CES05-GRAPH descriptor: " << column.ordinal << ' '
+                << column.canonical_name_key << ' '
+                << column.value_descriptor.descriptor_uuid.canonical << ' '
+                << column.value_descriptor.descriptor_kind << ' '
+                << column.value_descriptor.canonical_type_name << ' '
+                << column.value_descriptor.encoded_descriptor << '\n';
+    }
   }
   fixture->graph_descriptor = loaded.descriptor;
   return true;
@@ -1087,6 +1107,14 @@ api::TypedRelationalDag ProductionGraphDag(
     node.output_descriptor_ids.push_back(descriptor_id);
     node.bound_expression_ids.push_back(descriptor_id);
   }
+  node.bound_expression_ids.push_back(20);
+  if (expand) {
+    node.bound_expression_ids.insert(node.bound_expression_ids.end(),
+                                     {10, 11, 12, 13, 14});
+  } else {
+    node.bound_expression_ids.insert(node.bound_expression_ids.end(),
+                                     {10, 11});
+  }
   node.required_object_uuids = {graph.relation_uuid.canonical};
   node.semantic_variant_id =
       expand ? "SBLR_MODEL_EXPAND_V1" : "SBLR_MODEL_SOURCE_V1";
@@ -1112,14 +1140,25 @@ api::TypedRelationalDag ProductionGraphCteDag(
 }
 
 std::string ProductionCoreTypeUuid(const std::string_view stable_name) {
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
   const auto descriptor = std::ranges::find_if(
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
-  return descriptor == manifest.manifest.descriptor_rows.end()
-             ? std::string{}
-             : uuid::UuidToString(descriptor->descriptor_uuid.value);
+  if (count != 1 || descriptor == manifest.manifest.descriptor_rows.end() ||
+      !descriptor->descriptor_uuid.valid()) {
+    return {};
+  }
+  const auto descriptor_uuid =
+      uuid::UuidToString(descriptor->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      descriptor->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 api::TypedRelationalDag ProductionGraphCountDag(
@@ -1904,6 +1943,16 @@ bool ProductionCanonicalGraphQueryRoute() {
   }
   AddProductionAuthorization(&writer, "INSERT", fixture.graph_uuid);
   const auto orphan_write = WriteProductionGraph(fixture, writer, true);
+  if (orphan_write.ok || orphan_write.dml_summary.rows_changed != 0 ||
+      !DiagnosticContains(orphan_write,
+                          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1")) {
+    std::cerr << "QOW-CES05-GRAPH orphan write: ok=" << orphan_write.ok
+              << " rows=" << orphan_write.dml_summary.rows_changed;
+    for (const auto& diagnostic : orphan_write.diagnostics) {
+      std::cerr << ' ' << diagnostic.code << ':' << diagnostic.detail;
+    }
+    std::cerr << '\n';
+  }
   if (!Require(!orphan_write.ok && orphan_write.dml_summary.rows_changed == 0 &&
                    DiagnosticContains(
                        orphan_write,

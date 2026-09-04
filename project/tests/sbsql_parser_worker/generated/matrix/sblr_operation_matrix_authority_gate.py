@@ -84,6 +84,19 @@ def validate_impl_row_semantics(operation_id: str, impl: dict[str, Any], errors:
     scope = impl.get("scope_status")
     status = str(impl.get("current_implementation_status", ""))
     readiness = impl.get("executor_readiness_status")
+    opcode_status = impl.get("opcode_status")
+    if opcode_status == "retired_non_core":
+        if status != "behavior_implemented":
+            errors.append(
+                f"{operation_id} retired internal API has unsupported status {status}"
+            )
+        if readiness != "internal_engine_api_only" or impl.get(
+            "parser_route_status"
+        ) != "internal_engine_api_only":
+            errors.append(
+                f"{operation_id} retired non-Core identity is not quarantined as internal-only"
+            )
+        return
     if scope in {"noncluster_required", "local_or_cluster"}:
         if status not in {
             "behavior_implemented",
@@ -129,6 +142,12 @@ def validate_public_snapshot_text(
     missing_opcodes = []
     for entry in impl_entries:
         operation = entry.get("sblr_operation")
+        if entry.get("opcode_status") == "retired_non_core":
+            if isinstance(operation, str) and operation in opcode_registry_text:
+                errors.append(
+                    f"retired non-Core SBLR identity leaked into engine opcode registry: {operation}"
+                )
+            continue
         if isinstance(operation, str) and operation not in opcode_registry_text:
             missing_opcodes.append(operation)
     if missing_opcodes:

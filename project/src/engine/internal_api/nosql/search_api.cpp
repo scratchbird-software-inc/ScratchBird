@@ -667,11 +667,18 @@ std::string ExactBoundSearchCoreTypeUuid(const std::string_view stable_name) {
   const auto found = std::ranges::find_if(
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
-  return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
-                 found->descriptor_uuid.valid()
-             ? scratchbird::core::uuid::UuidToString(
-                   found->descriptor_uuid.value)
-             : std::string{};
+  if (count != 1 || found == manifest.manifest.descriptor_rows.end() ||
+      !found->descriptor_uuid.valid()) {
+    return {};
+  }
+  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
+      found->descriptor_uuid.value);
+  const auto identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          "019d0000-0000-7000-8000-00000000d701",
+          manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+          found->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 bool ExactBoundSearchDescriptorFields(
@@ -734,11 +741,24 @@ bool ExactBoundSearchStorageDescriptorImpl(
            CanonicalBoundSearchUuid(column.column_uuid.canonical) &&
            CanonicalBoundSearchUuid(
                column.value_descriptor.descriptor_uuid.canonical) &&
+           column.value_descriptor.descriptor_uuid.canonical ==
+               column.column_uuid.canonical &&
            ExactBoundSearchDescriptorFields(
                column.value_descriptor,
                {{"canonical", "text"},
                 {"type_uuid", text_type_uuid},
-                {"nullable", "false"}});
+                {"nullable", "false"},
+                {"column_uuid", column.column_uuid.canonical},
+                {"datatype_descriptor_uuid",
+                 "019d0000-0000-7000-8000-00000000d718"},
+                {"datatype_descriptor_generation", "1"},
+                {"type_generation", "1"},
+                {"codec_uuid",
+                 "019d0000-0000-7000-8000-00000000d71a"},
+                {"codec_id", "datatype.text.utf8.v1"},
+                {"codec_version", "1"},
+                {"codec_generation", "1"},
+                {"null_encoding", "1"}});
   };
   return descriptor.columns[0].column_uuid.canonical !=
              descriptor.columns[1].column_uuid.canonical &&

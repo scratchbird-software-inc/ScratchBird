@@ -7,254 +7,217 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_engine_envelope.hpp"
+#include "sblr_source_map_runtime.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
-using scratchbird::engine::sblr::DecodeSblrEnvelope;
-using scratchbird::engine::sblr::EncodeSblrEnvelope;
-using scratchbird::engine::sblr::MakeSblrEnvelope;
-using scratchbird::engine::sblr::SblrOperationEnvelope;
-using scratchbird::engine::sblr::SblrOperationRenderHint;
-using scratchbird::engine::sblr::SblrSourceSymbolArtifact;
-using scratchbird::engine::sblr::SerializeSblrEnvelopeToJson;
-using scratchbird::engine::sblr::ValidateSblrEnvelope;
+namespace sblr = scratchbird::engine::sblr;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << "require_failed: " << message << '\n';
-    std::exit(1);
+    std::exit(EXIT_FAILURE);
   }
 }
 
-bool Contains(std::string_view haystack, std::string_view needle) {
-  return haystack.find(needle) != std::string_view::npos;
+template <typename Result>
+bool HasDiagnostic(const Result& result, std::string_view code) {
+  return std::ranges::any_of(result.diagnostics, [&](const auto& diagnostic) {
+    return diagnostic.code == code;
+  });
 }
 
-bool HasDiagnostic(const scratchbird::engine::sblr::SblrEnvelopeValidationResult& result,
-                   std::string_view code) {
-  for (const auto& diagnostic : result.diagnostics) {
-    if (diagnostic.code == code) return true;
+sblr::SblrSourceMapUuidV1 UuidBytes(std::uint8_t seed) {
+  sblr::SblrSourceMapUuidV1 value{};
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    value[index] = static_cast<std::uint8_t>(seed + index);
   }
-  return false;
+  return value;
 }
 
-SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
-                                std::string stable_key,
-                                std::string resolved_uuid,
-                                std::string render_hint,
-                                std::string scope) {
-  SblrSourceSymbolArtifact symbol;
-  symbol.symbol_kind = std::move(symbol_kind);
-  symbol.stable_key = std::move(stable_key);
-  symbol.resolved_uuid = std::move(resolved_uuid);
-  symbol.render_hint = std::move(render_hint);
-  symbol.scope = std::move(scope);
-  symbol.source_hash = "sha256:source-map-segment";
-  return symbol;
+sblr::SblrSourceMapSha256V1 HashBytes(std::uint8_t seed) {
+  sblr::SblrSourceMapSha256V1 value{};
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    value[index] = static_cast<std::uint8_t>(seed + index);
+  }
+  return value;
 }
 
-SblrOperationRenderHint RenderHint(std::string hint_kind,
-                                   std::string stable_key,
-                                   std::string value) {
-  SblrOperationRenderHint hint;
-  hint.hint_kind = std::move(hint_kind);
-  hint.stable_key = std::move(stable_key);
-  hint.value = std::move(value);
-  return hint;
+void AppendU64Le(std::vector<std::uint8_t>* bytes, std::uint64_t value) {
+  for (unsigned shift = 0; shift != 64; shift += 8) {
+    bytes->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffU));
+  }
 }
 
-SblrOperationEnvelope BuildEnvelope() {
-  auto envelope = MakeSblrEnvelope("query.plan_operation",
-                                   "SBLR_QUERY_PLAN_OPERATION",
-                                   "CBQ-002-SBLR-SOURCE-ARTIFACT-RUNTIME");
-  envelope.source_artifact_map.policy_status = "non_authoritative_render_metadata";
-  envelope.source_artifact_map.source_identity = "SBSQL-SOURCE-ARTIFACT-CBQ-002";
-  envelope.source_artifact_map.source_hash = "sha256:cbq002-source-artifact-map";
-  envelope.source_artifact_map.render_metadata_only = true;
-  envelope.source_artifact_map.contains_sql_text = false;
-  envelope.source_artifact_map.raw_sql_text_authoritative = false;
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("variable", "var.v_running_total", "", "v_running_total", "procedure.local"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("parameter", "param.p_customer_id", "019dffbb-f000-7000-8000-000000000002", ":p_customer_id", "predicate"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("cursor", "cursor.customer_scan", "019dffbb-f000-7000-8000-000000000003", "customer_scan", "procedure"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("label", "label.retry_block", "", "retry_block", "procedure"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("block_name", "block.retry", "", "retry", "procedure"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("routine", "routine.apply_credit", "019dffbb-f000-7000-8000-000000000004", "apply_credit", "routine"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("routine_argument", "routine.apply_credit.arg.amount", "", "amount", "routine"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("exception_handler", "handler.not_found", "", "not_found", "exception"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("cte", "cte.active_customers", "", "active_customers", "query"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("relation_alias", "alias.customer.c", "", "c", "range"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("column_alias", "alias.column.customer_id", "", "customer_id", "projection"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("object_display_name", "object.customer", "019dffbb-f000-7000-8000-000000000001", "customer", "from"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("generated_temp", "generated.local.1", "", "__sb_local_1", "generated"));
-  envelope.source_artifact_map.operation_render_hints.push_back(
-      RenderHint("operation", "query.plan_operation", "render_as_select_projection"));
-  envelope.source_artifact_map.operation_render_hints.push_back(
-      RenderHint("result_shape", "projection.customer_id", "render_column_alias_customer_id"));
+sblr::SblrSourceMapDescriptorVectorV1 SourceMapVector() {
+  sblr::SblrSourceMapDescriptorVectorV1 vector;
+  vector.descriptor_uuid = UuidBytes(0x10);
+  vector.descriptor_generation = 1;
+  vector.registry_snapshot_uuid = UuidBytes(0x30);
+  vector.registry_generation = 7;
+  vector.statement_receipt_uuid = UuidBytes(0x50);
+  vector.bound_ast_sha256 = HashBytes(0x70);
+  for (std::uint64_t ordinal = 1; ordinal <= 13; ++ordinal) {
+    sblr::SblrSourceMapEntryV1 entry;
+    entry.node_id = ordinal;
+    entry.source_artifact_uuid =
+        UuidBytes(static_cast<std::uint8_t>(0x90 + ordinal));
+    entry.source_artifact_generation = 1;
+    entry.byte_offset = (ordinal - 1) * 8;
+    entry.byte_length = 8;
+    entry.line = static_cast<std::uint32_t>(ordinal);
+    entry.column = 1;
+    entry.redaction_class = 0;
+    vector.entries.push_back(entry);
+  }
+  return vector;
+}
+
+sblr::SblrOperationEnvelope SourceMapCarrier(
+    const sblr::SblrSourceMapDescriptorVectorV1& vector) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "engine.op.source_map", "SBLR_SOURCE_MAP",
+      "SBLR-SOURCE-MAP-SBOP-BOUNDARY-V1");
+  envelope.opcode_code = 6;
+  envelope.result_shape = "void";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid =
+      "019dffbb-f000-7000-8000-000000000010";
+  envelope.registry_snapshot_uuid =
+      "019dffbb-f000-7000-8000-000000000011";
+  envelope.parser_resolved_names_to_uuids = true;
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "source_map.vector";
+  operand.name = "source_map";
+  operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+  operand.value_body.assign(vector.descriptor_uuid.begin(),
+                            vector.descriptor_uuid.end());
+  AppendU64Le(&operand.value_body, vector.descriptor_generation);
+  envelope.operands.push_back(std::move(operand));
   return envelope;
 }
 
-void CheckRoundTrip() {
-  const auto envelope = BuildEnvelope();
-  const auto validation = ValidateSblrEnvelope(envelope);
-  Require(validation.ok, "non-authoritative source artifact metadata should validate");
+void CheckCanonicalSourceMapCarrier() {
+  auto vector = SourceMapVector();
+  const auto encoded_vector =
+      sblr::EncodeSblrSourceMapDescriptorVectorV1(&vector);
+  Require(encoded_vector.size() == 152 + 13 * 104,
+          "SMVD did not use the exact header and entry extents");
+  const auto decoded_vector = sblr::DecodeSblrSourceMapDescriptorVectorV1(
+      encoded_vector.data(), encoded_vector.size());
+  Require(decoded_vector.status == sblr::SblrSourceMapDecodeStatusV1::ok &&
+              decoded_vector.canonical_bytes == encoded_vector &&
+              decoded_vector.vector.entries.size() == 13 &&
+              decoded_vector.vector.vector_sha256 == vector.vector_sha256,
+          "canonical SMVD source map did not round trip byte-identically");
 
-  const auto encoded = EncodeSblrEnvelope(envelope);
-  Require(Contains(encoded, "source_artifact_policy_status=non_authoritative_render_metadata"),
-          "encoded envelope includes source artifact policy");
-  Require(Contains(encoded, "source_symbol=variable"),
-          "encoded envelope includes variable source symbol");
-  Require(Contains(encoded, "source_symbol=relation_alias"),
-          "encoded envelope includes relation alias source symbol");
-  Require(Contains(encoded, "source_symbol=column_alias"),
-          "encoded envelope includes column alias source symbol");
-  Require(Contains(encoded, "source_symbol=exception_handler"),
-          "encoded envelope includes exception handler source symbol");
-  Require(Contains(encoded, "source_operation_render_hint=operation"),
-          "encoded envelope includes operation render hint");
+  auto tampered_vector = encoded_vector;
+  tampered_vector[120] ^= 0x01U;
+  Require(sblr::DecodeSblrSourceMapDescriptorVectorV1(
+              tampered_vector.data(), tampered_vector.size())
+              .status != sblr::SblrSourceMapDecodeStatusV1::ok,
+          "tampered SMVD vector hash was accepted");
 
-  const auto decoded = DecodeSblrEnvelope(encoded);
-  Require(decoded.ok, "decoded envelope should validate");
-  Require(decoded.envelope.source_artifact_map.policy_status ==
-              "non_authoritative_render_metadata",
-          "policy survives decode");
-  Require(decoded.envelope.source_artifact_map.source_hash ==
-              "sha256:cbq002-source-artifact-map",
-          "source hash survives decode");
-  Require(decoded.envelope.source_artifact_map.render_metadata_only,
-          "render metadata marker survives decode");
-  Require(!decoded.envelope.source_artifact_map.raw_sql_text_authoritative,
-          "raw SQL authority stays forbidden after decode");
-  Require(decoded.envelope.source_artifact_map.symbols.size() == 13,
-          "all symbol artifacts survive decode");
-  Require(decoded.envelope.source_artifact_map.operation_render_hints.size() == 2,
-          "all operation render hints survive decode");
-  constexpr std::array<std::string_view, 13> kExpectedSymbolKinds = {
-      "variable",
-      "parameter",
-      "cursor",
-      "label",
-      "block_name",
-      "routine",
-      "routine_argument",
-      "exception_handler",
-      "cte",
-      "relation_alias",
-      "column_alias",
-      "object_display_name",
-      "generated_temp"};
-  for (std::size_t i = 0; i < kExpectedSymbolKinds.size(); ++i) {
-    Require(decoded.envelope.source_artifact_map.symbols[i].symbol_kind == kExpectedSymbolKinds[i],
-            "appendix symbol kind survives decode");
-  }
+  const auto envelope = SourceMapCarrier(vector);
+  const auto validation = sblr::ValidateSblrEnvelope(envelope);
+  Require(validation.ok,
+          "exact SBLR_SOURCE_MAP descriptor-reference carrier was rejected");
 
-  const auto json = SerializeSblrEnvelopeToJson(decoded.envelope);
-  Require(Contains(json, "\"source_artifact_map\""),
-          "json includes source artifact map object");
-  Require(Contains(json, "\"policy_status\": \"non_authoritative_render_metadata\""),
-          "json includes policy status");
-  Require(Contains(json, "\"source_hash\": \"sha256:cbq002-source-artifact-map\""),
-          "json includes source hash");
-  Require(Contains(json, "\"symbols\""),
-          "json includes symbol artifact array");
-  Require(Contains(json, "\"symbol_kind\": \"variable\""),
-          "json includes variable source symbol");
-  Require(Contains(json, "\"symbol_kind\": \"relation_alias\""),
-          "json includes relation alias source symbol");
-  Require(Contains(json, "\"symbol_kind\": \"column_alias\""),
-          "json includes column alias source symbol");
-  Require(Contains(json, "\"symbol_kind\": \"exception_handler\""),
-          "json includes exception handler source symbol");
-  Require(Contains(json, "\"symbol_kind\": \"generated_temp\""),
-          "json includes generated local source symbol");
-  Require(Contains(json, "\"operation_render_hints\""),
-          "json includes operation render hint array");
-  Require(Contains(json, "\"raw_sql_text_authoritative\": false"),
-          "json records raw SQL authority is forbidden");
+  const auto encoded_envelope = sblr::EncodeSblrEnvelope(envelope);
+  Require(!encoded_envelope.empty(),
+          "exact source-map SBOP carrier did not encode");
+  const auto decoded_envelope = sblr::DecodeSblrEnvelope(encoded_envelope);
+  Require(decoded_envelope.ok &&
+              decoded_envelope.envelope.operation_id ==
+                  "engine.op.source_map" &&
+              decoded_envelope.envelope.opcode == "SBLR_SOURCE_MAP" &&
+              decoded_envelope.envelope.opcode_code == 6 &&
+              decoded_envelope.envelope.operands.size() == 1 &&
+              decoded_envelope.envelope.operands.front().value_body ==
+                  envelope.operands.front().value_body &&
+              decoded_envelope.envelope.source_artifact_map.policy_status ==
+                  "absent" &&
+              decoded_envelope.envelope.source_artifact_map.symbols.empty() &&
+              decoded_envelope.envelope.source_artifact_map
+                  .operation_render_hints.empty(),
+          "source-map descriptor carrier changed identity or gained SBOP metadata");
 }
 
-void CheckValidationRejectsSourceAuthorityMisuse() {
-  auto sql_text = BuildEnvelope();
-  sql_text.source_artifact_map.contains_sql_text = true;
-  const auto sql_text_validation = ValidateSblrEnvelope(sql_text);
-  Require(!sql_text_validation.ok, "source artifact SQL text marker is rejected");
-  Require(HasDiagnostic(sql_text_validation, "SB_SBLR_SOURCE_ARTIFACT_SQL_TEXT_FORBIDDEN"),
-          "source artifact SQL text diagnostic is deterministic");
+void RequireDuplicateIngressRefusal(
+    const sblr::SblrOperationEnvelope& envelope,
+    std::string_view detail) {
+  const auto validation = sblr::ValidateSblrEnvelope(envelope);
+  Require(!validation.ok &&
+              HasDiagnostic(
+                  validation,
+                  "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY"),
+          detail);
+}
 
-  auto authoritative_source = BuildEnvelope();
-  authoritative_source.source_artifact_map.raw_sql_text_authoritative = true;
-  const auto authoritative_source_validation = ValidateSblrEnvelope(authoritative_source);
-  Require(!authoritative_source_validation.ok, "authoritative source artifacts are rejected");
-  Require(HasDiagnostic(authoritative_source_validation, "SB_SBLR_SOURCE_ARTIFACT_AUTHORITY_FORBIDDEN"),
-          "source artifact authority diagnostic is deterministic");
+void CheckLegacySbopArtifactRefusal() {
+  const auto vector = SourceMapVector();
 
-  auto symbol_authority = BuildEnvelope();
-  symbol_authority.source_artifact_map.symbols[0].authoritative = true;
-  const auto symbol_authority_validation = ValidateSblrEnvelope(symbol_authority);
-  Require(!symbol_authority_validation.ok, "authoritative symbol artifacts are rejected");
-  Require(HasDiagnostic(symbol_authority_validation, "SB_SBLR_SOURCE_SYMBOL_AUTHORITY_FORBIDDEN"),
-          "source symbol authority diagnostic is deterministic");
+  auto metadata = SourceMapCarrier(vector);
+  metadata.source_artifact_map.policy_status =
+      "non_authoritative_render_metadata";
+  metadata.source_artifact_map.source_identity =
+      "SBSQL-SOURCE-ARTIFACT-LEGACY";
+  metadata.source_artifact_map.source_hash =
+      "sha256:legacy-source-artifact-map";
+  RequireDuplicateIngressRefusal(
+      metadata, "legacy source metadata was accepted inside SBOP");
 
-  auto hint_sql = BuildEnvelope();
-  hint_sql.source_artifact_map.operation_render_hints[0].contains_sql_text = true;
-  const auto hint_sql_validation = ValidateSblrEnvelope(hint_sql);
-  Require(!hint_sql_validation.ok, "operation render hint SQL text is rejected");
-  Require(HasDiagnostic(hint_sql_validation, "SB_SBLR_OPERATION_RENDER_HINT_SQL_TEXT_FORBIDDEN"),
-          "operation render hint SQL text diagnostic is deterministic");
+  auto symbol = SourceMapCarrier(vector);
+  symbol.source_artifact_map.symbols.push_back(
+      {"variable", "var.v", {}, "v", "procedure.local",
+       "sha256:legacy-source-map-segment", false, false});
+  RequireDuplicateIngressRefusal(
+      symbol, "legacy source symbol was accepted inside SBOP");
 
-  auto invalid_symbol = BuildEnvelope();
-  invalid_symbol.source_artifact_map.symbols[0].symbol_kind = "sql_text";
-  const auto invalid_symbol_validation = ValidateSblrEnvelope(invalid_symbol);
-  Require(!invalid_symbol_validation.ok, "invalid source symbol kind is rejected");
-  Require(HasDiagnostic(invalid_symbol_validation, "SB_SBLR_SOURCE_SYMBOL_ARTIFACT_INVALID"),
-          "invalid source symbol diagnostic is deterministic");
+  auto render_hint = SourceMapCarrier(vector);
+  render_hint.source_artifact_map.operation_render_hints.push_back(
+      {"operation", "engine.op.source_map", "render_as_source", false,
+       false});
+  RequireDuplicateIngressRefusal(
+      render_hint, "legacy render hint was accepted inside SBOP");
 
-  auto missing_policy = BuildEnvelope();
-  missing_policy.source_artifact_map.policy_status = "absent";
-  const auto missing_policy_validation = ValidateSblrEnvelope(missing_policy);
-  Require(!missing_policy_validation.ok, "source artifacts without policy are rejected");
-  Require(HasDiagnostic(missing_policy_validation, "SB_SBLR_SOURCE_ARTIFACT_POLICY_REQUIRED"),
-          "source artifact missing policy diagnostic is deterministic");
+  auto authoritative = SourceMapCarrier(vector);
+  authoritative.source_artifact_map.raw_sql_text_authoritative = true;
+  RequireDuplicateIngressRefusal(
+      authoritative, "source-text authority was accepted inside SBOP");
 
-  auto unresolved_names = BuildEnvelope();
-  unresolved_names.parser_resolved_names_to_uuids = false;
-  const auto unresolved_names_validation = ValidateSblrEnvelope(unresolved_names);
-  Require(!unresolved_names_validation.ok, "unresolved parser names remain rejected");
-  Require(HasDiagnostic(unresolved_names_validation, "SB_SBLR_NAMES_NOT_RESOLVED_TO_UUIDS"),
-          "name-to-UUID diagnostic is preserved");
+  auto contained_sql = SourceMapCarrier(vector);
+  contained_sql.source_artifact_map.contains_sql_text = true;
+  RequireDuplicateIngressRefusal(
+      contained_sql, "source SQL marker was accepted inside SBOP");
 
-  auto envelope_sql = BuildEnvelope();
+  auto envelope_sql = SourceMapCarrier(vector);
   envelope_sql.contains_sql_text = true;
-  const auto envelope_sql_validation = ValidateSblrEnvelope(envelope_sql);
-  Require(!envelope_sql_validation.ok, "engine envelope SQL text remains rejected");
-  Require(HasDiagnostic(envelope_sql_validation, "SB_SBLR_SQL_TEXT_FORBIDDEN"),
-          "envelope SQL text diagnostic is preserved");
+  RequireDuplicateIngressRefusal(
+      envelope_sql, "SQL text was accepted as SBOP authority");
+
+  const auto encoded_legacy = sblr::EncodeSblrEnvelope(metadata);
+  Require(encoded_legacy.empty(),
+          "invalid legacy source metadata was serialized as canonical SBOP");
 }
 
 }  // namespace
 
 int main() {
-  CheckRoundTrip();
-  CheckValidationRejectsSourceAuthorityMisuse();
-  std::cout << "sbsql_sblr_source_artifact_runtime_conformance=passed\n";
-  return 0;
+  CheckCanonicalSourceMapCarrier();
+  CheckLegacySbopArtifactRefusal();
+  std::cout << "sbsql_sblr_source_map_sbop_boundary=passed\n";
+  return EXIT_SUCCESS;
 }

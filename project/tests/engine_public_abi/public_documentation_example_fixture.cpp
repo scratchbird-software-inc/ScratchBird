@@ -10,6 +10,8 @@
 #include "scratchbird/engine/sblr/lowering.hpp"
 #include "scratchbird/engine/sblr/raising.hpp"
 
+#include <algorithm>
+#include <array>
 #include <string_view>
 
 namespace {
@@ -20,6 +22,28 @@ sb_engine_uuid_t example_uuid(unsigned char tail) {
   uuid.bytes[6] = 0x70;
   uuid.bytes[15] = tail;
   return uuid;
+}
+
+std::array<std::uint8_t, 132> example_sblr_anchor() {
+  std::array<std::uint8_t, 132> anchor{};
+  const auto copy_uuid = [&anchor](std::size_t offset, unsigned char tail) {
+    const auto uuid = example_uuid(tail);
+    std::copy(std::begin(uuid.bytes), std::end(uuid.bytes),
+              anchor.begin() + static_cast<std::ptrdiff_t>(offset));
+  };
+  copy_uuid(0, 0x21);
+  copy_uuid(16, 0x22);
+  copy_uuid(32, 0x23);
+  anchor[48] = 1;
+  anchor[52] = 1;
+  anchor[60] = 1;
+  anchor[68] = 1;
+  copy_uuid(76, 0x24);
+  anchor[92] = 1;
+  anchor[100] = static_cast<std::uint8_t>(
+      scratchbird::engine::SblrPayloadKind::operation_envelope);
+  copy_uuid(116, 0x25);
+  return anchor;
 }
 
 }  // namespace
@@ -50,11 +74,18 @@ int main() {
 
   const std::uint8_t plan[] = {'d', 'o', 'c'};
   auto envelope = scratchbird::engine::sblr::EnvelopeBuilder()
+                      .canonical_anchor(example_sblr_anchor())
                       .operation(scratchbird::engine::SblrOperationFamily::relational_query, 1)
+                      .payload_kind(
+                          scratchbird::engine::SblrPayloadKind::operation_envelope)
                       .append_bytes(plan, sizeof(plan))
                       .encode();
   auto decoded = scratchbird::engine::sblr::EnvelopeReader::decode(envelope.data(), envelope.size());
-  if (decoded.status != scratchbird::engine::SblrCodecStatus::ok) {
+  if (decoded.status != scratchbird::engine::SblrCodecStatus::ok ||
+      decoded.envelope.canonical_anchor != example_sblr_anchor() ||
+      decoded.envelope.canonical_bytes.size() != sizeof(plan) ||
+      !std::equal(decoded.envelope.canonical_bytes.begin(),
+                  decoded.envelope.canonical_bytes.end(), plan)) {
     return 3;
   }
 

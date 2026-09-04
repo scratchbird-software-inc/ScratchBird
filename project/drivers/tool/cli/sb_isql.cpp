@@ -2835,9 +2835,12 @@ bool handleMetaCommand(const std::string& cmd) {
         g_connection->setCopyInputSizeHintBytes(regularFileSizeHint(filename));
         g_connection->setCopyPreallocationFactorPercent(82);
         g_connection->setCopyInputStream(&infile);
-        const std::string sql = std::string("COPY ") + table_name +
-            " FROM STDIN WITH (NATIVE_BULK_INGEST, NATIVE_BULK_INGEST_ENABLED=" +
-            (enabled ? "TRUE" : "FALSE") + ")";
+        // This is an sb_isql metacommand, not a public SBsql COPY option.
+        // Keep it on the authenticated private native-ingest wire lane so the
+        // public COPY grammar can continue to fail closed for unsupported
+        // option surfaces.
+        const std::string sql = std::string("NATIVE_BULK_INGEST ") +
+            table_name + " FROM STDIN " + (enabled ? "ENABLED" : "DISABLED");
         core::Status status = g_connection->executeQuery(sql, &results, &ctx);
         g_connection->setCopyInputStream(nullptr);
         g_connection->setCopyInputSizeHintBytes(0);
@@ -3019,14 +3022,18 @@ bool handleMetaCommand(const std::string& cmd) {
                 first_line.find('=') != std::string::npos &&
                 first_line.find(',') == std::string::npos;
             if (canonical_row_field_file) {
+                // The historical field=value file format belongs to the
+                // private native-ingest metacommand lane.  It is not an
+                // opcode-775 canonical CSV stream and must not be presented as
+                // one merely because the user entered \copy.
                 ResultSet results;
                 core::ErrorContext ctx;
                 g_connection->setCopyInputSizeHintBytes(regularFileSizeHint(filename));
                 g_connection->setCopyPreallocationFactorPercent(82);
                 g_connection->setCopyInputStream(&infile);
                 core::Status status = g_connection->executeQuery(
-                    "COPY " + table_or_query +
-                        " FROM STDIN WITH (NATIVE_BULK_INGEST, NATIVE_BULK_INGEST_ENABLED=TRUE)",
+                    "NATIVE_BULK_INGEST " + table_or_query +
+                        " FROM STDIN ENABLED",
                     &results,
                     &ctx);
                 g_connection->setCopyInputStream(nullptr);
@@ -3035,20 +3042,21 @@ bool handleMetaCommand(const std::string& cmd) {
                     std::cerr << "Error: " << ctx.message << "\n";
                     return false;
                 }
-                std::cout << "COPY " << results.getRowsAffected() << " rows from '" << filename << "'\n";
+                std::cout << "COPY " << results.getRowsAffected()
+                          << " rows from '" << filename << "'\n";
                 return true;
             }
 
-            infile.clear();
-            infile.seekg(0, std::ios::beg);
+            // Opcode 775 owns conversion and policy.  The client forwards the
+            // canonical_csv_default_v1 file bytes opaquely and must not select
+            // a parser-side row or binary conversion profile.
             ResultSet results;
             core::ErrorContext ctx;
             g_connection->setCopyInputSizeHintBytes(regularFileSizeHint(filename));
             g_connection->setCopyPreallocationFactorPercent(82);
             g_connection->setCopyInputStream(&infile);
             core::Status status = g_connection->executeQuery(
-                "COPY " + table_or_query +
-                    " FROM STDIN WITH (NATIVE_BULK_INGEST, NATIVE_BULK_INGEST_ENABLED=TRUE, FORMAT CSV, HEADER TRUE)",
+                "COPY " + table_or_query + " FROM STDIN",
                 &results,
                 &ctx);
             g_connection->setCopyInputStream(nullptr);

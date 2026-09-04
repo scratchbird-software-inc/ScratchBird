@@ -904,7 +904,7 @@ public class ScratchBirdIntegrationTest {
     }
 
     @Test
-    public void scratchBirdProviderHonorsExplicitUrlConfiguration() {
+    public void scratchBirdProviderHonorsExplicitUrlConfiguration() throws Exception {
         DBPDriver driver = (DBPDriver) Proxy.newProxyInstance(
             DBPDriver.class.getClassLoader(),
             new Class<?>[] {DBPDriver.class},

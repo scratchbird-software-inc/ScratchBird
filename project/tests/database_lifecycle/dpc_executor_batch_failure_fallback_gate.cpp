@@ -136,6 +136,7 @@ exec::ExecutorBatchDmlRequest UpdateRequest(
   request.operation = exec::ExecutorBatchDmlOperation::kUpdateReturning;
   request.returning_descriptor_digest =
       "dpc_executor_batch_failure_dml_returning_v1";
+  request.returning_column_count = 3;
   request.row_step =
       [](const exec::Tuple& row,
          std::size_t row_index) -> exec::ExecutorBatchDmlRowStepResult {

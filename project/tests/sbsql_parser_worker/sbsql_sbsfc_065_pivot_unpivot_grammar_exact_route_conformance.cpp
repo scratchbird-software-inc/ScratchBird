@@ -56,8 +56,7 @@ constexpr GrammarRow kRows[] = {
 struct RouteCase {
   std::string_view sql;
   std::vector<std::string_view> surface_ids;
-  std::vector<std::string_view> payload_markers;
-  std::vector<std::string_view> forbidden_payload_markers;
+  std::string_view trace_key;
 };
 
 struct PipelineArtifacts {
@@ -77,6 +76,14 @@ void Require(bool condition, std::string_view message) {
 
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
+}
+
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == name) return field.value;
+  }
+  return {};
 }
 
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
@@ -172,8 +179,8 @@ void RequireRegistryEvidence() {
   }
 }
 
-void RequireExactLowering(const RouteCase& test_case,
-                          const PipelineArtifacts& artifacts) {
+void RequireExactRefusal(const RouteCase& test_case,
+                         const PipelineArtifacts& artifacts) {
   PrintMessages(artifacts.cst.messages);
   PrintMessages(artifacts.ast.messages);
   PrintMessages(artifacts.bound.messages);
@@ -181,14 +188,27 @@ void RequireExactLowering(const RouteCase& test_case,
   PrintMessages(artifacts.verifier.messages);
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-065 CST failed");
   Require(!artifacts.ast.messages.has_errors(), "SBSFC-065 AST failed");
-  Require(artifacts.bound.bound, "SBSFC-065 bind failed");
-  Require(artifacts.verifier.admitted, "SBSFC-065 verifier rejected exact route");
-  Require(artifacts.envelope.operation_id == "query.plan_operation",
-          "SBSFC-065 operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == "SBLR_QUERY_PLAN_OPERATION",
-          "SBSFC-065 SBLR opcode mismatch");
-  Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
-          "SBSFC-065 operation family mismatch");
+  Require(!artifacts.bound.messages.has_errors(),
+          "SBSFC-065 component binding failed");
+  Require(!artifacts.verifier.admitted && artifacts.verifier.messages.has_errors(),
+          "SBSFC-065 authority-incomplete query child was admitted");
+  Require(artifacts.envelope.operation_id ==
+                  "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "SBSFC-065 exact refusal tuple mismatch");
+  Require(artifacts.envelope.operation_family ==
+                  "sblr.query.relational.v3" &&
+              artifacts.envelope.sblr_operation_key ==
+                  "sblr.query.relational.v3" &&
+              artifacts.envelope.command_family == "query" &&
+              artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.diagnostic_shape_key ==
+                  "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1" &&
+              artifacts.envelope.trace_key == test_case.trace_key,
+          "SBSFC-065 exact refusal contract metadata drifted");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "SBSFC-065 no-SQL-execution authority missing");
@@ -197,32 +217,33 @@ void RequireExactLowering(const RouteCase& test_case,
           "SBSFC-065 no-storage-finality authority missing");
   Require(!artifacts.envelope.parser_executes_sql,
           "SBSFC-065 lowering allowed parser SQL execution");
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-          "SBSFC-065 payload did not prove no SQL text authority");
-  Require(Contains(artifacts.envelope.payload, "\"object_name_text_included\":false"),
-          "SBSFC-065 payload did not prove no object-name text authority");
-  Require(!Contains(artifacts.envelope.payload, test_case.sql),
-          "SBSFC-065 payload embedded source SQL text");
-  Require(!Contains(artifacts.envelope.payload, "SBSQL_SURFACE_REPLAY") &&
-              !Contains(artifacts.envelope.payload, "refusal"),
-          "SBSFC-065 payload used forbidden replay/refusal evidence");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal") &&
-              !Contains(artifacts.envelope.payload, "recovery"),
-          "SBSFC-065 payload carried WAL/recovery authority");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              !artifacts.envelope.real_file_effects,
+          "SBSFC-065 refusal retained executable or parser-owned authority");
+  const auto diagnostic = std::find_if(
+      artifacts.envelope.messages.diagnostics.begin(),
+      artifacts.envelope.messages.diagnostics.end(),
+      [](const Diagnostic& candidate) {
+        return candidate.code == "SBSQL.IMPL.NOT_AVAILABLE";
+      });
+  Require(diagnostic != artifacts.envelope.messages.diagnostics.end(),
+          "SBSFC-065 exact refusal diagnostic missing");
+  Require(DiagnosticField(*diagnostic, "canonical_parent_operation_id") ==
+                  "query.execute" &&
+              DiagnosticField(*diagnostic,
+                              "canonical_parent_sblr_opcode") ==
+                  "SBLR_QUERY_EXECUTE" &&
+              DiagnosticField(*diagnostic, "executable_sblr_emitted") ==
+                  "false",
+          "SBSFC-065 exact refusal parent identity drifted");
+  const auto recognized =
+      DiagnosticField(*diagnostic, "recognized_surface_ids");
   for (const auto surface_id : test_case.surface_ids) {
-    Require(Contains(artifacts.envelope.payload, surface_id),
-            std::string("SBSFC-065 payload missing row marker ") +
+    Require(Contains(recognized, surface_id),
+            std::string("SBSFC-065 refusal missing row marker ") +
                 std::string(surface_id));
-  }
-  for (const auto marker : test_case.payload_markers) {
-    Require(Contains(artifacts.envelope.payload, marker),
-            std::string("SBSFC-065 payload missing marker ") + std::string(marker));
-  }
-  for (const auto marker : test_case.forbidden_payload_markers) {
-    Require(!Contains(artifacts.envelope.payload, marker),
-            std::string("SBSFC-065 payload embedded forbidden marker ") +
-                std::string(marker));
   }
 }
 
@@ -435,43 +456,20 @@ int main() {
         "SBSQL-2FC490557319",
         "SBSQL-816B796B486F",
         "SBSQL-6EA06E502ED7"},
-       {"\"query_envelope_kind\":\"table_pivot\"",
-        "\"query_operation\":\"pivot\"",
-        "\"pivot_clause_present\":true",
-        "\"pivot_aggregate_list_count\":1",
-        "\"pivot_aggregate_function\":\"sb.aggregate.sum\"",
-        "\"pivot_aggregate_value_field\":\"amount\"",
-        "\"pivot_for_column_field\":\"quarter\"",
-        "\"pivot_for_column_count\":1",
-        "\"pivot_in_item_count\":2",
-        "\"pivot_binding_model\":\"engine_row_descriptor_pivot_route\"",
-        "sys.query.pivot_descriptor"},
-       {"sales"}},
+       "trace.sbsql.pivot_exact_refusal"},
       {"SELECT * FROM sales UNPIVOT (amount FOR quarter IN (q1 AS 'Q1', q2 AS 'Q2'))",
        {"SBSQL-D07E07A7470C",
         "SBSQL-272C2607CD1A",
         "SBSQL-8AB61EB176C5",
         "SBSQL-E6995A4824AD",
         "SBSQL-49FFC54C3042"},
-       {"\"query_envelope_kind\":\"table_unpivot\"",
-        "\"query_operation\":\"unpivot\"",
-        "\"unpivot_clause_present\":true",
-        "\"unpivot_value_column_count\":1",
-        "\"unpivot_value_field\":\"amount\"",
-        "\"unpivot_pivot_column_field\":\"quarter\"",
-        "\"unpivot_in_item_count\":2",
-        "\"unpivot_binding_model\":\"engine_row_descriptor_unpivot_route\"",
-        "sys.query.unpivot_descriptor"},
-       {"sales"}},
+       "trace.sbsql.unpivot_exact_refusal"},
   };
 
   for (const auto& test_case : cases) {
     const auto artifacts = RunPipeline(test_case);
-    RequireExactLowering(test_case, artifacts);
-    RequireServerAdmission(artifacts.envelope);
+    RequireExactRefusal(test_case, artifacts);
   }
-  RequirePivotPlanDispatch();
-  RequireUnpivotPlanDispatch();
   std::cout << "sbsql_sbsfc_065_pivot_unpivot_grammar_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

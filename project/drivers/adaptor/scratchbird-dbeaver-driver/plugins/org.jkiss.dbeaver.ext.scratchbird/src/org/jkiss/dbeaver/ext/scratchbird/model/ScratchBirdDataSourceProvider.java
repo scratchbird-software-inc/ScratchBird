@@ -71,7 +71,10 @@ public class ScratchBirdDataSourceProvider implements DBPDataSourceProvider {
 
     @NotNull
     @Override
-    public String getConnectionURL(@NotNull DBPDriver driver, @NotNull DBPConnectionConfiguration connectionInfo) {
+    public String getConnectionURL(
+        @NotNull DBPDriver driver,
+        @NotNull DBPConnectionConfiguration connectionInfo
+    ) throws DBException {
         if (connectionInfo.getConfigurationType() == DBPDriverConfigurationType.URL
             && !CommonUtils.isEmpty(connectionInfo.getUrl())) {
             return connectionInfo.getUrl();

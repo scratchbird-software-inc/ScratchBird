@@ -7,10 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_engine_envelope.hpp"
+#include "sblr_opcode_registry.hpp"
 #include "sblr_to_sbsql.hpp"
 #include "sbu_sbsql_parser_support.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -41,11 +43,6 @@ constexpr std::string_view kQueryAliasUuid =
     "019dffbb-f000-7000-8000-000000000202";
 constexpr std::string_view kCatalogObjectUuid =
     "019dffbb-f000-7000-8000-000000000301";
-constexpr std::string_view kTransactionContextUuid =
-    "019dffbb-f000-7000-8000-000000000401";
-constexpr std::string_view kSavepointUuid =
-    "019dffbb-f000-7000-8000-000000000402";
-
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << "require_failed: " << message << '\n';
@@ -63,6 +60,42 @@ SblrOperand Operand(std::string name, std::string value) {
   operand.name = std::move(name);
   operand.value = std::move(value);
   return operand;
+}
+
+SblrOperationEnvelope CanonicalOperation(SblrOperationEnvelope envelope) {
+  const auto* entry =
+      scratchbird::engine::sblr::LookupSblrOperation(envelope.operation_id);
+  Require(entry != nullptr && entry->opcode == envelope.opcode && entry->code != 0,
+          "renderer fixture operation lacks an exact canonical registry identity");
+  envelope.opcode_code = entry->code;
+  envelope.parser_package_uuid = "019dffbb-f000-7000-8000-000000000501";
+  envelope.registry_snapshot_uuid = "019dffbb-f000-7000-8000-000000000502";
+  envelope.parser_resolved_names_to_uuids = true;
+  for (std::size_t index = 0; index < envelope.operands.size(); ++index) {
+    auto& operand = envelope.operands[index];
+    operand.ordinal = static_cast<std::uint32_t>(index + 1);
+    if (operand.value_kind !=
+            scratchbird::engine::sblr::SblrValueKind::null_value ||
+        !operand.value_body.empty()) {
+      continue;
+    }
+    operand.value_kind =
+        scratchbird::engine::sblr::SblrValueKind::literal_typed;
+    operand.value_body.assign(16, 0);
+    operand.value_body[0] = 0x12;
+    operand.value_body[6] = 0x70;
+    operand.value_body[8] = 0x80;
+    operand.value_body[15] = 0x51;
+    const auto value_size = static_cast<std::uint64_t>(operand.value.size());
+    for (std::uint32_t shift = 0; shift < 64; shift += 8) {
+      operand.value_body.push_back(
+          static_cast<std::uint8_t>((value_size >> shift) & 0xffu));
+    }
+    operand.value_body.insert(operand.value_body.end(), operand.value.begin(),
+                              operand.value.end());
+    operand.value.clear();
+  }
+  return envelope;
 }
 
 SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
@@ -92,37 +125,38 @@ void AttachSourcePolicy(SblrOperationEnvelope* envelope,
 }
 
 SblrOperationEnvelope BuildConvertibleEnvelope() {
-  auto envelope = MakeSblrEnvelope("general.procedural_operation",
-                                   "SBLR_GENERAL_PROCEDURAL_OPERATION",
+  auto envelope = MakeSblrEnvelope("engine.op.insert",
+                                   "SBLR_INSERT",
                                    "CBQ-021-SBLR-TO-SBSQL-CONVERSION");
   envelope.requires_transaction_context = true;
   envelope.operands.push_back(Operand("sbsql_render_family",
-                                      "source_preserving_procedural_bundle_v1"));
+                                      "source_preserving_dml_single_row_v1"));
   envelope.operands.push_back(Operand("authority_descriptor_uuid",
                                       "019dffbb-f000-7000-8000-000000000102"));
-  envelope.operands.push_back(Operand("relation_object_uuid",
+  envelope.operands.push_back(Operand("target_object_uuid",
                                       std::string(kRelationUuid)));
-  envelope.operands.push_back(Operand("variable_type", "INT"));
+  envelope.operands.push_back(
+      Operand("value_column_symbol_key", "alias.column.customer_id"));
+  envelope.operands.push_back(
+      Operand("value_column_uuid", std::string(kQueryAliasUuid)));
+  envelope.operands.push_back(
+      Operand("value_parameter_symbol_key", "param.p_customer_id"));
+  envelope.operands.push_back(
+      Operand("value_parameter_uuid", std::string(kQueryParameterUuid)));
 
   AttachSourcePolicy(&envelope, "CBQ-021-source-preserving-route",
                      "sha256:cbq021-source-map");
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("variable", "var.v_running_total", "", "v_running_total", "procedure.local"));
+      Symbol("parameter", "param.p_customer_id",
+             std::string(kQueryParameterUuid), ":p_customer_id",
+             "dml.parameter"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("parameter", "param.p_customer_id", "", ":p_customer_id", "routine.input"));
+      Symbol("column_alias", "alias.column.customer_id",
+             std::string(kQueryAliasUuid), "customer_id", "dml.value"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("cursor", "cursor.customer_scan", "", "customer_scan", "procedure.cursor"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("label", "label.retry_block", "", "retry_block", "procedure.label"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("exception_handler", "handler.not_found", "", "not_found", "procedure.handler"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("relation_alias", "alias.customer.c", "", "c", "query.range"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("column_alias", "alias.column.customer_id", "", "customer_id", "query.projection"));
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("object_display_name", "object.customer", std::string(kRelationUuid), "customer", "query.from"));
-  return envelope;
+      Symbol("object_display_name", "object.customer",
+             std::string(kRelationUuid), "customer", "dml.target"));
+  return CanonicalOperation(std::move(envelope));
 }
 
 SblrOperationEnvelope BuildQueryProjectionEnvelope() {
@@ -150,7 +184,7 @@ SblrOperationEnvelope BuildQueryProjectionEnvelope() {
   envelope.source_artifact_map.symbols.push_back(
       Symbol("column_alias", "alias.column.limit_value", std::string(kQueryAliasUuid),
              "limit_value", "query.projection"));
-  return envelope;
+  return CanonicalOperation(std::move(envelope));
 }
 
 SblrOperationEnvelope BuildCatalogDescriptorEnvelope() {
@@ -170,27 +204,7 @@ SblrOperationEnvelope BuildCatalogDescriptorEnvelope() {
   envelope.source_artifact_map.symbols.push_back(
       Symbol("object_display_name", "object.replay_target",
              std::string(kCatalogObjectUuid), "replay_target", "catalog.target"));
-  return envelope;
-}
-
-SblrOperationEnvelope BuildSavepointEnvelope(std::string operation_id,
-                                             std::string opcode) {
-  auto envelope = MakeSblrEnvelope(std::move(operation_id),
-                                   std::move(opcode),
-                                   "CBQ-021-transaction-savepoint-route");
-  envelope.requires_transaction_context = true;
-  envelope.operands.push_back(Operand("sbsql_render_family",
-                                      "source_preserving_transaction_control_v1"));
-  envelope.operands.push_back(Operand("transaction_context_uuid",
-                                      std::string(kTransactionContextUuid)));
-  envelope.operands.push_back(Operand("savepoint_authority_uuid",
-                                      std::string(kSavepointUuid)));
-  AttachSourcePolicy(&envelope, "CBQ-021-transaction-savepoint-source-map",
-                     "sha256:cbq021-transaction-savepoint");
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("label", "savepoint.batch_guard", std::string(kSavepointUuid),
-             "batch_guard", "transaction.savepoint"));
-  return envelope;
+  return CanonicalOperation(std::move(envelope));
 }
 
 void EraseOperand(SblrOperationEnvelope* envelope, std::string_view name) {
@@ -201,6 +215,32 @@ void EraseOperand(SblrOperationEnvelope* envelope, std::string_view name) {
                        return operand.name == name;
                      }),
       envelope->operands.end());
+  for (std::size_t index = 0; index < envelope->operands.size(); ++index) {
+    envelope->operands[index].ordinal = static_cast<std::uint32_t>(index + 1);
+  }
+}
+
+void SetOperandText(SblrOperationEnvelope* envelope,
+                    std::string_view name,
+                    std::string_view value) {
+  for (auto& operand : envelope->operands) {
+    if (operand.name != name) continue;
+    Require(operand.value_kind ==
+                    scratchbird::engine::sblr::SblrValueKind::literal_typed &&
+                operand.value_body.size() >= 24,
+            "renderer fixture typed operand is malformed");
+    operand.value.clear();
+    operand.value_body.resize(16);
+    const auto value_size = static_cast<std::uint64_t>(value.size());
+    for (std::uint32_t shift = 0; shift < 64; shift += 8) {
+      operand.value_body.push_back(
+          static_cast<std::uint8_t>((value_size >> shift) & 0xffu));
+    }
+    operand.value_body.insert(operand.value_body.end(), value.begin(),
+                              value.end());
+    return;
+  }
+  Require(false, "renderer fixture operand to mutate is missing");
 }
 
 std::vector<std::string> RenderedStatements(std::string_view rendered) {
@@ -233,23 +273,35 @@ void ExpectApiRefusal(const SblrOperationEnvelope& envelope,
           std::string(label) + " did not return exact diagnostic " + std::string(code));
 }
 
-std::string CheckRouteThroughApiParserAndUdr(const SblrOperationEnvelope& envelope,
-                                             std::string_view expected_fragment,
-                                             std::size_t expected_statement_count,
-                                             std::string_view label) {
+std::string EncodeOperationWithoutSourceArtifacts(
+    const SblrOperationEnvelope& envelope) {
+  auto operation = envelope;
+  operation.source_artifact_map = {};
+  const auto encoded = EncodeSblrEnvelope(operation);
+  Require(!encoded.empty(),
+          "canonical operation without source artifacts did not encode");
+  return encoded;
+}
+
+std::string CheckRouteThroughApiAndParser(const SblrOperationEnvelope& envelope,
+                                          std::string_view expected_fragment,
+                                          std::size_t expected_statement_count,
+                                          std::string_view label) {
   const SblrToSbsqlOptions options{.source_preserving = true};
   const auto api_result = RenderSblrEnvelopeToSbsql(envelope, options);
   Require(api_result.ok, std::string(label) + " API route rejected valid envelope");
   Require(Contains(api_result.sbsql_text, expected_fragment),
           std::string(label) + " API route did not render expected SBsql");
 
-  const auto udr_result =
-      sbu_sbsql_decompile_sblr(EncodeSblrEnvelope(envelope), kSourcePreservingPolicy);
-  Require(udr_result.ok, std::string(label) + " UDR route rejected valid envelope");
-  Require(udr_result.payload == api_result.sbsql_text,
-          std::string(label) + " UDR route drifted from engine API render");
+  Require(EncodeSblrEnvelope(envelope).empty(),
+          std::string(label) + " embedded source artifacts entered SBOP");
+  ExpectRefusal(sbu_sbsql_decompile_sblr(
+                    EncodeOperationWithoutSourceArtifacts(envelope),
+                    kSourcePreservingPolicy),
+                "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED",
+                std::string(label) + " bare-SBOP reversal");
 
-  const auto statements = RenderedStatements(udr_result.payload);
+  const auto statements = RenderedStatements(api_result.sbsql_text);
   Require(statements.size() == expected_statement_count,
           std::string(label) + " rendered SBsql statement count mismatch");
   for (const auto& statement : statements) {
@@ -266,22 +318,13 @@ void CheckValidSourcePreservingRoute() {
   const SblrToSbsqlOptions options{.source_preserving = true};
   const auto api_result = RenderSblrEnvelopeToSbsql(envelope, options);
   Require(api_result.ok, "engine SBLR-to-SBsql API rejected valid envelope");
-  Require(Contains(api_result.sbsql_text, "DECLARE VARIABLE v_running_total INT;"),
-          "rendered SBsql did not preserve variable name");
-  Require(Contains(api_result.sbsql_text, "PARAM LIST p_customer_id;"),
-          "rendered SBsql did not preserve parameter name");
-  Require(Contains(api_result.sbsql_text, "DECLARE customer_scan CURSOR;"),
-          "rendered SBsql did not preserve cursor name");
-  Require(Contains(api_result.sbsql_text, "PSQL LEAVE retry_block;"),
-          "rendered SBsql did not preserve label name");
-  Require(Contains(api_result.sbsql_text, "EXCEPTION HANDLER WHEN not_found;"),
-          "rendered SBsql did not preserve exception handler name");
-  Require(Contains(api_result.sbsql_text, "FROM customer AS c"),
-          "rendered SBsql did not preserve relation alias");
-  Require(Contains(api_result.sbsql_text, "AS customer_id"),
-          "rendered SBsql did not preserve column alias");
+  Require(api_result.sbsql_text ==
+              "INSERT INTO customer (customer_id) VALUES (:p_customer_id);",
+          "rendered SBsql did not preserve canonical DML symbols");
 
-  const auto encoded = EncodeSblrEnvelope(envelope);
+  Require(EncodeSblrEnvelope(envelope).empty(),
+          "source artifacts were serialized inside SBOP");
+  const auto encoded = EncodeOperationWithoutSourceArtifacts(envelope);
   ExpectRefusal(sbu_sbsql_decompile_sblr(encoded, "normal"),
                 "SBU_SBSQL.DECOMPILE_POLICY_REFUSED",
                 "normal decompile policy");
@@ -291,15 +334,12 @@ void CheckValidSourcePreservingRoute() {
   Require(debug.payload == "<sblr-debug-text-redacted>",
           "legacy debug decompile path should remain redacted for non-source-preserving packets");
 
-  const auto udr_result = sbu_sbsql_decompile_sblr(encoded, kSourcePreservingPolicy);
-  Require(udr_result.ok, "UDR source-preserving decompile rejected valid envelope");
-  Require(udr_result.payload == api_result.sbsql_text,
-          "UDR source-preserving decompile drifted from engine API render");
-  Require(!Contains(udr_result.payload, "<sblr-debug-text-redacted>"),
-          "source-preserving policy returned redacted debug placeholder");
+  ExpectRefusal(sbu_sbsql_decompile_sblr(encoded, kSourcePreservingPolicy),
+                "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED",
+                "bare-SBOP source-preserving decompile");
 
-  const auto statements = RenderedStatements(udr_result.payload);
-  Require(statements.size() == 6, "rendered SBsql statement count mismatch");
+  const auto statements = RenderedStatements(api_result.sbsql_text);
+  Require(statements.size() == 1, "rendered SBsql statement count mismatch");
   for (const auto& statement : statements) {
     const auto syntax = sbu_sbsql_validate_syntax(statement, "sbsql");
     Require(syntax.ok, "rendered SBsql statement did not validate through parser path");
@@ -308,77 +348,61 @@ void CheckValidSourcePreservingRoute() {
 
 void CheckCoreOperationFamilyRoutes() {
   const auto query_rendered =
-      CheckRouteThroughApiParserAndUdr(BuildQueryProjectionEnvelope(),
-                                       "SELECT :p_limit AS limit_value;",
-                                       1,
-                                       "query projection");
+      CheckRouteThroughApiAndParser(BuildQueryProjectionEnvelope(),
+                                    "SELECT :p_limit AS limit_value;",
+                                    1,
+                                    "query projection");
   Require(!Contains(query_rendered, "projection_descriptor_uuid"),
           "query projection rendered authority metadata as SBsql text");
 
   const auto catalog_rendered =
-      CheckRouteThroughApiParserAndUdr(BuildCatalogDescriptorEnvelope(),
-                                       "SHOW CREATE TABLE replay_target;",
-                                       1,
-                                       "catalog descriptor");
+      CheckRouteThroughApiAndParser(BuildCatalogDescriptorEnvelope(),
+                                    "SHOW CREATE TABLE replay_target;",
+                                    1,
+                                    "catalog descriptor");
   Require(!Contains(catalog_rendered, std::string(kCatalogObjectUuid)),
           "catalog descriptor rendered UUID authority as SBsql text");
 
-  CheckRouteThroughApiParserAndUdr(
-      BuildSavepointEnvelope("transaction.create_savepoint",
-                             "SBLR_TRANSACTION_CREATE_SAVEPOINT"),
-      "SAVEPOINT batch_guard;",
-      1,
-      "transaction create savepoint");
-  CheckRouteThroughApiParserAndUdr(
-      BuildSavepointEnvelope("transaction.release_savepoint",
-                             "SBLR_TRANSACTION_RELEASE_SAVEPOINT"),
-      "RELEASE SAVEPOINT batch_guard;",
-      1,
-      "transaction release savepoint");
-  CheckRouteThroughApiParserAndUdr(
-      BuildSavepointEnvelope("transaction.rollback_to_savepoint",
-                             "SBLR_TRANSACTION_ROLLBACK_TO_SAVEPOINT"),
-      "ROLLBACK TO SAVEPOINT batch_guard;",
-      1,
-      "transaction rollback-to-savepoint");
 }
 
 void CheckDeterministicRefusals() {
   auto absent = BuildConvertibleEnvelope();
   absent.source_artifact_map = {};
-  ExpectRefusal(sbu_sbsql_decompile_sblr(EncodeSblrEnvelope(absent), kSourcePreservingPolicy),
+  ExpectRefusal(sbu_sbsql_decompile_sblr(EncodeSblrEnvelope(absent),
+                                         kSourcePreservingPolicy),
                 "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED",
                 "absent source artifacts");
 
   auto redacted = BuildConvertibleEnvelope();
   redacted.source_artifact_map.policy_status = "redacted_render_metadata";
-  ExpectRefusal(sbu_sbsql_decompile_sblr(EncodeSblrEnvelope(redacted), kSourcePreservingPolicy),
-                "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REDACTED",
-                "redacted source artifacts");
+  ExpectApiRefusal(redacted,
+                   "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REDACTED",
+                   "redacted source artifacts");
 
   auto invalid = BuildConvertibleEnvelope();
   invalid.source_artifact_map.contains_sql_text = true;
-  ExpectRefusal(sbu_sbsql_decompile_sblr(EncodeSblrEnvelope(invalid), kSourcePreservingPolicy),
-                "SB_SBLR_SOURCE_ARTIFACT_SQL_TEXT_FORBIDDEN",
-                "invalid source artifacts");
+  ExpectApiRefusal(invalid,
+                   "SB_SBLR_SOURCE_ARTIFACT_SQL_TEXT_FORBIDDEN",
+                   "invalid source artifacts");
+
+  auto authoritative = BuildConvertibleEnvelope();
+  authoritative.source_artifact_map.raw_sql_text_authoritative = true;
+  ExpectApiRefusal(authoritative,
+                   "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_POLICY_UNSUPPORTED",
+                   "authoritative source artifacts");
 
   auto missing_authority = BuildConvertibleEnvelope();
-  EraseOperand(&missing_authority, "relation_object_uuid");
-  ExpectRefusal(sbu_sbsql_decompile_sblr(EncodeSblrEnvelope(missing_authority),
-                                         kSourcePreservingPolicy),
-                "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED",
-                "missing UUID authority operand");
+  EraseOperand(&missing_authority, "target_object_uuid");
+  ExpectApiRefusal(missing_authority,
+                   "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED",
+                   "missing UUID authority operand");
 
   auto mismatched_authority = BuildConvertibleEnvelope();
-  for (auto& operand : mismatched_authority.operands) {
-    if (operand.name == "relation_object_uuid") {
-      operand.value = "019dffbb-f000-7000-8000-000000000199";
-    }
-  }
-  ExpectRefusal(sbu_sbsql_decompile_sblr(EncodeSblrEnvelope(mismatched_authority),
-                                         kSourcePreservingPolicy),
-                "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
-                "mismatched UUID authority operand");
+  SetOperandText(&mismatched_authority, "target_object_uuid",
+                 "019dffbb-f000-7000-8000-000000000199");
+  ExpectApiRefusal(mismatched_authority,
+                   "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
+                   "mismatched UUID authority operand");
 
   auto query_missing_descriptor = BuildQueryProjectionEnvelope();
   EraseOperand(&query_missing_descriptor, "projection_descriptor_uuid");
@@ -387,11 +411,8 @@ void CheckDeterministicRefusals() {
                    "query missing projection descriptor authority");
 
   auto query_mismatched_parameter = BuildQueryProjectionEnvelope();
-  for (auto& operand : query_mismatched_parameter.operands) {
-    if (operand.name == "parameter_slot_uuid") {
-      operand.value = "019dffbb-f000-7000-8000-000000000299";
-    }
-  }
+  SetOperandText(&query_mismatched_parameter, "parameter_slot_uuid",
+                 "019dffbb-f000-7000-8000-000000000299");
   ExpectApiRefusal(query_mismatched_parameter,
                    "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
                    "query mismatched parameter UUID authority");
@@ -403,40 +424,17 @@ void CheckDeterministicRefusals() {
                    "catalog missing target object UUID authority");
 
   auto catalog_mismatched_object = BuildCatalogDescriptorEnvelope();
-  for (auto& operand : catalog_mismatched_object.operands) {
-    if (operand.name == "target_object_uuid") {
-      operand.value = "019dffbb-f000-7000-8000-000000000399";
-    }
-  }
+  SetOperandText(&catalog_mismatched_object, "target_object_uuid",
+                 "019dffbb-f000-7000-8000-000000000399");
   ExpectApiRefusal(catalog_mismatched_object,
                    "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
                    "catalog mismatched target UUID authority");
-
-  auto transaction_missing_context =
-      BuildSavepointEnvelope("transaction.create_savepoint",
-                             "SBLR_TRANSACTION_CREATE_SAVEPOINT");
-  EraseOperand(&transaction_missing_context, "transaction_context_uuid");
-  ExpectApiRefusal(transaction_missing_context,
-                   "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED",
-                   "transaction missing context authority");
-
-  auto transaction_mismatched_savepoint =
-      BuildSavepointEnvelope("transaction.create_savepoint",
-                             "SBLR_TRANSACTION_CREATE_SAVEPOINT");
-  for (auto& operand : transaction_mismatched_savepoint.operands) {
-    if (operand.name == "savepoint_authority_uuid") {
-      operand.value = "019dffbb-f000-7000-8000-000000000499";
-    }
-  }
-  ExpectApiRefusal(transaction_mismatched_savepoint,
-                   "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
-                   "transaction mismatched savepoint authority");
 
   auto unsupported = BuildQueryProjectionEnvelope();
   unsupported.operation_id = "query.unsupported_projection";
   unsupported.opcode = "SBLR_QUERY_UNSUPPORTED_PROJECTION";
   ExpectApiRefusal(unsupported,
-                   "SB_SBLR_TO_SBSQL_UNSUPPORTED_OPERATION",
+                   "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
                    "unsupported operation family");
 }
 

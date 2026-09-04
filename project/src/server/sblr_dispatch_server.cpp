@@ -35,6 +35,7 @@
 #include "../engine/sblr/sblr_opcode_stream.hpp"
 #include "../engine/sblr/sblr_transaction_begin_runtime.hpp"
 #include "../engine/sblr/sblr_transaction_commit_runtime.hpp"
+#include "sblr_bulk_import_stream_registry.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -8395,7 +8396,9 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
     const std::vector<std::uint8_t>& literal_execution_binding = {},
     const std::vector<std::uint8_t>& parameter_execution_binding = {},
     const std::vector<std::uint8_t>& parameter_value_set = {},
-    const std::vector<std::uint8_t>& variable_execution_binding = {}) {
+    const std::vector<std::uint8_t>& variable_execution_binding = {},
+    engine_api::SblrBulkImportStreamRegistry*
+        bulk_import_stream_registry = nullptr) {
   PublicAbiDispatchResult dispatch_result;
   dispatch_result.attempted = true;
   if (!statement_context.receipt || admission_token == nullptr) {
@@ -8437,6 +8440,7 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
   request.parameter_execution_binding = parameter_execution_binding;
   request.parameter_value_set = parameter_value_set;
   request.variable_execution_binding = variable_execution_binding;
+  request.bulk_import_stream_registry = bulk_import_stream_registry;
   request.package_admission_reservation.opaque_id =
       admission_token->package_reservation_handle;
   request.admitted_payload_kind = admission_token->reserved_payload_kind ==
@@ -8584,6 +8588,24 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
       dispatch_result.diagnostic_detail =
           std::string("status=") + sb_engine_status_name(status) +
           ";engine_result_missing";
+    }
+    const char* trace_path =
+        std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+    if (trace_path != nullptr && *trace_path != '\0') {
+      const auto trace_field = [](std::string value) {
+        std::replace(value.begin(), value.end(), '\t', ' ');
+        std::replace(value.begin(), value.end(), '\r', ' ');
+        std::replace(value.begin(), value.end(), '\n', ' ');
+        return value;
+      };
+      std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
+      if (trace) {
+        trace << "layer=statement_context_dispatch_failure"
+              << "\tcode=" << trace_field(dispatch_result.diagnostic_code)
+              << "\tdetail=" << trace_field(dispatch_result.diagnostic_detail)
+              << "\taudit=" << trace_field(dispatch_result.audit_detail)
+              << '\n';
+      }
     }
   }
   return dispatch_result;
@@ -10020,6 +10042,7 @@ SessionOperationResult HandleExecuteSblrImpl(
   }
   const bool transaction_control =
       admission.operation_id == "transaction.begin" ||
+      admission.operation_id == "transaction.set_characteristics" ||
       admission.operation_id == "transaction.commit" ||
       admission.operation_id == "transaction.rollback";
   const bool server_special_route =
@@ -11872,6 +11895,26 @@ SessionOperationResult HandleExecuteSblrImpl(
         mark_execute_phase("server_live_catalog_projection:" + live_catalog_projection_path);
       }
       mark_execute_phase("pre_public_abi_dispatch");
+      std::shared_ptr<const HostedDatabaseRuntime> bulk_import_runtime;
+      if (canonical_ingress &&
+          admission.operation_id == "engine.op.bulk_import_stream") {
+        bulk_import_runtime = FindHostedDatabaseRuntime(
+            engine_state, session->database_uuid);
+        if (!bulk_import_runtime ||
+            !bulk_import_runtime->bulk_import_stream_registry ||
+            !bulk_import_runtime->bulk_import_stream_registry->healthy()) {
+          CompleteServerRequestLifecycle(
+              registry, request_record.request_uuid,
+              ServerRequestLifecycleState::kFailed,
+              "bulk_import_stream_registry_unavailable");
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "BULK.IMPORT.RECOVERY_CONFLICT",
+              "The durable bulk-import stream registry is unavailable.",
+              "bulk_import_stream_registry_unavailable");
+        }
+      }
       auto public_abi = canonical_ingress
                             ? DispatchThroughStatementContextReceipt(
                                   *live_statement_context,
@@ -11881,7 +11924,11 @@ SessionOperationResult HandleExecuteSblrImpl(
                                   decoded->literal_execution_binding,
                                   decoded->parameter_execution_binding,
                                   decoded->parameter_value_set,
-                                  decoded->variable_execution_binding)
+                                  decoded->variable_execution_binding,
+                                  bulk_import_runtime
+                                      ? bulk_import_runtime
+                                            ->bulk_import_stream_registry.get()
+                                      : nullptr)
                         : use_server_live_catalog_projection
                             ? DispatchServerLiveIparCatalogProjection(dispatch_session,
                                                                       encoded,

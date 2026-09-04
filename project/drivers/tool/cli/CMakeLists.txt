@@ -14,7 +14,7 @@ project(scratchbird_cli LANGUAGES CXX)
 # It does not imply universal runtime parity or a stable plugin ABI across
 # engine, listener, parser-agent, and client layers.
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -25,6 +25,7 @@ find_package(OpenSSL REQUIRED)
 option(SB_BUILD_CLI_FDW "Build FDW-backed CLI tools (pg/mysql/firebird)" OFF)
 get_filename_component(SB_DRIVERS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 get_filename_component(SB_PROJECT_ROOT "${SB_DRIVERS_ROOT}/.." ABSOLUTE)
+set(SB_PROJECT_SOURCE_DIR "${SB_PROJECT_ROOT}")
 set(SB_ENGINE_SOURCE_DIR "${SB_PROJECT_ROOT}" CACHE PATH
     "Path to ScratchBird engine source tree (for FDW CLI linkage)")
 set(SB_ENGINE_BUILD_DIR "${CMAKE_BINARY_DIR}" CACHE PATH
@@ -32,10 +33,42 @@ set(SB_ENGINE_BUILD_DIR "${CMAKE_BINARY_DIR}" CACHE PATH
 
 include("${SB_PROJECT_ROOT}/cmake/PublicBranding.cmake")
 
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(SB_NONCLUSTER_ENGINE_PROFILE "bootstrap")
+    set(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE OFF)
+    set(SB_NONCLUSTER_ENGINE_DEGRADED_PROFILE ON)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated/scratchbird/core/platform")
+    configure_file(
+        "${SB_PROJECT_ROOT}/src/core/platform/noncluster_engine_profile.hpp.in"
+        "${CMAKE_BINARY_DIR}/generated/scratchbird/core/platform/noncluster_engine_profile.hpp"
+        @ONLY
+    )
+endif()
+
 set(SB_CPP_DRIVER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/cpp" CACHE PATH
     "Path to the current-repo C++ driver source tree")
 if (NOT TARGET scratchbird_client)
     add_subdirectory("${SB_CPP_DRIVER_DIR}" "${CMAKE_BINARY_DIR}/drivers/driver/cpp")
+endif()
+if (NOT TARGET sb_core_platform)
+    add_subdirectory("${SB_PROJECT_ROOT}/src/core/platform"
+                     "${CMAKE_BINARY_DIR}/core_platform_for_cli")
+endif()
+if (NOT TARGET sb_core_uuid)
+    add_subdirectory("${SB_PROJECT_ROOT}/src/core/uuid"
+                     "${CMAKE_BINARY_DIR}/core_uuid_for_cli")
+endif()
+if (NOT TARGET sb_core_datatypes)
+    add_subdirectory("${SB_PROJECT_ROOT}/src/core/datatypes"
+                     "${CMAKE_BINARY_DIR}/core_datatypes_for_cli")
+endif()
+if (NOT TARGET sb_core_resources)
+    add_subdirectory("${SB_PROJECT_ROOT}/src/core/resources"
+                     "${CMAKE_BINARY_DIR}/core_resources_for_cli")
+endif()
+if (NOT TARGET sb_core_index)
+    add_subdirectory("${SB_PROJECT_ROOT}/src/core/index"
+                     "${CMAKE_BINARY_DIR}/core_index_for_cli")
 endif()
 if (NOT TARGET sb_storage_database)
     add_subdirectory("${SB_PROJECT_ROOT}/src/storage/database"

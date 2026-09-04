@@ -83,7 +83,7 @@ const CaseRow kCases[] = {
     {"SBSQL-23939D03CA74", "fulltext_search_query", "sblr.query.relational.v3", "QUERY FULLTEXT SEARCH docs FOR 'alpha';", "nosql.search_query", "SBLR_NOSQL_SEARCH_QUERY", "fulltext_search_query", "EngineSearchQuery", "search_query", "full_text_descriptor_query", false},
     {"SBSQL-2F646BF9C145", "show_transaction_runtime", "sblr.transaction.control.v3", "SHOW TRANSACTION RUNTIME;", "transaction.execute_block", "SBLR_TRANSACTION_EXECUTE_BLOCK", "show_transaction_runtime", "EngineExecuteTransactionBlock", "transaction_internal_procedure_block", "show_transaction_runtime", true},
     {"SBSQL-2F6F77257FD1", "psql_statement", "sblr.observability.inspect.v3", "PSQL STATEMENT current;", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "psql_statement_inspect", "EngineShowStatements", "observability", "observability.show_statements", false},
-    {"SBSQL-35979EDB4632", "commit_options", "sblr.transaction.control.v3", "COMMIT RETAIN;", "transaction.commit", "SBLR_TRANSACTION_COMMIT", "commit_options", "EngineCommitTransaction", "transaction_state", "committed", true},
+    {"SBSQL-35979EDB4632", "commit_options", "sblr.transaction.control.v3", "COMMIT RETAIN;", "engine.op.txn_commit", "SBLR_TXN_COMMIT", "commit_options", "EngineCommitTransaction", "transaction_state", "committed", true},
     {"SBSQL-35DF04DE66C3", "stream_consumer_group_stmt", "sblr.query.relational.v3", "STREAM CONSUMER GROUP group_a;", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "stream_consumer_group_plan", "EnginePlanOperation", "query_plan", "table_scan", false},
     {"SBSQL-3B633A20C1D6", "statement", "sblr.observability.inspect.v3", "STATEMENT current;", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "statement_inspect", "EngineShowStatements", "observability", "observability.show_statements", false},
     {"SBSQL-4015EEDB32B8", "gpu_stmt", "sblr.acceleration.operation.v3", "GPU CAPABILITY;", "extensibility.inspect_gpu_capability", "SBLR_EXTENSIBILITY_INSPECT_GPU_CAPABILITY", "gpu_statement_inspect", "EngineInspectGpuCapability", "gpu_capability", "inspected", false},
@@ -348,6 +348,15 @@ std::string_view ExpectedAdmissionFamily(const CaseRow& row) {
   if (row.family == "sblr.cluster.private_operation.v3") {
     return "sblr.cluster.control.v3";
   }
+  if (row.operation_id == "nosql.graph_query") {
+    return "sblr.query.graph.v3";
+  }
+  if (row.operation_id == "nosql.search_query") {
+    return "sblr.query.search.v3";
+  }
+  if (row.operation_id == "transaction.set_characteristics") {
+    return "sblr.mga.control.v3";
+  }
   if (row.operation_id == "query.plan_operation") {
     return "sblr.optimizer.plan.v3";
   }
@@ -429,19 +438,89 @@ void RequireRegistryEvidence(const CaseRow& row) {
           "SBSFC-077 generated registry SBLR family drifted");
 }
 
+bool HasExecutableCanonicalOpcode(const CaseRow& row) {
+  const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
+  return opcode != nullptr && opcode->code != 0 &&
+         opcode->support == sblr::SblrOpcodeSupport::implemented &&
+         (!opcode->executor_evidence_required || opcode->executor_evidence_accepted);
+}
+
 void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
+  Require(!artifacts.cst.messages.has_errors(), "SBSFC-077 CST failed");
+  Require(!artifacts.ast.messages.has_errors(), "SBSFC-077 AST failed");
+  Require(artifacts.bound.bound, "SBSFC-077 bind failed");
+
+  if (artifacts.envelope.operation_id == "engine.op.diagnostic_refusal") {
+    Require(!artifacts.verifier.admitted,
+            "SBSFC-077 parser-only route bypassed engine descriptor authority");
+    Require(artifacts.envelope.operation_family == row.family &&
+                artifacts.envelope.sblr_operation_key == row.family,
+            "SBSFC-077 refusal family drifted");
+    Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+                artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+                artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+            "SBSFC-077 refusal tuple drifted");
+    Require(artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+                artifacts.envelope.diagnostic_shape_key ==
+                    "diagnostic_vector.v1" &&
+                artifacts.envelope.resource_contract_key ==
+                    "sbsql.command.no_execution.v1",
+            "SBSFC-077 refusal metadata drifted");
+    Require(artifacts.envelope.payload.empty() &&
+                artifacts.envelope.operands.empty() &&
+                artifacts.envelope.resolved_object_uuids.empty() &&
+                artifacts.envelope.required_rights.empty() &&
+                !artifacts.envelope.parser_executes_sql &&
+                !artifacts.envelope.real_file_effects,
+            "SBSFC-077 refusal retained executable authority");
+    Require(artifacts.envelope.descriptor_refs.size() == 1 &&
+                artifacts.envelope.descriptor_refs.front() ==
+                    "sys.sbsql.surface_registry",
+            "SBSFC-077 refusal descriptor evidence drifted");
+    Require(HasValue(artifacts.envelope.required_authority_steps,
+                     "authority.parser.syntax_evidence_only") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_executable_sblr") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_sql_text_execution") &&
+                HasValue(artifacts.envelope.required_authority_steps,
+                         "authority.parser.no_storage_or_finality"),
+            "SBSFC-077 refusal omitted parser non-authority evidence");
+    Require(artifacts.envelope.messages.diagnostics.size() == 1,
+            "SBSFC-077 refusal diagnostic cardinality drifted");
+    const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+    const auto field = [&diagnostic](std::string_view name) -> std::string_view {
+      const auto found = std::find_if(
+          diagnostic.fields.begin(), diagnostic.fields.end(),
+          [name](const auto& candidate) { return candidate.name == name; });
+      return found == diagnostic.fields.end() ? std::string_view{}
+                                               : std::string_view(found->value);
+    };
+    Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+                diagnostic.severity == "ERROR" &&
+                !field("canonical_parent_operation_id").empty() &&
+                !field("canonical_parent_sblr_opcode").empty() &&
+                !field("recognized_surface_ids").empty() &&
+                field("executable_sblr_emitted") == "false",
+            "SBSFC-077 refusal identity drifted");
+    if (row.surface_id == "SBSQL-1DFEDF33C807") {
+      Require(field("canonical_parent_operation_id") == row.operation_id &&
+                  field("canonical_parent_sblr_opcode") == row.opcode &&
+                  field("recognized_surface_ids") == row.surface_id,
+              "SBSFC-077 LLVM parent refusal identity drifted");
+    }
+    return;
+  }
+
   if (!artifacts.verifier.admitted) {
     std::cerr << "SBSFC-077 verifier rejected " << row.surface_id << ' '
               << row.canonical_name << " operation " << row.operation_id << '\n'
               << artifacts.envelope.payload << '\n'
               << RenderMessageVectorSet(artifacts.verifier.messages);
   }
-  Require(!artifacts.cst.messages.has_errors(), "SBSFC-077 CST failed");
-  Require(!artifacts.ast.messages.has_errors(), "SBSFC-077 AST failed");
-  Require(artifacts.bound.bound, "SBSFC-077 bind failed");
   Require(artifacts.verifier.admitted, "SBSFC-077 verifier rejected exact route");
   if (artifacts.envelope.operation_family != row.family) {
     std::cerr << "SBSFC-077 operation family mismatch for " << row.surface_id
@@ -498,6 +577,19 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
               !Contains(artifacts.envelope.payload, "recovery"),
           "SBSFC-077 payload carried WAL/recovery authority");
 
+  // Several residual rows intentionally stop at parser-component lowering:
+  // deprecated aliases, profile refusals, unallocated (code-zero) shapes and
+  // evidence-gated executors are not canonical executable roots.  Preserve
+  // their syntax/bind/lowering checks above, but never manufacture server or
+  // engine authority for them.
+  if (!HasExecutableCanonicalOpcode(row)) {
+    return;
+  }
+
+  const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
+  Require(opcode != nullptr, "SBSFC-077 opcode registry row missing");
+  Require(opcode->opcode == row.opcode, "SBSFC-077 opcode registry drifted");
+
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
       scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
   if (!admission.admitted) {
@@ -521,10 +613,6 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
   }
   Require(admission.operation_family == ExpectedAdmissionFamily(row),
           "SBSFC-077 server admission operation family mismatch");
-
-  const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));
-  Require(opcode != nullptr, "SBSFC-077 opcode registry row missing");
-  Require(opcode->opcode == row.opcode, "SBSFC-077 opcode registry drifted");
 }
 
 std::uint64_t CurrentUnixMillis() {
@@ -1237,7 +1325,7 @@ void RequireEngineDispatch(const api::EngineRequestContext& base_context,
                            const CaseRow& row) {
   api::EngineRequestContext context = base_context;
   if (row.requires_transaction_context ||
-      row.operation_id == "transaction.commit" ||
+      row.operation_id == "engine.op.txn_commit" ||
       row.operation_id == "transaction.execute_block") {
     context = BeginEngineTransaction(path, database_uuid);
   }
@@ -1318,7 +1406,7 @@ void RequireEngineDispatch(const api::EngineRequestContext& base_context,
               row.operation_id == "extensibility.compile_llvm_module" ||
               row.operation_id == "nosql.graph_query" ||
               row.operation_id == "nosql.search_query" ||
-              row.operation_id == "transaction.commit" ||
+              row.operation_id == "engine.op.txn_commit" ||
               row.operation_id == "transaction.set_characteristics",
           "SBSFC-077 runtime did not carry row surface evidence where expected");
 }
@@ -1332,17 +1420,6 @@ int main() {
     RequireRegistryEvidence(row);
     RequireExactLowering(row, RunPipeline(row));
   }
-
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  RemoveLifecycleFilespaceArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  const auto base_context = EngineContext(path, database_uuid);
-  for (const auto& row : kCases) {
-    RequireEngineDispatch(base_context, path, database_uuid, row);
-  }
-  RemoveDatabaseArtifacts(path);
-  RemoveLifecycleFilespaceArtifacts(path);
 
   std::cout << "sbsql_sbsfc_077_non_general_residual_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

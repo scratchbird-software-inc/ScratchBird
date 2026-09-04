@@ -473,7 +473,11 @@ void TestValidationFailureAndNonAuthoritativeRefusal() {
   MergeDeferredRows(fixture);
 
   {
-    std::ofstream out(fixture.database_path.string() + ".sb.mga_index_entries",
+    const auto scoped_index_path =
+        std::filesystem::path(fixture.database_path.string() +
+                              ".sb.mga_relation_scope") /
+        (fixture.table_uuid + ".indexes");
+    std::ofstream out(scoped_index_path,
                       std::ios::binary | std::ios::trunc);
     Require(static_cast<bool>(out), "DPC-033 could not corrupt index sidecar");
   }

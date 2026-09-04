@@ -529,17 +529,20 @@ ValidateCanonicalLogicalRelationalGraph(
     // ownership.  Admit only the closed family-specific widths here; never
     // narrow, strip, or replace that semantic closure.
     const bool exact_document_graph_key_value_attachment_width =
-        model_source &&
         node.bound_expression_ids.size() > node.output_descriptor_ids.size() &&
-        ((document_family &&
+        ((document_family && model_source &&
           node.bound_expression_ids.size() -
                   node.output_descriptor_ids.size() ==
               2) ||
-         (graph_family &&
+         (graph_family && model_source &&
           node.bound_expression_ids.size() -
                   node.output_descriptor_ids.size() ==
               3) ||
-         (key_value_family &&
+         (graph_family && model_expand &&
+          node.bound_expression_ids.size() -
+                  node.output_descriptor_ids.size() ==
+              6) ||
+         (key_value_family && model_source &&
           node.bound_expression_ids.size() -
                   node.output_descriptor_ids.size() ==
               4));

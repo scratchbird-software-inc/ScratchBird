@@ -57,11 +57,14 @@ engine_api::EngineRequestContext Context(const std::filesystem::path& database_p
                                          std::uint64_t epoch = 1000,
                                          std::uint64_t local_transaction_id = 1) {
   engine_api::EngineRequestContext context;
-  context.trust_mode = engine_api::EngineTrustMode::server_isolated;
+  context.trust_mode = engine_api::EngineTrustMode::embedded_in_process;
   context.database_path = database_path.string();
   context.database_uuid.canonical = std::string(database_uuid);
   context.security_context_present = true;
   context.trace_tags.push_back("security.bootstrap");
+  context.trace_tags.push_back("security.fixture_trace_authority");
+  context.trace_tags.push_back("right:KEY_RELEASE_APPROVE");
+  context.trace_tags.push_back("right:PROTECTED_MATERIAL_RELEASE");
   context.resource_epoch = epoch;
   context.local_transaction_id = local_transaction_id;
   context.snapshot_visible_through_local_transaction_id = local_transaction_id;

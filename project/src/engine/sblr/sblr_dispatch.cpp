@@ -1663,13 +1663,49 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       descriptor.datatype_catalog_generation = catalog_generation;
       descriptor.datatype_registry_generation = registry_generation;
       descriptor.datatype_identity_authoritative = true;
-      const auto identity = scratchbird::core::datatypes::
-          LookupDatatypeTypeCodecIdentityV1(
-              descriptor.datatype_catalog_snapshot_uuid,
-              descriptor.datatype_catalog_generation,
-              descriptor.datatype_registry_generation,
-              descriptor.descriptor_uuid,
-              descriptor.descriptor_generation);
+      static const auto canonical_descriptor_by_type_uuid = [] {
+        std::unordered_map<std::string, std::string> index;
+        const auto manifest = scratchbird::core::datatypes::
+            LoadCurrentCoreDatatypeCatalogManifest();
+        if (!manifest.ok()) return index;
+        for (const auto& row : manifest.manifest.descriptor_rows) {
+          if (!row.descriptor_uuid.valid()) continue;
+          const auto canonical_descriptor_uuid =
+              scratchbird::core::uuid::UuidToString(row.descriptor_uuid.value);
+          const auto identity = scratchbird::core::datatypes::
+              LookupDatatypeTypeCodecIdentityV1(
+                  "019d0000-0000-7000-8000-00000000d701",
+                  manifest.manifest.catalog_epoch, 1,
+                  canonical_descriptor_uuid, row.descriptor_epoch);
+          if (!identity.ok || identity.row.type_uuid.empty()) continue;
+          const auto [found, inserted] =
+              index.emplace(identity.row.type_uuid, canonical_descriptor_uuid);
+          if (!inserted && found->second != canonical_descriptor_uuid) {
+            found->second.clear();
+          }
+        }
+        return index;
+      }();
+      const auto canonical_descriptor =
+          canonical_descriptor_by_type_uuid.find(descriptor.type_uuid);
+      const auto identity =
+          canonical_descriptor == canonical_descriptor_by_type_uuid.end() ||
+                  canonical_descriptor->second.empty()
+              ? scratchbird::core::datatypes::
+                    DatatypeTypeCodecIdentityLookupV1{}
+              : scratchbird::core::datatypes::
+                    LookupDatatypeTypeCodecIdentityV1(
+                        descriptor.datatype_catalog_snapshot_uuid,
+                        descriptor.datatype_catalog_generation,
+                        descriptor.datatype_registry_generation,
+                        canonical_descriptor->second,
+                        descriptor.descriptor_generation);
+      const bool exact_datatype_identity =
+          identity.ok && identity.row.type_uuid == descriptor.type_uuid &&
+          identity.row.type_generation == descriptor.type_generation &&
+          identity.row.codec_id == descriptor.codec_id &&
+          identity.row.codec_version == descriptor.codec_version &&
+          identity.row.codec_generation == descriptor.codec_generation;
       if (!IsCanonicalNonNilUuid(descriptor.statement_receipt_uuid) ||
           !IsCanonicalNonNilUuid(descriptor.datatype_catalog_snapshot_uuid) ||
           descriptor.statement_receipt_uuid !=
@@ -1680,11 +1716,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
               dispatch_request.context.datatype_catalog_generation ||
           descriptor.datatype_registry_generation !=
               dispatch_request.context.datatype_registry_generation ||
-          !identity.ok || identity.row.type_uuid != descriptor.type_uuid ||
-          identity.row.type_generation != descriptor.type_generation ||
-          identity.row.codec_id != descriptor.codec_id ||
-          identity.row.codec_version != descriptor.codec_version ||
-          identity.row.codec_generation != descriptor.codec_generation) {
+          !exact_datatype_identity) {
         decoded.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
         decoded.detail =
             "authoritative relational datatype identity is stale cross-receipt or contradictory";
@@ -3042,7 +3074,6 @@ bool IsClusterOperationId(std::string_view operation_id) {
 SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
-  if (request.envelope.operation_id == "engine.op.ddl_drop_table" && request.envelope.opcode == "SBLR_DDL_DROP_TABLE" && request.envelope.opcode_code == 1539) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if ((request.envelope.operation_id == "ddl.operator.create" && request.envelope.opcode == "SBLR_DDL_CREATE_OPERATOR" && request.envelope.opcode_code == 1590) ||
       (request.envelope.operation_id == "ddl.operator.drop" && request.envelope.opcode == "SBLR_DDL_DROP_OPERATOR" && request.envelope.opcode_code == 1591)) {
     result.accepted = true;
@@ -5523,6 +5554,42 @@ std::string_view OperandExecutionValue(const SblrOperand& operand) {
           static_cast<std::size_t>(value_size)};
 }
 
+bool CanonicalTransactionCharacteristicsOperands(
+    const SblrOperationEnvelope& envelope) {
+  if (envelope.operands.size() != 3) return false;
+
+  std::optional<std::string_view> read_mode;
+  std::optional<std::string_view> read_only;
+  std::optional<std::string_view> isolation;
+  for (std::size_t index = 0; index < envelope.operands.size(); ++index) {
+    const auto& operand = envelope.operands[index];
+    if (operand.ordinal != index + 1 || operand.type != "text" ||
+        !operand.value.empty() || operand.value_flags != 0 ||
+        operand.value_kind != SblrValueKind::literal_typed) {
+      return false;
+    }
+    const auto value = OperandExecutionValue(operand);
+    if (operand.name == "transaction_read_mode" && !read_mode) {
+      read_mode = value;
+    } else if (operand.name == "transaction_read_only" && !read_only) {
+      read_only = value;
+    } else if (operand.name == "transaction_isolation_level" && !isolation) {
+      isolation = value;
+    } else {
+      return false;
+    }
+  }
+  if (!read_mode || (*read_mode != "read_write" && *read_mode != "read_only") ||
+      !read_only || (*read_only != "true" && *read_only != "false") ||
+      ((*read_mode == "read_only") != (*read_only == "true")) || !isolation) {
+    return false;
+  }
+  return *isolation == "read_committed" ||
+      *isolation == "read_consistency" ||
+      *isolation == "repeatable_read" || *isolation == "serializable" ||
+      *isolation == "snapshot";
+}
+
 api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
                                           const SblrDispatchRequest& request) {
   const auto phase_start = SblrSteadyClock::now();
@@ -6052,7 +6119,7 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "nosql.vector_collection_op") return "SBLR_NOSQL_VECTOR_COLLECTION_OP";
   if (operation_id == "nosql.search_query") return "SBLR_NOSQL_SEARCH_QUERY";
   if (operation_id == "filespace.create") return "SBLR_FILESPACE_CREATE";
-  if (operation_id == "filespace.preallocate") return "SBLR_FILESPACE_PREALLOCATE";
+  if (operation_id == "engine.op.filespace_preallocate") return "SBLR_FILESPACE_PREALLOCATE";
   if (operation_id == "filespace.attach") return "SBLR_FILESPACE_ATTACH";
   if (operation_id == "filespace.detach") return "SBLR_FILESPACE_DETACH";
   if (operation_id == "filespace.disconnect") return "SBLR_FILESPACE_DISCONNECT";
@@ -9430,8 +9497,17 @@ bool EnrichCanonicalFunctionResultDescriptor(
   }
   const std::string requested_type_name =
       value->descriptor.canonical_type_name;
-  const auto type_id =
-      dt::CanonicalTypeIdFromStableName(requested_type_name);
+  auto type_id = dt::CanonicalTypeIdFromStableName(requested_type_name);
+  if (type_id == dt::CanonicalTypeId::unknown) {
+    if (requested_type_name == "numeric.fixed") {
+      type_id = dt::CanonicalTypeId::decimal;
+    } else if (requested_type_name == "character.none" ||
+               requested_type_name == "character.utf8") {
+      type_id = dt::CanonicalTypeId::character;
+    } else if (requested_type_name == "blob.binary") {
+      type_id = dt::CanonicalTypeId::blob;
+    }
+  }
   if (type_id == dt::CanonicalTypeId::unknown) {
     *refusal_detail =
         "function result has no canonical core descriptor type";
@@ -9456,7 +9532,17 @@ bool EnrichCanonicalFunctionResultDescriptor(
       scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
   value->descriptor.descriptor_uuid.canonical = descriptor_uuid;
   value->descriptor.descriptor_kind = "scalar";
-  if (requested_type_name == "time_tz" || requested_type_name == "timetz") {
+  if (requested_type_name == "numeric.fixed" ||
+      requested_type_name == "character.none" ||
+      requested_type_name == "character.utf8" ||
+      requested_type_name == "blob.binary") {
+    value->descriptor.canonical_type_name = requested_type_name;
+    value->descriptor.encoded_descriptor =
+        "type_uuid=" + descriptor_uuid +
+        ";projection_profile=" + requested_type_name +
+        ";nullability=unknown";
+  } else if (requested_type_name == "time_tz" ||
+             requested_type_name == "timetz") {
     value->descriptor.canonical_type_name = "time_tz";
     value->descriptor.encoded_descriptor =
         "type_uuid=" + descriptor_uuid +
@@ -9675,8 +9761,93 @@ BuildCanonicalRelationalExpressionRuntimeServices(
 api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(
     const SblrDispatchRequest& request) {
   api::EngineEvaluateProjectionRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequest(request);
+
+  // The canonical parameter value set is authenticated and correlated by the
+  // SBPE/SBPN admission path before dispatch.  Project its sole admitted
+  // scalar slot into the query API only for the closed anonymous-int64
+  // projection profile; every other shape remains unbound and is refused by
+  // QOW-DIAG-QRY-026.
+  if (request.envelope.operation_id == "query.evaluate_projection" &&
+      request.envelope.opcode == "SBLR_QUERY_EVALUATE_PROJECTION" &&
+      request.envelope.opcode_code == 0x040eu &&
+      request.parameter_value_set.has_value() &&
+      request.parameter_value_set->records.size() == 1 &&
+      base.descriptors.empty() && base.assignments.empty() &&
+      api::SecurityOptionValue(base, "projection_count:") == "1" &&
+      api::SecurityOptionValue(base, "projection_0_expr_kind:") ==
+          "parameter" &&
+      api::SecurityOptionValue(base, "projection_0_type:") == "int64" &&
+      api::SecurityOptionValue(base,
+                               "projection_0_parameter_descriptor_kind:") ==
+          "input" &&
+      api::SecurityOptionValue(base,
+                               "projection_0_parameter_marker_kind:") ==
+          "anonymous" &&
+      api::SecurityOptionValue(base,
+                               "projection_0_parameter_ordinal:") == "1") {
+    const auto& value_record = request.parameter_value_set->records.front();
+    const auto uuid_text = [](const std::array<std::uint8_t, 16>& bytes) {
+      constexpr char hex[] = "0123456789abcdef";
+      std::string out;
+      out.reserve(36);
+      for (std::size_t index = 0; index < bytes.size(); ++index) {
+        if (index == 4 || index == 6 || index == 8 || index == 10) {
+          out.push_back('-');
+        }
+        out.push_back(hex[bytes[index] >> 4]);
+        out.push_back(hex[bytes[index] & 0x0fu]);
+      }
+      return out;
+    };
+    const std::string descriptor_uuid =
+        uuid_text(value_record.datatype_descriptor_uuid);
+    const auto identity = scratchbird::core::datatypes::
+        LookupDatatypeTypeCodecIdentityV1(
+            request.context.datatype_catalog_snapshot_uuid.canonical,
+            request.context.datatype_catalog_generation,
+            request.context.datatype_registry_generation, descriptor_uuid,
+            value_record.datatype_descriptor_generation);
+    const std::string parameter_name =
+        api::SecurityOptionValue(base, "projection_0_name:");
+    if (!parameter_name.empty() && value_record.slot_ordinal == 0 &&
+        value_record.direction == SblrParameterDirectionV1::in &&
+        value_record.state == SblrParameterValueStateV1::value &&
+        value_record.canonical_value_bytes.size() == 8 && identity.ok &&
+        identity.row.descriptor_uuid ==
+            "019d0000-0000-7000-8000-00000000d711" &&
+        identity.row.type_uuid ==
+            "019d0000-0000-7000-8000-00000000d712" &&
+        identity.row.canonical_value_exact_bytes == 8 &&
+        identity.row.codec_id == "datatype.int64.le.v1") {
+      std::uint64_t bits = 0;
+      for (std::size_t index = 0; index < 8; ++index) {
+        bits |= static_cast<std::uint64_t>(
+                    value_record.canonical_value_bytes[index])
+                << (index * 8u);
+      }
+      const std::int64_t numeric =
+          (bits & (std::uint64_t{1} << 63u)) == 0
+              ? static_cast<std::int64_t>(bits)
+              : -1 - static_cast<std::int64_t>(~bits);
+      api::EngineDescriptor descriptor;
+      descriptor.descriptor_uuid.canonical = descriptor_uuid;
+      descriptor.descriptor_kind = "scalar";
+      descriptor.canonical_type_name = "int64";
+      descriptor.encoded_descriptor = "type=int64;nullability=non_null";
+      api::EngineTypedValue value;
+      value.descriptor = descriptor;
+      value.encoded_value = std::to_string(numeric);
+      value.binary_value = value_record.canonical_value_bytes;
+      value.is_null = false;
+      value.setState(api::EngineValueState::value);
+      base.descriptors.push_back(descriptor);
+      base.assignments.push_back(
+          {std::move(parameter_name), std::move(value)});
+    }
+  }
+
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
   typed.function_evaluator = EvaluateProjectionFunction;
   typed.operator_evaluator = EvaluateProjectionOperator;
   return typed;
@@ -10171,9 +10342,6 @@ api::EngineSecurityAlterPolicyRequest TypedSecurityAlterPolicyRequest(
   typed.policy_uuid = !base.target_object.uuid.canonical.empty()
                           ? base.target_object.uuid.canonical
                           : api::SecurityOptionValue(base, "policy_uuid:");
-  if (typed.policy_uuid.empty() && request.envelope.operation_id == "engine.op.sec_drop_policy") {
-    typed.policy_uuid = "01010101-0101-4001-8001-010101010101";
-  }
   typed.target_object_uuid = api::SecurityOptionValue(base, "target_object_uuid:");
   typed.target_object_kind = api::SecurityOptionValue(base, "target_object_kind:");
   typed.policy_effect = api::SecurityOptionValue(base, "policy_effect:");
@@ -10368,6 +10536,10 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id == "engine.op.txn_rollback" &&
       request.envelope.opcode == "SBLR_TXN_ROLLBACK" &&
       request.envelope.opcode_code == 258;
+  const bool exact_txn_set_characteristics =
+      request.envelope.operation_id == "transaction.set_characteristics" &&
+      request.envelope.opcode == "SBLR_TRANSACTION_SET_CHARACTERISTICS" &&
+      request.envelope.opcode_code == 265;
   const bool exact_txn_savepoint =
       request.envelope.operation_id == "engine.op.txn_savepoint" &&
       request.envelope.opcode == "SBLR_TXN_SAVEPOINT" &&
@@ -10431,6 +10603,10 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_sequence_currval = request.envelope.operation_id=="engine.op.sequence_currval"&&request.envelope.opcode=="SBLR_SEQUENCE_CURRVAL"&&request.envelope.opcode_code==1034;
   const bool exact_sequence_setval = request.envelope.operation_id=="engine.op.sequence_setval"&&request.envelope.opcode=="SBLR_SEQUENCE_SETVAL"&&request.envelope.opcode_code==1035;
   const bool exact_query_numeric = request.envelope.operation_id=="engine.op.query_apply_numeric_operation"&&request.envelope.opcode=="SBLR_QUERY_APPLY_NUMERIC_OPERATION"&&request.envelope.opcode_code==1036;
+  const bool exact_evaluate_projection =
+      request.envelope.operation_id == "query.evaluate_projection" &&
+      request.envelope.opcode == "SBLR_QUERY_EVALUATE_PROJECTION" &&
+      request.envelope.opcode_code == 0x040eu;
   const bool exact_advanced_datatype_family = request.envelope.operation_id=="engine.op.query_evaluate_advanced_datatype_family"&&request.envelope.opcode=="SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY"&&request.envelope.opcode_code==1037;
   const bool exact_project = (request.envelope.operation_id=="engine.op.project"&&request.envelope.opcode=="SBLR_PROJECT"&&request.envelope.opcode_code==1280) || (request.envelope.operation_id=="engine.op.ddl_alter_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_ALTER_REWRITE_RULE"&&request.envelope.opcode_code==1618) || (request.envelope.operation_id=="engine.op.ddl_drop_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_DROP_REWRITE_RULE"&&request.envelope.opcode_code==1619);
   const bool exact_ddl_alter_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_alter_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_ALTER_REWRITE_RULE"&&request.envelope.opcode_code==1618;
@@ -10602,10 +10778,18 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id == "observability.show_version" &&
       request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_VERSION" &&
       request.envelope.opcode_code == 0x0D06;
+  const bool exact_show_database =
+      request.envelope.operation_id == "observability.show_database" &&
+      request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_DATABASE" &&
+      request.envelope.opcode_code == 0x0D07;
   const bool exact_show_management =
       request.envelope.operation_id == "observability.show_management" &&
       request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_MANAGEMENT" &&
       request.envelope.opcode_code == 0x0D0F;
+  const bool exact_show_agents_extended =
+      request.envelope.operation_id == "observability.show_agents_extended" &&
+      request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_AGENTS_EXTENDED" &&
+      request.envelope.opcode_code == 0x0D23;
   const bool exact_local_metrics_read =
       request.envelope.operation_id == "engine.op.read_metrics" &&
       request.envelope.opcode == "SBLR_READ_METRICS" &&
@@ -10672,11 +10856,40 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   if (exact_security_create_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_security_drop_policy) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_ddl_alter_timeseries_value_cache || exact_ddl_drop_timeseries_value_cache) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_txn_set_characteristics) {
+    if (request.context.cluster_authority_available ||
+        request.context.cluster_transaction_active ||
+        request.context.route_fence_present) {
+      result.diagnostic_id =
+          "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN";
+      result.detail =
+          "transaction characteristics cannot fall through a cluster route";
+      return result;
+    }
+    if (!CanonicalTransactionCharacteristicsOperands(request.envelope)) {
+      result.diagnostic_id = "SBLR.OPERAND.INVALID";
+      result.detail = "transaction characteristics operands are invalid";
+      return result;
+    }
+    const auto envelope_validation = ValidateSblrEnvelope(request.envelope);
+    if (!envelope_validation.ok) {
+      result.diagnostic_id = envelope_validation.diagnostics.empty()
+          ? "SBLR.OPERAND.INVALID"
+          : envelope_validation.diagnostics.front().code;
+      result.detail = envelope_validation.diagnostics.empty()
+          ? "transaction characteristics envelope validation failed"
+          : envelope_validation.diagnostics.front().message;
+      return result;
+    }
+    result.ok = true;
+    result.materialized_envelope = std::move(request.envelope);
+    return result;
+  }
   if (request.envelope.operation_id != "query.execute" && !exact_public_insert_rows && !exact_public_update_rows && !exact_public_native_bulk_ingest && !exact_public_ddl_create_table && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_create_user && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
-      !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit &&
+      !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit && !exact_show_database &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_drop_dictionary && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_serialize_logical_snapshot && !exact_database_deserialize_logical_snapshot && !exact_security_alter_user && !exact_security_create_role && !exact_security_drop_role && !exact_security_alter_role && !exact_security_create_group_mapping && !exact_security_drop_group_mapping && !exact_security_create_policy && !exact_security_drop_policy && !exact_txn_begin && !exact_txn_commit &&
-      !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_publication && !exact_ddl_alter_publication && !exact_ddl_drop_publication && !exact_ddl_create_procedure && !exact_ddl_alter_procedure && !exact_ddl_drop_procedure && !exact_ddl_create_function && !exact_ddl_alter_function && !exact_ddl_drop_function && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_rename_object && !exact_ddl_create_synonym && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
-      !exact_security_drop_privilege_template && !exact_show_management && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_admin_register_external_relation_resolver && !exact_admin_unregister_external_relation_resolver && !exact_ddl_create_dictionary && !exact_ddl_drop_package && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator && !ddl_type_identity_claim) {
+      !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_evaluate_projection && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_publication && !exact_ddl_alter_publication && !exact_ddl_drop_publication && !exact_ddl_create_procedure && !exact_ddl_alter_procedure && !exact_ddl_drop_procedure && !exact_ddl_create_function && !exact_ddl_alter_function && !exact_ddl_drop_function && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_rename_object && !exact_ddl_create_synonym && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
+      !exact_security_drop_privilege_template && !exact_show_management && !exact_show_agents_extended && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_admin_register_external_relation_resolver && !exact_admin_unregister_external_relation_resolver && !exact_ddl_create_dictionary && !exact_ddl_drop_package && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator && !ddl_type_identity_claim) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
     return result;
@@ -10808,8 +11021,8 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint;
   if (exact_srs_rewrite_validate || exact_source_map || exact_error_vector ||
       exact_txn_begin ||
-      exact_txn_commit || exact_txn_rollback || exact_txn_savepoint || exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_advanced_datatype_family || exact_management_envelope ||
-      exact_project || exact_security_create_privilege_template || exact_security_create_user || exact_security_alter_user || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_show_version || exact_show_management || exact_catalog_introspect || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_drop_materialized_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_alter_package || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_rename_object || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
+      exact_txn_commit || exact_txn_rollback || exact_txn_savepoint || exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_evaluate_projection || exact_advanced_datatype_family || exact_management_envelope ||
+      exact_project || exact_security_create_privilege_template || exact_security_create_user || exact_security_alter_user || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_show_version || exact_show_database || exact_show_management || exact_show_agents_extended || exact_catalog_introspect || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_drop_materialized_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_alter_package || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_rename_object || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
     if (exact_srs_rewrite_validate) {
       const auto opcode_validation =
           ValidateSblrOpcodeForEnvelope(request.envelope);
@@ -11043,7 +11256,6 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
 
-  if (request.envelope.operation_id == "engine.op.ddl_drop_table" && request.envelope.opcode == "SBLR_DDL_DROP_TABLE" && request.envelope.opcode_code == 1539) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (request.envelope.operation_id == "engine.op.diagnostic_refusal" && request.envelope.opcode == "SBLR_DIAGNOSTIC_REFUSAL" && request.envelope.opcode_code == 0x1900) { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="diagnostic_refusal_result"; return result; }
   const auto validation = ValidateSblrEnvelope(request.envelope);
   result.envelope_validated = validation.ok;
@@ -11176,6 +11388,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       has_exact_static_executor_evidence_identity(
           "engine.op.ddl_create_synonym", "SBLR_DDL_CREATE_SYNONYM",
           1574) ||
+      has_exact_static_executor_evidence_identity(
+          "engine.op.ddl_drop_synonym", "SBLR_DDL_DROP_SYNONYM", 1575) ||
       has_exact_static_executor_evidence_identity(
           "engine.op.ddl_create_foreign_table",
           "SBLR_DDL_CREATE_FOREIGN_TABLE", 1576) ||
@@ -11790,7 +12004,18 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if(op=="engine.op.ddl_create_timeseries_value_cache"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_timeseries_value_cache.cancelled_before_lookup","Value-cache creation cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.table_truncate"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.table_truncate.cancelled_before_lookup","truncate cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.table_analyze"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.table_analyze.cancelled_before_lookup","analyze cancelled before lookup");}else result.api_result.ok=true;}
-  else if(op=="engine.op.bulk_import_stream"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.bulk_import_stream.cancelled_before_lookup","bulk import cancelled before lookup");}else result.api_result.ok=true;}
+  else if (op == "engine.op.bulk_import_stream") {
+    // Opcode 775 is executable only through the receipt-bound bridge, which
+    // supplies the hosted database's durable stream registry.  A generic
+    // dispatch has neither that authority nor a sealed-spool recovery record;
+    // it must never synthesize a successful bulk mutation result.
+    result.accepted = false;
+    result.dispatched_to_api = false;
+    result.api_result = FailureResult(
+        request.context, op, "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+        "sblr.bulk_import_stream.receipt_bound_executor_required",
+        "bulk import stream execution requires the receipt-bound durable executor");
+  }
   else if(op=="engine.op.bulk_export_stream"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.bulk_export_stream.cancelled_before_lookup","bulk export cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.statement_batch"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.statement_batch.cancelled_before_lookup","statement batch cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.atomic_cas"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.atomic_cas.cancelled_before_lookup","atomic CAS cancelled before lookup");}else result.api_result.ok=true;}
@@ -11848,7 +12073,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       result.api_result.operation_id=op;
     }
   }
-  else if(op=="engine.op.ddl_create_domain" || op=="engine.op.ddl_create_schema" || op=="engine.op.ddl_create_table" || op=="engine.op.ddl_drop_index" || op=="engine.op.ddl_alter_domain" || op=="engine.op.ddl_create_materialized_view" || op=="engine.op.ddl_alter_type" || op=="engine.op.ddl_drop_type" || op=="engine.op.ddl_alter_view" || op=="engine.op.ddl_drop_view" || op=="engine.op.ddl_create_trigger" || op=="engine.op.ddl_alter_trigger"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_table.cancelled_before_lookup","DDL create operation cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_domain" || op=="engine.op.ddl_create_schema" || op=="engine.op.ddl_create_table" || op=="engine.op.ddl_drop_table" || op=="engine.op.ddl_drop_index" || op=="engine.op.ddl_alter_domain" || op=="engine.op.ddl_create_materialized_view" || op=="engine.op.ddl_alter_type" || op=="engine.op.ddl_drop_type" || op=="engine.op.ddl_alter_view" || op=="engine.op.ddl_drop_view" || op=="engine.op.ddl_create_trigger" || op=="engine.op.ddl_alter_trigger"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_table.cancelled_before_lookup","DDL create operation cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_drop_trigger"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_trigger.cancelled_before_lookup","DDL drop trigger cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_create_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_procedure.cancelled_before_lookup","DDL create procedure cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_drop_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_procedure.cancelled_before_lookup","DDL drop procedure cancelled before lookup");}else result.api_result.ok=true;}
@@ -12401,7 +12626,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "nosql.time_series_append") result.api_result = api::EngineTimeSeriesAppend(TypedRequest<api::EngineTimeSeriesAppendRequest>(request));
   else if (op == "extensibility.inspect_gpu_capability") result.api_result = api::EngineInspectGpuCapability(TypedRequest<api::EngineInspectGpuCapabilityRequest>(request));
   else if (op == "extensibility.compile_llvm_module") result.api_result = api::EngineCompileLlvmModule(TypedRequest<api::EngineCompileLlvmModuleRequest>(request));
-  else if (op == "filespace.preallocate") result.api_result = api::EngineFilespacePreallocate(TypedRequest<api::EngineFilespacePreallocateRequest>(request));
+  else if (op == "engine.op.filespace_preallocate") result.api_result = api::EngineFilespacePreallocate(TypedRequest<api::EngineFilespacePreallocateRequest>(request));
   else if (op == "filespace.create" ||
            op == "filespace.attach" ||
            op == "filespace.detach" ||

@@ -1122,7 +1122,12 @@ endif()
 
 add_executable(sbp_sbsql_pipeline_probe parser_pipeline_probe.cpp)
 target_compile_features(sbp_sbsql_pipeline_probe PRIVATE cxx_std_23)
-target_link_libraries(sbp_sbsql_pipeline_probe PRIVATE sbl_sbsql_parser_pipeline)
+target_link_libraries(sbp_sbsql_pipeline_probe PRIVATE
+  sbl_sbsql_embedded_client_bridge
+  sb_core_uuid
+  sb_storage_database
+  sb_server_core
+)
 add_test(NAME sbp_sbsql_pipeline_probe COMMAND sbp_sbsql_pipeline_probe)
 
 add_executable(sbsql_canonical_element_stream_runtime_conformance
@@ -2837,6 +2842,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARG
     sbsql_exhaustive_e2e_regression_gate
     PRIVATE
       sbl_sbsql_parser_pipeline
+      sbl_sbsql_embedded_client_bridge
       sbu_sbsql_parser_support
       sb_server_core
       sb_engine_sblr
@@ -2861,7 +2867,12 @@ add_executable(
   generated/canary/sbsql_canary_vertical_slice_probe.cpp
 )
 target_compile_features(sbp_sbsql_canary_vertical_slice_probe PRIVATE cxx_std_23)
-target_link_libraries(sbp_sbsql_canary_vertical_slice_probe PRIVATE sbl_sbsql_parser_pipeline)
+target_link_libraries(sbp_sbsql_canary_vertical_slice_probe PRIVATE
+  sbl_sbsql_embedded_client_bridge
+  sb_core_uuid
+  sb_storage_database
+  sb_server_core
+)
 add_test(
   NAME sbp_sbsql_canary_vertical_slice_probe
   COMMAND sbp_sbsql_canary_vertical_slice_probe "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
@@ -3163,7 +3174,12 @@ add_executable(
   generated/binder/sbsql_binder_authority_conformance_probe.cpp
 )
 target_compile_features(sbp_sbsql_binder_authority_conformance_probe PRIVATE cxx_std_23)
-target_link_libraries(sbp_sbsql_binder_authority_conformance_probe PRIVATE sbl_sbsql_parser_pipeline)
+target_link_libraries(sbp_sbsql_binder_authority_conformance_probe PRIVATE
+  sbl_sbsql_embedded_client_bridge
+  sb_core_uuid
+  sb_storage_database
+  sb_server_core
+)
 add_test(
   NAME sbp_sbsql_binder_authority_conformance_probe
   COMMAND sbp_sbsql_binder_authority_conformance_probe
@@ -3177,7 +3193,12 @@ add_executable(
   generated/lowering/sbsql_sblr_lowering_verifier_conformance_probe.cpp
 )
 target_compile_features(sbp_sbsql_sblr_lowering_verifier_conformance_probe PRIVATE cxx_std_23)
-target_link_libraries(sbp_sbsql_sblr_lowering_verifier_conformance_probe PRIVATE sbl_sbsql_parser_pipeline)
+target_link_libraries(sbp_sbsql_sblr_lowering_verifier_conformance_probe PRIVATE
+  sbl_sbsql_embedded_client_bridge
+  sb_core_uuid
+  sb_storage_database
+  sb_server_core
+)
 add_test(
   NAME sbp_sbsql_sblr_lowering_verifier_conformance_probe
   COMMAND sbp_sbsql_sblr_lowering_verifier_conformance_probe
@@ -3197,7 +3218,7 @@ add_test(
   COMMAND sbsql_constraint_ddl_lowering_conformance
 )
 set_tests_properties(sbsql_constraint_ddl_lowering_conformance PROPERTIES
-  LABELS "constraint_ddl_gate;PRF_G06_CONSTRAINTS_READY;sbsql_parser_worker"
+  LABELS "constraint_ddl_fail_closed_gate;authority_diagnostic_refusal;component_regression;sbsql_parser_worker"
 )
 
 add_executable(
@@ -3226,7 +3247,7 @@ if(TARGET sb_engine_sblr)
     COMMAND sbsql_sblr_source_artifact_runtime_conformance
   )
   set_tests_properties(sbsql_sblr_source_artifact_runtime_conformance PROPERTIES
-    LABELS "sbsql_sblr_source_artifact_runtime_conformance;sblr_source_artifact_reversal;sbsql_parser_worker"
+    LABELS "sbsql_sblr_source_map_descriptor_carrier;source_artifact_sbop_authority_refusal;component_regression;authority_diagnostic_registry_blocked;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3294,7 +3315,7 @@ if(TARGET sb_engine_sblr)
       COMMAND sbsql_sblr_source_roundtrip_closure_conformance
     )
     set_tests_properties(sbsql_sblr_source_roundtrip_closure_conformance PROPERTIES
-      LABELS "sbsql_sblr_source_roundtrip_closure_conformance;sblr_source_artifact_reversal;sblr_to_sbsql_conversion;sbsql_parser_worker"
+      LABELS "sbsql_sblr_source_roundtrip_closure_conformance;sblr_source_artifact_carrier_boundary;sblr_to_sbsql_conversion;sbsql_parser_worker"
     )
   endif()
 
@@ -3358,7 +3379,7 @@ if(TARGET sb_engine_sblr)
     COMMAND sbsql_synonym_sblr_dispatch_conformance
   )
   set_tests_properties(sbsql_synonym_sblr_dispatch_conformance PROPERTIES
-    LABELS "sbsql_synonym_sblr_dispatch_conformance;sbsql_catalog_synonym_gate;sblr_operation_matrix_gate;sbsql_parser_worker"
+    LABELS "sbsql_synonym_sblr_dispatch_conformance;sbsql_catalog_synonym_component;sblr_typed_carrier_gate;sblr_executor_evidence_refusal;sbsql_parser_worker"
   )
 endif()
 
@@ -3382,7 +3403,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_create_schema_exact_route_conformance
   )
   set_tests_properties(sbsql_create_schema_exact_route_conformance PROPERTIES
-    LABELS "sbsql_create_schema_exact_route_conformance;SBSFC-020R-G;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_create_schema_exact_route_conformance;sbsql_create_schema_exact_refusal;sbsql_catalog_schema_component;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3403,7 +3424,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_cast_value_exact_route_conformance
   )
   set_tests_properties(sbsql_cast_value_exact_route_conformance PROPERTIES
-    LABELS "sbsql_cast_value_exact_route_conformance;SBSFC-011R-N;SBSFC-011R-S;SBSFC-011R-T;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_cast_value_exact_route_conformance;sbsql_cast_value_exact_refusal;sbsql_datatype_cast_component;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3672,10 +3693,18 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     sbsql_sbsfc_063_window_grammar_exact_route_conformance.cpp
   )
   target_compile_features(sbsql_sbsfc_063_window_grammar_exact_route_conformance PRIVATE cxx_std_23)
+  target_compile_definitions(
+    sbsql_sbsfc_063_window_grammar_exact_route_conformance
+    PRIVATE
+      SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
   target_link_libraries(
     sbsql_sbsfc_063_window_grammar_exact_route_conformance
     PRIVATE
-      sbl_sbsql_parser_pipeline
+      sbl_sbsql_embedded_client_bridge
+      sb_core_memory
+      sb_core_uuid
+      sb_storage_database
       sb_server_core
       sb_engine_sblr
   )
@@ -3692,10 +3721,18 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     sbsql_sbsfc_064_parameter_sample_grammar_exact_route_conformance.cpp
   )
   target_compile_features(sbsql_sbsfc_064_parameter_sample_grammar_exact_route_conformance PRIVATE cxx_std_23)
+  target_compile_definitions(
+    sbsql_sbsfc_064_parameter_sample_grammar_exact_route_conformance
+    PRIVATE
+      SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
   target_link_libraries(
     sbsql_sbsfc_064_parameter_sample_grammar_exact_route_conformance
     PRIVATE
-      sbl_sbsql_parser_pipeline
+      sbl_sbsql_embedded_client_bridge
+      sb_core_memory
+      sb_core_uuid
+      sb_storage_database
       sb_server_core
       sb_engine_sblr
   )
@@ -3784,7 +3821,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_068_prepared_statement_control_conformance
   )
   set_tests_properties(sbsql_sbsfc_068_prepared_statement_control_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_068_prepared_statement_control_conformance;SBSFC-068;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_068_prepared_statement_control_conformance;SBSFC-068;prepared_statement_component;retired_sblr_text_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3824,7 +3861,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_070_psql_cursor_control_conformance
   )
   set_tests_properties(sbsql_sbsfc_070_psql_cursor_control_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_070_psql_cursor_control_conformance;SBSFC-070;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_070_psql_cursor_control_conformance;SBSFC-070;psql_cursor_component;retired_sblr_text_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3844,7 +3881,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_071_jobs_scheduler_conformance
   )
   set_tests_properties(sbsql_sbsfc_071_jobs_scheduler_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_071_jobs_scheduler_conformance;SBSFC-071;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_071_jobs_scheduler_conformance;SBSFC-071;jobs_scheduler_component;exact_refusal_passed;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3864,7 +3901,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_072_jobs_schedule_conformance
   )
   set_tests_properties(sbsql_sbsfc_072_jobs_schedule_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_072_jobs_schedule_conformance;SBSFC-072;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_072_jobs_schedule_conformance;SBSFC-072;jobs_scheduler_component;exact_refusal_passed;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3884,7 +3921,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_073_archive_replication_conformance
   )
   set_tests_properties(sbsql_sbsfc_073_archive_replication_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_073_archive_replication_conformance;SBSFC-073;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_073_archive_replication_conformance;SBSFC-073;archive_replication_component;exact_refusal_passed;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3904,7 +3941,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_074_multimodel_grammar_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_074_multimodel_grammar_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_074_multimodel_grammar_exact_route_conformance;SBSFC-074;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_074_multimodel_grammar_exact_route_conformance;SBSFC-074;multimodel_grammar_component;exact_refusal_passed;sbsql_parser_worker"
   )
 
   add_executable(
@@ -3964,7 +4001,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_create_statistics_exact_route_conformance
   )
   set_tests_properties(sbsql_create_statistics_exact_route_conformance PROPERTIES
-    LABELS "sbsql_create_statistics_exact_route_conformance;SBSFC-020R-QL;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_create_statistics_exact_route_conformance;SBSFC-020R-QL;sbsql_parser_worker;sbsql_component_conformance;sbsql_exact_refusal_passed"
   )
 
   add_executable(
@@ -3984,7 +4021,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_create_index_exact_route_conformance
   )
   set_tests_properties(sbsql_create_index_exact_route_conformance PROPERTIES
-    LABELS "sbsql_create_index_exact_route_conformance;SBSFC-020R-QP;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_create_index_exact_route_conformance;SBSFC-020R-QP;sbsql_parser_worker;sbsql_component_conformance;sbsql_exact_refusal_passed"
   )
 
   add_executable(
@@ -4004,7 +4041,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_create_index_template_exact_route_conformance
   )
   set_tests_properties(sbsql_create_index_template_exact_route_conformance PROPERTIES
-    LABELS "sbsql_create_index_template_exact_route_conformance;SBSFC-020R-QQ;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_create_index_template_exact_route_conformance;SBSFC-020R-QQ;sbsql_parser_worker;sbsql_component_conformance;sbsql_exact_refusal_passed"
   )
 
   add_executable(
@@ -4044,7 +4081,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_alter_rename_exact_route_conformance
   )
   set_tests_properties(sbsql_alter_rename_exact_route_conformance PROPERTIES
-    LABELS "sbsql_alter_rename_exact_route_conformance;SBSFC-020R-QS;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_alter_rename_exact_route_conformance;SBSFC-020R-QS;sbsql_parser_worker;sbsql_component_conformance;sbsql_exact_refusal_passed"
   )
 
   add_executable(
@@ -4064,7 +4101,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_drop_object_exact_route_conformance
   )
   set_tests_properties(sbsql_drop_object_exact_route_conformance PROPERTIES
-    LABELS "sbsql_drop_object_exact_route_conformance;SBSFC-020R-QT;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_drop_object_exact_route_conformance;SBSFC-020R-QT;sbsql_parser_worker;sbsql_component_conformance;sbsql_exact_refusal_passed"
   )
 
   add_executable(
@@ -4084,7 +4121,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_create_sequence_exact_route_conformance
   )
   set_tests_properties(sbsql_create_sequence_exact_route_conformance PROPERTIES
-    LABELS "sbsql_create_sequence_exact_route_conformance;SBSFC-020R-QM;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_create_sequence_exact_route_conformance;SBSFC-020R-QM;sbsql_parser_worker;sbsql_component_conformance;sbsql_exact_refusal_passed"
   )
 
   add_executable(
@@ -4104,7 +4141,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_create_domain_exact_route_conformance
   )
   set_tests_properties(sbsql_create_domain_exact_route_conformance PROPERTIES
-    LABELS "sbsql_create_domain_exact_route_conformance;SBSFC-020R-QO;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_create_domain_exact_route_conformance;SBSFC-020R-QO;sbsql_parser_worker;sbsql_component_conformance;sbsql_exact_refusal_passed"
   )
 
   add_executable(
@@ -4144,7 +4181,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_domain_language_expansion_conformance
   )
   set_tests_properties(sbsql_domain_language_expansion_conformance PROPERTIES
-    LABELS "sbsql_domain_language_expansion_conformance;EDR-036;EDR-GATE-036;EDR-DOMAIN-LANGUAGE-EXPANSION;mga_transaction_regression;sbsql_parser_worker"
+    LABELS "sbsql_domain_language_expansion_conformance;EDR-036;EDR-GATE-036;EDR-DOMAIN-LANGUAGE-EXPANSION;catalog_descriptor_component;exact_refusal_passed;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4308,7 +4345,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_create_executable_exact_route_conformance
   )
   set_tests_properties(sbsql_create_executable_exact_route_conformance PROPERTIES
-    LABELS "sbsql_create_executable_exact_route_conformance;SBSFC-020R-QU;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_create_executable_exact_route_conformance;SBSFC-020R-QU;SBSFC-030;sbsql_parser_worker;sbsql_exact_refusal_passed;engine_internal_api_component"
   )
 
   add_executable(
@@ -4327,7 +4364,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_routine_cursor_argument_conformance
   )
   set_tests_properties(sbsql_routine_cursor_argument_conformance PROPERTIES
-    LABELS "sbsql_routine_cursor_argument_conformance;ROUTINE-CURSOR-PROOF-CLOSURE;EDR-038;ROUTINE-CURSOR-GATE-001;ROUTINE-CURSOR-GATE-002;ROUTINE-CURSOR-GATE-003;ROUTINE-CURSOR-GATE-004;ROUTINE-CURSOR-GATE-005;ROUTINE-CURSOR-GATE-006;ROUTINE-CURSOR-GATE-007;ROUTINE-CURSOR-GATE-008;ROUTINE-CURSOR-GATE-009;sblr_operation_matrix_gate;mga_transaction_regression;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_routine_cursor_argument_conformance;EDR-038;ROUTINE-CURSOR-GATE-001;ROUTINE-CURSOR-GATE-009;sbsql_parser_worker;sbsql_exact_refusal_passed;retired_text_sblr_refusal"
   )
 
   add_executable(
@@ -4347,7 +4384,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_075_catalog_descriptor_mutation_conformance
   )
   set_tests_properties(sbsql_sbsfc_075_catalog_descriptor_mutation_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_075_catalog_descriptor_mutation_conformance;SBSFC-075;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_075_catalog_descriptor_mutation_conformance;SBSFC-075;SBSFC-030;sbsql_parser_worker;sbsql_exact_refusal_passed;catalog_descriptor_registry_component"
   )
 
   add_executable(
@@ -4367,7 +4404,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_076_dml_residual_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_076_dml_residual_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_076_dml_residual_exact_route_conformance;SBSFC-076;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_076_dml_residual_exact_route_conformance;SBSFC-076;SBSFC-030;sbsql_parser_worker;sbsql_exact_refusal_passed;exact_refusal_component"
   )
 
   add_executable(
@@ -4388,7 +4425,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_077_non_general_residual_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_077_non_general_residual_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_077_non_general_residual_exact_route_conformance;SBSFC-077;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_077_non_general_residual_exact_route_conformance;SBSFC-077;SBSFC-030;sbsql_parser_worker;noncanonical_and_executor_evidence_refusal;parser_lowering_component"
   )
 
   if(TARGET sb_engine_internal_api)
@@ -4428,7 +4465,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance;SBSFC-078;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_078_procedural_general_residual_exact_route_conformance;SBSFC-078;SBSFC-030;sbsql_parser_worker;noncanonical_and_executor_evidence_refusal;parser_lowering_component"
   )
 
   add_executable(
@@ -4448,7 +4485,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_079_multimodel_general_residual_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_079_multimodel_general_residual_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_079_multimodel_general_residual_exact_route_conformance;SBSFC-079;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_079_multimodel_general_residual_exact_route_conformance;SBSFC-079;SBSFC-030;sbsql_parser_worker;noncanonical_and_executor_evidence_refusal;parser_lowering_component"
   )
 
   add_executable(
@@ -4468,7 +4505,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_080_operational_general_residual_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_080_operational_general_residual_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_080_operational_general_residual_exact_route_conformance;SBSFC-080;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_080_operational_general_residual_exact_route_conformance;SBSFC-080;SBSFC-030;sbsql_parser_worker;parent_route_lowering;parser_lowering_component"
   )
 
   add_executable(
@@ -4488,7 +4525,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_memory_management_exact_route_conformance
   )
   set_tests_properties(sbsql_memory_management_exact_route_conformance PROPERTIES
-    LABELS "sbsql_memory_management_exact_route_conformance;MEMORY-MANAGEMENT-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+    LABELS "sbsql_memory_management_exact_route_conformance;memory_management_parser_component;noncanonical_opcode_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4508,7 +4545,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_storage_tier_exact_route_conformance
   )
   set_tests_properties(sbsql_storage_tier_exact_route_conformance PROPERTIES
-    LABELS "sbsql_storage_tier_exact_route_conformance;STORAGE-TIER-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+    LABELS "sbsql_storage_tier_exact_route_conformance;storage_tier_parser_component;noncanonical_opcode_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4528,7 +4565,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_filespace_discovery_exact_route_conformance
   )
   set_tests_properties(sbsql_filespace_discovery_exact_route_conformance PROPERTIES
-    LABELS "sbsql_filespace_discovery_exact_route_conformance;FILESPACE-DISCOVERY-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+    LABELS "sbsql_filespace_discovery_exact_route_conformance;filespace_discovery_parser_component;noncanonical_opcode_refusal;engine_internal_api_component;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4548,7 +4585,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_filespace_package_exact_route_conformance
   )
   set_tests_properties(sbsql_filespace_package_exact_route_conformance PROPERTIES
-    LABELS "sbsql_filespace_package_exact_route_conformance;FILESPACE-PACKAGE-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+    LABELS "sbsql_filespace_package_exact_route_conformance;filespace_package_parser_component;noncanonical_opcode_refusal;engine_internal_api_component;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4568,7 +4605,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_shard_placement_exact_route_conformance
   )
   set_tests_properties(sbsql_shard_placement_exact_route_conformance PROPERTIES
-    LABELS "sbsql_shard_placement_exact_route_conformance;SHARD-PLACEMENT-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+    LABELS "sbsql_shard_placement_exact_route_conformance;shard_placement_parser_component;noncanonical_opcode_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4589,7 +4626,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_encryption_maintenance_exact_route_conformance
   )
   set_tests_properties(sbsql_encryption_maintenance_exact_route_conformance PROPERTIES
-    LABELS "sbsql_encryption_maintenance_exact_route_conformance;ENCRYPTION-MAINTENANCE-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+    LABELS "sbsql_encryption_maintenance_exact_route_conformance;encryption_maintenance_parser_component;noncanonical_opcode_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4610,7 +4647,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_protected_material_exact_route_conformance
   )
   set_tests_properties(sbsql_protected_material_exact_route_conformance PROPERTIES
-    LABELS "sbsql_protected_material_exact_route_conformance;PROTECTED-MATERIAL-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+    LABELS "sbsql_protected_material_exact_route_conformance;protected_material_parser_component;noncanonical_opcode_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4630,7 +4667,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_081_descriptor_expression_residual_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_081_descriptor_expression_residual_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_081_descriptor_expression_residual_exact_route_conformance;SBSFC-081;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_081_descriptor_expression_residual_exact_route_conformance;SBSFC-081;descriptor_expression_parser_component;noncanonical_query_plan_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4650,7 +4687,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_082_surface_descriptor_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_082_surface_descriptor_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_082_surface_descriptor_exact_route_conformance;SBSFC-082;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_082_surface_descriptor_exact_route_conformance;SBSFC-082;surface_descriptor_parser_component;noncanonical_query_plan_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4670,7 +4707,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_083_grammar_surface_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_083_grammar_surface_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_083_grammar_surface_exact_route_conformance;SBSFC-083;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_083_grammar_surface_exact_route_conformance;SBSFC-083;grammar_surface_parser_component;noncanonical_query_plan_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4690,7 +4727,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_084_grammar_surface_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_084_grammar_surface_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_084_grammar_surface_exact_route_conformance;SBSFC-084;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_084_grammar_surface_exact_route_conformance;SBSFC-084;grammar_surface_parser_component;noncanonical_query_plan_refusal;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4710,7 +4747,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_sbsfc_085_grammar_surface_exact_route_conformance
   )
   set_tests_properties(sbsql_sbsfc_085_grammar_surface_exact_route_conformance PROPERTIES
-    LABELS "sbsql_sbsfc_085_grammar_surface_exact_route_conformance;SBSFC-085;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_sbsfc_085_grammar_surface_exact_route_conformance;SBSFC-085;grammar_surface_parser_component;noncanonical_query_plan_refusal;sbsql_parser_worker"
   )
 endif()
 
@@ -4733,7 +4770,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_column_constraint_exact_route_conformance
   )
   set_tests_properties(sbsql_column_constraint_exact_route_conformance PROPERTIES
-    LABELS "sbsql_column_constraint_exact_route_conformance;SBSFC-021R-X;SBSFC-021R-Y;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker"
+    LABELS "create_table_constraint_child_refusal;constraint_internal_api_component;authority_diagnostic_refusal;component_regression;sbsql_parser_worker"
   )
 endif()
 
@@ -5269,7 +5306,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_event_notification_exact_route_conformance
   )
   set_tests_properties(sbsql_event_notification_exact_route_conformance PROPERTIES
-    LABELS "sbsql_event_notification_exact_route_conformance;SBSFC-024R-O;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_event_notification_exact_route_conformance;event_notification_parser_component;event_notification_executor_evidence_refusal;sbsql_parser_worker;exact_refusal_passed"
   )
 endif()
 
@@ -5294,7 +5331,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_udr_package_management_exact_route_conformance
   )
   set_tests_properties(sbsql_udr_package_management_exact_route_conformance PROPERTIES
-    LABELS "sbsql_udr_package_management_exact_route_conformance;SBSFC-024R-L;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_udr_package_management_exact_route_conformance;udr_parser_component;udr_internal_api_component;unallocated_sblr_route_refusal;sbsql_parser_worker"
   )
 endif()
 
@@ -5316,7 +5353,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_security_exact_route_conformance
   )
   set_tests_properties(sbsql_security_exact_route_conformance PROPERTIES
-    LABELS "sbsql_security_exact_route_conformance;SBSFC-023;SBSFC-023R-C;SBSFC-023R-D;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_security_exact_route_conformance;security_parser_component;canonical_security_root_registry;legacy_security_sblr_refusal;sbsql_parser_worker"
   )
 endif()
 
@@ -5338,7 +5375,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_dml_exact_route_conformance
   )
   set_tests_properties(sbsql_dml_exact_route_conformance PROPERTIES
-    LABELS "sbsql_dml_exact_route_conformance;SBSFC-021;SBSFC-021R-Z;SBSFC-021R-AA;SBSFC-021R-AB;SBSFC-021R-AC;SBSFC-021R-AD;SBSFC-021R-AE;SBSFC-021R-AF;SBSFC-021R-AG;SBSFC-021R-AH;SBSFC-021R-AI;SBSFC-021R-AJ;SBSFC-021R-AK;SBSFC-021R-AL;SBSFC-021R-AM;SBSFC-021R-AN;SBSFC-021R-AO;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker"
+    LABELS "sbsql_dml_exact_route_conformance;dml_parser_component;canonical_admission_component;native_query_context_refusal;sbsql_parser_worker"
   )
 endif()
 
@@ -5465,7 +5502,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   set_tests_properties(
     sbsql_missing_functionality_migration_management_conformance
     PROPERTIES
-      LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-004;sbsql_parser_worker;mga_transaction_regression"
+      LABELS "sbsql_migration_parser_component;SBSQL-MISS-GATE-004;sbsql_parser_worker;mga_transaction_regression"
   )
 endif()
 
@@ -5494,7 +5531,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   set_tests_properties(
     sbsql_missing_functionality_lock_mga_policy_conformance
     PROPERTIES
-      LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-011;sbsql_parser_worker;mga_transaction_regression"
+      LABELS "sbsql_lock_parser_refusal_and_engine_component;SBSQL-MISS-GATE-011;sbsql_parser_worker;mga_transaction_regression"
   )
 endif()
 
@@ -5523,7 +5560,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   set_tests_properties(
     sbsql_missing_functionality_builtin_acceleration_contract_conformance
     PROPERTIES
-      LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-012;sbsql_parser_worker;mga_transaction_regression"
+      LABELS "sbsql_acceleration_parser_refusal_and_engine_component;SBSQL-MISS-GATE-012;sbsql_parser_worker;component_regression"
   )
 endif()
 
@@ -5558,7 +5595,9 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   target_link_libraries(
     sbsql_values_rowset_conformance
     PRIVATE
-      sbl_sbsql_parser_pipeline
+      sbl_sbsql_embedded_client_bridge
+      sb_core_uuid
+      sb_storage_database
       sb_server_core
       sb_engine_sblr
   )
@@ -5567,7 +5606,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_values_rowset_conformance
   )
   set_tests_properties(sbsql_values_rowset_conformance PROPERTIES
-    LABELS "sbsql_values_rowset_conformance;SBSFC-021;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker"
+    LABELS "sbsql_values_rowset_conformance;SBSFC-021;canonical_query_execute_live_route;values_set_operation_exact_refusal;sbsql_parser_worker;sbsql_e2e_passed"
   )
 endif()
 
@@ -6058,6 +6097,11 @@ add_executable(
   generated/upgrade/sbsql_upgrade_migration_compatibility_gate.cpp
 )
 target_compile_features(sbsql_upgrade_migration_compatibility_gate PRIVATE cxx_std_23)
+target_link_libraries(
+  sbsql_upgrade_migration_compatibility_gate
+  PRIVATE
+    sb_engine_functions
+)
 add_test(
   NAME sbsql_upgrade_migration_compatibility_gate
   COMMAND sbsql_upgrade_migration_compatibility_gate
@@ -6135,9 +6179,9 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
             $<$<TARGET_EXISTS:sbsql_example_database_seed>:$<TARGET_FILE:sbsql_example_database_seed>>
   )
   set_tests_properties(sb_listener_sbp_sbsql_server_engine_execution_smoke PROPERTIES
-    LABELS "public_single_node_full_route_gate;sbsql_canary_vertical_slice_gate;sb_server_sbsql_admission_conformance;sbsql_full_route_streaming_conformance;sbps_chunked_payload_conformance;sbsql_copy_streaming_conformance;sbsql_multi_result_conformance;sbsql_warning_partial_result_conformance;sbsql_stream_finality_conformance;SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE;TEMP-TABLE-GATE-015;ROUTINE-CURSOR-PROOF-CLOSURE;ROUTINE-CURSOR-GATE-009;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;server_lifecycle_gate;listener_sbct_pool_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate"
+    LABELS "public_single_node_full_route_gate;sbsql_canary_vertical_slice_gate;sb_server_sbsql_admission_conformance;sbsql_full_route_streaming_conformance;sbps_chunked_payload_conformance;sbsql_copy_streaming_conformance;sbsql_stream_finality_conformance;SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE;TEMP-TABLE-GATE-015;ROUTINE-CURSOR-PROOF-CLOSURE;ROUTINE-CURSOR-GATE-009;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;server_lifecycle_gate;listener_sbct_pool_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate"
   )
-  if(TARGET sb_isql)
+  if(TARGET sb_isql AND TARGET sbsql_example_database_seed)
     add_test(
       NAME sbsql_sb_isql_live_route_smoke
       COMMAND "${SBSQL_PYTHON3}"
@@ -6146,6 +6190,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seeder $<TARGET_FILE:sbsql_example_database_seed>
               --work-dir "${CMAKE_BINARY_DIR}/sb_isql_live"
     )
     set_tests_properties(sbsql_sb_isql_live_route_smoke PROPERTIES
@@ -6178,6 +6223,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
         sbp_sbsql
         sb_ipc_tester
         sb_isql
+        sbsql_example_database_seed
     )
     add_test(
       NAME live_server_agent_storage_benchmark_gate
@@ -6188,6 +6234,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
               --ipc-tester $<TARGET_FILE:sb_ipc_tester>
+              --database-seeder $<TARGET_FILE:sbsql_example_database_seed>
               --work-dir "${CMAKE_BINARY_DIR}/live_server_agent_storage"
     )
     set_tests_properties(live_server_agent_storage_benchmark_gate PROPERTIES
@@ -6200,6 +6247,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
         sbp_sbsql
         sb_ipc_tester
         sb_isql
+        sbsql_example_database_seed
     )
     add_test(
       NAME all_noncluster_agents_live_gate
@@ -6210,7 +6258,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
               --ipc-tester $<TARGET_FILE:sb_ipc_tester>
-              --agent-runtime-source "${PROJECT_SOURCE_DIR}/src/core/agents/agent_runtime.cpp"
+              --database-seeder $<TARGET_FILE:sbsql_example_database_seed>
+              --agent-runtime-source "${PROJECT_SOURCE_DIR}/src/core/agents/agent_runtime_manifest.def"
               --work-dir "${CMAKE_BINARY_DIR}/all_noncluster_agents_live"
     )
     set_tests_properties(all_noncluster_agents_live_gate PROPERTIES
@@ -6220,6 +6269,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       DEPENDS
         sb_server
         sb_ipc_tester
+        sbsql_example_database_seed
     )
     add_test(
       NAME server_agent_thread_runtime_gate
@@ -6227,6 +6277,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/server_agent_thread_runtime_gate.py"
               --server $<TARGET_FILE:sb_server>
               --ipc-tester $<TARGET_FILE:sb_ipc_tester>
+              --database-seeder $<TARGET_FILE:sbsql_example_database_seed>
               --work-dir "${CMAKE_BINARY_DIR}/server_agent_thread_runtime"
     )
     set_tests_properties(server_agent_thread_runtime_gate PROPERTIES
@@ -6236,6 +6287,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       DEPENDS
         sb_server
         sb_ipc_tester
+        sbsql_example_database_seed
     )
     add_test(
       NAME server_agent_runtime_process_kill_replay_gate
@@ -6243,6 +6295,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/server_agent_runtime_process_kill_replay_gate.py"
               --server $<TARGET_FILE:sb_server>
               --ipc-tester $<TARGET_FILE:sb_ipc_tester>
+              --database-seeder $<TARGET_FILE:sbsql_example_database_seed>
               --work-dir "${CMAKE_BINARY_DIR}/server_agent_runtime_process_kill_replay"
     )
     set_tests_properties(server_agent_runtime_process_kill_replay_gate PROPERTIES
@@ -6268,6 +6321,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
         sbp_sbsql
         sb_isql
         cdp_database_seed
+        sbsql_example_database_seed
     )
     add_test(
       NAME sbsql_sb_isql_local_ipc_route_smoke
@@ -6275,6 +6329,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_sb_isql_local_ipc_route_smoke.py"
               --server $<TARGET_FILE:sb_server>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seeder $<TARGET_FILE:sbsql_example_database_seed>
               --work-dir "${CMAKE_BINARY_DIR}/sb_isql_local_ipc"
     )
     set_tests_properties(sbsql_sb_isql_local_ipc_route_smoke PROPERTIES
@@ -6329,6 +6384,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --listener $<TARGET_FILE:sb_listener>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
               --fixture-root "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/fixtures/copy_persistence"
               --openssl ${SBSQL_OPENSSL_EXECUTABLE}
               --work-dir "${CMAKE_BINARY_DIR}/sbsql_copy_persistence_full_route"
@@ -6441,6 +6497,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_sb_isql_embedded_server_authority_smoke.py"
               --server $<TARGET_FILE:sb_server>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --database-seed $<TARGET_FILE:cdp_database_seed>
+              --resource-seed-pack-root "${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
               --work-dir "${CMAKE_BINARY_DIR}/sb_isql_embedded_authority"
     )
     set_tests_properties(sbsql_sb_isql_embedded_server_authority_smoke PROPERTIES
@@ -6683,10 +6741,19 @@ if(TARGET sbl_sbsql_embedded_client_bridge AND
   )
 endif()
 
-if(TARGET sb_server_core)
+if(TARGET sbl_sbsql_embedded_client_bridge AND
+   TARGET sb_storage_database AND TARGET sb_core_memory AND TARGET sb_core_uuid)
   add_executable(sb_engine_backed_streaming_conformance sbsql_engine_backed_streaming_conformance.cpp)
   target_compile_features(sb_engine_backed_streaming_conformance PRIVATE cxx_std_23)
-  target_link_libraries(sb_engine_backed_streaming_conformance PRIVATE sb_server_core)
+  target_compile_definitions(sb_engine_backed_streaming_conformance PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
+  target_link_libraries(sb_engine_backed_streaming_conformance PRIVATE
+    sbl_sbsql_embedded_client_bridge
+    sb_storage_database
+    sb_core_memory
+    sb_core_uuid
+  )
   add_test(
     NAME sb_engine_backed_streaming_conformance
     COMMAND sb_engine_backed_streaming_conformance
@@ -6935,3 +7002,31 @@ add_test(
 set_tests_properties(udr_implementation_coverage_gate PROPERTIES
   LABELS "udr_implementation_coverage;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker;release_gate"
 )
+
+# Kept at the end of this file so adding the focused authority oracle does not
+# renumber the existing configured CTest sequence.
+if(NOT WIN32 AND TARGET sbl_sbsql_embedded_client_bridge AND TARGET sb_server_core)
+  add_executable(
+    sbsql_central_import_refusal_wire_conformance
+    sbsql_central_import_refusal_wire_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_central_import_refusal_wire_conformance PRIVATE cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_central_import_refusal_wire_conformance
+    PRIVATE
+      sbl_sbsql_embedded_client_bridge
+      sb_core_uuid
+      sb_storage_database
+      sb_server_core
+  )
+  add_test(
+    NAME sbsql_central_import_refusal_wire_conformance
+    COMMAND sbsql_central_import_refusal_wire_conformance
+  )
+  set_tests_properties(
+    sbsql_central_import_refusal_wire_conformance PROPERTIES
+    LABELS "sbsql_central_import_refusal_wire_conformance;central_command_authority;exact_refusal;no_execution;sbsql_parser_worker"
+  )
+endif()

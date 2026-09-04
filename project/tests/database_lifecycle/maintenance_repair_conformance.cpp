@@ -18,6 +18,7 @@
 #include "row_data_page.hpp"
 #include "row_version.hpp"
 #include "sblr_dispatch.hpp"
+#include "sblr_opcode_registry.hpp"
 #include "session_registry.hpp"
 #include "startup_state.hpp"
 #include "transaction_state.hpp"
@@ -445,7 +446,10 @@ db::RepairHistoryInspectionRequest RepairHistoryRequest(
   return request;
 }
 
-api::EngineRequestContext EngineContext(const Fixture& fixture) {
+api::EngineRequestContext EngineContext(
+    const Fixture& fixture,
+    const scratchbird::tests::database_lifecycle::DurableBootstrapTransaction*
+        transaction = nullptr) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "dblc010-engine-request";
@@ -458,17 +462,35 @@ api::EngineRequestContext EngineContext(const Fixture& fixture) {
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  if (transaction != nullptr) {
+    context.transaction_uuid = transaction->transaction_uuid;
+    context.local_transaction_id = transaction->local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id =
+        transaction->snapshot_visible_through_local_transaction_id;
+  }
   return context;
 }
 
 sblr::SblrOperationEnvelope LifecycleEnvelope(std::string operation_id,
                                               std::string opcode) {
-  auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id),
+  const auto* registry_entry = sblr::LookupSblrOpcode(opcode);
+  Require(registry_entry != nullptr,
+          "SBLR lifecycle opcode is absent from the engine registry");
+  const bool exact_operation = registry_entry->operation_id == operation_id;
+  const std::string canonical_engine_operation =
+      "engine.op." + std::string(operation_id).replace(
+                         0, std::string("lifecycle.").size(), "lifecycle_");
+  Require(exact_operation || registry_entry->operation_id == canonical_engine_operation,
+          "SBLR lifecycle operation-to-executor identity mismatch");
+  auto envelope = sblr::MakeSblrEnvelope(registry_entry->operation_id,
                                          std::move(opcode),
                                          "trace.dblc010.lifecycle.repair");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = false;
-  envelope.requires_cluster_authority = false;
+  envelope.opcode_code = registry_entry->code;
+  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000db1001";
+  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000db1002";
+  envelope.requires_security_context = registry_entry->requires_security_context;
+  envelope.requires_transaction_context = registry_entry->requires_transaction_context;
+  envelope.requires_cluster_authority = registry_entry->requires_cluster_authority;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   return envelope;
@@ -478,11 +500,13 @@ sblr::SblrDispatchResult DispatchLifecycleSblr(
     const Fixture& fixture,
     std::string operation_id,
     std::string opcode,
-    std::vector<std::string> options = {}) {
+    std::vector<std::string> options = {},
+    const scratchbird::tests::database_lifecycle::DurableBootstrapTransaction*
+        transaction = nullptr) {
   api::EngineApiRequest api_request;
   api_request.option_envelopes = std::move(options);
   const sblr::SblrDispatchRequest request{
-      EngineContext(fixture),
+      EngineContext(fixture, transaction),
       LifecycleEnvelope(std::move(operation_id), std::move(opcode)),
       std::move(api_request)};
   return sblr::DispatchSblrOperation(request);
@@ -491,12 +515,18 @@ sblr::SblrDispatchResult DispatchLifecycleSblr(
 void RequireSblrLifecycleSuccess(const Fixture& fixture,
                                  std::string operation_id,
                                  std::string opcode,
-                                 std::vector<std::string> options = {}) {
+                                 std::vector<std::string> options,
+                                 const scratchbird::tests::database_lifecycle::
+                                     DurableBootstrapTransaction* transaction) {
   const std::string expected_operation = operation_id;
   const auto result = DispatchLifecycleSblr(fixture,
                                            std::move(operation_id),
                                            std::move(opcode),
-                                           std::move(options));
+                                           std::move(options),
+                                           transaction);
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
   Require(result.envelope_validated, "SBLR lifecycle envelope did not validate");
   Require(result.accepted, "SBLR lifecycle dispatch did not accept operation");
   Require(result.dispatched_to_api, "SBLR lifecycle dispatch did not reach API");
@@ -619,17 +649,26 @@ void TestEngineLifecycleApi(const Fixture& fixture, const Fixture& corrupt_fixtu
 }
 
 void TestSblrLifecycleRoute(const Fixture& fixture) {
+  const auto transaction =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          fixture.path, "DBLC-010-SBLR");
   RequireSblrLifecycleSuccess(fixture,
                               "lifecycle.enter_maintenance",
-                              "SBLR_LIFECYCLE_ENTER_MAINTENANCE");
+                              "SBLR_LIFECYCLE_ENTER_MAINTENANCE",
+                              {},
+                              &transaction);
   RequireSblrLifecycleSuccess(fixture,
                               "lifecycle.verify_database",
-                              "SBLR_LIFECYCLE_VERIFY_DATABASE");
+                              "SBLR_LIFECYCLE_VERIFY_DATABASE",
+                              {},
+                              &transaction);
 
   const auto repair_refused = DispatchLifecycleSblr(
       fixture,
       "lifecycle.repair_database",
-      "SBLR_LIFECYCLE_REPAIR_DATABASE");
+      "SBLR_LIFECYCLE_REPAIR_DATABASE",
+      {},
+      &transaction);
   Require(repair_refused.envelope_validated, "SBLR repair-refusal envelope did not validate");
   Require(repair_refused.accepted, "SBLR repair-refusal dispatch did not accept operation");
   Require(repair_refused.dispatched_to_api, "SBLR repair-refusal did not reach API");
@@ -639,7 +678,11 @@ void TestSblrLifecycleRoute(const Fixture& fixture) {
 
   RequireSblrLifecycleSuccess(fixture,
                               "lifecycle.exit_maintenance",
-                              "SBLR_LIFECYCLE_EXIT_MAINTENANCE");
+                              "SBLR_LIFECYCLE_EXIT_MAINTENANCE",
+                              {},
+                              &transaction);
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
+      transaction);
 }
 
 sbps::Frame ManagementFrame(const std::array<std::uint8_t, 16>& session_uuid,
@@ -667,14 +710,17 @@ ServerSessionRegistry RegistryWithPrincipal(const Fixture& fixture,
   session.database_path = fixture.path.string();
   session.database_uuid = fixture.database_uuid;
   session.effective_user_uuid = sbps::MakeUuidV7Bytes();
+  session.embedded_in_process = true;
   if (principal == "admin") {
     session.engine_authorization_trace_tags = {
+        "security.fixture_trace_authority",
         "right:OBS_MANAGEMENT_CONTROL",
         "right:OBS_MANAGEMENT_INSPECT",
         "right:OBS_CONFIG_CONTROL",
         "right:SUPPORT_EXPORT"};
   } else if (principal == "auditor") {
     session.engine_authorization_trace_tags = {
+        "security.fixture_trace_authority",
         "right:OBS_CONFIG_INSPECT",
         "right:OBS_METRICS_READ_ALL"};
   }

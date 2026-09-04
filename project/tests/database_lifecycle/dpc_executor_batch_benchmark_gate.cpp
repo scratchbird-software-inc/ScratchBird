@@ -211,6 +211,7 @@ exec::ExecutorBatchDmlRequest UpdateReturningRequest() {
   request.operation = exec::ExecutorBatchDmlOperation::kUpdateReturning;
   request.returning_descriptor_digest =
       "dpc_executor_batch_benchmark_update_returning_v1";
+  request.returning_column_count = 3;
   request.row_step =
       [](const exec::Tuple& row,
          std::size_t row_index) -> exec::ExecutorBatchDmlRowStepResult {
@@ -232,6 +233,7 @@ exec::ExecutorBatchDmlRequest DeleteReturningRequest() {
   request.operation = exec::ExecutorBatchDmlOperation::kDeleteReturning;
   request.returning_descriptor_digest =
       "dpc_executor_batch_benchmark_delete_returning_v1";
+  request.returning_column_count = 3;
   request.row_step =
       [](const exec::Tuple& row,
          std::size_t row_index) -> exec::ExecutorBatchDmlRowStepResult {

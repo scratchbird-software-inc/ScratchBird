@@ -67,6 +67,7 @@ struct ExecutorBatchDmlRequest {
   ExecutorBatchRequest batch_request;
   ExecutorBatchDmlOperation operation = ExecutorBatchDmlOperation::kUpdateReturning;
   std::string returning_descriptor_digest;
+  std::size_t returning_column_count = 0;
   ExecutorBatchDmlRowStep row_step;
 };
 

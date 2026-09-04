@@ -2795,75 +2795,14 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
     }
   }
   if (!append_batches.empty()) {
-    std::vector<MgaIndexEntryAppendBatch> locality_batches;
-    locality_batches.reserve(append_batches.size());
-    for (const auto& exact_batch : append_batches) {
-      MgaIndexEntryAppendBatch locality_batch;
-      locality_batch.index = exact_batch.index;
-      locality_batch.table_uuid = exact_batch.table_uuid;
-      locality_batch.rows.reserve(exact_batch.entries.size());
-      for (const auto& entry : exact_batch.entries) {
-        MgaIndexEntryRowInput row;
-        row.row_uuid = entry.row_uuid;
-        row.version_uuid = entry.version_uuid;
-        row.values.push_back({exact_batch.index.column_name,
-                              entry.payload_value});
-        locality_batch.rows.push_back(std::move(row));
-      }
-      locality_batches.push_back(std::move(locality_batch));
-    }
-    const auto locality_plan = PlanLocalityAwareIndexApplyBatches(locality_batches);
+    // These keys were computed from the complete, authority-validated row
+    // image above. Keep them exact through locality planning: reconstructing a
+    // row from only the payload column loses partial-index predicate columns
+    // (and can also reinterpret expression keys).
+    const auto locality_plan =
+        PlanLocalityAwareExactIndexApplyBatches(append_batches);
     if (locality_plan.diagnostic.error) {
       return locality_plan.diagnostic;
-    }
-    std::vector<std::vector<bool>> exact_entry_used;
-    exact_entry_used.reserve(append_batches.size());
-    for (const auto& batch : append_batches) {
-      exact_entry_used.emplace_back(batch.entries.size(), false);
-    }
-    std::vector<MgaExactIndexEntryAppendBatch> planned_exact_batches;
-    planned_exact_batches.reserve(locality_plan.batches.size());
-    for (const auto& planned_batch : locality_plan.batches) {
-      MgaExactIndexEntryAppendBatch exact_batch;
-      exact_batch.index = planned_batch.index;
-      exact_batch.table_uuid = planned_batch.table_uuid;
-      for (const auto& planned_row : planned_batch.rows) {
-        const std::string payload_value =
-            CrudFieldValue(planned_row.values, planned_batch.index.column_name);
-        bool matched = false;
-        for (std::size_t batch_index = 0;
-             batch_index < append_batches.size() && !matched;
-             ++batch_index) {
-          const auto& source_batch = append_batches[batch_index];
-          if (source_batch.index.index_uuid != planned_batch.index.index_uuid) {
-            continue;
-          }
-          for (std::size_t entry_index = 0;
-               entry_index < source_batch.entries.size();
-               ++entry_index) {
-            if (exact_entry_used[batch_index][entry_index]) {
-              continue;
-            }
-            const auto& source = source_batch.entries[entry_index];
-            if (source.row_uuid != planned_row.row_uuid ||
-                source.version_uuid != planned_row.version_uuid ||
-                source.payload_value != payload_value) {
-              continue;
-            }
-            exact_batch.entries.push_back(source);
-            exact_entry_used[batch_index][entry_index] = true;
-            matched = true;
-            break;
-          }
-        }
-        if (!matched) {
-          return MakeInvalidRequestDiagnostic("dml.update_rows",
-                                              "index_apply_locality_exact_entry_mapping_failed");
-        }
-      }
-      if (!exact_batch.entries.empty()) {
-        planned_exact_batches.push_back(std::move(exact_batch));
-      }
     }
     if (evidence != nullptr) {
       std::uint64_t entry_count = 0;
@@ -2876,11 +2815,11 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
                            std::to_string(entry_count)});
     }
     if (append_context != nullptr) {
-      return append_context->AppendExactIndexEntryBatches(planned_exact_batches);
+      return append_context->AppendExactIndexEntryBatches(locality_plan.batches);
     }
     MgaRelationHotAppendContext local_append_context(context);
     const auto appended =
-        local_append_context.AppendExactIndexEntryBatches(planned_exact_batches);
+        local_append_context.AppendExactIndexEntryBatches(locality_plan.batches);
     if (appended.error) { return appended; }
     return local_append_context.FlushIndexEntries();
   }
@@ -3226,20 +3165,46 @@ bool DmlUpdateResolveColumnIdentity(
     }
     return false;
   }
-  const auto lookup = scratchbird::core::datatypes::
-      LookupDatatypeTypeCodecIdentityV1(
-          context.datatype_catalog_snapshot_uuid.canonical,
-          context.datatype_catalog_generation,
-          context.datatype_registry_generation,
-          column.value_descriptor.descriptor_uuid.canonical, 1);
   const auto encoded_type_uuid = DmlUpdateDescriptorField(
       column.value_descriptor.encoded_descriptor, "type_uuid");
   const auto encoded_descriptor_uuid = DmlUpdateDescriptorField(
       column.value_descriptor.encoded_descriptor,
       "datatype_descriptor_uuid");
+  const auto encoded_descriptor_generation = DmlUpdateDescriptorField(
+      column.value_descriptor.encoded_descriptor,
+      "datatype_descriptor_generation");
+  std::uint64_t descriptor_generation = 0;
+  const auto parsed_generation =
+      encoded_descriptor_generation.has_value()
+          ? std::from_chars(encoded_descriptor_generation->data(),
+                            encoded_descriptor_generation->data() +
+                                encoded_descriptor_generation->size(),
+                            descriptor_generation)
+          : std::from_chars_result{};
+  if (!encoded_descriptor_uuid.has_value() ||
+      !encoded_descriptor_generation.has_value() ||
+      parsed_generation.ec != std::errc{} ||
+      parsed_generation.ptr != encoded_descriptor_generation->data() +
+                                   encoded_descriptor_generation->size() ||
+      descriptor_generation == 0) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic(
+        "DATATYPE.DESCRIPTOR_INVALID",
+        "sblr.dml_update_rows.column_identity_stale",
+        column.canonical_name_key);
+    return false;
+  }
+  // The relation column retains its persisted outer descriptor UUID.  The
+  // embedded datatype_descriptor_uuid is the canonical datatype-registry
+  // identity and is the only valid key for a type/codec lookup.  Conflating
+  // these two authorities makes every persisted column look stale.
+  const auto lookup = scratchbird::core::datatypes::
+      LookupDatatypeTypeCodecIdentityV1(
+          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_generation,
+          context.datatype_registry_generation,
+          *encoded_descriptor_uuid, descriptor_generation);
   if (!lookup.ok || !encoded_type_uuid.has_value() ||
       *encoded_type_uuid != lookup.row.type_uuid ||
-      !encoded_descriptor_uuid.has_value() ||
       *encoded_descriptor_uuid != lookup.row.descriptor_uuid) {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
         "DATATYPE.DESCRIPTOR_INVALID",

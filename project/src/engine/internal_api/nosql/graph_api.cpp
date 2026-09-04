@@ -111,6 +111,10 @@ bool CanonicalUuid(const std::string_view value) {
 bool ExactGraphValueDescriptor(const EngineDescriptor& descriptor,
                                const std::string_view expected_type,
                                const std::string_view expected_type_uuid,
+                               const scratchbird::core::datatypes::
+                                   DatatypeTypeCodecIdentityRowV1*
+                                       expected_registry_identity,
+                               const std::string_view expected_column_uuid,
                                const bool expected_nullable) {
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
       descriptor.descriptor_kind != "canonical_type_descriptor" ||
@@ -133,12 +137,44 @@ bool ExactGraphValueDescriptor(const EngineDescriptor& descriptor,
     if (end == std::string_view::npos) break;
     offset = end + 1;
   }
-  if (fields.size() != 3 || !fields.contains("canonical") ||
+  const bool contextual_text = expected_type == "text";
+  if (fields.size() != (contextual_text ? 12U : 3U) ||
+      !fields.contains("canonical") ||
       !fields.contains("type_uuid") || !fields.contains("nullable") ||
       fields.at("canonical") != expected_type ||
       !CanonicalUuid(fields.at("type_uuid")) ||
       fields.at("type_uuid") != expected_type_uuid ||
-      fields.at("nullable") != (expected_nullable ? "true" : "false")) {
+      fields.at("nullable") != (expected_nullable ? "true" : "false") ||
+      (contextual_text &&
+       (expected_registry_identity == nullptr ||
+        !fields.contains("column_uuid") ||
+        fields.at("column_uuid") != expected_column_uuid ||
+        !fields.contains("datatype_descriptor_uuid") ||
+        fields.at("datatype_descriptor_uuid") !=
+            expected_registry_identity->descriptor_uuid ||
+        descriptor.descriptor_uuid.canonical !=
+            expected_column_uuid ||
+        !fields.contains("datatype_descriptor_generation") ||
+        fields.at("datatype_descriptor_generation") !=
+            std::to_string(
+                expected_registry_identity->descriptor_generation) ||
+        !fields.contains("type_generation") ||
+        fields.at("type_generation") !=
+            std::to_string(expected_registry_identity->type_generation) ||
+        !fields.contains("codec_uuid") ||
+        fields.at("codec_uuid") != expected_registry_identity->codec_uuid ||
+        !fields.contains("codec_id") ||
+        fields.at("codec_id") != expected_registry_identity->codec_id ||
+        !fields.contains("codec_version") ||
+        fields.at("codec_version") !=
+            std::to_string(expected_registry_identity->codec_version) ||
+        !fields.contains("codec_generation") ||
+        fields.at("codec_generation") !=
+            std::to_string(expected_registry_identity->codec_generation) ||
+        !fields.contains("null_encoding") ||
+        fields.at("null_encoding") !=
+            std::to_string(expected_registry_identity->null_encoding_code))) ||
+      (!contextual_text && fields.contains("column_uuid"))) {
     return false;
   }
   return true;
@@ -163,10 +199,7 @@ bool ExactGraphDescriptorCohort(
     const auto& column = descriptor.columns[ordinal];
     for (std::size_t prior = 0; prior < ordinal; ++prior) {
       if (descriptor.columns[prior].column_uuid.canonical ==
-              column.column_uuid.canonical ||
-          descriptor.columns[prior]
-                  .value_descriptor.descriptor_uuid.canonical ==
-              column.value_descriptor.descriptor_uuid.canonical) {
+          column.column_uuid.canonical) {
         return false;
       }
     }
@@ -180,8 +213,22 @@ bool ExactGraphDescriptorCohort(
         !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
       return false;
     }
-    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
-        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    const auto& descriptor_row =
+        type_row.manifest.descriptor_rows.front();
+    const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
+        descriptor_row.descriptor_uuid.value);
+    const auto codec_identity =
+        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+            "019d0000-0000-7000-8000-00000000d701",
+            manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+            descriptor_row.descriptor_epoch);
+    const auto expected_type_uuid =
+        codec_identity.ok ? codec_identity.row.type_uuid : descriptor_uuid;
+    const auto* expected_registry_identity =
+        codec_identity.ok ? &codec_identity.row : nullptr;
+    if (kTypes[ordinal] == "text" && expected_registry_identity == nullptr) {
+      return false;
+    }
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] ||
         column.nullable != kNullable[ordinal] || column.generated ||
@@ -193,6 +240,8 @@ bool ExactGraphDescriptorCohort(
         !CanonicalUuid(column.column_uuid.canonical) ||
         !ExactGraphValueDescriptor(column.value_descriptor, kTypes[ordinal],
                                    expected_type_uuid,
+                                   expected_registry_identity,
+                                   column.column_uuid.canonical,
                                    kNullable[ordinal])) {
       return false;
     }

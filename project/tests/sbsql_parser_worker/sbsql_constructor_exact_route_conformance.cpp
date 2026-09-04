@@ -28,7 +28,22 @@ namespace {
 
 using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
-namespace sblr = scratchbird::engine::sblr;
+namespace canonical_test_sblr {
+using namespace scratchbird::engine::sblr;
+inline SblrOperationEnvelope MakeSblrEnvelope(std::string operation_id,
+                                              std::string opcode,
+                                              std::string trace_key = {}) {
+  return scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+      operation_id, opcode, trace_key);
+}
+inline SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
+  request.envelope =
+      scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+          std::move(request.envelope));
+  return scratchbird::engine::sblr::DispatchSblrOperation(std::move(request));
+}
+}  // namespace canonical_test_sblr
+namespace sblr = canonical_test_sblr;
 
 constexpr std::string_view kArraySql = "SELECT ARRAY[1, 2] AS array_value;";
 constexpr std::string_view kRowSql = "SELECT ROW(1, 'alpha') AS row_value;";

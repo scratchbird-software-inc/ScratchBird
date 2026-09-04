@@ -300,7 +300,8 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   envelope.operands.push_back({"text", "projection_0_arg_2_type", "text"});
   envelope.operands.push_back({"text", "projection_0_arg_2_value", "fallback"});
   envelope.operands.push_back({"text", "projection_0_arg_2_is_null", "false"});
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 void RequireEngineDispatch() {

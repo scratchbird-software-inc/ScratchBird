@@ -14,6 +14,12 @@ namespace scratchbird::engine::sblr {
 
 class EnvelopeBuilder {
  public:
+  EnvelopeBuilder& canonical_anchor(
+      const std::array<std::uint8_t, 132>& anchor) noexcept {
+    envelope_.canonical_anchor = anchor;
+    return *this;
+  }
+
   EnvelopeBuilder& operation(SblrOperationFamily family, std::uint16_t opcode) noexcept {
     envelope_.family = family;
     envelope_.opcode = opcode;

@@ -14,6 +14,7 @@
 #include <array>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -989,6 +990,27 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
 #endif
 }
 
+std::vector<PublicNameResolutionResult>
+EmbeddedEngineClient::ResolveRelationDescriptorsPublic(
+    const SessionContext& session,
+    const std::vector<ipc::PublicRelationResolutionRequest>& requests,
+    const ParserConfig& config) {
+  std::vector<PublicNameResolutionResult> results;
+  results.reserve(requests.size());
+  // Each request still crosses the exact production V3 frame codec and server
+  // admission path. The engine-side statement metadata view is immutable and
+  // generation-keyed, so all members borrow one validated transaction/MGA
+  // cohort without introducing parser-owned descriptor authority.
+  for (const auto& request : requests) {
+    results.push_back(ResolveNamePublic(session,
+                                        request.presented_name,
+                                        request.quoted,
+                                        request.object_class,
+                                        config));
+  }
+  return results;
+}
+
 PublicNameResolutionResult EmbeddedEngineClient::RenderUuidPublic(
     const SessionContext& session,
     std::string_view object_uuid) {
@@ -1214,6 +1236,189 @@ ipc::ServerLiteralBindingResult EmbeddedEngineClient::FinalizeLiteralBinding(
   return result;
 }
 
+ipc::ServerParameterBindingResult
+EmbeddedEngineClient::NegotiateParameterDescriptors(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbpr) {
+  ipc::ServerParameterBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || canonical_sbpr.size() < 136 ||
+      canonical_sbpr.size() > 98416) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "the embedded parameter descriptor request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(42, session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::
+          kSchemaNegotiateParameterDescriptorsRequestV1;
+  frame.payload = canonical_sbpr;
+  const auto operation =
+      scratchbird::server::HandleNegotiateParameterDescriptors(
+          &impl_->registry, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != 43 ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::
+              kSchemaNegotiateParameterDescriptorsResultV1) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.PARAMETER_RESULT_SCHEMA_MISMATCH",
+                  "the embedded parameter negotiation result is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_sbpr;
+  AddDiagnostic(&result.messages,
+                "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerParameterBindingResult
+EmbeddedEngineClient::FinalizeParameterBinding(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbpf) {
+  ipc::ServerParameterBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || canonical_sbpf.size() < 280 ||
+      canonical_sbpf.size() > 426192) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "the embedded parameter finalization request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(44, session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaFinalizeParameterBindingRequestV1;
+  frame.payload = canonical_sbpf;
+  const auto operation = scratchbird::server::HandleFinalizeParameterBinding(
+      &impl_->registry, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != 45 ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaFinalizeParameterBindingResultV1) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.PARAMETER_RESULT_SCHEMA_MISMATCH",
+                  "the embedded parameter finalization result is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_sbpf;
+  AddDiagnostic(&result.messages,
+                "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerBulkImportBindResult EmbeddedEngineClient::BindBulkImportStream(
+    const SessionContext& session,
+    const scratchbird::wire::sbps_bulk_import::Bind& bind) {
+  ipc::ServerBulkImportBindResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated) {
+    AddDiagnostic(&result.messages, "SECURITY.ACCESS_DENIED",
+                  "embedded bulk import bind requires authentication");
+    return result;
+  }
+  std::vector<std::uint8_t> payload;
+  std::string detail;
+  if (!scratchbird::wire::sbps_bulk_import::EncodeBind(bind, &payload, &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  detail.empty() ? "embedded bulk import bind is malformed" : detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamBind), session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::kSchemaBulkImportStreamBindV1;
+  frame.payload = std::move(payload);
+  const auto operation = scratchbird::server::HandleBindBulkImportStream(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type !=
+          static_cast<std::uint16_t>(
+              scratchbird::server::sbps::MessageType::kBulkImportStreamBindAck) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaBulkImportStreamBindAckV1) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT",
+                  "embedded bulk import bind response is not exactly correlated");
+    return result;
+  }
+  if (!scratchbird::wire::sbps_bulk_import::DecodeBindAck(
+          operation.payload.data(), operation.payload.size(), &result.binding, &detail) ||
+      result.binding.authenticated_receipt_uuid != bind.authenticated_receipt_uuid ||
+      result.binding.structural_occurrence != bind.structural_occurrence ||
+      result.binding.import_occurrence != bind.import_occurrence ||
+      result.binding.syntax_demand_sha256 != bind.syntax_demand_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT",
+                  detail.empty() ? "embedded bulk import bind acknowledgement is invalid" : detail);
+    return result;
+  }
+  result.accepted = true;
+#else
+  (void)session; (void)bind;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerBulkImportChunkResult EmbeddedEngineClient::AppendBulkImportStream(const SessionContext& session, const scratchbird::wire::sbps_bulk_import::Chunk& chunk) {
+  ipc::ServerBulkImportChunkResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  std::vector<std::uint8_t> payload;
+  std::string detail;
+  if (!session.authenticated || !scratchbird::wire::sbps_bulk_import::EncodeChunk(chunk, &payload, &detail)) { AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID", detail.empty() ? "bulk import chunk is malformed" : detail); return result; }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamChunk), session); frame.header.payload_schema_id = scratchbird::server::sbps::kSchemaBulkImportStreamChunkV1; frame.payload = std::move(payload);
+  const auto operation = scratchbird::server::HandleAppendBulkImportStream(&impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) { AddServerDiagnostics(operation.diagnostics, &result.messages); return result; }
+  if (operation.response_message_type != static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamChunkAck) || operation.response_schema_id != scratchbird::server::sbps::kSchemaBulkImportStreamChunkAckV1) { result.outcome_unknown = true; AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT", "embedded bulk import chunk response is not exactly correlated"); return result; }
+  const bool extent_valid =
+      chunk.byte_offset <= std::numeric_limits<std::uint64_t>::max() -
+                               chunk.chunk_payload.size();
+  if (!scratchbird::wire::sbps_bulk_import::DecodeChunkAck(operation.payload.data(), operation.payload.size(), &result.acknowledgement, &detail) || !extent_valid || result.acknowledgement.stream_uuid != chunk.stream_uuid || result.acknowledgement.stream_generation != chunk.stream_generation || result.acknowledgement.accepted_sequence != chunk.chunk_sequence || result.acknowledgement.accepted_total_bytes != chunk.byte_offset + chunk.chunk_payload.size() || result.acknowledgement.accepted_chain_sha256 != chunk.chunk_chain_sha256) { result.outcome_unknown = true; AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT", detail.empty() ? "bulk import chunk acknowledgement is not exactly correlated" : detail); return result; }
+  result.accepted = true;
+#else
+  (void)session; (void)chunk; AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE", "embedded engine support is unavailable");
+#endif
+  return result;
+}
+
+ipc::ServerBulkImportSealResult EmbeddedEngineClient::SealBulkImportStream(const SessionContext& session, const scratchbird::wire::sbps_bulk_import::Seal& seal) {
+  ipc::ServerBulkImportSealResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  std::vector<std::uint8_t> payload; std::string detail;
+  if (!session.authenticated || !scratchbird::wire::sbps_bulk_import::EncodeSeal(seal, &payload, &detail)) { AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID", detail.empty() ? "bulk import seal is malformed" : detail); return result; }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamSeal), session); frame.header.payload_schema_id = scratchbird::server::sbps::kSchemaBulkImportStreamSealV1; frame.payload = std::move(payload);
+  const auto operation = scratchbird::server::HandleSealBulkImportStream(&impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) { AddServerDiagnostics(operation.diagnostics, &result.messages); return result; }
+  if (operation.response_message_type != static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamSealAck) || operation.response_schema_id != scratchbird::server::sbps::kSchemaBulkImportStreamSealAckV1) { result.outcome_unknown = true; AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT", "embedded bulk import seal response is not exactly correlated"); return result; }
+  if (!scratchbird::wire::sbps_bulk_import::DecodeSealAck(operation.payload.data(), operation.payload.size(), &result.acknowledgement, &detail) || result.acknowledgement.stream_uuid != seal.stream_uuid || result.acknowledgement.stream_generation != seal.stream_generation || result.acknowledgement.chunk_count != seal.final_chunk_count || result.acknowledgement.total_stream_bytes != seal.total_stream_bytes || result.acknowledgement.final_chain_sha256 != seal.final_chain_sha256 || result.acknowledgement.content_sha256 != seal.content_sha256) { result.outcome_unknown = true; AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT", detail.empty() ? "bulk import seal acknowledgement is not exactly correlated" : detail); return result; }
+  result.accepted = true;
+#else
+  (void)session; (void)seal; AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE", "embedded engine support is unavailable");
+#endif
+  return result;
+}
+
 ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateBulkImportStream(
     const SessionContext& session,
     const std::vector<std::uint8_t>& canonical_request) {
@@ -1241,6 +1446,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateBulkImportStrea
   if (operation.response_schema_id !=
           scratchbird::server::sbps::kSchemaCoordinateBulkImportStreamResultV1 ||
       operation.payload.size() != 424) {
+    result.outcome_unknown = true;
     AddDiagnostic(&result.messages,
                   "PARSER_SERVER_IPC.BULK_IMPORT_STREAM_RESULT_SCHEMA_MISMATCH",
                   "the embedded bulk import stream result is invalid");

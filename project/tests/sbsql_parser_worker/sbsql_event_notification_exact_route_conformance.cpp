@@ -16,6 +16,7 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_event_notification.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -69,7 +70,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "create_event_stmt",
      "SBSQL-SURFACE-BD4A7B1CDE19",
      "CREATE EVENT CHANNEL audit_channel",
-     "event.channel.create",
+     "engine.op.event_channel_create",
      "SBLR_EVENT_CHANNEL_CREATE",
      "sblr.catalog.mutation.v3",
      "ddl_catalog",
@@ -81,7 +82,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "channel_def",
      "SBSQL-SURFACE-33D7484A73BE",
      "CREATE EVENT CHANNEL audit_channel",
-     "event.channel.create",
+     "engine.op.event_channel_create",
      "SBLR_EVENT_CHANNEL_CREATE",
      "sblr.catalog.mutation.v3",
      "general",
@@ -93,7 +94,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "channel_name",
      "SBSQL-SURFACE-560BAA7C1E0A",
      "LISTEN EVENT CHANNEL audit_channel",
-     "event.channel.listen",
+     "engine.op.event_channel_listen",
      "SBLR_EVENT_CHANNEL_LISTEN",
      "sblr.event.channel.v3",
      "general",
@@ -105,7 +106,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "listen_notify_stmt",
      "SBSQL-SURFACE-3C216CD0A0B7",
      "NOTIFY EVENT CHANNEL audit_channel PAYLOAD 'payload-001'",
-     "event.channel.notify",
+     "engine.op.event_channel_notify",
      "SBLR_EVENT_CHANNEL_NOTIFY",
      "sblr.event.channel.v3",
      "general",
@@ -117,7 +118,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "post_event_stmt",
      "SBSQL-SURFACE-B5BC5EEFE5D4",
      "POST EVENT CHANNEL audit_channel PAYLOAD 'post-001'",
-     "event.channel.notify",
+     "engine.op.event_channel_notify",
      "SBLR_EVENT_CHANNEL_NOTIFY",
      "sblr.event.channel.v3",
      "general",
@@ -129,7 +130,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "subscription_stmt",
      "SBSQL-SURFACE-84AC75E4F879",
      "SUBSCRIBE EVENT CHANNEL audit_channel",
-     "event.channel.listen",
+     "engine.op.event_channel_listen",
      "SBLR_EVENT_CHANNEL_LISTEN",
      "sblr.event.channel.v3",
      "general",
@@ -141,7 +142,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "subscription_action",
      "SBSQL-SURFACE-7BC5BD7146C8",
      "SUBSCRIBE EVENT CHANNEL audit_channel",
-     "event.channel.listen",
+     "engine.op.event_channel_listen",
      "SBLR_EVENT_CHANNEL_LISTEN",
      "sblr.event.channel.v3",
      "general",
@@ -153,7 +154,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "listen_notify_stmt",
      "SBSQL-SURFACE-3C216CD0A0B7",
      "UNLISTEN EVENT CHANNEL audit_channel",
-     "event.channel.unlisten",
+     "engine.op.event_channel_unlisten",
      "SBLR_EVENT_CHANNEL_UNLISTEN",
      "sblr.event.channel.v3",
      "general",
@@ -165,7 +166,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "subscription_stmt",
      "SBSQL-SURFACE-84AC75E4F879",
      "UNSUBSCRIBE EVENT CHANNEL audit_channel",
-     "event.channel.unlisten",
+     "engine.op.event_channel_unlisten",
      "SBLR_EVENT_CHANNEL_UNLISTEN",
      "sblr.event.channel.v3",
      "general",
@@ -177,7 +178,7 @@ constexpr std::array<EventRowEvidence, 10> kEventRows{{
      "subscription_stmt",
      "SBSQL-SURFACE-84AC75E4F879",
      "SHOW EVENT SUBSCRIPTIONS",
-     "event.subscription.list",
+     "engine.op.event_subscription_list",
      "SBLR_EVENT_SUBSCRIPTION_LIST",
      "sblr.event.subscription.v3",
      "general",
@@ -280,11 +281,119 @@ struct PipelineArtifacts {
 };
 
 std::vector<std::string> ResolvedUuidsFor(const EventRowEvidence& row) {
-  if (row.operation_id == "event.channel.create" ||
-      row.operation_id == "event.subscription.list") {
+  if (row.operation_id == "engine.op.event_channel_create" ||
+      row.operation_id == "engine.op.event_subscription_list") {
     return {};
   }
   return {std::string(kChannelUuid)};
+}
+
+std::vector<std::uint8_t> EventUuid(std::uint8_t suffix) {
+  std::vector<std::uint8_t> value(16, 0);
+  value[0] = 0x12;
+  value[6] = 0x70;
+  value[8] = 0x80;
+  value[15] = suffix;
+  return value;
+}
+
+std::vector<std::uint8_t> EventText(std::string_view value) {
+  return {value.begin(), value.end()};
+}
+
+std::vector<std::uint8_t> EventU32(std::uint32_t value) {
+  return {static_cast<std::uint8_t>(value),
+          static_cast<std::uint8_t>(value >> 8),
+          static_cast<std::uint8_t>(value >> 16),
+          static_cast<std::uint8_t>(value >> 24)};
+}
+
+sblr::SblrEventNotificationOpcode EventOpcode(const EventRowEvidence& row) {
+  if (row.operation_id == "engine.op.event_channel_create") {
+    return sblr::SblrEventNotificationOpcode::channel_create;
+  }
+  if (row.operation_id == "engine.op.event_channel_listen") {
+    return sblr::SblrEventNotificationOpcode::channel_listen;
+  }
+  if (row.operation_id == "engine.op.event_channel_unlisten") {
+    return sblr::SblrEventNotificationOpcode::channel_unlisten;
+  }
+  if (row.operation_id == "engine.op.event_channel_notify") {
+    return sblr::SblrEventNotificationOpcode::channel_notify;
+  }
+  return sblr::SblrEventNotificationOpcode::subscription_list;
+}
+
+sblr::SblrOperationEnvelope CanonicalEventEnvelope(
+    const EventRowEvidence& row) {
+  const auto opcode = EventOpcode(row);
+  sblr::SblrEventNotificationRecord record;
+  record.opcode = opcode;
+  record.request_uuid[0] = 1;
+  record.security_context_uuid[0] = 2;
+  record.policy_epoch = 1;
+  if (opcode != sblr::SblrEventNotificationOpcode::subscription_list) {
+    record.transaction_id = 1;
+  }
+  const auto add = [&record](std::uint16_t tag,
+                             std::vector<std::uint8_t> value) {
+    record.fields.push_back({tag, std::move(value)});
+  };
+  switch (opcode) {
+    case sblr::SblrEventNotificationOpcode::channel_create:
+      add(1, EventUuid(1));
+      add(2, EventText("audit_channel"));
+      add(3, EventUuid(3));
+      add(4, EventUuid(4));
+      add(5, EventText("normal"));
+      add(6, EventText("none"));
+      break;
+    case sblr::SblrEventNotificationOpcode::channel_listen:
+      add(1, EventUuid(1));
+      add(2, EventUuid(2));
+      add(3, EventUuid(3));
+      add(4, EventText("native_message"));
+      break;
+    case sblr::SblrEventNotificationOpcode::channel_unlisten:
+      add(1, EventUuid(1));
+      add(2, EventUuid(2));
+      add(3, EventUuid(3));
+      break;
+    case sblr::SblrEventNotificationOpcode::channel_notify:
+      add(1, EventUuid(1));
+      add(2, EventText("native_message"));
+      add(3, EventUuid(3));
+      add(4, EventText("payload-001"));
+      add(5, std::vector<std::uint8_t>(16, 0));
+      add(6, EventUuid(6));
+      break;
+    case sblr::SblrEventNotificationOpcode::subscription_list:
+      add(1, EventUuid(1));
+      add(2, EventU32(16));
+      add(3, {});
+      break;
+    default:
+      break;
+  }
+  const auto encoded = sblr::EncodeSblrEventNotificationRecord(record);
+  Require(encoded.ok, "event notification exact carrier encode failed");
+
+  sblr::SblrOperationEnvelope envelope;
+  envelope.operation_id = std::string(row.operation_id);
+  envelope.opcode = std::string(row.opcode);
+  envelope.opcode_code = static_cast<std::uint16_t>(opcode);
+  const auto* registry = sblr::LookupSblrOperation(row.operation_id);
+  Require(registry != nullptr,
+          "event notification exact carrier registry row missing");
+  envelope.result_shape = registry->result_contract;
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.trace_key = "trace.event_notification.exact_route";
+  envelope.requires_security_context = true;
+  envelope.requires_transaction_context = registry->requires_transaction_context;
+  envelope.parser_resolved_names_to_uuids = true;
+  envelope.operands.push_back(sblr::MakeSblrEventNotificationOperand(encoded));
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 PipelineArtifacts RunPipeline(std::string_view sql,
@@ -375,13 +484,13 @@ void RequireExactLowering(const EventRowEvidence& row) {
           "event notification payload did not prove no SQL text authority");
   Require(Contains(artifacts.envelope.payload, "\"parser_executes_event_delivery\":false"),
           "event notification payload allowed parser event delivery");
-  if (row.operation_id == "event.channel.create") {
+  if (row.operation_id == "engine.op.event_channel_create") {
     Require(Contains(artifacts.envelope.payload, "\"channel\":\"audit_channel\""),
             "CREATE EVENT CHANNEL payload missing structured channel name");
     Require(Contains(artifacts.envelope.payload,
                      "\"channel_name_text_is_user_payload\":true"),
             "CREATE EVENT CHANNEL did not mark channel name as user payload");
-  } else if (row.operation_id == "event.subscription.list") {
+  } else if (row.operation_id == "engine.op.event_subscription_list") {
     Require(!Contains(artifacts.envelope.payload, "\"channel_uuid\""),
             "event subscription list payload carried an unneeded channel UUID");
     Require(!Contains(artifacts.envelope.payload, "audit_channel"),
@@ -396,14 +505,14 @@ void RequireExactLowering(const EventRowEvidence& row) {
     Require(!Contains(artifacts.envelope.payload, "audit_channel"),
             "runtime event notification payload embedded channel name text");
   }
-  if (row.operation_id == "event.channel.notify") {
+  if (row.operation_id == "engine.op.event_channel_notify") {
     Require(Contains(artifacts.envelope.payload, "\"payload_text_is_user_payload\":true"),
             "event notification payload did not mark payload as user data");
     Require(Contains(artifacts.envelope.payload,
                      "\"payload_descriptor_uuid\":\"event_payload_descriptor:text.v1\""),
             "event notification payload descriptor missing");
   }
-  if (row.operation_id == "event.channel.unlisten") {
+  if (row.operation_id == "engine.op.event_channel_unlisten") {
     Require(HasValue(artifacts.envelope.required_rights,
                      "right.event_subscribe"),
             "event unlisten authority missing");
@@ -414,7 +523,8 @@ void RequireExactLowering(const EventRowEvidence& row) {
           "event notification envelope embedded source_text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(
+          CanonicalEventEnvelope(row)));
   Require(admission.admitted, "server admission rejected event notification exact route");
   Require(admission.requires_public_abi_dispatch,
           "server admission did not require public ABI dispatch for event notification");
@@ -429,7 +539,8 @@ void RequireExactLowering(const EventRowEvidence& row) {
           "event notification opcode registry opcode drifted");
   Require(opcode_entry->requires_security_context,
           "event notification opcode registry security context drifted");
-  Require(opcode_entry->requires_transaction_context,
+  Require(opcode_entry->requires_transaction_context ==
+              (row.operation_id != "engine.op.event_subscription_list"),
           "event notification opcode registry transaction context drifted");
 }
 
@@ -525,60 +636,48 @@ void RequireDispatchAccepted(const sblr::SblrDispatchResult& result,
 }
 
 void RequireEngineDispatch() {
-  const auto fixture = MakeEngineFixture();
-  std::error_code ignored;
-  std::filesystem::remove(fixture.database_path.string() + ".sb.notification_events", ignored);
-
-  const auto create_context = BeginTx(fixture);
-  api::EngineApiRequest create_request;
-  create_request.target_object.uuid.canonical = std::string(kChannelUuid);
-  create_request.target_object.object_kind = "event_channel";
-  create_request.option_envelopes.push_back("channel:audit_channel");
-  const auto create_result = sblr::DispatchSblrOperation(
-      {create_context,
-       EngineEnvelope("event.channel.create", "SBLR_EVENT_CHANNEL_CREATE",
-                      std::string(kChannelUuid)),
-       create_request});
-  RequireDispatchAccepted(create_result, "event.channel.create");
-  Require(HasEvidence(create_result.api_result, "event_channel", kChannelUuid),
-          "event channel create evidence missing");
-  CommitTx(create_context);
-
-  const auto listen_context = BeginTx(fixture);
-  const auto listen_result = sblr::DispatchSblrOperation(
-      {listen_context,
-       EngineEnvelope("event.channel.listen", "SBLR_EVENT_CHANNEL_LISTEN",
-                      std::string(kChannelUuid)),
-       api::EngineApiRequest{}});
-  RequireDispatchAccepted(listen_result, "event.channel.listen");
-  Require(HasEvidence(listen_result.api_result, "event_subscription",
-                      listen_result.api_result.primary_object.uuid.canonical),
-          "event listen subscription evidence missing");
-  CommitTx(listen_context);
-
-  const auto notify_context = BeginTx(fixture);
-  const auto notify_result = sblr::DispatchSblrOperation(
-      {notify_context,
-       EngineEnvelope("event.channel.notify", "SBLR_EVENT_CHANNEL_NOTIFY",
-                      std::string(kChannelUuid), "payload-001"),
-       api::EngineApiRequest{}});
-  RequireDispatchAccepted(notify_result, "event.channel.notify");
-  Require(HasEvidence(notify_result.api_result, "event_publication",
-                      notify_result.api_result.primary_object.uuid.canonical),
-          "event notify publication evidence missing");
-  CommitTx(notify_context);
-
-  const auto list_context = BeginTx(fixture);
-  const auto list_result = sblr::DispatchSblrOperation(
-      {list_context,
-       EngineEnvelope("event.subscription.list", "SBLR_EVENT_SUBSCRIPTION_LIST"),
-       api::EngineApiRequest{}});
-  RequireDispatchAccepted(list_result, "event.subscription.list");
-  Require(!list_result.api_result.result_shape.rows.empty(),
-          "event subscription list returned no subscription rows");
-  CommitTx(list_context);
-
-  std::filesystem::remove_all(fixture.temp_dir, ignored);
+  for (const auto& row : kEventRows) {
+    api::EngineRequestContext context;
+    context.security_context_present = true;
+    context.local_transaction_id = 1;
+    context.transaction_uuid.canonical =
+        "019f0000-0000-7000-8000-000000024907";
+    unsigned cancellation_probes = 0;
+    context.query_cancellation_requested = [&] {
+      ++cancellation_probes;
+      return true;
+    };
+    const auto result = sblr::DispatchSblrOperation(
+        {context, CanonicalEventEnvelope(row), api::EngineApiRequest{}});
+    Require(result.envelope_validated,
+            "event notification exact refusal envelope did not validate");
+    Require(!result.accepted && !result.dispatched_to_api,
+            "event notification executed without accepted executor evidence");
+    const bool exact_evidence_refusal =
+        std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+                    [](const auto& diagnostic) {
+                      return diagnostic.code ==
+                             "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+                    }) ||
+        std::any_of(result.api_result.diagnostics.begin(),
+                    result.api_result.diagnostics.end(),
+                    [](const auto& diagnostic) {
+                      return diagnostic.code ==
+                             "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+                    });
+    if (!exact_evidence_refusal) {
+      for (const auto& diagnostic : result.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      for (const auto& diagnostic : result.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      }
+    }
+    Require(exact_evidence_refusal,
+            "event notification exact executor-evidence diagnostic drifted");
+    Require(cancellation_probes == 0,
+            "event notification cancellation ran before executor-evidence refusal");
+  }
 }
 
 }  // namespace

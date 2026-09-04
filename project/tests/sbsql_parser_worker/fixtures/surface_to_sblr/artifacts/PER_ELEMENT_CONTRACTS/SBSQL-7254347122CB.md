@@ -22,17 +22,17 @@ Generated public per-element contract snapshot.
 | Diagnostic target | canonical_message_vector_and_parser_rendering |
 | Final acceptance rule | parse_bind_lower_server_engine_diagnostic_and_regression_evidence |
 | Closure action | implement_full_route_or_exact_canonical_refusal |
-| Canonical diagnostic precedence | SBLR.OPCODE_INVALID;SBLR.OPERAND_INVALID;SECURITY.ACCESS_DENIED;MGA.TRANSACTION_INVALID;MGA.AUTHORITY_MISMATCH;CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN;PROCESS.CANCELLED;SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING;SBLR.OPERATION_UNSUPPORTED |
+| Canonical diagnostic precedence | canonical_message_vector_set;SBSQL.IMPL.NOT_AVAILABLE;accepted=false;executable_sblr_emitted=false;no_result;no_authority_publication;no_mutation |
 
 ## Release Closure
 
 | Field | Value |
 | --- | --- |
 | Backlog closure status | e2e_passed |
-| Release final status | pending |
-| Release claim | not_releasable |
-| Release status | blocked |
-| Remaining risk | authenticated_route_fixture_status=fixture_authored;sblr_round_trip_fixture_status=fixture_authored |
+| Release final status | exact_refusal_passed |
+| Release claim | public_exact_refusal_implemented |
+| Release status | row_evidence_complete |
+| Remaining risk | none |
 
 ## Semantic Oracle
 

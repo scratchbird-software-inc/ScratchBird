@@ -46,6 +46,15 @@ CanonicalResultCursorSession::CanonicalResultCursorSession(
     std::unique_ptr<State> state)
     : state_(std::move(state)) {}
 
+std::shared_ptr<CanonicalResultCursorSession>
+CanonicalResultCursorSession::Create(std::unique_ptr<State> state) {
+  struct ConstructionAccess final : CanonicalResultCursorSession {
+    explicit ConstructionAccess(std::unique_ptr<State> value)
+        : CanonicalResultCursorSession(std::move(value)) {}
+  };
+  return std::make_shared<ConstructionAccess>(std::move(state));
+}
+
 CanonicalResultCursorSession::~CanonicalResultCursorSession() {
   Release(CanonicalResultCursorReleaseReason::kAbandoned);
 }
@@ -995,8 +1004,7 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
       state->cancellation_diagnostic =
           *request.cursor_cancellation_diagnostic;
       state->release = request.cursor_release;
-      cursor_session = std::shared_ptr<CanonicalResultCursorSession>(
-          new CanonicalResultCursorSession(std::move(state)));
+      cursor_session = CanonicalResultCursorSession::Create(std::move(state));
     }
 
     const auto refuse_cursor = [&](DescriptorRuntimeDiagnostic diagnostic) {

@@ -9,11 +9,15 @@
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "sblr_to_sbsql.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "sblr_transaction_commit_runtime.hpp"
+#include "sblr_transaction_rollback_runtime.hpp"
 #include "sbu_sbsql_parser_support.hpp"
 
-#include "scratchbird/engine/sblr/lowering.hpp"
+#include "scratchbird/engine/sblr_envelope.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -35,8 +39,6 @@ constexpr std::string_view kDescriptorUuid =
     "019f1000-0000-7000-8000-000000000001";
 constexpr std::string_view kTableUuid =
     "019f1000-0000-7000-8000-000000000101";
-constexpr std::string_view kIndexUuid =
-    "019f1000-0000-7000-8000-000000000102";
 constexpr std::string_view kValueColumnUuid =
     "019f1000-0000-7000-8000-000000000201";
 constexpr std::string_view kPredicateColumnUuid =
@@ -67,6 +69,68 @@ sblr::SblrOperand Operand(std::string name, std::string value) {
   operand.name = std::move(name);
   operand.value = std::move(value);
   return operand;
+}
+
+sblr::SblrOperationEnvelope CanonicalOperation(
+    sblr::SblrOperationEnvelope envelope) {
+  const auto* entry = sblr::LookupSblrOperation(envelope.operation_id);
+  Require(entry != nullptr && entry->opcode == envelope.opcode && entry->code != 0,
+          "source round-trip fixture lacks an exact canonical registry identity");
+  envelope.opcode_code = entry->code;
+  envelope.parser_package_uuid = "019f1000-0000-7000-8000-000000000501";
+  envelope.registry_snapshot_uuid = "019f1000-0000-7000-8000-000000000502";
+  envelope.parser_resolved_names_to_uuids = true;
+  for (std::size_t index = 0; index < envelope.operands.size(); ++index) {
+    auto& operand = envelope.operands[index];
+    operand.ordinal = static_cast<std::uint32_t>(index + 1);
+    if (operand.value_kind != sblr::SblrValueKind::null_value ||
+        !operand.value_body.empty()) {
+      continue;
+    }
+    operand.value_kind = sblr::SblrValueKind::literal_typed;
+    operand.value_body.assign(16, 0);
+    operand.value_body[0] = 0x12;
+    operand.value_body[6] = 0x70;
+    operand.value_body[8] = 0x80;
+    operand.value_body[15] = 0x51;
+    const auto value_size = static_cast<std::uint64_t>(operand.value.size());
+    for (std::uint32_t shift = 0; shift < 64; shift += 8) {
+      operand.value_body.push_back(
+          static_cast<std::uint8_t>((value_size >> shift) & 0xffu));
+    }
+    operand.value_body.insert(operand.value_body.end(), operand.value.begin(),
+                              operand.value.end());
+    operand.value.clear();
+  }
+  return envelope;
+}
+
+void RenumberOperands(sblr::SblrOperationEnvelope* envelope) {
+  for (std::size_t index = 0; index < envelope->operands.size(); ++index) {
+    envelope->operands[index].ordinal = static_cast<std::uint32_t>(index + 1);
+  }
+}
+
+void SetOperandText(sblr::SblrOperationEnvelope* envelope,
+                    std::string_view name,
+                    std::string_view value) {
+  for (auto& operand : envelope->operands) {
+    if (operand.name != name) continue;
+    Require(operand.value_kind == sblr::SblrValueKind::literal_typed &&
+                operand.value_body.size() >= 24,
+            "source round-trip typed operand is malformed");
+    operand.value.clear();
+    operand.value_body.resize(16);
+    const auto value_size = static_cast<std::uint64_t>(value.size());
+    for (std::uint32_t shift = 0; shift < 64; shift += 8) {
+      operand.value_body.push_back(
+          static_cast<std::uint8_t>((value_size >> shift) & 0xffu));
+    }
+    operand.value_body.insert(operand.value_body.end(), value.begin(),
+                              value.end());
+    return;
+  }
+  Require(false, "source round-trip operand to mutate is missing");
 }
 
 sblr::SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
@@ -156,58 +220,7 @@ sblr::SblrOperationEnvelope BuildDmlEnvelope(std::string operation_id,
                                       std::string(kPredicateParameterUuid)));
   AttachSourcePolicy(&envelope, "CBQ-038-dml-source-map");
   AttachTableAndColumnSymbols(&envelope);
-  return envelope;
-}
-
-sblr::SblrOperationEnvelope BuildCreateTableEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope("ddl.create_table",
-                                         "SBLR_DDL_CREATE_TABLE",
-                                         "CBQ-038-DDL-CREATE-TABLE-ROUNDTRIP");
-  envelope.requires_transaction_context = true;
-  envelope.operands.push_back(Operand("sbsql_render_family",
-                                      "source_preserving_ddl_create_table_v1"));
-  envelope.operands.push_back(Operand("authority_descriptor_uuid",
-                                      std::string(kDescriptorUuid)));
-  envelope.operands.push_back(Operand("table_symbol_key",
-                                      "object.roundtrip_customer"));
-  envelope.operands.push_back(Operand("target_object_uuid",
-                                      std::string(kTableUuid)));
-  envelope.operands.push_back(Operand("column_symbol_key", "column.amount"));
-  envelope.operands.push_back(Operand("column_descriptor_uuid",
-                                      std::string(kValueColumnUuid)));
-  envelope.operands.push_back(Operand("column_type", "INT"));
-  AttachSourcePolicy(&envelope, "CBQ-038-create-table-source-map");
-  AttachTableAndColumnSymbols(&envelope);
-  return envelope;
-}
-
-sblr::SblrOperationEnvelope BuildCreateIndexEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope("ddl.create_index",
-                                         "SBLR_DDL_CREATE_INDEX",
-                                         "CBQ-038-DDL-CREATE-INDEX-ROUNDTRIP");
-  envelope.requires_transaction_context = true;
-  envelope.operands.push_back(Operand("sbsql_render_family",
-                                      "source_preserving_ddl_create_index_v1"));
-  envelope.operands.push_back(Operand("authority_descriptor_uuid",
-                                      std::string(kDescriptorUuid)));
-  envelope.operands.push_back(Operand("index_symbol_key",
-                                      "object.idx_roundtrip_customer_amount"));
-  envelope.operands.push_back(Operand("index_object_uuid",
-                                      std::string(kIndexUuid)));
-  envelope.operands.push_back(Operand("table_symbol_key",
-                                      "object.roundtrip_customer"));
-  envelope.operands.push_back(Operand("relation_object_uuid",
-                                      std::string(kTableUuid)));
-  envelope.operands.push_back(Operand("column_symbol_key", "column.amount"));
-  envelope.operands.push_back(Operand("column_descriptor_uuid",
-                                      std::string(kValueColumnUuid)));
-  AttachSourcePolicy(&envelope, "CBQ-038-create-index-source-map");
-  envelope.source_artifact_map.symbols.push_back(
-      Symbol("object_display_name", "object.idx_roundtrip_customer_amount",
-             std::string(kIndexUuid), "idx_roundtrip_customer_amount",
-             "catalog.index"));
-  AttachTableAndColumnSymbols(&envelope);
-  return envelope;
+  return CanonicalOperation(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope BuildTransactionEnvelope(std::string operation_id,
@@ -215,23 +228,79 @@ sblr::SblrOperationEnvelope BuildTransactionEnvelope(std::string operation_id,
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id),
                                          std::move(opcode),
                                          "CBQ-038-TRANSACTION-ROUNDTRIP");
-  envelope.operands.push_back(Operand("sbsql_render_family",
-                                      "source_preserving_transaction_control_v1"));
-  if (envelope.operation_id == "transaction.begin" ||
-      envelope.operation_id == "transaction.set_characteristics" ||
-      envelope.operation_id == "transaction.txn_begin") {
+  if (envelope.operation_id == "engine.op.txn_begin") {
+    envelope.requires_transaction_context = false;
+    envelope.result_shape = "transaction_handle";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    sblr::SblrTransactionBeginOptionsV1 options;
+    options.isolation_profile_uuid[0] = 1;
+    options.isolation_profile_generation = 1;
+    options.transaction_policy_snapshot_uuid[0] = 2;
+    options.transaction_policy_generation = 1;
+    options.read_mode = 1;
+    options.authority_scope = 1;
+    options.wait_policy = 1;
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "transaction.begin_options";
+    operand.name = "options";
+    operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+    operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+    Require(!operand.value_body.empty(),
+            "canonical transaction begin options did not encode");
+    envelope.operands.push_back(std::move(operand));
+  } else if (envelope.operation_id == "engine.op.txn_commit") {
+    envelope.requires_transaction_context = true;
+    envelope.result_shape = "commit_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    sblr::SblrTransactionCommitOptionsV1 options;
+    options.transaction_uuid[0] = 1;
+    options.local_transaction_id = 1;
+    options.admitted_handle_evidence_sha256[0] = 2;
+    options.commit_mode = 1;
+    options.authority_scope = 1;
+    options.wait_policy = 1;
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "transaction.commit.options";
+    operand.name = "options";
+    operand.value_kind = sblr::SblrValueKind::transaction_commit_options;
+    operand.value_body = sblr::EncodeSblrTransactionCommitOptionsV1(&options);
+    Require(!operand.value_body.empty(),
+            "canonical transaction commit options did not encode");
+    envelope.operands.push_back(std::move(operand));
+  } else if (envelope.operation_id == "engine.op.txn_rollback") {
+    envelope.requires_transaction_context = true;
+    envelope.result_shape = "rollback_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    sblr::SblrTransactionRollbackOptionsV1 options;
+    options.transaction_uuid[0] = 1;
+    options.local_transaction_id = 1;
+    options.admitted_handle_evidence_sha256[0] = 2;
+    options.rollback_mode = 1;
+    options.authority_scope = 1;
+    options.wait_policy = 1;
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "transaction.rollback.options";
+    operand.name = "options";
+    operand.value_kind = sblr::SblrValueKind::transaction_rollback_options;
+    operand.value_body = sblr::EncodeSblrTransactionRollbackOptionsV1(&options);
+    Require(!operand.value_body.empty(),
+            "canonical transaction rollback options did not encode");
+    envelope.operands.push_back(std::move(operand));
+  } else {
+    envelope.operands.push_back(Operand(
+        "sbsql_render_family", "source_preserving_transaction_control_v1"));
     envelope.operands.push_back(Operand("session_context_uuid",
                                         std::string(kSessionContextUuid)));
-  } else {
-    envelope.requires_transaction_context = true;
-    envelope.operands.push_back(Operand("transaction_context_uuid",
-                                        std::string(kTransactionContextUuid)));
-  }
-  if (envelope.operation_id == "transaction.set_characteristics") {
-    envelope.operands.push_back(Operand("transaction_read_mode", "read_only"));
+    if (envelope.operation_id == "transaction.set_characteristics") {
+      envelope.operands.push_back(
+          Operand("transaction_read_mode", "read_only"));
+    }
   }
   AttachSourcePolicy(&envelope, "CBQ-038-transaction-source-map");
-  return envelope;
+  return CanonicalOperation(std::move(envelope));
 }
 
 std::vector<std::string> RenderedStatements(std::string_view rendered) {
@@ -245,52 +314,77 @@ std::vector<std::string> RenderedStatements(std::string_view rendered) {
 }
 
 std::string BinaryRoundTripCanonicalText(
-    const sblr::SblrOperationEnvelope& envelope,
-    public_sblr::SblrOperationFamily family) {
-  const auto encoded_text = sblr::EncodeSblrEnvelope(envelope);
-  const std::string descriptor = "descriptor_authority=" +
-                                 std::string(kDescriptorUuid);
-  const auto binary =
-      sblr::EnvelopeBuilder()
-          .operation(family, 1)
-          .payload_kind(public_sblr::SblrPayloadKind::operation_envelope)
-          .descriptor(1,
-                      reinterpret_cast<const std::uint8_t*>(descriptor.data()),
-                      descriptor.size())
-          .append_bytes(reinterpret_cast<const std::uint8_t*>(encoded_text.data()),
-                        encoded_text.size())
-          .encode();
+    const sblr::SblrOperationEnvelope& envelope) {
+  Require(sblr::EncodeSblrEnvelope(envelope).empty(),
+          "source metadata was serialized inside SBOP");
+  auto operation = envelope;
+  operation.source_artifact_map = {};
+  const auto validation = sblr::ValidateSblrEnvelope(operation);
+  Require(validation.ok,
+          "canonical operation without source metadata is invalid: " +
+              sblr::SerializeSblrValidationToJson(validation));
+  const auto encoded_text = sblr::EncodeSblrEnvelope(operation);
+  Require(!encoded_text.empty(),
+          "canonical operation without source metadata did not encode");
+  const auto uuid = [](std::uint8_t suffix) {
+    std::array<std::uint8_t, 16> value{};
+    value[0] = 0x12;
+    value[6] = 0x70;
+    value[8] = 0x80;
+    value[15] = suffix;
+    return value;
+  };
+  public_sblr::SblrCanonicalContainer container;
+  const auto engine_uuid = uuid(0x21);
+  const auto dialect_uuid = uuid(0x22);
+  const auto parser_uuid = uuid(0x31);
+  const auto bundle_uuid = uuid(0x24);
+  const auto request_uuid = uuid(0x25);
+  std::copy(engine_uuid.begin(), engine_uuid.end(),
+            container.canonical_anchor.begin());
+  std::copy(dialect_uuid.begin(), dialect_uuid.end(),
+            container.canonical_anchor.begin() + 16);
+  std::copy(parser_uuid.begin(), parser_uuid.end(),
+            container.canonical_anchor.begin() + 32);
+  container.canonical_anchor[48] = 1;
+  container.canonical_anchor[52] = 1;
+  container.canonical_anchor[60] = 1;
+  container.canonical_anchor[68] = 1;
+  std::copy(bundle_uuid.begin(), bundle_uuid.end(),
+            container.canonical_anchor.begin() + 76);
+  container.canonical_anchor[92] = 1;
+  container.canonical_anchor[100] = 2;
+  std::copy(request_uuid.begin(), request_uuid.end(),
+            container.canonical_anchor.begin() + 116);
+  container.operation_payload.assign(encoded_text.begin(), encoded_text.end());
+  const auto binary = public_sblr::EncodeSblrContainer(container);
+  Require(!binary.empty(), "canonical SBLR container did not encode");
   const auto decoded =
-      public_sblr::DecodeSblrEnvelopeBytes(binary.data(), binary.size());
+      public_sblr::DecodeSblrContainerBytes(binary.data(), binary.size());
   Require(decoded.status == public_sblr::SblrCodecStatus::ok,
           "binary SBLR envelope did not decode");
-  Require(decoded.envelope.payload_kind ==
-              public_sblr::SblrPayloadKind::operation_envelope,
-          "binary SBLR payload kind drifted");
-  Require(decoded.envelope.family == family,
-          "binary SBLR operation family drifted");
-  Require(decoded.envelope.descriptors.size() == 1,
-          "binary SBLR descriptor authority missing");
+  Require(decoded.container.source_map.empty(),
+          "operation-only container acquired an unvalidated source map");
 
   const std::string canonical_text(
-      reinterpret_cast<const char*>(decoded.envelope.canonical_bytes.data()),
-      decoded.envelope.canonical_bytes.size());
+      reinterpret_cast<const char*>(decoded.container.operation_payload.data()),
+      decoded.container.operation_payload.size());
   Require(canonical_text == encoded_text,
           "binary SBLR canonical bytes did not preserve source envelope");
 
-  const auto reencoded = public_sblr::EncodeSblrEnvelope(decoded.envelope);
+  const auto reencoded = public_sblr::EncodeSblrContainer(decoded.container);
   Require(reencoded == binary,
           "binary SBLR encode/decode was not byte-identical");
   return canonical_text;
 }
 
 void CheckRenderReparseRoundTrip(const sblr::SblrOperationEnvelope& envelope,
-                                 public_sblr::SblrOperationFamily family,
                                  std::string_view expected_fragment,
                                  std::string_view label) {
-  const auto canonical_text = BinaryRoundTripCanonicalText(envelope, family);
-  const auto decoded_text = sblr::DecodeSblrEnvelope(canonical_text);
+  const auto canonical_text = BinaryRoundTripCanonicalText(envelope);
+  auto decoded_text = sblr::DecodeSblrEnvelope(canonical_text);
   Require(decoded_text.ok, std::string(label) + " textual envelope did not decode");
+  decoded_text.envelope.source_artifact_map = envelope.source_artifact_map;
 
   const sblr::SblrToSbsqlOptions options{.source_preserving = true};
   const auto rendered = sblr::RenderSblrEnvelopeToSbsql(decoded_text.envelope, options);
@@ -305,9 +399,11 @@ void CheckRenderReparseRoundTrip(const sblr::SblrOperationEnvelope& envelope,
 
   const auto udr_result =
       udr::sbu_sbsql_decompile_sblr(canonical_text, kSourcePreservingPolicy);
-  Require(udr_result.ok, std::string(label) + " UDR decompile failed");
-  Require(udr_result.payload == rendered.sbsql_text,
-          std::string(label) + " UDR decompile drifted from engine render");
+  Require(!udr_result.ok &&
+              Contains(udr_result.message_vector_json,
+                       "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED"),
+          std::string(label) +
+              " bare-SBOP UDR reversal did not fail closed");
 
   for (const auto& statement : RenderedStatements(rendered.sbsql_text)) {
     const auto syntax = udr::sbu_sbsql_validate_syntax(statement, "sbsql");
@@ -332,118 +428,123 @@ void ExpectApiRefusal(const sblr::SblrOperationEnvelope& envelope,
 }
 
 void CheckRouteCoverage() {
-  CheckRenderReparseRoundTrip(BuildCreateTableEnvelope(),
-                              public_sblr::SblrOperationFamily::catalog_mutation,
-                              "CREATE TABLE roundtrip_customer (amount INT);",
-                              "DDL create table");
-  CheckRenderReparseRoundTrip(BuildCreateIndexEnvelope(),
-                              public_sblr::SblrOperationFamily::catalog_mutation,
-                              "CREATE INDEX idx_roundtrip_customer_amount ON roundtrip_customer (amount);",
-                              "DDL create index");
   CheckRenderReparseRoundTrip(
-      BuildDmlEnvelope("dml.insert_rows", "SBLR_DML_INSERT_ROWS"),
-      public_sblr::SblrOperationFamily::dml_insert,
+      BuildDmlEnvelope("engine.op.insert", "SBLR_INSERT"),
       "INSERT INTO roundtrip_customer (amount) VALUES (:p_amount);",
       "DML insert");
   CheckRenderReparseRoundTrip(
-      BuildDmlEnvelope("dml.select_rows", "SBLR_DML_SELECT_ROWS"),
-      public_sblr::SblrOperationFamily::relational_query,
-      "SELECT amount FROM roundtrip_customer WHERE customer_id = :p_customer_id;",
-      "DML select");
-  CheckRenderReparseRoundTrip(
-      BuildDmlEnvelope("dml.update_rows", "SBLR_DML_UPDATE_ROWS"),
-      public_sblr::SblrOperationFamily::dml_update,
+      BuildDmlEnvelope("engine.op.update", "SBLR_UPDATE"),
       "UPDATE roundtrip_customer SET amount = :p_amount WHERE customer_id = :p_customer_id;",
       "DML update");
   CheckRenderReparseRoundTrip(
-      BuildDmlEnvelope("dml.delete_rows", "SBLR_DML_DELETE_ROWS"),
-      public_sblr::SblrOperationFamily::dml_delete,
+      BuildDmlEnvelope("engine.op.delete", "SBLR_DELETE"),
       "DELETE FROM roundtrip_customer WHERE customer_id = :p_customer_id;",
       "DML delete");
   CheckRenderReparseRoundTrip(
-      BuildTransactionEnvelope("transaction.begin", "SBLR_TRANSACTION_BEGIN"),
-      public_sblr::SblrOperationFamily::transaction_control,
+      BuildTransactionEnvelope("engine.op.txn_begin", "SBLR_TXN_BEGIN"),
       "BEGIN TRANSACTION;",
       "transaction begin");
   CheckRenderReparseRoundTrip(
       BuildTransactionEnvelope("transaction.set_characteristics",
                                "SBLR_TRANSACTION_SET_CHARACTERISTICS"),
-      public_sblr::SblrOperationFamily::transaction_control,
       "SET TRANSACTION READ ONLY;",
       "transaction set characteristics");
   CheckRenderReparseRoundTrip(
-      BuildTransactionEnvelope("transaction.commit", "SBLR_TRANSACTION_COMMIT"),
-      public_sblr::SblrOperationFamily::transaction_control,
+      BuildTransactionEnvelope("engine.op.txn_commit", "SBLR_TXN_COMMIT"),
       "COMMIT;",
       "transaction commit");
   CheckRenderReparseRoundTrip(
-      BuildTransactionEnvelope("transaction.rollback", "SBLR_TRANSACTION_ROLLBACK"),
-      public_sblr::SblrOperationFamily::transaction_control,
+      BuildTransactionEnvelope("engine.op.txn_rollback", "SBLR_TXN_ROLLBACK"),
       "ROLLBACK;",
       "transaction rollback");
 }
 
 void CheckAuthorityAndPolicyRefusals() {
-  auto missing_authority = BuildCreateTableEnvelope();
+  auto missing_authority =
+      BuildDmlEnvelope("engine.op.update", "SBLR_UPDATE");
   missing_authority.operands.erase(
       std::remove_if(missing_authority.operands.begin(),
                      missing_authority.operands.end(),
                      [](const sblr::SblrOperand& operand) {
-                       return operand.name == "column_descriptor_uuid";
+                       return operand.name == "value_column_uuid";
                      }),
       missing_authority.operands.end());
+  RenumberOperands(&missing_authority);
   ExpectApiRefusal(missing_authority,
                    "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED",
-                   "missing column descriptor authority");
+                   "missing value column descriptor authority");
 
-  auto mismatched_authority = BuildDmlEnvelope("dml.update_rows",
-                                               "SBLR_DML_UPDATE_ROWS");
-  for (auto& operand : mismatched_authority.operands) {
-    if (operand.name == "value_column_uuid") {
-      operand.value = "019f1000-0000-7000-8000-00000000ffff";
-    }
-  }
+  auto mismatched_authority =
+      BuildDmlEnvelope("engine.op.update", "SBLR_UPDATE");
+  SetOperandText(&mismatched_authority, "value_column_uuid",
+                 "019f1000-0000-7000-8000-00000000ffff");
   ExpectApiRefusal(mismatched_authority,
                    "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
                    "mismatched value column authority");
 
-  auto sql_text_artifact = BuildDmlEnvelope("dml.select_rows",
-                                            "SBLR_DML_SELECT_ROWS");
+  auto missing_source = BuildDmlEnvelope("engine.op.insert", "SBLR_INSERT");
+  missing_source.source_artifact_map = {};
+  ExpectApiRefusal(missing_source,
+                   "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED",
+                   "missing source artifact sidecar");
+
+  auto redacted = BuildDmlEnvelope("engine.op.insert", "SBLR_INSERT");
+  redacted.source_artifact_map.policy_status = "redacted_render_metadata";
+  ExpectApiRefusal(redacted,
+                   "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REDACTED",
+                   "redacted source artifact sidecar");
+
+  auto sql_text_artifact =
+      BuildDmlEnvelope("engine.op.update", "SBLR_UPDATE");
   sql_text_artifact.source_artifact_map.contains_sql_text = true;
   ExpectApiRefusal(sql_text_artifact,
                    "SB_SBLR_SOURCE_ARTIFACT_SQL_TEXT_FORBIDDEN",
                    "source artifact SQL text misuse");
 
-  auto known_no_contract = sblr::MakeSblrEnvelope("query.plan_operation",
-                                                  "SBLR_QUERY_PLAN_OPERATION",
-                                                  "CBQ-038-NONREVERSIBLE");
+  auto authoritative = BuildDmlEnvelope("engine.op.insert", "SBLR_INSERT");
+  authoritative.source_artifact_map.raw_sql_text_authoritative = true;
+  ExpectApiRefusal(authoritative,
+                   "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_POLICY_UNSUPPORTED",
+                   "authoritative source artifact misuse");
+
+  auto known_no_contract = CanonicalOperation(sblr::MakeSblrEnvelope(
+      "query.bind_expression", "SBLR_QUERY_BIND_EXPRESSION",
+      "CBQ-038-NONREVERSIBLE"));
   AttachSourcePolicy(&known_no_contract, "CBQ-038-known-no-contract");
   ExpectApiRefusal(known_no_contract,
                    "SB_SBLR_TO_SBSQL_NO_SOURCE_PRESERVING_RENDER_CONTRACT",
                    "known operation without render contract");
 
-  auto cluster = sblr::MakeSblrEnvelope("cluster.place_object",
-                                        "SBLR_CLUSTER_PLACE_OBJECT",
-                                        "CBQ-038-CLUSTER-REFUSAL");
+  auto cluster = CanonicalOperation(sblr::MakeSblrEnvelope(
+      "engine.op.cluster_write_admission", "SBLR_CLUSTER_WRITE_ADMISSION",
+      "CBQ-038-CLUSTER-REFUSAL"));
+  cluster.requires_cluster_authority = true;
   AttachSourcePolicy(&cluster, "CBQ-038-cluster-refusal");
   ExpectApiRefusal(cluster,
                    "SB_SBLR_TO_SBSQL_NON_CORE_OPERATION_REFUSED",
                    "cluster operation refusal");
 
-  auto provider = sblr::MakeSblrEnvelope("op.show.gpu",
-                                         "SBLR_OP_SHOW_GPU",
-                                         "CBQ-038-OPTIONAL-PROVIDER-REFUSAL");
+  const auto& registry = sblr::StaticSblrOpcodeRegistry();
+  const auto provider_entry = std::find_if(
+      registry.begin(), registry.end(), [](const auto& entry) {
+        return entry.category == sblr::SblrOpcodeCategory::extensibility &&
+               entry.code != 0;
+      });
+  Require(provider_entry != registry.end(),
+          "canonical optional-provider registry entry is missing");
+  auto provider = CanonicalOperation(sblr::MakeSblrEnvelope(
+      provider_entry->operation_id, provider_entry->opcode,
+      "CBQ-038-OPTIONAL-PROVIDER-REFUSAL"));
   AttachSourcePolicy(&provider, "CBQ-038-provider-refusal");
   ExpectApiRefusal(provider,
                    "SB_SBLR_TO_SBSQL_OPTIONAL_PROVIDER_OPERATION_REFUSED",
                    "optional provider operation refusal");
 
-  auto unknown = sblr::MakeSblrEnvelope("query.unknown_roundtrip",
-                                        "SBLR_QUERY_UNKNOWN_ROUNDTRIP",
-                                        "CBQ-038-UNKNOWN-REFUSAL");
-  AttachSourcePolicy(&unknown, "CBQ-038-unknown-refusal");
+  auto unknown = BuildDmlEnvelope("engine.op.insert", "SBLR_INSERT");
+  unknown.operation_id = "query.unknown_roundtrip";
+  unknown.opcode = "SBLR_QUERY_UNKNOWN_ROUNDTRIP";
   ExpectApiRefusal(unknown,
-                   "SB_SBLR_TO_SBSQL_UNSUPPORTED_OPERATION",
+                   "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
                    "unknown operation refusal");
 }
 

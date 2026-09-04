@@ -43,8 +43,11 @@ VALIDATION_COMMANDS = ARTIFACTS / "database_lifecycle_validation_commands.md"
 AGENT_STATUS = ARTIFACTS / "DATABASE_LIFECYCLE_AGENT_STATUS.csv"
 WRITE_SCOPE = ARTIFACTS / "DATABASE_LIFECYCLE_AGENT_WRITE_SCOPE_REGISTER.csv"
 EXECUTION_QUEUE = ARTIFACTS / "DATABASE_LIFECYCLE_SLICE_EXECUTION_QUEUE.csv"
-ENGINE_LIFECYCLE_PACKET = Path("public_input_snapshot")
-DIAGNOSTIC_CODES = Path("public_contract_snapshot")
+# The former single-file public_input_snapshot was replaced by the canonical
+# SBSQL snapshot directory.  Lifecycle and diagnostic contract text now lives
+# in the consolidated public contract snapshot.
+ENGINE_LIFECYCLE_PACKET = Path("public_contract_snapshot")
+DIAGNOSTIC_CODES = Path("project/resources/diagnostics/reconciliation-diagnostic-codes.yaml")
 DIAGNOSTIC_SHAPES = Path("public_contract_snapshot")
 DEFAULT_REPORT = ARTIFACTS / "DATABASE_LIFECYCLE_TRACEABILITY_REPORT.md"
 

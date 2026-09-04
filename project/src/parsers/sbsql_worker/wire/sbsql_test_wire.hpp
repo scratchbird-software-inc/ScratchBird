@@ -20,6 +20,8 @@
 #include <string>
 #include <string_view>
 #include <memory>
+#include <utility>
+#include <vector>
 
 namespace scratchbird::parser::sbsql {
 
@@ -78,6 +80,39 @@ PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
     std::string_view authenticated_type_uuid,
     bool nullable);
 
+// Opt-in, caller-owned observation of the final parser artifacts produced by
+// RunPipeline.  This deliberately carries no statement receipt, native binding
+// context, descriptor authority body, or other engine-owned handle.
+struct SbsqlPipelineConformanceSummary {
+  bool captured{false};
+  bool bound{false};
+  bool bound_has_errors{false};
+  bool payload_nonempty{false};
+  bool verifier_admitted{false};
+  bool verifier_has_errors{false};
+  bool has_descriptor_refs{false};
+  bool has_read_right{false};
+  bool has_syntax_authority{false};
+  bool has_resolver_authority{false};
+  std::uint32_t envelope_version{0};
+  std::uint64_t catalog_epoch{0};
+  std::uint64_t security_policy_epoch{0};
+  std::uint64_t descriptor_epoch{0};
+  std::string bound_operation_family;
+  std::string bound_sblr_operation_key;
+  std::string bound_surface_key;
+  std::string operation_family;
+  std::string operation_id;
+  std::string sblr_operation_key;
+  std::string sblr_opcode;
+  std::string surface_key;
+  std::string command_family;
+  std::string result_shape_key;
+  std::string diagnostic_shape_key;
+  std::string resource_contract_key;
+  std::vector<std::string> resolved_object_uuids;
+};
+
 class SbsqlTestWireSession {
  public:
   SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache);
@@ -101,7 +136,9 @@ class SbsqlTestWireSession {
                              const ipc::VariableFrameCoordination*
                                  variable_coordination = nullptr,
                              const scratchbird::engine::sblr::SblrVariableFrameBeginResultV1*
-                                 variable_frame = nullptr);
+                                 variable_frame = nullptr,
+                             SbsqlPipelineConformanceSummary*
+                                 conformance_summary = nullptr);
   PipelineResult RunVariableForWire(std::string_view sql,
                                     bool cursor_requested = false);
   PipelineResult RunSourceMapForWire();
@@ -128,6 +165,16 @@ class SbsqlTestWireSession {
   PipelineResult RunTableTruncateForWire();
   PipelineResult RunTableAnalyzeForWire();
   PipelineResult RunBulkImportStreamForWire();
+  PipelineResult BeginBulkImportStreamForWire(
+      std::string_view command_surface_id,
+      const std::vector<std::pair<std::string, bool>>& target_name_atoms,
+      bool autocommit_emulation = false);
+  PipelineResult AppendBulkImportStreamChunkForWire(
+      const std::vector<std::uint8_t>& payload);
+  PipelineResult SealAndExecuteBulkImportStreamForWire();
+  void AcknowledgeBulkImportStreamCompletionForWire();
+  void AbandonBulkImportStreamForWire();
+  [[nodiscard]] bool HasHeldBulkImportStreamForWire() const;
   PipelineResult RunBulkExportStreamForWire();
   PipelineResult RunStatementBatchForWire();
   PipelineResult RunAtomicCasForWire();
@@ -348,7 +395,7 @@ class SbsqlTestWireSession {
   PipelineResult RunContextGetForWire();
   PipelineResult RunStmtPrepareForWire();
   PipelineResult RunStmtPrepareCanonicalForWire();
-  PipelineResult RunStmtExecuteForWire();
+  PipelineResult RunStmtExecuteForWire(bool cursor_requested = false);
   PipelineResult RunStmtExecuteDirectForWire();
   PipelineResult RunStmtFreeForWire();
   PipelineResult RunStmtCancelForWire();
@@ -446,6 +493,8 @@ class SbsqlTestWireSession {
   [[nodiscard]] const SessionContext& session() const { return session_; }
 
  private:
+  struct HeldBulkImportStream;
+
   ParserConfig config_;
   ParserMetrics* metrics_;
   SblrTemplateCache* cache_;
@@ -453,6 +502,7 @@ class SbsqlTestWireSession {
   std::string last_cursor_uuid_;
   std::unique_ptr<EmbeddedEngineClient> embedded_client_;
   std::unique_ptr<SbpsClient> server_client_;
+  std::unique_ptr<HeldBulkImportStream> held_bulk_import_stream_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::vector<std::uint8_t> admitted_transaction_handle_;
   std::vector<std::uint8_t> retired_transaction_handle_;
@@ -463,6 +513,9 @@ class SbsqlTestWireSession {
   std::vector<std::uint8_t> admitted_cursor_handle_;
   std::vector<std::uint8_t> parent_savepoint_handle_;
   std::vector<std::uint8_t> descendant_savepoint_handle_;
+  std::map<std::string,
+           std::pair<std::uint64_t, std::vector<std::uint8_t>>>
+      savepoint_refresh_authorities_;
   std::vector<std::uint8_t> retired_savepoint_release_operand_;
   bool replaying_savepoint_release_{false};
   std::vector<std::uint8_t> retired_savepoint_rollback_operand_;

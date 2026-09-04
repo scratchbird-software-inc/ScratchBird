@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""SML-067..SML-081 release-certification matrix CTest gate."""
+"""SML-067..SML-081 release-certification evidence-state CTest gate."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "sbsql.release_certification.sml_067_081.v1"
+SCHEMA_VERSION = "sbsql.release_certification_state.sml_067_081.v2"
 GATE_ID = "SML-GATE-067-081"
 DEFAULT_FIXTURE = (
     "project/tests/sbsql_parser_worker/generated/release_certification/"
@@ -50,7 +50,7 @@ REQUIRED_MATRIX_IDS = {
 }
 REQUIRED_ROW_KINDS = {
     "deterministic_input",
-    "closeout_assertion",
+    "nonfinality_assertion",
     "ctest_execution",
 }
 REQUIRED_LABELS = {
@@ -67,18 +67,11 @@ PUBLIC_OUTPUT_FORBIDDEN_SEGMENTS = {
     "".join(("no", "te")),
     "".join(("no", "tes")),
 }
-OPEN_STATUS_TOKENS = {
-    "".join(("pen", "ding")),
-    "".join(("to", "do")),
-    "tbd",
-    "".join(("de", "ferred")),
-    "".join(("wai", "ved")),
-    "".join(("skip", "ped")),
-    "".join(("block", "ed")),
-    "".join(("open", "")),
-    "".join(("un", "closed")),
-}
-WEAK_SUCCESS_TOKENS = {
+FALSE_FINALITY_TOKENS = {
+    "implemented_and_proven",
+    "status=closed",
+    "release_certified=true",
+    "rows_not_closed=0",
     "".join(("place", "holder")),
     "".join(("st", "ub")),
     "".join(("skel", "eton")),
@@ -143,6 +136,15 @@ def is_safe_rel_path(path: str) -> bool:
     return "docs/documentation/draft" not in normalized
 
 
+def is_safe_source_path(path: str) -> bool:
+    if is_safe_rel_path(path):
+        return True
+    normalized = path.replace("\\", "/")
+    return normalized.startswith(
+        "../Workplans/sbsql-sblr-implementation-alignment/"
+    ) and normalized.count("../") == 1
+
+
 def generated_output_allowed(path: str) -> bool:
     normalized = path.replace("\\", "/")
     if not is_safe_rel_path(normalized):
@@ -200,7 +202,11 @@ def validate_sources(repo: Path, payload: dict[str, Any], errors: list[str]) -> 
         require(source_id != "", "source missing source_id", errors)
         require(source_id not in source_ids, f"duplicate source_id {source_id}", errors)
         source_ids.add(source_id)
-        require(is_safe_rel_path(rel_path), f"{source_id} unsafe source path: {rel_path}", errors)
+        require(
+            is_safe_source_path(rel_path),
+            f"{source_id} unsafe source path: {rel_path}",
+            errors,
+        )
         require(source.get("anchor_sha256") == anchor_hash(source),
                 f"{source_id} anchor hash drift", errors)
         path = repo / rel_path
@@ -245,11 +251,11 @@ def validate_row(row: dict[str, Any], matrix: dict[str, Any], errors: list[str])
     require(row.get("sml_id") == matrix.get("sml_id"), f"{row_id} SML mismatch", errors)
     require(row.get("matrix_id") == matrix.get("matrix_id"), f"{row_id} matrix mismatch", errors)
     require(row.get("row_kind") in REQUIRED_ROW_KINDS, f"{row_id} row kind invalid", errors)
-    require(row.get("status") == "closed", f"{row_id} is not closed", errors)
-    require(row.get("evidence_state") == "implemented_and_proven",
+    require(row.get("status") == "acceptance_open", f"{row_id} status drift", errors)
+    require(row.get("evidence_state") == "structural_and_declarative_evidence_retained",
             f"{row_id} evidence state drift", errors)
-    require(row.get("closed_by") == "sbsql_sml_067_081_release_certification_gate",
-            f"{row_id} closure gate drift", errors)
+    require(row.get("closed_by") == "not_applicable_release_acceptance_open",
+            f"{row_id} nonfinal closure identity drift", errors)
     require(row.get("parser_executes_sql") is False, f"{row_id} parser authority drift", errors)
     require(row.get("network_required") is False, f"{row_id} network dependency drift", errors)
     require(row.get("docs_documentation_draft_required") is False,
@@ -257,7 +263,7 @@ def validate_row(row: dict[str, Any], matrix: dict[str, Any], errors: list[str])
     require(row.get("public_tracking_artifact_created") is False,
             f"{row_id} public tracking artifact drift", errors)
     require(row.get("exception_count") == 0, f"{row_id} exception count drift", errors)
-    require(row.get("open_row_count") == 0, f"{row_id} open row count drift", errors)
+    require(row.get("open_row_count") == 1, f"{row_id} open row count drift", errors)
     labels = set(row.get("ctest_labels", []))
     require(REQUIRED_LABELS <= labels, f"{row_id} missing required CTest labels", errors)
     require(row.get("sml_id") in labels, f"{row_id} missing SML label", errors)
@@ -285,8 +291,8 @@ def validate_row(row: dict[str, Any], matrix: dict[str, Any], errors: list[str])
         "closure_rule": row.get("closure_rule"),
         "generated_outputs": row.get("generated_outputs"),
     })).lower()
-    for token in sorted(OPEN_STATUS_TOKENS | WEAK_SUCCESS_TOKENS):
-        require(token not in combined, f"{row_id} weak or open token {token!r}", errors)
+    for token in sorted(FALSE_FINALITY_TOKENS):
+        require(token not in combined, f"{row_id} false-finality token {token!r}", errors)
 
 
 def validate_matrices(payload: dict[str, Any], source_ids: set[str], errors: list[str]) -> list[dict[str, Any]]:
@@ -333,6 +339,12 @@ def validate(repo: Path, payload: dict[str, Any], fixture: Path, gate_path: Path
     require(set(payload.get("required_sml_ids", [])) == REQUIRED_SML_IDS,
             "required SML ids drift", errors)
     require(payload.get("network_required") is False, "network dependency drift", errors)
+    require(payload.get("release_certified") is False,
+            "release certification was fabricated while acceptance is open", errors)
+    require(payload.get("workplan_status") == "in_progress",
+            "workplan status drift", errors)
+    require(payload.get("open_acceptance_phases") == ["IA-14", "IA-15"],
+            "open acceptance phase set drift", errors)
     require(payload.get("docs_documentation_draft_created") is False,
             "draft documentation output drift", errors)
     require(payload.get("public_workplan_report_audit_note_created") is False,
@@ -344,14 +356,17 @@ def validate(repo: Path, payload: dict[str, Any], fixture: Path, gate_path: Path
     not_closed = [
         row.get("row_id", "")
         for row in rows
-        if row.get("status") != "closed"
-        or row.get("evidence_state") != "implemented_and_proven"
-        or row.get("open_row_count") != 0
-        or row.get("exception_count") != 0
+        if row.get("status") == "acceptance_open"
+        and row.get("evidence_state")
+        == "structural_and_declarative_evidence_retained"
+        and row.get("open_row_count") == 1
+        and row.get("exception_count") == 0
     ]
     require(payload.get("row_count") == len(rows), "row_count drift", errors)
-    require(payload.get("rows_not_closed") == 0, "payload rows_not_closed drift", errors)
-    require(not not_closed, f"rows not closed: {not_closed}", errors)
+    require(payload.get("rows_not_closed") == len(rows),
+            "payload rows_not_closed drift", errors)
+    require(len(not_closed) == len(rows),
+            "one or more rows fabricated release closure", errors)
 
     generator = repo / GENERATOR
     for path in (fixture, gate_path, generator):
@@ -382,7 +397,9 @@ def main() -> int:
     print(
         "sbsql_sml_067_081_release_certification_gate=passed "
         f"matrices={len(payload.get('matrices', []))} "
-        f"rows={payload.get('row_count')} rows_not_closed=0 "
+        f"rows={payload.get('row_count')} "
+        f"rows_not_closed={payload.get('rows_not_closed')} "
+        "release_certified=false open_acceptance_phases=IA-14,IA-15 "
         f"manifest_sha256={payload.get('manifest_sha256')}"
     )
     return 0

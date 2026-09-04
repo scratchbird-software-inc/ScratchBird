@@ -30,6 +30,16 @@ ALLOWED_STATUSES = {
     "exact_refusal_passed",
 }
 BRIDGE_EXACT_REFUSAL_SURFACE_ID = "SBSQL-D50EC7C4422E"
+CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
+    "SBSQL-A57CFDE0BBA9",
+    "SBSQL-28F16A4C7DD0",
+    "SBSQL-B1816929AD45",
+    "SBSQL-5CC9FDFFE6F7",
+}
+CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
+    "SBSQL-DE4B8AAF6326",
+    "SBSQL-7BA0B928798B",
+}
 REQUIRED_KEYS = [
     "fixture_kind",
     "fixture_status",
@@ -99,6 +109,12 @@ def main() -> int:
     parser.add_argument("--artifact-root", default=DEFAULT_ARTIFACT_ROOT)
     args = parser.parse_args()
     root = Path(args.repo_root).resolve()
+    generator_root = root / "project/tools/sb_parser_gen"
+    sys.path.insert(0, str(generator_root))
+    from plan_import_rows_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        is_central_import_refusal_surface,
+    )
+
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
@@ -151,7 +167,20 @@ def main() -> int:
         if "sql_text" not in forbidden or "operation_family_only_routing" not in forbidden:
             errors.append(f"{surface_id} fixture lost forbidden authority source coverage")
         authority = fields.get("execution_authority_model", "")
-        if "no_wal_authority" not in authority or "sblr_envelope_with_uuid_and_descriptor_authority_only" not in authority:
+        if surface_id in (
+            CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
+            | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
+        ):
+            for token in (
+                "parser_syntax_only",
+                "no_executable_sblr",
+                "no_engine_execution",
+                "no_catalog_mutation",
+                "no_wal_authority",
+            ):
+                if token not in authority:
+                    errors.append(f"{surface_id} pre-SBLR refusal authority model missing {token}")
+        elif "no_wal_authority" not in authority or "sblr_envelope_with_uuid_and_descriptor_authority_only" not in authority:
             errors.append(f"{surface_id} fixture lost SBLR/MGA authority model")
         if "sbsql_parser_worker" not in fields.get("per_row_ctest_label", ""):
             errors.append(f"{surface_id} fixture missing parser-worker CTest evidence")
@@ -160,26 +189,95 @@ def main() -> int:
                 [f"{key}={value}" for key, value in row.items()]
                 + [f"{key}={value}" for key, value in fields.items()]
             )
-            required = (
-                "bridge.cluster_route",
-                "operation_id=bridge.cluster_route",
-                "opcode=SBLR_BRIDGE_VALIDATE",
-                "canonical_sblr_admission_before_trusted_udr_dispatch",
-                "UDR.BRIDGE.UNSUPPORTED",
-                "accepted=false",
-                "private_cluster_execution=false",
-                "not_applicable_no_round_trip_in_public_build",
-                "sbsql_exact_refusal_passed",
-            )
-            forbidden = (
-                "cluster_provider_route_passed",
-                "SBLR.CLUSTER.STUB_RESPONSE",
-                "UDR.BRIDGE.UNLICENSED",
-            )
-            if surface_id != BRIDGE_EXACT_REFUSAL_SURFACE_ID:
-                errors.append(f"{surface_id} is not an admitted exact-refusal round-trip fixture")
             if fields.get("per_row_final_state") != "exact_refusal_passed":
                 errors.append(f"{surface_id} exact-refusal fixture lost per-row final state")
+            if surface_id == BRIDGE_EXACT_REFUSAL_SURFACE_ID:
+                required = (
+                    "bridge.cluster_route",
+                    "operation_id=bridge.cluster_route",
+                    "opcode=SBLR_BRIDGE_VALIDATE",
+                    "canonical_sblr_admission_before_trusted_udr_dispatch",
+                    "UDR.BRIDGE.UNSUPPORTED",
+                    "accepted=false",
+                    "private_cluster_execution=false",
+                    "not_applicable_no_round_trip_in_public_build",
+                    "sbsql_exact_refusal_passed",
+                )
+                forbidden = (
+                    "cluster_provider_route_passed",
+                    "SBLR.CLUSTER.STUB_RESPONSE",
+                    "UDR.BRIDGE.UNLICENSED",
+                )
+            elif is_central_import_refusal_surface(surface_id):
+                required = (
+                    "oracle_authority_status=Core_central_command_exact_diagnostic_refusal",
+                    "not_admitted_diagnostic_refusal",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "accepted=false",
+                    "executable_sblr_emitted=false",
+                    "no_server_or_engine_dispatch",
+                    "not_applicable_no_executable_sblr",
+                    "no_result",
+                    "no_authority_publication",
+                    "result_published=false",
+                    "descriptor_authority_published=false",
+                    "transaction_state_transition=false",
+                    "catalog_mutation=false",
+                    "row_mutation=false",
+                    "durable_state_byte_identical=true",
+                    "sbsql_exact_refusal_passed",
+                )
+                forbidden = (
+                    "dml.plan_import_rows",
+                    "SBLR_DML_PLAN_IMPORT_ROWS",
+                    "engine.op.bulk_import_stream",
+                    "SBLR_BULK_IMPORT_STREAM",
+                    "result_published=true",
+                    "catalog_mutation=true",
+                    "row_mutation=true",
+                )
+            elif surface_id in CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS:
+                required = (
+                    "not_admitted_parent_engine.op.ddl_create_table",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "parent_operation_id=engine.op.ddl_create_table",
+                    "parent_opcode=SBLR_DDL_CREATE_TABLE",
+                    "pre_sblr_refusal=true",
+                    "executable_sblr_emitted=false",
+                    "no_server_or_engine_dispatch",
+                    "catalog_mutation=false",
+                    "not_applicable_pre_sblr_exact_refusal",
+                )
+                forbidden = (
+                    "ddl.constraint.create",
+                    "SBLR_DDL_CONSTRAINT_CREATE",
+                    "server_admission_not_reached=false",
+                    "engine_dispatch_not_reached=false",
+                    "catalog_mutation=true",
+                    "byte_identical_round_trip_required=yes",
+                )
+            elif surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS:
+                required = (
+                    "not_admitted_parent_engine.op.ddl_create_schema",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "parent_operation_id=engine.op.ddl_create_schema",
+                    "parent_opcode=SBLR_DDL_CREATE_SCHEMA",
+                    "pre_sblr_refusal=true",
+                    "executable_sblr_emitted=false",
+                    "no_server_or_engine_dispatch",
+                    "catalog_mutation=false",
+                    "not_applicable_pre_sblr_exact_refusal",
+                )
+                forbidden = (
+                    "server_admission_not_reached=false",
+                    "engine_dispatch_not_reached=false",
+                    "catalog_mutation=true",
+                    "byte_identical_round_trip_required=yes",
+                )
+            else:
+                errors.append(f"{surface_id} is not an admitted exact-refusal round-trip fixture")
+                required = ()
+                forbidden = ()
             for token in required:
                 if token not in evidence:
                     errors.append(f"{surface_id} exact-refusal fixture missing {token}")

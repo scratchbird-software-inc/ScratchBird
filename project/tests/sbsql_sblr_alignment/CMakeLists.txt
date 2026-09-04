@@ -1608,6 +1608,11 @@ target_include_directories(sbsql_sblr_alignment_ia07_bulk_import_stream_runtime 
 target_link_libraries(sbsql_sblr_alignment_ia07_bulk_import_stream_runtime PRIVATE sb_sblr_parameter_wire_codec)
 add_test(NAME sbsql_sblr_alignment_ia07_bulk_import_stream_runtime COMMAND sbsql_sblr_alignment_ia07_bulk_import_stream_runtime)
 set_tests_properties(sbsql_sblr_alignment_ia07_bulk_import_stream_runtime PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-002450;malformed_operand")
+add_executable(sbsql_sblr_alignment_ia07_bulk_import_stream_registry ia07_bulk_import_stream_registry_test.cpp)
+target_include_directories(sbsql_sblr_alignment_ia07_bulk_import_stream_registry PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia07_bulk_import_stream_registry PRIVATE sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia07_bulk_import_stream_registry COMMAND sbsql_sblr_alignment_ia07_bulk_import_stream_registry)
+set_tests_properties(sbsql_sblr_alignment_ia07_bulk_import_stream_registry PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-005727;CSC-TEST-005728;CSC-TEST-005729;CSC-TEST-005733;CSC-TEST-005734;durable_registry;deterministic_lifecycle_recovery")
 add_executable(sbsql_sblr_alignment_ia07_bulk_import_stream_availability ia07_bulk_import_stream_availability_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia07_bulk_import_stream_availability PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia07_bulk_import_stream_availability PRIVATE sb_engine_internal_api)
@@ -5084,8 +5089,86 @@ add_test(NAME sbsql_sblr_alignment_sbps_private_narrow_profile_activation
   COMMAND sbsql_sblr_alignment_sbps_private_narrow_profile_activation)
 set_tests_properties(
   sbsql_sblr_alignment_sbps_private_narrow_profile_activation PROPERTIES
-  LABELS "sbsql_sblr_alignment;SBPS;private_narrow_profile;activation;29_pairs;18_forbidden;zero_capability;evidence_gated;exact_dispatch"
+  LABELS "sbsql_sblr_alignment;SBPS;private_narrow_profile;activation;35_pairs;18_forbidden;zero_capability;evidence_gated;exact_dispatch"
   TIMEOUT 30)
+
+add_executable(sbsql_sblr_alignment_sbps_bulk_import_stream_codec
+  sbps_bulk_import_stream_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_sbps_bulk_import_stream_codec PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_sbps_bulk_import_stream_codec PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_sbps_bulk_import_stream_codec PRIVATE
+  sb_wire_bulk_import_stream_codec)
+add_test(NAME sbsql_sblr_alignment_sbps_bulk_import_stream_codec
+  COMMAND sbsql_sblr_alignment_sbps_bulk_import_stream_codec)
+set_tests_properties(sbsql_sblr_alignment_sbps_bulk_import_stream_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;SBPS;bulk_import;TLV1;7715;7716;7717;7718;7719;7720;malformed"
+  TIMEOUT 30)
+
+add_executable(sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority
+  ia07_bulk_import_stream_bind_authority_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority PRIVATE cxx_std_23)
+target_include_directories(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority PRIVATE
+  sb_server_core
+  sb_engine_internal_api
+  sb_storage_database
+  sb_transaction_mga
+  sb_core_platform
+  sb_core_uuid
+  sbl_parser_server_ipc_schema)
+add_test(NAME sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority
+  COMMAND sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority)
+set_tests_properties(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;StatementBulkImportAuthorityV1;message_706;schema_7719;message_707;schema_7720;receipt_private;name_resolution;MGA;INSERT_authorization;replay;conflict;cluster_refusal"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_ia07_bulk_import_stream_durable_coordinator
+  ia07_bulk_import_stream_durable_coordinator_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_durable_coordinator PRIVATE cxx_std_23)
+target_include_directories(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_durable_coordinator PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_durable_coordinator PRIVATE
+  sb_engine_internal_api
+  sb_core_hash
+  sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_ia07_bulk_import_stream_durable_coordinator
+  COMMAND sbsql_sblr_alignment_ia07_bulk_import_stream_durable_coordinator)
+set_tests_properties(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_durable_coordinator PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;durable_coordinator;BIRQ;BIRD;replay;conflict;fail_closed"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_ia07_bulk_import_stream_execution
+  ia07_bulk_import_stream_execution_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_execution PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_execution PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_execution PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia07_bulk_import_stream_execution
+  COMMAND sbsql_sblr_alignment_ia07_bulk_import_stream_execution)
+set_tests_properties(
+  sbsql_sblr_alignment_ia07_bulk_import_stream_execution PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-005733;CSC-TEST-005735;engine_execution;canonical_csv_default;atomic_refusal;exact_replay;recovery_conflict"
+  TIMEOUT 120)
 
 # SEARCH_KEY: SB_TEST_SBLR_PLAN_IMPORT_ROWS_CODEC_V1
 # Exact Core-derived binary proof for the planning-only import carrier family.

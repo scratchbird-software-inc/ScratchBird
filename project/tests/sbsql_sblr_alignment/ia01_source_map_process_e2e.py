@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ia01_package_process_e2e import ProofError, allocate_work, seed_database, stop, wait_path
+from ia01_package_process_e2e import ProofError, allocate_work, seed_database, stop, wait_unix
 
 
 STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
@@ -231,6 +231,14 @@ STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
     ),
 }
 
+# Most static evidence refusals are rejected while the package members are
+# preflighted.  A small number have an operation-specific public-ABI fence and
+# therefore publish the more precise audit key below.  Keep these exact rather
+# than accepting an arbitrary non-empty audit field.
+STATIC_EXECUTOR_EVIDENCE_AUDIT_KEYS = {
+    "security-create-user": "sblr.security_create_user.executor_unavailable",
+}
+
 PRE_CONTEXT_COMMAND_REFUSALS = {
     "stmt-prepare": (
         "CSC-TEST-003573", "STMT_PREPARE",
@@ -348,7 +356,13 @@ def main() -> int:
                 )
         database = work / "source_map.sbdb"
         endpoint = work / "sc" / "s.sock"
-        evidence = seed_database(Path(args.server), database)
+        evidence = seed_database(
+            Path(args.server),
+            database,
+            ("--bulk-import-fixture",)
+            if args.operation == "bulk-import-stream"
+            else (),
+        )
         server_trace = work / "server_phase.jsonl"
         dispatch_trace = work / "dispatch_phase.jsonl"
         env = os.environ.copy()
@@ -362,7 +376,7 @@ def main() -> int:
             stdout=(work / "server.out").open("wb"),
             stderr=(work / "server.err").open("wb"), env=env,
         )
-        wait_path(endpoint)
+        wait_unix(endpoint)
         catalog_event_path = Path(f"{database}.sb.catalog_object_events")
         catalog_event_before = None
         executor_availability_before = None
@@ -929,10 +943,29 @@ def main() -> int:
             dispatch_lines = tuple(
                 line for line in dispatch_audit.splitlines() if line
             )
-            if dispatch_lines != (preflight_marker, preflight_marker):
+            refusal_prefix = (
+                "layer=statement_context_dispatch_failure"
+                "\tcode=SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING\t"
+            )
+            refusal_suffix = (
+                "\taudit="
+                + STATIC_EXECUTOR_EVIDENCE_AUDIT_KEYS.get(
+                    args.operation,
+                    "sblr.opcode_stream.member_preflight_refused",
+                )
+            )
+            if (
+                len(dispatch_lines) != 4
+                or dispatch_lines[0] != preflight_marker
+                or not dispatch_lines[1].startswith(refusal_prefix)
+                or not dispatch_lines[1].endswith(refusal_suffix)
+                or dispatch_lines[2] != preflight_marker
+                or not dispatch_lines[3].startswith(refusal_prefix)
+                or not dispatch_lines[3].endswith(refusal_suffix)
+            ):
                 raise ProofError(
-                    f"{operation_label} did not produce exactly two "
-                    "authenticated canonical-SBLR static preflights"
+                    f"{operation_label} did not produce exactly two ordered "
+                    "authenticated canonical-SBLR static preflight/refusal pairs"
                 )
             server_dispatch_audit = (
                 server_trace.read_text(encoding="utf-8", errors="replace")

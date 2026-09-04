@@ -2,19 +2,21 @@
   "docs_documentation_draft_created": false,
   "gate_id": "SML-GATE-067-081",
   "generated_by": "project/tools/sb_parser_gen/generate_sbsql_sml_067_081_release_certification.py",
-  "manifest_sha256": "sha256:21e90cf568fa0a592cd506d353138a98919f0252640759809535cf87c903ecf0",
+  "manifest_sha256": "sha256:fa860fda41dad004a2661690cc2d315e21a744009a6451cad5e3d9ba600f14a8",
   "matrices": [
     {
       "authority": "public_release_evidence_only",
       "gate_id": "SML-GATE-067",
       "matrix_id": "enterprise_completion",
-      "matrix_sha256": "sha256:c62ef4920dd540f3129f8192adb98b7d6872dd95ce53cfcd853e6a52405744d2",
+      "matrix_sha256": "sha256:671790dbea6daf67fd8a6a888b31b2c397ded7ee8459b34a129538cf1ba8431a",
       "required_proof_vectors": [
         "closure_gate",
         "full_build_regeneration",
         "row_status"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "enterprise_closure_gate",
         "enterprise_completion_manifest",
         "master_closure_gate"
@@ -22,8 +24,8 @@
       "rows": [
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -32,8 +34,8 @@
             "SML-GATE-067"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:7066c56ce3d0e85c3b1007791eb1d9536e17012c3467256140e0841a785828bd",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:eccee3818ef3f781c03fd824b41d9a7a00f82bf8b4fa3bb9131ae4ca76e320b1",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-067",
           "generated_outputs": [
@@ -43,7 +45,7 @@
           ],
           "matrix_id": "enterprise_completion",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "closure_gate",
@@ -53,20 +55,22 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-067-ENTERPRISE_COMPLETION-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:1386381ac8763de652ca562ae029e871f0d487c75a83209f7f20cab5b9c28b14",
+          "row_sha256": "sha256:c4e48778b424d679474d6e1e8f72ba1a23a4ab4186d2863372081c32fc6b8883",
           "sml_id": "SML-067",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "enterprise_completion_manifest",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "enterprise completion"
         },
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -75,8 +79,8 @@
             "SML-GATE-067"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:311be93414ad75f2874eecdd4963bca70a437ece1448242b1c58b1dc112d4b08",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:55668d694a1899bf79ca91fc1b838d8fa9e8d752000d47e8f76f6178975906cc",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-067",
           "generated_outputs": [
@@ -86,7 +90,7 @@
           ],
           "matrix_id": "enterprise_completion",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "closure_gate",
@@ -95,21 +99,23 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-067-ENTERPRISE_COMPLETION-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:2e61d2d9fcdb0aea0d2c66bf066f84a03240a796773caa9d37ab9beb61ef7059",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:83bb14e868a6895be2b158ef96b870b4aca515eabedaf22c7c263db47ad68df7",
           "sml_id": "SML-067",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "enterprise_completion_manifest",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "enterprise completion"
         },
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -118,8 +124,8 @@
             "SML-GATE-067"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:968dbe1b0414c55e5a08caacf950a6341c8b7f48680250e1cc414b8fa3c99236",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:2496e753e1aac21a0d497c813b4151867a2160e472e5476e5bd4b5f440260096",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-067",
           "generated_outputs": [
@@ -129,7 +135,7 @@
           ],
           "matrix_id": "enterprise_completion",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "closure_gate",
@@ -139,14 +145,16 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-067-ENTERPRISE_COMPLETION-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:058af274bcd329b301bfd35f50908b4e751221273d73609fcecae0a887de0332",
+          "row_sha256": "sha256:570d6fa25abcb6f09d6ebf127ffcb392dc6cae23325986274a4c816f737313f2",
           "sml_id": "SML-067",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "enterprise_completion_manifest",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "enterprise completion"
         }
       ],
@@ -157,21 +165,23 @@
       "authority": "compatibility_policy_and_engine_admission",
       "gate_id": "SML-GATE-068",
       "matrix_id": "version_compatibility",
-      "matrix_sha256": "sha256:431291ae853d007ca4c789d17bcf2d644a80675df9536f9e3f8173ccc8250c9c",
+      "matrix_sha256": "sha256:45741d081c50a67904fa49286f71cb6d9f9b797350d2789f80a7c4d426313f1d",
       "required_proof_vectors": [
         "declared_versions",
         "diagnostic_shape",
         "future_version_refusal"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "support_release_lifecycle",
         "version_manifest"
       ],
       "rows": [
         {
           "authority": "compatibility_policy_and_engine_admission",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -180,8 +190,8 @@
             "SML-GATE-068"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:b8d17ae806cfc45db0ab53ba8c1269c3e8cfaf8872ff637b225a192126f9da21",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:20aa5a78b8be020db9fd2f91878222bcb64711ec089849c1a54916be61856bed",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-068",
           "generated_outputs": [
@@ -191,7 +201,7 @@
           ],
           "matrix_id": "version_compatibility",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "declared_versions",
@@ -201,19 +211,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-068-VERSION_COMPATIBILITY-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:c3e6759bc573d01c519888d7f877ddc32e716a3cb935dd995be1197e499d09ce",
+          "row_sha256": "sha256:361d7a80ecf04b8e90a8bbf812996d6f86f91b0f6191d6e94e8c650a62aefb0a",
           "sml_id": "SML-068",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "support_release_lifecycle",
             "version_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "version compatibility"
         },
         {
           "authority": "compatibility_policy_and_engine_admission",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -222,8 +234,8 @@
             "SML-GATE-068"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:e305743d708226960d97a3de8c246835d89a9b3643a9a2f6c896999da3ea64f2",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:b0de4e88dada945c91725631339c4324d2291bdd9f92fadef7fc0a2bfbe0e72b",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-068",
           "generated_outputs": [
@@ -233,7 +245,7 @@
           ],
           "matrix_id": "version_compatibility",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "declared_versions",
@@ -242,20 +254,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-068-VERSION_COMPATIBILITY-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:165e2093832261dd286d4e8c8055b7414948cdb7c29990cfd8407c5b07a1d6c9",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:ecaaef0aa8677f6884779cff564c226578019bbb55f1c77de4547e5debb06c3b",
           "sml_id": "SML-068",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "support_release_lifecycle",
             "version_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "version compatibility"
         },
         {
           "authority": "compatibility_policy_and_engine_admission",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -264,8 +278,8 @@
             "SML-GATE-068"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:f3a9b37df13d326103def6f4d1edba1959a7558a072581317ec37fc91029bfc9",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:9fd5e208ca05b112c7d6d7aaa1bfbdc40fc9c13987f13a980ef392fd802b33f3",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-068",
           "generated_outputs": [
@@ -275,7 +289,7 @@
           ],
           "matrix_id": "version_compatibility",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "declared_versions",
@@ -285,13 +299,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-068-VERSION_COMPATIBILITY-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:de115922320f587ef30716449d38b0fa06b253ddd8762cdb78665298d25842ac",
+          "row_sha256": "sha256:73938c6f5850c28d378856e064dfc8b05ccef805cb6596ed6c166e54b8f1ce95",
           "sml_id": "SML-068",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "support_release_lifecycle",
             "version_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "version compatibility"
         }
       ],
@@ -302,21 +318,23 @@
       "authority": "wire_protocol_capture_oracle",
       "gate_id": "SML-GATE-069",
       "matrix_id": "wire_transcripts",
-      "matrix_sha256": "sha256:5e8668ca30875c618fadbc1a52a2e03fd7dd06f8e46d82ea0f3ee0d5820b1dea",
+      "matrix_sha256": "sha256:8b1f04753e079c9bad24f55131ff84ddfda4f6e25a7673feb3a14bfddab33351",
       "required_proof_vectors": [
         "negative_transcripts",
         "normalization_rules",
         "positive_transcripts"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "release_retention_manifest",
         "wire_manifest"
       ],
       "rows": [
         {
           "authority": "wire_protocol_capture_oracle",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -325,8 +343,8 @@
             "SML-GATE-069"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:f356b238723882c73b709974cc02e10d44dbc24a5a4bab074e39734619d2ad59",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:439410f30687b08479d19e512103a849b2cd62a8cca897a80d03343d6b6d4f70",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-069",
           "generated_outputs": [
@@ -336,7 +354,7 @@
           ],
           "matrix_id": "wire_transcripts",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "negative_transcripts",
@@ -346,19 +364,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-069-WIRE_TRANSCRIPTS-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:1eebb3be6f578d729479e0d9a35562290599f33d7c404d2f7681feaa2db4cbb3",
+          "row_sha256": "sha256:ad62f5d15e9a631e3969daefea37a254def805005b38263652577d40a4c1c27e",
           "sml_id": "SML-069",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "release_retention_manifest",
             "wire_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "wire transcripts"
         },
         {
           "authority": "wire_protocol_capture_oracle",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -367,8 +387,8 @@
             "SML-GATE-069"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:3079c4968f33b096ccd45bbf840189c17a809129abcca392f33c1fff68936e8f",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:767a695613fea0d127074047981af68ca45d85d8627ea38e271351ba39f487e5",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-069",
           "generated_outputs": [
@@ -378,7 +398,7 @@
           ],
           "matrix_id": "wire_transcripts",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "negative_transcripts",
@@ -387,20 +407,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-069-WIRE_TRANSCRIPTS-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:f6b69c663d388a1105c1fa85d8d1577ab44463d2cd51cc600862fb9248d0de70",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:bfe51499637ccae13618de01906e4369349835600a68aa84e5f66f564e490cf0",
           "sml_id": "SML-069",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "release_retention_manifest",
             "wire_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "wire transcripts"
         },
         {
           "authority": "wire_protocol_capture_oracle",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -409,8 +431,8 @@
             "SML-GATE-069"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:2a48d7bbc3d0586fbdbfdcc5a11f5df2ca09915b2549a8b4ca35eb3601c47889",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:f40192df0aa51d64bd83d0ff2337a30f611c27aa83ec8de40912b0ef6a6bc448",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-069",
           "generated_outputs": [
@@ -420,7 +442,7 @@
           ],
           "matrix_id": "wire_transcripts",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "negative_transcripts",
@@ -430,13 +452,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-069-WIRE_TRANSCRIPTS-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:d16ce326704e89fd300b7dd98cc65d63ad9fd84de62dff1ea9b557645f73ef8a",
+          "row_sha256": "sha256:fb603e64be1b235e4ec8fe4d409fa2dd08a1fb6a5e6d5e16d27085c1e1e37cae",
           "sml_id": "SML-069",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "release_retention_manifest",
             "wire_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "wire transcripts"
         }
       ],
@@ -447,21 +471,23 @@
       "authority": "parser_boundary_then_engine_authority",
       "gate_id": "SML-GATE-070",
       "matrix_id": "shared_surface_boundary",
-      "matrix_sha256": "sha256:f227dee2008a871132b99cc93833866ba11121bf2cbf03165a3acbd5df43ae70",
+      "matrix_sha256": "sha256:a51a3e746e03fe0ddd0eb638180730c98d29cb9aff0a0de7cadef3f658561378",
       "required_proof_vectors": [
         "lane_local_grammar",
         "reference_profile_isolation",
         "shared_helper_boundary"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "language_closure_gate",
         "shared_surface_manifest"
       ],
       "rows": [
         {
           "authority": "parser_boundary_then_engine_authority",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -470,8 +496,8 @@
             "SML-GATE-070"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:14b12c719bc200e06dc125997af348f0c98436762eb8017bd0b60245d6720617",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:3de29555111a0699b5d7c9efbf7e5f1232203299abce0077285ccb6fcb281b30",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-070",
           "generated_outputs": [
@@ -481,7 +507,7 @@
           ],
           "matrix_id": "shared_surface_boundary",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "lane_local_grammar",
@@ -491,19 +517,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-070-SHARED_SURFACE_BOUNDARY-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:f5be648931521eb3004419ca661117d5339856a91240fb7b9ce296e72302e4bd",
+          "row_sha256": "sha256:7905f04f083aebc221fec28673c1210a57350ed5efd65ca35d7e5a4e719234e4",
           "sml_id": "SML-070",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "language_closure_gate",
             "shared_surface_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "shared surface boundary"
         },
         {
           "authority": "parser_boundary_then_engine_authority",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -512,8 +540,8 @@
             "SML-GATE-070"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:2a52791b0f977d985facfbc004287a2fc10735ee6a340023213fddb4d8bc2287",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:547868716fe1ce37620b8ca5c0542228de52be24944b1da4cbdfcbeb65ce5f52",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-070",
           "generated_outputs": [
@@ -523,7 +551,7 @@
           ],
           "matrix_id": "shared_surface_boundary",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "lane_local_grammar",
@@ -532,20 +560,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-070-SHARED_SURFACE_BOUNDARY-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:61a003ce993102f61edf600bef58649597aba2b1971c7b77d25dba0bcbc41976",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:ad6d04ee2cc3a9f41027def5d31898847b40c276c8b76fd03bd2ffbcedaef70c",
           "sml_id": "SML-070",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "language_closure_gate",
             "shared_surface_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "shared surface boundary"
         },
         {
           "authority": "parser_boundary_then_engine_authority",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -554,8 +584,8 @@
             "SML-GATE-070"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:83aadb92b8ddcb52521730a8c427e00476abe65ca830978a137e70732fc09674",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:b4184a71641139db2caf735593be2b409e71b7639e7a1190b8c67ec9c53ac0be",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-070",
           "generated_outputs": [
@@ -565,7 +595,7 @@
           ],
           "matrix_id": "shared_surface_boundary",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "lane_local_grammar",
@@ -575,13 +605,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-070-SHARED_SURFACE_BOUNDARY-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:8eb1a1e14d49601665f4ba058ae1f8cd9dd7b70015ca718c52a0a61069cee9a3",
+          "row_sha256": "sha256:ebed28bbf44c14fb22ef13f9f0f29d5089b822577ab420028916978fb7ff90d7",
           "sml_id": "SML-070",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "language_closure_gate",
             "shared_surface_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "shared surface boundary"
         }
       ],
@@ -592,21 +624,23 @@
       "authority": "server_session_and_mga_transaction_inventory",
       "gate_id": "SML-GATE-071",
       "matrix_id": "resource_limits_cancellation",
-      "matrix_sha256": "sha256:d53cb90d91d47523b895434bb515b39aaffc271a780621e199768ad5761af2af",
+      "matrix_sha256": "sha256:c19e84a21a600d8391057f67aa91111be08ed3cf2ae25db7826bdf162b20e3fb",
       "required_proof_vectors": [
         "bounded_parse",
         "cancellation_routing",
         "mga_finality_preserved"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "resource_limit_manifest",
         "rollback_gate_source"
       ],
       "rows": [
         {
           "authority": "server_session_and_mga_transaction_inventory",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -615,8 +649,8 @@
             "SML-GATE-071"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:7cc19d96e39f9da171d63bd93e72f63ed4ee83b429414057341286445b4b05b8",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:5f446925212f781ba8119907df6449db81c8f3a18f6d72273b8506673257ec32",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-071",
           "generated_outputs": [
@@ -626,7 +660,7 @@
           ],
           "matrix_id": "resource_limits_cancellation",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "bounded_parse",
@@ -636,19 +670,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-071-RESOURCE_LIMITS_CANCELLATION-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:a57548297ecf9f25dddc7ff4978e7423e175a0c21763fdc018d9c79abae5610c",
+          "row_sha256": "sha256:d93c291c62e1ec27769e99d31d5f1efd8aa6a332d19185e353dd3058a7dfb735",
           "sml_id": "SML-071",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "resource_limit_manifest",
             "rollback_gate_source"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "resource limits and cancellation"
         },
         {
           "authority": "server_session_and_mga_transaction_inventory",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -657,8 +693,8 @@
             "SML-GATE-071"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:663059a789295b59af7a1e9085453da561c03cc9ebaf375e7368a60f9a312de2",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:c0ec97eec72ab7b75981653368ca4367457801673ab6f558014b390e673d0429",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-071",
           "generated_outputs": [
@@ -668,7 +704,7 @@
           ],
           "matrix_id": "resource_limits_cancellation",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "bounded_parse",
@@ -677,20 +713,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-071-RESOURCE_LIMITS_CANCELLATION-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:58aaff92a19e7e17d21a8193de7f10e65c94ce7cad77c011d12ef26ca2370308",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:85570e1c0bceb8647093b76d2c793957b8fe241d84acbca11e4dc967680f677d",
           "sml_id": "SML-071",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "resource_limit_manifest",
             "rollback_gate_source"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "resource limits and cancellation"
         },
         {
           "authority": "server_session_and_mga_transaction_inventory",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -699,8 +737,8 @@
             "SML-GATE-071"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:e130b760219b3ab16daca14a4dfb29e281b4ada4d816b847b87727b01deb4851",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:993727e8e5e80429dea92327c669b2c0a23f0f8e095927d6f18e80fc8bafe18a",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-071",
           "generated_outputs": [
@@ -710,7 +748,7 @@
           ],
           "matrix_id": "resource_limits_cancellation",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "bounded_parse",
@@ -720,13 +758,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-071-RESOURCE_LIMITS_CANCELLATION-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:54c346388f78a7782287c29910fcaed2cb1bd2fdfd183fc1377e46d2c5ceb1a3",
+          "row_sha256": "sha256:e1966985a633793ff63a9d9b6183c7272ccdb1e082b1aa73faca8ba55df483da",
           "sml_id": "SML-071",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "resource_limit_manifest",
             "rollback_gate_source"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "resource limits and cancellation"
         }
       ],
@@ -737,21 +777,23 @@
       "authority": "compatibility_decision_register",
       "gate_id": "SML-GATE-072",
       "matrix_id": "variance_register",
-      "matrix_sha256": "sha256:279e6d9707c488aa482bf1f6a77290467443ff6b91f4c2912619cca0564386b5",
+      "matrix_sha256": "sha256:3a5870b54382abde5ae00159e05d3e95447a88900dae85595c06e0e99290aea1",
       "required_proof_vectors": [
         "exact_match",
         "explicit_refusal",
         "normalized_match"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "variance_manifest",
         "version_manifest"
       ],
       "rows": [
         {
           "authority": "compatibility_decision_register",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -760,8 +802,8 @@
             "SML-GATE-072"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:d4f9381367b662e0bea8667b6961cb1d8986d8a70e6662a7b1182a6b1f0b165d",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:cffe936f11c55979d1c73a9be34c8dfc86eb9365d2eb11ded339c25cd0017e73",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-072",
           "generated_outputs": [
@@ -771,7 +813,7 @@
           ],
           "matrix_id": "variance_register",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "exact_match",
@@ -781,19 +823,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-072-VARIANCE_REGISTER-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:5813875201213d4c7f93ed5d33778354607e81a5f23415b22d42b66f31b0fa40",
+          "row_sha256": "sha256:8fcc35e1544571b596eccfbe487241ae01ddf80c67c4a60498e5d607cebcb950",
           "sml_id": "SML-072",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "variance_manifest",
             "version_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "variance register"
         },
         {
           "authority": "compatibility_decision_register",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -802,8 +846,8 @@
             "SML-GATE-072"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:0f42bf64d743c7159c4ad987c71cc60628cc1ede6c203846ee0d8fb9996aadfd",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:c6596877b21af7bd03253c38df5f0bcadcdbd142f0b4cfe2314cf001f87da073",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-072",
           "generated_outputs": [
@@ -813,7 +857,7 @@
           ],
           "matrix_id": "variance_register",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "exact_match",
@@ -822,20 +866,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-072-VARIANCE_REGISTER-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:1e0adcd950162866686afc8654e68b6cafd05942cd9d35d36ea89956721f8978",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:6f3fa0a366ef791a2117937457597fdea8671a39d331e750ebe1783440f94d2c",
           "sml_id": "SML-072",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "variance_manifest",
             "version_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "variance register"
         },
         {
           "authority": "compatibility_decision_register",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -844,8 +890,8 @@
             "SML-GATE-072"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:5539f6f8e60ec903542739e18554886191025ab642781d400cc5080471d4a360",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:4dca8334329aaa7b292bc61340a78f8ffa6fb830a561877c0387db7fe8f25fb7",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-072",
           "generated_outputs": [
@@ -855,7 +901,7 @@
           ],
           "matrix_id": "variance_register",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "exact_match",
@@ -865,13 +911,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-072-VARIANCE_REGISTER-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:15c670bbe4cb1ebe5a5f1d731df3763bf2887ac894de19eaed09dc0ad554e4b6",
+          "row_sha256": "sha256:f236c7937701a19909190cbd71db38e36d06e543b850351b4bdd6e875e9491f5",
           "sml_id": "SML-072",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "variance_manifest",
             "version_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "variance register"
         }
       ],
@@ -882,21 +930,23 @@
       "authority": "public_release_evidence_only",
       "gate_id": "SML-GATE-073",
       "matrix_id": "release_evidence_retention",
-      "matrix_sha256": "sha256:ff1306e43ae2fe417555c07f18f3945ef052fb6a1bc560d70865569f59b82090",
+      "matrix_sha256": "sha256:2621dc75e7502865ea0b55393d4b08bb853ff11f6ed0ef47728290f299065202",
       "required_proof_vectors": [
         "redaction",
         "regeneration_owner",
         "retained_artifact_classes"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "enterprise_closure_gate",
         "release_retention_manifest"
       ],
       "rows": [
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -905,8 +955,8 @@
             "SML-GATE-073"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:1abb8779e4b097116a6ed68c611d74e580626bbd9e7921de264472fb0b2e6dec",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:437e491cbd62e4e1735fb393d352529a756a5fecd905fccd2c2eb91e79cb9686",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-073",
           "generated_outputs": [
@@ -916,7 +966,7 @@
           ],
           "matrix_id": "release_evidence_retention",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "redaction",
@@ -926,19 +976,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-073-RELEASE_EVIDENCE_RETENTION-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:cdc424d65d4fc49f9880999a2c346c55122fa2d5a6fac3e5cfe6d9190453c5c2",
+          "row_sha256": "sha256:bbce6ae8482323bc5b212633beaabc3c0814d996f0b8b3d4a14479ce283ffe66",
           "sml_id": "SML-073",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "release_retention_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "release evidence retention"
         },
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -947,8 +999,8 @@
             "SML-GATE-073"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:b8a7ecd65c3808bfe039b2b34c89879079efa7062278c9e4524ef01ebc05cea6",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:12dd98eebaac7cb023c0cea290578a4f541bd55089f99a20588df7d951ed3675",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-073",
           "generated_outputs": [
@@ -958,7 +1010,7 @@
           ],
           "matrix_id": "release_evidence_retention",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "redaction",
@@ -967,20 +1019,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-073-RELEASE_EVIDENCE_RETENTION-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:5f2aad32757732772dfd27beadd6439901a0e5d9d9ff627f5173e32feebe146b",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:495a022a7c8d8aab0300d89fc2b8c28c1b2fe4fe357bd8e70c64df1c058936a8",
           "sml_id": "SML-073",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "release_retention_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "release evidence retention"
         },
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -989,8 +1043,8 @@
             "SML-GATE-073"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:8ea6ef36fdb9df00bb8be7fdf6ee4f6451aca647eab380d9929338de29451296",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:68c827cc6a959289c6c48ac0e0a2bca828f9586fcf4477a74364ed0958c4c181",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-073",
           "generated_outputs": [
@@ -1000,7 +1054,7 @@
           ],
           "matrix_id": "release_evidence_retention",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "redaction",
@@ -1010,13 +1064,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-073-RELEASE_EVIDENCE_RETENTION-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:de8ada665dbea115af8fdd9089e218cbc75a57272fb6808d753e8da03449d150",
+          "row_sha256": "sha256:b64b138e4393bce0e3b0a81721a50f469932e38912f2ab4b2f3b4af2b95adb73",
           "sml_id": "SML-073",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "release_retention_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "release evidence retention"
         }
       ],
@@ -1027,13 +1083,15 @@
       "authority": "integrated_ctest_closure",
       "gate_id": "SML-GATE-074",
       "matrix_id": "integrated_proof",
-      "matrix_sha256": "sha256:636d3127c0017269c4dece5bfc377edca812f6ccc9e436b1ed102c82514250f4",
+      "matrix_sha256": "sha256:7e70957d83db72d881d2ecf73b5a344e905d89be40a80541e082ff8c546ce5cf",
       "required_proof_vectors": [
         "diagnostic_goldens",
         "listener_handoff",
         "sblr_lowering"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "enterprise_closure_gate",
         "language_closure_gate",
         "master_closure_gate"
@@ -1041,8 +1099,8 @@
       "rows": [
         {
           "authority": "integrated_ctest_closure",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1051,8 +1109,8 @@
             "SML-GATE-074"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:12701341bbdbc3383af52dea33a86bc8393eb3b7e2574324cce95a3f43927209",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:21e8828f3833a522b7029a242867e6f633bf3ed39a31b2f495b54389f30fd081",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-074",
           "generated_outputs": [
@@ -1062,7 +1120,7 @@
           ],
           "matrix_id": "integrated_proof",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "diagnostic_goldens",
@@ -1072,20 +1130,22 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-074-INTEGRATED_PROOF-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:c5147fc1b62a41ed15019f720d3aa4d3bd64ff44bf2e3a5be8c0efef611f6fe7",
+          "row_sha256": "sha256:2840cbaa24d84b9855c26feb4cc9efc7a8ec8efd04842b3b1698a70d8d81e6a8",
           "sml_id": "SML-074",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "language_closure_gate",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "integrated proof"
         },
         {
           "authority": "integrated_ctest_closure",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1094,8 +1154,8 @@
             "SML-GATE-074"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:699bbcc721d08da84f617a589dc25f273c4dd77906cfd8c9fe128ee1ad280dd7",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:598c26db9bf92f51358d77e1ec48cbc7ac30488daeb619ccfffc02712e3c6053",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-074",
           "generated_outputs": [
@@ -1105,7 +1165,7 @@
           ],
           "matrix_id": "integrated_proof",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "diagnostic_goldens",
@@ -1114,21 +1174,23 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-074-INTEGRATED_PROOF-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:b4da54947d3eb91e5bc47fd3d75a61975d8dc5cd3b98fa8146b64c0a851c8ca9",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:84728cb56066064e76f88d23267e9610add60c6043c3775406baa6c1c20c8f69",
           "sml_id": "SML-074",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "language_closure_gate",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "integrated proof"
         },
         {
           "authority": "integrated_ctest_closure",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1137,8 +1199,8 @@
             "SML-GATE-074"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:44c9425e9df2268009d017037be190b9b4848b775cebd81a23c7466555b51862",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:775926a8a1f0db09e5882052045f96fe9dd4dc0aa8c84a885983be6867a403a2",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-074",
           "generated_outputs": [
@@ -1148,7 +1210,7 @@
           ],
           "matrix_id": "integrated_proof",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "diagnostic_goldens",
@@ -1158,14 +1220,16 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-074-INTEGRATED_PROOF-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:f42b0a31232c6739bc33f5ffe5856401b0aff5068a4fa3b47ef7a6e66fb8c5ba",
+          "row_sha256": "sha256:29cff97ecbe266a33236bc15f3797cfb0b4678b84e42e48753b8dd34a93acb19",
           "sml_id": "SML-074",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "language_closure_gate",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "integrated proof"
         }
       ],
@@ -1176,13 +1240,15 @@
       "authority": "engine_owned_mga_recovery",
       "gate_id": "SML-GATE-075",
       "matrix_id": "crash_recovery",
-      "matrix_sha256": "sha256:9771e428bc9c69bfd40bb8f4eed732cd7c4ed39f75dce3dbef7918880e99ba24",
+      "matrix_sha256": "sha256:367b8420c691f66103e739e61ae42605545d1f60e9d981a676e4e0664eab7f87",
       "required_proof_vectors": [
         "catalog_overlay",
         "mga_recovery_authority",
         "restart_replay"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "enterprise_completion_manifest",
         "rollback_gate_source",
         "support_maintenance_policy"
@@ -1190,8 +1256,8 @@
       "rows": [
         {
           "authority": "engine_owned_mga_recovery",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1200,8 +1266,8 @@
             "SML-GATE-075"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:303536ff78cf0f60131c748cb2a04cc477f9b1d9e8a5402b7f35bb499fd96c6a",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:db13a8aa829955089110712f7d82901cb0a73c3e13474fc338469e1dc2eb4e91",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-075",
           "generated_outputs": [
@@ -1211,7 +1277,7 @@
           ],
           "matrix_id": "crash_recovery",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "catalog_overlay",
@@ -1221,20 +1287,22 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-075-CRASH_RECOVERY-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:0b6feca441a6bab697e578340c3e0c9ccd9c5a77339e869d1c1393e827202d78",
+          "row_sha256": "sha256:7a62c4e596ff4a399aa6c4860d313f7247cb784b67aef2c9ebd402a2e04d97ac",
           "sml_id": "SML-075",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "rollback_gate_source",
             "support_maintenance_policy"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "crash recovery"
         },
         {
           "authority": "engine_owned_mga_recovery",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1243,8 +1311,8 @@
             "SML-GATE-075"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:388811073209862c31e2c447922ca551a90c5c278a1dba26fe02833cf69bc448",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:3c2febe4be7a775d79fa4a2ac5d725ce6144866e54b83a636b6131b5d29237a6",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-075",
           "generated_outputs": [
@@ -1254,7 +1322,7 @@
           ],
           "matrix_id": "crash_recovery",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "catalog_overlay",
@@ -1263,21 +1331,23 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-075-CRASH_RECOVERY-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:d02fbb881d9a39d7069b0004eb996df2ad5ab79a17c0eb064c5ca3b9eca293e4",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:0ad3ce48de48104ef954b9dc9569aba1945458df5286e6f4cdc5fed95a684f12",
           "sml_id": "SML-075",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "rollback_gate_source",
             "support_maintenance_policy"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "crash recovery"
         },
         {
           "authority": "engine_owned_mga_recovery",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1286,8 +1356,8 @@
             "SML-GATE-075"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:3fa8246c4f9725fda58a397170a9a6f84d661e689b13982a6fcf520a462d25bd",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:654a5565429853edfdb35c76c888c350d517fd42021c83fb7d45c175d70c8d1a",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-075",
           "generated_outputs": [
@@ -1297,7 +1367,7 @@
           ],
           "matrix_id": "crash_recovery",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "catalog_overlay",
@@ -1307,14 +1377,16 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-075-CRASH_RECOVERY-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:37180dede10e49b7eff4b9b8ece71270c49057a03fa407e210699a0be942d965",
+          "row_sha256": "sha256:af226fdcbafba500f35c2818f6a50231d330311c87c9115aa030bea3342a4848",
           "sml_id": "SML-075",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "rollback_gate_source",
             "support_maintenance_policy"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "crash recovery"
         }
       ],
@@ -1325,21 +1397,23 @@
       "authority": "bounded_ctest_soak_evidence",
       "gate_id": "SML-GATE-076",
       "matrix_id": "soak_certification",
-      "matrix_sha256": "sha256:d114004bdc99b0f53b711e67aacf75c688b2d9fcb3158f110d5ad481714fb5f1",
+      "matrix_sha256": "sha256:b454aebe4c11bb25609b22155a9c9e501622c9ffffef8adcdd528cf5e52e8d38",
       "required_proof_vectors": [
         "bounded_duration",
         "descriptor_drift_guard",
         "resource_trend"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "enterprise_completion_manifest",
         "soak_gate_source"
       ],
       "rows": [
         {
           "authority": "bounded_ctest_soak_evidence",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1348,8 +1422,8 @@
             "SML-GATE-076"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:9faeb3d13277c6189bdcf07a9f61464f32f92dfc2ae398ef9463b057b99fef8e",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:5ff5e854286441d2b3539c1415e216338e2c2b53379b57bc6f2ce272987abe2d",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-076",
           "generated_outputs": [
@@ -1359,7 +1433,7 @@
           ],
           "matrix_id": "soak_certification",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "bounded_duration",
@@ -1369,19 +1443,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-076-SOAK_CERTIFICATION-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:56ca848ae0834e52d7f369499ccc234a1b5b53ab9b072f9ed98354cdf54cf0e2",
+          "row_sha256": "sha256:598f868bacebef6a921ee5a2da2a073e16fb2864e7888c02219cb9b4bf85861c",
           "sml_id": "SML-076",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "soak_gate_source"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "soak certification"
         },
         {
           "authority": "bounded_ctest_soak_evidence",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1390,8 +1466,8 @@
             "SML-GATE-076"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:4441d36c4897d788dfdbd5a1e670d157b9ae427d8ecea05a7252a4e3115865e6",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:71854eb0fe83e0d0434d5024a5736880c9baab3960073e2daa9acf512607dada",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-076",
           "generated_outputs": [
@@ -1401,7 +1477,7 @@
           ],
           "matrix_id": "soak_certification",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "bounded_duration",
@@ -1410,20 +1486,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-076-SOAK_CERTIFICATION-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:14a4b186dfd14a953d81a2489d2f0f76e6babde5862dfa03c600f2c812a03c8e",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:2b6e41d5584d1bd5c83016aaca4301559a81d809005e61cd28ccaaae3a19d42f",
           "sml_id": "SML-076",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "soak_gate_source"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "soak certification"
         },
         {
           "authority": "bounded_ctest_soak_evidence",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1432,8 +1510,8 @@
             "SML-GATE-076"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:51d466adf0ac88db3cc51391f65f3789a4bd3d30e448747052337464916d56fb",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:021cc5e239e19d47527e135b0553d00bf621d8da5064624981672161c8f2d9af",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-076",
           "generated_outputs": [
@@ -1443,7 +1521,7 @@
           ],
           "matrix_id": "soak_certification",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "bounded_duration",
@@ -1453,13 +1531,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-076-SOAK_CERTIFICATION-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:8fe8894a321c05095387a52f9cdea03e3f77e814f2f0f0d29da629a0b50b2d89",
+          "row_sha256": "sha256:dfa8514c38338290f5d853dabd4e05923e42b4f249f8d1fb6935074635393ceb",
           "sml_id": "SML-076",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "soak_gate_source"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "soak certification"
         }
       ],
@@ -1470,7 +1550,7 @@
       "authority": "release_packaging_ctest_evidence",
       "gate_id": "SML-GATE-077",
       "matrix_id": "operational_packaging",
-      "matrix_sha256": "sha256:8d68e6825686e4f23a4ca0371dce29f73654e5873daf4693665ca6742817a5ef",
+      "matrix_sha256": "sha256:91c1c234033f129ea9354779f1c1fc9dbc8ca7fff8e2e5bc989f85a2b1651586",
       "required_proof_vectors": [
         "artifact_integrity",
         "install_upgrade_rollback",
@@ -1478,14 +1558,16 @@
       ],
       "required_source_ids": [
         "admin_runbooks",
+        "alignment_tracker",
+        "alignment_validation_report",
         "driver_release_declaration",
         "enterprise_completion_manifest"
       ],
       "rows": [
         {
           "authority": "release_packaging_ctest_evidence",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1494,8 +1576,8 @@
             "SML-GATE-077"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:eb63f1b947f2f083b8036d10cd146539d1df987be69765f7e53f52a7106b0fb2",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:bd680035805ebd5805b5b3a8950a06c119079b79e9873c71d0355db5cee78b1c",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-077",
           "generated_outputs": [
@@ -1505,7 +1587,7 @@
           ],
           "matrix_id": "operational_packaging",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "artifact_integrity",
@@ -1515,20 +1597,22 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-077-OPERATIONAL_PACKAGING-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:66e7c0860b46bc61dfcb51ea2eaa6d8309f4dace90e4fbe10a4cc4978e15fb5e",
+          "row_sha256": "sha256:2cdaf3616f7f24d233083722a990245418e0f187c0c37f2af9647b996a1fa64a",
           "sml_id": "SML-077",
           "source_ids": [
             "admin_runbooks",
+            "alignment_tracker",
+            "alignment_validation_report",
             "driver_release_declaration",
             "enterprise_completion_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "operational packaging"
         },
         {
           "authority": "release_packaging_ctest_evidence",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1537,8 +1621,8 @@
             "SML-GATE-077"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:7269840a4054edd30dd163071fb2d2ffb63e7fb2735f5962b36ddcb6b6d6483e",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:36736e0b7f80ea9f21fa17bbf972673a85e0abe42a884c5c19363d52de3638a5",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-077",
           "generated_outputs": [
@@ -1548,7 +1632,7 @@
           ],
           "matrix_id": "operational_packaging",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "artifact_integrity",
@@ -1557,21 +1641,23 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-077-OPERATIONAL_PACKAGING-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:d85547e7c9c70ed1219c8e58e12f9e53a8bcc60b9e0ea7f2f1c1c383704d3b6d",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:a325d65d07b142a1c13785e7860890759f5fc6152ecac1c57a571244c7b85eb0",
           "sml_id": "SML-077",
           "source_ids": [
             "admin_runbooks",
+            "alignment_tracker",
+            "alignment_validation_report",
             "driver_release_declaration",
             "enterprise_completion_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "operational packaging"
         },
         {
           "authority": "release_packaging_ctest_evidence",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1580,8 +1666,8 @@
             "SML-GATE-077"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:ea2e3c9db2cd8465ab59a97be538060e0c049fd3ac4df92232bbae8b50adc43d",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:35dc1d8906ef4ab5f90891be9fe39faba8a8ffda1cf8d327acd0f2217696b33a",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-077",
           "generated_outputs": [
@@ -1591,7 +1677,7 @@
           ],
           "matrix_id": "operational_packaging",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "artifact_integrity",
@@ -1601,14 +1687,16 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-077-OPERATIONAL_PACKAGING-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:63c2dc60ef54b0f7a1ffb8e071f9500f9d96c2566e4fc2eee735b6e3e343c809",
+          "row_sha256": "sha256:7215841fffd939f28be9751e512745c011569b61a8e914f308619dc8aa8a29d4",
           "sml_id": "SML-077",
           "source_ids": [
             "admin_runbooks",
+            "alignment_tracker",
+            "alignment_validation_report",
             "driver_release_declaration",
             "enterprise_completion_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "operational packaging"
         }
       ],
@@ -1619,7 +1707,7 @@
       "authority": "public_release_evidence_only",
       "gate_id": "SML-GATE-078",
       "matrix_id": "documentation_support_process_evidence_state",
-      "matrix_sha256": "sha256:1792e6e9f21df20cd68d247b02ad01633437f0a9625f3aa00c66883571fdd897",
+      "matrix_sha256": "sha256:a9099c877e0321ad031af393529713216993ca88ef0290f54f88fd59f2fd4abe",
       "required_proof_vectors": [
         "clean_public_docs",
         "draft_doc_exclusion",
@@ -1627,14 +1715,16 @@
       ],
       "required_source_ids": [
         "admin_runbooks",
+        "alignment_tracker",
+        "alignment_validation_report",
         "support_maintenance_policy",
         "support_release_lifecycle"
       ],
       "rows": [
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1643,8 +1733,8 @@
             "SML-GATE-078"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:d232d535465fbeb6763c6f1a96392f6446c9b9ae0191337d50af262b46a12e93",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:12d66e41c5828698f584d0788338ca4ad2632fec31d32a6fb48e46fc67a2fd9c",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-078",
           "generated_outputs": [
@@ -1654,7 +1744,7 @@
           ],
           "matrix_id": "documentation_support_process_evidence_state",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "clean_public_docs",
@@ -1664,20 +1754,22 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-078-DOCUMENTATION_SUPPORT_PROCESS_EVIDENCE_STATE-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:fc9e40a381352e35732e561ea69addd4d11043c5b3fdea42008c728f128f237f",
+          "row_sha256": "sha256:ac4b8fa7e73907a4c3d0d27d01b1d12c6e5041a6ef48df9d575ec9b2e8583769",
           "sml_id": "SML-078",
           "source_ids": [
             "admin_runbooks",
+            "alignment_tracker",
+            "alignment_validation_report",
             "support_maintenance_policy",
             "support_release_lifecycle"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "documentation and support process evidence state"
         },
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1686,8 +1778,8 @@
             "SML-GATE-078"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:1ec9e13458c95d8bbb7fdb90f40e29c11f0d314e92c68d429984cc799c11635d",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:e35344d11ce45e164c3a66f7474584a605ee46dd4786d8566045dd0384dba68b",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-078",
           "generated_outputs": [
@@ -1697,7 +1789,7 @@
           ],
           "matrix_id": "documentation_support_process_evidence_state",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "clean_public_docs",
@@ -1706,21 +1798,23 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-078-DOCUMENTATION_SUPPORT_PROCESS_EVIDENCE_STATE-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:e36ebe92226cc9b005b488b8b1658a3e598ca89f67bbfa712b0923aa67043014",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:83ae3977a37ae70c27a371c468cbae2a67e9bded11294425ce2778e6427e9d78",
           "sml_id": "SML-078",
           "source_ids": [
             "admin_runbooks",
+            "alignment_tracker",
+            "alignment_validation_report",
             "support_maintenance_policy",
             "support_release_lifecycle"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "documentation and support process evidence state"
         },
         {
           "authority": "public_release_evidence_only",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1729,8 +1823,8 @@
             "SML-GATE-078"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:0dfd40d98705e83b8c8f639088175eca1e18edd22234242bef9ca81401386d44",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:c3f04b652f094a9d7cddbfe4ed90ed81f5d5f17d43f2714b1a7ff1936c68ca04",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-078",
           "generated_outputs": [
@@ -1740,7 +1834,7 @@
           ],
           "matrix_id": "documentation_support_process_evidence_state",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "clean_public_docs",
@@ -1750,14 +1844,16 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-078-DOCUMENTATION_SUPPORT_PROCESS_EVIDENCE_STATE-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:e614c66c005ffee9e44c1d46d2a6565fa83ae71b93d6dd5402add4545a14d791",
+          "row_sha256": "sha256:530351519d95ea078b1d33fa7d9d6877d1f896951f59c1213060361b674dcf4a",
           "sml_id": "SML-078",
           "source_ids": [
             "admin_runbooks",
+            "alignment_tracker",
+            "alignment_validation_report",
             "support_maintenance_policy",
             "support_release_lifecycle"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "documentation and support process evidence state"
         }
       ],
@@ -1768,21 +1864,23 @@
       "authority": "independent_review_gate_closure",
       "gate_id": "SML-GATE-079",
       "matrix_id": "independent_audit_closure",
-      "matrix_sha256": "sha256:8013f332fa4adb73d173e67457f8bc280a0b310504d34768b131f3e7e98fa64b",
+      "matrix_sha256": "sha256:5b260f99d356d26e7ffe5637c4acd7044e45e42c836e4ea8db4b2c36b3240675",
       "required_proof_vectors": [
         "gate_dependency_closure",
         "reviewer_independence",
         "zero_open_rows"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "enterprise_completion_manifest",
         "master_closure_gate"
       ],
       "rows": [
         {
           "authority": "independent_review_gate_closure",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1791,8 +1889,8 @@
             "SML-GATE-079"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:b92b803bb7ee08f19b67d8acc8d4a66bc056f46d8d89430cccb5a41e4b7d59e8",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:ab01aa53d1927e772e4f33709ae9ef5ef5beafba51796e12baf98d5c8df87fb0",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-079",
           "generated_outputs": [
@@ -1802,7 +1900,7 @@
           ],
           "matrix_id": "independent_audit_closure",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "gate_dependency_closure",
@@ -1812,19 +1910,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-079-INDEPENDENT_AUDIT_CLOSURE-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:8c5475ebed1ecbd6be9463978f4a7565a6be019d0ef6a6dd7e8fc74c74580e11",
+          "row_sha256": "sha256:f36d2d94328e557ce14005ceea2d036a6ba82c5f27671f2800c782ecfb37b2a1",
           "sml_id": "SML-079",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "independent audit closure"
         },
         {
           "authority": "independent_review_gate_closure",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1833,8 +1933,8 @@
             "SML-GATE-079"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:942a3abfedc21b256ea1fe31aab410789d57aed8f8bd724182e09694e3dcef0e",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:5f4f9d1ba80d8797403b09dcfda71a9c8c8e909f6868a5536135e09d830ce944",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-079",
           "generated_outputs": [
@@ -1844,7 +1944,7 @@
           ],
           "matrix_id": "independent_audit_closure",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "gate_dependency_closure",
@@ -1853,20 +1953,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-079-INDEPENDENT_AUDIT_CLOSURE-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:136432ee05034b5031fee09b7507178f1b0b2d9035fc4d1374dc05993af3540c",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:8b87d854de4017c438e35527beb21cef9ab66f59cb458e9abcb3d2da9bcdbed2",
           "sml_id": "SML-079",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "independent audit closure"
         },
         {
           "authority": "independent_review_gate_closure",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1875,8 +1977,8 @@
             "SML-GATE-079"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:350755c8c1810ae3a281fb10733f8bd010e198c64aaf9993b7a58986a1afd54f",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:7de38a5e21466d1663f5f69d02f7603c32063f5c1a1534a808f70f7928456b03",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-079",
           "generated_outputs": [
@@ -1886,7 +1988,7 @@
           ],
           "matrix_id": "independent_audit_closure",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "gate_dependency_closure",
@@ -1896,13 +1998,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-079-INDEPENDENT_AUDIT_CLOSURE-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:daabc15f70a92bed738bf832af8b4cb75774801648599ac7e6e1fdfead8009b7",
+          "row_sha256": "sha256:d8802dfac1ff0c39e650c4ea3c86b5f0fb63836ceef8b2e515bf2c402e1cc509",
           "sml_id": "SML-079",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "master_closure_gate"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "independent audit closure"
         }
       ],
@@ -1913,21 +2017,23 @@
       "authority": "release_certification_gate",
       "gate_id": "SML-GATE-080",
       "matrix_id": "no_exception_ledger",
-      "matrix_sha256": "sha256:9f24f94b32d15913306de49db57f9f714b9ebb50e6f447e0f554149a3f19f442",
+      "matrix_sha256": "sha256:7de1af38e071afda482ce1da873c52471e49dab33f6f0c86effacacc43a26730",
       "required_proof_vectors": [
         "explicit_refusal_only",
         "no_manual_blessing",
         "zero_exception_rows"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "enterprise_completion_manifest",
         "release_retention_manifest"
       ],
       "rows": [
         {
           "authority": "release_certification_gate",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1936,8 +2042,8 @@
             "SML-GATE-080"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:8b8cb2aa68c27ba342f4e2d041b0b7f16a2d07d18cd7cad3a7ebb60dc79051b0",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:fe1600ac4ced92de356753d0e9ffc28aebc36e092d7623b3a2b92da366f355d5",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-080",
           "generated_outputs": [
@@ -1947,7 +2053,7 @@
           ],
           "matrix_id": "no_exception_ledger",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "explicit_refusal_only",
@@ -1957,19 +2063,21 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-080-NO_EXCEPTION_LEDGER-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:bceab8d0c73c83232eb8f9efcd49c0a2bca22cec4eb1689a64dc8fe081f839d5",
+          "row_sha256": "sha256:22c4dfee9b1802aced0c1b706129f95dbafdd583d947e1e8d236e03498602ec4",
           "sml_id": "SML-080",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "release_retention_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "no-exception ledger"
         },
         {
           "authority": "release_certification_gate",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -1978,8 +2086,8 @@
             "SML-GATE-080"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:13b67072c56f842a2e9e2979108d7bbbc0ca07ceec1e0ea27934708ed2a02ebb",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:5c3900f4e9e47cbfa8cac44a3a0de9230d2443ef10e60fd374e3e08c7f484e7e",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-080",
           "generated_outputs": [
@@ -1989,7 +2097,7 @@
           ],
           "matrix_id": "no_exception_ledger",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "explicit_refusal_only",
@@ -1998,20 +2106,22 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-080-NO_EXCEPTION_LEDGER-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:4be8be023c357855a29a7d3f7cd72037c5b920ce26ef6f00631002c2f0497045",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:0ffdb03db5a324c2db2a4d6d934bc4cff92b26a78ebf625b6e072918fb50c95b",
           "sml_id": "SML-080",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "release_retention_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "no-exception ledger"
         },
         {
           "authority": "release_certification_gate",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -2020,8 +2130,8 @@
             "SML-GATE-080"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:6c181f808bf48dc4b27954c4e803c807615fda757689f51c57fe788a6ec636c3",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:4e4125bde60ec824ec1b325c77f9cb549b8c9e612fae375068565f0fd66c07de",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-080",
           "generated_outputs": [
@@ -2031,7 +2141,7 @@
           ],
           "matrix_id": "no_exception_ledger",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "explicit_refusal_only",
@@ -2041,13 +2151,15 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-080-NO_EXCEPTION_LEDGER-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:c290d9ec57d55a70b755ce4bd7abd8b5487f25a621c303f567fc3ddd82872cbf",
+          "row_sha256": "sha256:914814a41ca0506cf85edd6643034833f17a07cd22e02c7f06442430538eea68",
           "sml_id": "SML-080",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_completion_manifest",
             "release_retention_manifest"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "no-exception ledger"
         }
       ],
@@ -2058,13 +2170,15 @@
       "authority": "generated_public_test_gate",
       "gate_id": "SML-GATE-081",
       "matrix_id": "implementation_start_alignment",
-      "matrix_sha256": "sha256:5e163d8ad8197cb0a720c8e4b5cc4597669b989d6c6abbe285bfda823e08c8cd",
+      "matrix_sha256": "sha256:46ce12a74e74a7aa8fefb52b6a9a5ca95840745bee03675d0b47af9de9564119",
       "required_proof_vectors": [
         "ctest_label_ready",
         "pre_start_gate_materialized",
         "write_scope_bounded"
       ],
       "required_source_ids": [
+        "alignment_tracker",
+        "alignment_validation_report",
         "enterprise_closure_gate",
         "generator_source",
         "sbsql_ctest_registration"
@@ -2072,8 +2186,8 @@
       "rows": [
         {
           "authority": "generated_public_test_gate",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "All declared source anchors are local repo paths with stable token checks and no draft-doc dependency.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "All declared source anchors are controlled workspace paths with stable token checks and no draft-doc dependency.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -2082,8 +2196,8 @@
             "SML-GATE-081"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:ad1279ceb4b4881aa71f160af9d87b2f4cf293cbdf09a4625acd786c41a97902",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:669cd5bd8db5417d30edda9ab07dcef6bf925f74f2e1870fded159cc5ae27062",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-081",
           "generated_outputs": [
@@ -2093,7 +2207,7 @@
           ],
           "matrix_id": "implementation_start_alignment",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "ctest_label_ready",
@@ -2103,20 +2217,22 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-081-IMPLEMENTATION_START_ALIGNMENT-01",
           "row_kind": "deterministic_input",
-          "row_sha256": "sha256:7f9be84421cf16eedc9c3b049669a08d62826cf1f17b85107fda3dd6f2396c18",
+          "row_sha256": "sha256:e366df42280310e74605a3a69befcc12bf2cf5943afc2e44aab0e82d0b7066dd",
           "sml_id": "SML-081",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "generator_source",
             "sbsql_ctest_registration"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "implementation start alignment"
         },
         {
           "authority": "generated_public_test_gate",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The release-certification row is closed only by executable gate validation and machine-readable hash proof.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "The row retains evidence but cannot claim release acceptance while IA-14 and IA-15 are open.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -2125,8 +2241,8 @@
             "SML-GATE-081"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:97d1972309c9d9310bdbaf291cb98d33b0a10cb78426e3744c49bd5951b4a43b",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:2d52ff6c41cdfd64edd076d7edf7c4504b7c118bbba3a2f852628557bab6c1b8",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-081",
           "generated_outputs": [
@@ -2136,7 +2252,7 @@
           ],
           "matrix_id": "implementation_start_alignment",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "ctest_label_ready",
@@ -2145,21 +2261,23 @@
           ],
           "public_tracking_artifact_created": false,
           "row_id": "SML-081-IMPLEMENTATION_START_ALIGNMENT-02",
-          "row_kind": "closeout_assertion",
-          "row_sha256": "sha256:490c54f01d46a056d33af1053a355f24a1d36ff9dad7d04024f9227e03db549f",
+          "row_kind": "nonfinality_assertion",
+          "row_sha256": "sha256:35bb8af8f7ee8ad6c447c51fd6f6d4d4a5ea344ccecd262ba77dc4642ca9d16e",
           "sml_id": "SML-081",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "generator_source",
             "sbsql_ctest_registration"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "implementation start alignment"
         },
         {
           "authority": "generated_public_test_gate",
-          "closed_by": "sbsql_sml_067_081_release_certification_gate",
-          "closure_rule": "The CTest label set exposes the slice and gate labels required for release certification.",
+          "closed_by": "not_applicable_release_acceptance_open",
+          "closure_rule": "CTest validates deterministic evidence state and rejects fabricated implemented-and-proven closure.",
           "ctest_labels": [
             "sbsql_release_certification",
             "sbsql_parser_worker",
@@ -2168,8 +2286,8 @@
             "SML-GATE-081"
           ],
           "docs_documentation_draft_required": false,
-          "evidence_sha256": "sha256:22edd5ce34dd9c51a8e76b8893aa32c187e25786d093981edbecc7094bd32c2e",
-          "evidence_state": "implemented_and_proven",
+          "evidence_sha256": "sha256:14ca85f3cce20a6f869308186c1305bdc72163461c01ca003bf7bac0d0e4b617",
+          "evidence_state": "structural_and_declarative_evidence_retained",
           "exception_count": 0,
           "gate_id": "SML-GATE-081",
           "generated_outputs": [
@@ -2179,7 +2297,7 @@
           ],
           "matrix_id": "implementation_start_alignment",
           "network_required": false,
-          "open_row_count": 0,
+          "open_row_count": 1,
           "parser_executes_sql": false,
           "proof_vectors": [
             "ctest_label_ready",
@@ -2189,14 +2307,16 @@
           "public_tracking_artifact_created": false,
           "row_id": "SML-081-IMPLEMENTATION_START_ALIGNMENT-03",
           "row_kind": "ctest_execution",
-          "row_sha256": "sha256:876b0b9039b4cdd6980079085e9cd1d11a8b989418258bed1dd990b380ab365c",
+          "row_sha256": "sha256:c41966a2c524d72fdc8ad69b9a6526768789dbaa6c356038e76ab5003067c8a1",
           "sml_id": "SML-081",
           "source_ids": [
+            "alignment_tracker",
+            "alignment_validation_report",
             "enterprise_closure_gate",
             "generator_source",
             "sbsql_ctest_registration"
           ],
-          "status": "closed",
+          "status": "acceptance_open",
           "title": "implementation start alignment"
         }
       ],
@@ -2205,7 +2325,12 @@
     }
   ],
   "network_required": false,
+  "open_acceptance_phases": [
+    "IA-14",
+    "IA-15"
+  ],
   "public_workplan_report_audit_note_created": false,
+  "release_certified": false,
   "required_sml_ids": [
     "SML-067",
     "SML-068",
@@ -2224,8 +2349,8 @@
     "SML-081"
   ],
   "row_count": 45,
-  "rows_not_closed": 0,
-  "schema_version": "sbsql.release_certification.sml_067_081.v1",
+  "rows_not_closed": 45,
+  "schema_version": "sbsql.release_certification_state.sml_067_081.v2",
   "source_evidence": [
     {
       "anchor_sha256": "sha256:bfc781714d83851fb7dd9db529af6543a6a9994a6020d09ba9421e6d66f35415",
@@ -2239,34 +2364,54 @@
       "source_id": "sbsql_ctest_registration"
     },
     {
-      "anchor_sha256": "sha256:6ac81c079bc43275b7aab9b9fb167316787bda3865fb61c6687f376a2c8884e2",
+      "anchor_sha256": "sha256:b71ed2ad7755d5879fe73881d352ec24636d24915b871274f6651396d5585f59",
       "path": "project/tests/sbsql_parser_worker/final_sblr_sbsql_enterprise_proof_closure_gate.py",
-      "purpose": "enterprise proof and release evidence gate source",
+      "purpose": "enterprise evidence-retention and open-finding gate source",
       "required_tokens": [
-        "Final SBLR/SBsql enterprise proof closure gate",
-        "RELEASE_EVIDENCE_RETENTION_MATRIX.csv"
+        "Retain and verify the current SBsql/SBLR enterprise closure evidence",
+        "open_release_blockers"
       ],
       "source_id": "enterprise_closure_gate"
     },
     {
-      "anchor_sha256": "sha256:0166f7cf9622b5969bd958bc26d9834a12b24ef5bf9ecdd39781fc111dc44ef3",
+      "anchor_sha256": "sha256:4fdecd01a38b4cee5e4e6ec8d429d86565c1bbc6a34652141f4bf5861c1c80fd",
       "path": "project/tests/sbsql_parser_worker/final_sblr_sbsql_master_closure_gate.py",
-      "purpose": "integrated final closure sequence gate source",
+      "purpose": "integrated structural-consistency gate source",
       "required_tokens": [
-        "Master gate for the final SBLR/SBsql closure sequence",
-        "MASTER_EXIT_CRITERIA.csv"
+        "Master consistency gate for the current SBsql/SBLR closure sequence",
+        "master gate must not turn structural closure into final workplan acceptance"
       ],
       "source_id": "master_closure_gate"
     },
     {
-      "anchor_sha256": "sha256:0b253d9a925af954f8ff47fa2ee7f64889dd61634d11c93f24b9f1f837e69789",
+      "anchor_sha256": "sha256:674bfb62c476d9d316a02a986a0765b923c8e00abfe88e49fc5588a2d4390e4c",
       "path": "project/tests/sbsql_parser_worker/sbsql_final_language_expansion_closure_gate.py",
-      "purpose": "SBsql-to-SBLR integrated proof gate source",
+      "purpose": "Core authority and implementation-obligation inventory gate source",
       "required_tokens": [
-        "Final SBsql language expansion closure gate",
-        "SBSQL_TO_SBLR_PROOF_MATRIX.csv"
+        "Validate the current Core SBsql/SBLR authority and obligation closure",
+        "runtime behavior or final implementation acceptance"
       ],
       "source_id": "language_closure_gate"
+    },
+    {
+      "anchor_sha256": "sha256:b9e17b8288c20bc45b5758be75ee6d4c4e03cb9100f5b2f517412072d2b8ac6d",
+      "path": "../Workplans/sbsql-sblr-implementation-alignment/TRACKER.csv",
+      "purpose": "authoritative open full-corpus and owner-acceptance phase state",
+      "required_tokens": [
+        "IA-14,Run full corpus live E2E fault recovery and cross-area regression",
+        "IA-15,Owner acceptance and archive"
+      ],
+      "source_id": "alignment_tracker"
+    },
+    {
+      "anchor_sha256": "sha256:f00b488f19a9087fdc13a6736df359ba41196661156ff383797dce55ea4b6986",
+      "path": "../Workplans/sbsql-sblr-implementation-alignment/VALIDATION_REPORT.md",
+      "purpose": "explicit nonfinal implementation-alignment acceptance state",
+      "required_tokens": [
+        "Status: in progress",
+        "not final workplan acceptance"
+      ],
+      "source_id": "alignment_validation_report"
     },
     {
       "anchor_sha256": "sha256:ce2be5a5362c8bc85b4b5f3e2747bdd3cc46c0dc817ea39fed67c4ed12214a99",
@@ -2409,5 +2554,6 @@
       ],
       "source_id": "generator_source"
     }
-  ]
+  ],
+  "workplan_status": "in_progress"
 }

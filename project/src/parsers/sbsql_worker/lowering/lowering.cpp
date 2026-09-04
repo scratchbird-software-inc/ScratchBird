@@ -774,6 +774,7 @@ struct DmlRouteInfo {
   bool read{false};
   bool upsert_surface{false};
   bool import_planning{false};
+  bool bulk_import_stream{false};
   bool copy_options_present{false};
   bool copy_header_option{false};
   bool requires_target_uuid{false};
@@ -4135,15 +4136,15 @@ std::string UdrOpcodeForOperation(std::string_view operation_id) {
 }
 
 std::string EventOpcodeForOperation(std::string_view operation_id) {
-  if (operation_id == "event.channel.create") return "SBLR_EVENT_CHANNEL_CREATE";
-  if (operation_id == "event.channel.alter") return "SBLR_EVENT_CHANNEL_ALTER";
-  if (operation_id == "event.channel.drop") return "SBLR_EVENT_CHANNEL_DROP";
-  if (operation_id == "event.channel.listen") return "SBLR_EVENT_CHANNEL_LISTEN";
-  if (operation_id == "event.channel.unlisten") return "SBLR_EVENT_CHANNEL_UNLISTEN";
-  if (operation_id == "event.channel.notify") return "SBLR_EVENT_CHANNEL_NOTIFY";
-  if (operation_id == "event.subscription.list") return "SBLR_EVENT_SUBSCRIPTION_LIST";
-  if (operation_id == "event.delivery.poll") return "SBLR_EVENT_DELIVERY_POLL";
-  if (operation_id == "event.delivery.ack") return "SBLR_EVENT_DELIVERY_ACK";
+  if (operation_id == "engine.op.event_channel_create") return "SBLR_EVENT_CHANNEL_CREATE";
+  if (operation_id == "engine.op.event_channel_alter") return "SBLR_EVENT_CHANNEL_ALTER";
+  if (operation_id == "engine.op.event_channel_drop") return "SBLR_EVENT_CHANNEL_DROP";
+  if (operation_id == "engine.op.event_channel_listen") return "SBLR_EVENT_CHANNEL_LISTEN";
+  if (operation_id == "engine.op.event_channel_unlisten") return "SBLR_EVENT_CHANNEL_UNLISTEN";
+  if (operation_id == "engine.op.event_channel_notify") return "SBLR_EVENT_CHANNEL_NOTIFY";
+  if (operation_id == "engine.op.event_subscription_list") return "SBLR_EVENT_SUBSCRIPTION_LIST";
+  if (operation_id == "engine.op.event_delivery_poll") return "SBLR_EVENT_DELIVERY_POLL";
+  if (operation_id == "engine.op.event_delivery_ack") return "SBLR_EVENT_DELIVERY_ACK";
   return {};
 }
 
@@ -4230,11 +4231,11 @@ bool IsSupportedUdrPackageOperation(std::string_view operation_id) {
 }
 
 bool IsSupportedEventNotificationOperation(std::string_view operation_id) {
-  return operation_id == "event.channel.create" ||
-         operation_id == "event.channel.listen" ||
-         operation_id == "event.channel.unlisten" ||
-         operation_id == "event.channel.notify" ||
-         operation_id == "event.subscription.list";
+  return operation_id == "engine.op.event_channel_create" ||
+         operation_id == "engine.op.event_channel_listen" ||
+         operation_id == "engine.op.event_channel_unlisten" ||
+         operation_id == "engine.op.event_channel_notify" ||
+         operation_id == "engine.op.event_subscription_list";
 }
 
 bool IsSupportedObservabilityInspectOperation(std::string_view operation_id) {
@@ -4387,6 +4388,9 @@ std::string DmlOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "dml.delete_rows") return "SBLR_DML_DELETE_ROWS";
   if (operation_id == "dml.merge_rows") return "SBLR_DML_MERGE_ROWS";
   if (operation_id == "dml.plan_import_rows") return "SBLR_DML_PLAN_IMPORT_ROWS";
+  if (operation_id == "engine.op.bulk_import_stream") {
+    return "SBLR_BULK_IMPORT_STREAM";
+  }
   return {};
 }
 
@@ -4396,7 +4400,8 @@ bool IsDmlRowOperation(std::string_view operation_id) {
          operation_id == "dml.update_rows" ||
          operation_id == "dml.delete_rows" ||
          operation_id == "dml.merge_rows" ||
-         operation_id == "dml.plan_import_rows";
+         operation_id == "dml.plan_import_rows" ||
+         operation_id == "engine.op.bulk_import_stream";
 }
 
 bool IsTransactionControlOperation(std::string_view operation_id) {
@@ -10567,14 +10572,13 @@ DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
     AnalyzeInsertValues(cst, &info);
   } else if (first == "COPY") {
     info.active = true;
-    info.import_planning = true;
-    info.operation_id = "dml.plan_import_rows";
+    info.bulk_import_stream = true;
+    info.operation_id = "engine.op.bulk_import_stream";
+    info.opcode = "SBLR_BULK_IMPORT_STREAM";
     info.surface_variant = "copy_import_export";
     info.requires_target_uuid = true;
-    info.import_source_kind = "native_sbsql_import";
-    info.import_format_family = ContainsWord(words, "JSONL") ? "jsonl" : "csv";
-    info.copy_header_option = ContainsWord(words, "HEADER");
-    info.copy_options_present = info.copy_header_option;
+    info.import_source_kind = "sbwp_copy_data";
+    info.import_format_family = "csv";
   } else if (first == "LOAD" && words.size() >= 2 && words[1] == "DATA") {
     info.active = true;
     info.import_planning = true;
@@ -13276,7 +13280,11 @@ bool BuildBinaryOperatorProjectionItem(std::string_view surface_lookup_name,
   std::vector<ScalarProjectionItem> arguments;
   arguments.push_back(std::move(left));
   arguments.push_back(std::move(right));
-  return BuildOperatorProjectionItem(descriptor, std::move(arguments), item);
+  if (!BuildOperatorProjectionItem(descriptor, std::move(arguments), item)) {
+    return false;
+  }
+  AppendIfMissing(&item->expression_surface_ids, "SBSQL-129417E283C2");
+  return true;
 }
 
 bool BuildMultiplicativeProjectionItem(ScalarProjectionItem left,
@@ -13313,6 +13321,13 @@ bool BuildArithmeticProjectionItem(std::string_view surface_lookup_name,
   arguments.push_back(std::move(left));
   arguments.push_back(std::move(right));
   if (!BuildOperatorProjectionItem(descriptor, std::move(arguments), item)) return false;
+  if (surface_lookup_name == "sb.operator.multiply" ||
+      surface_lookup_name == "sb.operator.divide") {
+    AppendIfMissing(&item->expression_surface_ids, "SBSQL-129417E283C2");
+  } else if (surface_lookup_name == "sb.operator.add" ||
+             surface_lookup_name == "sb.operator.subtract") {
+    AppendIfMissing(&item->expression_surface_ids, "SBSQL-B1DCA7AA5204");
+  }
   return true;
 }
 
@@ -13512,6 +13527,8 @@ bool BuildInProjectionItem(ScalarProjectionItem value,
   item->engine_entrypoint = "special_in";
   item->type_name = "boolean";
   item->is_null = false;
+  item->arguments.clear();
+  item->arguments.reserve(list_values.size() + 1);
   item->arguments.push_back(std::move(value));
   for (auto& list_value : list_values) item->arguments.push_back(std::move(list_value));
   item->expression_surface_ids = {
@@ -21432,11 +21449,11 @@ bool ConsumeSimpleCreateExecutableObjectKind(const CstDocument& cst,
     std::string_view row_surface_id;
   };
   static constexpr CreateKind kCreateKinds[] = {
-      {"FUNCTION", "function", "ddl.create_function", "SBLR_DDL_CREATE_FUNCTION",
+      {"FUNCTION", "function", "engine.op.ddl_create_function", "SBLR_DDL_CREATE_FUNCTION",
        "sys.catalog.function", "SBSQL-4A5F97F6CC4E"},
-      {"PROCEDURE", "procedure", "ddl.create_procedure", "SBLR_DDL_CREATE_PROCEDURE",
+      {"PROCEDURE", "procedure", "engine.op.ddl_create_procedure", "SBLR_DDL_CREATE_PROCEDURE",
        "sys.catalog.procedure", "SBSQL-13F5A8364A50"},
-      {"TRIGGER", "trigger", "ddl.create_trigger", "SBLR_DDL_CREATE_TRIGGER",
+      {"TRIGGER", "trigger", "engine.op.ddl_create_trigger", "SBLR_DDL_CREATE_TRIGGER",
        "sys.catalog.trigger", "SBSQL-5127560F8031"},
   };
   for (const auto& kind : kCreateKinds) {
@@ -21533,7 +21550,7 @@ EventNotificationRouteInfo AnalyzeEventNotificationRoute(
     info.mutation = true;
     info.requires_channel_uuid = false;
     info.name_text_user_payload = true;
-    info.operation_id = "event.channel.create";
+    info.operation_id = "engine.op.event_channel_create";
     info.surface_variant = "create_event_channel";
     info.row_surface_ids = {
         "SBSQL-7693C369D578", "SBSQL-E52360D3932B", "SBSQL-8AD3BDAA2DEF"};
@@ -21558,7 +21575,8 @@ EventNotificationRouteInfo AnalyzeEventNotificationRoute(
     const auto words = MeaningfulUpperTokens(cst);
     const bool listen = !words.empty() && words.front() == "LISTEN";
     info.active = true;
-    info.operation_id = listen ? "event.channel.listen" : "event.channel.unlisten";
+    info.operation_id = listen ? "engine.op.event_channel_listen"
+                               : "engine.op.event_channel_unlisten";
     info.surface_variant = listen ? "listen_event_channel" : "unlisten_event_channel";
     info.row_surface_ids = {"SBSQL-34936281765E", "SBSQL-8AD3BDAA2DEF"};
     (void)ConsumeOptionalEventChannelWords(cst, &index);
@@ -21579,7 +21597,7 @@ EventNotificationRouteInfo AnalyzeEventNotificationRoute(
     info.active = true;
     info.mutation = true;
     info.payload_text_user_payload = true;
-    info.operation_id = "event.channel.notify";
+    info.operation_id = "engine.op.event_channel_notify";
     info.surface_variant = "notify_event_channel";
     info.row_surface_ids = {"SBSQL-34936281765E", "SBSQL-8AD3BDAA2DEF"};
     (void)ConsumeOptionalEventChannelWords(cst, &index);
@@ -21601,7 +21619,7 @@ EventNotificationRouteInfo AnalyzeEventNotificationRoute(
     info.active = true;
     info.mutation = true;
     info.payload_text_user_payload = true;
-    info.operation_id = "event.channel.notify";
+    info.operation_id = "engine.op.event_channel_notify";
     info.surface_variant = "post_event";
     info.row_surface_ids = {"SBSQL-33A1149AB350", "SBSQL-8AD3BDAA2DEF"};
     (void)ConsumeOptionalEventChannelWords(cst, &index);
@@ -21623,7 +21641,8 @@ EventNotificationRouteInfo AnalyzeEventNotificationRoute(
     const auto words = MeaningfulUpperTokens(cst);
     const bool subscribe = !words.empty() && words.front() == "SUBSCRIBE";
     info.active = true;
-    info.operation_id = subscribe ? "event.channel.listen" : "event.channel.unlisten";
+    info.operation_id = subscribe ? "engine.op.event_channel_listen"
+                                  : "engine.op.event_channel_unlisten";
     info.surface_variant = subscribe ? "subscribe_event_channel" : "unsubscribe_event_channel";
     info.row_surface_ids = {
         "SBSQL-832A8A3D2913", "SBSQL-9F45E03EC6AF", "SBSQL-8AD3BDAA2DEF"};
@@ -21648,7 +21667,7 @@ EventNotificationRouteInfo AnalyzeEventNotificationRoute(
     }
     info.active = true;
     info.requires_channel_uuid = false;
-    info.operation_id = "event.subscription.list";
+    info.operation_id = "engine.op.event_subscription_list";
     info.surface_variant = "show_event_subscriptions";
     info.row_surface_ids = {"SBSQL-832A8A3D2913", "SBSQL-9F45E03EC6AF"};
     if (!OnlyStatementTerminatorRemains(cst, index)) {
@@ -22241,6 +22260,39 @@ std::string RenderSimpleCreateTableExpressionToken(const Token& token) {
   return token.text;
 }
 
+bool AtSimpleCreateTableColumnConstraintIntroducer(const CstDocument& cst,
+                                                   std::size_t index) {
+  std::string first;
+  std::string second;
+  for (; index < cst.tokens.size(); ++index) {
+    const auto& token = cst.tokens[index];
+    if (token.kind == TokenKind::kEnd ||
+        token.kind == TokenKind::kStatementTerminator) {
+      break;
+    }
+    if (IsTriviaToken(token)) continue;
+    if (token.quoted ||
+        (token.kind != TokenKind::kIdentifier &&
+         token.kind != TokenKind::kKeyword &&
+         token.kind != TokenKind::kNullLiteral &&
+         token.kind != TokenKind::kDefaultLiteral)) {
+      break;
+    }
+    if (first.empty()) {
+      first = ToUpperAscii(token.text);
+    } else {
+      second = ToUpperAscii(token.text);
+      break;
+    }
+  }
+  if (first == "NOT") return second == "NULL";
+  if (first == "PRIMARY") return second == "KEY";
+  return first == "NULL" || first == "UNIQUE" ||
+         first == "REFERENCES" || first == "CHECK" ||
+         first == "CONSTRAINT" || first == "GENERATED" ||
+         first == "COLLATE" || first == "DEFAULT";
+}
+
 bool ConsumeSimpleCreateTableDefaultExpression(const CstDocument& cst,
                                                std::size_t* index,
                                                std::string* expression) {
@@ -22265,6 +22317,10 @@ bool ConsumeSimpleCreateTableDefaultExpression(const CstDocument& cst,
     const auto& token = cst.tokens[cursor];
     if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) return false;
     if (depth == 0 && (token.text == "," || token.text == ")")) break;
+    if (depth == 0 && !rendered.empty() &&
+        AtSimpleCreateTableColumnConstraintIntroducer(cst, cursor)) {
+      break;
+    }
     if (IsTriviaToken(token)) {
       ++cursor;
       continue;
@@ -24785,8 +24841,9 @@ AlterTableColumnDdlInfo AnalyzeAlterTableColumnDdl(
   } else if (action_word == "RENAME") {
     ++index;
     if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "COLUMN") {
-      info.invalid_reason = "alter_table_rename_column_keyword_required";
-      return info;
+      // Table/object rename belongs to AnalyzeAlterRenameDdl.  This analyzer
+      // owns only the explicit RENAME COLUMN form.
+      return AlterTableColumnDdlInfo{};
     }
     ++index;
     if (index >= tokens.size() || !IsIdentifierLikeToken(*tokens[index])) {
@@ -27082,12 +27139,11 @@ ConstraintDdlInfo AnalyzeConstraintDdl(
     const std::vector<std::string>& resolved_object_uuids) {
   ConstraintDdlInfo info;
   const auto words = MeaningfulUpperTokens(cst);
-  if (words.empty()) return info;
-  const bool catalog_statement = words.front() == "CREATE" || words.front() == "ALTER" || words.front() == "DROP";
-  if (!catalog_statement) return info;
-  if (words.front() == "CREATE" && ContainsWord(words, "TABLE")) return info;
-  if (words.front() == "ALTER" && ContainsAdjacent(words, "ALTER", "COLUMN")) return info;
-  if (words.front() == "ALTER" && ContainsAdjacent(words, "SET", "DEFAULT") &&
+  if (words.size() < 2 || words[0] != "ALTER" || words[1] != "TABLE") {
+    return info;
+  }
+  if (ContainsAdjacent(words, "ALTER", "COLUMN")) return info;
+  if (ContainsAdjacent(words, "SET", "DEFAULT") &&
       !ContainsWord(words, "CONSTRAINT")) {
     return info;
   }
@@ -27183,19 +27239,7 @@ ConstraintDdlInfo AnalyzeConstraintDdl(
     AddConstraintSurface(&info.constraint_surface_ids, "SBSQL-A57CFDE0BBA9");
   }
 
-  if (!info.active) {
-    info.active = true;
-    if (words.front() == "CREATE") {
-      info.operation_id = "ddl.constraint.create";
-      info.catalog_action = "create_or_alter_constraint_descriptor";
-    } else if (words.front() == "ALTER") {
-      info.operation_id = "ddl.constraint.alter";
-      info.catalog_action = "create_or_alter_constraint_descriptor";
-    } else {
-      info.operation_id = "ddl.constraint.drop";
-      info.catalog_action = "drop_constraint_descriptor";
-    }
-  }
+  if (!info.active) return info;
   if (ContainsWord(words, "DEFERRABLE") || ContainsAdjacent(words, "INITIALLY", "DEFERRED")) {
     info.enforcement_timing = "transaction_end";
   }
@@ -28316,11 +28360,11 @@ void PopulateEventNotificationAuthority(SblrEnvelope* envelope,
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.opcode;
   envelope->engine_api_operation_id = info.operation_id;
-  if (info.operation_id == "event.channel.create") {
+  if (info.operation_id == "engine.op.event_channel_create") {
     envelope->operation_family = "sblr.catalog.mutation.v3";
     envelope->sblr_operation_key = "sblr.catalog.mutation.v3";
     envelope->resource_contract_key = "resource.contract.metadata_mutation";
-  } else if (info.operation_id == "event.subscription.list") {
+  } else if (info.operation_id == "engine.op.event_subscription_list") {
     envelope->operation_family = "sblr.event.subscription.v3";
     envelope->sblr_operation_key = "sblr.event.subscription.v3";
     envelope->resource_contract_key = "resource.contract.control";
@@ -28333,7 +28377,7 @@ void PopulateEventNotificationAuthority(SblrEnvelope* envelope,
     envelope->resource_contract_key = "resource.contract.control";
   }
   envelope->result_shape_key =
-      info.operation_id == "event.subscription.list" ? "result.shape.management_report"
+      info.operation_id == "engine.op.event_subscription_list" ? "result.shape.management_report"
                                                      : "result.shape.command_status";
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
@@ -28352,21 +28396,21 @@ void PopulateEventNotificationAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->descriptor_refs, "sys.event.channel");
   AppendIfMissing(&envelope->descriptor_refs, "sys.event.notification_log");
-  if (info.operation_id == "event.channel.listen" ||
-      info.operation_id == "event.channel.unlisten" ||
-      info.operation_id == "event.subscription.list") {
+  if (info.operation_id == "engine.op.event_channel_listen" ||
+      info.operation_id == "engine.op.event_channel_unlisten" ||
+      info.operation_id == "engine.op.event_subscription_list") {
     AppendIfMissing(&envelope->descriptor_refs, "sys.event.subscription");
   }
-  if (info.operation_id == "event.channel.notify") {
+  if (info.operation_id == "engine.op.event_channel_notify") {
     AppendIfMissing(&envelope->descriptor_refs, "sys.event.publication");
   }
   AppendIfMissing(&envelope->policy_refs, "event_notification_authorization_policy");
-  if (info.operation_id == "event.channel.create") {
+  if (info.operation_id == "engine.op.event_channel_create") {
     AppendIfMissing(&envelope->required_rights, "right.event_create");
-  } else if (info.operation_id == "event.channel.listen" ||
-             info.operation_id == "event.channel.unlisten") {
+  } else if (info.operation_id == "engine.op.event_channel_listen" ||
+             info.operation_id == "engine.op.event_channel_unlisten") {
     AppendIfMissing(&envelope->required_rights, "right.event_subscribe");
-  } else if (info.operation_id == "event.channel.notify") {
+  } else if (info.operation_id == "engine.op.event_channel_notify") {
     AppendIfMissing(&envelope->required_rights, "right.event_publish");
   } else {
     AppendIfMissing(&envelope->required_rights, "right.event_delivery_read");
@@ -28491,11 +28535,19 @@ void PopulateDmlRouteAuthority(SblrEnvelope* envelope, const DmlRouteInfo& info)
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.import_planning_api_required");
   }
+  if (info.bulk_import_stream) {
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.engine.bulk_import_stream_api_required");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.engine.bulk_import_stream_descriptor_required");
+  }
   AppendIfMissing(&envelope->required_authority_steps,
                   info.read ? "authority.engine.mga_snapshot_visibility_required"
                             : (info.import_planning
                                    ? "authority.engine.mga_import_planning_required"
-                                   : "authority.engine.mga_row_mutation_required"));
+                                   : (info.bulk_import_stream
+                                          ? "authority.engine.mga_bulk_import_publication_required"
+                                          : "authority.engine.mga_row_mutation_required")));
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
@@ -28512,7 +28564,9 @@ void PopulateDmlRouteAuthority(SblrEnvelope* envelope, const DmlRouteInfo& info)
   AppendIfMissing(&envelope->policy_refs, info.read ? "row_visibility_policy"
                                                     : (info.import_planning
                                                            ? "import_planning_policy"
-                                                           : "row_mutation_policy"));
+                                                           : (info.bulk_import_stream
+                                                                  ? "bulk_import_stream_policy"
+                                                                  : "row_mutation_policy")));
   if (info.has_on_conflict) {
     AppendIfMissing(&envelope->policy_refs, "row_conflict_policy");
   }
@@ -30981,7 +31035,11 @@ void AppendEngineApiCommandJson(std::ostream& out,
 
 void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
   if (!info.active || !info.valid) return;
-  out << "\"dml_envelope_kind\":\"" << (info.read ? "row_query" : "row_mutation") << "\","
+  out << "\"dml_envelope_kind\":\""
+      << (info.read ? "row_query"
+                    : (info.bulk_import_stream ? "bulk_import_stream"
+                                               : "row_mutation"))
+      << "\","
       << "\"dml_operation_id\":\"" << EscapeJson(info.operation_id) << "\","
       << "\"dml_surface_variant\":\"" << EscapeJson(info.surface_variant) << "\","
       << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\",";
@@ -31031,7 +31089,9 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
       << "\"mga_access_model\":\"" << (info.read ? "snapshot_visibility"
                                                  : (info.import_planning
                                                         ? "import_plan_no_row_write"
-                                                        : "row_version_mutation")) << "\","
+                                                        : (info.bulk_import_stream
+                                                               ? "bulk_import_durable_publication"
+                                                               : "row_version_mutation"))) << "\","
       << "\"engine_dml_api_required\":true,"
       << "\"import_execution_deferred\":" << (info.import_planning ? "true" : "false") << ',';
   if (!info.read && !info.import_planning) {
@@ -31226,6 +31286,13 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
         << "\"source_handle_included\":false,"
         << "\"parser_decodes_bytes\":false,"
         << "\"row_persistence_claimed\":false,";
+  }
+  if (info.bulk_import_stream) {
+    out << "\"source_kind\":\"sbwp_copy_data\","
+        << "\"format_family\":\"csv\","
+        << "\"stream_payload_deferred_to_copy_data\":true,"
+        << "\"descriptor_source\":\"engine_issued_bulk_import_stream_descriptor\","
+        << "\"result_publication_after_durable_import\":true,";
   }
   out
       << "\"parser_authorizes\":false,"
@@ -31856,12 +31923,12 @@ void AppendEventNotificationJson(std::ostream& out,
     out << "\"payload\":\"" << EscapeJson(info.payload) << "\","
         << "\"payload_descriptor_uuid\":\"event_payload_descriptor:text.v1\",";
   }
-  if (info.operation_id == "event.channel.listen" ||
-      info.operation_id == "event.channel.unlisten") {
+  if (info.operation_id == "engine.op.event_channel_listen" ||
+      info.operation_id == "engine.op.event_channel_unlisten") {
     out << "\"delivery_profile\":\"" << EscapeJson(info.delivery_profile) << "\",";
   }
   out << "\"event_channel_create_mutation\":"
-      << (info.operation_id == "event.channel.create" ? "true" : "false") << ','
+      << (info.operation_id == "engine.op.event_channel_create" ? "true" : "false") << ','
       << "\"event_notification_mutation\":" << (info.mutation ? "true" : "false") << ','
       << "\"event_store_touched\":true,"
       << "\"source_relation_required\":false,"
@@ -33159,7 +33226,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   envelope.engine_api_operation_id = envelope.operation_id;
   envelope.engine_api_function = "DispatchTypedPlanOperation";
   envelope.result_shape_key = "query_execute_result";
-  envelope.diagnostic_shape_key = "engine.diagnostic.v1";
+  envelope.diagnostic_shape_key = "diagnostic_vector";
   envelope.resource_contract_key = "resource.contract.query_read";
   envelope.trace_key = bound.trace_key;
   envelope.source_artifact_policy = "absent";
@@ -39402,8 +39469,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_relation->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeySumInt128;
       if (grouped_sum_int128) {
-        constexpr std::string_view kBigintDescriptorUuid =
-            "019d0000-0000-7000-8000-00000000d711";
         constexpr std::string_view kBigintTypeUuid =
             "019d0000-0000-7000-8000-00000000d712";
         constexpr std::string_view kInt128DescriptorUuid =
@@ -39434,14 +39499,16 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             grouped_value_descriptor.datatype_registry_generation ==
                 aggregate_descriptor.datatype_registry_generation;
         if (width != 2 ||
-            grouped_key_descriptor.descriptor_uuid != kBigintDescriptorUuid ||
+            !IsCanonicalBoundSourceUuid(
+                grouped_key_descriptor.descriptor_uuid) ||
             grouped_key_descriptor.descriptor_generation != 1 ||
             grouped_key_descriptor.type_uuid != kBigintTypeUuid ||
             grouped_key_descriptor.type_generation != 1 ||
             grouped_key_descriptor.codec_id != "datatype.int64.le.v1" ||
             grouped_key_descriptor.codec_version != 1 ||
             grouped_key_descriptor.codec_generation != 1 ||
-            grouped_value_descriptor.descriptor_uuid != kBigintDescriptorUuid ||
+            !IsCanonicalBoundSourceUuid(
+                grouped_value_descriptor.descriptor_uuid) ||
             grouped_value_descriptor.descriptor_generation != 1 ||
             grouped_value_descriptor.type_uuid != kBigintTypeUuid ||
             grouped_value_descriptor.type_generation != 1 ||
@@ -41264,6 +41331,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       (normalize_peer_ranking_semantic || normalize_ntile_semantic ||
        normalize_value_semantic ||
        window_relation->semantic_variant_id == "window.row-number.v1");
+  const bool normalize_row_number_semantic =
+      window_relation != nullptr &&
+      window_relation->semantic_variant_id == "window.row-number.v1";
   const auto* normalized_aggregate_invocation =
       normalize_aggregate_window_semantic &&
               native.window_invocations.size() == 1
@@ -41344,13 +41414,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.relations.size() == 2 &&
       native.window_definitions.size() == 1 &&
       native.window_invocations.size() == 1 &&
-      !native.window_definitions.front().canonical_name_key.has_value() &&
+      (!native.window_definitions.front().canonical_name_key.has_value() ||
+       normalize_row_number_semantic) &&
       !native.window_definitions.front().inherited_window_id.has_value() &&
       native.window_definitions.front().partition_expression_ids.empty() &&
       native.window_definitions.front().ordering_terms.size() == 1 &&
-      !native.window_definitions.front().frame_unit.has_value() &&
-      !native.window_definitions.front().frame_start.has_value() &&
-      !native.window_definitions.front().frame_end.has_value() &&
+      ((!native.window_definitions.front().frame_unit.has_value() &&
+        !native.window_definitions.front().frame_start.has_value() &&
+        !native.window_definitions.front().frame_end.has_value()) ||
+       normalize_row_number_semantic) &&
       native.window_definitions.front().exclusion ==
           NativeWindowFrameExclusion::kNoOthers &&
       native.window_invocations.front().function_abi_version == 1 &&
@@ -41768,7 +41840,20 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(grouping_set.relation_id) + "|" +
              JoinCanonicalHandleList(grouping_set.expression_ids)});
   }
-  for (const auto& definition : native.window_definitions) {
+  for (const auto& source_definition : native.window_definitions) {
+    auto definition = source_definition;
+    if (normalize_catalog_ranking && normalize_row_number_semantic) {
+      // A named window has already been resolved by the authenticated binder,
+      // and ROW_NUMBER is independent of the frame.  Erase those
+      // presentation-only/semantically inert fields from the executable DAG
+      // so every equivalent spelling shares the exact normalized
+      // Scan->Sort->Window->Project profile.
+      definition.canonical_name_key.reset();
+      definition.frame_unit.reset();
+      definition.frame_start.reset();
+      definition.frame_end.reset();
+      definition.exclusion = NativeWindowFrameExclusion::kNoOthers;
+    }
     std::string encoded_ordering_terms;
     for (std::size_t ordinal = 0; ordinal < definition.ordering_terms.size();
          ++ordinal) {
@@ -42332,7 +42417,109 @@ CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(
       definitions, referenced_names, maximum_definition_count);
 }
 
+CentralImportCommandRoute AnalyzeCentralImportCommandRoute(
+    const CstDocument& cst) {
+  if (cst.messages.has_errors()) return {};
+  const auto words = MeaningfulUpperTokens(cst);
+  if (words.empty()) return {};
+  const auto refuse = [](const std::string_view surface_id,
+                         const std::string_view canonical_name) {
+    return CentralImportCommandRoute{
+        CentralImportCommandDisposition::kExactRefusal,
+        surface_id,
+        canonical_name,
+        "SBSQL.IMPL.NOT_AVAILABLE"};
+  };
+  if (words.size() >= 2 && words[0] == "GPU" && words[1] == "WORKLOAD") {
+    return refuse("SBSQL-7254347122CB", "gpu_workload_action");
+  }
+  if (words.size() >= 2 && words[0] == "CYPHER" && words[1] == "LOAD") {
+    return refuse("SBSQL-B7DCE9CB07B6", "cypher_load_csv");
+  }
+  if ((words.size() >= 2 && words[0] == "LOAD" &&
+       (words[1] == "DATA" || words[1] == "CSV" || words[1] == "XML")) ||
+      (words.size() >= 2 && words[0] == "BULK" && words[1] == "IMPORT") ||
+      (words.size() >= 2 && words[0] == "INGEST" &&
+       (words[1] == "LINE_PROTOCOL" || words[1] == "LINE"))) {
+    return refuse("SBSQL-DB993AE8EDBB", "load_data_clause");
+  }
+  if (words[0] != "COPY") return {};
+
+  const auto direction = std::find_if(
+      words.begin() + 1, words.end(),
+      [](const std::string& word) { return word == "FROM" || word == "TO"; });
+  if (direction == words.end() || std::next(direction) == words.end()) {
+    return {};
+  }
+  const auto endpoint = std::next(direction);
+  if (*direction == "TO" || *endpoint == "STDOUT") {
+    return refuse("SBSQL-BDC2B64DA2A9", "copy_endpoint");
+  }
+  if (*endpoint == "STREAM" || *endpoint == "LOCATION" ||
+      *endpoint != "STDIN") {
+    return refuse("SBSQL-D19FE1151601", "copy_source");
+  }
+  const auto explicit_format = std::find_if(
+      std::next(endpoint), words.end(), [](const std::string& word) {
+        return word == "CSV" || word == "JSONL" || word == "BINARY" ||
+               word == "FORMAT";
+      });
+  if (explicit_format != words.end()) {
+    return refuse("SBSQL-2DDA6BFD9B65", "copy_format");
+  }
+  if (std::find(std::next(endpoint), words.end(), "WITH") != words.end()) {
+    return refuse("SBSQL-4369855D2FC4", "copy_options");
+  }
+  return {CentralImportCommandDisposition::kBulkImportStream,
+          "SBSQL-465931ED7427",
+          "copy_import_export",
+          {}};
+}
+
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session) {
+  const auto central_import_route = AnalyzeCentralImportCommandRoute(cst);
+  if (central_import_route.disposition ==
+      CentralImportCommandDisposition::kExactRefusal) {
+    SblrEnvelope refusal;
+    refusal.operation_family = "sblr.dml.operation.v3";
+    refusal.statement_hash = bound.statement_hash;
+    refusal.surface_key = std::string(central_import_route.canonical_name);
+    refusal.command_family = "dml";
+    refusal.operation_id = "engine.op.diagnostic_refusal";
+    refusal.sblr_operation_key = "sblr.dml.operation.v3";
+    refusal.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    refusal.engine_api_operation_id = "not_admitted";
+    refusal.result_shape_key = "diagnostic_vector.v1";
+    refusal.diagnostic_shape_key = "diagnostic_vector.v1";
+    refusal.resource_contract_key = "sbsql.command.no_execution.v1";
+    refusal.trace_key = "trace.sbsql.central_import_exact_refusal";
+    refusal.catalog_epoch = bound.catalog_epoch != 0 ? bound.catalog_epoch
+                                                     : session.catalog_epoch;
+    refusal.security_policy_epoch =
+        bound.security_policy_epoch != 0 ? bound.security_policy_epoch
+                                         : session.security_policy_epoch;
+    refusal.descriptor_epoch = bound.descriptor_epoch != 0
+                                   ? bound.descriptor_epoch
+                                   : session.descriptor_epoch;
+    refusal.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.exact_emulated_diagnostic = true;
+    refusal.messages = bound.messages;
+    if (!refusal.messages.has_errors()) {
+      refusal.messages.diagnostics.push_back(MakeDiagnostic(
+          std::string(central_import_route.diagnostic_id), "ERROR",
+          "The recognized SBsql import surface is not admitted for execution.",
+          "sbp_sbsql.lowering",
+          {{"surface_id", std::string(central_import_route.surface_id)},
+           {"canonical_name",
+            std::string(central_import_route.canonical_name)}}));
+    }
+    return refusal;
+  }
   if (bound.native_relational_recognized || bound.native_relational.bound ||
       bound.registry_family == "sbsql.query.values.v3") {
     return LowerBoundNativeRelationalToCanonicalSblr(bound, session);
@@ -42363,6 +42550,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   }
 
   const auto simple_create_schema = AnalyzeSimpleCreateSchema(cst);
+  const auto cast_value = AnalyzeCastValueRoute(cst);
   const auto simple_create_table = AnalyzeSimpleCreateTable(cst);
   const auto simple_create_sequence = AnalyzeSimpleCreateSequence(cst);
   const auto simple_create_view = AnalyzeSimpleCreateView(cst);
@@ -42514,6 +42702,478 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   envelope.required_rights = bound.required_rights;
   envelope.required_authority_steps = bound.required_authority_steps;
   envelope.messages = bound.messages;
+  const auto refuse_missing_engine_bound_parent =
+      [&](std::string_view operation_family,
+          std::string_view command_family,
+          std::string_view trace_key,
+          std::string_view canonical_parent_operation_id,
+          std::string_view canonical_parent_sblr_opcode,
+          const std::vector<std::string>& recognized_surface_ids,
+          std::string_view message) -> SblrEnvelope {
+    SblrEnvelope refusal = envelope;
+    refusal.operation_family = std::string(operation_family);
+    refusal.sblr_operation_key = std::string(operation_family);
+    refusal.command_family = std::string(command_family);
+    refusal.operation_id = "engine.op.diagnostic_refusal";
+    refusal.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    refusal.engine_api_operation_id = "not_admitted";
+    refusal.result_shape_key = "diagnostic_vector.v1";
+    refusal.diagnostic_shape_key = "diagnostic_vector.v1";
+    refusal.resource_contract_key = "sbsql.command.no_execution.v1";
+    refusal.trace_key = std::string(trace_key);
+    refusal.resolved_object_uuids.clear();
+    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.policy_refs.clear();
+    refusal.required_rights.clear();
+    refusal.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    refusal.operands.clear();
+    refusal.exact_emulated_diagnostic = true;
+    refusal.real_file_effects = false;
+    refusal.parser_executes_sql = false;
+    refusal.payload.clear();
+    if (!refusal.messages.has_errors()) {
+      refusal.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.IMPL.NOT_AVAILABLE", "ERROR", std::string(message),
+          "sbp_sbsql.lowering",
+          {{"canonical_parent_operation_id",
+            std::string(canonical_parent_operation_id)},
+           {"canonical_parent_sblr_opcode",
+            std::string(canonical_parent_sblr_opcode)},
+           {"recognized_surface_ids",
+            JoinCommaSeparated(recognized_surface_ids)},
+           {"executable_sblr_emitted", "false"}}));
+    }
+    return refusal;
+  };
+  if (transaction_lock_route.active && transaction_lock_route.valid) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.transaction.control.v3", bound.command_family,
+        "trace.sbsql.transaction_lock_exact_refusal", "not_admitted",
+        "SBLR_DIAGNOSTIC_REFUSAL", transaction_lock_route.row_surface_ids,
+        "The recognized transaction lock statement is not admitted for "
+        "execution; transaction lock policy remains engine-owned and no "
+        "legacy SBLR_TXN_LOCK or SBLR_TXN_UNLOCK carrier may substitute for "
+        "an allocated Core descriptor route.");
+  }
+  if (exact_command_route.active && exact_command_route.valid &&
+      exact_command_route.spec != nullptr &&
+      (exact_command_route.spec->operation_id ==
+           "op.native_compile.cache_invalidate" ||
+       exact_command_route.spec->operation_id == "op.gpu.cache_clear")) {
+    return refuse_missing_engine_bound_parent(
+        exact_command_route.spec->operation_family, bound.command_family,
+        "trace.sbsql.acceleration_control_exact_refusal", "not_admitted",
+        "SBLR_DIAGNOSTIC_REFUSAL",
+        {std::string(exact_command_route.spec->surface_key)},
+        "The recognized acceleration control syntax is not admitted until "
+        "an exact engine-bound control descriptor and accepted executor "
+        "evidence are available; legacy op.gpu and op.native_compile "
+        "operation aliases are not executable authority.");
+  }
+  if (catalog_descriptor_mutation.active &&
+      catalog_descriptor_mutation.valid &&
+      catalog_descriptor_mutation.operation_id ==
+          "engine.op.ddl_create_type") {
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.create_type_exact_refusal",
+        "engine.op.ddl_create_type", "SBLR_DDL_CREATE_TYPE",
+        catalog_descriptor_mutation.row_surface_ids,
+        "CREATE TYPE is not admitted until the authenticated engine binder "
+        "publishes the exact create_type_descriptor for the presented type "
+        "identity and definition with accepted executor evidence.");
+  }
+  if (simple_create_view.active && simple_create_view.valid &&
+      simple_create_view.materialized) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.create_materialized_view_exact_refusal",
+        "engine.op.ddl_create_materialized_view",
+        "SBLR_DDL_CREATE_MATERIALIZED_VIEW",
+        {"SBSQL-02482A768886", "SBSQL-D95E144EB891"},
+        "CREATE MATERIALIZED VIEW is not admitted until the authenticated "
+        "engine binder publishes the exact create_materialized_view_descriptor "
+        "for the presented identity, query, dependencies, and refresh policy "
+        "with accepted executor evidence.");
+  }
+  if (catalog_descriptor_mutation.active &&
+      catalog_descriptor_mutation.valid &&
+      (catalog_descriptor_mutation.operation_id ==
+           "catalog.mutation.create_cast" ||
+       catalog_descriptor_mutation.operation_id ==
+           "catalog.mutation.create_operation" ||
+       catalog_descriptor_mutation.operation_id ==
+           "catalog.mutation.create_operator")) {
+    const bool create_cast =
+        catalog_descriptor_mutation.operation_id ==
+        "catalog.mutation.create_cast";
+    const bool create_operator =
+        catalog_descriptor_mutation.operation_id ==
+        "catalog.mutation.create_operator";
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.catalog_descriptor_mutation_exact_refusal",
+        create_cast
+            ? "engine.op.ddl_create_cast"
+            : (create_operator ? "engine.op.ddl_create_operator"
+                               : "not_admitted"),
+        create_cast
+            ? "SBLR_DDL_CREATE_CAST"
+            : (create_operator ? "SBLR_DDL_CREATE_OPERATOR"
+                               : "SBLR_DIAGNOSTIC_REFUSAL"),
+        catalog_descriptor_mutation.row_surface_ids,
+        "The recognized catalog mutation has no admissible generic "
+        "catalog.mutation carrier; an exact authenticated engine-bound "
+        "descriptor and accepted executor evidence are required.");
+  }
+  if (simple_create_sequence.active && simple_create_sequence.valid) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.create_sequence_exact_refusal",
+        "engine.op.ddl_create_sequence", "SBLR_DDL_CREATE_SEQUENCE",
+        {"SBSQL-AF9CF8BF1987", "SBSQL-F74CA2CEFF16"},
+        "CREATE SEQUENCE is not admitted until the authenticated engine "
+        "binder publishes the exact create_sequence_descriptor for the "
+        "presented name and option set with accepted executor evidence.");
+  }
+  if (simple_create_domain.active && simple_create_domain.valid) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.create_domain_exact_refusal",
+        "engine.op.ddl_create_domain", "SBLR_DDL_CREATE_DOMAIN",
+        {"SBSQL-8E675F371A9C"},
+        "CREATE DOMAIN is not admitted until the authenticated engine "
+        "binder publishes the exact create_domain_descriptor for the "
+        "presented identity, type, constraints, defaults, and collation "
+        "with accepted executor evidence.");
+  }
+  if (index_template_ddl.active && index_template_ddl.valid) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.index_template_exact_refusal", "not_admitted",
+        "SBLR_DIAGNOSTIC_REFUSAL", {"SBSQL-07D017E18394"},
+        "INDEX TEMPLATE commands are specified but are not admitted for "
+        "execution.");
+  }
+  if (alter_rename_ddl.active && alter_rename_ddl.valid) {
+    const bool standalone_rename = alter_rename_ddl.standalone_rename;
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.alter_rename_exact_refusal",
+        standalone_rename ? "engine.op.ddl_rename_object" : "not_admitted",
+        standalone_rename ? "SBLR_DDL_RENAME_OBJECT"
+                          : "SBLR_DIAGNOSTIC_REFUSAL",
+        standalone_rename
+            ? std::vector<std::string>{"SBSQL-58224DEE5BCA",
+                                       "SBSQL-5CCF87EB0C5C",
+                                       "SBSQL-ADEF20254494"}
+            : std::vector<std::string>{"SBSQL-472ECFA63673",
+                                       "SBSQL-6824451E6988",
+                                       "SBSQL-CFDD65DE9EA6",
+                                       "SBSQL-5CCF87EB0C5C",
+                                       "SBSQL-ADEF20254494"},
+        standalone_rename
+            ? "RENAME is not admitted until the authenticated engine binder "
+              "publishes an exact rename_object_descriptor and accepted "
+              "executor evidence."
+            : "The recognized ALTER OBJECT form is specified but is not "
+              "admitted for execution.");
+  }
+  if (simple_drop_object.active && simple_drop_object.valid) {
+    std::string_view canonical_parent_operation_id = "not_admitted";
+    std::string_view canonical_parent_sblr_opcode =
+        "SBLR_DIAGNOSTIC_REFUSAL";
+    if (simple_drop_object.target_object_kind == "table") {
+      canonical_parent_operation_id = "engine.op.ddl_drop_table";
+      canonical_parent_sblr_opcode = "SBLR_DDL_DROP_TABLE";
+    } else if (simple_drop_object.target_object_kind == "filespace") {
+      canonical_parent_operation_id = "engine.op.filespace_drop";
+      canonical_parent_sblr_opcode = "SBLR_FILESPACE_DROP";
+    }
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.drop_object_exact_refusal",
+        canonical_parent_operation_id, canonical_parent_sblr_opcode,
+        {simple_drop_object.row_surface_id, "SBSQL-40CAFAB37942",
+         "SBSQL-CFFCCDEF6AC4", "SBSQL-5CCF87EB0C5C",
+         "SBSQL-ADEF20254494"},
+        "The recognized DROP object form has no admitted generic "
+        "ddl.drop_object carrier; an exact engine-bound object-specific "
+        "descriptor is required when Core defines one.");
+  }
+  if (job_route.active && job_route.valid) {
+    SblrEnvelope refusal = envelope;
+    refusal.operation_family = bound.operation_family;
+    refusal.sblr_operation_key = bound.operation_family;
+    refusal.command_family = bound.command_family;
+    refusal.operation_id = "engine.op.diagnostic_refusal";
+    refusal.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    refusal.engine_api_operation_id = "not_admitted";
+    refusal.result_shape_key = "diagnostic_vector.v1";
+    refusal.diagnostic_shape_key = "diagnostic_vector.v1";
+    refusal.resource_contract_key = "sbsql.command.no_execution.v1";
+    refusal.trace_key = "trace.sbsql.jobs_scheduler_exact_refusal";
+    refusal.resolved_object_uuids.clear();
+    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.policy_refs.clear();
+    refusal.required_rights.clear();
+    refusal.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    refusal.operands.clear();
+    refusal.exact_emulated_diagnostic = true;
+    refusal.real_file_effects = false;
+    refusal.parser_executes_sql = false;
+    refusal.payload.clear();
+    if (!refusal.messages.has_errors()) {
+      refusal.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.IMPL.NOT_AVAILABLE", "ERROR",
+          "The recognized jobs scheduler command is specified but is not "
+          "admitted for execution.",
+          "sbp_sbsql.lowering",
+          {{"recognized_surface_ids",
+            JoinCommaSeparated(job_route.row_surface_ids)},
+           {"executor_operation_id", "not_admitted"},
+           {"executable_sblr_emitted", "false"}}));
+    }
+    return refusal;
+  }
+  if (archive_route.active && archive_route.valid) {
+    const std::string_view canonical_operation_id =
+        archive_route.backup
+            ? "engine.op.backup_start"
+            : archive_route.restore
+                  ? "engine.op.restore_backup"
+                  : archive_route.archive ? "engine.op.archive_export"
+                                          : "not_admitted";
+    const std::string_view canonical_sblr_opcode =
+        archive_route.backup
+            ? "SBLR_BACKUP_START"
+            : archive_route.restore
+                  ? "SBLR_RESTORE_BACKUP"
+                  : archive_route.archive ? "SBLR_ARCHIVE_EXPORT"
+                                          : "SBLR_DIAGNOSTIC_REFUSAL";
+    SblrEnvelope refusal = envelope;
+    refusal.operation_family = "sblr.archive_replication.operation.v3";
+    refusal.sblr_operation_key = refusal.operation_family;
+    refusal.command_family = bound.command_family;
+    refusal.operation_id = "engine.op.diagnostic_refusal";
+    refusal.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    refusal.engine_api_operation_id = "not_admitted";
+    refusal.result_shape_key = "diagnostic_vector.v1";
+    refusal.diagnostic_shape_key = "diagnostic_vector.v1";
+    refusal.resource_contract_key = "sbsql.command.no_execution.v1";
+    refusal.trace_key = "trace.sbsql.archive_replication_exact_refusal";
+    refusal.resolved_object_uuids.clear();
+    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.policy_refs.clear();
+    refusal.required_rights.clear();
+    refusal.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    refusal.operands.clear();
+    refusal.exact_emulated_diagnostic = true;
+    refusal.real_file_effects = false;
+    refusal.parser_executes_sql = false;
+    refusal.payload.clear();
+    if (!refusal.messages.has_errors()) {
+      refusal.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.IMPL.NOT_AVAILABLE", "ERROR",
+          "The recognized backup, restore, archive, replication, or "
+          "changefeed command has no admitted engine-bound descriptor route.",
+          "sbp_sbsql.lowering",
+          {{"canonical_operation_id", std::string(canonical_operation_id)},
+           {"canonical_sblr_opcode", std::string(canonical_sblr_opcode)},
+           {"recognized_surface_ids",
+            JoinCommaSeparated(archive_route.row_surface_ids)},
+           {"executable_sblr_emitted", "false"}}));
+    }
+    return refusal;
+  }
+  if (simple_create_executable_object.active &&
+      simple_create_executable_object.valid) {
+    std::vector<std::string> recognized_surface_ids = {
+        simple_create_executable_object.row_surface_id};
+    for (const auto& surface_id :
+         simple_create_executable_object.parameter_surface_ids) {
+      AppendIfMissing(&recognized_surface_ids, surface_id);
+    }
+    if (simple_create_executable_object.object_kind == "function") {
+      AppendIfMissing(&recognized_surface_ids, "SBSQL-52EF59CC2556");
+    } else if (simple_create_executable_object.object_kind == "procedure") {
+      AppendIfMissing(&recognized_surface_ids, "SBSQL-B5E9C0943E63");
+    }
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", "ddl_catalog",
+        "trace.sbsql.create_executable_exact_refusal",
+        simple_create_executable_object.operation_id,
+        simple_create_executable_object.sblr_opcode,
+        recognized_surface_ids,
+        "CREATE FUNCTION, PROCEDURE, or TRIGGER is not admitted until the "
+        "authenticated engine binder can publish the matching exact bound "
+        "signature, body, target, security, catalog, and recovery descriptor.");
+  }
+  if (cast_value.active && cast_value.valid) {
+    std::vector<std::string> recognized_surface_ids = {
+        "SBSQL-6F701227513B", "SBSQL-D63D7D939A15",
+        "SBSQL-4E6D7545B4DF", "SBSQL-73103A84DE7B",
+        "SBSQL-C6EDE941F4E9", "SBSQL-FBCBEC94EB19"};
+    for (const auto& surface_id : cast_value.semantic_surface_ids) {
+      AppendIfMissing(&recognized_surface_ids, surface_id);
+    }
+    envelope.operation_family = "sblr.expression.runtime.v3";
+    envelope.sblr_operation_key = "sblr.expression.runtime.v3";
+    envelope.command_family = "query";
+    envelope.operation_id = "engine.op.diagnostic_refusal";
+    envelope.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    envelope.engine_api_operation_id = "not_admitted";
+    envelope.result_shape_key = "diagnostic_vector.v1";
+    envelope.diagnostic_shape_key = "diagnostic_vector.v1";
+    envelope.resource_contract_key = "sbsql.command.no_execution.v1";
+    envelope.trace_key = "trace.sbsql.cast_value_exact_refusal";
+    envelope.resolved_object_uuids.clear();
+    envelope.descriptor_refs = {"sys.sbsql.surface_registry"};
+    envelope.policy_refs.clear();
+    envelope.required_rights.clear();
+    envelope.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    envelope.operands.clear();
+    envelope.exact_emulated_diagnostic = true;
+    envelope.real_file_effects = false;
+    envelope.parser_executes_sql = false;
+    envelope.payload.clear();
+    if (!envelope.messages.has_errors()) {
+      envelope.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.IMPL.NOT_AVAILABLE", "ERROR",
+          "CAST is not admitted until the authenticated expression binder can "
+          "publish the exact CSDD to CSDO descriptor.",
+          "sbp_sbsql.lowering",
+          {{"canonical_parent_operation_id", "engine.op.cast"},
+           {"canonical_parent_sblr_opcode", "SBLR_CAST"},
+           {"recognized_surface_ids",
+            JoinCommaSeparated(recognized_surface_ids)},
+           {"executable_sblr_emitted", "false"}}));
+    }
+    return envelope;
+  }
+  if (simple_create_schema.active && simple_create_schema.valid) {
+    envelope.operation_family = "sblr.catalog.mutation.v3";
+    envelope.sblr_operation_key = "sblr.catalog.mutation.v3";
+    envelope.command_family = "ddl_catalog";
+    envelope.operation_id = "engine.op.diagnostic_refusal";
+    envelope.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    envelope.engine_api_operation_id = "not_admitted";
+    envelope.result_shape_key = "diagnostic_vector.v1";
+    envelope.diagnostic_shape_key = "diagnostic_vector.v1";
+    envelope.resource_contract_key = "sbsql.command.no_execution.v1";
+    envelope.trace_key = "trace.sbsql.create_schema_exact_refusal";
+    envelope.resolved_object_uuids.clear();
+    envelope.descriptor_refs = {"sys.sbsql.surface_registry"};
+    envelope.policy_refs.clear();
+    envelope.required_rights.clear();
+    envelope.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    envelope.operands.clear();
+    envelope.exact_emulated_diagnostic = true;
+    envelope.real_file_effects = false;
+    envelope.parser_executes_sql = false;
+    envelope.payload.clear();
+    if (!envelope.messages.has_errors()) {
+      envelope.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.IMPL.NOT_AVAILABLE", "ERROR",
+          "CREATE SCHEMA is not admitted until the authenticated engine binder "
+          "can publish the exact CSDX to CSDO descriptor.",
+          "sbp_sbsql.lowering",
+          {{"canonical_parent_operation_id", "engine.op.ddl_create_schema"},
+           {"canonical_parent_sblr_opcode", "SBLR_DDL_CREATE_SCHEMA"},
+           {"recognized_surface_ids",
+            "SBSQL-DE4B8AAF6326,SBSQL-7BA0B928798B"},
+           {"executable_sblr_emitted", "false"}}));
+    }
+    return envelope;
+  }
+  const bool unsupported_create_table_constraint =
+      simple_create_table.active &&
+      (ContainsWord(words, "CONSTRAINT") ||
+       ContainsAdjacent(words, "PRIMARY", "KEY") ||
+       ContainsAdjacent(words, "FOREIGN", "KEY") ||
+       ContainsAdjacent(words, "NOT", "NULL") ||
+       ContainsWord(words, "REFERENCES") || ContainsWord(words, "UNIQUE") ||
+       ContainsWord(words, "CHECK") || ContainsWord(words, "DEFAULT"));
+  if (unsupported_create_table_constraint || constraint_ddl.active) {
+    const bool create_table_root = unsupported_create_table_constraint;
+    std::vector<std::string> recognized_surface_ids;
+    if (create_table_root) {
+      if (ContainsAdjacent(words, "NOT", "NULL") ||
+          ContainsWord(words, "REFERENCES") || ContainsWord(words, "DEFAULT")) {
+        AppendIfMissing(&recognized_surface_ids, "SBSQL-A57CFDE0BBA9");
+      }
+      if (HasTopLevelTableConstraintSyntax(cst)) {
+        AppendIfMissing(&recognized_surface_ids, "SBSQL-28F16A4C7DD0");
+      }
+      if (ContainsWord(words, "CONSTRAINT")) {
+        AppendIfMissing(&recognized_surface_ids, "SBSQL-B1816929AD45");
+        AppendIfMissing(&recognized_surface_ids, "SBSQL-5CC9FDFFE6F7");
+      }
+    } else {
+      recognized_surface_ids = constraint_ddl.constraint_surface_ids;
+    }
+    envelope.operation_family = "sblr.catalog.mutation.v3";
+    envelope.sblr_operation_key = "sblr.catalog.mutation.v3";
+    envelope.command_family = "ddl_catalog";
+    envelope.operation_id = "engine.op.diagnostic_refusal";
+    envelope.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    envelope.engine_api_operation_id = "not_admitted";
+    envelope.result_shape_key = "diagnostic_vector.v1";
+    envelope.diagnostic_shape_key = "diagnostic_vector.v1";
+    envelope.resource_contract_key = "sbsql.command.no_execution.v1";
+    envelope.trace_key = "trace.sbsql.constraint_ddl_exact_refusal";
+    envelope.resolved_object_uuids.clear();
+    envelope.descriptor_refs = {"sys.sbsql.surface_registry"};
+    envelope.policy_refs.clear();
+    envelope.required_rights.clear();
+    envelope.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    envelope.operands.clear();
+    envelope.exact_emulated_diagnostic = true;
+    envelope.real_file_effects = false;
+    envelope.parser_executes_sql = false;
+    envelope.payload.clear();
+    if (!envelope.messages.has_errors()) {
+      envelope.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.IMPL.NOT_AVAILABLE", "ERROR",
+          "Constraint-bearing table DDL is not admitted until the exact "
+          "engine-bound parent descriptor and constraint vector are available.",
+          "sbp_sbsql.lowering",
+          {{"canonical_parent_operation_id",
+            create_table_root ? "engine.op.ddl_create_table"
+                              : "engine.op.ddl_alter_table"},
+           {"canonical_parent_sblr_opcode",
+            create_table_root ? "SBLR_DDL_CREATE_TABLE"
+                              : "SBLR_DDL_ALTER_TABLE"},
+           {"recognized_surface_ids",
+            JoinCommaSeparated(recognized_surface_ids)},
+           {"executable_sblr_emitted", "false"}}));
+    }
+    return envelope;
+  }
   if (language_control_route.active && language_control_route.valid) {
     PopulateLanguageControlAuthority(&envelope, language_control_route);
     if (!bound.bound || envelope.messages.has_errors()) return envelope;
@@ -42870,6 +43530,18 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                                    "for_select_form",
                                    "for_select_descriptor_plan");
   }
+  if (sbsfc077_residual.active && sbsfc077_residual.valid &&
+      sbsfc077_residual.surface_id == "SBSQL-1DFEDF33C807") {
+    return refuse_missing_engine_bound_parent(
+        "sblr.acceleration.llvm.v3", bound.command_family,
+        "trace.sbsql.llvm_statement_exact_refusal",
+        "extensibility.compile_llvm_module",
+        "SBLR_EXTENSIBILITY_COMPILE_LLVM_MODULE",
+        {sbsfc077_residual.surface_id},
+        "The recognized LLVM statement is not admitted until an "
+        "authenticated engine binder publishes the exact LLVM compilation "
+        "descriptor and accepted executor evidence.");
+  }
   if (!(exact_command_route.active && exact_command_route.valid) &&
       sbsfc077_residual.active && sbsfc077_residual.valid) {
     if (sbsfc077_residual.object_kind == "filespace" &&
@@ -42919,9 +43591,31 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   }
   const auto simple_create_statistics =
       AnalyzeSimpleCreateStatistics(cst, envelope.resolved_object_uuids);
+  if (simple_create_statistics.active &&
+      (simple_create_statistics.valid ||
+       simple_create_statistics.invalid_reason ==
+           "statistics_target_uuid_required")) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.create_statistics_exact_refusal", "not_admitted",
+        "SBLR_DIAGNOSTIC_REFUSAL", {"SBSQL-442E76222244"},
+        "CREATE STATISTICS is specified but is not admitted until an exact "
+        "engine-bound statistics descriptor and executor evidence are "
+        "available.");
+  }
   const auto simple_create_index =
       index_template_ddl.active ? SimpleCreateIndexInfo{} :
                                   AnalyzeSimpleCreateIndex(cst, envelope.resolved_object_uuids);
+  if (simple_create_index.active && simple_create_index.valid) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.create_index_exact_refusal",
+        "engine.op.ddl_create_index", "SBLR_DDL_CREATE_INDEX",
+        {"SBSQL-D09825658F68"},
+        "CREATE INDEX is not admitted until the authenticated engine binder "
+        "publishes an exact create_index_descriptor and accepted executor "
+        "evidence.");
+  }
   const auto parsed_table_join =
       AnalyzeTableJoinRoute(cst, envelope.resolved_object_uuids);
   const auto table_join =
@@ -42938,10 +43632,41 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                                 AnalyzeTableSetOperationRoute(cst, envelope.resolved_object_uuids);
   const auto table_sample =
       AnalyzeTableSampleRoute(cst, envelope.resolved_object_uuids);
+  if (table_sample.active && table_sample.valid) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.query.relational.v3", "query",
+        "trace.sbsql.table_sample_exact_refusal", "query.execute",
+        "SBLR_QUERY_EXECUTE",
+        {"SBSQL-095E9B3C6EDF", "SBSQL-999D9DF49F00"},
+        "TABLESAMPLE is not admitted until the authenticated query binder "
+        "can publish an exact table-sample scan profile inside query.execute.");
+  }
   const auto pivot_route =
       AnalyzePivotRoute(cst, envelope.resolved_object_uuids);
   const auto unpivot_route =
       AnalyzeUnpivotRoute(cst, envelope.resolved_object_uuids);
+  if (pivot_route.active && pivot_route.valid) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.query.relational.v3", "query",
+        "trace.sbsql.pivot_exact_refusal", "query.execute",
+        "SBLR_QUERY_EXECUTE",
+        {"SBSQL-0100E654C08A", "SBSQL-04A5A902018B",
+         "SBSQL-E8446176569C", "SBSQL-2FC490557319",
+         "SBSQL-816B796B486F", "SBSQL-6EA06E502ED7"},
+        "PIVOT is not admitted until the authenticated query binder can "
+        "publish an exact pivot descriptor inside query.execute.");
+  }
+  if (unpivot_route.active && unpivot_route.valid) {
+    return refuse_missing_engine_bound_parent(
+        "sblr.query.relational.v3", "query",
+        "trace.sbsql.unpivot_exact_refusal", "query.execute",
+        "SBLR_QUERY_EXECUTE",
+        {"SBSQL-D07E07A7470C", "SBSQL-272C2607CD1A",
+         "SBSQL-8AB61EB176C5", "SBSQL-E6995A4824AD",
+         "SBSQL-49FFC54C3042"},
+        "UNPIVOT is not admitted until the authenticated query binder can "
+        "publish an exact unpivot descriptor inside query.execute.");
+  }
   const auto row_number_window =
       AnalyzeRowNumberWindowRoute(cst, envelope.resolved_object_uuids);
   const auto derived_group_constant =
@@ -42960,7 +43685,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
           : AnalyzeTableCountRoute(cst, envelope.resolved_object_uuids);
   const auto scalar_subquery =
       AnalyzeScalarSubqueryRoute(cst, envelope.resolved_object_uuids);
-  const auto cast_value = AnalyzeCastValueRoute(cst);
   const auto scalar_projection =
       (observability_statement_route || cast_value.active || scalar_subquery.active ||
        cursor_control.active || prepared_control.active || routine_invocation.active ||
@@ -42975,8 +43699,94 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto create_vector_collection = AnalyzeCreateVectorCollection(cst);
   const auto vector_collection_operation =
       AnalyzeVectorCollectionOperation(cst, envelope.resolved_object_uuids);
+  const auto refuse_vector_collection_command =
+      [&](std::string_view surface_id,
+          std::string_view canonical_name) -> SblrEnvelope {
+    SblrEnvelope refusal;
+    refusal.operation_family = envelope.operation_family;
+    refusal.statement_hash = envelope.statement_hash;
+    refusal.surface_key = envelope.surface_key;
+    refusal.command_family = envelope.command_family;
+    refusal.operation_id = "engine.op.diagnostic_refusal";
+    refusal.sblr_operation_key = envelope.sblr_operation_key;
+    refusal.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    refusal.engine_api_operation_id = "not_admitted";
+    refusal.result_shape_key = "diagnostic_vector.v1";
+    refusal.diagnostic_shape_key = "diagnostic_vector.v1";
+    refusal.resource_contract_key = "sbsql.command.no_execution.v1";
+    refusal.trace_key = "trace.sbsql.vector_collection_exact_refusal";
+    refusal.catalog_epoch = envelope.catalog_epoch;
+    refusal.security_policy_epoch = envelope.security_policy_epoch;
+    refusal.descriptor_epoch = envelope.descriptor_epoch;
+    refusal.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.exact_emulated_diagnostic = true;
+    refusal.messages = envelope.messages;
+    if (!refusal.messages.has_errors()) {
+      refusal.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.IMPL.NOT_AVAILABLE", "ERROR",
+          "The recognized vector collection command is not admitted for execution.",
+          "sbp_sbsql.lowering",
+          {{"surface_id", std::string(surface_id)},
+           {"canonical_name", std::string(canonical_name)},
+           {"executable_sblr_emitted", "false"}}));
+    }
+    return refusal;
+  };
+  if (create_vector_collection.active && create_vector_collection.valid) {
+    return refuse_vector_collection_command("SBSQL-F71131A52D48",
+                                            "create_vector_collection");
+  }
+  if (vector_collection_operation.active && vector_collection_operation.valid) {
+    return refuse_vector_collection_command("SBSQL-43D593BC6E94",
+                                            "vector_op_stmt");
+  }
   const auto multimodel_nosql =
       AnalyzeMultiModelNoSqlRoute(cst, envelope.resolved_object_uuids);
+  if (multimodel_nosql.active && multimodel_nosql.valid) {
+    SblrEnvelope refusal = envelope;
+    refusal.operation_family = "sblr.query.multimodel_or_ddl.v3";
+    refusal.sblr_operation_key = refusal.operation_family;
+    refusal.command_family = bound.command_family;
+    refusal.operation_id = "engine.op.diagnostic_refusal";
+    refusal.sblr_opcode = "SBLR_DIAGNOSTIC_REFUSAL";
+    refusal.engine_api_operation_id = "not_admitted";
+    refusal.result_shape_key = "diagnostic_vector.v1";
+    refusal.diagnostic_shape_key = "diagnostic_vector.v1";
+    refusal.resource_contract_key = "sbsql.command.no_execution.v1";
+    refusal.trace_key = "trace.sbsql.multimodel_exact_refusal";
+    refusal.resolved_object_uuids.clear();
+    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.policy_refs.clear();
+    refusal.required_rights.clear();
+    refusal.required_authority_steps = {
+        "authority.parser.syntax_evidence_only",
+        "authority.parser.no_executable_sblr",
+        "authority.parser.no_sql_text_execution",
+        "authority.parser.no_storage_or_finality"};
+    refusal.operands.clear();
+    refusal.exact_emulated_diagnostic = true;
+    refusal.real_file_effects = false;
+    refusal.parser_executes_sql = false;
+    refusal.payload.clear();
+    if (!refusal.messages.has_errors()) {
+      refusal.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.IMPL.NOT_AVAILABLE", "ERROR",
+          "The recognized multimodel command is specified but is not admitted "
+          "without an exact engine-bound descriptor route.",
+          "sbp_sbsql.lowering",
+          {{"attempted_operation_id", multimodel_nosql.operation_id},
+           {"recognized_surface_ids",
+            JoinCommaSeparated(multimodel_nosql.row_surface_ids)},
+           {"executor_operation_id", "not_admitted"},
+           {"executable_sblr_emitted", "false"}}));
+    }
+    return refusal;
+  }
   const auto dml_route = recursive_cte_insert.active
                              ? recursive_cte_insert
                          : (table_join.active || table_set_operation.active ||
@@ -42989,10 +43799,47 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                           multimodel_nosql.active)
                              ? DmlRouteInfo{}
                              : AnalyzeDmlRoute(cst, envelope.resolved_object_uuids);
+  if (dml_route.active && dml_route.valid &&
+      (dml_route.surface_variant == "select_for_update" ||
+       dml_route.surface_variant == "merge" ||
+       dml_route.surface_variant == "cypher_delete" ||
+       dml_route.surface_variant == "cypher_merge" ||
+       dml_route.surface_variant == "graph_delete_node" ||
+       dml_route.surface_variant == "graph_delete_edge" ||
+       dml_route.surface_variant == "document_path_update" ||
+       dml_route.surface_variant == "document_bulk")) {
+    const bool merge_parent = dml_route.surface_variant == "merge";
+    return refuse_missing_engine_bound_parent(
+        "sblr.dml.operation.v3", bound.command_family,
+        "trace.sbsql.dml_residual_exact_refusal",
+        merge_parent ? "engine.op.merge" : "not_admitted",
+        merge_parent ? "SBLR_MERGE" : "SBLR_DIAGNOSTIC_REFUSAL",
+        dml_route.keyword_surface_ids,
+        "The recognized residual DML subform is specified but is not admitted "
+        "for execution; no generic UPDATE, DELETE, or MERGE carrier may "
+        "substitute for its missing exact engine-bound descriptor route.");
+  }
   const auto show_create = AnalyzeShowCreateRoute(cst, envelope.resolved_object_uuids);
   const auto security_dcl = AnalyzeSecurityDcl(cst, envelope.resolved_object_uuids);
   const auto security_policy_route =
       AnalyzeSecurityPolicyRoute(cst, envelope.resolved_object_uuids);
+  if (security_policy_route.active && security_policy_route.valid &&
+      (security_policy_route.surface_variant == "drop_policy" ||
+       security_policy_route.surface_variant == "drop_principal")) {
+    const bool drop_policy =
+        security_policy_route.surface_variant == "drop_policy";
+    return refuse_missing_engine_bound_parent(
+        "sblr.catalog.mutation.v3", bound.command_family,
+        "trace.sbsql.drop_object_exact_refusal",
+        drop_policy ? "engine.op.sec_drop_policy" : "not_admitted",
+        drop_policy ? "SBLR_SEC_DROP_POLICY" : "SBLR_DIAGNOSTIC_REFUSAL",
+        {drop_policy ? "SBSQL-25CE560681AB" : "SBSQL-EF85496DB350",
+         "SBSQL-40CAFAB37942", "SBSQL-CFFCCDEF6AC4",
+         "SBSQL-5CCF87EB0C5C", "SBSQL-ADEF20254494"},
+        "The recognized security DROP form is not admitted without its "
+        "exact engine-bound security descriptor and accepted executor "
+        "evidence.");
+  }
   PopulateConstraintDdlAuthority(&envelope, constraint_ddl);
   PopulateIndexTemplateDdlAuthority(&envelope, index_template_ddl);
   PopulateCommentOnDdlAuthority(&envelope, comment_on_ddl);
@@ -46237,28 +47084,27 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                "aggregate.grouped-int64-key-sum.v1";
       });
   if (grouped_sum_node != graph.nodes.end()) {
-    constexpr std::string_view kBigintDescriptorUuid =
-        "019d0000-0000-7000-8000-00000000d711";
     constexpr std::string_view kInt128DescriptorUuid =
         "019d0000-0000-7000-8000-00000000d714";
+    const auto is_bigint = [](const auto& descriptor) {
+      return IsCanonicalRelationalUuid(descriptor.descriptor_uuid) &&
+             descriptor.type_uuid ==
+                 "019d0000-0000-7000-8000-00000000d712" &&
+             descriptor.codec_id == "datatype.int64.le.v1";
+    };
+    const auto is_int128 = [&](const auto& descriptor) {
+      return descriptor.descriptor_uuid == kInt128DescriptorUuid &&
+             descriptor.type_uuid ==
+                 "019d0000-0000-7000-8000-00000000d715" &&
+             descriptor.codec_id == "datatype.int128.le.v1";
+    };
     if (graph.descriptors.size() != 3 ||
-        !std::ranges::all_of(graph.descriptors, [](const auto& descriptor) {
-          const bool bigint =
-              descriptor.descriptor_uuid ==
-              "019d0000-0000-7000-8000-00000000d711";
-          const bool int128 =
-              descriptor.descriptor_uuid ==
-              "019d0000-0000-7000-8000-00000000d714";
+        !std::ranges::all_of(graph.descriptors, [&](const auto& descriptor) {
+          const bool bigint = is_bigint(descriptor);
+          const bool int128 = is_int128(descriptor);
           return descriptor.datatype_identity_authoritative &&
                  descriptor.descriptor_generation == 1 &&
-                 descriptor.type_uuid ==
-                     (bigint
-                          ? "019d0000-0000-7000-8000-00000000d712"
-                          : "019d0000-0000-7000-8000-00000000d715") &&
                  descriptor.type_generation == 1 &&
-                 descriptor.codec_id ==
-                     (bigint ? "datatype.int64.le.v1"
-                             : "datatype.int128.le.v1") &&
                  descriptor.codec_version == 1 &&
                  descriptor.codec_generation == 1 &&
                  descriptor.datatype_catalog_snapshot_uuid ==
@@ -46267,10 +47113,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                  descriptor.datatype_registry_generation == 1 &&
                  (bigint || int128);
         }) ||
-        std::ranges::count(graph.descriptors, kBigintDescriptorUuid,
-                           &ParsedRelationalDescriptor::descriptor_uuid) != 2 ||
-        std::ranges::count(graph.descriptors, kInt128DescriptorUuid,
-                           &ParsedRelationalDescriptor::descriptor_uuid) != 1) {
+        std::ranges::count_if(graph.descriptors, is_bigint) != 2 ||
+        std::ranges::count_if(graph.descriptors, is_int128) != 1) {
       return RefuseRelationalGraph(
           "DATATYPE.DESCRIPTOR.INVALID",
           "catalog grouped SUM requires exactly three receipt-bound authoritative datatype descriptors",
@@ -49573,8 +50417,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.EVENT_OPCODE_MISMATCH",
                        "event notification SBLR operation id and opcode do not match");
     }
-    const bool create_channel = envelope.operation_id == "event.channel.create";
-    const bool list_subscriptions = envelope.operation_id == "event.subscription.list";
+    const bool create_channel =
+        envelope.operation_id == "engine.op.event_channel_create";
+    const bool list_subscriptions =
+        envelope.operation_id == "engine.op.event_subscription_list";
     const std::string_view expected_family =
         create_channel ? "sblr.catalog.mutation.v3"
         : list_subscriptions ? "sblr.event.subscription.v3"
@@ -49619,7 +50465,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.EVENT_CHANNEL_CREATE_NAME_MISSING",
                        "CREATE EVENT CHANNEL must carry the requested channel name as structured user payload");
     }
-    if (envelope.operation_id == "event.channel.notify" &&
+    if (envelope.operation_id == "engine.op.event_channel_notify" &&
         (envelope.payload.find("\"payload_text_is_user_payload\":true") == std::string::npos ||
          envelope.payload.find("\"payload_descriptor_uuid\":\"event_payload_descriptor:text.v1\"") ==
              std::string::npos)) {

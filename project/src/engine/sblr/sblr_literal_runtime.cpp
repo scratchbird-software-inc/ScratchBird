@@ -440,6 +440,115 @@ SblrLiteralDescriptorProfileCodecResultV1 DecodeSblrLiteralDescriptorProfileV1(
   result.ok=true;return result;
 }
 
+std::array<std::uint8_t, 32> ComputeSblrLiteralDescriptorProfileBindingV2(
+    const SblrLiteralStatementDescriptorProfileV2& profile,
+    std::uint64_t receipt_security_epoch,
+    std::uint64_t receipt_resource_epoch) {
+  static constexpr std::string_view domain =
+      "ScratchBird.SblrLiteralStatementDescriptorProfile.V2";
+  std::vector<std::uint8_t> bytes(domain.begin(), domain.end());
+  Put16(&bytes, 2);
+  bytes.insert(bytes.end(), profile.profile_uuid.begin(), profile.profile_uuid.end());
+  bytes.insert(bytes.end(), profile.statement_receipt_uuid.begin(), profile.statement_receipt_uuid.end());
+  bytes.insert(bytes.end(), profile.catalog_snapshot_uuid.begin(), profile.catalog_snapshot_uuid.end());
+  Put64(&bytes, profile.catalog_generation);
+  bytes.insert(bytes.end(), profile.descriptor_uuid.begin(), profile.descriptor_uuid.end());
+  Put64(&bytes, profile.descriptor_generation);
+  bytes.insert(bytes.end(), profile.type_uuid.begin(), profile.type_uuid.end());
+  bytes.insert(bytes.end(), profile.persisted_descriptor_uuid.begin(),
+               profile.persisted_descriptor_uuid.end());
+  Put64(&bytes, profile.persisted_descriptor_generation);
+  PutText(&bytes, profile.codec_id);
+  Put16(&bytes, profile.codec_version);
+  Put64(&bytes, profile.codec_generation);
+  bytes.push_back(profile.nullable ? 1 : 0);
+  Put64(&bytes, receipt_security_epoch);
+  Put64(&bytes, receipt_resource_epoch);
+  const auto digest = core::hash::ComputeSha256Digest(bytes);
+  return digest.ok() ? digest.digest : std::array<std::uint8_t, 32>{};
+}
+
+std::vector<std::uint8_t> EncodeSblrLiteralDescriptorProfileV2(
+    const SblrLiteralStatementDescriptorProfileV2& profile) {
+  if (!Nonzero(profile.profile_uuid) || !Nonzero(profile.statement_receipt_uuid) ||
+      !Nonzero(profile.catalog_snapshot_uuid) || profile.catalog_generation == 0 ||
+      !Nonzero(profile.descriptor_uuid) || profile.descriptor_generation == 0 ||
+      !Nonzero(profile.type_uuid) || profile.descriptor_uuid == profile.type_uuid ||
+      !Nonzero(profile.persisted_descriptor_uuid) ||
+      profile.persisted_descriptor_generation == 0 ||
+      profile.persisted_descriptor_uuid == profile.descriptor_uuid ||
+      profile.persisted_descriptor_uuid == profile.type_uuid ||
+      profile.codec_id.empty() || profile.codec_id.size() > 65535 ||
+      profile.codec_id.find('\0') != std::string::npos ||
+      profile.codec_version == 0 || profile.codec_generation == 0) return {};
+  const std::size_t total = 188 + profile.codec_id.size();
+  if (total > std::numeric_limits<std::uint32_t>::max()) return {};
+  std::vector<std::uint8_t> out; out.reserve(total);
+  out.insert(out.end(), {'S','B','L','P'}); Put16(&out, 2); Put16(&out, 188);
+  Put32(&out, static_cast<std::uint32_t>(total)); Put32(&out, 0);
+  out.insert(out.end(), profile.profile_uuid.begin(), profile.profile_uuid.end());
+  out.insert(out.end(), profile.statement_receipt_uuid.begin(), profile.statement_receipt_uuid.end());
+  out.insert(out.end(), profile.catalog_snapshot_uuid.begin(), profile.catalog_snapshot_uuid.end());
+  Put64(&out, profile.catalog_generation);
+  out.insert(out.end(), profile.descriptor_uuid.begin(), profile.descriptor_uuid.end());
+  Put64(&out, profile.descriptor_generation);
+  out.insert(out.end(), profile.type_uuid.begin(), profile.type_uuid.end());
+  out.insert(out.end(), profile.persisted_descriptor_uuid.begin(),
+             profile.persisted_descriptor_uuid.end());
+  Put64(&out, profile.persisted_descriptor_generation);
+  Put16(&out, static_cast<std::uint16_t>(profile.codec_id.size()));
+  Put16(&out, profile.codec_version); Put64(&out, profile.codec_generation);
+  out.push_back(profile.nullable ? 1 : 0); out.insert(out.end(), 7, 0);
+  out.insert(out.end(), profile.profile_binding_sha256.begin(),
+             profile.profile_binding_sha256.end());
+  out.insert(out.end(), profile.codec_id.begin(), profile.codec_id.end());
+  return out;
+}
+
+SblrLiteralDescriptorProfileCodecResultV2
+DecodeSblrLiteralDescriptorProfileV2(const std::uint8_t* bytes,
+                                      std::size_t size) {
+  SblrLiteralDescriptorProfileCodecResultV2 result;
+  result.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+  const auto fail = [&](std::string detail) {
+    result.detail = std::move(detail); return result;
+  };
+  if (bytes == nullptr || size < 188 ||
+      !std::equal(bytes, bytes + 4,
+                  reinterpret_cast<const std::uint8_t*>("SBLP")) ||
+      U16(bytes + 4) != 2 || U16(bytes + 6) != 188 ||
+      U32(bytes + 8) != size || U32(bytes + 12) != 0) {
+    return fail("SBLP v2 header is noncanonical");
+  }
+  const auto codec_bytes = U16(bytes + 136);
+  if (codec_bytes != size - 188 || U16(bytes + 138) == 0 ||
+      U64(bytes + 140) == 0 || bytes[148] > 1 ||
+      std::any_of(bytes + 149, bytes + 156, [](auto v) { return v != 0; }) ||
+      std::find(bytes + 188, bytes + size, 0) != bytes + size) {
+    return fail("SBLP v2 fields are noncanonical");
+  }
+  auto& p = result.profile;
+  std::copy_n(bytes + 16, 16, p.profile_uuid.begin());
+  std::copy_n(bytes + 32, 16, p.statement_receipt_uuid.begin());
+  std::copy_n(bytes + 48, 16, p.catalog_snapshot_uuid.begin());
+  p.catalog_generation = U64(bytes + 64);
+  std::copy_n(bytes + 72, 16, p.descriptor_uuid.begin());
+  p.descriptor_generation = U64(bytes + 88);
+  std::copy_n(bytes + 96, 16, p.type_uuid.begin());
+  std::copy_n(bytes + 112, 16, p.persisted_descriptor_uuid.begin());
+  p.persisted_descriptor_generation = U64(bytes + 128);
+  p.codec_version = U16(bytes + 138); p.codec_generation = U64(bytes + 140);
+  p.nullable = bytes[148] != 0;
+  std::copy_n(bytes + 156, 32, p.profile_binding_sha256.begin());
+  p.codec_id.assign(reinterpret_cast<const char*>(bytes + 188), codec_bytes);
+  result.canonical_bytes = EncodeSblrLiteralDescriptorProfileV2(p);
+  if (result.canonical_bytes.size() != size ||
+      !std::equal(result.canonical_bytes.begin(), result.canonical_bytes.end(), bytes)) {
+    return fail("SBLP v2 decode/re-encode differs");
+  }
+  result.ok = true; return result;
+}
+
 std::optional<std::int64_t> DecodeSblrLiteralInt64LeV1(
     const std::uint8_t* bytes, std::size_t size) {
   if (bytes == nullptr || size != 8) return std::nullopt;

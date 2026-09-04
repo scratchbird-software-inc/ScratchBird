@@ -14,8 +14,8 @@ CREATE TABLE __SB_NAMESPACE__.optimizer_page_index_matrix (
 
 INSERT INTO __SB_NAMESPACE__.optimizer_storage_source_manifest VALUES
     ('project/tests/release_evidence/commercial_readiness_public_evidence/artifacts/DURABLE_STORAGE_INDEX_PROOF_MATRIX.csv', '59fd18ddd09a6963bbbbd0e07762d6945160a7d83fd8097a58889b7aeffd0202', 894),
-    ('project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml', 'bcc4a151a93c1c228a02a85ba059fb6e9151fc209ec0cb60ea8afe7e9d34ce84', 696154),
-    ('project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml', 'b414c18e030504765c6c297689b7771d07df30260a1069026fd8a4992b80c39f', 58637);
+    ('project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml', '69c1f7a4a2e6bfbeda82d0ee9dfb7069f943e250e250f0653048abde6d4fbfbe', 696120),
+    ('project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml', '421f69f2f7a70afeaaaba9dbab4351967304056b049e88c31ec248670855cd2f', 58626);
 INSERT INTO __SB_NAMESPACE__.optimizer_page_index_matrix VALUES
     ('OPT-1024-btree', 1024, 'btree', 'EXPLAIN SELECT * FROM __SB_NAMESPACE__.dt_int64_values WHERE case_id BETWEEN 1 AND 55'),
     ('OPT-1024-unique_btree', 1024, 'unique_btree', 'EXPLAIN SELECT * FROM __SB_NAMESPACE__.dt_int64_values WHERE case_id BETWEEN 1 AND 55'),

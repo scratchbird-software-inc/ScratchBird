@@ -1,6 +1,42 @@
 {
   "rules": [
     {
+      "authority": "codec",
+      "category": "codec",
+      "fixed_identity": true,
+      "id": "src-contextual-text-wire-profile-identities",
+      "path_glob": "project/src/engine/internal_api/query/contextual_text_literal_authority.cpp",
+      "context_regex": "098229e6-00f4-53ee-89da-452f2f0767c2|24bc744a-95d3-5668-b32e-aaf4616bdb4c",
+      "rationale": "Core assigns these stable contextual-text wire profile identities as codec authority values."
+    },
+    {
+      "authority": "codec",
+      "category": "codec",
+      "fixed_identity": true,
+      "id": "src-contextual-text-policy-identities",
+      "path_glob": "project/src/engine/internal_api/query/contextual_text_policy_registry_v2.cpp",
+      "context_regex": "35342fdb-2a81-5dfb-8dc8-c99b78acde3c|c5fb802c-17b7-5737-8ee8-0abf3ad2900f|233c7c3d-7454-52b6-8c8e-cfda48f8c683|835325ab-4c2b-5d07-aa03-271a9bd3a79c",
+      "rationale": "Core assigns stable contextual-text policy profile identities as codec authority values."
+    },
+    {
+      "authority": "codec",
+      "category": "codec",
+      "fixed_identity": true,
+      "id": "src-contextual-text-target-identities",
+      "path_glob": "project/src/engine/internal_api/query/contextual_text_target_authority_resolver_v2.cpp",
+      "context_regex": "b3217577-26d4-5d9e-bf58-5cfdb29c3687|3cd930a5-cf22-51a5-b36c-5a1b62d74f89|d13c373f-afca-552e-89ef-43a4f1ec5100|9932194a-7dda-5dec-8600-c6800d195f66|2f299fd4-9e29-5dae-9a39-5c4f8a3f4fd5|dc31437d-be8b-5469-984e-2c1cefa9ca66",
+      "rationale": "Core assigns stable contextual-text target identities as codec authority values."
+    },
+    {
+      "authority": "sentinel",
+      "category": "sentinel",
+      "fixed_identity": true,
+      "id": "src-security-policy-fallback-sentinel",
+      "literal": "01010101-0101-4001-8001-010101010101",
+      "path_glob": "project/src/engine/sblr/sblr_dispatch.cpp",
+      "rationale": "This fixed policy fallback is a sentinel used only when an optional policy UUID is absent."
+    },
+    {
       "authority": "sentinel",
       "category": "sentinel",
       "fixed_identity": true,

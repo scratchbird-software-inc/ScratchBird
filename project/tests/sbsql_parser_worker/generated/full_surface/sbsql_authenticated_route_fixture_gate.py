@@ -30,6 +30,16 @@ ALLOWED_STATUSES = {
     "exact_refusal_passed",
 }
 BRIDGE_EXACT_REFUSAL_SURFACE_ID = "SBSQL-D50EC7C4422E"
+CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
+    "SBSQL-A57CFDE0BBA9",
+    "SBSQL-28F16A4C7DD0",
+    "SBSQL-B1816929AD45",
+    "SBSQL-5CC9FDFFE6F7",
+}
+CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
+    "SBSQL-DE4B8AAF6326",
+    "SBSQL-7BA0B928798B",
+}
 REQUIRED_KEYS = [
     "fixture_kind",
     "fixture_status",
@@ -95,6 +105,12 @@ def main() -> int:
     parser.add_argument("--artifact-root", default=DEFAULT_ARTIFACT_ROOT)
     args = parser.parse_args()
     root = Path(args.repo_root).resolve()
+    generator_root = root / "project/tools/sb_parser_gen"
+    sys.path.insert(0, str(generator_root))
+    from plan_import_rows_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        is_central_import_refusal_surface,
+    )
+
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
@@ -150,25 +166,93 @@ def main() -> int:
                 [f"{key}={value}" for key, value in row.items()]
                 + [f"{key}={value}" for key, value in fields.items()]
             )
-            required = (
-                "canonical_name=bridge_cluster_route_stub",
-                "operation_id=bridge.cluster_route",
-                "opcode=SBLR_BRIDGE_VALIDATE",
-                "canonical_sblr_admission_before_trusted_udr_dispatch",
-                "UDR.BRIDGE.UNSUPPORTED",
-                "accepted=false",
-                "private_cluster_execution=false",
-                "sbsql_exact_refusal_passed",
-            )
-            forbidden = (
-                "cluster_provider_route_passed",
-                "SBLR.CLUSTER.STUB_RESPONSE",
-                "UDR.BRIDGE.UNLICENSED",
-            )
-            if surface_id != BRIDGE_EXACT_REFUSAL_SURFACE_ID:
-                errors.append(f"{surface_id} is not an admitted exact-refusal route fixture")
             if fields.get("per_row_final_state") != "exact_refusal_passed":
                 errors.append(f"{surface_id} exact-refusal fixture lost per-row final state")
+            if surface_id == BRIDGE_EXACT_REFUSAL_SURFACE_ID:
+                required = (
+                    "canonical_name=bridge_cluster_route_stub",
+                    "operation_id=bridge.cluster_route",
+                    "opcode=SBLR_BRIDGE_VALIDATE",
+                    "canonical_sblr_admission_before_trusted_udr_dispatch",
+                    "UDR.BRIDGE.UNSUPPORTED",
+                    "accepted=false",
+                    "private_cluster_execution=false",
+                    "sbsql_exact_refusal_passed",
+                )
+                forbidden = (
+                    "cluster_provider_route_passed",
+                    "SBLR.CLUSTER.STUB_RESPONSE",
+                    "UDR.BRIDGE.UNLICENSED",
+                )
+            elif is_central_import_refusal_surface(surface_id):
+                required = (
+                    "cluster_scope=noncluster_or_profile_scoped",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "accepted=false",
+                    "executable_sblr_emitted=false",
+                    "no_result",
+                    "no_authority_publication",
+                    "result_published=false",
+                    "descriptor_authority_published=false",
+                    "transaction_state_transition=false",
+                    "catalog_mutation=false",
+                    "row_mutation=false",
+                    "durable_state_byte_identical=true",
+                    "sbsql_exact_refusal_passed",
+                )
+                forbidden = (
+                    "dml.plan_import_rows",
+                    "SBLR_DML_PLAN_IMPORT_ROWS",
+                    "engine.op.bulk_import_stream",
+                    "SBLR_BULK_IMPORT_STREAM",
+                    "result_published=true",
+                    "catalog_mutation=true",
+                    "row_mutation=true",
+                )
+            elif surface_id in CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS:
+                required = (
+                    "not_applicable_exact_refusal_before_executable_sblr",
+                    "sbsql_input_to_parser_worker_refusal_before_sbps_submission",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "parent_operation_id=engine.op.ddl_create_table",
+                    "parent_opcode=SBLR_DDL_CREATE_TABLE",
+                    "pre_sblr_refusal=true",
+                    "executable_sblr_emitted=false",
+                    "server_admission_not_reached=true",
+                    "engine_dispatch_not_reached=true",
+                    "catalog_mutation=false",
+                )
+                forbidden = (
+                    "ddl.constraint.create",
+                    "SBLR_DDL_CONSTRAINT_CREATE",
+                    "sbwp_1.1_over_tls",
+                    "server_admission_not_reached=false",
+                    "engine_dispatch_not_reached=false",
+                    "catalog_mutation=true",
+                )
+            elif surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS:
+                required = (
+                    "not_applicable_exact_refusal_before_executable_sblr",
+                    "sbsql_input_to_parser_worker_refusal_before_sbps_submission",
+                    "SBSQL.IMPL.NOT_AVAILABLE",
+                    "parent_operation_id=engine.op.ddl_create_schema",
+                    "parent_opcode=SBLR_DDL_CREATE_SCHEMA",
+                    "pre_sblr_refusal=true",
+                    "executable_sblr_emitted=false",
+                    "server_admission_not_reached=true",
+                    "engine_dispatch_not_reached=true",
+                    "catalog_mutation=false",
+                )
+                forbidden = (
+                    "sbwp_1.1_over_tls",
+                    "server_admission_not_reached=false",
+                    "engine_dispatch_not_reached=false",
+                    "catalog_mutation=true",
+                )
+            else:
+                errors.append(f"{surface_id} is not an admitted exact-refusal route fixture")
+                required = ()
+                forbidden = ()
             for token in required:
                 if token not in evidence:
                     errors.append(f"{surface_id} exact-refusal fixture missing {token}")

@@ -12,30 +12,31 @@ int main() {
   SblrDmlConditionalMutateRequestV1 decoded_request;
   assert(DecodeSblrDmlConditionalMutateRequestV1(
       request_wire.data(), request_wire.size(), &decoded_request, nullptr));
-  request_wire[16] ^= 0x01;
+  request_wire[32] = 0;
   assert(!DecodeSblrDmlConditionalMutateRequestV1(
       request_wire.data(), request_wire.size(), &decoded_request, nullptr));
 
   SblrDmlConditionalMutateDescriptorV1 descriptor;
   descriptor.body[0] = 0x11;
-  descriptor.evidence[0] = 0x22;
   descriptor.availability = 1;
   auto descriptor_wire = EncodeSblrDmlConditionalMutateDescriptorV1(descriptor, true);
   SblrDmlConditionalMutateDescriptorV1 decoded_descriptor;
   assert(DecodeSblrDmlConditionalMutateDescriptorV1(
       descriptor_wire.data(), descriptor_wire.size(), &decoded_descriptor, nullptr, true));
+  assert(EncodeSblrDmlConditionalMutateDescriptorV1(decoded_descriptor, true) ==
+         descriptor_wire);
   descriptor_wire[416] ^= 0x01;
   assert(!DecodeSblrDmlConditionalMutateDescriptorV1(
       descriptor_wire.data(), descriptor_wire.size(), &decoded_descriptor, nullptr, true));
 
   SblrDmlConditionalMutateResultV1 result;
-  result.evidence[0] = 0x33;
   result.availability = 1;
   result.publication_barrier[0] = 0x44;
   auto result_wire = EncodeSblrDmlConditionalMutateResultV1(result);
   SblrDmlConditionalMutateResultV1 decoded_result;
   assert(DecodeSblrDmlConditionalMutateResultV1(
       result_wire.data(), result_wire.size(), &decoded_result, nullptr));
+  assert(EncodeSblrDmlConditionalMutateResultV1(decoded_result) == result_wire);
   result_wire[256] ^= 0x01;
   assert(!DecodeSblrDmlConditionalMutateResultV1(
       result_wire.data(), result_wire.size(), &decoded_result, nullptr));

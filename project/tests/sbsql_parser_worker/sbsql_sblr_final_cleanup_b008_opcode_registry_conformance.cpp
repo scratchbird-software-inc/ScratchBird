@@ -8,10 +8,15 @@
 
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "cluster_provider/cluster_provider.hpp"
+#include "engine/sblr/sblr_bulk_import_stream_runtime.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "sblr_transaction_commit_runtime.hpp"
+#include "sblr_transaction_rollback_runtime.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -139,6 +144,71 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = row.requires_transaction_context;
   envelope.requires_cluster_authority = row.requires_cluster_authority;
+
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.name = "options";
+  if (row.operation_id == "engine.op.txn_begin") {
+    sblr::SblrTransactionBeginOptionsV1 options;
+    options.isolation_profile_uuid[0] = 1;
+    options.isolation_profile_generation = 1;
+    options.transaction_policy_snapshot_uuid[0] = 2;
+    options.transaction_policy_generation = 1;
+    options.read_mode = 1;
+    options.authority_scope = 1;
+    options.wait_policy = 1;
+    envelope.result_shape = "transaction_handle";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "transaction.begin_options";
+    operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+    operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  } else if (row.operation_id == "engine.op.txn_commit") {
+    sblr::SblrTransactionCommitOptionsV1 options;
+    options.transaction_uuid[0] = 1;
+    options.local_transaction_id = 1;
+    options.admitted_handle_evidence_sha256[0] = 2;
+    options.commit_mode = 1;
+    options.authority_scope = 1;
+    options.wait_policy = 1;
+    envelope.result_shape = "commit_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "transaction.commit.options";
+    operand.value_kind = sblr::SblrValueKind::transaction_commit_options;
+    operand.value_body = sblr::EncodeSblrTransactionCommitOptionsV1(&options);
+  } else if (row.operation_id == "engine.op.txn_rollback") {
+    sblr::SblrTransactionRollbackOptionsV1 options;
+    options.transaction_uuid[0] = 1;
+    options.local_transaction_id = 1;
+    options.admitted_handle_evidence_sha256[0] = 2;
+    options.rollback_mode = 1;
+    options.authority_scope = 1;
+    options.wait_policy = 1;
+    envelope.result_shape = "rollback_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "transaction.rollback.options";
+    operand.value_kind = sblr::SblrValueKind::transaction_rollback_options;
+    operand.value_body = sblr::EncodeSblrTransactionRollbackOptionsV1(&options);
+  } else if (row.operation_id == "engine.op.bulk_import_stream") {
+    sblr::SblrBulkImportStreamDescriptorV1 descriptor;
+    descriptor.canonical_body.fill(1);
+    std::fill(descriptor.canonical_body.begin() + 28,
+              descriptor.canonical_body.begin() + 32, 0);
+    std::fill(descriptor.canonical_body.begin() + 352,
+              descriptor.canonical_body.end(), 0);
+    descriptor.availability_generation = 1;
+    envelope.result_shape = "bulk_mutation_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    operand.type = "bulk_import_stream_descriptor";
+    operand.name = "bulk_import";
+    operand.value_kind = sblr::SblrValueKind::bulk_import_stream_descriptor;
+    operand.value_body =
+        sblr::EncodeSblrBulkImportStreamDescriptorV1(descriptor, true);
+  }
+  if (!operand.type.empty()) {
+    Require(!operand.value_body.empty(),
+            EvidenceMessage(row, "envelope", "typed carrier did not encode"));
+    envelope.operands.push_back(std::move(operand));
+  }
   return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
       envelope);
 }

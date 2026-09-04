@@ -348,17 +348,11 @@ void RequireExactLowering(const UdrRowEvidence& row) {
   Require(Contains(artifacts.envelope.payload, row.surface_id),
           EvidenceMessage(row, "parser_bind_lower", "row surface id missing from UDR payload"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted,
-          EvidenceMessage(row, "server_admission", "server admission rejected UDR route"));
-  Require(admission.requires_public_abi_dispatch,
-          EvidenceMessage(row, "server_admission",
-                          "server admission did not require engine public ABI dispatch"));
-  Require(admission.operation_id == "extensibility.inspect_udr_packages",
-          EvidenceMessage(row, "server_admission", "server admission operation id mismatch"));
-  Require(admission.operation_family == "sblr.udr.operation.v3",
-          EvidenceMessage(row, "server_admission", "server admission family mismatch"));
+  const auto* opcode =
+      sblr::LookupSblrOperation("extensibility.inspect_udr_packages");
+  Require(opcode != nullptr && opcode->code == 0,
+          EvidenceMessage(row, "parser_component",
+                          "unallocated UDR inspect route acquired canonical opcode authority"));
 }
 
 void RequireLifecycleLowering(const UdrLifecycleRouteCase& route) {
@@ -443,17 +437,10 @@ void RequireLifecycleLowering(const UdrLifecycleRouteCase& route) {
   Require(Contains(artifacts.envelope.payload, "\"udr_package_name\":\"sbup_demo\""),
           RouteMessage(route, "parser_bind_lower", "UDR package name missing from payload"));
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted,
-          RouteMessage(route, "server_admission", "server admission rejected UDR lifecycle route"));
-  Require(admission.requires_public_abi_dispatch,
-          RouteMessage(route, "server_admission",
-                       "server admission did not require engine public ABI dispatch"));
-  Require(admission.operation_id == route.operation_id,
-          RouteMessage(route, "server_admission", "server admission operation id mismatch"));
-  Require(admission.operation_family == "sblr.udr.operation.v3",
-          RouteMessage(route, "server_admission", "server admission family mismatch"));
+  const auto* opcode = sblr::LookupSblrOperation(route.operation_id);
+  Require(opcode != nullptr && opcode->code == 0,
+          RouteMessage(route, "parser_component",
+                       "unallocated UDR lifecycle route acquired canonical opcode authority"));
 }
 
 api::EngineRequestContext EngineContext() {
@@ -481,6 +468,33 @@ api::EngineRequestContext EngineContext() {
   context.security_epoch = 47;
   context.resource_epoch = 53;
   context.name_resolution_epoch = 59;
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      "019f0000-0000-7000-8000-000000003805";
+  context.authorization_context.security_context_generation = 1;
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.security_epoch = context.security_epoch;
+  context.authorization_context.policy_epoch = context.resource_epoch;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  context.authorization_context.effective_subjects.push_back(
+      {context.principal_uuid, "principal"});
+  api::EngineMaterializedAuthorizationGrant manage;
+  manage.grant_uuid.canonical =
+      "019f0000-0000-7000-8000-000000003806";
+  manage.subject_uuid = context.principal_uuid;
+  manage.subject_kind = "principal";
+  manage.right = "UDR_MANAGE";
+  manage.security_epoch = context.security_epoch;
+  context.authorization_context.grants.push_back(std::move(manage));
+  api::EngineMaterializedAuthorizationGrant inspect;
+  inspect.grant_uuid.canonical =
+      "019f0000-0000-7000-8000-000000003807";
+  inspect.subject_uuid = context.principal_uuid;
+  inspect.subject_kind = "principal";
+  inspect.right = "UDR_INSPECT";
+  inspect.security_epoch = context.security_epoch;
+  context.authorization_context.grants.push_back(std::move(inspect));
   return context;
 }
 
@@ -683,51 +697,29 @@ void RequireLifecycleEngineApis() {
           "dropped UDR package remained visible");
 }
 
-sblr::SblrOperationEnvelope EngineEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope(
-      "extensibility.inspect_udr_packages",
-      "SBLR_EXTENSIBILITY_INSPECT_UDR_PACKAGES",
-      "trace.udr_package_management.exact_route");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  return envelope;
-}
-
-void RequireEngineDispatch(const UdrRowEvidence& row) {
-  api::EngineApiRequest api_request;
-  api_request.option_envelopes.push_back("permission:inspect_udr");
-  const sblr::SblrDispatchRequest request{EngineContext(), EngineEnvelope(), api_request};
-  const auto result = sblr::DispatchSblrOperation(request);
+void RequireEngineApiInspection(const UdrRowEvidence& row) {
+  api::EngineInspectUdrPackageRequest request;
+  request.context = EngineContext();
+  request.option_envelopes.push_back("permission:inspect_udr");
+  const auto result = api::EngineInspectUdrPackages(request);
   for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
               << diagnostic.detail << '\n';
   }
-  Require(result.envelope_validated,
-          EvidenceMessage(row, "engine_dispatch", "engine SBLR envelope did not validate"));
-  Require(result.accepted,
-          EvidenceMessage(row, "engine_dispatch", "engine SBLR dispatch did not accept operation"));
-  Require(result.dispatched_to_api,
-          EvidenceMessage(row, "engine_dispatch", "engine SBLR dispatch did not route to API"));
-  Require(result.api_result.ok,
-          EvidenceMessage(row, "engine_dispatch", "engine API returned failure"));
-  Require(result.api_result.operation_id == "extensibility.inspect_udr_packages",
-          EvidenceMessage(row, "engine_dispatch", "engine API operation id mismatch"));
-  Require(ApiResultHasEvidence(result.api_result, "extension_behavior", "inspected"),
-          EvidenceMessage(row, "engine_dispatch", "UDR inspect evidence missing"));
-  Require(ApiResultHasEvidence(result.api_result, "authority_boundary",
+  Require(result.ok,
+          EvidenceMessage(row, "engine_api", "engine UDR inspect API returned failure"));
+  Require(result.operation_id == "extensibility.inspect_udr_packages",
+          EvidenceMessage(row, "engine_api", "engine API operation id mismatch"));
+  Require(ApiResultHasEvidence(result, "extension_behavior", "inspected"),
+          EvidenceMessage(row, "engine_api", "UDR inspect evidence missing"));
+  Require(ApiResultHasEvidence(result, "authority_boundary",
                                "mga_sblr_uuid_security_transaction_preserved"),
-          EvidenceMessage(row, "engine_dispatch", "authority-boundary evidence missing"));
-  Require(ApiResultHasField(result.api_result,
+          EvidenceMessage(row, "engine_api", "authority-boundary evidence missing"));
+  Require(ApiResultHasField(result,
                             row.expected_field,
                             row.expected_value,
                             row.contains),
-          EvidenceMessage(row, "engine_dispatch", "expected UDR result field missing"));
+          EvidenceMessage(row, "engine_api", "expected UDR result field missing"));
 }
 
 }  // namespace
@@ -743,7 +735,7 @@ int main() {
   for (const auto& row : kUdrRows) {
     RequireRegistryEvidence(row);
     RequireExactLowering(row);
-    RequireEngineDispatch(row);
+    RequireEngineApiInspection(row);
   }
   RequireLifecycleEngineApis();
   std::cout << "sbsql_udr_package_management_exact_route_conformance=passed\n";

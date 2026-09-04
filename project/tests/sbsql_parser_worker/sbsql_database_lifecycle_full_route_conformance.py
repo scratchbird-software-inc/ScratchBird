@@ -22,7 +22,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from live_auth_fixture import local_password_evidence as durable_local_password_evidence
+from live_auth_fixture import DEFAULT_PRINCIPAL_UUID
 from live_auth_fixture import write_local_password_auth_fixture
 
 
@@ -38,12 +38,14 @@ MSG_ROW_DESCRIPTION = 0x44
 MSG_DATA_ROW = 0x45
 MSG_COMMAND_COMPLETE = 0x46
 MSG_ERROR = 0x48
+MSG_PARAMETER_STATUS = 0x4F
+MSG_SERVER_INFO = 0x61
 
-ADMIN_VERIFIER = b"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-BENCHMARK_VERIFIER = b"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-ADMIN_PRINCIPAL_UUID = "019f0a11-ce00-7000-8000-0000000000ad"
-BENCHMARK_PRINCIPAL_UUID = "019f0a11-ce00-7000-8000-0000000000bc"
-ADMIN_AUTHORIZATION_TAGS = "right:CONNECT,right:OBS_MANAGEMENT_CONTROL"
+SBWP_VERSION_P1 = 0x0101
+FEATURE_STREAMING = 1 << 1
+FEATURE_BULK_REJECTS = 1 << 17
+
+BENCHMARK_PASSWORD = b"ScratchBird-E2E-2026!"
 
 
 class RouteError(RuntimeError):
@@ -105,7 +107,13 @@ def connect_tls(port: int, timeout: float = 8.0) -> ssl.SSLSocket:
             ctx.maximum_version = ssl.TLSVersion.TLSv1_3
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            return ctx.wrap_socket(raw, server_hostname="localhost")
+            tls_socket = ctx.wrap_socket(raw, server_hostname="localhost")
+            # Bound TCP connection attempts independently from authenticated
+            # SBWP work. Password verification, durable authorization, attach,
+            # and initial transaction publication are a finite engine route but
+            # are not required to complete within the one-second connect bound.
+            tls_socket.settimeout(max(timeout, 30.0))
+            return tls_socket
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             time.sleep(0.05)
@@ -162,6 +170,46 @@ def startup_payload(user: str, database: str) -> bytes:
     return bytes(payload)
 
 
+def p1_startup_payload(user: str, database: str, client_features: int) -> bytes:
+    def lpstr(value: str) -> bytes:
+        encoded = value.encode("utf-8")
+        return struct.pack("<I", len(encoded)) + encoded
+
+    def key_value(key: str, value: str) -> bytes:
+        encoded = value.encode("utf-8")
+        return lpstr(key) + bytes([0x01, 0x00]) + struct.pack("<I", len(encoded)) + encoded
+
+    fields = (("database", database), ("user", user))
+    payload = bytearray()
+    payload += struct.pack(
+        "<HHIQQQ",
+        SBWP_VERSION_P1,
+        SBWP_VERSION_P1,
+        0,
+        client_features,
+        client_features,
+        0,
+    )
+    payload += b"\x11" * 16
+    payload += b"\x00" * 16
+    payload += b"\x00" * 16
+    payload += struct.pack("<I", len(fields))
+    for key, value in fields:
+        payload += key_value(key, value)
+    payload += struct.pack("<I", 0)
+    return bytes(payload)
+
+
+def decode_ready(payload: bytes) -> tuple[int, int]:
+    if len(payload) >= 76:
+        transaction_id = struct.unpack_from("<Q", payload, 48)[0]
+        state = payload[56]
+        return (0 if state == ord("I") else 1), transaction_id
+    if len(payload) < 20:
+        raise RouteError("READY payload too short")
+    return payload[0], struct.unpack_from("<Q", payload, 4)[0]
+
+
 def query_payload(sql: str) -> bytes:
     return struct.pack("<III", 0, 0, 0) + sql.encode("utf-8") + b"\x00"
 
@@ -173,35 +221,57 @@ def expect_frame(sock: ssl.SSLSocket, expected: int) -> tuple[bytes, bytes, int]
     return payload, attachment, txn_id
 
 
-def local_password_evidence(user: str, verifier: bytes) -> bytes:
-    principal_uuid = ADMIN_PRINCIPAL_UUID if user == "admin" else BENCHMARK_PRINCIPAL_UUID
-    authorization_tags = ADMIN_AUTHORIZATION_TAGS if user == "admin" else "right:CONNECT"
-    return durable_local_password_evidence(
-        user,
-        verifier.decode("ascii"),
-        principal_uuid=principal_uuid,
-        authorization_tags=authorization_tags,
-    ).encode("utf-8")
-
-
-def authenticate(sock: ssl.SSLSocket, user: str, verifier: bytes) -> tuple[bytes, int]:
+def authenticate(sock: ssl.SSLSocket, user: str, password: bytes) -> tuple[bytes, int, int]:
     sequence = 0
-    send_frame(sock, MSG_STARTUP, sequence, startup_payload(user, "default"))
+    send_frame(
+        sock,
+        MSG_STARTUP,
+        sequence,
+        p1_startup_payload(
+            user, "default", FEATURE_STREAMING | FEATURE_BULK_REJECTS
+        ),
+    )
     sequence += 1
     auth_payload, _, _ = expect_frame(sock, MSG_AUTH_REQUEST)
     if not auth_payload or auth_payload[0] != 1:
         raise RouteError("expected PASSWORD auth request")
-    send_frame(sock, MSG_AUTH_RESPONSE, sequence, local_password_evidence(user, verifier))
+    # Only the credential crosses the public boundary. Principal UUID, roles,
+    # grants, and authorization tags are resolved from durable engine state.
+    send_frame(sock, MSG_AUTH_RESPONSE, sequence, password)
     auth_ok, attachment, _ = expect_frame(sock, MSG_AUTH_OK)
     if len(auth_ok) < 20:
         raise RouteError("AUTH_OK payload too short")
     attachment = auth_ok[:16] or attachment
-    expect_frame(sock, MSG_READY)
-    return attachment, sequence + 1
+    while True:
+        msg_type, ready_payload, _, frame_transaction_id = recv_frame(sock)
+        if msg_type == MSG_READY:
+            break
+        if msg_type in (MSG_SERVER_INFO, MSG_PARAMETER_STATUS):
+            continue
+        raise RouteError(
+            f"expected READY after AUTH_OK, got 0x{msg_type:02x}, payload={ready_payload!r}"
+        )
+    status, transaction_id = decode_ready(ready_payload)
+    if status == 0 or transaction_id == 0 or frame_transaction_id == 0:
+        raise RouteError("fresh authenticated session did not publish an active MGA transaction")
+    return attachment, sequence + 1, transaction_id
 
 
-def query_success(sock: ssl.SSLSocket, attachment: bytes, sequence: int, sql: str) -> int:
-    send_frame(sock, MSG_QUERY, sequence, query_payload(sql), attachment=attachment)
+def query_success(
+    sock: ssl.SSLSocket,
+    attachment: bytes,
+    transaction_id: int,
+    sequence: int,
+    sql: str,
+) -> int:
+    send_frame(
+        sock,
+        MSG_QUERY,
+        sequence,
+        query_payload(sql),
+        attachment=attachment,
+        txn_id=transaction_id,
+    )
     saw_row = False
     saw_complete = False
     while True:
@@ -225,8 +295,22 @@ def query_success(sock: ssl.SSLSocket, attachment: bytes, sequence: int, sql: st
         raise RouteError(f"{sql} returned unexpected frame 0x{msg_type:02x}")
 
 
-def query_error(sock: ssl.SSLSocket, attachment: bytes, sequence: int, sql: str, expected: bytes) -> int:
-    send_frame(sock, MSG_QUERY, sequence, query_payload(sql), attachment=attachment)
+def query_error(
+    sock: ssl.SSLSocket,
+    attachment: bytes,
+    transaction_id: int,
+    sequence: int,
+    sql: str,
+    expected: bytes,
+) -> int:
+    send_frame(
+        sock,
+        MSG_QUERY,
+        sequence,
+        query_payload(sql),
+        attachment=attachment,
+        txn_id=transaction_id,
+    )
     saw_expected = False
     while True:
         msg_type, payload, _, _ = recv_frame(sock)
@@ -240,8 +324,21 @@ def query_error(sock: ssl.SSLSocket, attachment: bytes, sequence: int, sql: str,
         raise RouteError(f"{sql} expected ERROR/READY, got frame 0x{msg_type:02x}")
 
 
-def query_shutdown(sock: ssl.SSLSocket, attachment: bytes, sequence: int, sql: str) -> int:
-    send_frame(sock, MSG_QUERY, sequence, query_payload(sql), attachment=attachment)
+def query_shutdown(
+    sock: ssl.SSLSocket,
+    attachment: bytes,
+    transaction_id: int,
+    sequence: int,
+    sql: str,
+) -> int:
+    send_frame(
+        sock,
+        MSG_QUERY,
+        sequence,
+        query_payload(sql),
+        attachment=attachment,
+        txn_id=transaction_id,
+    )
     saw_complete = False
     try:
         while True:
@@ -280,29 +377,14 @@ def dump_logs(work: Path) -> None:
 
 def seed_database(seeder: str | None, database: Path) -> None:
     if seeder:
-        subprocess.check_call([seeder, str(database), "benchmark_user", BENCHMARK_VERIFIER.decode("ascii")])
-        write_local_password_auth_fixture(
-            database,
-            "admin",
-            ADMIN_VERIFIER.decode("ascii"),
-            principal_uuid=ADMIN_PRINCIPAL_UUID,
-            authorization_tags=ADMIN_AUTHORIZATION_TAGS,
-            append=True,
-        )
+        subprocess.check_call([seeder, str(database), "benchmark_user", BENCHMARK_PASSWORD.decode("ascii")])
         return
     write_local_password_auth_fixture(
         database,
         "benchmark_user",
-        BENCHMARK_VERIFIER.decode("ascii"),
-        principal_uuid=BENCHMARK_PRINCIPAL_UUID,
-    )
-    write_local_password_auth_fixture(
-        database,
-        "admin",
-        ADMIN_VERIFIER.decode("ascii"),
-        principal_uuid=ADMIN_PRINCIPAL_UUID,
-        authorization_tags=ADMIN_AUTHORIZATION_TAGS,
-        append=True,
+        BENCHMARK_PASSWORD.decode("ascii"),
+        principal_uuid=DEFAULT_PRINCIPAL_UUID,
+        authorization_tags="right:CONNECT,right:OBS_MANAGEMENT_CONTROL",
     )
 
 
@@ -320,7 +402,6 @@ def launch_stack(
             args.server,
             "--foreground",
             "--no-listeners",
-            "--create-if-missing",
             "--control-dir",
             str(server_control),
             "--runtime-dir",
@@ -380,15 +461,34 @@ def run_scenario(args: argparse.Namespace, command: str) -> None:
         try:
             server, listener = launch_stack(args, work, runtime, database, port)
             with connect_tls(port) as sock:
-                attachment, sequence = authenticate(sock, "admin", ADMIN_VERIFIER)
-                sequence = query_success(sock, attachment, sequence, "SHOW SERVER LIFECYCLE")
-                sequence = query_success(sock, attachment, sequence, "VERIFY DATABASE")
+                attachment, sequence, transaction_id = authenticate(
+                    sock, "benchmark_user", BENCHMARK_PASSWORD
+                )
+                sequence = query_success(
+                    sock, attachment, transaction_id, sequence, "SHOW SERVER LIFECYCLE"
+                )
+                sequence = query_success(
+                    sock, attachment, transaction_id, sequence, "VERIFY DATABASE"
+                )
                 if command == "drop_refusal":
-                    query_error(sock, attachment, sequence, "DROP DATABASE LOGICAL", b"ENGINE.DBLC_DROP_UNSAFE")
+                    query_error(
+                        sock,
+                        attachment,
+                        transaction_id,
+                        sequence,
+                        "DROP DATABASE LOGICAL",
+                        b"ENGINE.DBLC_DROP_UNSAFE",
+                    )
                 else:
-                    query_shutdown(sock, attachment, sequence, command)
+                    query_shutdown(sock, attachment, transaction_id, sequence, command)
                     try:
-                        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+                        send_frame(
+                            sock,
+                            MSG_TERMINATE,
+                            sequence + 1,
+                            attachment=attachment,
+                            txn_id=transaction_id,
+                        )
                     except OSError:
                         pass
         except Exception:

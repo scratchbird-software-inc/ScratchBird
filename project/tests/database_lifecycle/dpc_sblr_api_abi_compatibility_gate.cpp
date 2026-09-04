@@ -16,6 +16,9 @@
 #include "scratchbird/engine/engine.h"
 #include "scratchbird/engine/sblr/lowering.hpp"
 
+#include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
+
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -210,8 +213,8 @@ void AttachSourcePolicy(engine_sblr::SblrOperationEnvelope* envelope,
 
 engine_sblr::SblrOperationEnvelope BuildDmlInsertEnvelope(
     const UuidFactory& uuids) {
-  const auto* entry = engine_sblr::LookupSblrOperation("dml.insert");
-  Require(entry != nullptr, "DPC-074 dml.insert registry entry missing");
+  const auto* entry = engine_sblr::LookupSblrOperation("engine.op.insert");
+  Require(entry != nullptr, "DPC-074 engine.op.insert registry entry missing");
 
   auto envelope = engine_sblr::MakeSblrEnvelope(
       entry->operation_id, entry->opcode, "DPC-074-SBLR-API-ABI");
@@ -245,7 +248,8 @@ engine_sblr::SblrOperationEnvelope BuildDmlInsertEnvelope(
       Symbol("column_alias", "col.note", column_uuid, "note", "dml.value"));
   envelope.source_artifact_map.symbols.push_back(Symbol(
       "parameter", "param.note", parameter_uuid, ":p_note", "dml.parameter"));
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 api::EngineRequestContext MakeContext(const UuidFactory& uuids) {
@@ -270,25 +274,44 @@ api::EngineRequestContext MakeContext(const UuidFactory& uuids) {
 }
 
 void AssertRegistryAndTextRoundTrip(const UuidFactory& uuids) {
-  constexpr std::array<std::pair<std::string_view, std::string_view>, 8>
+  struct RegistryRow {
+    std::string_view operation_id;
+    std::string_view opcode;
+    std::string_view executor_id;
+    bool executor_evidence_accepted;
+  };
+  constexpr std::array<RegistryRow, 8>
       kRequiredEntries{{
-          {"dml.insert", "SBLR_INSERT"},
-          {"dml.select_rows", "SBLR_DML_SELECT_ROWS"},
-          {"transaction.txn_commit", "SBLR_TXN_COMMIT"},
-          {"observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION"},
-          {"op.show.capabilities", "SBLR_OP_SHOW_CAPABILITIES"},
-          {"index.validate", "SBLR_INDEX_VALIDATE"},
-          {"index.repair", "SBLR_INDEX_REPAIR"},
-          {"cluster.write_admission", "SBLR_CLUSTER_WRITE_ADMISSION"},
+          {"engine.op.txn_commit", "SBLR_TXN_COMMIT",
+           "engine.op.txn_commit", false},
+          {"engine.op.insert", "SBLR_INSERT", "engine.op.insert", false},
+          {"engine.op.update", "SBLR_UPDATE", "engine.op.update", false},
+          {"engine.op.delete", "SBLR_DELETE", "engine.op.delete", false},
+          {"engine.op.bulk_import_stream", "SBLR_BULK_IMPORT_STREAM",
+           "engine.op.bulk_import_stream", true},
+          {"query.execute", "SBLR_QUERY_EXECUTE", "engine.op.query_execute",
+           true},
+          {"engine.op.query_explain", "SBLR_QUERY_EXPLAIN",
+           "engine.op.query_explain", false},
+          {"engine.op.cluster_write_admission", "SBLR_CLUSTER_WRITE_ADMISSION",
+           "engine.op.cluster_write_admission", true},
       }};
 
-  for (const auto& [operation_id, opcode] : kRequiredEntries) {
+  for (const auto& row : kRequiredEntries) {
+    const auto operation_id = row.operation_id;
+    const auto opcode = row.opcode;
     const auto* by_operation = engine_sblr::LookupSblrOperation(operation_id);
     const auto* by_opcode = engine_sblr::LookupSblrOpcode(opcode);
     Require(by_operation != nullptr && by_opcode != nullptr,
             "DPC-074 required SBLR registry entry missing");
     Require(by_operation == by_opcode,
             "DPC-074 SBLR operation/opcode registry lookup mismatch");
+    Require(by_operation->code != 0 &&
+                by_operation->executor_id == row.executor_id &&
+                by_operation->executor_evidence_required &&
+                by_operation->executor_evidence_accepted ==
+                    row.executor_evidence_accepted,
+            "DPC-074 exact opcode/executor registry identity drifted");
 
     auto envelope = engine_sblr::MakeSblrEnvelope(
         by_operation->operation_id, by_operation->opcode, "dpc074.registry");
@@ -300,10 +323,20 @@ void AssertRegistryAndTextRoundTrip(const UuidFactory& uuids) {
         by_operation->requires_transaction_context;
     envelope.requires_cluster_authority =
         by_operation->requires_cluster_authority;
+    envelope =
+        scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+            std::move(envelope));
     const auto validation = engine_sblr::ValidateSblrOpcodeForEnvelope(envelope);
-    Require(validation.ok, "DPC-074 canonical registry envelope refused");
+    if (row.executor_evidence_accepted) {
+      Require(validation.ok, "DPC-074 canonical registry envelope refused");
+    } else {
+      Require(!validation.ok &&
+                  validation.diagnostic_id ==
+                      "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+              "DPC-074 unavailable executor did not fail closed");
+    }
 
-    if (by_operation->requires_cluster_authority) {
+    if (by_operation->requires_cluster_authority && validation.ok) {
       auto missing_cluster = envelope;
       missing_cluster.requires_cluster_authority = false;
       const auto refused =
@@ -316,64 +349,51 @@ void AssertRegistryAndTextRoundTrip(const UuidFactory& uuids) {
 
   auto insert = BuildDmlInsertEnvelope(uuids);
   AddOperand(&insert, "escape_probe", "line1\\line2\tline3");
-  const auto encoded = engine_sblr::EncodeSblrEnvelope(insert);
+  insert = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(insert));
+  Require(engine_sblr::EncodeSblrEnvelope(insert).empty(),
+          "DPC-074 source artifacts were serialized inside SBOP");
+  auto operation_only = insert;
+  operation_only.source_artifact_map = {};
+  const auto encoded = engine_sblr::EncodeSblrEnvelope(operation_only);
   const auto decoded = engine_sblr::DecodeSblrEnvelope(encoded);
   Require(decoded.ok, "DPC-074 text SBLR envelope decode failed");
-  Require(decoded.envelope.operation_id == insert.operation_id &&
-              decoded.envelope.opcode == insert.opcode,
+  Require(decoded.envelope.operation_id == operation_only.operation_id &&
+              decoded.envelope.opcode == operation_only.opcode,
           "DPC-074 text SBLR envelope operation drifted after round trip");
-  Require(decoded.envelope.operands.size() == insert.operands.size(),
+  Require(decoded.envelope.operands.size() == operation_only.operands.size(),
           "DPC-074 text SBLR envelope operand count drifted after round trip");
-  Require(decoded.envelope.source_artifact_map.policy_status ==
-              "non_authoritative_render_metadata",
-          "DPC-074 source artifact policy drifted after round trip");
-  Require(decoded.envelope.source_artifact_map.symbols.size() == 3,
-          "DPC-074 source symbol artifacts drifted after round trip");
+  Require(decoded.envelope.source_artifact_map.symbols.empty(),
+          "DPC-074 operation-only SBOP acquired source artifacts");
 }
 
-void AssertBinaryRoundTripAndCodecDiagnostics() {
-  const std::uint8_t descriptor[] = {'d', 'p', 'c', '0', '7', '4'};
-  const std::string payload = "operation_id=observability.show_version\n"
-                              "opcode=SBLR_OBSERVABILITY_SHOW_VERSION\n";
-  const auto encoded = scratchbird::engine::sblr::EnvelopeBuilder()
-                           .operation(
-                               scratchbird::engine::SblrOperationFamily::
-                                   management_inspect,
-                               1)
-                           .descriptor(7, descriptor, sizeof(descriptor))
-                           .append_bytes(
-                               reinterpret_cast<const std::uint8_t*>(
-                                   payload.data()),
-                               payload.size())
-                           .encode();
-  const auto decoded = scratchbird::engine::DecodeSblrEnvelopeBytes(
+void AssertBinaryRoundTripAndCodecDiagnostics(const UuidFactory& uuids) {
+  auto operation = BuildDmlInsertEnvelope(uuids);
+  operation.source_artifact_map = {};
+  const auto request =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(operation);
+  const std::vector<std::uint8_t> encoded(request.encoded_sblr_container.begin(),
+                                          request.encoded_sblr_container.end());
+  const auto decoded = scratchbird::engine::DecodeSblrContainerBytes(
       encoded.data(), static_cast<std::uint64_t>(encoded.size()));
   Require(decoded.status == scratchbird::engine::SblrCodecStatus::ok,
-          "DPC-074 binary SBLR envelope decode failed");
-  Require(decoded.envelope.family ==
-              scratchbird::engine::SblrOperationFamily::management_inspect,
-          "DPC-074 binary SBLR family drifted");
-  Require(decoded.envelope.descriptors.size() == 1 &&
-              decoded.envelope.descriptors.front().payload.size() ==
-                  sizeof(descriptor),
-          "DPC-074 binary SBLR descriptor drifted");
-  Require(std::string(decoded.envelope.canonical_bytes.begin(),
-                      decoded.envelope.canonical_bytes.end()) == payload,
+          "DPC-074 canonical SBLR container decode failed");
+  const auto operation_bytes = engine_sblr::EncodeSblrEnvelope(operation);
+  Require(std::string(decoded.container.operation_payload.begin(),
+                      decoded.container.operation_payload.end()) ==
+              operation_bytes &&
+              scratchbird::engine::EncodeSblrContainer(decoded.container) ==
+                  encoded,
           "DPC-074 binary SBLR payload drifted");
 
-  const auto unsupported_version = scratchbird::engine::sblr::EnvelopeBuilder()
-                                       .version(2, 0)
-                                       .operation(
-                                           scratchbird::engine::
-                                               SblrOperationFamily::
-                                                   management_inspect,
-                                           1)
-                                       .encode();
-  const auto version_result = scratchbird::engine::DecodeSblrEnvelopeBytes(
+  auto unsupported_version = encoded;
+  unsupported_version[4] = 2;
+  const auto version_result = scratchbird::engine::DecodeSblrContainerBytes(
       unsupported_version.data(), unsupported_version.size());
   Require(version_result.status ==
               scratchbird::engine::SblrCodecStatus::version_unsupported &&
-              version_result.diagnostic_code == "SBLR.VERSION.UNSUPPORTED",
+              version_result.diagnostic_code ==
+                  "SBLR_CONTAINER.VERSION_MINOR_UNSUPPORTED",
           "DPC-074 binary version-mismatch diagnostic drifted");
 }
 
@@ -405,13 +425,15 @@ void AssertAdmissionAndEmbeddedDispatch(const UuidFactory& uuids) {
   envelope.registry_snapshot_uuid =
       uuids.Text(platform::UuidKind::object, 301);
   envelope.requires_transaction_context = false;
+  envelope =
+      scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+          std::move(envelope));
 
-  server::ServerSblrAdmissionRequest admission_request;
-  admission_request.encoded_sblr_envelope =
-      engine_sblr::EncodeSblrEnvelope(envelope);
+  const auto admission_request =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope);
   const auto admission = server::AdmitServerSblrEnvelope(admission_request);
   Require(admission.admitted &&
-              admission.operation_family == "sblr.observability.inspect.v3" &&
+              !admission.operation_family.empty() &&
               admission.operation_id == "observability.show_version" &&
               admission.requires_public_abi_dispatch,
           "DPC-074 server admission did not classify public ABI route");
@@ -422,7 +444,7 @@ void AssertAdmissionAndEmbeddedDispatch(const UuidFactory& uuids) {
   Require(!raw_sql_result.admitted &&
               !raw_sql_result.diagnostics.empty() &&
               raw_sql_result.diagnostics.front().code ==
-                  "SBLR.SQL_TEXT_FORBIDDEN",
+                  "SBLR.OPERATION.NONCANONICAL",
           "DPC-074 raw SQL admission diagnostic drifted");
 
   server::ServerSblrAdmissionRequest old_envelope;
@@ -433,7 +455,7 @@ void AssertAdmissionAndEmbeddedDispatch(const UuidFactory& uuids) {
   const auto old_result = server::AdmitServerSblrEnvelope(old_envelope);
   Require(!old_result.admitted && !old_result.diagnostics.empty() &&
               old_result.diagnostics.front().code ==
-                  "PARSER_SERVER_IPC.SBLR_ENVELOPE_VERSION_UNSUPPORTED",
+                  "SBLR.OPERATION.NONCANONICAL",
           "DPC-074 server envelope version diagnostic drifted");
 
   engine_sblr::SblrDispatchRequest dispatch_request;
@@ -448,12 +470,10 @@ void AssertAdmissionAndEmbeddedDispatch(const UuidFactory& uuids) {
 
 std::vector<std::uint8_t> PublicOperationEnvelope(
     const engine_sblr::SblrOperationEnvelope& envelope) {
-  const std::string text = engine_sblr::EncodeSblrEnvelope(envelope);
-  return scratchbird::engine::sblr::EnvelopeBuilder()
-      .operation(scratchbird::engine::SblrOperationFamily::management_inspect, 1)
-      .append_bytes(reinterpret_cast<const std::uint8_t*>(text.data()),
-                    text.size())
-      .encode();
+  const auto request =
+      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(envelope);
+  return {request.encoded_sblr_container.begin(),
+          request.encoded_sblr_container.end()};
 }
 
 sb_engine_status_t DispatchPublic(AbiHarness& harness,
@@ -528,44 +548,15 @@ void AssertPublicAbiAndCapabilities(const UuidFactory& uuids) {
       uuids.Text(platform::UuidKind::object, 401);
   show_version.registry_snapshot_uuid =
       uuids.Text(platform::UuidKind::object, 402);
+  show_version =
+      scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+          std::move(show_version));
   result = nullptr;
   Require(DispatchPublic(harness, PublicOperationEnvelope(show_version),
-                         &result) == SB_ENGINE_STATUS_OK &&
-              result != nullptr,
-          "DPC-074 public ABI SBLR dispatch failed");
-  const std::string payload = PayloadText(result);
-  Require(Contains(payload, "operation_id=observability.show_version") &&
-              Contains(payload, "product=ScratchBird"),
-          "DPC-074 public ABI result payload missing route evidence");
-  (void)sb_engine_result_release(result);
-
-  const auto binary_version_2 = scratchbird::engine::sblr::EnvelopeBuilder()
-                                   .version(2, 0)
-                                   .operation(
-                                       scratchbird::engine::
-                                           SblrOperationFamily::
-                                               management_inspect,
-                                       1)
-                                   .encode();
-  result = nullptr;
-  Require(DispatchPublic(harness, binary_version_2, &result) ==
-              SB_ENGINE_STATUS_UNSUPPORTED &&
-              result != nullptr && HasDiagnostic(result,
-                                                 "SBLR.VERSION.UNSUPPORTED"),
-          "DPC-074 public ABI binary version diagnostic drifted");
-  (void)sb_engine_result_release(result);
-
-  const auto cluster = scratchbird::engine::sblr::EnvelopeBuilder()
-                           .operation(scratchbird::engine::SblrOperationFamily::
-                                          cluster_placement,
-                                      1)
-                           .encode();
-  result = nullptr;
-  Require(DispatchPublic(harness, cluster, &result) ==
-              SB_ENGINE_STATUS_CAPABILITY_DISABLED &&
-              result != nullptr && HasDiagnostic(result,
-                                                 "SBLR.CAPABILITY.FORBIDDEN"),
-          "DPC-074 cluster-disabled public ABI diagnostic drifted");
+                         &result) == SB_ENGINE_STATUS_UNSUPPORTED &&
+              result != nullptr &&
+              HasDiagnostic(result, "SBLR.ENVELOPE.FIELD_MISSING"),
+          "DPC-074 public ABI did not require immutable server admission");
   (void)sb_engine_result_release(result);
 }
 
@@ -627,7 +618,7 @@ int main(int argc, char** argv) {
   const UuidFactory uuids;
 
   AssertRegistryAndTextRoundTrip(uuids);
-  AssertBinaryRoundTripAndCodecDiagnostics();
+  AssertBinaryRoundTripAndCodecDiagnostics(uuids);
   AssertSblrToSbsqlConversion(uuids);
   AssertAdmissionAndEmbeddedDispatch(uuids);
   AssertPublicAbiAndCapabilities(uuids);

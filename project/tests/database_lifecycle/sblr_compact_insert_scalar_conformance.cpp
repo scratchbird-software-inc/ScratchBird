@@ -198,6 +198,9 @@ sblr::SblrDispatchResult DispatchCompactInsert(
   auto envelope = sblr::MakeSblrEnvelope(
       "dml.insert_rows", "SBLR_DML_INSERT_ROWS",
       "SBLR-COMPACT-SCALAR-CONFORMANCE");
+  envelope.opcode_code = 0x030eu;
+  envelope.result_shape = "mutation_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
       NewUuidText(platform::UuidKind::object, 2000);
   envelope.registry_snapshot_uuid =
@@ -207,21 +210,33 @@ sblr::SblrDispatchResult DispatchCompactInsert(
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
-  envelope.operands.push_back(
-      {"text", "target_object_uuid", fixture.table_uuid});
-  envelope.operands.push_back({"text", "target_object_kind", "table"});
-  envelope.operands.push_back(
-      {"text", "insert_values_row_count", std::to_string(cells.size())});
-  envelope.operands.push_back(
-      {"text", "insert_values_column_count", "1"});
-  envelope.operands.push_back(
-      {"text", "insert_values_column_list_present", "false"});
-  envelope.operands.push_back(
-      {"text", "insert_values_descriptor_column_0", "octet_value"});
-  envelope.operands.push_back(
-      {"text", "insert_values_compact_format", std::move(compact_format)});
-  envelope.operands.push_back(
-      {"text", "insert_values_compact_payload", CompactPayload(cells)});
+  const auto text_descriptor =
+      NewUuid(platform::UuidKind::object, 2002).value.bytes;
+  const auto append_text = [&](std::string name, std::string value) {
+    sblr::SblrOperand operand;
+    operand.ordinal =
+        static_cast<std::uint32_t>(envelope.operands.size() + 1u);
+    operand.type = "text";
+    operand.name = std::move(name);
+    operand.value_kind = sblr::SblrValueKind::literal_typed;
+    operand.value_body.assign(text_descriptor.begin(), text_descriptor.end());
+    const auto size = static_cast<std::uint64_t>(value.size());
+    for (unsigned byte = 0; byte < 8; ++byte) {
+      operand.value_body.push_back(
+          static_cast<std::uint8_t>(size >> (byte * 8u)));
+    }
+    operand.value_body.insert(operand.value_body.end(), value.begin(),
+                              value.end());
+    envelope.operands.push_back(std::move(operand));
+  };
+  append_text("target_object_uuid", fixture.table_uuid);
+  append_text("target_object_kind", "table");
+  append_text("insert_values_row_count", std::to_string(cells.size()));
+  append_text("insert_values_column_count", "1");
+  append_text("insert_values_column_list_present", "false");
+  append_text("insert_values_descriptor_column_0", "octet_value");
+  append_text("insert_values_compact_format", std::move(compact_format));
+  append_text("insert_values_compact_payload", CompactPayload(cells));
 
   sblr::SblrDispatchRequest request;
   request.context = fixture.context;
@@ -286,6 +301,20 @@ int main() {
 
   const auto inserted = DispatchCompactInsert(
       fixture, "sblr.dml.insert.cells.hex.v1", bound_values);
+  if (!inserted.envelope_validated || !inserted.accepted ||
+      !inserted.dispatched_to_api || !inserted.api_result.ok) {
+    std::cerr << "compact insert state: envelope_validated="
+              << inserted.envelope_validated
+              << " accepted=" << inserted.accepted
+              << " dispatched=" << inserted.dispatched_to_api
+              << " api_ok=" << inserted.api_result.ok << '\n';
+    for (const auto& diagnostic : inserted.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    }
+    for (const auto& diagnostic : inserted.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+  }
   Require(inserted.envelope_validated && inserted.accepted &&
               inserted.dispatched_to_api && inserted.api_result.ok,
           "bound compact scalar insert did not reach engine MGA execution");

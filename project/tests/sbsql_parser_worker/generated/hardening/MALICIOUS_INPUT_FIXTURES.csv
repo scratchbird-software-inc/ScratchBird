@@ -14,12 +14,12 @@ MAL-RESOURCE-SBLR,binder_lowering,sblr_envelope_too_large,SBSQL.RESOURCE.SBLR_EN
 MAL-WIRE-OVERSIZE,full_route_client,oversized_statement,SBSQL.RESOURCE.STATEMENT_TOO_LARGE,ready
 MAL-UDR-CONTEXT,udr,missing_engine_context,UDR.SBSQL.CONTEXT_MISSING,ready
 MAL-UDR-DECOMPILE,udr,debug_policy_refused,SBU_SBSQL.DECOMPILE_POLICY_REFUSED,ready
-MAL-SBPS-RAW-SQL,sbps_packet,raw_sql_sblr_payload,SBLR.SQL_TEXT_FORBIDDEN,ready
-MAL-SBPS-BAD-SBLR,sbps_packet,malformed_sblr_payload,PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED,ready
+MAL-SBPS-RAW-SQL,sbps_packet,raw_sql_retired_sblr_ingress,SBLR.OPERATION.NONCANONICAL,ready
+MAL-SBPS-BAD-SBLR,sbps_packet,malformed_retired_sblr_ingress,SBLR.OPERATION.NONCANONICAL,ready
 MAL-SBPS-TRUNCATED,sbps_packet,truncated_header,PARSER_SERVER_IPC.FRAME_LENGTH_INVALID,ready
 MAL-SBPS-BAD-MAGIC,sbps_packet,bad_magic,PARSER_SERVER_IPC.FRAME_MAGIC_INVALID,ready
 MAL-SBPS-UNKNOWN-TYPE,sbps_packet,unknown_message_type,PARSER_SERVER_IPC.MESSAGE_TYPE_UNKNOWN,ready
 MAL-SBPS-PAYLOAD-CRC,sbps_packet,payload_crc_invalid,PARSER_SERVER_IPC.FRAME_PAYLOAD_CRC_INVALID,ready
 MAL-SBPS-OVERSIZE,sbps_packet,oversized_payload,PARSER_SERVER_IPC.FRAME_LENGTH_INVALID,ready
 MAL-MSGV-ROUNDTRIP,message_vector,diagnostic_vector_roundtrip,SBSQL.FUZZ.SMOKE,ready
-MAL-BINDER-UNRESOLVED,binder_lowering,missing_public_name_resolution,SBSQL.NAME_RESOLUTION.PUBLIC_RESOLVER_REQUIRED,ready
+MAL-BINDER-UNRESOLVED,binder_lowering,missing_native_engine_binding_context,QOW-DIAG-BOUNDAST-SCOPE,ready

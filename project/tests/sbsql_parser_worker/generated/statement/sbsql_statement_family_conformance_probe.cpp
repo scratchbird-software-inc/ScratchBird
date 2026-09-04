@@ -89,6 +89,7 @@ bool ValidateStatementDescriptorCoverage() {
     const auto parsed_category = ParseStatementParserCategory(row.family);
     ok &= Require(parsed_kind.has_value(), std::string(row.surface_id) + " invalid surface kind");
     ok &= Require(parsed_category.has_value(), std::string(row.surface_id) + " invalid family category");
+    if (!parsed_kind.has_value() || !parsed_category.has_value()) continue;
     ok &= Require(descriptor->kind == parsed_kind.value(),
                   std::string(row.surface_id) + " surface kind mismatch");
     ok &= Require(descriptor->category == parsed_category.value(),
@@ -154,12 +155,12 @@ bool ValidateStatementDescriptorCoverage() {
 
   ok &= Require(BuiltinStatementSurfaceDescriptors().size() == registry_count,
                 "statement descriptor count does not match generated non-expression rows");
-  ok &= Require(registry_count == 1049, "expected 1049 non-expression statement/grammar rows");
-  ok &= Require(grammar_count == 1010, "expected 1010 grammar-production statement rows");
+  ok &= Require(registry_count == 1083, "expected 1083 non-expression statement/grammar rows");
+  ok &= Require(grammar_count == 1044, "expected 1044 grammar-production statement rows");
   ok &= Require(canonical_count == 39, "expected 39 canonical statement rows");
-  ok &= Require(native_now_count == 1014, "expected 1014 native_now statement rows");
+  ok &= Require(native_now_count == 1048, "expected 1048 native_now statement rows");
   ok &= Require(cluster_private_status_count == 35, "expected 35 cluster_private status rows");
-  ok &= Require(cluster_private_scope_count == 46, "expected 46 cluster_private scope rows");
+  ok &= Require(cluster_private_scope_count == 47, "expected 47 cluster_private scope rows");
   ok &= Require(exact_refusal_count >= cluster_private_scope_count,
                 "exact refusal count must cover cluster-private scope rows");
 
@@ -168,13 +169,13 @@ bool ValidateStatementDescriptorCoverage() {
                 "expected 429 FSPE-005 grammar-production rows");
   ok &= Require(active_statement_worker_canonical_count == 24,
                 "expected 24 FSPE-005 canonical-surface rows");
-  ok &= Require(active_family_counts["ddl_catalog"] == 176, "ddl_catalog active count mismatch");
+  ok &= Require(active_family_counts["ddl_catalog"] == 171, "ddl_catalog active count mismatch");
   ok &= Require(active_family_counts["multi_model"] == 70, "multi_model active count mismatch");
   ok &= Require(active_family_counts["query"] == 43, "query active count mismatch");
-  ok &= Require(active_family_counts["observability"] == 37, "observability active count mismatch");
+  ok &= Require(active_family_counts["observability"] == 36, "observability active count mismatch");
   ok &= Require(active_family_counts["dml"] == 36, "dml active count mismatch");
   ok &= Require(active_family_counts["transaction"] == 24, "transaction active count mismatch");
-  ok &= Require(active_family_counts["security"] == 21, "security active count mismatch");
+  ok &= Require(active_family_counts["security"] == 26, "security active count mismatch");
   return ok;
 }
 
@@ -216,6 +217,8 @@ bool ValidateLookupDescriptors() {
                 "canonical surface kind name mismatch");
   ok &= Require(StatementParserCategoryName(StatementParserCategory::kDml) == "dml",
                 "DML category name mismatch");
+  ok &= Require(StatementParserCategoryName(StatementParserCategory::kBridge) == "bridge",
+                "bridge category name mismatch");
   return ok;
 }
 

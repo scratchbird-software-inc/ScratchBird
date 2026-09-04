@@ -47,18 +47,13 @@ void Require(bool condition, std::string_view message) {
   }
 }
 
-void RequireServerAccepted(
+bool HasServerDiagnostic(
     const scratchbird::server::SessionOperationResult& result,
-    std::string_view message) {
-  if (result.accepted) return;
-  std::cerr << message << '\n';
+    std::string_view code) {
   for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << "  diagnostic=" << diagnostic.code << '\n';
-    for (const auto& field : diagnostic.fields) {
-      std::cerr << "    " << field.key << '=' << field.value << '\n';
-    }
+    if (diagnostic.code == code) return true;
   }
-  std::exit(EXIT_FAILURE);
+  return false;
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -222,7 +217,7 @@ sbps::Frame CloseCursorFrame(const std::array<std::uint8_t, 16>& session_uuid,
   return frame;
 }
 
-void RequireServerRoute() {
+void RequireRetiredServerCarrierRefusal() {
   std::array<std::uint8_t, 16> session_uuid{};
   auto registry = MakeRegistry(&session_uuid);
   const auto engine_state = MakeEngineState();
@@ -234,49 +229,37 @@ void RequireServerRoute() {
 
   const auto prepare_result = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, prepare.envelope.payload));
-  RequireServerAccepted(prepare_result,
-                        "SBSFC-068 server prepare control was not accepted");
-  Require(registry.prepared_by_uuid.size() == 1,
-          "SBSFC-068 server did not create one prepared statement record");
-  const auto prepared_it = registry.prepared_by_uuid.begin();
-  Require(prepared_it->second.statement_name == "prep_one",
-          "SBSFC-068 prepared statement name was not session-bound");
-  Require(prepared_it->second.operation_id == "query.evaluate_projection",
-          "SBSFC-068 prepared statement did not store the inner operation id");
-  Require(Contains(prepared_it->second.encoded_sblr_envelope, "\"operation_id\":\"query.evaluate_projection\""),
-          "SBSFC-068 prepared statement did not store executable canonical SBLR");
-  Require(!Contains(prepared_it->second.encoded_sblr_envelope, "PREPARE prep_one AS SELECT"),
-          "SBSFC-068 prepared statement stored raw SQL text");
+  Require(!prepare_result.accepted,
+          "SBSFC-068 retired textual PREPARE carrier was accepted");
+  Require(HasServerDiagnostic(prepare_result, "SBLR.OPERATION.NONCANONICAL"),
+          "SBSFC-068 retired textual PREPARE refusal diagnostic drifted");
+  Require(registry.prepared_by_uuid.empty(),
+          "SBSFC-068 retired textual PREPARE published prepared state");
 
   const auto execute_result = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, execute.envelope.payload));
-  Require(execute_result.accepted, "SBSFC-068 server execute prepared was not accepted");
-  const std::string execute_payload(execute_result.payload.begin(), execute_result.payload.end());
-  Require(Contains(execute_payload, "query.evaluate_projection"),
-          "SBSFC-068 execute prepared did not dispatch the stored inner SBLR operation");
+  Require(!execute_result.accepted,
+          "SBSFC-068 retired textual EXECUTE carrier was accepted");
+  Require(HasServerDiagnostic(execute_result, "SBLR.OPERATION.NONCANONICAL"),
+          "SBSFC-068 retired textual EXECUTE refusal diagnostic drifted");
 
   const auto cursor_execute_result = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, cursor_execute.envelope.payload));
-  Require(cursor_execute_result.accepted,
-          "SBSFC-068 server execute prepared WITH CURSOR was not accepted");
-  const auto cursor_uuid =
-      scratchbird::server::DecodeCursorUuidForTest(cursor_execute_result.payload);
-  Require(cursor_uuid.has_value(),
-          "SBSFC-068 execute prepared WITH CURSOR did not return a cursor UUID");
-  const auto close_cursor_result = scratchbird::server::HandleCloseCursor(
-      &registry, CloseCursorFrame(session_uuid, *cursor_uuid));
-  Require(close_cursor_result.accepted,
-          "SBSFC-068 close cursor after prepared execute was not accepted");
+  Require(!cursor_execute_result.accepted,
+          "SBSFC-068 retired textual EXECUTE WITH CURSOR carrier was accepted");
+  Require(HasServerDiagnostic(cursor_execute_result,
+                              "SBLR.OPERATION.NONCANONICAL"),
+          "SBSFC-068 retired textual cursor refusal diagnostic drifted");
 
   const auto deallocate_result = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, deallocate.envelope.payload));
-  Require(deallocate_result.accepted, "SBSFC-068 server deallocate was not accepted");
-  Require(prepared_it->second.closed, "SBSFC-068 deallocate did not close prepared state");
-
-  const auto execute_after_deallocate = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_uuid, execute.envelope.payload));
-  Require(!execute_after_deallocate.accepted,
-          "SBSFC-068 execute after deallocate unexpectedly succeeded");
+  Require(!deallocate_result.accepted,
+          "SBSFC-068 retired textual DEALLOCATE carrier was accepted");
+  Require(HasServerDiagnostic(deallocate_result,
+                              "SBLR.OPERATION.NONCANONICAL"),
+          "SBSFC-068 retired textual DEALLOCATE refusal diagnostic drifted");
+  Require(registry.prepared_by_uuid.empty() && registry.cursors_by_uuid.empty(),
+          "SBSFC-068 retired prepared-control carriers mutated server state");
 }
 
 }  // namespace
@@ -322,6 +305,6 @@ int main() {
   Require(Contains(cursor_execute.envelope.payload, "SBSQL-3F4B1406188A"),
           "SBSFC-068 EXECUTE WITH CURSOR payload missing option row id");
 
-  RequireServerRoute();
+  RequireRetiredServerCarrierRefusal();
   return EXIT_SUCCESS;
 }

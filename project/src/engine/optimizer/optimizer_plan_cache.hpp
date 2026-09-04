@@ -443,6 +443,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   CanonicalPreparePhysicalPlanResult result;
   const auto refuse = [&](std::string field_id) {
     result = {};
+    result.issues.reserve(1);
     result.issues.push_back(
         {"QOW-DIAG-OPT-010-PREPARE-REFUSAL-V1", std::move(field_id)});
     return result;
@@ -653,6 +654,8 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
 
   std::unordered_set<std::uint32_t> parameter_descriptor_ids;
   std::unordered_set<std::string> parameter_descriptor_uuids;
+  parameter_descriptor_ids.reserve(request.parameters.size());
+  parameter_descriptor_uuids.reserve(request.parameters.size());
   for (std::size_t index = 0; index < request.parameters.size(); ++index) {
     const auto& parameter = request.parameters[index];
     if (parameter.ordinal != index + 1 || parameter.descriptor_id == 0 ||
@@ -678,6 +681,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
     return refuse("result_descriptor_coverage");
   }
   std::unordered_set<std::string> result_descriptor_uuids;
+  result_descriptor_uuids.reserve(request.result_descriptors.size());
   for (std::size_t index = 0; index < request.result_descriptors.size();
        ++index) {
     const auto& descriptor = request.result_descriptors[index];
@@ -1586,6 +1590,7 @@ ValidateCanonicalExecutablePlanParameterBindings(
   CanonicalExecutablePlanParameterBindResult result;
   const auto refuse = [&](std::string field_id) {
     result = {};
+    result.issues.reserve(1);
     result.issues.push_back(CanonicalExecutablePlanIssue(
         "QOW-DIAG-OPT-010-PARAMETER-REFUSAL-V1", std::move(field_id)));
     return result;
@@ -1969,6 +1974,7 @@ class CanonicalExecutablePlanCache {
     CanonicalExecutablePlanCacheAdmissionResult result;
     const auto refuse = [&](std::string field_id) {
       result = {};
+      result.issues.reserve(1);
       result.issues.push_back(
           {"QOW-DIAG-OPT-009-REFUSAL-V1", std::move(field_id)});
       return result;
@@ -2024,6 +2030,7 @@ class CanonicalExecutablePlanCache {
                                 "QOW-DIAG-OPT-009-REFUSAL-V1") {
       result = {};
       result.reprepare_required = reprepare_required;
+      result.issues.reserve(1);
       result.issues.push_back(CanonicalExecutablePlanIssue(
           std::move(diagnostic_id), std::move(field_id)));
       return result;
@@ -2178,6 +2185,8 @@ class CanonicalExecutablePlanCache {
     result.receipt
         .structural_no_optimizer_search_planner_or_fallback_route = true;
     result.receipt.mga_statement_context = current.statement_context;
+    result.receipt.physical_node_ids.reserve(entry->prepared_plan->nodes.size());
+    result.receipt.causal_counter_ids.reserve(entry->prepared_plan->nodes.size());
     for (const auto& node : entry->prepared_plan->nodes) {
       result.receipt.physical_node_ids.push_back(node.physical_node_id);
       result.receipt.causal_counter_ids.push_back(node.causal_counter_id);
@@ -2240,6 +2249,7 @@ class CanonicalExecutablePlanCache {
     const auto refuse = [&](std::string field_id) {
       result.accepted = false;
       result.issues.clear();
+      result.issues.reserve(1);
       result.issues.push_back(CanonicalExecutablePlanIssue(
           "QOW-DIAG-OPT-010-REPREPARE-REFUSAL-V1", std::move(field_id),
           "error", "plan", "not_retryable"));

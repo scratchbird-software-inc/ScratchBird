@@ -1659,18 +1659,58 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
 
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(
-      request.context.database_path);
-  if (!loaded.ok()) {
-    return MakeTxnError<EngineResolveStatementSnapshotResult>(
-        request.context,
-        operation_id,
-        DiagnosticFromMGA(loaded.diagnostic,
-                          "SB-MGA-TXN-INV-LOAD-FAILED",
-                          "mga.transaction_inventory.load_failed"));
+  scratchbird::storage::database::LocalTransactionStoreResult loaded;
+  const LocalTransactionInventory* inventory = nullptr;
+  if (request.context.statement_transaction_inventory_snapshot != nullptr) {
+    const auto& retained =
+        *request.context.statement_transaction_inventory_snapshot;
+    const auto fence = scratchbird::storage::database::
+        RevalidateLocalTransactionInventorySnapshot(retained);
+    if (retained.database_path != request.context.database_path) {
+      return MakeTxnError<EngineResolveStatementSnapshotResult>(
+          request.context,
+          operation_id,
+          MakeInvalidRequestDiagnostic(
+              operation_id,
+              "statement_transaction_inventory_snapshot_stale"));
+    }
+    if (fence.ok()) {
+      inventory = &retained.inventory;
+    } else {
+      // The publish journal is database-wide. Another session may commit or
+      // roll back while this statement retains its immutable snapshot, so a
+      // changed journal identity is a signal to revalidate the exact owner and
+      // published snapshot against current authority, not proof that this
+      // statement is stale. The slow reload occurs only on that generation
+      // change; the normal execution fence remains metadata-only.
+      loaded = LoadLocalTransactionInventoryFromDatabase(
+          request.context.database_path);
+      if (!loaded.ok()) {
+        return MakeTxnError<EngineResolveStatementSnapshotResult>(
+            request.context,
+            operation_id,
+            DiagnosticFromMGA(
+                loaded.diagnostic,
+                "SB-MGA-TXN-INV-LOAD-FAILED",
+                "mga.transaction_inventory.load_failed"));
+      }
+      inventory = &loaded.inventory;
+    }
+  } else {
+    loaded = LoadLocalTransactionInventoryFromDatabase(
+        request.context.database_path);
+    if (!loaded.ok()) {
+      return MakeTxnError<EngineResolveStatementSnapshotResult>(
+          request.context,
+          operation_id,
+          DiagnosticFromMGA(loaded.diagnostic,
+                            "SB-MGA-TXN-INV-LOAD-FAILED",
+                            "mga.transaction_inventory.load_failed"));
+    }
+    inventory = &loaded.inventory;
   }
   auto resolved = ResolveCurrentStatementStableSnapshotVector(
-      loaded.inventory,
+      *inventory,
       snapshot_uuid.value,
       transaction_uuid.value,
       MakeLocalTransactionId(request.context.local_transaction_id));

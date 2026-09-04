@@ -56,7 +56,11 @@ void VerifyCstSourceBufferMetadata() {
           "CST source buffer UUID evidence missing");
   Require(!cst.source_hash.empty(), "CST source hash missing");
   Require(cst.line_ending_mode == "crlf", "CST line-ending mode was not recorded");
-  Require(cst.dialect_profile_uuid == "sbsql.default", "CST dialect profile missing");
+  Require(cst.dialect_profile_uuid == "sbsql.v3",
+          "CST dialect profile missing");
+  Require(cst.canonical_element_stream.dialect_profile_uuid ==
+              cst.dialect_profile_uuid,
+          "canonical element stream dialect profile drifted from the CST");
   Require(cst.trivia_preserved, "CST trivia preservation flag missing");
 }
 
@@ -122,17 +126,24 @@ void VerifyManagementAndClusterClassification() {
 void VerifyGeneratedRegistryProfiles() {
   std::size_t native_now = 0;
   std::size_t native_future = 0;
-  std::size_t cluster_private = 0;
-  for (const auto& row : sbsql::GeneratedSurfaceRegistryRows()) {
+  std::size_t cluster_private_status = 0;
+  std::size_t cluster_private_scope = 0;
+  const auto rows = sbsql::GeneratedSurfaceRegistryRows();
+  for (const auto& row : rows) {
     if (row.source_status == "native_now") ++native_now;
     if (row.source_status == "native_future") ++native_future;
-    if (row.cluster_scope == "cluster_private") ++cluster_private;
+    if (row.source_status == "cluster_private") ++cluster_private_status;
+    if (row.cluster_scope == "cluster_private") ++cluster_private_scope;
   }
-  Require(native_now + native_future == 2546,
-          "generated registry public source-status profile unexpectedly changed");
-  Require(native_now == 2546, "generated registry native-now profile unexpectedly changed");
+  Require(rows.size() == 2617,
+          "generated registry row count unexpectedly changed");
+  Require(native_now == 2580,
+          "generated registry native-now profile unexpectedly changed");
   Require(native_future == 0, "generated registry must not retain native-future inventory rows");
-  Require(cluster_private > 20, "generated registry cluster-private profile unexpectedly small");
+  Require(cluster_private_status == 37,
+          "generated registry cluster-private status profile unexpectedly changed");
+  Require(cluster_private_scope == 57,
+          "generated registry cluster-private scope profile unexpectedly changed");
   Require(sbsql::FindGeneratedSurfaceRegistryRowByCanonicalName("backup_stmt") != nullptr,
           "generated registry missing backup management surface");
   Require(sbsql::FindGeneratedSurfaceRegistryRowByCanonicalName("cluster_stmt") != nullptr,

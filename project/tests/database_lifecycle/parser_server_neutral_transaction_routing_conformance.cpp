@@ -74,6 +74,9 @@ void VerifyExactPublicDatatypeIdentityProjection() {
   text.datatype_codec_generation = 1;
   text.datatype_canonical_value_bytes = 0;
   text.datatype_null_encoding = 1;
+  text.encoded_type_descriptor =
+      "descriptor_kind=canonical_type_descriptor;"
+      "datatype_descriptor_uuid=019d0000-0000-7000-8000-00000000d718";
   Require(ipc::ValidatePublicRelationDatatypeIdentityV3ForTest(descriptor,
                                                                text),
           "exact canonical TEXT public identity projection was refused");
@@ -112,8 +115,9 @@ void VerifyExactPublicDatatypeIdentityProjection() {
       "TEXT public identity projection admitted a stale registry generation");
   reject_text(
       [](auto&, auto& column) {
-        column.type_descriptor_uuid =
-            "019d0000-0000-7000-8000-00000000d719";
+        column.encoded_type_descriptor =
+            "descriptor_kind=canonical_type_descriptor;"
+            "datatype_descriptor_uuid=019d0000-0000-7000-8000-00000000d719";
       },
       "TEXT public identity projection admitted a descriptor lookalike");
   reject_text(
@@ -141,6 +145,9 @@ void VerifyExactPublicDatatypeIdentityProjection() {
       "019d0000-0000-7000-8000-00000000d717";
   fixed.datatype_codec_id = "datatype.int32.le.v1";
   fixed.datatype_canonical_value_bytes = 4;
+  fixed.encoded_type_descriptor =
+      "descriptor_kind=canonical_type_descriptor;"
+      "datatype_descriptor_uuid=019d0000-0000-7000-8000-00000000d716";
   Require(ipc::ValidatePublicRelationDatatypeIdentityV3ForTest(descriptor,
                                                                fixed),
           "exact fixed-width public identity projection was refused");

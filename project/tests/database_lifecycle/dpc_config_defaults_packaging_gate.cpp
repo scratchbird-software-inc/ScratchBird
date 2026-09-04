@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "database_lifecycle_test_memory.hpp"
 #include "observability/performance_optimization_surface.hpp"
 #include "management/support_bundle_api.hpp"
 
@@ -98,6 +99,10 @@ api::EngineRequestContext Context() {
       "right:OBS_MANAGEMENT_INSPECT",
       "right:OBS_CONFIG_INSPECT",
       "dpc_config_defaults_packaging_gate"};
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context,
+      "dpc_config_defaults_packaging_gate",
+      {"OBS_MANAGEMENT_INSPECT", "OBS_CONFIG_INSPECT"});
   return context;
 }
 

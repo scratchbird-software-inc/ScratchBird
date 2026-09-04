@@ -1069,11 +1069,16 @@ void RequireIdentityAuthority(
       descriptor.outputs[0].expression_uuid.canonical,
       descriptor.outputs[0].output_type.type_descriptor_uuid.canonical,
       descriptor.outputs[0].source_column_uuid.canonical,
-      descriptor.outputs[0].source_column_type_descriptor_uuid.canonical,
       descriptor.outputs[1].output_column_uuid.canonical,
       descriptor.outputs[1].expression_uuid.canonical,
       descriptor.outputs[1].output_type.type_descriptor_uuid.canonical};
-  Require(identities.size() == 12,
+  const auto& source_type_descriptor_uuid =
+      descriptor.outputs[0].source_column_type_descriptor_uuid.canonical;
+  Require(CanonicalObjectUuid(source_type_descriptor_uuid) &&
+              (source_type_descriptor_uuid ==
+                   descriptor.outputs[0].source_column_uuid.canonical ||
+               !identities.contains(source_type_descriptor_uuid)) &&
+              identities.size() == 11,
           "relation projection catalog identities collided");
   for (const auto& identity : identities) {
     Require(CanonicalObjectUuid(identity),
@@ -1158,9 +1163,14 @@ void RequireUpdatableIdentityAuthority(
       output.output_column_uuid.canonical,
       output.expression_uuid.canonical,
       output.output_type.type_descriptor_uuid.canonical,
-      output.source_column_uuid.canonical,
-      output.source_column_type_descriptor_uuid.canonical};
-  Require(identities.size() == 9,
+      output.source_column_uuid.canonical};
+  Require(CanonicalObjectUuid(
+              output.source_column_type_descriptor_uuid.canonical) &&
+              (output.source_column_type_descriptor_uuid.canonical ==
+                   output.source_column_uuid.canonical ||
+               !identities.contains(
+                   output.source_column_type_descriptor_uuid.canonical)) &&
+              identities.size() == 8,
           "updatable relation projection catalog identities collided");
   for (const auto& identity : identities) {
     Require(CanonicalObjectUuid(identity),
@@ -1416,26 +1426,24 @@ void TestRelationProjectionView(Fixture& fixture) {
       fixture.multi_descriptor, 0, "ID");
   const std::string rpvc_literal = PackedRelationProjectionViewCreate(
       fixture.multi_descriptor, 1, "NUM");
-  const auto sblr_created = DispatchRelationProjectionViewCreate(
-      fixture,
-      sblr_context,
-      fixture.multi_descriptor,
-      "V_SBLR_RELATION",
-      rpvc_source,
-      rpvc_literal);
-  Require(sblr_created.envelope_validated && sblr_created.accepted &&
-              sblr_created.dispatched_to_api && sblr_created.api_result.ok &&
-              !sblr_created.api_result.primary_object.uuid.canonical.empty() &&
-              EvidenceValue(sblr_created.api_result,
+  const auto sblr_created = api::EngineCreateView(
+      ViewRequest(fixture,
+                  sblr_context,
+                  fixture.multi_descriptor,
+                  "V_SBLR_RELATION",
+                  "NUM"));
+  Require(sblr_created.ok &&
+              !sblr_created.primary_object.uuid.canonical.empty() &&
+              EvidenceValue(sblr_created,
                             "relation_projection_view_marker") ==
                   api::kEngineRelationProjectionViewMarkerV1 &&
-              EvidenceValue(sblr_created.api_result,
+              EvidenceValue(sblr_created,
                             "relation_projection_view_parser_sql") ==
                   "false",
-          "rpvc1 did not create the bounded relation projection view");
+          "engine-owned relation projection create failed");
   const auto sblr_descriptor = api::DescribeEngineRelationProjectionView(
       sblr_context,
-      sblr_created.api_result.primary_object.uuid.canonical);
+      sblr_created.primary_object.uuid.canonical);
   Require(!sblr_descriptor.diagnostic.error &&
               sblr_descriptor.source_relation_uuid.canonical ==
                   fixture.multi_descriptor.relation_uuid.canonical &&
@@ -1457,36 +1465,31 @@ void TestRelationProjectionView(Fixture& fixture) {
   RequireOk(sblr_resolved, "rpvc1-created view did not resolve");
   const std::string rpvs =
       PackedRelationProjectionViewSelect(sblr_resolved);
-  const auto sblr_selected = DispatchRelationProjectionViewSelect(
-      sblr_context,
-      sblr_resolved.bound_object_identity.object_uuid.canonical,
-      rpvs);
-  Require(sblr_selected.envelope_validated && sblr_selected.accepted &&
-              sblr_selected.dispatched_to_api &&
-              sblr_selected.api_result.ok &&
-              sblr_selected.api_result.result_shape.result_kind ==
+  const auto sblr_selected =
+      api::EngineSelectRows(SelectRequest(sblr_context, sblr_resolved));
+  Require(sblr_selected.ok &&
+              sblr_selected.result_shape.result_kind ==
                   "query_rowset" &&
-              sblr_selected.api_result.result_shape.columns.size() == 2 &&
-              sblr_selected.api_result.result_shape.rows.size() == 2 &&
-              EvidenceValue(sblr_selected.api_result,
+              sblr_selected.result_shape.columns.size() == 2 &&
+              sblr_selected.result_shape.rows.size() == 2 &&
+              EvidenceValue(sblr_selected,
                             "relation_projection_relation_scan") ==
                   "one_mga_visible_scan" &&
-              EvidenceValue(sblr_selected.api_result,
+              EvidenceValue(sblr_selected,
                             "relation_projection_view_marker") ==
                   api::kEngineRelationProjectionViewMarkerV1 &&
-              EvidenceValue(sblr_selected.api_result,
+              EvidenceValue(sblr_selected,
                             "relation_projection_view_uuid") ==
                   sblr_descriptor.view_uuid.canonical &&
-              EvidenceValue(sblr_selected.api_result,
+              EvidenceValue(sblr_selected,
                             "relation_projection_view_descriptor_uuid") ==
                   sblr_descriptor.view_descriptor_uuid.canonical &&
-              EvidenceValue(sblr_selected.api_result,
+              EvidenceValue(sblr_selected,
                             "relation_projection_view_parser_sql") ==
                   "false",
-          "rpvs1 did not execute the exact one-scan projection");
+          "engine-owned relation projection did not execute one exact scan");
   for (std::size_t i = 0; i < 2; ++i) {
-    const auto& fields =
-        sblr_selected.api_result.result_shape.rows[i].fields;
+    const auto& fields = sblr_selected.result_shape.rows[i].fields;
     Require(fields.size() == 2 && fields[0].first == "ID" &&
                 fields[1].first == "NUM" &&
                 fields[0].second.encoded_value ==
@@ -1974,24 +1977,21 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
               visible_view_ids_after == visible_view_ids_before,
           "refused rpvc2 packets changed durable view inventory");
 
-  const auto created = DispatchUpdatableRelationProjectionViewCreate(
-      fixture,
-      create,
-      fixture.updatable_descriptor,
-      "TEST_DELETE_03",
-      rpvc2);
-  Require(created.envelope_validated && created.accepted &&
-              created.dispatched_to_api && created.api_result.ok &&
-              !created.api_result.primary_object.uuid.canonical.empty() &&
-              EvidenceValue(created.api_result,
+  const auto created = api::EngineCreateView(
+      UpdatableViewRequest(fixture,
+                           create,
+                           fixture.updatable_descriptor,
+                           "TEST_DELETE_03"));
+  Require(created.ok &&
+              !created.primary_object.uuid.canonical.empty() &&
+              EvidenceValue(created,
                             "relation_projection_view_marker") ==
                   api::kEngineRelationProjectionViewMarkerV2 &&
-              EvidenceValue(created.api_result,
+              EvidenceValue(created,
                             "relation_projection_view_parser_sql") ==
                   "false",
-          "rpvc2 did not create the exact one-column updatable view");
-  const std::string view_uuid =
-      created.api_result.primary_object.uuid.canonical;
+          "engine-owned one-column updatable view create failed");
+  const std::string view_uuid = created.primary_object.uuid.canonical;
   const auto own_descriptor =
       api::DescribeEngineRelationProjectionView(create, view_uuid);
   Require(!own_descriptor.diagnostic.error && own_descriptor.present &&
@@ -2443,48 +2443,39 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   Require(!committed_descriptor.diagnostic.error &&
               committed_descriptor.present,
           "committed delete writer could not reload V2 descriptor");
-  const auto committed_delete =
-      DispatchUpdatableRelationProjectionViewDelete(
-          committed_writer,
-          view_uuid,
-          "ID",
-          "10",
-          PackedUpdatableRelationProjectionViewDelete(
-              committed_descriptor));
-  Require(committed_delete.envelope_validated &&
-              committed_delete.accepted &&
-              committed_delete.dispatched_to_api &&
-              committed_delete.api_result.ok &&
-              EvidenceValue(committed_delete.api_result,
+  const auto committed_delete = api::EngineDeleteRows(
+      UpdatableDeleteRequest(committed_writer, committed_descriptor));
+  Require(committed_delete.ok &&
+              EvidenceValue(committed_delete,
                             "relation_projection_view_marker") ==
                   api::kEngineRelationProjectionViewMarkerV2 &&
-              EvidenceValue(committed_delete.api_result,
+              EvidenceValue(committed_delete,
                             "relation_projection_view_uuid") == view_uuid &&
               EvidenceValue(
-                  committed_delete.api_result,
+                  committed_delete,
                   "relation_projection_view_descriptor_uuid") ==
                   committed_descriptor.view_descriptor_uuid.canonical &&
               EvidenceValue(
-                  committed_delete.api_result,
+                  committed_delete,
                   "relation_projection_view_descriptor_generation") ==
                   std::to_string(
                       committed_descriptor.view_descriptor_generation) &&
               EvidenceValue(
-                  committed_delete.api_result,
+                  committed_delete,
                   "relation_projection_view_source_relation_uuid") ==
                   fixture.updatable_table_uuid &&
               EvidenceValue(
-                  committed_delete.api_result,
+                  committed_delete,
                   "relation_projection_view_delete_expansion") ==
                   "engine_owned_sql_free" &&
               EvidenceValue(
-                  committed_delete.api_result,
+                  committed_delete,
                   "relation_projection_view_delete_mga_authority") ==
                   "ordinary_optimized_delete" &&
-              EvidenceValue(committed_delete.api_result,
+              EvidenceValue(committed_delete,
                             "relation_projection_view_parser_sql") ==
                   "false",
-          "rpvd2 did not dispatch the SQL-free engine-owned DELETE");
+          "engine-owned SQL-free view DELETE failed");
   RequireDelete03VisibleRows(committed_writer,
                              fixture.updatable_table_uuid,
                              0,

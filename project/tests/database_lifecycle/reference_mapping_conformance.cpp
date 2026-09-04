@@ -9,7 +9,9 @@
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
+#if SB_DBLC_HAVE_FIREBIRD_PARSER
 #include "firebird_dialect.hpp"
+#endif
 #include "lowering/lowering.hpp"
 #include "statement/statement_catalog.hpp"
 
@@ -21,8 +23,10 @@
 
 namespace {
 
-namespace fb = scratchbird::parser::firebird;
 namespace sb = scratchbird::parser::sbsql;
+#if SB_DBLC_HAVE_FIREBIRD_PARSER
+namespace fb = scratchbird::parser::firebird;
+#endif
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -198,6 +202,7 @@ void CheckSbsqlLifecycleMappings() {
   CheckSbsqlExactDiagnostic("BACKUP DATABASE safe TO 'safe.fbk'");
 }
 
+#if SB_DBLC_HAVE_FIREBIRD_PARSER
 void CheckFirebirdMappingInventory() {
   std::size_t lifecycle_api = 0;
   std::size_t exact_diagnostic = 0;
@@ -333,12 +338,15 @@ void CheckFirebirdLifecycleMappings() {
   Require(Contains(fb::FirebirdLifecycleMappingReportJson(), "DBLC_P14_REFERENCE_MAPPING_COMPLETE"),
           "DBLC-014 Firebird mapping report missing gate marker");
 }
+#endif
 
 }  // namespace
 
 int main() {
   CheckSbsqlLifecycleMappings();
+#if SB_DBLC_HAVE_FIREBIRD_PARSER
   CheckFirebirdLifecycleMappings();
+#endif
   std::cout << "DBLC_P14_REFERENCE_MAPPING_COMPLETE=passed\n";
   return EXIT_SUCCESS;
 }

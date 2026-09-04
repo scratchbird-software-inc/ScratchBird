@@ -26,6 +26,7 @@ import live_server_agent_storage_benchmark_gate as live
 @dataclass(frozen=True)
 class AgentDescriptor:
     agent_type_id: str
+    layer: str
     deployment: str
     scope: str
     authority: str
@@ -96,17 +97,18 @@ def require(condition: bool, message: str) -> None:
 def parse_registry(source: Path) -> dict[str, AgentDescriptor]:
     text = source.read_text(encoding="utf-8")
     pattern = re.compile(
-        r'Agent\("([^"]+)",\s*AgentDeployment::(local|both|cluster),\s*"([^"]+)",\s*'
-        r'AgentAuthorityClass::([a-z_]+),\s*AgentActivationProfile::([a-z_]+),'
+        r'SB_AGENT_MANIFEST_ENTRY\(\s*([^,\s]+),\s*([^,\s]+),\s*'
+        r'(local|both|cluster),\s*"([^"]+)",\s*([a-z_]+),\s*([a-z_]+)\s*\)'
     )
     descriptors: dict[str, AgentDescriptor] = {}
     for match in pattern.finditer(text):
         descriptor = AgentDescriptor(
             agent_type_id=match.group(1),
-            deployment=match.group(2),
-            scope=match.group(3),
-            authority=match.group(4),
-            default_activation=match.group(5),
+            layer=match.group(2),
+            deployment=match.group(3),
+            scope=match.group(4),
+            authority=match.group(5),
+            default_activation=match.group(6),
         )
         descriptors[descriptor.agent_type_id] = descriptor
     require(descriptors, "canonical_agent_registry_not_parsed")
@@ -119,13 +121,14 @@ def parse_show_agents_extended(output: str) -> dict[str, dict[str, str]]:
         if not line.strip():
             continue
         fields = line.strip().split("|")
-        require(len(fields) == 6, f"show_agents_extended_bad_row:{line}")
+        require(len(fields) == 7, f"show_agents_extended_bad_row:{line}")
         rows[fields[0]] = {
-            "deployment": fields[1],
-            "scope": fields[2],
-            "authority": fields[3],
-            "cluster_only": fields[4],
-            "state": fields[5],
+            "layer": fields[1],
+            "deployment": fields[2],
+            "scope": fields[3],
+            "authority": fields[4],
+            "cluster_only": fields[5],
+            "state": fields[6],
         }
     require(rows, "show_agents_extended_empty")
     return rows
@@ -136,7 +139,6 @@ def run_sb_isql(args: argparse.Namespace,
                 port: int,
                 sql: str,
                 principal: str = "alice") -> str:
-    evidence = f"scheme=local_password_v1;principal={principal};verifier={live.VERIFIER}"
     completed = subprocess.run(
         [
             args.sb_isql,
@@ -147,7 +149,7 @@ def run_sb_isql(args: argparse.Namespace,
             "-U",
             principal,
             "-P",
-            evidence,
+            live.PASSWORD,
             "-q",
             "-A",
             "-t",
@@ -212,6 +214,8 @@ def assert_live_agent_coverage(registry: dict[str, AgentDescriptor],
 
     for agent_type_id, descriptor in noncluster.items():
         row = show_rows[agent_type_id]
+        require(row["layer"] == descriptor.layer,
+                f"live_layer_mismatch:{agent_type_id}")
         require(row["deployment"] == descriptor.deployment,
                 f"live_deployment_mismatch:{agent_type_id}")
         require(row["scope"] == descriptor.scope, f"live_scope_mismatch:{agent_type_id}")
@@ -363,7 +367,7 @@ def assert_metrics_and_support_evidence(args: argparse.Namespace, endpoint: Path
         "management_export_support_bundle",
         "all_noncluster",
         "--principal",
-        "sysdba",
+        "alice",
         "--expect-payload-contains",
         "support_bundle",
     )
@@ -379,6 +383,7 @@ def main() -> int:
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
     parser.add_argument("--ipc-tester", required=True)
+    parser.add_argument("--database-seeder", required=True)
     parser.add_argument("--agent-runtime-source", required=True)
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args()
@@ -389,19 +394,22 @@ def main() -> int:
     try:
         registry = parse_registry(Path(args.agent_runtime_source))
         database_path = args.work / "all_noncluster_live.sbdb"
-        Path(str(database_path) + ".sb.local_password_auth").write_text(
-            f"alice\tlocal_password\t{live.VERIFIER}\n"
-            f"sysdba\tlocal_password\t{live.VERIFIER}\n",
-            encoding="utf-8",
+        seeded = subprocess.run(
+            [args.database_seeder, str(database_path), "alice", live.PASSWORD],
+            stdout=(args.work / "database_seed.out").open("wb"),
+            stderr=(args.work / "database_seed.err").open("wb"),
+            check=False,
         )
+        require(seeded.returncode == 0 and database_path.is_file(),
+                f"approved_database_seed_failed:{seeded.returncode}")
         endpoint = args.work / "sc" / "s.sock"
         server = live.start_server(
-            args, database_path, args.work / "sc", args.work / "sr", endpoint, "all_noncluster", True
+            args, database_path, args.work / "sc", args.work / "sr", endpoint, "all_noncluster", False
         )
         status = live.decode_payload_json(
             live.run_ipc(args, endpoint, "database_status", "all_noncluster"), "database_status")
         database = live.first_database(status)
-        live.assert_agent_runtime(database, expect_created=True, expected_uuid=None)
+        live.assert_agent_runtime(database, expect_created=False, expected_uuid=None)
 
         listener, port = start_listener(args, database_path, endpoint)
         show_output = run_sb_isql(args, database_path, port, "SHOW AGENTS EXTENDED")

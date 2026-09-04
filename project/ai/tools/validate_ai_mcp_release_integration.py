@@ -281,8 +281,15 @@ def check_release_gate_split(public_root: Path, errors: list[str]) -> None:
             errors.append(f"CMakePresets missing AI MCP release proof token {token}")
 
 
-def check_packaging(public_root: Path, errors: list[str]) -> None:
+def check_packaging(
+    public_root: Path,
+    errors: list[str],
+    *,
+    require_packaging: bool,
+) -> None:
     package_root = public_root / "packaging" / "2026.07.03" / "adapters" / "scratchbird-ai-mcp"
+    if not package_root.exists() and not require_packaging:
+        return
     required_files = (
         "package_manifest.json",
         "SBOM.json",
@@ -334,6 +341,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", default=str(ROOT_DIR))
     parser.add_argument("--output-json", default="")
+    parser.add_argument(
+        "--require-packaging",
+        action="store_true",
+        help="require and validate the separately produced release package tree",
+    )
     args = parser.parse_args()
     ai_root = Path(args.repo_root).resolve()
     public_root = ai_root.parents[1] if ai_root.name == "ai" else ai_root
@@ -347,7 +359,11 @@ def main() -> int:
     check_compile_artifact(errors)
     check_remote_auth_policy(errors)
     check_release_gate_split(public_root, errors)
-    check_packaging(public_root, errors)
+    check_packaging(
+        public_root,
+        errors,
+        require_packaging=args.require_packaging,
+    )
     check_capability_matrix(public_root, errors)
 
     payload = {

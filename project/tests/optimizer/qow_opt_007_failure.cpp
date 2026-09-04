@@ -9,9 +9,7 @@
 int main() {
   const auto plan = optimizer::CoordinateModelFamilyDependencyDagV1(
       AdmissionForProfile("COMP-3-FAILURE-CLEANUP-V1", 349));
-  const auto root = std::filesystem::temp_directory_path() /
-                    "sb_rcp080_qow_opt_007_failure";
-  std::filesystem::remove_all(root);
+  const auto root = UniqueTempRoot("sb_rcp080_qow_opt_007_failure");
   memory::TempWorkspaceLifecycleManager workspace(
       WorkspacePolicy(root, "rcp080_qow_opt_007_failure"));
   RuntimeCounters counters;

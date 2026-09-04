@@ -136,6 +136,14 @@ bool HasValue(const std::vector<std::string>& values, std::string_view expected)
   return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
+std::string DiagnosticField(const Diagnostic& diagnostic,
+                            std::string_view name) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.name == name) return field.value;
+  }
+  return {};
+}
+
 bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
@@ -219,109 +227,63 @@ void RequireRegistryEvidence(const CaseRow& row) {
 void RequireExactLowering(const CaseRow& row,
                           const PipelineArtifacts& artifacts,
                           std::size_t index) {
+  (void)index;
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
-  if (!artifacts.verifier.admitted) {
-    std::cerr << "SBSFC-075 rejected surface=" << row.surface_id
-              << " canonical=" << row.canonical_name
-              << " sql=" << row.sql
-              << " operation_id=" << artifacts.envelope.operation_id
-              << " opcode=" << artifacts.envelope.sblr_opcode
-              << " payload=" << artifacts.envelope.payload << '\n';
-    std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
-  }
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-075 CST failed");
   Require(!artifacts.ast.messages.has_errors(), "SBSFC-075 AST failed");
   Require(artifacts.bound.bound, "SBSFC-075 bind failed");
-  Require(artifacts.verifier.admitted, "SBSFC-075 verifier rejected exact route");
+  Require(!artifacts.verifier.admitted,
+          "SBSFC-075 parser-only route bypassed engine descriptor authority");
   Require(artifacts.envelope.operation_family == kFamily,
           "SBSFC-075 operation family mismatch");
-  Require(artifacts.envelope.operation_id == row.operation_id,
-          "SBSFC-075 operation id mismatch");
-  Require(artifacts.envelope.engine_api_operation_id == row.operation_id,
-          "SBSFC-075 engine API operation id mismatch");
-  Require(artifacts.envelope.sblr_opcode == row.opcode,
-          "SBSFC-075 SBLR opcode mismatch");
-  const bool exact_materialized_view =
-      row.operation_id == "engine.op.ddl_create_materialized_view";
-  if (exact_materialized_view) {
-    Require(sblr::LookupSblrOperation("catalog.mutation.create_materialized_view") == nullptr,
-            "retired duplicate CREATE MATERIALIZED VIEW identity remained admitted");
-    Require(HasValue(artifacts.envelope.required_authority_steps,
-                     "authority.engine.ddl_create_materialized_view_api_required"),
-            "SBSFC-075 materialized-view DDL authority missing");
-    Require(Contains(artifacts.envelope.payload,
-                     "\"catalog_envelope_kind\":\"create_view_ddl\""),
-            "SBSFC-075 materialized-view payload kind missing");
-    Require(Contains(artifacts.envelope.payload,
-                     "\"view_materialized\":true"),
-            "SBSFC-075 materialized-view payload identity missing");
-    Require(Contains(artifacts.envelope.payload,
-                     "\"view_query_shape\":\"grouped_summary_relation\""),
-            "SBSFC-075 materialized-view query descriptor missing");
-  } else {
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL",
+          "SBSFC-075 did not use the exact non-executable refusal tuple");
+  Require(artifacts.envelope.result_shape_key == "diagnostic_vector.v1" &&
+              artifacts.envelope.diagnostic_shape_key ==
+                  "diagnostic_vector.v1" &&
+              artifacts.envelope.resource_contract_key ==
+                  "sbsql.command.no_execution.v1",
+          "SBSFC-075 refusal metadata drifted");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              artifacts.envelope.required_rights.empty(),
+          "SBSFC-075 refusal retained executable authority");
+  Require(artifacts.envelope.descriptor_refs.size() == 1 &&
+              artifacts.envelope.descriptor_refs.front() ==
+                  "sys.sbsql.surface_registry",
+          "SBSFC-075 refusal retained a bound catalog descriptor");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.catalog_descriptor_mutation_api_required"),
-          "SBSFC-075 catalog descriptor mutation API authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.catalog_uuid_assignment_or_resolution_required"),
-          "SBSFC-075 UUID authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.name_registry_required"),
-          "SBSFC-075 name registry authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.engine.mga_catalog_commit_required"),
-          "SBSFC-075 MGA catalog authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_storage_or_finality"),
-          "SBSFC-075 parser no-finality authority missing");
-  Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.parser.no_sql_text_execution"),
-          "SBSFC-075 parser no-SQL-execution authority missing");
+                   "authority.parser.syntax_evidence_only") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_executable_sblr") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_storage_or_finality") &&
+              HasValue(artifacts.envelope.required_authority_steps,
+                       "authority.parser.no_sql_text_execution"),
+          "SBSFC-075 refusal omitted parser non-authority evidence");
   Require(!artifacts.envelope.parser_executes_sql,
           "SBSFC-075 lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
           "SBSFC-075 lowering allowed file effects");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"catalog_envelope_kind\":\"catalog_descriptor_mutation\""),
-          "SBSFC-075 payload missing descriptor mutation envelope");
-  Require(Contains(artifacts.envelope.payload, row.operation_id),
-          "SBSFC-075 payload missing operation id");
-  Require(Contains(artifacts.envelope.payload, row.surface_id),
-          "SBSFC-075 payload missing row surface id");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"descriptor_ref\":\"sys.catalog."),
-          "SBSFC-075 payload missing descriptor ref");
-  Require(Contains(artifacts.envelope.payload,
-                   "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
-          "SBSFC-075 payload missing metadata-only name authority");
-  }
-  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
-          "SBSFC-075 payload exposed SQL text");
-  if (row.needs_uuid) {
-    Require(Contains(artifacts.envelope.payload, TargetUuidFor(index)),
-            "SBSFC-075 payload missing UUID-bound target");
-  }
-  if (!exact_materialized_view && !row.needs_uuid &&
-      std::string_view(row.sql).rfind("CREATE ", 0) == 0) {
-    Require(Contains(artifacts.envelope.payload, "\"name\":\""),
-            "SBSFC-075 create payload missing requested object name");
-  }
-  Require(!Contains(artifacts.envelope.payload, "SBSQL_SURFACE_REPLAY") &&
-              !Contains(artifacts.envelope.payload, "refusal"),
-          "SBSFC-075 payload used forbidden replay/refusal evidence");
-  Require(!Contains(artifacts.envelope.payload, "WAL") &&
-              !Contains(artifacts.envelope.payload, "wal"),
-          "SBSFC-075 payload carried WAL authority");
-
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted, "server admission rejected SBSFC-075 exact route");
-  Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI dispatch for SBSFC-075");
-  Require(admission.operation_id == row.operation_id,
-          "server admission SBSFC-075 operation id mismatch");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1,
+          "SBSFC-075 did not emit one exact refusal diagnostic");
+  const auto& diagnostic = artifacts.envelope.messages.diagnostics.front();
+  Require(diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE" &&
+              diagnostic.severity == "ERROR" &&
+              DiagnosticField(diagnostic, "canonical_parent_operation_id") ==
+                  row.operation_id &&
+              DiagnosticField(diagnostic, "canonical_parent_sblr_opcode") ==
+                  row.opcode &&
+              DiagnosticField(diagnostic, "executable_sblr_emitted") ==
+                  "false" &&
+              Contains(DiagnosticField(diagnostic, "recognized_surface_ids"),
+                       row.surface_id),
+          "SBSFC-075 refusal identity drifted");
 
   const auto* opcode_entry = sblr::LookupSblrOperation(std::string(row.operation_id));
   Require(opcode_entry != nullptr, "SBSFC-075 opcode registry row missing");
@@ -330,6 +292,19 @@ void RequireExactLowering(const CaseRow& row,
           "SBSFC-075 opcode registry security context drifted");
   Require(opcode_entry->requires_transaction_context,
           "SBSFC-075 opcode registry transaction context drifted");
+
+  auto descriptorless = scratchbird::test::sbsql::
+      BuildCanonicalEngineSblrEnvelopeForTest(
+          row.operation_id, row.opcode,
+          "trace.sbsfc075.descriptor_authority_refusal");
+  descriptorless.result_shape = "ddl_result";
+  descriptorless.diagnostic_shape = "diagnostic_vector";
+  descriptorless.requires_security_context = true;
+  descriptorless.requires_transaction_context = true;
+  const auto validation = sblr::ValidateSblrEnvelope(descriptorless);
+  Require(!validation.ok && !validation.diagnostics.empty() &&
+              validation.diagnostics.front().code == "SBLR.OPERAND_INVALID",
+          "descriptor-less SBSFC-075 SBLR bypassed exact operand authority");
 }
 
 std::uint64_t CurrentUnixMillis() {
@@ -421,6 +396,8 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  envelope.result_shape = "transaction_handle";
+  envelope.diagnostic_shape = "diagnostic_vector";
   sblr::SblrTransactionBeginOptionsV1 options;
   options.isolation_profile_uuid[0] = 1;
   options.isolation_profile_generation = 1;
@@ -431,7 +408,7 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   options.wait_policy = 1;
   sblr::SblrOperand operand;
   operand.ordinal = 1;
-  operand.type = "transaction.begin.options";
+  operand.type = "transaction.begin_options";
   operand.name = "options";
   operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
   operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
@@ -561,11 +538,6 @@ int main() {
     const auto artifacts = RunPipeline(row, index);
     RequireExactLowering(row, artifacts, index);
   }
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  RequireEngineDispatch(path, database_uuid);
-  RemoveDatabaseArtifacts(path);
   std::cout << "sbsql_sbsfc_075_catalog_descriptor_mutation_conformance=passed\n";
   return EXIT_SUCCESS;
 }

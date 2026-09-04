@@ -24,9 +24,7 @@ int main() {
                                 std::vector<std::uint16_t>({0, 1, 2}),
                         "failure proof did not admit the ordered parallel wave");
 
-  const auto root = std::filesystem::temp_directory_path() /
-                    "sb_rcp080_qow_opt_018_failure";
-  std::filesystem::remove_all(root);
+  const auto root = UniqueTempRoot("sb_rcp080_qow_opt_018_failure");
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "rcp080_qow_opt_018_failure";
   policy.root_path = root;

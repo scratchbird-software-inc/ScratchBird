@@ -637,7 +637,6 @@ bool SamePersistedRowDescriptor(
     const CanonicalRelationalExpressionRuntimeServices* services = nullptr,
     std::string* authority_refusal_detail = nullptr) {
   if (!api::QowCanonicalDescriptorIdentityV1(actual) ||
-      actual.descriptor_uuid.canonical != bound.descriptor_uuid ||
       actual.descriptor_kind != "scalar") {
     return false;
   }
@@ -653,17 +652,29 @@ bool SamePersistedRowDescriptor(
   }
   if (bound.descriptor_uuid == bound.type_uuid) {
     api::EngineDescriptor expected;
-    return BuildExactCanonicalBooleanRuntimeDescriptorV1(
+    return actual.descriptor_uuid.canonical == bound.descriptor_uuid &&
+           BuildExactCanonicalBooleanRuntimeDescriptorV1(
                bound, expected_nullability, &expected) &&
            SameDescriptor(expected, actual);
   }
 
-  const bool exact_canonical_text =
-      ExactCanonicalTextRelationalDescriptorV1(bound, expected_nullability);
+  // The outer persisted descriptor UUID is a relation-issued occurrence
+  // handle; canonical TEXT identity is carried by the descriptor's immutable
+  // codec tuple.  Do not look the persisted handle up as though it were the
+  // datatype UUID when deciding whether live authority is required.
+  const bool exact_contextual_canonical_text =
+      bound.datatype_identity_authoritative &&
+      bound.descriptor_uuid != bound.type_uuid &&
+      bound.codec_id == "datatype.text.utf8.v1" &&
+      bound.codec_version == 1 && bound.codec_generation != 0 &&
+      bound.descriptor_generation != 0 && bound.type_generation != 0 &&
+      bound.collation_uuid.has_value() && bound.width.has_value() &&
+      *bound.width != 0 && !bound.timezone_profile_id.has_value() &&
+      !bound.precision.has_value() && !bound.scale.has_value();
   const bool live_persisted_text_authority =
       services != nullptr &&
       static_cast<bool>(services->persisted_row_descriptor_authority);
-  if (exact_canonical_text &&
+  if (exact_contextual_canonical_text &&
       (live_persisted_text_authority ||
        CarriesPersistedTextAuthorityFieldsV1(actual))) {
     if (!live_persisted_text_authority) {
@@ -677,6 +688,8 @@ bool SamePersistedRowDescriptor(
         bound_descriptor_id, bound, actual, expected_nullability,
         authority_refusal_detail);
   }
+
+  if (actual.descriptor_uuid.canonical != bound.descriptor_uuid) return false;
 
   static const auto canonical_type_name_by_type_uuid = [] {
     std::unordered_map<std::string, std::string> names;
@@ -731,6 +744,9 @@ bool SamePersistedRowDescriptor(
   bool codec_version_seen = false;
   bool codec_generation_seen = false;
   bool null_encoding_seen = false;
+  bool codec_uuid_seen = false;
+  bool column_uuid_seen = false;
+  std::optional<dt::DatatypeTypeCodecIdentityRowV1> datatype_identity;
 
   const auto exact_string_optional = [](const std::string_view value,
                                         const std::optional<std::string>& bound_value,
@@ -773,9 +789,24 @@ bool SamePersistedRowDescriptor(
       }
       canonical_seen = true;
     } else if (key == "datatype_descriptor_uuid") {
-      if (datatype_descriptor_uuid_seen || value.empty() ||
-          value != bound.descriptor_uuid) {
+      if (datatype_descriptor_uuid_seen || value.empty()) {
         return false;
+      }
+      if (value != bound.descriptor_uuid) {
+        const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+            bound.datatype_catalog_snapshot_uuid,
+            bound.datatype_catalog_generation,
+            bound.datatype_registry_generation, std::string(value),
+            bound.descriptor_generation);
+        if (!bound.datatype_identity_authoritative || !identity.ok ||
+            identity.row.type_uuid != bound.type_uuid ||
+            identity.row.type_generation != bound.type_generation ||
+            identity.row.codec_id != bound.codec_id ||
+            identity.row.codec_version != bound.codec_version ||
+            identity.row.codec_generation != bound.codec_generation) {
+          return false;
+        }
+        datatype_identity = identity.row;
       }
       datatype_descriptor_uuid_seen = true;
     } else if (key == "type_uuid") {
@@ -829,7 +860,7 @@ bool SamePersistedRowDescriptor(
       const auto [end_ptr, error] = std::from_chars(
           value.data(), value.data() + value.size(), parsed);
       if (error != std::errc{} || end_ptr != value.data() + value.size() ||
-          parsed == 0) return false;
+          parsed == 0 || parsed != bound.descriptor_generation) return false;
       descriptor_generation_seen = true;
       persisted_authority = true;
     } else if (key == "type_generation") {
@@ -838,12 +869,25 @@ bool SamePersistedRowDescriptor(
       const auto [end_ptr, error] = std::from_chars(
           value.data(), value.data() + value.size(), parsed);
       if (error != std::errc{} || end_ptr != value.data() + value.size() ||
-          parsed == 0) return false;
+          parsed == 0 || parsed != bound.type_generation) return false;
       type_generation_seen = true;
       persisted_authority = true;
+    } else if (key == "codec_uuid") {
+      if (codec_uuid_seen || !datatype_identity.has_value() || value.empty() ||
+          value != datatype_identity->codec_uuid) {
+        return false;
+      }
+      codec_uuid_seen = true;
+    } else if (key == "column_uuid") {
+      if (column_uuid_seen || value != bound.descriptor_uuid ||
+          value != actual.descriptor_uuid.canonical) {
+        return false;
+      }
+      column_uuid_seen = true;
     } else if (key == "codec_id") {
       if (codec_id_seen || value.empty() ||
-          value.find('|') != std::string_view::npos) return false;
+          value.find('|') != std::string_view::npos ||
+          value != bound.codec_id) return false;
       codec_id_seen = true;
       persisted_authority = true;
     } else if (key == "codec_version" || key == "codec_generation" ||
@@ -858,6 +902,13 @@ bool SamePersistedRowDescriptor(
           value.data(), value.data() + value.size(), parsed);
       if (error != std::errc{} || end_ptr != value.data() + value.size() ||
           parsed == 0) return false;
+      if ((key == "codec_version" && parsed != bound.codec_version) ||
+          (key == "codec_generation" &&
+           parsed != bound.codec_generation) ||
+          (key == "null_encoding" && datatype_identity.has_value() &&
+           parsed != datatype_identity->null_encoding_code)) {
+        return false;
+      }
       *seen = true;
       persisted_authority = true;
     } else {

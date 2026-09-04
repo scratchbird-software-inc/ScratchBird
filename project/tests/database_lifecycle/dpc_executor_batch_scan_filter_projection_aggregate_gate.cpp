@@ -131,7 +131,7 @@ void ScanFilterProjectionEquivalence() {
           "enabled pipeline must not report fallback");
   RequireSameSignature(row_by_row, batched, "pipeline enabled/disabled");
   Require(batched.evidence.deterministic_result_signature ==
-              "dpc_executor_batch_relational_projected_v1|"
+              "dpc_executor_batch_relational_projected_v1|3|"
               "[1,7,1][2,11,2][3,13,3][1,17,4]",
           "pipeline result signature drifted");
   Require(batched.evidence.preserves_input_order,
@@ -172,7 +172,7 @@ void AggregateEquivalenceAndOrdering() {
   Require(!batched.evidence.preserves_input_order,
           "aggregate output is grouped order, not input order");
   Require(batched.evidence.deterministic_result_signature ==
-              "dpc_executor_batch_relational_aggregate_v1|"
+              "dpc_executor_batch_relational_aggregate_v1|2|"
               "[1,24][2,16][3,13]",
           "aggregate grouped signature drifted");
   Require(batched.evidence.rows_requested == 5,

@@ -26,6 +26,7 @@
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
+struct PreparedMgaHeapReadAuthorityCohort;
 struct TypedRelationalDag;
 }
 
@@ -182,6 +183,8 @@ class CanonicalResultCursorSession {
   struct State;
 
   explicit CanonicalResultCursorSession(std::unique_ptr<State> state);
+  static std::shared_ptr<CanonicalResultCursorSession> Create(
+      std::unique_ptr<State> state);
   bool Release(CanonicalResultCursorReleaseReason reason) noexcept;
 
   std::unique_ptr<State> state_;
@@ -1520,6 +1523,12 @@ struct CanonicalHeapPhysicalDagDispatchRequest {
   CanonicalExecutionMgaAuthority mga_authority;
   const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
   std::shared_ptr<const CanonicalExecutionMgaAuthority> shared_mga_authority;
+  // Admission may pass the exact immutable statement/relation authority it
+  // already prepared.  Registration revalidates its file/generation fence
+  // before access and never rebuilds the same descriptor/authorization rows.
+  std::shared_ptr<const scratchbird::engine::internal_api::
+                            PreparedMgaHeapReadAuthorityCohort>
+      heap_read_authority_cohort;
   std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
 };
 

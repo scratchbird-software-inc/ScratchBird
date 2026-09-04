@@ -10166,8 +10166,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  const auto input_descriptor =
                      descriptor_by_id.find(column.descriptor_id);
                  return input_descriptor != descriptor_by_id.end() &&
-                        input_descriptor->second->descriptor_uuid ==
-                            "019d0000-0000-7000-8000-00000000d711" &&
+                        IsNonNullCanonicalUuid(
+                            input_descriptor->second->descriptor_uuid) &&
                         input_descriptor->second->descriptor_generation == 1 &&
                         input_descriptor->second->type_uuid ==
                             "019d0000-0000-7000-8000-00000000d712" &&

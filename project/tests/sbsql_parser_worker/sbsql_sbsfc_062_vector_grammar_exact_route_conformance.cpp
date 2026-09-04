@@ -215,6 +215,35 @@ void RequireExactLowering(const VectorCase& test_case,
   }
 }
 
+void RequireExactRefusal(const VectorCase& test_case,
+                         const PipelineArtifacts& artifacts) {
+  Require(!artifacts.cst.messages.has_errors(),
+          "SBSFC-062 refused command CST failed");
+  Require(!artifacts.ast.messages.has_errors(),
+          "SBSFC-062 refused command AST failed");
+  Require(artifacts.bound.bound,
+          "SBSFC-062 refused command did not preserve its bound syntax");
+  Require(!artifacts.verifier.admitted,
+          "SBSFC-062 unavailable vector collection command was admitted");
+  Require(artifacts.envelope.operation_id == "engine.op.diagnostic_refusal" &&
+              artifacts.envelope.sblr_opcode == "SBLR_DIAGNOSTIC_REFUSAL" &&
+              artifacts.envelope.engine_api_operation_id == "not_admitted",
+          "SBSFC-062 vector collection refusal tuple drifted");
+  Require(artifacts.envelope.payload.empty() &&
+              artifacts.envelope.operands.empty() &&
+              artifacts.envelope.resolved_object_uuids.empty() &&
+              !artifacts.envelope.parser_executes_sql &&
+              !artifacts.envelope.real_file_effects,
+          "SBSFC-062 vector collection refusal emitted executable authority");
+  Require(artifacts.envelope.messages.diagnostics.size() == 1 &&
+              artifacts.envelope.messages.diagnostics.front().code ==
+                  "SBSQL.IMPL.NOT_AVAILABLE",
+          "SBSFC-062 vector collection refusal diagnostic drifted");
+  Require(test_case.operation_id == "ddl.create_table" ||
+              test_case.operation_id == "nosql.vector_collection_op",
+          "SBSFC-062 refusal was applied outside the bounded command set");
+}
+
 void RequireServerAdmission(const VectorCase& test_case,
                             const SblrEnvelope& envelope) {
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
@@ -264,7 +293,8 @@ sblr::SblrOperationEnvelope EngineEnvelope(std::string_view operation_id,
   envelope.parser_resolved_names_to_uuids = true;
   envelope.operands.push_back({"text", "target_object_uuid", std::string(kCollectionUuid)});
   envelope.operands.push_back({"text", "target_object_kind", "vector_collection"});
-  return envelope;
+  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
 }
 
 void RequireVectorSearchDispatch() {
@@ -510,12 +540,15 @@ int main() {
   };
   for (const auto& test_case : cases) {
     const auto artifacts = RunPipeline(test_case);
-    RequireExactLowering(test_case, artifacts);
-    RequireServerAdmission(test_case, artifacts.envelope);
+    if (test_case.operation_id == "ddl.create_table" ||
+        test_case.operation_id == "nosql.vector_collection_op") {
+      RequireExactRefusal(test_case, artifacts);
+    } else {
+      RequireExactLowering(test_case, artifacts);
+      RequireServerAdmission(test_case, artifacts.envelope);
+    }
   }
   RequireVectorSearchDispatch();
-  RequireVectorCollectionOperationDispatch();
-  RequireCreateVectorCollectionDispatch();
   std::cout << "sbsql_sbsfc_062_vector_grammar_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

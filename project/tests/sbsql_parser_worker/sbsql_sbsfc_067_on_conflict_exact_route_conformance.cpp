@@ -16,6 +16,8 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -320,6 +322,10 @@ api::EngineRequestContext EngineContextForDatabase(const std::string& database_u
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  context.datatype_catalog_snapshot_uuid.canonical =
+      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_generation = 1;
+  context.datatype_registry_generation = 1;
   context.trace_tags.push_back("right:DML_ROUTE_TEST");
   context.trace_tags.push_back("sbsql_surface_id:SBSQL-0084E23B9299");
   context.trace_tags.push_back("sbsql_surface_id:SBSQL-3635EA022CA5");
@@ -354,6 +360,8 @@ void PrintDispatchDiagnostics(const sblr::SblrDispatchResult& result) {
 sblr::SblrDispatchResult Dispatch(api::EngineRequestContext context,
                                   sblr::SblrOperationEnvelope envelope,
                                   api::EngineApiRequest request = {}) {
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
   const sblr::SblrDispatchRequest dispatch{std::move(context),
                                            std::move(envelope),
                                            std::move(request)};
@@ -372,23 +380,57 @@ sblr::SblrDispatchResult Dispatch(api::EngineRequestContext context,
 
 api::EngineRequestContext BeginEngineTransaction(const std::string& database_uuid) {
   auto context = EngineContextForDatabase(database_uuid);
-  auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
-                                         "SBLR_TRANSACTION_BEGIN",
+  auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
+                                         "SBLR_TXN_BEGIN",
                                          "trace.sbsfc067.transaction.begin");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.contains_sql_text = false;
+  envelope.result_shape = "transaction_handle";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  sblr::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid[0] = 1;
+  options.isolation_profile_generation = 1;
+  options.transaction_policy_snapshot_uuid[0] = 2;
+  options.transaction_policy_generation = 1;
+  options.read_mode = 1;
+  options.authority_scope = 1;
+  options.wait_policy = 1;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin_options";
+  operand.name = "options";
+  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
+  operand.value_body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
+  Require(!operand.value_body.empty(),
+          "SBSFC-067 transaction begin options encoding failed");
+  envelope.operands.push_back(std::move(operand));
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
   const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
   const auto result = sblr::DispatchSblrOperation(request);
   PrintDispatchDiagnostics(result);
   Require(result.envelope_validated, "SBSFC-067 transaction begin envelope invalid");
   Require(result.accepted, "SBSFC-067 transaction begin dispatch rejected");
   Require(result.api_result.ok, "SBSFC-067 transaction begin failed");
-  Require(result.api_result.local_transaction_id != 0,
-          "SBSFC-067 transaction begin did not assign local transaction id");
-  context.local_transaction_id = result.api_result.local_transaction_id;
-  context.transaction_uuid = result.api_result.transaction_uuid;
-  context.snapshot_visible_through_local_transaction_id = context.local_transaction_id;
+  Require(result.api_result.local_transaction_id == 0,
+          "SBSFC-067 SBLR preflight published a transaction before the public API");
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  for (const auto& diagnostic : begun.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(begun.ok, "SBSFC-067 public API transaction begin failed");
+  Require(begun.local_transaction_id != 0,
+          "SBSFC-067 public API transaction begin returned no identity");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
   return context;
 }
 
@@ -458,12 +500,13 @@ void AddTextOperand(sblr::SblrOperationEnvelope* envelope,
   envelope->operands.push_back({"text", std::move(name), std::move(value)});
 }
 
-void AddRowField(sblr::SblrOperationEnvelope* envelope,
-                 std::string row_uuid,
-                 std::string field,
-                 std::string value) {
-  envelope->operands.push_back(
-      {"row_field", std::move(row_uuid) + "|" + std::move(field), std::move(value)});
+api::EngineTypedValue TextValue(std::string value) {
+  api::EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = "text";
+  typed.descriptor.encoded_descriptor = "type=text";
+  typed.encoded_value = std::move(value);
+  return typed;
 }
 
 sblr::SblrDispatchResult InsertCustomer(const api::EngineRequestContext& context,
@@ -481,9 +524,14 @@ sblr::SblrDispatchResult InsertCustomer(const api::EngineRequestContext& context
     AddTextOperand(&envelope, "conflict_target_column", "id");
     if (update_name) AddTextOperand(&envelope, "on_conflict_update_column", "name");
   }
-  AddRowField(&envelope, row_uuid, "id", std::move(id));
-  AddRowField(&envelope, std::move(row_uuid), "name", std::move(name));
-  return Dispatch(context, std::move(envelope));
+  api::EngineApiRequest request;
+  request.option_envelopes.push_back("result_payload_policy:full_payload");
+  api::EngineRowValue row;
+  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.fields.push_back({"id", TextValue(std::move(id))});
+  row.fields.push_back({"name", TextValue(std::move(name))});
+  request.rows.push_back(std::move(row));
+  return Dispatch(context, std::move(envelope), std::move(request));
 }
 
 void RequireRuntimeConflictBehavior() {
@@ -498,7 +546,17 @@ void RequireRuntimeConflictBehavior() {
                                  "Ada");
   Require(HasEvidence(inserted.api_result, "mga_row_store", "row_insert"),
           "SBSFC-067 initial insert evidence missing");
-  Require(FieldValue(inserted.api_result, "name") == "Ada",
+  const std::string inserted_name = FieldValue(inserted.api_result, "name");
+  if (inserted_name != "Ada") {
+    std::cerr << "SBSFC-067 initial insert observed name=" << inserted_name
+              << " rows=" << inserted.api_result.result_shape.rows.size() << '\n';
+    for (const auto& [field, value] :
+         inserted.api_result.result_shape.rows.front().fields) {
+      std::cerr << "SBSFC-067 initial insert field=" << field
+                << " value=" << value.encoded_value << '\n';
+    }
+  }
+  Require(inserted_name == "Ada",
           "SBSFC-067 initial insert result mismatch");
 
   auto skipped = InsertCustomer(context,

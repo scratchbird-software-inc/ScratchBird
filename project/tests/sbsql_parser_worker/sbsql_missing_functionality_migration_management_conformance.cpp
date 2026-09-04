@@ -12,6 +12,7 @@
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
+#include "management/management_api.hpp"
 #include "memory.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "rendering/rendering.hpp"
@@ -152,34 +153,6 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
-}
-
-sblr::SblrOperationEnvelope EngineEnvelopeFromParser(const SblrEnvelope& parser_envelope) {
-  auto engine_envelope = sblr::MakeSblrEnvelope(
-      parser_envelope.engine_api_operation_id.empty() ? parser_envelope.operation_id
-                                                      : parser_envelope.engine_api_operation_id,
-      parser_envelope.sblr_opcode,
-      parser_envelope.trace_key);
-  engine_envelope.result_shape = parser_envelope.result_shape_key;
-  engine_envelope.diagnostic_shape = "diagnostic.canonical_message_vector";
-  engine_envelope.requires_security_context = true;
-  engine_envelope.requires_transaction_context = true;
-  engine_envelope.requires_cluster_authority = false;
-  engine_envelope.contains_sql_text = false;
-  engine_envelope.parser_resolved_names_to_uuids = true;
-  for (const auto& operand : parser_envelope.operands) {
-    engine_envelope.operands.push_back({operand.type, operand.name, operand.value});
-  }
-  return engine_envelope;
-}
-
-void PrintDispatchDiagnostics(const sblr::SblrDispatchResult& result) {
-  for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << "dispatch " << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
-    std::cerr << "api " << diagnostic.code << ':' << diagnostic.detail << '\n';
-  }
 }
 
 std::uint64_t CurrentUnixMillis() {
@@ -373,17 +346,41 @@ PipelineArtifacts RequireMigrationRoute(std::string_view sql,
   Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
           "Gate 004 migration payload missing no-SQL-text proof");
 
-  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
-      scratchbird::test::sbsql::BuildCanonicalSblrAdmissionRequest(artifacts.envelope));
-  Require(admission.admitted, "Gate 004 server admission rejected migration route");
-  Require(admission.requires_public_abi_dispatch,
-          "Gate 004 server admission did not require public ABI dispatch");
-  Require(admission.operation_id == operation_id,
-          "Gate 004 server admission operation mismatch");
-
-  const auto* registry_row = sblr::LookupSblrOperation(operation_id);
+  struct CanonicalMigrationTuple {
+    std::string_view operation_id;
+    std::string_view opcode;
+    std::string_view operand_contract;
+  };
+  CanonicalMigrationTuple canonical;
+  if (engine_api_function == "EngineBeginMigration") {
+    canonical = {"engine.op.migration_begin_donor",
+                 "SBLR_MIGRATION_BEGIN_DONOR",
+                 "migration_begin_donor_descriptor"};
+  } else if (engine_api_function == "EngineAlterMigration") {
+    canonical = {"engine.op.migration_alter",
+                 "SBLR_MIGRATION_ALTER",
+                 "migration_alter_descriptor"};
+  } else {
+    canonical = {"engine.op.show_migration",
+                 "SBLR_SHOW_MIGRATION",
+                 "migration_show_descriptor"};
+  }
+  const auto* registry_row = sblr::LookupSblrOperation(canonical.operation_id);
   Require(registry_row != nullptr, "Gate 004 opcode registry row missing");
-  Require(registry_row->opcode == opcode, "Gate 004 opcode registry drifted");
+  Require(registry_row->opcode == canonical.opcode,
+          "Gate 004 canonical opcode registry drifted");
+  Require(registry_row->operand_contract == canonical.operand_contract,
+          "Gate 004 canonical operand contract drifted");
+  Require(registry_row->result_contract == "migration_operation_result",
+          "Gate 004 canonical result contract drifted");
+  Require(registry_row->executor_id == canonical.operation_id,
+          "Gate 004 canonical executor identity drifted");
+  Require(registry_row->executor_evidence_required &&
+              !registry_row->executor_evidence_accepted,
+          "Gate 004 migration opcode must remain evidence-gated");
+  Require(registry_row->missing_executor_evidence_diagnostic ==
+              "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+          "Gate 004 migration evidence refusal diagnostic drifted");
   Require(registry_row->requires_security_context,
           "Gate 004 opcode registry must require security context");
   Require(registry_row->requires_transaction_context,
@@ -393,16 +390,45 @@ PipelineArtifacts RequireMigrationRoute(std::string_view sql,
   return artifacts;
 }
 
-sblr::SblrDispatchResult DispatchMigrationRoute(
+api::EngineApiRequest MigrationApiRequest(
     const api::EngineRequestContext& context,
     const PipelineArtifacts& artifacts) {
-  auto result = sblr::DispatchSblrOperation(
-      {context, EngineEnvelopeFromParser(artifacts.envelope), api::EngineApiRequest{}});
-  PrintDispatchDiagnostics(result);
-  Require(result.envelope_validated, "Gate 004 engine envelope rejected");
-  Require(result.accepted, "Gate 004 dispatch refused public migration route");
-  Require(result.dispatched_to_api, "Gate 004 dispatch did not call engine API");
-  return result;
+  api::EngineApiRequest request;
+  request.context = context;
+  request.operation_id = artifacts.envelope.operation_id;
+  request.option_envelopes.reserve(artifacts.envelope.operands.size());
+  for (const auto& operand : artifacts.envelope.operands) {
+    if (!operand.name.empty()) {
+      request.option_envelopes.push_back(operand.name + ":" + operand.value);
+    }
+  }
+  return request;
+}
+
+api::EngineApiResult CallMigrationApi(
+    const api::EngineRequestContext& context,
+    const PipelineArtifacts& artifacts) {
+  const auto base = MigrationApiRequest(context, artifacts);
+  if (artifacts.envelope.engine_api_function == "EngineBeginMigration") {
+    api::EngineBeginMigrationRequest request;
+    static_cast<api::EngineApiRequest&>(request) = base;
+    return api::EngineBeginMigration(request);
+  }
+  if (artifacts.envelope.engine_api_function == "EngineAlterMigration") {
+    api::EngineAlterMigrationRequest request;
+    static_cast<api::EngineApiRequest&>(request) = base;
+    return api::EngineAlterMigration(request);
+  }
+  if (artifacts.envelope.engine_api_function == "EngineShowMigration") {
+    api::EngineShowMigrationRequest request;
+    static_cast<api::EngineApiRequest&>(request) = base;
+    return api::EngineShowMigration(request);
+  }
+  Require(artifacts.envelope.engine_api_function == "EngineShowMigrations",
+          "Gate 004 unknown migration component API");
+  api::EngineShowMigrationsRequest request;
+  static_cast<api::EngineApiRequest&>(request) = base;
+  return api::EngineShowMigrations(request);
 }
 
 void RequireNegativeParserShape(std::string_view sql, std::string_view detail) {
@@ -425,12 +451,9 @@ void RequireSecurityRefusal(const PipelineArtifacts& artifacts,
                             const api::EngineRequestContext& context) {
   auto insecure = context;
   insecure.security_context_present = false;
-  auto result = sblr::DispatchSblrOperation(
-      {insecure, EngineEnvelopeFromParser(artifacts.envelope), api::EngineApiRequest{}});
-  Require(result.envelope_validated, "Gate 004 insecure envelope was not validated");
-  Require(!result.accepted, "Gate 004 insecure route was accepted");
-  Require(!result.api_result.ok, "Gate 004 insecure migration route succeeded");
-  Require(HasDiagnostic(result.api_result, "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED"),
+  const auto result = CallMigrationApi(insecure, artifacts);
+  Require(!result.ok, "Gate 004 insecure migration component API succeeded");
+  Require(HasDiagnostic(result, "SB_ENGINE_API_SECURITY_CONTEXT_REQUIRED"),
           "Gate 004 security-context diagnostic missing");
 }
 
@@ -455,25 +478,25 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
   Require(Contains(begin.envelope.payload, "\"reference_package\":\"pg_compat_pack\""),
           "Gate 004 begin migration reference package operand missing");
   RequireSecurityRefusal(begin, context);
-  auto begin_result = DispatchMigrationRoute(context, begin);
-  Require(begin_result.api_result.ok, "Gate 004 begin migration API failed");
-  Require(begin_result.api_result.result_shape.result_kind == "rs.migration.status.v1",
+  auto begin_result = CallMigrationApi(context, begin);
+  Require(begin_result.ok, "Gate 004 begin migration API failed");
+  Require(begin_result.result_shape.result_kind == "rs.migration.status.v1",
           "Gate 004 begin migration result shape drifted");
-  Require(HasEvidence(begin_result.api_result, "engine_api_function", "EngineBeginMigration"),
+  Require(HasEvidence(begin_result, "engine_api_function", "EngineBeginMigration"),
           "Gate 004 begin migration API evidence missing");
-  Require(HasEvidence(begin_result.api_result, "reference_profile", "postgres"),
+  Require(HasEvidence(begin_result, "reference_profile", "postgres"),
           "Gate 004 begin migration reference profile evidence missing");
-  Require(HasEvidence(begin_result.api_result, "reference_storage_authority_accepted", "false"),
+  Require(HasEvidence(begin_result, "reference_storage_authority_accepted", "false"),
           "Gate 004 begin migration accepted reference storage authority");
-  Require(HasEvidence(begin_result.api_result, "reference_finality_accepted", "false"),
+  Require(HasEvidence(begin_result, "reference_finality_accepted", "false"),
           "Gate 004 begin migration accepted reference finality");
-  Require(HasEvidence(begin_result.api_result, "private_cluster_execution", "false"),
+  Require(HasEvidence(begin_result, "private_cluster_execution", "false"),
           "Gate 004 begin migration entered private cluster execution");
-  Require(HasEvidence(begin_result.api_result, "wal_recovery_authority", "false"),
+  Require(HasEvidence(begin_result, "wal_recovery_authority", "false"),
           "Gate 004 begin migration carried WAL authority");
-  const std::string migration_uuid = begin_result.api_result.primary_object.uuid.canonical;
+  const std::string migration_uuid = begin_result.primary_object.uuid.canonical;
   Require(!migration_uuid.empty(), "Gate 004 begin migration did not persist UUID");
-  Require(FirstRowValue(begin_result.api_result, "state") == "prepared",
+  Require(FirstRowValue(begin_result, "state") == "prepared",
           "Gate 004 begin migration state drifted");
 
   const auto alter = RequireMigrationRoute(
@@ -484,11 +507,11 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
       "rs.migration.status.v1");
   Require(Contains(alter.envelope.payload, "\"migration_action\":\"start\""),
           "Gate 004 alter migration action operand missing");
-  auto alter_result = DispatchMigrationRoute(context, alter);
-  Require(alter_result.api_result.ok, "Gate 004 alter migration API failed");
-  Require(HasEvidence(alter_result.api_result, "engine_api_function", "EngineAlterMigration"),
+  auto alter_result = CallMigrationApi(context, alter);
+  Require(alter_result.ok, "Gate 004 alter migration API failed");
+  Require(HasEvidence(alter_result, "engine_api_function", "EngineAlterMigration"),
           "Gate 004 alter migration API evidence missing");
-  Require(FirstRowValue(alter_result.api_result, "state") == "running",
+  Require(FirstRowValue(alter_result, "state") == "running",
           "Gate 004 alter migration state drifted");
 
   const auto show = RequireMigrationRoute(
@@ -497,15 +520,15 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
       "SBLR_SHOW_MIGRATION",
       "EngineShowMigration",
       "rs.migration.status.v1");
-  auto show_result = DispatchMigrationRoute(context, show);
-  Require(show_result.api_result.ok, "Gate 004 show migration API failed");
-  Require(show_result.api_result.result_shape.result_kind == "rs.migration.status.v1",
+  auto show_result = CallMigrationApi(context, show);
+  Require(show_result.ok, "Gate 004 show migration API failed");
+  Require(show_result.result_shape.result_kind == "rs.migration.status.v1",
           "Gate 004 show migration result shape drifted");
-  Require(HasEvidence(show_result.api_result, "engine_api_function", "EngineShowMigration"),
+  Require(HasEvidence(show_result, "engine_api_function", "EngineShowMigration"),
           "Gate 004 show migration API evidence missing");
-  Require(FirstRowValue(show_result.api_result, "state") == "running",
+  Require(FirstRowValue(show_result, "state") == "running",
           "Gate 004 show migration did not observe running state");
-  Require(FirstRowValue(show_result.api_result, "migration_uuid") == migration_uuid,
+  Require(FirstRowValue(show_result, "migration_uuid") == migration_uuid,
           "Gate 004 show migration UUID drifted");
 
   const auto show_all = RequireMigrationRoute(
@@ -514,19 +537,19 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
       "SBLR_SHOW_MIGRATIONS",
       "EngineShowMigrations",
       "rs.migration.list.v1");
-  auto show_all_result = DispatchMigrationRoute(context, show_all);
-  Require(show_all_result.api_result.ok, "Gate 004 show migrations API failed");
-  Require(show_all_result.api_result.result_shape.result_kind == "rs.migration.list.v1",
+  auto show_all_result = CallMigrationApi(context, show_all);
+  Require(show_all_result.ok, "Gate 004 show migrations API failed");
+  Require(show_all_result.result_shape.result_kind == "rs.migration.list.v1",
           "Gate 004 show migrations result shape drifted");
-  Require(HasEvidence(show_all_result.api_result, "engine_api_function", "EngineShowMigrations"),
+  Require(HasEvidence(show_all_result, "engine_api_function", "EngineShowMigrations"),
           "Gate 004 show migrations API evidence missing");
-  Require(!show_all_result.api_result.result_shape.rows.empty(),
+  Require(!show_all_result.result_shape.rows.empty(),
           "Gate 004 show migrations returned no rows");
-  Require(FirstRowValue(show_all_result.api_result, "migration_uuid") == migration_uuid,
+  Require(FirstRowValue(show_all_result, "migration_uuid") == migration_uuid,
           "Gate 004 show migrations did not list migration UUID");
-  Require(FirstRowValue(show_all_result.api_result, "reference_storage_authority_accepted") == "false",
+  Require(FirstRowValue(show_all_result, "reference_storage_authority_accepted") == "false",
           "Gate 004 show migrations row accepted reference storage authority");
-  Require(FirstRowValue(show_all_result.api_result, "reference_finality_accepted") == "false",
+  Require(FirstRowValue(show_all_result, "reference_finality_accepted") == "false",
           "Gate 004 show migrations row accepted reference finality");
 
   CommitEngineTransaction(context);
@@ -559,15 +582,15 @@ void RequireMigrationReopenPath(const std::filesystem::path& path,
       "SBLR_SHOW_MIGRATION",
       "EngineShowMigration",
       "rs.migration.status.v1");
-  auto show_result = DispatchMigrationRoute(context, show);
-  Require(show_result.api_result.ok, "Gate 004 reopen show migration API failed");
-  Require(FirstRowValue(show_result.api_result, "migration_uuid") == migration_uuid,
+  auto show_result = CallMigrationApi(context, show);
+  Require(show_result.ok, "Gate 004 reopen show migration API failed");
+  Require(FirstRowValue(show_result, "migration_uuid") == migration_uuid,
           "Gate 004 reopen show migration UUID drifted");
-  Require(FirstRowValue(show_result.api_result, "state") == "running",
+  Require(FirstRowValue(show_result, "state") == "running",
           "Gate 004 reopen show migration did not preserve running state");
-  Require(FirstRowValue(show_result.api_result, "reference_storage_authority_accepted") == "false",
+  Require(FirstRowValue(show_result, "reference_storage_authority_accepted") == "false",
           "Gate 004 reopen show migration accepted reference storage authority");
-  Require(FirstRowValue(show_result.api_result, "reference_finality_accepted") == "false",
+  Require(FirstRowValue(show_result, "reference_finality_accepted") == "false",
           "Gate 004 reopen show migration accepted reference finality");
 
   const auto show_all = RequireMigrationRoute(
@@ -576,13 +599,13 @@ void RequireMigrationReopenPath(const std::filesystem::path& path,
       "SBLR_SHOW_MIGRATIONS",
       "EngineShowMigrations",
       "rs.migration.list.v1");
-  auto show_all_result = DispatchMigrationRoute(context, show_all);
-  Require(show_all_result.api_result.ok, "Gate 004 reopen show migrations API failed");
-  Require(!show_all_result.api_result.result_shape.rows.empty(),
+  auto show_all_result = CallMigrationApi(context, show_all);
+  Require(show_all_result.ok, "Gate 004 reopen show migrations API failed");
+  Require(!show_all_result.result_shape.rows.empty(),
           "Gate 004 reopen show migrations returned no rows");
-  Require(FirstRowValue(show_all_result.api_result, "migration_uuid") == migration_uuid,
+  Require(FirstRowValue(show_all_result, "migration_uuid") == migration_uuid,
           "Gate 004 reopen show migrations did not list migration UUID");
-  Require(FirstRowValue(show_all_result.api_result, "state") == "running",
+  Require(FirstRowValue(show_all_result, "state") == "running",
           "Gate 004 reopen show migrations did not preserve running state");
 
   CommitEngineTransaction(context);

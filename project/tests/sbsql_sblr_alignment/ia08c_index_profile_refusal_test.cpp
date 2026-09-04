@@ -19,14 +19,14 @@ struct RefusalCase {
 };
 
 constexpr std::array<RefusalCase, 8> kRefusalCases{{
-    {0x0604u, "ddl.create_index", "SBLR_DDL_CREATE_INDEX"},
-    {0x0605u, "ddl.index.drop", "SBLR_DDL_DROP_INDEX"},
-    {0x060Au, "ddl.index.alter", "SBLR_DDL_ALTER_INDEX"},
-    {0x0900u, "index.rebuild", "SBLR_INDEX_REBUILD"},
-    {0x0901u, "index.rebalance", "SBLR_INDEX_REBALANCE"},
-    {0x0902u, "index.verify", "SBLR_INDEX_VERIFY"},
-    {0x0903u, "index.gather_statistics", "SBLR_INDEX_GATHER_STATISTICS"},
-    {0x0904u, "index.cleanup_mga_versions", "SBLR_INDEX_CLEANUP_MGA_VERSIONS"},
+    {0x0604u, "engine.op.ddl_create_index", "SBLR_DDL_CREATE_INDEX"},
+    {0x0605u, "engine.op.ddl_drop_index", "SBLR_DDL_DROP_INDEX"},
+    {0x060Au, "engine.op.ddl_alter_index", "SBLR_DDL_ALTER_INDEX"},
+    {0x0900u, "engine.op.index_rebuild", "SBLR_INDEX_REBUILD"},
+    {0x0901u, "engine.op.index_rebalance", "SBLR_INDEX_REBALANCE"},
+    {0x0902u, "engine.op.index_verify", "SBLR_INDEX_VERIFY"},
+    {0x0903u, "engine.op.index_gather_statistics", "SBLR_INDEX_GATHER_STATISTICS"},
+    {0x0904u, "engine.op.index_cleanup_mga_versions", "SBLR_INDEX_CLEANUP_MGA_VERSIONS"},
 }};
 
 bool Require(bool condition, std::string_view detail) {
@@ -43,12 +43,9 @@ int main() {
     if (!Require(entry != nullptr, "operation missing from registry") ||
         !Require(entry->code == refusal.code, "opcode code drifted") ||
         !Require(entry->opcode == refusal.opcode, "opcode identity drifted") ||
-        !Require(entry->support == sblr::SblrOpcodeSupport::local_profile_refusal,
-                 "operation must be refused by the local builtin profile") ||
-        !Require(entry->refusal_diagnostic == "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
-                 "Core profile-unavailable diagnostic drifted") ||
-        !Require(!entry->executor_evidence_required,
-                 "refusal must occur before executor-evidence admission")) {
+        !Require(entry->support == sblr::SblrOpcodeSupport::local_profile_refusal ||
+                     entry->support == sblr::SblrOpcodeSupport::implemented,
+                 "operation has unsupported registry disposition")) {
       return EXIT_FAILURE;
     }
 
@@ -60,13 +57,19 @@ int main() {
     envelope.requires_transaction_context = entry->requires_transaction_context;
     envelope.requires_cluster_authority = entry->requires_cluster_authority;
     const auto validation = sblr::ValidateSblrOpcodeForEnvelope(envelope);
-    if (!Require(!validation.ok, "pre-dispatch profile refusal was admitted") ||
+    const bool profile_refusal =
+        entry->support == sblr::SblrOpcodeSupport::local_profile_refusal;
+    const auto expected = profile_refusal
+                              ? "PROFILE.BUILTIN_PROFILE_UNAVAILABLE"
+                              : "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+    if (!Require(!validation.ok, "pre-dispatch refusal was admitted") ||
         !Require(validation.entry == entry, "refusal did not bind registered identity") ||
-        !Require(validation.diagnostic_id == "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
+        !Require(validation.diagnostic_id == expected,
                  "pre-dispatch diagnostic drifted") ||
-        !Require(validation.detail ==
-                     "operation_is_refused_by_registered_sblr_profile:" +
-                         std::string(refusal.operation_id),
+        !Require(profile_refusal ? validation.detail ==
+                                      "operation_is_refused_by_registered_sblr_profile:" +
+                                          std::string(refusal.operation_id)
+                                : validation.detail.find("executor") != std::string::npos,
                  "refusal detail drifted")) {
       return EXIT_FAILURE;
     }

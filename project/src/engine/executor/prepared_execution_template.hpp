@@ -213,6 +213,7 @@ class PreparedTemplateStatementUseReceipt {
           receipt);
 
   PreparedTemplateStatementUseReceipt() = default;
+  static std::shared_ptr<PreparedTemplateStatementUseReceipt> Create();
 
   std::string receipt_id_;
   std::string prepared_template_id_;

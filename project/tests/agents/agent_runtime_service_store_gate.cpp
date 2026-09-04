@@ -385,6 +385,101 @@ void TestRuntimeServiceStoreRoundTrip() {
   Cleanup(database.path);
 }
 
+void TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic() {
+  const auto database = CreateActiveDatabase();
+  const auto context = Context(database);
+
+  api::AgentDurableCatalogStoreRequest seed;
+  seed.context = context;
+  seed.image = CatalogImage();
+  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000be50";
+  seed.production_live_path = true;
+  seed.fsync_or_checkpoint_evidence = true;
+  Require(api::PersistAgentDurableCatalogImage(seed).ok,
+          "initial lease batch catalog seed persist failed");
+
+  api::AgentRuntimeServiceStore service;
+  api::AgentRuntimeServiceStoreOpenRequest open;
+  open.context = context;
+  open.manifest = agents::CanonicalAgentManifest();
+  open.production_live_path = true;
+  open.worker_foreground_protection_enabled = true;
+  open.crash_recovery_mode = true;
+  open.service_owner_uuid = "018f0000-0000-7000-8000-00000000be51";
+  open.evidence_uuid = "018f0000-0000-7000-8000-00000000be52";
+  open.fsync_or_checkpoint_evidence = true;
+  auto result = service.Open(std::move(open));
+  Require(result.status.ok, "lease batch runtime service open failed");
+  result = service.Start("018f0000-0000-7000-8000-00000000be53", true);
+  Require(result.status.ok, "lease batch runtime service start failed");
+
+  auto first = LeaseRequest();
+  first.lease_uuid = "018f0000-0000-7000-8000-00000000be54";
+  first.owner_uuid = "018f0000-0000-7000-8000-00000000be55";
+  first.evidence_uuid = "018f0000-0000-7000-8000-00000000be56";
+  auto second = LeaseRequest();
+  second.lease_uuid = "018f0000-0000-7000-8000-00000000be57";
+  second.owner_uuid = "018f0000-0000-7000-8000-00000000be58";
+  second.evidence_uuid = "018f0000-0000-7000-8000-00000000be59";
+
+  result = service.AcquireLeaseBatch(
+      {first, second},
+      "018f0000-0000-7000-8000-00000000be60",
+      true);
+  Require(result.status.ok, "durable lease batch acquisition failed");
+  Require(result.evidence.lifecycle_event == "lease_acquire_batch",
+          "durable lease batch lifecycle evidence was not preserved");
+
+  const auto acquired = api::LoadAgentDurableCatalogImage(context, true);
+  Require(acquired.ok, "durable lease batch catalog reload failed");
+  Require(acquired.image.leases.size() == 2,
+          "durable lease batch did not persist every lease");
+  const auto acquired_root = acquired.image.authority.catalog_root_digest;
+  std::uint64_t first_expiry = 0;
+  std::string first_evidence;
+  for (const auto& lease : acquired.image.leases) {
+    if (lease.lease_uuid == first.lease_uuid) {
+      first_expiry = lease.expires_at_microseconds;
+      first_evidence = lease.evidence_uuid;
+    }
+  }
+  Require(first_expiry != 0 && first_evidence == first.evidence_uuid,
+          "durable lease batch first lease identity was not persisted");
+
+  auto renewed_first = first;
+  renewed_first.now_microseconds = 2000;
+  renewed_first.evidence_uuid =
+      "018f0000-0000-7000-8000-00000000be61";
+  auto conflicting_second = second;
+  conflicting_second.now_microseconds = 2000;
+  conflicting_second.owner_uuid =
+      "018f0000-0000-7000-8000-00000000be62";
+  conflicting_second.evidence_uuid =
+      "018f0000-0000-7000-8000-00000000be63";
+  result = service.AcquireLeaseBatch(
+      {renewed_first, conflicting_second},
+      "018f0000-0000-7000-8000-00000000be64",
+      true);
+  Require(!result.status.ok &&
+              result.status.diagnostic_code ==
+                  "SB_AGENT_LEASE.DUPLICATE_LIVE_OWNER_REFUSED",
+          "conflicting durable lease batch was not refused");
+
+  const auto after_conflict = api::LoadAgentDurableCatalogImage(context, true);
+  Require(after_conflict.ok,
+          "durable lease batch catalog reload after conflict failed");
+  Require(after_conflict.image.authority.catalog_root_digest == acquired_root,
+          "conflicting durable lease batch changed persistent catalog state");
+  for (const auto& lease : after_conflict.image.leases) {
+    if (lease.lease_uuid != first.lease_uuid) { continue; }
+    Require(lease.expires_at_microseconds == first_expiry &&
+                lease.evidence_uuid == first_evidence,
+            "conflicting durable lease batch partially renewed an earlier lease");
+  }
+
+  Cleanup(database.path);
+}
+
 void TestRuntimeServiceStoreRequiresCheckpointEvidence() {
   const auto database = CreateActiveDatabase();
   const auto context = Context(database);
@@ -965,6 +1060,7 @@ void TestRuntimeServiceStoreRejectsDuplicateLiveLeaseOwner() {
 
 int main() {
   TestRuntimeServiceStoreRoundTrip();
+  TestRuntimeServiceStoreAcquireLeaseBatchIsAtomic();
   TestRuntimeServiceStoreRequiresCheckpointEvidence();
   TestRuntimeServiceStoreAcceptsTransactionPerOperation();
   TestRuntimeServiceStoreDrainShutdownPersist();

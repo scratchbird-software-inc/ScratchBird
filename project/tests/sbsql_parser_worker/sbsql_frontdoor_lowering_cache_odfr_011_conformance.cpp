@@ -20,6 +20,11 @@ namespace sbsql = scratchbird::parser::sbsql;
 
 namespace {
 
+constexpr std::string_view kCacheableParserOnlySql =
+    "ENGINE QUERY BIND EXPRESSION";
+constexpr std::string_view kDifferentParserOnlyShapeSql =
+    "ENGINE QUERY BIND PREDICATE";
+
 void Require(bool condition, std::string_view message) {
   if (condition) return;
   std::cerr << message << '\n';
@@ -92,11 +97,11 @@ void VerifySessionLanguageDimensionMiss(std::string_view label, Mutator mutator)
   const auto config = Config();
   sbsql::SbsqlTestWireSession base_session(config, &base_metrics, &cache);
   SeedEngineAuthenticatedContext(&base_session);
-  const auto first = base_session.RunPipeline("select 1", false);
+  const auto first = base_session.RunPipeline(kCacheableParserOnlySql, false);
   Require(first.accepted,
           std::string(label) + " base lowering was not accepted diagnostics=" +
               DiagnosticCodes(first.messages));
-  const auto second = base_session.RunPipeline("select 1", false);
+  const auto second = base_session.RunPipeline(kCacheableParserOnlySql, false);
   Require(second.frontdoor_cache_hit,
           std::string(label) + " base cache seed did not hit");
 
@@ -105,7 +110,7 @@ void VerifySessionLanguageDimensionMiss(std::string_view label, Mutator mutator)
   SeedEngineAuthenticatedContext(&changed_session);
   auto& context = const_cast<sbsql::SessionContext&>(changed_session.session());
   mutator(context);
-  const auto changed = changed_session.RunPipeline("select 1", false);
+  const auto changed = changed_session.RunPipeline(kCacheableParserOnlySql, false);
   Require(changed.accepted,
           std::string(label) + " changed lowering was not accepted diagnostics=" +
               DiagnosticCodes(changed.messages));
@@ -120,7 +125,7 @@ void RunFrontdoorCacheHitPath() {
   sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
   SeedEngineAuthenticatedContext(&session);
 
-  const auto first = session.RunPipeline("select 1", false);
+  const auto first = session.RunPipeline(kCacheableParserOnlySql, false);
   Require(first.accepted,
           std::string("first lowering was not accepted diagnostics=") +
               DiagnosticCodes(first.messages));
@@ -133,7 +138,7 @@ void RunFrontdoorCacheHitPath() {
   Require(Contains(first.sblr_payload, "\"parser_executes_sql\":false"),
           "lowered payload did not carry parser_executes_sql=false");
 
-  const auto second = session.RunPipeline("select 1", false);
+  const auto second = session.RunPipeline(kCacheableParserOnlySql, false);
   Require(second.accepted, "cached lowering was not accepted");
   Require(second.frontdoor_cache_hit, "second lowering did not hit front-door cache");
   Require(second.sblr_payload == first.sblr_payload,
@@ -174,18 +179,19 @@ void RunDimensionMisses() {
   const auto base_config = Config();
   sbsql::SbsqlTestWireSession base_session(base_config, &base_metrics, &cache);
   SeedEngineAuthenticatedContext(&base_session);
-  const auto first = base_session.RunPipeline("select 1", false);
+  const auto first = base_session.RunPipeline(kCacheableParserOnlySql, false);
   Require(first.accepted,
           std::string("base cache seed was not accepted diagnostics=") +
               DiagnosticCodes(first.messages));
-  const auto second = base_session.RunPipeline("select 1", false);
+  const auto second = base_session.RunPipeline(kCacheableParserOnlySql, false);
   Require(second.frontdoor_cache_hit, "base cache seed did not hit");
 
   sbsql::ParserMetrics registry_metrics;
   const auto registry_config = Config("default", base_config.registry_version + 1);
   sbsql::SbsqlTestWireSession registry_session(registry_config, &registry_metrics, &cache);
   SeedEngineAuthenticatedContext(&registry_session);
-  const auto registry_changed = registry_session.RunPipeline("select 1", false);
+  const auto registry_changed =
+      registry_session.RunPipeline(kCacheableParserOnlySql, false);
   Require(registry_changed.accepted,
           std::string("registry-version changed lowering was not accepted diagnostics=") +
               DiagnosticCodes(registry_changed.messages));
@@ -196,7 +202,8 @@ void RunDimensionMisses() {
   const auto profile_config = Config("profile.changed");
   sbsql::SbsqlTestWireSession profile_session(profile_config, &profile_metrics, &cache);
   SeedEngineAuthenticatedContext(&profile_session);
-  const auto profile_changed = profile_session.RunPipeline("select 1", false);
+  const auto profile_changed =
+      profile_session.RunPipeline(kCacheableParserOnlySql, false);
   Require(profile_changed.accepted,
           std::string("profile changed lowering was not accepted diagnostics=") +
               DiagnosticCodes(profile_changed.messages));
@@ -206,7 +213,8 @@ void RunDimensionMisses() {
   sbsql::ParserMetrics parameter_metrics;
   sbsql::SbsqlTestWireSession parameter_session(base_config, &parameter_metrics, &cache);
   SeedEngineAuthenticatedContext(&parameter_session);
-  const auto parameter_changed = parameter_session.RunPipeline("select '1'", false);
+  const auto parameter_changed =
+      parameter_session.RunPipeline(kDifferentParserOnlyShapeSql, false);
   Require(parameter_changed.accepted,
           std::string("parameter-shape changed lowering was not accepted diagnostics=") +
               DiagnosticCodes(parameter_changed.messages));
@@ -252,14 +260,15 @@ void RunNormalizationSafety() {
   sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
   SeedEngineAuthenticatedContext(&session);
 
-  const auto canonical = session.RunPipeline("select 1", false);
+  const auto canonical = session.RunPipeline(kCacheableParserOnlySql, false);
   Require(canonical.accepted,
           std::string("normalization seed was not accepted diagnostics=") +
               DiagnosticCodes(canonical.messages));
   Require(!canonical.frontdoor_cache_hit,
           "normalization seed unexpectedly hit front-door cache");
 
-  const auto outside_case_whitespace = session.RunPipeline(" SELECT   1 ", false);
+  const auto outside_case_whitespace =
+      session.RunPipeline(" engine   query bind expression ", false);
   Require(outside_case_whitespace.accepted,
           std::string("outside-token normalization query was not accepted diagnostics=") +
               DiagnosticCodes(outside_case_whitespace.messages));
@@ -271,14 +280,14 @@ void RunNormalizationSafety() {
   sbsql::SbsqlTestWireSession literal_session(config, &literal_metrics, &literal_cache);
   SeedEngineAuthenticatedContext(&literal_session);
 
-  const auto lower_literal = literal_session.RunPipeline("select 'abc'", false);
+  const auto lower_literal = literal_session.RunPipeline("SET x = 'abc'", false);
   Require(lower_literal.accepted,
           std::string("lowercase literal query was not accepted diagnostics=") +
               DiagnosticCodes(lower_literal.messages));
   Require(!lower_literal.frontdoor_cache_hit,
           "lowercase literal query unexpectedly hit front-door cache");
 
-  const auto upper_literal = literal_session.RunPipeline("select 'ABC'", false);
+  const auto upper_literal = literal_session.RunPipeline("SET x = 'ABC'", false);
   Require(upper_literal.accepted,
           std::string("uppercase literal query was not accepted diagnostics=") +
               DiagnosticCodes(upper_literal.messages));
@@ -295,7 +304,7 @@ void RunNormalizationSafety() {
   SeedEngineAuthenticatedContext(&identifier_session);
 
   const auto lower_identifier =
-      identifier_session.RunPipeline("select 1 as \"abc\"", false);
+      identifier_session.RunPipeline("SET \"abc\" = 1", false);
   Require(lower_identifier.accepted,
           std::string("lowercase quoted identifier query was not accepted diagnostics=") +
               DiagnosticCodes(lower_identifier.messages));
@@ -303,7 +312,7 @@ void RunNormalizationSafety() {
           "lowercase quoted identifier query unexpectedly hit front-door cache");
 
   const auto upper_identifier =
-      identifier_session.RunPipeline("select 1 as \"ABC\"", false);
+      identifier_session.RunPipeline("SET \"ABC\" = 1", false);
   Require(upper_identifier.accepted,
           std::string("uppercase quoted identifier query was not accepted diagnostics=") +
               DiagnosticCodes(upper_identifier.messages));

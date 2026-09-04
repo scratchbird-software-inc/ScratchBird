@@ -103,6 +103,28 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
              : uuid::UuidToString(found->descriptor_uuid.value);
 }
 
+std::string CoreRuntimeTypeUuid(const std::string_view stable_name) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto descriptor = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (count != 1 || descriptor == manifest.manifest.descriptor_rows.end() ||
+      !descriptor->descriptor_uuid.valid()) {
+    return {};
+  }
+  const auto descriptor_uuid =
+      uuid::UuidToString(descriptor->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      descriptor->descriptor_epoch);
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+}
+
 enum class FixtureKind { kBase, kEmpty, kInvalid, kDuplicate };
 
 struct SearchFixture {
@@ -1686,7 +1708,7 @@ api::TypedRelationalDag ProductionSearchUnaryCompositionDag(
       CoreTypeUuid("boolean")));
   dag.descriptors.push_back(DagDescriptor(
       109, GeneratedUuid(platform::UuidKind::object, 0xe09),
-      CoreTypeUuid("int64")));
+      CoreRuntimeTypeUuid("int64")));
 
   std::array<std::uint32_t, 5> projected_expression_ids{};
   for (std::size_t ordinal = 0; ordinal < projected_expression_ids.size();
@@ -1835,7 +1857,7 @@ api::TypedRelationalDag ProductionSearchCteFetchDag(
   dag.nodes.push_back(std::move(cte));
   dag.descriptors.push_back(DagDescriptor(
       108, GeneratedUuid(platform::UuidKind::object, 0xe20),
-      CoreTypeUuid("int64")));
+      CoreRuntimeTypeUuid("int64")));
   api::RelationalExpressionRecord count;
   count.expression_id = 40;
   count.expression_kind = api::RelationalExpressionKind::kLiteral;
@@ -1868,7 +1890,7 @@ api::TypedRelationalDag ProductionSearchCountDag(
   dag.root_node_id = 2;
   dag.descriptors.push_back(DagDescriptor(
       108, GeneratedUuid(platform::UuidKind::object, 0xe30),
-      CoreTypeUuid("int64")));
+      CoreRuntimeTypeUuid("int64")));
   const auto count = exec::LookupCanonicalAggregateByFunctionV1(
       exec::CanonicalAggregateFunction::count);
   api::RelationalExpressionRecord aggregate;
@@ -1894,7 +1916,7 @@ api::TypedRelationalDag ProductionSearchGroupedAggregateDag(
   auto dag = ProductionSearchDag(
       fixture, "SEARCH_TERMS", "alpha beta", 3);
   dag.root_node_id = 3;
-  const auto int64_type = CoreTypeUuid("int64");
+  const auto int64_type = CoreRuntimeTypeUuid("int64");
   dag.descriptors.push_back(DagDescriptor(
       108, GeneratedUuid(platform::UuidKind::object, 0xe31), int64_type));
   dag.descriptors.push_back(DagDescriptor(
