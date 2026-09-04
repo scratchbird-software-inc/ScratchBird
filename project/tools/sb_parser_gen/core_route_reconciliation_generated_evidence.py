@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+import re
 
 
 _COMMAND_SOURCES: dict[str, str] = {
@@ -65,6 +66,58 @@ _PROMOTION_SOURCES: dict[str, str] = {
     "SBSQL-B4FB30E2A8B7": "project/tests/sbsql_parser_worker/sbsql_sbsfc_077_non_general_residual_exact_route_conformance.cpp",
 }
 
+# Reviewed concrete-parent projections.  The Core promotion registry uses
+# conceptual SBLR route names, while several established implementation
+# carriers use a public operation key for the same parent.  These pairs are
+# deliberately closed: notably, the deprecated ``query.plan_operation`` and
+# legacy DML/observability substitutes are absent.  A row is selected only
+# when its generated evidence names the concrete carrier and one of the
+# reviewed sources contains both the exact surface identity and that carrier.
+_COMPATIBLE_PARENT_PROOFS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("sblr.ddl.create_table", "ddl.create_table"),
+        ("sblr.ddl.type_descriptor", "ddl.create_table"),
+        ("sblr.expression.runtime", "query.evaluate_projection"),
+        ("sblr.management.acceleration", "observability.show_acceleration"),
+        ("sblr.management.agent", "observability.show_agents_extended"),
+        ("sblr.management.decision", "observability.show_decision_service"),
+        ("sblr.notification.channel", "event.channel.create"),
+        ("sblr.notification.channel", "event.channel.listen"),
+        ("sblr.query.cast_value", "query.cast_value"),
+        ("sblr.query.evaluate_projection", "query.evaluate_projection"),
+        ("sblr.query.evaluate_projection", "sb.temporal.current_timestamp"),
+        ("sblr.query.graph", "nosql.graph_query"),
+        ("sblr.query.vector_search", "nosql.vector_search"),
+        ("sblr.security.event_trigger", "security.policy.attach"),
+        ("sblr.security.principal", "security.policy.attach"),
+        ("sblr.security.privilege", "security.privilege.grant"),
+        ("sblr.storage.aof", "storage.manage_operation"),
+        ("sblr.storage.policy", "security.policy.attach"),
+        ("sblr.storage.secret", "storage.manage_operation"),
+        ("sblr.storage.shadow", "storage.manage_operation"),
+        ("sblr.storage.tier", "storage.manage_operation"),
+        ("sblr.transaction.autonomous", "transaction.execute_block"),
+        (
+            "sblr.transaction.set_characteristics",
+            "transaction.set_characteristics",
+        ),
+    }
+)
+
+_PROMOTION_REVIEW_SOURCES: tuple[str, ...] = (
+    "project/tests/sbsql_parser_worker/sbsql_cast_value_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_create_table_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_event_notification_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_observability_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_query_scalar_projection_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_sbsfc_061_json_grammar_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_sbsfc_062_vector_grammar_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_sbsfc_077_non_general_residual_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_sbsfc_079_multimodel_general_residual_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_sbsfc_080_operational_general_residual_exact_route_conformance.cpp",
+    "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
+)
+
 _COMMAND_REGISTRY = "registries/sbsql-command-sblr-zero-grey-closure.csv"
 _PROMOTION_REGISTRY = "registries/normalized-executable-surface-promotions-20260822.csv"
 
@@ -102,6 +155,37 @@ def _validate_source(repo_root: Path, relative_path: str, required: tuple[str, .
         )
 
 
+def _contains_exact_token(text: str, token: str) -> bool:
+    return (
+        re.search(
+            rf"(?<![A-Za-z0-9_.]){re.escape(token)}(?![A-Za-z0-9_.])", text
+        )
+        is not None
+    )
+
+
+def _reviewed_compatible_parent_source(
+    repo_root: Path,
+    surface_id: str,
+    core_route: str,
+    generated_evidence: str,
+) -> str | None:
+    proof_tokens = sorted(
+        proof
+        for route, proof in _COMPATIBLE_PARENT_PROOFS
+        if route == core_route and _contains_exact_token(generated_evidence, proof)
+    )
+    for proof in proof_tokens:
+        for relative_path in _PROMOTION_REVIEW_SOURCES:
+            path = repo_root / relative_path
+            if not path.is_file():
+                raise ValueError(f"reviewed route source missing: {path}")
+            text = path.read_text(encoding="utf-8")
+            if surface_id in text and _contains_exact_token(text, proof):
+                return relative_path
+    return None
+
+
 def validate_authoritative_runtime_inputs(repo_root: Path) -> None:
     core = _core_root(repo_root)
     command_rows = _read_unique_rows(
@@ -134,8 +218,6 @@ def augment_strict_ledger_row(
     classification: dict[str, str],
 ) -> dict[str, str]:
     surface_id = surface.get("surface_id", "")
-    if surface_id not in _COMMAND_SOURCES and surface_id not in _PROMOTION_SOURCES:
-        return classification
     result = dict(classification)
     core = _core_root(repo_root)
     if surface_id in _COMMAND_SOURCES:
@@ -147,12 +229,32 @@ def augment_strict_ledger_row(
             f"executor_operation_id={row['executor_operation_id']};"
             "core_route_source_reviewed=true"
         )
-    else:
+    elif surface_id in _PROMOTION_SOURCES:
         row = _read_unique_rows(
             core / _PROMOTION_REGISTRY, frozenset((surface_id,))
         )[surface_id]
         addition = (
             f"parent_sblr_route={row['sblr_route']};"
+            "core_parent_route_source_reviewed=true"
+        )
+    else:
+        rows = _read_unique_rows(
+            core / _PROMOTION_REGISTRY, frozenset((surface_id,))
+        )
+        row = rows.get(surface_id)
+        if row is None:
+            return classification
+        source = _reviewed_compatible_parent_source(
+            repo_root,
+            surface_id,
+            row["sblr_route"],
+            result.get("function_or_api_operation_id", ""),
+        )
+        if source is None:
+            return classification
+        addition = (
+            f"parent_sblr_route={row['sblr_route']};"
+            f"core_parent_route_source={source};"
             "core_parent_route_source_reviewed=true"
         )
     existing = result.get("function_or_api_operation_id", "")
@@ -170,8 +272,6 @@ def augment_per_row_manifest_row(
     classification: dict[str, str],
 ) -> dict[str, str]:
     surface_id = surface.get("surface_id", "")
-    if surface_id not in _COMMAND_SOURCES and surface_id not in _PROMOTION_SOURCES:
-        return classification
     result = dict(classification)
     core = _core_root(repo_root)
     if surface_id in _COMMAND_SOURCES:
@@ -183,12 +283,32 @@ def augment_per_row_manifest_row(
             f"executor_operation_id={row['executor_operation_id']};"
             "core_route_source_reviewed=true"
         )
-    else:
+    elif surface_id in _PROMOTION_SOURCES:
         row = _read_unique_rows(
             core / _PROMOTION_REGISTRY, frozenset((surface_id,))
         )[surface_id]
         addition = (
             f"parent_sblr_route={row['sblr_route']};"
+            "core_parent_route_source_reviewed=true"
+        )
+    else:
+        rows = _read_unique_rows(
+            core / _PROMOTION_REGISTRY, frozenset((surface_id,))
+        )
+        row = rows.get(surface_id)
+        if row is None:
+            return classification
+        source = _reviewed_compatible_parent_source(
+            repo_root,
+            surface_id,
+            row["sblr_route"],
+            result.get("implementation_refs", ""),
+        )
+        if source is None:
+            return classification
+        addition = (
+            f"parent_sblr_route={row['sblr_route']};"
+            f"core_parent_route_source={source};"
             "core_parent_route_source_reviewed=true"
         )
     existing = result.get("implementation_refs", "")
