@@ -122,10 +122,20 @@ def validate_master(root: Path, build_root: Path | None) -> dict[str, int | str]
         + summary["envelope_identities"],
         "implementation population does not equal Core command + opcode + envelope identities",
     )
+    baseline_test_obligations = 4 * (
+        summary["command_identities"] + summary["opcode_identities"]
+    )
     require(
-        summary["test_obligations"]
-        == 4 * (summary["command_identities"] + summary["opcode_identities"]),
+        summary["test_obligations"] >= baseline_test_obligations,
         "test population does not provide four layers per Core command/opcode identity",
+    )
+    # The language gate above proves that every identity retains exactly one
+    # contract, integration, fault, and E2E baseline obligation.  Additional
+    # narrowly scoped obligations (currently the owner-approved opcode-775
+    # transport/recovery tranche) strengthen that baseline and must not make
+    # the master accounting gate reject an otherwise exact population.
+    summary["supplemental_test_obligations"] = (
+        summary["test_obligations"] - baseline_test_obligations
     )
     require(
         summary["workplan_status"] == "in_progress",
@@ -153,6 +163,7 @@ def main() -> int:
         f"sblr_envelopes={summary['envelope_identities']} "
         f"implementation_items={summary['implementation_items']} "
         f"test_obligations={summary['test_obligations']} "
+        f"supplemental_test_obligations={summary['supplemental_test_obligations']} "
         f"open_release_blockers={summary['open_release_blockers']} "
         f"workplan_status={summary['workplan_status']}"
     )

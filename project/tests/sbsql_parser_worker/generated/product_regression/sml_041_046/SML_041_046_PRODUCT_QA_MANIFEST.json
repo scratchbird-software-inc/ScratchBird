@@ -62,11 +62,11 @@
   "hardening_oracle_link": {
     "edge_case_count": 11,
     "fuzz_evidence_count": 4,
-    "manifest_sha256": "26fe7a4fa4be4ba69276bcf8760c567ca4bd78bfae830316e10fc8f991bb6f3b",
+    "manifest_sha256": "a80dfc92973e1c2180841c603d059e3041b769b0f77209837b85fd6794f0f192",
     "path": "project/tests/sbsql_parser_worker/generated/hardening/sml_041_046/SML_044_046_HARDENING_ORACLE.json",
     "schema_version": "sbsql.sml_044_046.hardening_oracle.v1"
   },
-  "manifest_sha256": "a9dea378de7865dbf835ef9384941cdc281ca5b343ba2549d727a84e2c0935ae",
+  "manifest_sha256": "0ce7b8b7c48a85cb8f95f091042d8f559195064ebddd74c862cfb7d07a4ebfec",
   "network_dependency": false,
   "product_qa_script_corpus": [
     {
@@ -414,11 +414,11 @@
       "evidence_path_hashes": [
         {
           "path": "project/tests/sbsql_parser_worker/final_sblr_sbsql_master_closure_gate.py",
-          "sha256": "1d0a3f2cc47ef8cd01e8ef8937d89a65855f6462ce1a43692a5782d993e3af6e"
+          "sha256": "a68cbd66a68a8c2b4143fcfbd2bb7a4f60671a3a7a1ba2256b4eddc11389b622"
         },
         {
           "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv",
-          "sha256": "ea597c6ab2cf18c04ec2a71663672ab6fba3985afbab80f5fe17ccdaa852d1c2"
+          "sha256": "7962a0afcd716a9b96a9437cacfb47ca1604a5ba0bbc893bc3462ba98f73612a"
         }
       ],
       "evidence_paths": [
@@ -426,7 +426,7 @@
         "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv"
       ],
       "network_dependency": false,
-      "row_sha256": "d95698751834af1fc2467b81309189799135b7cfd3b495f294aa040be43e15e2",
+      "row_sha256": "4534f0a8f2749da48f8eea1d0e65462d99c2baeb71681a15a1c3d3d4397021d6",
       "script_hash": "ba9d3854ea2c790ac35ba4ff11b8deeb0746d8dfab001c0b585b3d8d620e10f0",
       "sml_id": "SML-042",
       "suite_class": "release",
@@ -4586,17 +4586,17 @@
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv",
       "row_count": 2617,
-      "row_sha256": "ab3169932ecc13b6b4665fd4b5643af31261501a8904f40e2220bbbabe6265df",
-      "sha256": "ea597c6ab2cf18c04ec2a71663672ab6fba3985afbab80f5fe17ccdaa852d1c2",
-      "size_bytes": 5033330,
+      "row_sha256": "91bdb6dca8abcff113100891fb1ff8e1ecbdc57987ed64458228429f6dabb81d",
+      "sha256": "7962a0afcd716a9b96a9437cacfb47ca1604a5ba0bbc893bc3462ba98f73612a",
+      "size_bytes": 5033222,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/PER_ROW_EVIDENCE_MANIFEST.csv",
       "row_count": 2617,
-      "row_sha256": "e42a913451c7a327c436dc7ea9a5ae6b8e4a22a709b4fad2fb39b6135a2c4383",
-      "sha256": "da27d93161a7dfd6d3b1b7fce2d7173fd235db16aa93db54b2fb52ab6946ecac",
-      "size_bytes": 6442786,
+      "row_sha256": "c5eb44846a738598b316cc3dc50b38204a16b90b9445f9938cb6b027e1e48c86",
+      "sha256": "585677e9c8081c0e67cb6b95e084a1c6d46178b380c6366e28fba29229df1c1e",
+      "size_bytes": 6442678,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     },
     {
@@ -4610,9 +4610,9 @@
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBLR_BINARY_ROUND_TRIP_MATRIX.csv",
       "row_count": 2617,
-      "row_sha256": "2347ca5328edeca4ee15242fb2d0688df75f197f6e6146708e1cd53a8be6d519",
-      "sha256": "b484af60a3552a5ac0cbde9989f62c1653ecedb632ed209e38de149b57c5455d",
-      "size_bytes": 4296441,
+      "row_sha256": "60c434e8ba30c8d40f327c21f5af69705ef1fd5e6b702f7190559cc0829ba3fe",
+      "sha256": "f90f2555a69820a97c0b7c77d225ce325ad6232c58a3a587148430fb64827b7b",
+      "size_bytes": 4296442,
       "surface_id_set_sha256": "cfe4937a19a7f94a26e5351b9a7c2108dfa6edcc709de375887694b62043159c"
     }
   ]

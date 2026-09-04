@@ -226,13 +226,17 @@ REQUIRED_CTEST_NAMES = {
 IMPLEMENTATION_STATUSES = {
     "absent",
     "partial",
-    "externally_owned_coordination_only",
+    "conformant_verified",
+    "corrected_verified",
+    "exact_refusal_verified",
+    "blocked_owner_decision",
 }
 
 TEST_STATUSES = {
     "test_required",
     "audit_candidate",
-    "externally_owned_coordination_only",
+    "verified_pass",
+    "blocked_owner_decision",
 }
 
 TEST_FAMILIES = {
@@ -576,11 +580,14 @@ def validate_workplan_obligations(
         )
         if row["area_id"] == "IA-EXT-OPT":
             require(
-                row["implementation_status"] == "externally_owned_coordination_only",
-                f"optimizer-owned implementation obligation loses ownership boundary: {key}",
+                row["implementation_status"] in {"absent", "partial"},
+                "absorbed optimizer/QOW obligation was promoted without an exact "
+                f"local review: {key} {row['implementation_status']}",
             )
-        elif row["implementation_status"] == "externally_owned_coordination_only":
-            fail(f"non-optimizer implementation obligation marked externally owned: {key}")
+            require(
+                row["review_status"].startswith("owner_absorbed_2026-09-04"),
+                f"absorbed optimizer/QOW obligation loses its review provenance: {key}",
+            )
         implementation_by_key[key] = row
 
     command_families: dict[str, set[str]] = defaultdict(set)
@@ -635,20 +642,21 @@ def validate_workplan_obligations(
             row["area_id"] == implementation_by_key[key]["area_id"],
             f"test/implementation area drift for {test_id}",
         )
+        require(
+            row["area_id"] in row["planned_ctest_label"]
+            and row["required_layer"] in row["planned_ctest_label"],
+            f"test obligation label loses area/layer identity: {test_id}",
+        )
         if row["area_id"] == "IA-EXT-OPT":
             require(
-                row["implementation_status"] == "externally_owned_coordination_only"
-                and row["planned_ctest_label"] == "external_optimizer_proof_chain",
-                f"optimizer-owned test obligation loses ownership boundary: {test_id}",
-            )
-        else:
-            require(
-                row["area_id"] in row["planned_ctest_label"]
-                and row["required_layer"] in row["planned_ctest_label"],
-                f"test obligation label loses area/layer identity: {test_id}",
+                row["implementation_status"] in {"test_required", "audit_candidate"},
+                "absorbed optimizer/QOW test was promoted without an exact local "
+                f"review: {test_id} {row['implementation_status']}",
             )
         for authority in row["controlling_authority"].split("|"):
             authority_path = authority.split("#", 1)[0]
+            if authority_path.startswith("Specifications/Core/"):
+                authority_path = authority_path.removeprefix("Specifications/Core/")
             require(
                 authority_path in core_authorities,
                 f"test obligation cites non-admitted Core authority: {test_id} {authority_path}",
@@ -662,15 +670,25 @@ def validate_workplan_obligations(
     )
     required_layers = {"contract", "integration", "fault", "e2e"}
     for key, item_tests in tests_by_item.items():
-        require(len(item_tests) == 4, f"item does not have four test obligations: {key}")
-        by_layer = {row["required_layer"]: row for row in item_tests}
-        require(set(by_layer) == required_layers, f"item layer closure drift: {key}")
         expected_families = TEST_FAMILIES[key[0]]
-        for layer, row in by_layer.items():
+        baseline_by_layer: dict[str, dict[str, str]] = {}
+        for layer in required_layers:
+            matches = [
+                row
+                for row in item_tests
+                if row["required_layer"] == layer
+                and row["test_family"] == expected_families[layer]
+            ]
             require(
-                row["test_family"] == expected_families[layer],
-                f"item test-family drift: {key} {layer}",
+                len(matches) == 1,
+                "item must retain exactly one baseline obligation for "
+                f"{key} {layer}: observed={len(matches)}",
             )
+            baseline_by_layer[layer] = matches[0]
+        require(
+            set(baseline_by_layer) == required_layers,
+            f"item layer closure drift: {key}",
+        )
 
     area_ids = {row["area_id"] for row in areas}
     require(
@@ -679,8 +697,8 @@ def validate_workplan_obligations(
     )
     tracker_by_phase = unique_index(tracker, "phase_id", "alignment tracker")
     require(
-        tracker_by_phase.get("IA-14", {}).get("status") == "pending",
-        "alignment tracker no longer records the open full-corpus acceptance phase",
+        tracker_by_phase.get("IA-14", {}).get("status") == "in_progress",
+        "alignment tracker no longer records the active full-corpus acceptance phase",
     )
     require(
         tracker_by_phase.get("IA-15", {}).get("status") == "pending",
