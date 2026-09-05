@@ -12,6 +12,8 @@
 #include "parser_ipc_common.hpp"
 #include "sbps_bulk_import_stream_codec.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -222,15 +224,49 @@ struct ServerParameterCoordinationResult {
   MessageVectorSet messages;
 };
 
+struct PreparedParameterSlotReference {
+  std::uint32_t slot_ordinal{0};
+  std::array<std::uint8_t, 16> slot_uuid{};
+  std::array<std::uint8_t, 16> datatype_descriptor_uuid{};
+  std::array<std::uint8_t, 16> datatype_type_uuid{};
+  std::uint64_t datatype_descriptor_generation{0};
+  std::uint8_t direction{0};
+  std::uint8_t nullable{0};
+};
+
 struct PreparedParameterReference {
   std::string prepared_statement_uuid;
   std::uint64_t prepared_generation{0};
   std::string operation_uuid;
   std::uint64_t coordination_generation{0};
+  // Retained only from the authenticated SBPG/SBPA preparation exchange.
+  // These values are not encoded into the public 56-byte prepared reference;
+  // they let a later SBsql BIND copy the exact engine-issued slot authority
+  // without inferring identities from SQL text or host values.
+  std::array<std::uint8_t, 16> parameter_set_uuid{};
+  std::uint64_t parameter_set_generation{0};
+  std::array<std::uint8_t, 32> ordered_slot_table_sha256{};
+  std::array<std::uint8_t, 16> batch_uuid{};
+  std::uint64_t batch_generation{0};
+  std::array<std::uint8_t, 16> dynamic_package_uuid{};
+  std::uint64_t dynamic_generation{0};
+  std::vector<PreparedParameterSlotReference> slots;
+  // Exact engine-issued SBPA retained for the subsequent private PREPARE
+  // bind.  This is admission evidence, not a client-authored type demand;
+  // the engine re-decodes it and compares every field with receipt-private
+  // parameter authority before publishing the named statement.
+  std::vector<std::uint8_t> canonical_parameter_admission;
 
   [[nodiscard]] bool present() const {
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
     return !prepared_statement_uuid.empty() && prepared_generation != 0 &&
-           !operation_uuid.empty() && coordination_generation != 0;
+           !operation_uuid.empty() && coordination_generation != 0 &&
+           nonzero(parameter_set_uuid) && parameter_set_generation != 0 &&
+           nonzero(ordered_slot_table_sha256) && !slots.empty() &&
+           !canonical_parameter_admission.empty();
   }
 };
 
@@ -615,6 +651,78 @@ class SbpsClient {
       const ParserSessionContext&,
       const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDmlPlanImportRowsBind(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindStmtPrepare(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateStmtPrepare(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindStmtExecuteDirect(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateStmtExecuteDirect(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateStmtExecute(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindStmtFree(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateStmtFree(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindStmtCancel(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateStmtCancel(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindParameterBind(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateParameterBind(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateResultPage(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindQueryExplain(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateQueryExplain(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindNameResolve(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateNameResolve(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindParseText(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateParseText(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindCatalogEpochCheck(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateCatalogEpochCheck(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult BindDatabaseAttach(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDatabaseAttach(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateOptimizerStatsRead(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateOptimizerStatsDrop(
       const ParserSessionContext&,
       const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDelete(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;

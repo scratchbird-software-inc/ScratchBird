@@ -524,6 +524,27 @@ struct ServerCursorRecord {
   std::array<std::uint8_t, 16> snapshot_uuid{};
   std::array<std::uint8_t, 32> stream_descriptor_receipt_binding_sha256{};
   bool stream_descriptor_live = false;
+  // Exact RESULT_PAGE lifecycle. These identities are issued from the
+  // cursor-owning statement receipt and never accepted from the parser.
+  std::uint64_t result_page_cursor_generation = 1;
+  std::uint64_t result_page_result_set_handle_generation = 1;
+  std::uint64_t result_page_row_descriptor_generation = 1;
+  std::array<std::uint8_t, 16> result_page_redaction_profile_uuid{};
+  std::uint64_t result_page_redaction_generation = 0;
+  std::array<std::uint8_t, 16> result_page_policy_snapshot_uuid{};
+  std::uint64_t result_page_policy_generation = 0;
+  std::array<std::uint8_t, 16> result_page_resource_budget_uuid{};
+  std::uint64_t result_page_resource_budget_generation = 0;
+  std::uint64_t result_page_next_page_number = 0;
+  std::array<std::uint8_t, 16> result_page_continuation_uuid{};
+  std::uint64_t result_page_continuation_generation = 0;
+  std::vector<std::uint8_t> pending_result_page_request;
+  std::vector<std::uint8_t> pending_result_page_descriptor;
+  std::map<std::uint64_t, std::vector<std::uint8_t>>
+      result_page_descriptors_by_occurrence;
+  std::vector<std::uint8_t> last_result_page_descriptor;
+  std::vector<std::uint8_t> last_result_page_result;
+  std::string last_result_page_material;
   std::uint64_t fetch_count = 0;
   bool exhausted = false;
   bool closed = false;
@@ -1045,6 +1066,54 @@ SessionOperationResult HandleCoordinateUpdate(ServerSessionRegistry*,const Hoste
 SessionOperationResult HandleCoordinateDmlUpdateRowsBind(
     ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateDmlPlanImportRowsBind(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindStmtPrepare(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateStmtPrepare(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindStmtExecuteDirect(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateStmtExecuteDirect(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateStmtExecute(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindStmtFree(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateStmtFree(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindStmtCancel(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateStmtCancel(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindParameterBind(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateParameterBind(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateResultPage(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindQueryExplain(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateQueryExplain(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindNameResolve(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateNameResolve(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindParseText(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateParseText(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindCatalogEpochCheck(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateCatalogEpochCheck(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleBindDatabaseAttach(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateDatabaseAttach(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateOptimizerStatsRead(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleCoordinateOptimizerStatsDrop(
     ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateDelete(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateMerge(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

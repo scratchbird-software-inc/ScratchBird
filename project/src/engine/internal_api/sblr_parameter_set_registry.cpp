@@ -26,6 +26,10 @@ namespace scratchbird::engine::internal_api {
 namespace {
 constexpr std::string_view kMagic = "SBPSR1";
 constexpr std::string_view kDomain = "ScratchBird.SblrParameterSetRegistry.V1";
+constexpr std::string_view kBindMagic = "SBPBR1";
+constexpr std::string_view kBindDomain =
+    "ScratchBird.SblrParameterBindPublication.V1";
+constexpr std::size_t kMaximumBindValueBytes = 32U * 1024U * 1024U;
 std::mutex& RegistryMutex() { static std::mutex value; return value; }
 std::unordered_map<std::string, SblrParameterSetSnapshot>& LiveSets() {
   static std::unordered_map<std::string, SblrParameterSetSnapshot> value;
@@ -87,6 +91,49 @@ std::string Sha256(std::string_view bytes) {
   return digest.ok()
       ? "sha256:" + scratchbird::core::hash::HexLower(digest.digest)
       : std::string{};
+}
+std::string Sha256(const std::vector<std::uint8_t>& bytes) {
+  return Sha256(std::string_view(
+      reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+}
+bool ValidSha256(std::string_view value) {
+  if (value.size() != 71 || value.substr(0, 7) != "sha256:") return false;
+  return std::all_of(value.begin() + 7, value.end(), [](unsigned char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+  });
+}
+std::string HexBytes(const std::vector<std::uint8_t>& bytes) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(bytes.size() * 2);
+  for (const auto byte : bytes) {
+    result.push_back(kHex[byte >> 4U]);
+    result.push_back(kHex[byte & 0x0fU]);
+  }
+  return result;
+}
+bool ParseHexBytes(std::string_view text, std::vector<std::uint8_t>* bytes) {
+  if (bytes == nullptr || text.empty() || (text.size() & 1U) != 0 ||
+      text.size() / 2 > kMaximumBindValueBytes) {
+    return false;
+  }
+  const auto nibble = [](unsigned char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+  };
+  bytes->clear();
+  bytes->reserve(text.size() / 2);
+  for (std::size_t i = 0; i < text.size(); i += 2) {
+    const auto high = nibble(text[i]);
+    const auto low = nibble(text[i + 1]);
+    if (high < 0 || low < 0) {
+      bytes->clear();
+      return false;
+    }
+    bytes->push_back(static_cast<std::uint8_t>((high << 4) | low));
+  }
+  return true;
 }
 void Field(std::string* out, std::string_view value) {
   out->append(std::to_string(value.size())); out->push_back(':'); out->append(value);
@@ -248,6 +295,246 @@ bool DurableAppend(const std::string& path, const std::string& line) {
 std::string StorePath(const EngineRequestContext& context, std::string_view uuid) {
   return context.database_path + ".sb.sblr_parameter_set." + std::string(uuid) + ".v1";
 }
+std::string BindStorePath(const EngineRequestContext& context,
+                          std::string_view uuid) {
+  return context.database_path + ".sb.sblr_parameter_bind." +
+      std::string(uuid) + ".v1";
+}
+
+std::string BindMaterial(const SblrParameterBindPublicationSnapshot& value) {
+  std::string out(kBindDomain);
+  for (const auto& field : {
+           value.database_uuid, value.session_uuid,
+           value.statement_receipt_uuid, value.execution_uuid,
+           value.prepared_statement_uuid,
+           value.parameter_set_descriptor_uuid,
+           value.ordered_slot_table_sha256, value.batch_uuid,
+           value.dynamic_package_uuid, value.catalog_snapshot_uuid,
+           value.mga_snapshot_uuid, value.value_vector_sha256,
+           value.bind_evidence_uuid}) {
+    Field(&out, field);
+  }
+  for (const auto number : {
+           value.prepared_generation, value.parameter_set_generation,
+           value.batch_generation, value.dynamic_generation,
+           value.catalog_generation, value.security_epoch,
+           value.resource_epoch, value.executor_availability_generation}) {
+    Field(&out, std::to_string(number));
+  }
+  Field(&out, std::string_view(
+                  reinterpret_cast<const char*>(
+                      value.canonical_value_vector.data()),
+                  value.canonical_value_vector.size()));
+  return out;
+}
+
+std::string BindRecord(const SblrParameterBindPublicationSnapshot& value) {
+  std::ostringstream out;
+  out << kBindMagic << '\t' << value.database_uuid << '\t'
+      << value.session_uuid << '\t' << value.statement_receipt_uuid << '\t'
+      << value.execution_uuid << '\t' << value.prepared_statement_uuid << '\t'
+      << value.prepared_generation << '\t'
+      << value.parameter_set_descriptor_uuid << '\t'
+      << value.parameter_set_generation << '\t'
+      << value.ordered_slot_table_sha256 << '\t' << value.batch_uuid << '\t'
+      << value.batch_generation << '\t' << value.dynamic_package_uuid << '\t'
+      << value.dynamic_generation << '\t' << value.catalog_snapshot_uuid
+      << '\t' << value.catalog_generation << '\t' << value.security_epoch
+      << '\t' << value.resource_epoch << '\t' << value.mga_snapshot_uuid
+      << '\t' << value.executor_availability_generation << '\t'
+      << value.value_vector_sha256 << '\t' << value.bind_evidence_uuid << '\t'
+      << value.publication_evidence_sha256 << '\t'
+      << HexBytes(value.canonical_value_vector);
+  return out.str();
+}
+
+bool DecodeBindRecord(std::string_view record,
+                      SblrParameterBindPublicationSnapshot* value) {
+  if (value == nullptr) return false;
+  const auto fields = Split(record, '\t');
+  if (fields.size() != 24 || fields[0] != kBindMagic) return false;
+  SblrParameterBindPublicationSnapshot decoded;
+  decoded.database_uuid = fields[1];
+  decoded.session_uuid = fields[2];
+  decoded.statement_receipt_uuid = fields[3];
+  decoded.execution_uuid = fields[4];
+  decoded.prepared_statement_uuid = fields[5];
+  decoded.prepared_generation = U64(fields[6]);
+  decoded.parameter_set_descriptor_uuid = fields[7];
+  decoded.parameter_set_generation = U64(fields[8]);
+  decoded.ordered_slot_table_sha256 = fields[9];
+  decoded.batch_uuid = fields[10];
+  decoded.batch_generation = U64(fields[11]);
+  decoded.dynamic_package_uuid = fields[12];
+  decoded.dynamic_generation = U64(fields[13]);
+  decoded.catalog_snapshot_uuid = fields[14];
+  decoded.catalog_generation = U64(fields[15]);
+  decoded.security_epoch = U64(fields[16]);
+  decoded.resource_epoch = U64(fields[17]);
+  decoded.mga_snapshot_uuid = fields[18];
+  decoded.executor_availability_generation = U64(fields[19]);
+  decoded.value_vector_sha256 = fields[20];
+  decoded.bind_evidence_uuid = fields[21];
+  decoded.publication_evidence_sha256 = fields[22];
+  if (!ParseHexBytes(fields[23], &decoded.canonical_value_vector) ||
+      !ValidUuid(decoded.database_uuid,
+                 scratchbird::core::platform::UuidKind::database) ||
+      !ValidUuid(decoded.session_uuid,
+                 scratchbird::core::platform::UuidKind::session) ||
+      !ValidUuid(decoded.statement_receipt_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      !ValidUuid(decoded.execution_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      !ValidUuid(decoded.prepared_statement_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      decoded.prepared_generation == 0 ||
+      !ValidUuid(decoded.parameter_set_descriptor_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      decoded.parameter_set_generation == 0 ||
+      !ValidSha256(decoded.ordered_slot_table_sha256) ||
+      !ValidOptionalPair(decoded.batch_uuid, decoded.batch_generation) ||
+      !ValidOptionalPair(decoded.dynamic_package_uuid,
+                         decoded.dynamic_generation) ||
+      !ValidUuid(decoded.catalog_snapshot_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      decoded.catalog_generation == 0 || decoded.security_epoch == 0 ||
+      decoded.resource_epoch == 0 ||
+      !ValidUuid(decoded.mga_snapshot_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      decoded.executor_availability_generation == 0 ||
+      !ValidSha256(decoded.value_vector_sha256) ||
+      !ValidUuid(decoded.bind_evidence_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      !ValidSha256(decoded.publication_evidence_sha256) ||
+      decoded.value_vector_sha256 != Sha256(decoded.canonical_value_vector) ||
+      decoded.publication_evidence_sha256 != Sha256(BindMaterial(decoded))) {
+    return false;
+  }
+  *value = std::move(decoded);
+  return true;
+}
+
+bool SameBindPublication(
+    const SblrParameterBindPublicationSnapshot& left,
+    const SblrParameterBindPublicationSnapshot& right) {
+  return left.database_uuid == right.database_uuid &&
+      left.session_uuid == right.session_uuid &&
+      left.statement_receipt_uuid == right.statement_receipt_uuid &&
+      left.execution_uuid == right.execution_uuid &&
+      left.prepared_statement_uuid == right.prepared_statement_uuid &&
+      left.prepared_generation == right.prepared_generation &&
+      left.parameter_set_descriptor_uuid ==
+          right.parameter_set_descriptor_uuid &&
+      left.parameter_set_generation == right.parameter_set_generation &&
+      left.ordered_slot_table_sha256 == right.ordered_slot_table_sha256 &&
+      left.batch_uuid == right.batch_uuid &&
+      left.batch_generation == right.batch_generation &&
+      left.dynamic_package_uuid == right.dynamic_package_uuid &&
+      left.dynamic_generation == right.dynamic_generation &&
+      left.catalog_snapshot_uuid == right.catalog_snapshot_uuid &&
+      left.catalog_generation == right.catalog_generation &&
+      left.security_epoch == right.security_epoch &&
+      left.resource_epoch == right.resource_epoch &&
+      left.mga_snapshot_uuid == right.mga_snapshot_uuid &&
+      left.executor_availability_generation ==
+          right.executor_availability_generation &&
+      left.value_vector_sha256 == right.value_vector_sha256 &&
+      left.canonical_value_vector == right.canonical_value_vector;
+}
+
+bool DurablePublishBind(const EngineRequestContext& context,
+                        const SblrParameterBindPublicationSnapshot& value) {
+  const auto path = BindStorePath(context,
+                                  value.parameter_set_descriptor_uuid);
+  const auto temporary = path + ".tmp." +
+      GenerateUuid(scratchbird::core::platform::UuidKind::object, 919);
+  if (temporary == path + ".tmp.") return false;
+  const auto record = BindRecord(value);
+  {
+    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(record.data(), static_cast<std::streamsize>(record.size()));
+    out.put('\n');
+    out.flush();
+    if (!out) {
+      std::error_code ignored;
+      std::filesystem::remove(temporary, ignored);
+      return false;
+    }
+  }
+#if defined(_WIN32)
+  HANDLE handle = CreateFileA(temporary.c_str(), GENERIC_WRITE,
+                              FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+  const bool synced = handle != INVALID_HANDLE_VALUE &&
+      FlushFileBuffers(handle) != 0;
+  if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+#else
+  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CLOEXEC);
+  const bool synced = fd >= 0 && ::fsync(fd) == 0;
+  if (fd >= 0) ::close(fd);
+#endif
+  if (!synced) {
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    return false;
+  }
+  std::error_code error;
+  if (std::filesystem::exists(path, error) || error) {
+    std::filesystem::remove(temporary, error);
+    return false;
+  }
+  std::filesystem::create_hard_link(temporary, path, error);
+  std::error_code ignored;
+  std::filesystem::remove(temporary, ignored);
+  if (error) return false;
+#if !defined(_WIN32)
+  const auto parent = std::filesystem::path(path).parent_path();
+  const int directory_fd = ::open(parent.empty() ? "." : parent.c_str(),
+                                  O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory_fd < 0) return false;
+  const bool directory_synced = ::fsync(directory_fd) == 0;
+  ::close(directory_fd);
+  if (!directory_synced) return false;
+#endif
+  return true;
+}
+
+SblrParameterBindPublicationResult LoadBindLocked(
+    const EngineRequestContext& context, const std::string& descriptor_uuid) {
+  SblrParameterBindPublicationResult result;
+  if (context.database_path.empty() ||
+      !ValidUuid(context.database_uuid.canonical,
+                 scratchbird::core::platform::UuidKind::database) ||
+      !ValidUuid(descriptor_uuid,
+                 scratchbird::core::platform::UuidKind::object)) {
+    result.diagnostic = Diagnostic("SBLR.PARAMETER.STALE",
+                                   "sblr.parameter_bind.identity_invalid",
+                                   "parameter binding identity is invalid");
+    return result;
+  }
+  std::ifstream in(BindStorePath(context, descriptor_uuid), std::ios::binary);
+  if (!in) {
+    result.diagnostic = Diagnostic("SBLR.PARAMETER.STALE",
+                                   "sblr.parameter_bind.absent",
+                                   "parameter binding is absent");
+    return result;
+  }
+  std::string line;
+  std::string trailing;
+  if (!std::getline(in, line) || std::getline(in, trailing) || !in.eof() ||
+      !DecodeBindRecord(line, &result.snapshot) ||
+      result.snapshot.database_uuid != context.database_uuid.canonical ||
+      result.snapshot.parameter_set_descriptor_uuid != descriptor_uuid) {
+    result.diagnostic = Diagnostic("SBLR.PARAMETER.STALE",
+                                   "sblr.parameter_bind.corrupt",
+                                   "parameter binding publication is corrupt");
+    return result;
+  }
+  result.ok = true;
+  result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
+  return result;
+}
 bool DecodeRecord(const std::string& line, std::string_view kind,
                   SblrParameterSetSnapshot* value, std::string* prior_uuid,
                   std::uint64_t* prior_generation, std::string* reason) {
@@ -389,6 +676,176 @@ SblrParameterSetMutationResult IssueSblrParameterSet(
 SblrParameterSetLoadResult LoadSblrParameterSet(const EngineRequestContext& context,
                                                 const std::string& uuid) {
   std::lock_guard lock(RegistryMutex()); return LoadLocked(context,uuid);
+}
+
+SblrParameterBindPublicationResult PublishSblrParameterBinding(
+    const EngineRequestContext& context,
+    const SblrParameterSetSnapshot& admitted,
+    const SblrParameterBindPublicationRequest& request) {
+  std::lock_guard lock(RegistryMutex());
+  SblrParameterBindPublicationResult result;
+  const auto refuse = [&](std::string code, std::string key,
+                          std::string detail) {
+    result.diagnostic = Diagnostic(std::move(code), std::move(key),
+                                   std::move(detail));
+    return result;
+  };
+  if (!HasPrivateReceiptAuthority(context)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "sblr.parameter_bind.publish_denied",
+                  "engine-owned private statement receipt required");
+  }
+  const char* authority_mismatch = nullptr;
+  if (admitted.state != SblrParameterSetState::active)
+    authority_mismatch = "parameter_set_not_active";
+  else if (admitted.database_uuid != context.database_uuid.canonical)
+    authority_mismatch = "database_uuid";
+  else if (admitted.session_uuid != context.session_uuid.canonical)
+    authority_mismatch = "session_uuid";
+  else if (request.parameter_set_descriptor_uuid !=
+           admitted.parameter_set_descriptor_uuid)
+    authority_mismatch = "parameter_set_descriptor_uuid";
+  else if (request.parameter_set_generation != admitted.descriptor_generation)
+    authority_mismatch = "parameter_set_generation";
+  else if (request.prepared_statement_uuid != admitted.prepared_statement_uuid)
+    authority_mismatch = "prepared_statement_uuid";
+  else if (request.prepared_generation != admitted.prepared_generation)
+    authority_mismatch = "prepared_generation";
+  else if (request.batch_uuid != admitted.batch_uuid)
+    authority_mismatch = "batch_uuid";
+  else if (request.batch_generation != admitted.batch_generation)
+    authority_mismatch = "batch_generation";
+  else if (request.dynamic_package_uuid != admitted.dynamic_package_uuid)
+    authority_mismatch = "dynamic_package_uuid";
+  else if (request.dynamic_generation != admitted.dynamic_generation)
+    authority_mismatch = "dynamic_generation";
+  else if (request.ordered_slot_table_sha256 != admitted.slots_sha256)
+    authority_mismatch = "ordered_slot_table_sha256";
+  else if (request.catalog_generation != context.catalog_generation_id)
+    authority_mismatch = "statement_catalog_generation";
+  else if (request.catalog_generation != admitted.catalog_generation)
+    authority_mismatch = "parameter_set_catalog_generation";
+  else if (request.security_epoch != context.security_epoch)
+    authority_mismatch = "statement_security_epoch";
+  else if (request.security_epoch != admitted.security_epoch)
+    authority_mismatch = "parameter_set_security_epoch";
+  else if (request.resource_epoch != context.resource_epoch)
+    authority_mismatch = "statement_resource_epoch";
+  else if (request.resource_epoch != admitted.resource_epoch)
+    authority_mismatch = "parameter_set_resource_epoch";
+  if (authority_mismatch != nullptr) {
+    return refuse("SBLR.PARAMETER.STALE",
+                  "sblr.parameter_bind.authority_stale",
+                  std::string("parameter-set or statement authority changed: ") +
+                      authority_mismatch);
+  }
+  if (!ValidUuid(request.statement_receipt_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      !ValidUuid(request.execution_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      !ValidUuid(request.prepared_statement_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      request.prepared_generation == 0 ||
+      !ValidUuid(request.catalog_snapshot_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      !ValidUuid(request.mga_snapshot_uuid,
+                 scratchbird::core::platform::UuidKind::object) ||
+      request.executor_availability_generation == 0 ||
+      request.canonical_value_vector.empty() ||
+      request.canonical_value_vector.size() > kMaximumBindValueBytes ||
+      !ValidSha256(request.value_vector_sha256) ||
+      request.value_vector_sha256 != Sha256(request.canonical_value_vector)) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  "sblr.parameter_bind.publication_invalid",
+                  "canonical bind identities and value evidence required");
+  }
+  SblrParameterBindPublicationSnapshot proposed;
+  proposed.database_uuid = context.database_uuid.canonical;
+  proposed.session_uuid = context.session_uuid.canonical;
+  proposed.statement_receipt_uuid = request.statement_receipt_uuid;
+  proposed.execution_uuid = request.execution_uuid;
+  proposed.prepared_statement_uuid = request.prepared_statement_uuid;
+  proposed.prepared_generation = request.prepared_generation;
+  proposed.parameter_set_descriptor_uuid =
+      request.parameter_set_descriptor_uuid;
+  proposed.parameter_set_generation = request.parameter_set_generation;
+  proposed.ordered_slot_table_sha256 = request.ordered_slot_table_sha256;
+  proposed.batch_uuid = request.batch_uuid;
+  proposed.batch_generation = request.batch_generation;
+  proposed.dynamic_package_uuid = request.dynamic_package_uuid;
+  proposed.dynamic_generation = request.dynamic_generation;
+  proposed.catalog_snapshot_uuid = request.catalog_snapshot_uuid;
+  proposed.catalog_generation = request.catalog_generation;
+  proposed.security_epoch = request.security_epoch;
+  proposed.resource_epoch = request.resource_epoch;
+  proposed.mga_snapshot_uuid = request.mga_snapshot_uuid;
+  proposed.executor_availability_generation =
+      request.executor_availability_generation;
+  proposed.value_vector_sha256 = request.value_vector_sha256;
+  proposed.canonical_value_vector = request.canonical_value_vector;
+
+  std::error_code error;
+  const auto path = BindStorePath(context,
+                                  request.parameter_set_descriptor_uuid);
+  if (std::filesystem::exists(path, error)) {
+    if (error) {
+      return refuse("MGA.TRANSACTION.STALE",
+                    "sblr.parameter_bind.lookup_failed",
+                    "durable binding identity cannot be classified");
+    }
+    auto existing = LoadBindLocked(context,
+                                   request.parameter_set_descriptor_uuid);
+    if (!existing.ok || !SameBindPublication(existing.snapshot, proposed)) {
+      return refuse("MGA.TRANSACTION.STALE",
+                    "sblr.parameter_bind.replay_conflict",
+                    "an existing binding differs from the exact request");
+    }
+    existing.replayed = true;
+    existing.evidence.push_back({"sblr.parameter_bind.publication",
+                                 existing.snapshot.
+                                     publication_evidence_sha256});
+    return existing;
+  }
+  if (error) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "sblr.parameter_bind.lookup_failed",
+                  "durable binding identity cannot be classified");
+  }
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse("PROCESS.CANCELLED", "sblr.parameter_bind.cancelled",
+                  "binding was cancelled before durable publication");
+  }
+  proposed.bind_evidence_uuid = GenerateUuid(
+      scratchbird::core::platform::UuidKind::object, 917);
+  proposed.publication_evidence_sha256 = Sha256(BindMaterial(proposed));
+  if (proposed.bind_evidence_uuid.empty() ||
+      proposed.publication_evidence_sha256.empty() ||
+      !DurablePublishBind(context, proposed)) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "sblr.parameter_bind.publish_failed",
+                  "durable parameter binding publication failed");
+  }
+  result.ok = true;
+  result.snapshot = std::move(proposed);
+  result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
+  result.evidence.push_back({"sblr.parameter_bind.publication",
+                             result.snapshot.publication_evidence_sha256});
+  return result;
+}
+
+SblrParameterBindPublicationResult LoadSblrParameterBinding(
+    const EngineRequestContext& context,
+    const std::string& parameter_set_descriptor_uuid) {
+  std::lock_guard lock(RegistryMutex());
+  if (!HasPrivateReceiptAuthority(context)) {
+    SblrParameterBindPublicationResult result;
+    result.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED",
+                                   "sblr.parameter_bind.load_denied",
+                                   "engine-owned private statement receipt required");
+    return result;
+  }
+  return LoadBindLocked(context, parameter_set_descriptor_uuid);
 }
 
 EngineApiDiagnostic BeginSblrParameterSetRegistryRecovery(

@@ -144,6 +144,10 @@ struct ParserStatementContext {
   std::string statement_snapshot_uuid;
   std::string statement_metadata_snapshot_uuid;
   std::string catalog_epoch_uuid;
+  // Exact statement-visible catalog generation issued with this receipt.
+  // This is deliberately distinct from preliminary_catalog_generation,
+  // which names the fixed datatype/literal registry generation.
+  std::uint64_t preliminary_statement_catalog_generation{0};
   std::string security_context_uuid;
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
   // Exact engine-issued UTC bytes from SBPS statement-context V7-V10. This
@@ -218,6 +222,9 @@ struct ParserStatementContext {
   std::uint64_t preliminary_psql_autonomous_frame_executor_availability_generation{0};
   std::uint64_t preliminary_transaction_reservation_release_executor_availability_generation{0};
   std::uint64_t preliminary_temporary_instance_cleanup_executor_availability_generation{0};
+  std::uint64_t preliminary_stmt_prepare_executor_availability_generation{0};
+  std::uint64_t preliminary_stmt_execute_direct_executor_availability_generation{0};
+  std::uint64_t preliminary_stmt_free_executor_availability_generation{0};
   std::uint64_t preliminary_cursor_open_executor_availability_generation{0};
   std::uint64_t preliminary_cursor_fetch_executor_availability_generation{0};
   std::uint64_t preliminary_cursor_close_executor_availability_generation{0};

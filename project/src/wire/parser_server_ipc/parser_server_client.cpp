@@ -8,6 +8,21 @@
 
 #include "parser_server_client.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "sbps_statement_management_bind_codec.hpp"
+#include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
+#include "engine/sblr/sblr_stmt_execute_direct_runtime.hpp"
+#include "engine/sblr/sblr_stmt_execute_runtime.hpp"
+#include "engine/sblr/sblr_stmt_free_runtime.hpp"
+#include "engine/sblr/sblr_stmt_cancel_runtime.hpp"
+#include "engine/sblr/sblr_parameter_bind_runtime.hpp"
+#include "engine/sblr/sblr_result_page_runtime.hpp"
+#include "engine/sblr/sblr_query_explain_runtime.hpp"
+#include "engine/sblr/sblr_name_resolve_runtime.hpp"
+#include "engine/sblr/sblr_parse_text_runtime.hpp"
+#include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
+#include "engine/sblr/sblr_database_attach_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -937,18 +952,110 @@ constexpr std::uint32_t kSchemaContextGetRequestV1 = 7399;
 constexpr std::uint32_t kSchemaContextGetResultV1 = 7400;
 constexpr std::uint32_t kSchemaStmtPrepareRequestV1 = 7401;
 constexpr std::uint32_t kSchemaStmtPrepareResultV1 = 7402;
-constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindRequestV1 = 7403;
-constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindResultV1 = 7404;
-constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindRequestV1 = 7405;
-constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindResultV1 = 7406;
+constexpr std::uint32_t kSchemaStmtExecuteDirectRequestV1 = 7403;
+constexpr std::uint32_t kSchemaStmtExecuteDirectResultV1 = 7404;
+constexpr std::uint32_t kSchemaStmtFreeRequestV1 = 7405;
+constexpr std::uint32_t kSchemaStmtFreeResultV1 = 7406;
+constexpr std::uint32_t kSchemaStmtCancelRequestV1 = 7407;
+constexpr std::uint32_t kSchemaStmtCancelResultV1 = 7408;
+constexpr std::uint32_t kSchemaParameterBindRequestV1 = 7409;
+constexpr std::uint32_t kSchemaParameterBindResultV1 = 7410;
+constexpr std::uint32_t kSchemaResultPageRequestV1 = 7411;
+constexpr std::uint32_t kSchemaResultPageResultV1 = 7412;
+constexpr std::uint32_t kSchemaQueryExplainRequestV1 = 7415;
+constexpr std::uint32_t kSchemaQueryExplainResultV1 = 7416;
+constexpr std::uint32_t kSchemaStmtPrepareBindRequestV1 = 7725;
+constexpr std::uint32_t kSchemaStmtPrepareBindResultV1 = 7726;
+constexpr std::uint32_t kSchemaStmtFreeBindRequestV1 = 7727;
+constexpr std::uint32_t kSchemaStmtFreeBindResultV1 = 7728;
+constexpr std::uint32_t kSchemaStmtExecuteDirectBindRequestV1 = 7729;
+constexpr std::uint32_t kSchemaStmtExecuteDirectBindResultV1 = 7730;
+constexpr std::uint32_t kSchemaStmtExecuteRequestV1 = 7731;
+constexpr std::uint32_t kSchemaStmtExecuteResultV1 = 7732;
+constexpr std::uint32_t kSchemaStmtCancelBindRequestV1 = 7733;
+constexpr std::uint32_t kSchemaStmtCancelBindResultV1 = 7734;
+constexpr std::uint32_t kSchemaParameterBindPrivateRequestV1 = 7735;
+constexpr std::uint32_t kSchemaParameterBindPrivateResultV1 = 7736;
+constexpr std::uint32_t kSchemaQueryExplainBindRequestV1 = 7737;
+constexpr std::uint32_t kSchemaQueryExplainBindResultV1 = 7738;
+constexpr std::uint32_t kSchemaNameResolveBindRequestV1 = 7739;
+constexpr std::uint32_t kSchemaNameResolveBindResultV1 = 7740;
+constexpr std::uint32_t kSchemaNameResolveRequestV1 = 7417;
+constexpr std::uint32_t kSchemaNameResolveResultV1 = 7418;
+constexpr std::uint32_t kSchemaParseTextRequestV1 = 7419;
+constexpr std::uint32_t kSchemaParseTextResultV1 = 7420;
+constexpr std::uint32_t kSchemaCatalogEpochCheckRequestV1 = 7421;
+constexpr std::uint32_t kSchemaCatalogEpochCheckResultV1 = 7422;
+constexpr std::uint32_t kSchemaOptimizerStatsReadRequestV1 = 7741;
+constexpr std::uint32_t kSchemaOptimizerStatsReadResultV1 = 7742;
+constexpr std::uint32_t kSchemaOptimizerStatsDropRequestV1 = 7743;
+constexpr std::uint32_t kSchemaOptimizerStatsDropResultV1 = 7744;
+constexpr std::uint32_t kSchemaParseTextBindRequestV1 = 7745;
+constexpr std::uint32_t kSchemaParseTextBindResultV1 = 7746;
+constexpr std::uint32_t kSchemaCatalogEpochCheckBindRequestV1 = 7747;
+constexpr std::uint32_t kSchemaCatalogEpochCheckBindResultV1 = 7748;
+constexpr std::uint32_t kSchemaDatabaseAttachRequestV1 = 7423;
+constexpr std::uint32_t kSchemaDatabaseAttachResultV1 = 7424;
+constexpr std::uint32_t kSchemaDatabaseAttachBindRequestV1 = 7749;
+constexpr std::uint32_t kSchemaDatabaseAttachBindResultV1 = 7750;
+constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindRequestV1 = 7721;
+constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindResultV1 = 7722;
+constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindRequestV1 = 7723;
+constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindResultV1 = 7724;
 constexpr std::uint16_t kMessageContextGetRequest = 386;
 constexpr std::uint16_t kMessageContextGetResult = 387;
 constexpr std::uint16_t kMessageStmtPrepareRequest = 388;
 constexpr std::uint16_t kMessageStmtPrepareResult = 389;
-constexpr std::uint16_t kMessageCoordinateDmlUpdateRowsBindRequest = 390;
-constexpr std::uint16_t kMessageCoordinateDmlUpdateRowsBindResult = 391;
-constexpr std::uint16_t kMessageCoordinateDmlPlanImportRowsBindRequest = 392;
-constexpr std::uint16_t kMessageCoordinateDmlPlanImportRowsBindResult = 393;
+constexpr std::uint16_t kMessageStmtExecuteDirectRequest = 390;
+constexpr std::uint16_t kMessageStmtExecuteDirectResult = 391;
+constexpr std::uint16_t kMessageStmtFreeRequest = 392;
+constexpr std::uint16_t kMessageStmtFreeResult = 393;
+constexpr std::uint16_t kMessageStmtCancelRequest = 394;
+constexpr std::uint16_t kMessageStmtCancelResult = 395;
+constexpr std::uint16_t kMessageParameterBindRequest = 396;
+constexpr std::uint16_t kMessageParameterBindResult = 397;
+constexpr std::uint16_t kMessageResultPageRequest = 398;
+constexpr std::uint16_t kMessageResultPageResult = 399;
+constexpr std::uint16_t kMessageQueryExplainRequest = 402;
+constexpr std::uint16_t kMessageQueryExplainResult = 403;
+constexpr std::uint16_t kMessageNameResolveRequest = 404;
+constexpr std::uint16_t kMessageNameResolveResult = 405;
+constexpr std::uint16_t kMessageParseTextRequest = 406;
+constexpr std::uint16_t kMessageParseTextResult = 407;
+constexpr std::uint16_t kMessageCatalogEpochCheckRequest = 408;
+constexpr std::uint16_t kMessageCatalogEpochCheckResult = 409;
+constexpr std::uint16_t kMessageDatabaseAttachRequest = 410;
+constexpr std::uint16_t kMessageDatabaseAttachResult = 411;
+constexpr std::uint16_t kMessageStmtPrepareBindRequest = 712;
+constexpr std::uint16_t kMessageStmtPrepareBindResult = 713;
+constexpr std::uint16_t kMessageStmtFreeBindRequest = 714;
+constexpr std::uint16_t kMessageStmtFreeBindResult = 715;
+constexpr std::uint16_t kMessageStmtExecuteDirectBindRequest = 716;
+constexpr std::uint16_t kMessageStmtExecuteDirectBindResult = 717;
+constexpr std::uint16_t kMessageStmtExecuteRequest = 718;
+constexpr std::uint16_t kMessageStmtExecuteResult = 719;
+constexpr std::uint16_t kMessageStmtCancelBindRequest = 720;
+constexpr std::uint16_t kMessageStmtCancelBindResult = 721;
+constexpr std::uint16_t kMessageParameterBindPrivateRequest = 722;
+constexpr std::uint16_t kMessageParameterBindPrivateResult = 723;
+constexpr std::uint16_t kMessageQueryExplainBindRequest = 724;
+constexpr std::uint16_t kMessageQueryExplainBindResult = 725;
+constexpr std::uint16_t kMessageNameResolveBindRequest = 726;
+constexpr std::uint16_t kMessageNameResolveBindResult = 727;
+constexpr std::uint16_t kMessageOptimizerStatsReadRequest = 728;
+constexpr std::uint16_t kMessageOptimizerStatsReadResult = 729;
+constexpr std::uint16_t kMessageOptimizerStatsDropRequest = 730;
+constexpr std::uint16_t kMessageOptimizerStatsDropResult = 731;
+constexpr std::uint16_t kMessageParseTextBindRequest = 732;
+constexpr std::uint16_t kMessageParseTextBindResult = 733;
+constexpr std::uint16_t kMessageCatalogEpochCheckBindRequest = 734;
+constexpr std::uint16_t kMessageCatalogEpochCheckBindResult = 735;
+constexpr std::uint16_t kMessageDatabaseAttachBindRequest = 736;
+constexpr std::uint16_t kMessageDatabaseAttachBindResult = 737;
+constexpr std::uint16_t kMessageCoordinateDmlUpdateRowsBindRequest = 708;
+constexpr std::uint16_t kMessageCoordinateDmlUpdateRowsBindResult = 709;
+constexpr std::uint16_t kMessageCoordinateDmlPlanImportRowsBindRequest = 710;
+constexpr std::uint16_t kMessageCoordinateDmlPlanImportRowsBindResult = 711;
 constexpr std::uint16_t kMessageSessionSettingSetResult = 371;
 constexpr std::uint32_t kSchemaSessionSettingResetRequestV1 = 7385;
 constexpr std::uint32_t kSchemaSessionSettingResetResultV1 = 7386;
@@ -2450,11 +2557,11 @@ bool DecodeAcquireStatementContextPayloadV11(
   }
   const auto wire_extension_version = GetU16(payload, offset);
   const auto extension_version =
-      wire_extension_version >= 27 && wire_extension_version <= 71
+      wire_extension_version >= 27 && wire_extension_version <= 73
           ? static_cast<std::uint16_t>(26)
           : wire_extension_version;
   const bool recognized_extended_wire =
-      wire_extension_version >= 27 && wire_extension_version <= 71;
+      wire_extension_version >= 27 && wire_extension_version <= 73;
   if ((payload.size() == offset + 76 && wire_extension_version != 2) ||
       (payload.size() == offset + 156 && extension_version != 3) ||
       (payload.size() == offset + 228 && extension_version != 4) ||
@@ -2524,6 +2631,10 @@ bool DecodeAcquireStatementContextPayloadV11(
   context->preliminary_psql_autonomous_frame_executor_availability_generation = 0;
   context->preliminary_transaction_reservation_release_executor_availability_generation = 0;
   context->preliminary_temporary_instance_cleanup_executor_availability_generation = 0;
+  context->preliminary_stmt_prepare_executor_availability_generation = 0;
+  context->preliminary_stmt_execute_direct_executor_availability_generation = 0;
+  context->preliminary_stmt_free_executor_availability_generation = 0;
+  context->preliminary_statement_catalog_generation = 0;
   context->preliminary_cursor_open_executor_availability_generation = 0;
   context->preliminary_cursor_fetch_executor_availability_generation = 0;
   context->preliminary_cursor_close_executor_availability_generation = 0;
@@ -2612,6 +2723,8 @@ bool DecodeAcquireStatementContextPayloadV11(
       }
       if (wire_extension_version == 70) return 768;
       if (wire_extension_version == 71) return 776;
+      if (wire_extension_version == 72) return 800;
+      if (wire_extension_version == 73) return 808;
       if (extension_version == 6) return 80;
       if (extension_version == 7) return 104;
       if (extension_version >= 8 && extension_version <= 26) {
@@ -2956,6 +3069,28 @@ bool DecodeAcquireStatementContextPayloadV11(
         }
         context->preliminary_maximum_mga_relation_decoded_bytes_per_pass =
             maximum_decoded_bytes_per_pass;
+      }
+      if (wire_extension_version >= 72) {
+        const auto prepare_generation = GetU64(payload, trailer + 776);
+        const auto execute_direct_generation = GetU64(payload, trailer + 784);
+        const auto free_generation = GetU64(payload, trailer + 792);
+        if (prepare_generation == 0 || execute_direct_generation == 0 ||
+            free_generation == 0) {
+          return false;
+        }
+        context->preliminary_stmt_prepare_executor_availability_generation =
+            prepare_generation;
+        context->preliminary_stmt_execute_direct_executor_availability_generation =
+            execute_direct_generation;
+        context->preliminary_stmt_free_executor_availability_generation =
+            free_generation;
+      }
+      if (wire_extension_version >= 73) {
+        const auto statement_catalog_generation =
+            GetU64(payload, trailer + 800);
+        if (statement_catalog_generation == 0) return false;
+        context->preliminary_statement_catalog_generation =
+            statement_catalog_generation;
       }
     }
   }
@@ -6659,12 +6794,22 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
           transaction.local_transaction_id ||
       result.context.transaction.transaction_uuid !=
           transaction.transaction_uuid) {
+    ParserStatementContext base_context;
+    std::size_t base_bytes = 0;
+    const bool base_decoded = DecodeAcquireStatementContextPayloadNative(
+        response.payload, 11, true, true, true, 23, true, 10,
+        &base_context, &base_bytes);
+    const auto wire_extension =
+        base_decoded && response.payload.size() >= base_bytes + 2
+            ? GetU16(response.payload, base_bytes)
+            : 0;
     AddDiagnostic(
         &result.messages,
         "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
         "The engine-issued native statement context was malformed or did not match the requested transaction (payload_bytes=" +
             std::to_string(response.payload.size()) + ", extension=" +
-            std::to_string(result.context.preliminary_extension_version) +
+            std::to_string(wire_extension) + ", base_bytes=" +
+            std::to_string(base_bytes) +
             ", requested_local=" + std::to_string(transaction.local_transaction_id) +
             ", returned_local=" + std::to_string(result.context.transaction.local_transaction_id) +
             ", uuid_equal=" +
@@ -6801,17 +6946,37 @@ ServerStatementContextResult SbpsClient::AcquireParameterStatementContext(
     result.messages = std::move(messages);
     return result;
   }
+  ParserStatementContext diagnostic_base_context;
+  std::size_t diagnostic_extension_offset = 0;
+  const bool diagnostic_base_decoded =
+      DecodeAcquireStatementContextPayloadNative(
+          response.payload, 11, true, true, true, 23, true, 10,
+          &diagnostic_base_context, &diagnostic_extension_offset);
+  const auto diagnostic_prepared_uuid =
+      diagnostic_base_decoded &&
+              response.payload.size() >= diagnostic_extension_offset + 92
+          ? GetUuid(response.payload, diagnostic_extension_offset + 76)
+          : std::array<std::uint8_t, 16>{};
   if (!DecodeAcquireStatementContextPayloadV11(response.payload,
                                                &result.context) ||
       result.context.preliminary_extension_version < 3 ||
       result.context.preliminary_extension_version > 26 ||
+      result.context.preliminary_prepared_statement_uuid.empty() ||
+      result.context.preliminary_prepared_generation == 0 ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||
       result.context.transaction.transaction_uuid !=
           transaction.transaction_uuid) {
-    AddDiagnostic(&result.messages,
-                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
-                  "The coordinated parameter statement context was malformed or mismatched.");
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
+        "The coordinated parameter statement context was malformed or "
+        "mismatched (payload_bytes=" +
+            std::to_string(response.payload.size()) +
+            ", extension_offset=" +
+            std::to_string(diagnostic_extension_offset) +
+            ", wire_prepared_uuid=" +
+            OptionalUuidToText(diagnostic_prepared_uuid) + ").");
     result.context = {};
     return result;
   }
@@ -8403,6 +8568,1441 @@ ServerVariableBindingResult SbpsClient::CoordinateDelete(const ParserSessionCont
 ServerVariableBindingResult SbpsClient::CoordinateMerge(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateMergeRequest,kSchemaCoordinateMergeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateMergeResult||response.header.schema_id!=kSchemaCoordinateMergeResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 ServerVariableBindingResult SbpsClient::CoordinateTableTruncate(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateTableTruncateRequest,kSchemaCoordinateTableTruncateRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateTableTruncateResult||response.header.schema_id!=kSchemaCoordinateTableTruncateResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 ServerVariableBindingResult SbpsClient::CoordinateTableAnalyze(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateTableAnalyzeRequest,kSchemaCoordinateTableAnalyzeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateTableAnalyzeResult||response.header.schema_id!=kSchemaCoordinateTableAnalyzeResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+
+ServerVariableBindingResult SbpsClient::BindStmtPrepare(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::PrepareBindRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodePrepareBindRequestV1(payload.data(), payload.size(), &request,
+                                     &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "statement PREPARE bind request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtPrepareBindRequest,
+                              kSchemaStmtPrepareBindRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::PrepareBindAckV1 ack;
+  if (response.header.message_type != kMessageStmtPrepareBindResult ||
+      response.header.schema_id != kSchemaStmtPrepareBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::DecodePrepareBindAckV1(
+          response.payload.data(), response.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&messages, "MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "statement PREPARE bind acknowledgement is not exactly correlated"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateStmtPrepare(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrStmtPrepareRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrStmtPrepareRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "statement PREPARE request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtPrepareRequest,
+                              kSchemaStmtPrepareRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrStmtPrepareDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageStmtPrepareResult ||
+      response.header.schema_id != kSchemaStmtPrepareResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtPrepareDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&messages, "MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "statement PREPARE descriptor is not exactly correlated"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindStmtExecuteDirect(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::
+      ExecuteDirectBindRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeExecuteDirectBindRequestV1(
+              payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(
+        &messages, "SBLR.OPERAND.INVALID",
+        detail.empty() ? "statement EXECUTE DIRECT bind request is malformed"
+                       : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtExecuteDirectBindRequest,
+                              kSchemaStmtExecuteDirectBindRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::ExecuteDirectBindAckV1 ack;
+  if (response.header.message_type != kMessageStmtExecuteDirectBindResult ||
+      response.header.schema_id != kSchemaStmtExecuteDirectBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeExecuteDirectBindAckV1(response.payload.data(),
+                                       response.payload.size(), &ack,
+                                       &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.TRANSACTION.STALE",
+        detail.empty()
+            ? "statement EXECUTE DIRECT bind acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateStmtExecuteDirect(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrStmtExecuteDirectRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrStmtExecuteDirectRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "statement EXECUTE DIRECT request is malformed"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtExecuteDirectRequest,
+                              kSchemaStmtExecuteDirectRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrStmtExecuteDirectDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageStmtExecuteDirectResult ||
+      response.header.schema_id != kSchemaStmtExecuteDirectResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtExecuteDirectDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.TRANSACTION.STALE",
+        detail.empty()
+            ? "statement EXECUTE DIRECT descriptor is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateStmtExecute(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrStmtExecuteRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrStmtExecuteRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "prepared statement EXECUTE request is malformed"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtExecuteRequest,
+                              kSchemaStmtExecuteRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrStmtExecuteDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageStmtExecuteResult ||
+      response.header.schema_id != kSchemaStmtExecuteResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtExecuteDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.TRANSACTION.STALE",
+        detail.empty()
+            ? "prepared statement EXECUTE descriptor is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindStmtFree(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::FreeBindRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::DecodeFreeBindRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "statement FREE bind request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtFreeBindRequest,
+                              kSchemaStmtFreeBindRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::FreeBindAckV1 ack;
+  if (response.header.message_type != kMessageStmtFreeBindResult ||
+      response.header.schema_id != kSchemaStmtFreeBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::DecodeFreeBindAckV1(
+          response.payload.data(), response.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&messages, "MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "statement FREE bind acknowledgement is not exactly correlated"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateStmtFree(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrStmtFreeRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrStmtFreeRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "statement FREE request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtFreeRequest,
+                              kSchemaStmtFreeRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrStmtFreeDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageStmtFreeResult ||
+      response.header.schema_id != kSchemaStmtFreeResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtFreeDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&messages, "MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "statement FREE descriptor is not exactly correlated"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindStmtCancel(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::CancelBindRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::DecodeCancelBindRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "statement CANCEL bind request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtCancelBindRequest,
+                              kSchemaStmtCancelBindRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::CancelBindAckV1 ack;
+  if (response.header.message_type != kMessageStmtCancelBindResult ||
+      response.header.schema_id != kSchemaStmtCancelBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::DecodeCancelBindAckV1(
+          response.payload.data(), response.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.reason != request.reason || ack.mode != request.mode ||
+      ack.deadline_monotonic_ns != request.deadline_monotonic_ns ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.TRANSACTION.STALE",
+        detail.empty()
+            ? "statement CANCEL bind acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateStmtCancel(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrStmtCancelRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrStmtCancelRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "statement CANCEL request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageStmtCancelRequest,
+                              kSchemaStmtCancelRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrStmtCancelDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageStmtCancelResult ||
+      response.header.schema_id != kSchemaStmtCancelResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtCancelDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail)) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.TRANSACTION.STALE",
+        detail.empty()
+            ? "statement CANCEL descriptor is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindParameterBind(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::ParameterBindRequestV1
+      request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeParameterBindRequestV1(payload.data(), payload.size(),
+                                       &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "parameter bind demand is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageParameterBindPrivateRequest,
+                              kSchemaParameterBindPrivateRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrParameterBindDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageParameterBindPrivateResult ||
+      response.header.schema_id != kSchemaParameterBindPrivateResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrParameterBindDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid !=
+          request.authenticated_receipt_uuid ||
+      descriptor.prepared_statement_uuid !=
+          request.prepared_statement_uuid ||
+      descriptor.prepared_generation != request.prepared_generation ||
+      descriptor.parameter_set_uuid != request.parameter_set_uuid ||
+      descriptor.parameter_set_generation !=
+          request.parameter_set_generation ||
+      descriptor.ordered_slot_table_sha256 !=
+          request.ordered_slot_table_sha256 ||
+      descriptor.batch_uuid != request.batch_uuid ||
+      descriptor.batch_generation != request.batch_generation ||
+      descriptor.dynamic_package_uuid != request.dynamic_package_uuid ||
+      descriptor.dynamic_generation != request.dynamic_generation ||
+      descriptor.canonical_value_vector != request.canonical_value_vector) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&messages, "MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "parameter bind descriptor is not exactly correlated"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateParameterBind(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrParameterBindRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrParameterBindRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "parameter bind request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageParameterBindRequest,
+                              kSchemaParameterBindRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrParameterBindDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageParameterBindResult ||
+      response.header.schema_id != kSchemaParameterBindResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrParameterBindDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&messages, "MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "parameter bind result is not exactly correlated"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateResultPage(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrResultPageRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrResultPageRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "result page request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageResultPageRequest,
+                              kSchemaResultPageRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrResultPageDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageResultPageResult ||
+      response.header.schema_id != kSchemaResultPageResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrResultPageDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&messages, "MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "result page descriptor is not exactly correlated"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindQueryExplain(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::QueryExplainBindRequestV1
+      request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeQueryExplainBindRequestV1(
+              payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "query EXPLAIN bind request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageQueryExplainBindRequest,
+                              kSchemaQueryExplainBindRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::QueryExplainBindAckV1 ack;
+  if (response.header.message_type != kMessageQueryExplainBindResult ||
+      response.header.schema_id != kSchemaQueryExplainBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeQueryExplainBindAckV1(response.payload.data(),
+                                      response.payload.size(), &ack,
+                                      &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.canonical_query_sblr_sha256 !=
+          request.canonical_container_sha256 ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.TRANSACTION.STALE",
+        detail.empty()
+            ? "query EXPLAIN bind acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateQueryExplain(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrQueryExplainRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrQueryExplainRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "query EXPLAIN request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageQueryExplainRequest,
+                              kSchemaQueryExplainRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrQueryExplainDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageQueryExplainResult ||
+      response.header.schema_id != kSchemaQueryExplainResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrQueryExplainDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.resource_budget_generation != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.TRANSACTION.STALE",
+        detail.empty()
+            ? "query EXPLAIN descriptor is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindNameResolve(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::NameResolveBindRequestV1
+      request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeNameResolveBindRequestV1(payload.data(), payload.size(),
+                                         &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "name-resolution bind request is malformed"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageNameResolveBindRequest,
+                              kSchemaNameResolveBindRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::NameResolveBindAckV1 ack;
+  if (response.header.message_type != kMessageNameResolveBindResult ||
+      response.header.schema_id != kSchemaNameResolveBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeNameResolveBindAckV1(response.payload.data(),
+                                     response.payload.size(), &ack,
+                                     &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.TRANSACTION.STALE",
+        detail.empty()
+            ? "name-resolution bind acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateNameResolve(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrNameResolveRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrNameResolveRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "name-resolution request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageNameResolveRequest,
+                              kSchemaNameResolveRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrNameResolveDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageNameResolveResult ||
+      response.header.schema_id != kSchemaNameResolveResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrNameResolveDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&messages, "MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "name-resolution descriptor is not exactly correlated"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindParseText(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::ParseTextBindRequestV1
+      request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeParseTextBindRequestV1(payload.data(), payload.size(),
+                                       &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "PARSE TEXT bind request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageParseTextBindRequest,
+                              kSchemaParseTextBindRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::ParseTextBindAckV1 ack;
+  if (response.header.message_type != kMessageParseTextBindResult ||
+      response.header.schema_id != kSchemaParseTextBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::DecodeParseTextBindAckV1(
+          response.payload.data(), response.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.canonical_input_sha256 != request.canonical_input_sha256 ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "PARSE TEXT bind acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateParseText(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrParseTextRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrParseTextRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty() ? "PARSE TEXT request is malformed"
+                                 : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageParseTextRequest,
+                              kSchemaParseTextRequestV1, session_uuid,
+                              connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrParseTextDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageParseTextResult ||
+      response.header.schema_id != kSchemaParseTextResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrParseTextDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty() ? "PARSE TEXT descriptor is not exactly correlated"
+                       : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindCatalogEpochCheck(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::
+      CatalogEpochCheckBindRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeCatalogEpochCheckBindRequestV1(
+              payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(
+        &messages, "SBLR.OPERAND_INVALID",
+        detail.empty() ? "CATALOG EPOCH CHECK bind request is malformed"
+                       : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageCatalogEpochCheckBindRequest,
+                              kSchemaCatalogEpochCheckBindRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::
+      CatalogEpochCheckBindAckV1 ack;
+  if (response.header.message_type !=
+          kMessageCatalogEpochCheckBindResult ||
+      response.header.schema_id != kSchemaCatalogEpochCheckBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeCatalogEpochCheckBindAckV1(
+              response.payload.data(), response.payload.size(), &ack,
+              &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "CATALOG EPOCH CHECK bind acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateCatalogEpochCheck(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrCatalogEpochCheckRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrCatalogEpochCheckRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND_INVALID",
+                  detail.empty()
+                      ? "CATALOG EPOCH CHECK request is malformed"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageCatalogEpochCheckRequest,
+                              kSchemaCatalogEpochCheckRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrCatalogEpochCheckDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageCatalogEpochCheckResult ||
+      response.header.schema_id != kSchemaCatalogEpochCheckResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrCatalogEpochCheckDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.object_scoped != request.object_scoped ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.requested_catalog_generation !=
+          request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "CATALOG EPOCH CHECK descriptor is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BindDatabaseAttach(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::wire::sbps_statement_management::
+      DatabaseAttachBindRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeDatabaseAttachBindRequestV1(
+              payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(
+        &messages, "SBLR.OPERAND_INVALID",
+        detail.empty() ? "DATABASE ATTACH bind request is malformed"
+                       : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageDatabaseAttachBindRequest,
+                              kSchemaDatabaseAttachBindRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::DatabaseAttachBindAckV1 ack;
+  if (response.header.message_type != kMessageDatabaseAttachBindResult ||
+      response.header.schema_id != kSchemaDatabaseAttachBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeDatabaseAttachBindAckV1(
+              response.payload.data(), response.payload.size(), &ack,
+              &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "DATABASE ATTACH bind acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateDatabaseAttach(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrDatabaseAttachRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrDatabaseAttachRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND_INVALID",
+                  detail.empty()
+                      ? "DATABASE ATTACH request is malformed"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageDatabaseAttachRequest,
+                              kSchemaDatabaseAttachRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrDatabaseAttachDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageDatabaseAttachResult ||
+      response.header.schema_id != kSchemaDatabaseAttachResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrDatabaseAttachDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "DATABASE ATTACH descriptor is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateOptimizerStatsRead(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrOptimizerStatsReadRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrOptimizerStatsReadRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "optimizer statistics request is malformed"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageOptimizerStatsReadRequest,
+                              kSchemaOptimizerStatsReadRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrOptimizerStatsReadDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageOptimizerStatsReadResult ||
+      response.header.schema_id != kSchemaOptimizerStatsReadResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrOptimizerStatsReadDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "optimizer statistics descriptor is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateOptimizerStatsDrop(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrOptimizerStatsDropRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrOptimizerStatsDropRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(&messages, "SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "optimizer statistics drop request is malformed"
+                      : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageOptimizerStatsDropRequest,
+                              kSchemaOptimizerStatsDropRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrOptimizerStatsDropDescriptorV1 descriptor;
+  if (response.header.message_type != kMessageOptimizerStatsDropResult ||
+      response.header.schema_id != kSchemaOptimizerStatsDropResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrOptimizerStatsDropDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "optimizer statistics drop descriptor is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
 ServerBulkImportBindResult SbpsClient::BindBulkImportStream(
     const ParserSessionContext& session,
     const scratchbird::wire::sbps_bulk_import::Bind& bind) const {

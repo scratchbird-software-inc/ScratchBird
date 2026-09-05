@@ -113,6 +113,21 @@ struct SbsqlPipelineConformanceSummary {
   std::vector<std::string> resolved_object_uuids;
 };
 
+// Caller-owned result for an authenticated compile-only pipeline pass.  The
+// parser returns the exact engine-issued statement context together with the
+// finalized canonical submission that would otherwise be dispatched.  This
+// is used by compound statement-management operations such as PREPARE and
+// EXECUTE DIRECT; it does not execute the nested statement or transfer the
+// private receipt out of the server/engine boundary.
+struct SbsqlCanonicalCompileOutput {
+  bool captured{false};
+  ipc::ParserStatementContext statement_context;
+  ipc::ParserCanonicalSblrSubmission submission;
+  std::string operation_id;
+  std::string operation_family;
+  std::string result_shape_key;
+};
+
 class SbsqlTestWireSession {
  public:
   SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache);
@@ -138,7 +153,9 @@ class SbsqlTestWireSession {
                              const scratchbird::engine::sblr::SblrVariableFrameBeginResultV1*
                                  variable_frame = nullptr,
                              SbsqlPipelineConformanceSummary*
-                                 conformance_summary = nullptr);
+                                 conformance_summary = nullptr,
+                             SbsqlCanonicalCompileOutput*
+                                 canonical_compile_output = nullptr);
   PipelineResult RunVariableForWire(std::string_view sql,
                                     bool cursor_requested = false);
   PipelineResult RunSourceMapForWire();
@@ -197,10 +214,28 @@ class SbsqlTestWireSession {
   PipelineResult RunQueryEvaluateAdvancedDatatypeFamilyForWire();
   PipelineResult RunProjectForWire();
   PipelineResult RunShowObjectDetailForWire();
-  PipelineResult RunNameResolveForWire();
-  PipelineResult RunParseTextForWire();
-  PipelineResult RunCatalogEpochCheckForWire();
-  PipelineResult RunDatabaseAttachForWire();
+  PipelineResult RunNameResolveForWire(
+      std::string_view sql = "RESOLVE NAME app.customers AS table;",
+      bool autocommit_emulation = false);
+  PipelineResult RunOptimizerStatsReadForWire(
+      std::string_view sql = "OPTIMIZER STATS READ;",
+      bool autocommit_emulation = false);
+  PipelineResult RunOptimizerStatsDropForWire(
+      std::string_view sql = "OPTIMIZER STATS DROP;",
+      bool autocommit_emulation = false);
+  PipelineResult RunParseTextForWire(
+      std::string_view sql =
+          "PARSE TEXT sbsql.builtin.recovery.en 'SELECT 1;' WITH "
+          "MAX_BYTES 4096 MAX_DEPTH 64 ALLOW_DONOR_EXTENSIONS FALSE;",
+      bool autocommit_emulation = false);
+  PipelineResult RunCatalogEpochCheckForWire(
+      std::string_view sql = "CATALOG EPOCH CHECK;",
+      bool autocommit_emulation = false);
+  PipelineResult RunDatabaseAttachForWire(
+      std::string_view sql =
+          "DATABASE ATTACH REGISTERED CURRENT AS workplan_attachment READ "
+          "ONLY;",
+      bool autocommit_emulation = false);
   PipelineResult RunDatabaseDetachForWire();
   PipelineResult RunDatabaseCheckpointForWire();
   PipelineResult RunDatabaseVacuumForWire();
@@ -396,13 +431,15 @@ class SbsqlTestWireSession {
   PipelineResult RunStmtPrepareForWire();
   PipelineResult RunStmtPrepareCanonicalForWire();
   PipelineResult RunStmtExecuteForWire(bool cursor_requested = false);
-  PipelineResult RunStmtExecuteDirectForWire();
+  PipelineResult RunStmtExecuteDirectForWire(bool cursor_requested = false);
   PipelineResult RunStmtFreeForWire();
   PipelineResult RunStmtCancelForWire();
   PipelineResult RunParameterBindForWire();
   PipelineResult RunResultPageForWire();
   PipelineResult RunQueryExecuteForWire();
-  PipelineResult RunQueryExplainForWire();
+  PipelineResult RunQueryExplainForWire(
+      std::string_view sql = "EXPLAIN SELECT 1;",
+      bool autocommit_emulation = false);
   PipelineResult RunSecurityAlterRoleForWire();
   PipelineResult RunSecurityCreateGroupMappingForWire();
   PipelineResult RunSecurityDropGroupMappingForWire();
@@ -525,6 +562,10 @@ class SbsqlTestWireSession {
   std::map<std::string, StableCachedPublicNameResolution>
       stable_relation_name_resolution_cache_;
   std::map<std::string, ipc::CursorStreamDescriptorV1> cursor_stream_descriptors_;
+  std::map<std::string, ipc::ParserStatementContext>
+      cursor_statement_contexts_;
+  std::map<std::string, ipc::PreparedParameterReference>
+      prepared_parameter_bindings_;
   std::deque<std::string> stable_relation_name_resolution_lru_;
 
   bool FinalizeSuccessfulAutocommitForWire(PipelineResult* statement_result);
@@ -553,6 +594,41 @@ class SbsqlTestWireSession {
                                      std::string_view resolved_object_class = {});
   void SeedCreatedDdlNameResolutionCache(const CstDocument& cst,
                                          const PipelineResult& result);
+  PipelineResult RunNamedStmtPrepareForWire(
+      std::string_view original_sql,
+      std::string_view statement_name,
+      bool statement_name_quoted,
+      std::string_view nested_sql,
+      const SbsqlCanonicalCompileOutput* precompiled = nullptr,
+      const std::vector<std::uint8_t>* declared_parameter_type_demands =
+          nullptr);
+  PipelineResult RunNamedStmtExecuteDirectForWire(
+      std::string_view original_sql,
+      std::string_view nested_sql,
+      bool cursor_requested,
+      bool autocommit_emulation);
+  PipelineResult RunNamedStmtExecuteForWire(
+      std::string_view original_sql,
+      std::string_view statement_name,
+      bool statement_name_quoted,
+      bool cursor_requested,
+      bool autocommit_emulation);
+  PipelineResult RunNamedStmtFreeForWire(
+      std::string_view original_sql,
+      std::string_view statement_name,
+      bool statement_name_quoted);
+  PipelineResult RunNamedStmtCancelForWire(
+      std::string_view original_sql,
+      std::string_view statement_name,
+      bool statement_name_quoted,
+      std::uint8_t reason,
+      std::uint8_t mode,
+      std::uint64_t deadline_monotonic_ns);
+  PipelineResult RunNamedParameterBindForWire(
+      std::string_view original_sql,
+      std::string_view statement_name,
+      bool statement_name_quoted,
+      const std::vector<PreparedParameterWireValue>& values);
   bool DisconnectExecutionRoute(MessageVectorSet* messages);
   PipelineResult RunServerManagementCommand(const ServerManagementCommand& command);
   int ServeSbwp(std::intptr_t fd);

@@ -4630,6 +4630,12 @@ bool IsCommandCompletionOnlyDml(std::string_view sql) {
          std::string::npos;
 }
 
+bool IsCommandCompletionOnlyStatementManagement(std::string_view sql) {
+  const std::string normalized = Upper(StripSqlTerminator(std::string(sql)));
+  return StartsWithWord(normalized, "PREPARE") ||
+         StartsWithWord(normalized, "DEALLOCATE");
+}
+
 void RefreshWireTransactionStateFromSession(const SbsqlTestWireSession& session,
                                             SbwpSessionState* state) {
   if (state == nullptr) return;
@@ -4821,7 +4827,8 @@ bool SendPipelineResult(ClientIo* io,
   // and public ABI. They are not an implicit SQL row set. A DDL command only
   // exposes rows through an explicit RETURNING or inspection surface, neither
   // of which is part of the normalized command-completion forms above.
-  if (IsCommandCompletionOnlyDdl(sql) || IsCommandCompletionOnlyDml(sql)) {
+  if (IsCommandCompletionOnlyDdl(sql) || IsCommandCompletionOnlyDml(sql) ||
+      IsCommandCompletionOnlyStatementManagement(sql)) {
     return SendFrame(io,
                      state,
                      kCommandComplete,

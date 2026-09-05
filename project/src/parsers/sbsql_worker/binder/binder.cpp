@@ -11203,8 +11203,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (operator_expression) {
       record.canonical_operator_name = expression.operator_name;
     }
-    if (expression.expression_kind == NativeExpressionAstKind::kLiteral ||
-        expression.expression_kind == NativeExpressionAstKind::kParameter) {
+    if (expression.expression_kind == NativeExpressionAstKind::kLiteral) {
       record.literal_or_parameter_ref = expression.spelling;
     }
     used_descriptor_ids.insert(record.result_descriptor_id);

@@ -3,6 +3,21 @@
 
 // CSC-TEST-002337: explicit authenticated SOURCE_MAP process client.
 #include "common/common.hpp"
+#include "engine/sblr/sblr_stmt_execute_runtime.hpp"
+#include "engine/sblr/sblr_stmt_execute_direct_runtime.hpp"
+#include "engine/sblr/sblr_stmt_free_runtime.hpp"
+#include "engine/sblr/sblr_stmt_cancel_runtime.hpp"
+#include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
+#include "engine/sblr/sblr_parameter_bind_runtime.hpp"
+#include "engine/sblr/sblr_result_page_runtime.hpp"
+#include "engine/sblr/sblr_name_resolve_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
+#include "engine/sblr/sblr_parse_text_runtime.hpp"
+#include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
+#include "engine/sblr/sblr_database_attach_runtime.hpp"
+#include "engine/sblr/sblr_opcode_stream.hpp"
+#include "scratchbird/engine/sblr_envelope.hpp"
 #include "wire/sbsql_test_wire.hpp"
 
 #include <iostream>
@@ -234,7 +249,36 @@ int main(int argc, char** argv) {
                     : operation == "show-object-detail"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunShowObjectDetailForWire():begun; }()
                     : operation == "name-resolve"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunNameResolveForWire():begun; }()
+                          ? [&session] {
+                              auto begun = session.RunPipeline(
+                                  "BEGIN TRANSACTION", true);
+                              return begun.accepted
+                                         ? session.RunPipeline(
+                                               "RESOLVE NAME app.customers AS table;",
+                                               true)
+                                         : begun;
+                            }()
+                    : operation == "optimizer-stats-read"
+                          ? [&session] {
+                              auto begun = session.RunPipeline(
+                                  "BEGIN TRANSACTION", true);
+                              return begun.accepted
+                                         ? session.RunPipeline(
+                                               "OPTIMIZER STATS READ;", true)
+                                         : begun;
+                            }()
+                    : operation == "optimizer-stats-drop"
+                          ? [&session] {
+                              auto begun = session.RunPipeline(
+                                  "BEGIN TRANSACTION", true);
+                              if (!begun.accepted) return begun;
+                              auto dropped = session.RunPipeline(
+                                  "OPTIMIZER STATS DROP;", true);
+                              if (!dropped.accepted) return dropped;
+                              auto committed = session.RunPipeline(
+                                  "COMMIT", true);
+                              return committed.accepted ? dropped : committed;
+                            }()
                     : operation == "parse-text"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunParseTextForWire():begun; }()
                     : operation == "catalog-epoch-check"
@@ -627,13 +671,14 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunContextGetForWire():begun; }()
                     : operation == "stmt-prepare"
                           ? session.RunPipeline(
-                                "PREPARE prep_one AS SELECT 7 AS value;", true)
+                                "PREPARE STATEMENT prep_one AS SELECT 1;",
+                                true)
                     : operation == "stmt-execute"
-        ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtExecuteForWire():begun; }()
+        ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtExecuteForWire(true):begun; }()
                     : operation == "stmt-execute-direct"
-        ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtExecuteDirectForWire():begun; }()
+        ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtExecuteDirectForWire(true):begun; }()
                     : operation == "stmt-free"
-        ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtFreeForWire():begun; }()
+                          ? session.RunStmtFreeForWire()
                     : operation == "stmt-cancel"
         ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtCancelForWire():begun; }()
                     : operation == "parameter-bind"
@@ -787,24 +832,870 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (operation == "stmt-prepare") {
-    const bool exact_refusal =
-        !result.accepted && result.messages.diagnostics.size() == 1 &&
-        result.messages.diagnostics.front().code == "SBSQL.IMPL.NOT_AVAILABLE";
-    const bool no_canonical_result =
-        result.sblr_payload.empty() && result.server_operation_id.empty() &&
+    scratchbird::engine::sblr::SblrStmtPrepareResultV1 decoded;
+    std::string detail;
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.stmt_prepare" &&
+        scratchbird::engine::sblr::DecodeSblrStmtPrepareResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.status == 1 && decoded.publication_barrier == 1 &&
+        decoded.prepared_generation != 0 &&
+        decoded.executor_availability_generation != 0;
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003573 STMT_PREPARE exact_result_failed"
+                << " detail=" << detail << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003573 STMT_PREPARE accepted "
+                 "canonical_sblr=true publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "stmt-execute") {
+    scratchbird::engine::sblr::SblrStmtExecuteResultV1 decoded;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.stmt_execute" &&
+        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        scratchbird::engine::sblr::DecodeSblrStmtExecuteResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.status == 1 && decoded.publication_barrier == 1 &&
+        decoded.executor_availability_generation != 0 &&
+        nonzero(decoded.result_descriptor_uuid) &&
+        nonzero(decoded.result_handle_uuid) &&
+        nonzero(decoded.effect_evidence_sha256) &&
+        nonzero(decoded.operation_evidence_uuid);
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003577 STMT_EXECUTE exact_result_failed"
+                << " detail=" << detail
+                << " payload_bytes=" << result.server_result_payload.size()
+                << " payload_magic="
+                << result.server_result_payload.substr(
+                       0, std::min<std::size_t>(
+                              4, result.server_result_payload.size()))
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    const auto fetched =
+        session.FetchCursorOnRoute(result.server_cursor_uuid, 1);
+    const bool exact_nested_result =
+        fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
+        !fetched.row_packet.empty() &&
+        fetched.row_packet.find("operation_id=engine.op.stmt_execute") !=
+            std::string::npos &&
+        fetched.row_packet.find("result_kind=stmt_execute_result") !=
+            std::string::npos &&
+        fetched.row_packet.find("row[0]=key_a=1") != std::string::npos &&
+        fetched.row_packet.find("row_meta[0]=key_a:int64:not_null") !=
+            std::string::npos;
+    if (!exact_nested_result) {
+      std::cerr << "CSC-TEST-003577 STMT_EXECUTE nested_result_failed"
+                << " accepted=" << fetched.accepted
+                << " row_count=" << fetched.row_count
+                << " end_of_cursor=" << fetched.end_of_cursor
+                << " row_packet=" << fetched.row_packet << '\n';
+      for (const auto& diagnostic : fetched.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003577 STMT_EXECUTE accepted "
+                 "canonical_sblr=true publication_barrier=passed "
+                 "result_handle=validated nested_row=key_a:1\n";
+    return 0;
+  }
+  if (operation == "stmt-execute-direct") {
+    scratchbird::engine::sblr::SblrStmtExecuteDirectResultV1 decoded;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.stmt_execute_direct" &&
+        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        scratchbird::engine::sblr::DecodeSblrStmtExecuteDirectResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.status == 1 && decoded.publication_barrier == 1 &&
+        decoded.executor_availability_generation != 0 &&
+        nonzero(decoded.result_descriptor_uuid) &&
+        nonzero(decoded.result_handle_uuid) &&
+        nonzero(decoded.effect_evidence_sha256) &&
+        nonzero(decoded.operation_evidence_uuid);
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003581 STMT_EXECUTE_DIRECT exact_result_failed"
+                << " detail=" << detail
+                << " payload_bytes=" << result.server_result_payload.size()
+                << " payload_magic="
+                << result.server_result_payload.substr(
+                       0, std::min<std::size_t>(4,
+                                                result.server_result_payload.size()))
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    const auto fetched =
+        session.FetchCursorOnRoute(result.server_cursor_uuid, 1);
+    const bool exact_nested_result =
+        fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
+        !fetched.row_packet.empty() &&
+        fetched.row_packet.find(
+            "operation_id=engine.op.stmt_execute_direct") !=
+            std::string::npos &&
+        fetched.row_packet.find("result_kind=stmt_execute_result") !=
+            std::string::npos &&
+        fetched.row_packet.find("row[0]=key_a=1") != std::string::npos &&
+        fetched.row_packet.find("row_meta[0]=key_a:int64:not_null") !=
+            std::string::npos;
+    if (!exact_nested_result) {
+      std::cerr << "CSC-TEST-003581 STMT_EXECUTE_DIRECT nested_result_failed"
+                << " accepted=" << fetched.accepted
+                << " row_count=" << fetched.row_count
+                << " end_of_cursor=" << fetched.end_of_cursor
+                << " row_packet=" << fetched.row_packet << '\n';
+      for (const auto& diagnostic : fetched.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003581 STMT_EXECUTE_DIRECT accepted "
+                 "canonical_sblr=true publication_barrier=passed "
+                 "result_handle=validated nested_row=key_a:1\n";
+    return 0;
+  }
+  if (operation == "stmt-free") {
+    scratchbird::engine::sblr::SblrStmtFreeResultV1 decoded;
+    std::string detail;
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.stmt_free" &&
+        scratchbird::engine::sblr::DecodeSblrStmtFreeResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.terminal_state == 1 && decoded.publication_barrier == 1 &&
+        decoded.terminal_prepared_generation != 0 &&
+        decoded.executor_availability_generation != 0;
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003585 STMT_FREE exact_result_failed"
+                << " detail=" << detail << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003585 STMT_FREE accepted "
+                 "canonical_sblr=true publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "stmt-cancel") {
+    scratchbird::engine::sblr::SblrStmtCancelResultV1 decoded;
+    std::string detail;
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.stmt_cancel" &&
+        scratchbird::engine::sblr::DecodeSblrStmtCancelResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.state == 3 && decoded.finality <= 1 &&
+        decoded.publication_barrier == 1 &&
+        decoded.target_execution_generation != 0 &&
+        decoded.executor_availability_generation != 0;
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003589 STMT_CANCEL exact_result_failed"
+                << " detail=" << detail << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003589 STMT_CANCEL accepted "
+                 "canonical_sblr=true state=already_terminal "
+                 "publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "parameter-bind") {
+    scratchbird::engine::sblr::SblrStmtExecuteResultV1 decoded;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.stmt_execute" &&
+        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        scratchbird::engine::sblr::DecodeSblrStmtExecuteResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.status == 1 && decoded.publication_barrier == 1 &&
+        decoded.executor_availability_generation != 0 &&
+        nonzero(decoded.result_descriptor_uuid) &&
+        nonzero(decoded.result_handle_uuid) &&
+        nonzero(decoded.effect_evidence_sha256) &&
+        nonzero(decoded.operation_evidence_uuid);
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003593 PARAMETER_BIND consume_failed"
+                << " detail=" << detail
+                << " payload_bytes=" << result.server_result_payload.size()
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    const auto fetched =
+        session.FetchCursorOnRoute(result.server_cursor_uuid, 1);
+    const bool exact_typed_result =
+        fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
+        !fetched.row_packet.empty() &&
+        fetched.row_packet.find("operation_id=engine.op.stmt_execute") !=
+            std::string::npos &&
+        fetched.row_packet.find("result_kind=stmt_execute_result") !=
+            std::string::npos &&
+        fetched.row_packet.find("row[0]=key_a=7") !=
+            std::string::npos &&
+        fetched.row_packet.find("row_meta[0]=key_a:int64:not_null") !=
+            std::string::npos;
+    if (!exact_typed_result) {
+      std::cerr << "CSC-TEST-003593 PARAMETER_BIND typed_result_failed"
+                << " accepted=" << fetched.accepted
+                << " row_count=" << fetched.row_count
+                << " end_of_cursor=" << fetched.end_of_cursor
+                << " row_packet=" << fetched.row_packet << '\n';
+      for (const auto& diagnostic : fetched.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003593 PARAMETER_BIND accepted "
+                 "canonical_sblr=true durable_bind_consumed=true "
+                 "typed_value=7 "
+                 "publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "result-page") {
+    scratchbird::engine::sblr::SblrResultPageResultV1 decoded;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.result_page" &&
+        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        scratchbird::engine::sblr::DecodeSblrResultPageResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.completion_state == 1 && decoded.terminal_state == 1 &&
+        decoded.returned_row_count == 1 && decoded.next_row_offset == 1 &&
+        decoded.executor_availability_generation != 0 &&
+        nonzero(decoded.cursor_uuid) &&
+        nonzero(decoded.result_set_handle_uuid) &&
+        nonzero(decoded.row_descriptor_uuid) &&
+        nonzero(decoded.redaction_profile_uuid) &&
+        nonzero(decoded.result_material_sha256) &&
+        nonzero(decoded.executor_evidence_sha256) &&
+        nonzero(decoded.publication_barrier_uuid) &&
+        nonzero(decoded.result_evidence_uuid) &&
+        !nonzero(decoded.next_continuation_uuid) &&
+        decoded.next_continuation_generation == 0;
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003597 RESULT_PAGE exact_result_failed"
+                << " detail=" << detail
+                << " payload_bytes=" << result.server_result_payload.size()
+                << " row_count=" << result.server_row_count << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003597 RESULT_PAGE accepted "
+                 "canonical_sblr=true returned_rows=1 terminal=true "
+                 "publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "name-resolve") {
+    scratchbird::engine::sblr::SblrNameResolveResultV1 decoded;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.name_resolve" &&
+        result.server_row_count == 0 && !result.server_result_payload.empty() &&
+        result.sblr_payload.find("app.customers") == std::string::npos &&
+        scratchbird::engine::sblr::DecodeSblrNameResolveResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.status == 1 && decoded.visibility == 1 &&
+        decoded.object_class == 2 &&
+        decoded.object_descriptor_generation != 0 &&
+        decoded.catalog_generation != 0 && decoded.security_epoch != 0 &&
+        nonzero(decoded.resolution_uuid) &&
+        nonzero(decoded.resolved_object_uuid) &&
+        nonzero(decoded.resolved_namespace_uuid) &&
+        nonzero(decoded.redaction_profile_uuid) &&
+        nonzero(decoded.publication_evidence_uuid) &&
+        nonzero(decoded.resolution_material_sha256) &&
+        nonzero(decoded.executor_evidence_sha256);
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003613 NAME_RESOLVE exact_result_failed"
+                << " detail=" << detail
+                << " payload_bytes=" << result.server_result_payload.size()
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003613 NAME_RESOLVE accepted "
+                 "canonical_sblr=true visible_table=true "
+                 "publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "optimizer-stats-read") {
+    scratchbird::engine::sblr::SblrOptimizerStatsReadResultV1 decoded;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.optimizer_stats_read" &&
+        result.server_row_count == 0 && !result.server_result_payload.empty() &&
+        result.sblr_payload.find("OPTIMIZER STATS READ") == std::string::npos &&
+        scratchbird::engine::sblr::DecodeSblrOptimizerStatsReadResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.flags == scratchbird::engine::sblr::
+                             kSblrOptimizerStatsReadCatalogFlags &&
+        decoded.catalog_generation != 0 && decoded.security_epoch != 0 &&
+        decoded.resource_epoch != 0 && decoded.inventory_generation != 0 &&
+        decoded.executor_availability_generation != 0 &&
+        nonzero(decoded.statistics_snapshot_uuid) &&
+        nonzero(decoded.statement_receipt_uuid) &&
+        nonzero(decoded.statement_snapshot_uuid) &&
+        nonzero(decoded.result_material_sha256) &&
+        nonzero(decoded.executor_evidence_sha256);
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003617 OPTIMIZER_STATS_READ exact_result_failed"
+                << " detail=" << detail
+                << " payload_bytes=" << result.server_result_payload.size()
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003617 OPTIMIZER_STATS_READ accepted "
+                 "canonical_sblr=true immutable_catalog_snapshot=true "
+                 "publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "optimizer-stats-drop") {
+    scratchbird::engine::sblr::SblrOptimizerStatsDropResultV1 dropped;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_drop =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.optimizer_stats_drop" &&
+        result.server_row_count == 0 && !result.server_result_payload.empty() &&
+        result.sblr_payload.find("OPTIMIZER STATS DROP") == std::string::npos &&
+        scratchbird::engine::sblr::DecodeSblrOptimizerStatsDropResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &dropped, &detail) &&
+        dropped.flags == scratchbird::engine::sblr::
+                             kSblrOptimizerStatsDropAllScopesFlag &&
+        dropped.status == scratchbird::engine::sblr::
+                              kSblrOptimizerStatsDropPublishedStatus &&
+        dropped.statistics_epoch == dropped.prior_statistics_epoch + 1 &&
+        dropped.cache_invalidation_generation == dropped.statistics_epoch &&
+        dropped.publication_barrier_generation == dropped.effect_generation &&
+        dropped.catalog_generation != 0 && dropped.security_epoch != 0 &&
+        dropped.resource_epoch != 0 && dropped.inventory_generation != 0 &&
+        dropped.executor_availability_generation != 0 &&
+        nonzero(dropped.effect_uuid) && nonzero(dropped.statement_receipt_uuid) &&
+        nonzero(dropped.durable_publication_uuid) &&
+        nonzero(dropped.result_material_sha256) &&
+        nonzero(dropped.executor_evidence_sha256);
+    if (!exact_drop) {
+      std::cerr << "CSC-TEST-003621 OPTIMIZER_STATS_DROP exact_result_failed"
+                << " detail=" << detail
+                << " payload_bytes=" << result.server_result_payload.size()
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+
+    // Prove the committed epoch through a fresh authenticated parser/server
+    // session. The observer receives only OSRR; it does not reuse the DROP
+    // receipt, transaction, descriptor, or result bytes.
+    scratchbird::parser::sbsql::SbsqlTestWireSession observer(
+        config, nullptr, nullptr);
+    scratchbird::parser::sbsql::MessageVectorSet observer_messages;
+    if (!observer.AuthenticateCredentials(credentials, &observer_messages)) {
+      for (const auto& diagnostic : observer_messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    auto observer_begin = observer.RunPipeline("BEGIN TRANSACTION", true);
+    auto observed = observer_begin.accepted
+                        ? observer.RunPipeline("OPTIMIZER STATS READ;", true)
+                        : observer_begin;
+    scratchbird::engine::sblr::SblrOptimizerStatsReadResultV1 read;
+    const bool independent_visibility =
+        observed.accepted && !observed.messages.has_errors() &&
+        observed.server_operation_id == "engine.op.optimizer_stats_read" &&
+        scratchbird::engine::sblr::DecodeSblrOptimizerStatsReadResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                observed.server_result_payload.data()),
+            observed.server_result_payload.size(), &read, &detail) &&
+        read.optimizer_statistics_epoch == dropped.statistics_epoch &&
+        read.optimizer_statistics_epoch > 1 &&
+        read.executor_availability_generation != 0;
+    if (!independent_visibility) {
+      std::cerr << "CSC-TEST-003621 OPTIMIZER_STATS_DROP "
+                   "independent_epoch_observation_failed"
+                << " detail=" << detail
+                << " observed_payload_bytes="
+                << observed.server_result_payload.size() << '\n';
+      for (const auto& diagnostic : observed.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003621 OPTIMIZER_STATS_DROP accepted "
+                 "canonical_sblr=true durable_epoch_advanced=true "
+                 "cache_invalidation=passed independent_session_read=passed "
+                 "publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "parse-text") {
+    namespace sblr = scratchbird::engine::sblr;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const auto contains_text = [](const std::vector<std::uint8_t>& bytes,
+                                  std::string_view text) {
+      return !text.empty() &&
+             std::search(bytes.begin(), bytes.end(), text.begin(), text.end()) !=
+                 bytes.end();
+    };
+
+    std::string detail;
+    sblr::SblrParseTextResultV1 decoded_result;
+    sblr::SblrParseTextDescriptorV1 decoded_descriptor;
+    const auto outer_container = scratchbird::engine::DecodeSblrContainerBytes(
+        reinterpret_cast<const std::uint8_t*>(result.sblr_payload.data()),
+        result.sblr_payload.size());
+    const auto outer_stream = outer_container.status ==
+                                      scratchbird::engine::SblrCodecStatus::ok
+                                  ? sblr::DecodeSblrOpcodeStream(std::string_view(
+                                        reinterpret_cast<const char*>(
+                                            outer_container.container
+                                                .operation_payload.data()),
+                                        outer_container.container
+                                            .operation_payload.size()))
+                                  : sblr::SblrOpcodeStreamResult{};
+    const bool outer_root_shape =
+        outer_stream.ok && outer_stream.stream.operations.size() == 3 &&
+        outer_stream.stream.operations[1].operation_id ==
+            "engine.op.parse_text" &&
+        outer_stream.stream.operations[1].opcode == "SBLR_PARSE_TEXT" &&
+        outer_stream.stream.operations[1].opcode_code ==
+            sblr::kSblrParseTextOpcodeCode &&
+        outer_stream.stream.operations[1].operands.size() == 1 &&
+        outer_stream.stream.operations[1].operands[0].type ==
+            "parse_text_descriptor" &&
+        outer_stream.stream.operations[1].operands[0].name == "text" &&
+        outer_stream.stream.operations[1].operands[0].value_kind ==
+            sblr::SblrValueKind::parse_text_descriptor &&
+        sblr::DecodeSblrParseTextDescriptorV1(
+            outer_stream.stream.operations[1].operands[0].value_body.data(),
+            outer_stream.stream.operations[1].operands[0].value_body.size(),
+            &decoded_descriptor, &detail);
+    const bool result_shape =
+        sblr::DecodeSblrParseTextResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded_result, &detail);
+    const auto nested_container =
+        result_shape
+            ? scratchbird::engine::DecodeSblrContainerBytes(
+                  decoded_result.canonical_sblr_bytes.data(),
+                  decoded_result.canonical_sblr_bytes.size())
+            : scratchbird::engine::SblrDecodedContainer{};
+    const auto nested_stream =
+        nested_container.status == scratchbird::engine::SblrCodecStatus::ok
+            ? sblr::DecodeSblrOpcodeStream(std::string_view(
+                  reinterpret_cast<const char*>(
+                      nested_container.container.operation_payload.data()),
+                  nested_container.container.operation_payload.size()))
+            : sblr::SblrOpcodeStreamResult{};
+    const bool nested_root_shape =
+        nested_stream.ok && nested_stream.stream.operations.size() == 3 &&
+        nested_stream.stream.operations[1].operation_id == "query.execute" &&
+        nested_stream.stream.operations[1].opcode == "SBLR_QUERY_EXECUTE" &&
+        nested_stream.stream.operations[1].opcode_code == 4615;
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.parse_text" &&
         result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
         result.server_affected_rows == 0 &&
         !result.server_affected_rows_present &&
-        result.server_result_payload.empty();
-    if (!exact_refusal || !no_canonical_result) {
-      std::cerr << "CSC-TEST-003573 STMT_PREPARE "
-                   "fail_closed_contract_failed\n";
+        !result.server_result_payload.empty() && outer_root_shape &&
+        result_shape && nested_root_shape && decoded_result.status == 1 &&
+        decoded_result.publication_barrier == 1 &&
+        decoded_result.parse_uuid == decoded_descriptor.parse_uuid &&
+        decoded_result.statement_receipt_uuid ==
+            decoded_descriptor.statement_receipt_uuid &&
+        decoded_result.language_profile_uuid ==
+            decoded_descriptor.language_profile_uuid &&
+        decoded_result.language_profile_generation ==
+            decoded_descriptor.language_profile_generation &&
+        decoded_result.parser_package_uuid ==
+            decoded_descriptor.parser_package_uuid &&
+        decoded_result.catalog_generation ==
+            decoded_descriptor.catalog_generation &&
+        decoded_result.security_epoch == decoded_descriptor.security_epoch &&
+        decoded_result.resource_epoch == decoded_descriptor.resource_epoch &&
+        decoded_result.canonical_sblr_bytes ==
+            decoded_descriptor.canonical_sblr_bytes &&
+        decoded_result.executor_availability_generation ==
+            decoded_descriptor.executor_availability_generation &&
+        nonzero(decoded_result.parse_uuid) &&
+        nonzero(decoded_result.statement_receipt_uuid) &&
+        nonzero(decoded_result.language_profile_uuid) &&
+        nonzero(decoded_result.parser_package_uuid) &&
+        nonzero(decoded_result.parse_evidence_uuid) &&
+        nonzero(decoded_result.result_evidence_sha256) &&
+        nonzero(decoded_result.executor_evidence_sha256) &&
+        !contains_text(decoded_result.canonical_sblr_bytes, "SELECT 1") &&
+        result.sblr_payload.find("SELECT 1") == std::string::npos &&
+        result.server_result_payload.find("SELECT 1") == std::string::npos;
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003625 PARSE_TEXT exact_result_failed"
+                << " detail=" << detail
+                << " outer_ok=" << outer_root_shape
+                << " result_ok=" << result_shape
+                << " nested_ok=" << nested_root_shape
+                << " result_bytes=" << result.server_result_payload.size()
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
       return 4;
     }
-    std::cout << "CSC-TEST-003573 STMT_PREPARE "
-                 "deterministic_refusal=SBSQL.IMPL.NOT_AVAILABLE "
-                 "no_statement_context=true no_canonical_execution=true "
-                 "no_result_publication=true\n";
+    std::cout << "CSC-TEST-003625 PARSE_TEXT accepted "
+                 "canonical_sblr=true nested_canonical_sblr=true "
+                 "publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "catalog-epoch-check") {
+    namespace sblr = scratchbird::engine::sblr;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    std::string detail;
+    sblr::SblrCatalogEpochCheckResultV1 decoded_result;
+    sblr::SblrCatalogEpochCheckDescriptorV1 decoded_descriptor;
+    const auto outer_container = scratchbird::engine::DecodeSblrContainerBytes(
+        reinterpret_cast<const std::uint8_t*>(result.sblr_payload.data()),
+        result.sblr_payload.size());
+    const auto outer_stream =
+        outer_container.status == scratchbird::engine::SblrCodecStatus::ok
+            ? sblr::DecodeSblrOpcodeStream(std::string_view(
+                  reinterpret_cast<const char*>(
+                      outer_container.container.operation_payload.data()),
+                  outer_container.container.operation_payload.size()))
+            : sblr::SblrOpcodeStreamResult{};
+    const bool outer_root_shape =
+        outer_stream.ok && outer_stream.stream.operations.size() == 3 &&
+        outer_stream.stream.operations[1].operation_id ==
+            "engine.op.catalog_epoch_check" &&
+        outer_stream.stream.operations[1].opcode ==
+            "SBLR_CATALOG_EPOCH_CHECK" &&
+        outer_stream.stream.operations[1].opcode_code ==
+            sblr::kSblrCatalogEpochCheckOpcodeCode &&
+        outer_stream.stream.operations[1].operands.size() == 1 &&
+        outer_stream.stream.operations[1].operands[0].type ==
+            "catalog_epoch_check_descriptor" &&
+        outer_stream.stream.operations[1].operands[0].name ==
+            "catalog_epoch" &&
+        outer_stream.stream.operations[1].operands[0].value_kind ==
+            sblr::SblrValueKind::catalog_epoch_check_descriptor &&
+        sblr::DecodeSblrCatalogEpochCheckDescriptorV1(
+            outer_stream.stream.operations[1].operands[0].value_body.data(),
+            outer_stream.stream.operations[1].operands[0].value_body.size(),
+            &decoded_descriptor, &detail);
+    const bool result_shape =
+        sblr::DecodeSblrCatalogEpochCheckResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded_result, &detail);
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.catalog_epoch_check" &&
+        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_affected_rows == 0 &&
+        !result.server_affected_rows_present && outer_root_shape &&
+        result_shape && !decoded_descriptor.object_scoped &&
+        !decoded_result.object_scoped && decoded_result.status == 1 &&
+        decoded_result.visibility == 1 &&
+        decoded_result.check_uuid == decoded_descriptor.check_uuid &&
+        decoded_result.observed_catalog_epoch_uuid ==
+            decoded_descriptor.requested_catalog_epoch_uuid &&
+        decoded_result.observed_catalog_generation ==
+            decoded_descriptor.requested_catalog_generation &&
+        decoded_result.database_uuid == decoded_descriptor.database_uuid &&
+        decoded_result.schema_tree_uuid ==
+            decoded_descriptor.schema_tree_uuid &&
+        decoded_result.schema_tree_generation ==
+            decoded_descriptor.schema_tree_generation &&
+        decoded_result.observed_security_epoch ==
+            decoded_descriptor.security_epoch &&
+        decoded_result.observed_resource_epoch ==
+            decoded_descriptor.resource_epoch &&
+        decoded_result.executor_availability_generation ==
+            decoded_descriptor.executor_availability_generation &&
+        nonzero(decoded_descriptor.statement_receipt_uuid) &&
+        nonzero(decoded_descriptor.policy_snapshot_uuid) &&
+        nonzero(decoded_descriptor.catalog_snapshot_uuid) &&
+        nonzero(decoded_descriptor.descriptor_sha256) &&
+        nonzero(decoded_descriptor.visibility_scope_sha256) &&
+        nonzero(decoded_result.redaction_profile_uuid) &&
+        nonzero(decoded_result.publication_evidence_uuid) &&
+        nonzero(decoded_result.result_material_sha256) &&
+        result.sblr_payload.find("CATALOG EPOCH CHECK") ==
+            std::string::npos;
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003629 CATALOG_EPOCH_CHECK exact_result_failed"
+                << " detail=" << detail
+                << " outer_ok=" << outer_root_shape
+                << " result_ok=" << result_shape
+                << " result_bytes=" << result.server_result_payload.size()
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003629 CATALOG_EPOCH_CHECK accepted "
+                 "canonical_sblr=true current_epoch=true "
+                 "redaction_bound=true publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "database-attach") {
+    namespace sblr = scratchbird::engine::sblr;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    std::string detail;
+    sblr::SblrDatabaseAttachResultV1 decoded_result;
+    sblr::SblrDatabaseAttachDescriptorV1 decoded_descriptor;
+    const auto outer_container = scratchbird::engine::DecodeSblrContainerBytes(
+        reinterpret_cast<const std::uint8_t*>(result.sblr_payload.data()),
+        result.sblr_payload.size());
+    const auto outer_stream =
+        outer_container.status == scratchbird::engine::SblrCodecStatus::ok
+            ? sblr::DecodeSblrOpcodeStream(std::string_view(
+                  reinterpret_cast<const char*>(
+                      outer_container.container.operation_payload.data()),
+                  outer_container.container.operation_payload.size()))
+            : sblr::SblrOpcodeStreamResult{};
+    const bool outer_root_shape =
+        outer_stream.ok && outer_stream.stream.operations.size() == 3 &&
+        outer_stream.stream.operations[1].operation_id ==
+            "engine.op.database_attach" &&
+        outer_stream.stream.operations[1].opcode ==
+            "SBLR_DATABASE_ATTACH" &&
+        outer_stream.stream.operations[1].opcode_code ==
+            sblr::kSblrDatabaseAttachOpcodeCode &&
+        outer_stream.stream.operations[1].operands.size() == 1 &&
+        outer_stream.stream.operations[1].operands[0].ordinal == 1 &&
+        outer_stream.stream.operations[1].operands[0].type ==
+            "database_attach_descriptor" &&
+        outer_stream.stream.operations[1].operands[0].name ==
+            "attachment" &&
+        outer_stream.stream.operations[1].operands[0].value_kind ==
+            sblr::SblrValueKind::database_attach_descriptor &&
+        sblr::DecodeSblrDatabaseAttachDescriptorV1(
+            outer_stream.stream.operations[1].operands[0].value_body.data(),
+            outer_stream.stream.operations[1].operands[0].value_body.size(),
+            &decoded_descriptor, &detail);
+    const bool result_shape = sblr::DecodeSblrDatabaseAttachResultV1(
+        reinterpret_cast<const std::uint8_t*>(
+            result.server_result_payload.data()),
+        result.server_result_payload.size(), &decoded_result, &detail);
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.database_attach" &&
+        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_affected_rows == 0 &&
+        !result.server_affected_rows_present && outer_root_shape &&
+        result_shape && decoded_descriptor.mode == 1 &&
+        decoded_descriptor.alias_scope == 1 && decoded_result.status == 1 &&
+        decoded_result.lifecycle_state == 1 &&
+        decoded_result.publication_barrier == 1 &&
+        decoded_result.attach_uuid == decoded_descriptor.attach_uuid &&
+        decoded_result.database_uuid == decoded_descriptor.database_uuid &&
+        decoded_result.alias_uuid == decoded_descriptor.alias_uuid &&
+        decoded_result.database_generation != 0 &&
+        decoded_result.catalog_generation ==
+            decoded_descriptor.catalog_generation &&
+        nonzero(decoded_descriptor.statement_receipt_uuid) &&
+        nonzero(decoded_descriptor.storage_uuid) &&
+        nonzero(decoded_descriptor.catalog_snapshot_uuid) &&
+        nonzero(decoded_descriptor.security_context_uuid) &&
+        nonzero(decoded_descriptor.policy_snapshot_uuid) &&
+        nonzero(decoded_descriptor.transaction_uuid) &&
+        nonzero(decoded_descriptor.descriptor_sha256) &&
+        nonzero(decoded_descriptor.storage_alias_binding_sha256) &&
+        nonzero(decoded_result.catalog_epoch_uuid) &&
+        nonzero(decoded_result.attachment_evidence_uuid) &&
+        nonzero(decoded_result.result_material_sha256) &&
+        nonzero(decoded_result.executor_evidence_sha256) &&
+        decoded_descriptor.executor_availability_generation != 0 &&
+        result.sblr_payload.find("DATABASE ATTACH REGISTERED") ==
+            std::string::npos &&
+        result.sblr_payload.find("workplan_attachment") ==
+            std::string::npos;
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003633 DATABASE_ATTACH exact_result_failed"
+                << " detail=" << detail
+                << " outer_ok=" << outer_root_shape
+                << " result_ok=" << result_shape
+                << " result_bytes=" << result.server_result_payload.size()
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003633 DATABASE_ATTACH accepted "
+                 "canonical_sblr=true registered_storage=true "
+                 "session_alias=true publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "query-execute") {
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "query.execute" &&
+        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        result.server_result_payload.empty() &&
+        result.sblr_payload.find("SELECT key_a") == std::string::npos;
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-003601 QUERY_EXECUTE exact_result_failed"
+                << " accepted=" << result.accepted
+                << " operation_id=" << result.server_operation_id
+                << " cursor_uuid=" << result.server_cursor_uuid
+                << " row_count=" << result.server_row_count
+                << " terminal_payload_bytes="
+                << result.server_result_payload.size() << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    const auto fetched =
+        session.FetchCursorOnRoute(result.server_cursor_uuid, 1);
+    const bool exact_row =
+        fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
+        fetched.row_packet.find("operation_id=query.execute") !=
+            std::string::npos &&
+        fetched.row_packet.find("row[0]=key_a=1") != std::string::npos &&
+        fetched.row_packet.find("row_meta[0]=key_a:int64:not_null") !=
+            std::string::npos;
+    if (!exact_row) {
+      std::cerr << "CSC-TEST-003601 QUERY_EXECUTE row_result_failed"
+                << " accepted=" << fetched.accepted
+                << " row_count=" << fetched.row_count
+                << " end_of_cursor=" << fetched.end_of_cursor
+                << " row_packet=" << fetched.row_packet << '\n';
+      for (const auto& diagnostic : fetched.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003601 QUERY_EXECUTE accepted "
+                 "canonical_sblr=true result_handle=validated "
+                 "typed_row=key_a:1\n";
     return 0;
   }
   const char* static_refusal_test_id =

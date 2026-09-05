@@ -1179,6 +1179,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "PREPARE") canonical_name = "prepare_stmt";
   else if (keyword == "EXECUTE") canonical_name = "execute_stmt";
   else if (keyword == "DEALLOCATE") canonical_name = "deallocate_stmt";
+  else if (keyword == "CANCEL" && second == "STATEMENT") canonical_name = "cancel_statement";
   else if (keyword == "OPEN" && second != "DATABASE") canonical_name = "psql_open_cursor_stmt";
   else if (keyword == "FETCH") canonical_name = "psql_fetch_stmt";
   else if (keyword == "CLOSE") canonical_name = "psql_close_cursor_stmt";
@@ -3215,6 +3216,12 @@ AstDocument BuildAst(const CstDocument& cst) {
         IsCreateStatisticsStatement(cst) ||
         IsCreateSynonymStatement(cst);
     ast.produces_sblr = true;
+  } else if (keyword == "RESOLVE" && second == "NAME") {
+    ast.family = StatementFamily::kCatalog;
+    ast.registry_family = "sbsql.catalog.introspect.v3";
+    ast.operation_family = "sblr.catalog.introspect.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
   } else if (keyword == "SHOW") {
     ast.family = StatementFamily::kShow;
     if (IsShowCreateStatement(cst)) {
@@ -3260,11 +3267,15 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.operation_family = "sblr.transaction.control.v3";
     ast.produces_sblr = true;
   } else if (keyword == "PREPARE" || keyword == "DEALLOCATE" ||
+             (keyword == "BIND" && second == "PARAMETERS") ||
+             (keyword == "CANCEL" && second == "STATEMENT") ||
              (keyword == "OPEN" && second != "DATABASE") || keyword == "FETCH" || keyword == "CLOSE" ||
              (keyword == "DECLARE" && third == "CURSOR")) {
     ast.family = StatementFamily::kExecute;
     ast.registry_family = "sbsql.execute.v3";
-    ast.operation_family = "sblr.general.operation.v3";
+    ast.operation_family = keyword == "BIND"
+                               ? "sblr.statement.management.v3"
+                               : "sblr.general.operation.v3";
     ast.produces_sblr = true;
   } else if (keyword == "EXECUTE") {
     ast.family = StatementFamily::kExecute;

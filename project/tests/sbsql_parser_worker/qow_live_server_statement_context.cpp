@@ -4343,13 +4343,23 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
               v11_projection.response_schema_id ==
                   sbps::kSchemaAcquireStatementContextResultV11 &&
               v11_layout.has_value() && v11_layout->profile_count == 646 &&
-              v11_projection.payload.size() == v11_trailer + 776 &&
-              PayloadU16(v11_projection.payload, v11_extension) == 71 &&
+              v11_projection.payload.size() == v11_trailer + 808 &&
+              PayloadU16(v11_projection.payload, v11_extension) == 73 &&
               ipc::DecodeNativeStatementContextResultPayloadV11(
                   v11_projection.payload, &v11_context) &&
               v11_context
                       .preliminary_maximum_mga_relation_decoded_bytes_per_pass ==
-                  kDefaultMgaRelationDecodedBytesPerPass,
+                  kDefaultMgaRelationDecodedBytesPerPass &&
+              v11_context
+                      .preliminary_stmt_prepare_executor_availability_generation !=
+                  0 &&
+              v11_context
+                      .preliminary_stmt_execute_direct_executor_availability_generation !=
+                  0 &&
+              v11_context
+                      .preliminary_stmt_free_executor_availability_generation !=
+                  0 &&
+              v11_context.preliminary_statement_catalog_generation != 0,
           "native V11 MGA scan-byte projection drifted");
   {
     auto mutation = v11_projection.payload;

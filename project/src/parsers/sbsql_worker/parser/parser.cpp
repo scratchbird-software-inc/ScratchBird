@@ -292,8 +292,8 @@ class NativeRelationalParser final {
         LooksLikeBoundedCatalogRelationSelect()) {
       return ParseCatalogRelationSelect();
     }
-    if (LooksLikeBoundedObjectFreeConstantSelect()) {
-      return ParseObjectFreeConstantSelect();
+    if (LooksLikeBoundedObjectFreeScalarSelect()) {
+      return ParseObjectFreeScalarSelect();
     }
     if (tokens_.empty() || !IsWord(*tokens_.front(), "VALUES")) {
       return std::move(document_);
@@ -367,14 +367,15 @@ class NativeRelationalParser final {
     return std::move(document_);
   }
 
-  bool LooksLikeBoundedObjectFreeConstantSelect() const {
+  bool LooksLikeBoundedObjectFreeScalarSelect() const {
     if (tokens_.size() != 2 && tokens_.size() != 3) return false;
     return IsWord(*tokens_[0], "SELECT") &&
-           tokens_[1]->kind == TokenKind::kNumericLiteral &&
+           (tokens_[1]->kind == TokenKind::kNumericLiteral ||
+            tokens_[1]->kind == TokenKind::kParameter) &&
            (tokens_.size() == 2 || tokens_[2]->text == ";");
   }
 
-  NativeRelationalAstDocument ParseObjectFreeConstantSelect() {
+  NativeRelationalAstDocument ParseObjectFreeScalarSelect() {
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -386,25 +387,29 @@ class NativeRelationalParser final {
     }
 
     const Token& select_token = Consume();
-    const Token& literal_token = Consume();
-    NativeExpressionAstNode literal;
-    literal.expression_id = 1;
-    literal.expression_kind = NativeExpressionAstKind::kLiteral;
-    literal.literal_kind = NativeLiteralAstKind::kNumeric;
-    literal.spelling = literal_token.text;
-    literal.range = TokenSourceRange(literal_token);
-    document_.expressions.push_back(std::move(literal));
+    const Token& scalar_token = Consume();
+    NativeExpressionAstNode scalar;
+    scalar.expression_id = 1;
+    scalar.expression_kind = scalar_token.kind == TokenKind::kParameter
+                                 ? NativeExpressionAstKind::kParameter
+                                 : NativeExpressionAstKind::kLiteral;
+    if (scalar.expression_kind == NativeExpressionAstKind::kLiteral) {
+      scalar.literal_kind = NativeLiteralAstKind::kNumeric;
+      scalar.spelling = scalar_token.text;
+    }
+    scalar.range = TokenSourceRange(scalar_token);
+    document_.expressions.push_back(std::move(scalar));
 
     NativeValuesRowAstNode row;
     row.row_id = 1;
     row.expression_ids = {1};
-    row.range = TokenSourceRange(literal_token);
+    row.range = TokenSourceRange(scalar_token);
     document_.values_rows.push_back(std::move(row));
 
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
-      Refuse("object_free_constant_select_trailing_input",
-             "bounded object-free constant SELECT has unexpected trailing input");
+      Refuse("object_free_scalar_select_trailing_input",
+             "bounded object-free scalar SELECT has unexpected trailing input");
       return FinishRefusal();
     }
 
@@ -413,7 +418,7 @@ class NativeRelationalParser final {
     relation.relation_kind = NativeRelationAstKind::kValues;
     relation.values_row_ids = {1};
     relation.output_expression_ids = {1};
-    relation.range = Span(select_token, literal_token);
+    relation.range = Span(select_token, scalar_token);
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
     document_.status = NativeRelationalParseStatus::kAccepted;

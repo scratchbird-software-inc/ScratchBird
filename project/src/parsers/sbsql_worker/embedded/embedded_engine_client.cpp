@@ -9,6 +9,21 @@
 // SEARCH_KEY: SBSQL_EMBEDDED_ENGINE_CLIENT
 
 #include "embedded/embedded_engine_client.hpp"
+#include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
+#include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
+#include "engine/sblr/sblr_stmt_execute_direct_runtime.hpp"
+#include "engine/sblr/sblr_stmt_execute_runtime.hpp"
+#include "engine/sblr/sblr_stmt_free_runtime.hpp"
+#include "engine/sblr/sblr_stmt_cancel_runtime.hpp"
+#include "engine/sblr/sblr_parameter_bind_runtime.hpp"
+#include "engine/sblr/sblr_result_page_runtime.hpp"
+#include "engine/sblr/sblr_query_explain_runtime.hpp"
+#include "engine/sblr/sblr_name_resolve_runtime.hpp"
+#include "engine/sblr/sblr_parse_text_runtime.hpp"
+#include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
+#include "engine/sblr/sblr_database_attach_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1320,6 +1335,1388 @@ EmbeddedEngineClient::FinalizeParameterBinding(
   (void)canonical_sbpf;
   AddDiagnostic(&result.messages,
                 "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtPrepare(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::PrepareBindRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodePrepareBindRequestV1(canonical_request.data(),
+                                     canonical_request.size(), &request,
+                                     &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded statement PREPARE bind request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kStmtPrepareBindRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtPrepareBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindStmtPrepare(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::PrepareBindAckV1 ack;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kStmtPrepareBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtPrepareBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::DecodePrepareBindAckV1(
+          operation.payload.data(), operation.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded statement PREPARE bind result is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateStmtPrepare(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrStmtPrepareRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrStmtPrepareRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded statement PREPARE request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kStmtPrepareRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtPrepareRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateStmtPrepare(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrStmtPrepareDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kStmtPrepareResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtPrepareResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtPrepareDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded statement PREPARE result is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtExecuteDirect(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::
+      ExecuteDirectBindRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeExecuteDirectBindRequestV1(
+              canonical_request.data(), canonical_request.size(), &request,
+              &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded statement EXECUTE DIRECT bind request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::
+          kStmtExecuteDirectBindRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtExecuteDirectBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindStmtExecuteDirect(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::wire::sbps_statement_management::ExecuteDirectBindAckV1 ack;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kStmtExecuteDirectBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtExecuteDirectBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeExecuteDirectBindAckV1(operation.payload.data(),
+                                       operation.payload.size(), &ack,
+                                       &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.TRANSACTION.STALE",
+        "embedded statement EXECUTE DIRECT bind result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateStmtExecuteDirect(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrStmtExecuteDirectRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrStmtExecuteDirectRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded statement EXECUTE DIRECT request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kStmtExecuteDirectRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtExecuteDirectRequestV1;
+  frame.payload = canonical_request;
+  const auto operation =
+      scratchbird::server::HandleCoordinateStmtExecuteDirect(
+          &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrStmtExecuteDirectDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kStmtExecuteDirectResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtExecuteDirectResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtExecuteDirectDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.TRANSACTION.STALE",
+        "embedded statement EXECUTE DIRECT result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateStmtExecute(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrStmtExecuteRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrStmtExecuteRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded prepared statement EXECUTE request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kStmtExecuteRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtExecuteRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateStmtExecute(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrStmtExecuteDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kStmtExecuteResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtExecuteResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtExecuteDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.TRANSACTION.STALE",
+        "embedded prepared statement EXECUTE result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtFree(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::FreeBindRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::DecodeFreeBindRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded statement FREE bind request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kStmtFreeBindRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtFreeBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindStmtFree(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::wire::sbps_statement_management::FreeBindAckV1 ack;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kStmtFreeBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtFreeBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::DecodeFreeBindAckV1(
+          operation.payload.data(), operation.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded statement FREE bind result is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateStmtFree(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrStmtFreeRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrStmtFreeRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded statement FREE request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kStmtFreeRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtFreeRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateStmtFree(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrStmtFreeDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kStmtFreeResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtFreeResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtFreeDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded statement FREE result is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtCancel(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::CancelBindRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::DecodeCancelBindRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded statement CANCEL bind request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kStmtCancelBindRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtCancelBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindStmtCancel(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::wire::sbps_statement_management::CancelBindAckV1 ack;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kStmtCancelBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtCancelBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::DecodeCancelBindAckV1(
+          operation.payload.data(), operation.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence || ack.reason != request.reason ||
+      ack.mode != request.mode ||
+      ack.deadline_monotonic_ns != request.deadline_monotonic_ns ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.TRANSACTION.STALE",
+        "embedded statement CANCEL bind result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateStmtCancel(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrStmtCancelRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrStmtCancelRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded statement CANCEL request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kStmtCancelRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaStmtCancelRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateStmtCancel(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrStmtCancelDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kStmtCancelResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaStmtCancelResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrStmtCancelDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail)) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.TRANSACTION.STALE",
+        "embedded statement CANCEL result is not exactly correlated", detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindParameterBind(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::ParameterBindRequestV1
+      request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeParameterBindRequestV1(canonical_request.data(),
+                                       canonical_request.size(), &request,
+                                       &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded parameter bind demand is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kParameterBindPrivateRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaParameterBindPrivateRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindParameterBind(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrParameterBindDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kParameterBindPrivateResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaParameterBindPrivateResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrParameterBindDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid !=
+          request.authenticated_receipt_uuid ||
+      descriptor.prepared_statement_uuid !=
+          request.prepared_statement_uuid ||
+      descriptor.parameter_set_uuid != request.parameter_set_uuid ||
+      descriptor.canonical_value_vector != request.canonical_value_vector) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.TRANSACTION.STALE",
+        "embedded parameter bind descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateParameterBind(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrParameterBindRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrParameterBindRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded parameter bind request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kParameterBindRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaParameterBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateParameterBind(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrParameterBindDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kParameterBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaParameterBindResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrParameterBindDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded parameter bind result is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateResultPage(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrResultPageRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrResultPageRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded result page request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kResultPageRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaResultPageRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateResultPage(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrResultPageDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kResultPageResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaResultPageResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrResultPageDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded result page descriptor is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindQueryExplain(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::QueryExplainBindRequestV1
+      request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeQueryExplainBindRequestV1(
+              canonical_request.data(), canonical_request.size(), &request,
+              &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded query EXPLAIN bind request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kQueryExplainBindRequest),
+                         session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaQueryExplainBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindQueryExplain(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::wire::sbps_statement_management::QueryExplainBindAckV1 ack;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kQueryExplainBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaQueryExplainBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeQueryExplainBindAckV1(operation.payload.data(),
+                                      operation.payload.size(), &ack,
+                                      &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.canonical_query_sblr_sha256 !=
+          request.canonical_container_sha256 ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded query EXPLAIN bind result is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateQueryExplain(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrQueryExplainRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrQueryExplainRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded query EXPLAIN request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kQueryExplainRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaQueryExplainRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateQueryExplain(
+      &impl_->registry, impl_->engine_state, frame);
+  scratchbird::engine::sblr::SblrQueryExplainDescriptorV1 descriptor;
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kQueryExplainResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaQueryExplainResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrQueryExplainDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.resource_budget_generation != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded query EXPLAIN descriptor is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindNameResolve(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::NameResolveBindRequestV1
+      request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeNameResolveBindRequestV1(canonical_request.data(),
+                                         canonical_request.size(), &request,
+                                         &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded name-resolution bind request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kNameResolveBindRequest),
+                         session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaNameResolveBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindNameResolve(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::NameResolveBindAckV1 ack;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kNameResolveBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaNameResolveBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeNameResolveBindAckV1(operation.payload.data(),
+                                     operation.payload.size(), &ack,
+                                     &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.TRANSACTION.STALE",
+        "embedded name-resolution bind result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateNameResolve(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrNameResolveRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrNameResolveRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded name-resolution request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kNameResolveRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaNameResolveRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateNameResolve(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrNameResolveDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kNameResolveResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaNameResolveResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrNameResolveDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
+                  "embedded name-resolution descriptor is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindParseText(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::ParseTextBindRequestV1
+      request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeParseTextBindRequestV1(canonical_request.data(),
+                                       canonical_request.size(), &request,
+                                       &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded PARSE TEXT bind request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kParseTextBindRequest),
+                         session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaParseTextBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindParseText(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::ParseTextBindAckV1 ack;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kParseTextBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaParseTextBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeParseTextBindAckV1(operation.payload.data(),
+                                   operation.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.canonical_input_sha256 != request.canonical_input_sha256 ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(&result.messages, "MGA.AUTHORITY_MISMATCH",
+                  "embedded PARSE TEXT bind result is not exactly correlated",
+                  detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateParseText(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrParseTextRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrParseTextRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded PARSE TEXT request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kParseTextRequest), session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaParseTextRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateParseText(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrParseTextDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kParseTextResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaParseTextResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrParseTextDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded PARSE TEXT descriptor is not exactly correlated", detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindCatalogEpochCheck(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::
+      CatalogEpochCheckBindRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeCatalogEpochCheckBindRequestV1(
+              canonical_request.data(), canonical_request.size(), &request,
+              &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded CATALOG EPOCH CHECK bind request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kCatalogEpochCheckBindRequest),
+                         session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::
+      kSchemaCatalogEpochCheckBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindCatalogEpochCheck(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::
+      CatalogEpochCheckBindAckV1 ack;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCatalogEpochCheckBindResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCatalogEpochCheckBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeCatalogEpochCheckBindAckV1(
+              operation.payload.data(), operation.payload.size(), &ack,
+              &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded CATALOG EPOCH CHECK bind result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateCatalogEpochCheck(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrCatalogEpochCheckRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrCatalogEpochCheckRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded CATALOG EPOCH CHECK request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kCatalogEpochCheckRequest),
+                         session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::
+      kSchemaCatalogEpochCheckRequestV1;
+  frame.payload = canonical_request;
+  const auto operation =
+      scratchbird::server::HandleCoordinateCatalogEpochCheck(
+          &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrCatalogEpochCheckDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCatalogEpochCheckResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCatalogEpochCheckResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrCatalogEpochCheckDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.object_scoped != request.object_scoped ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.requested_catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded CATALOG EPOCH CHECK descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::BindDatabaseAttach(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::wire::sbps_statement_management::
+      DatabaseAttachBindRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeDatabaseAttachBindRequestV1(
+              canonical_request.data(), canonical_request.size(), &request,
+              &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded DATABASE ATTACH bind request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kDatabaseAttachBindRequest),
+                         session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::
+      kSchemaDatabaseAttachBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleBindDatabaseAttach(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::wire::sbps_statement_management::DatabaseAttachBindAckV1 ack;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kDatabaseAttachBindResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaDatabaseAttachBindResultV1 ||
+      !scratchbird::wire::sbps_statement_management::
+          DecodeDatabaseAttachBindAckV1(
+              operation.payload.data(), operation.payload.size(), &ack,
+              &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.occurrence != request.occurrence ||
+      ack.request_evidence_sha256 != request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded DATABASE ATTACH bind result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDatabaseAttach(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrDatabaseAttachRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrDatabaseAttachRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded DATABASE ATTACH request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kDatabaseAttachRequest),
+                         session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaDatabaseAttachRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateDatabaseAttach(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrDatabaseAttachDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::kDatabaseAttachResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaDatabaseAttachResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrDatabaseAttachDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded DATABASE ATTACH descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateOptimizerStatsRead(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrOptimizerStatsReadRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrOptimizerStatsReadRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded optimizer statistics request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kOptimizerStatsReadRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaOptimizerStatsReadRequestV1;
+  frame.payload = canonical_request;
+  const auto operation =
+      scratchbird::server::HandleCoordinateOptimizerStatsRead(
+          &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrOptimizerStatsReadDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kOptimizerStatsReadResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaOptimizerStatsReadResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrOptimizerStatsReadDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded optimizer statistics descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateOptimizerStatsDrop(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrOptimizerStatsDropRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrOptimizerStatsDropRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded optimizer statistics drop request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kOptimizerStatsDropRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaOptimizerStatsDropRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::
+      HandleCoordinateOptimizerStatsDrop(&impl_->registry,
+                                         impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrOptimizerStatsDropDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kOptimizerStatsDropResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaOptimizerStatsDropResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrOptimizerStatsDropDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail) ||
+      descriptor.statement_receipt_uuid != request.statement_receipt_uuid ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded optimizer statistics drop descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
                 "embedded engine support is not linked into this SBsql parser build");
 #endif
   return result;

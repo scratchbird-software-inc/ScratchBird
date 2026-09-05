@@ -239,6 +239,504 @@ struct StatementBulkImportAuthorityV1 {
       authorization_observation;
 };
 
+// Syntax-only input for PREPARE. The nested body is already a canonical
+// parser submission produced under this same receipt; it is re-decoded and
+// rebound by the engine before any prepared identity is issued.
+struct StatementPrepareBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string statement_name;
+  bool quoted = false;
+  std::vector<std::uint8_t> declared_parameter_type_demands;
+  std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementPrepareBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string statement_name_uuid;
+  std::array<std::uint8_t, 32> descriptor_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementPrepareAuthorityV1 {
+  StatementPrepareBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::string canonical_statement_name;
+  bool quoted = false;
+  std::string body_operation_id;
+  std::string body_operation_family;
+  std::string body_result_shape;
+  bool source_free_parameterless_query_template = false;
+  bool source_free_parameterized_query_template = false;
+  std::string parameter_set_uuid;
+  std::uint64_t parameter_set_generation = 0;
+  std::uint64_t parameter_prepared_generation = 0;
+  std::string parameter_set_snapshot_uuid;
+  std::uint64_t parameter_set_snapshot_generation = 0;
+  std::string ordered_slot_table_sha256;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+};
+
+struct StatementExecuteDirectBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> canonical_parameter_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementExecuteDirectBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string result_descriptor_uuid;
+  std::array<std::uint8_t, 32> descriptor_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementExecuteDirectAuthorityV1 {
+  StatementExecuteDirectBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::string body_operation_id;
+  std::string body_operation_family;
+  std::string body_result_shape;
+  std::string result_handle_uuid;
+  std::string operation_evidence_uuid;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> canonical_parameter_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  scratchbird::engine::internal_api::EngineApiResult terminal_api_result;
+  bool terminal_result_published = false;
+};
+
+struct StatementQueryExplainBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  bool verbose = false;
+  std::uint8_t format = 1;
+  std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementQueryExplainBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string explain_uuid;
+  std::array<std::uint8_t, 32> canonical_query_sblr_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementQueryExplainAuthorityV1 {
+  StatementQueryExplainBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  std::vector<std::uint8_t> canonical_plan_material;
+  std::string body_operation_id;
+  std::string body_operation_family;
+  std::string body_result_shape;
+  bool verbose = false;
+  std::uint8_t format = 1;
+  bool terminal_result_published = false;
+};
+
+struct StatementNameResolveNameAtomV1 {
+  std::string raw_text;
+  bool quoted = false;
+};
+
+struct StatementNameResolveBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::uint8_t resolution_mode = 0;
+  std::uint8_t object_class = 0;
+  std::vector<StatementNameResolveNameAtomV1> target_name_atoms;
+  std::vector<StatementNameResolveNameAtomV1> namespace_name_atoms;
+  std::array<std::uint8_t, 32> target_name_atoms_sha256{};
+  std::array<std::uint8_t, 32> namespace_name_atoms_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementNameResolveBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string resolution_uuid;
+  std::array<std::uint8_t, 32> descriptor_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementNameResolveAuthorityV1 {
+  StatementNameResolveBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::vector<StatementNameResolveNameAtomV1> target_name_atoms;
+  std::vector<StatementNameResolveNameAtomV1> namespace_name_atoms;
+  std::uint8_t resolution_mode = 0;
+  std::uint8_t object_class = 0;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::string redaction_profile_uuid;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
+// Syntax-only private bind for PARSE TEXT. The raw UTF-8 input never enters
+// the executable descriptor: it is retained under the opaque receipt only so
+// exact replay/conflict checks can be performed against the authenticated
+// request. The nested SBLR carriers are parser-produced and engine-validated
+// under this same receipt before SPTD is issued.
+struct StatementParseTextBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string language_profile_id;
+  std::string canonical_input_utf8;
+  std::uint32_t requested_maximum_bytes = 0;
+  std::uint16_t requested_maximum_depth = 0;
+  bool allow_donor_extensions = false;
+  std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::array<std::uint8_t, 32> canonical_input_sha256{};
+  std::array<std::uint8_t, 32> canonical_container_sha256{};
+  std::array<std::uint8_t, 32> canonical_execution_envelope_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementParseTextBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string parse_uuid;
+  std::array<std::uint8_t, 32> descriptor_sha256{};
+  std::array<std::uint8_t, 32> canonical_input_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementParseTextAuthorityV1 {
+  StatementParseTextBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::string language_profile_id;
+  std::string canonical_input_utf8;
+  std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
+struct StatementCatalogEpochCheckNameAtomV1 {
+  std::string raw_text;
+  bool quoted = false;
+};
+
+// Syntax-only private bind for CATALOG EPOCH CHECK. The parser may select the
+// database scope with no atoms or present one qualified identifier. It never
+// supplies an epoch, object UUID, schema-tree identity, or visibility result.
+struct StatementCatalogEpochCheckBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  bool object_scoped = false;
+  std::vector<StatementCatalogEpochCheckNameAtomV1> target_name_atoms;
+  std::array<std::uint8_t, 32> target_name_atoms_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementCatalogEpochCheckBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string check_uuid;
+  std::string object_uuid;
+  std::uint64_t object_generation = 0;
+  std::string schema_tree_uuid;
+  std::uint64_t schema_tree_generation = 0;
+  std::array<std::uint8_t, 32> visibility_scope_sha256{};
+  std::array<std::uint8_t, 32> descriptor_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementCatalogEpochCheckAuthorityV1 {
+  StatementCatalogEpochCheckBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::vector<StatementCatalogEpochCheckNameAtomV1> target_name_atoms;
+  std::string object_uuid;
+  std::uint64_t object_generation = 0;
+  std::string schema_tree_uuid;
+  std::uint64_t schema_tree_generation = 0;
+  std::string redaction_profile_uuid;
+  std::uint64_t redaction_generation = 0;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
+struct StatementDatabaseAttachNameAtomV1 {
+  std::string raw_text;
+  bool quoted = false;
+};
+
+// Syntax-only private bind for DATABASE ATTACH REGISTERED. The parser may
+// present only the registered-storage spelling, alias spelling, access mode,
+// and session alias scope. Every storage, database, catalog, transaction, and
+// attachment identity is engine-issued under the same live receipt.
+struct StatementDatabaseAttachBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::uint8_t mode = 0;
+  std::uint8_t alias_scope = 0;
+  StatementDatabaseAttachNameAtomV1 storage_reference;
+  StatementDatabaseAttachNameAtomV1 database_alias;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementDatabaseAttachBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string attach_uuid;
+  std::string storage_uuid;
+  std::string alias_uuid;
+  std::string database_uuid;
+  std::string catalog_snapshot_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::array<std::uint8_t, 32> descriptor_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementDatabaseAttachAuthorityV1 {
+  StatementDatabaseAttachBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  StatementDatabaseAttachNameAtomV1 storage_reference;
+  StatementDatabaseAttachNameAtomV1 database_alias;
+  std::uint8_t mode = 0;
+  std::uint8_t alias_scope = 0;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
+// Receipt-private authority for the narrow catalog statistics reader.  The
+// public descriptor exposes only immutable statement/catalog/security/
+// resource identities and aggregate MGA counters; it is not an optimizer
+// capability or plan handle.
+struct StatementOptimizerStatsReadAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::string statistics_snapshot_uuid;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
+// Receipt-private authority for one optimizer-statistics epoch advance. The
+// exact descriptor is engine-issued after management authorization and is the
+// sole key accepted by the durable statistics journal.
+struct StatementOptimizerStatsDropAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::string effect_uuid;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
+struct StatementExecuteBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string statement_name;
+  bool quoted = false;
+  std::vector<std::uint8_t> canonical_parameter_bytes;
+  std::vector<std::uint8_t> exact_request_bytes;
+};
+
+struct StatementExecuteAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::string canonical_statement_name;
+  std::vector<std::uint8_t> exact_request_bytes;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::string body_operation_id;
+  std::string body_operation_family;
+  std::string body_result_shape;
+  bool source_free_parameterless_query_template = false;
+  bool source_free_parameterized_query_template = false;
+  std::string parameter_set_uuid;
+  std::uint64_t parameter_set_generation = 0;
+  std::string parameter_set_snapshot_uuid;
+  std::uint64_t parameter_set_snapshot_generation = 0;
+  std::string ordered_slot_table_sha256;
+  std::string parameter_binding_receipt_uuid;
+  std::string parameter_binding_execution_uuid;
+  std::string parameter_value_sha256;
+  std::vector<std::uint8_t> canonical_parameter_bytes;
+  std::string result_handle_uuid;
+  std::string operation_evidence_uuid;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  scratchbird::engine::internal_api::EngineApiResult terminal_api_result;
+  bool terminal_result_published = false;
+};
+
+struct StatementFreeBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string statement_name;
+  bool quoted = false;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementFreeBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string statement_uuid;
+  std::string statement_name_uuid;
+  std::uint64_t prepared_generation = 0;
+  std::array<std::uint8_t, 32> descriptor_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementFreeAuthorityV1 {
+  StatementFreeBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::string canonical_statement_name;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+};
+
+struct StatementCancelBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string statement_name;
+  bool quoted = false;
+  std::uint8_t reason = 0;
+  std::uint8_t mode = 0;
+  std::uint64_t deadline_monotonic_ns = 0;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementCancelBindAckV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string binding_uuid;
+  std::uint64_t binding_generation = 0;
+  std::string target_execution_uuid;
+  std::string target_statement_uuid;
+  std::string target_statement_receipt_uuid;
+  std::string cancel_operation_uuid;
+  std::string target_transaction_uuid;
+  std::uint64_t target_execution_generation = 0;
+  std::uint8_t reason = 0;
+  std::uint8_t mode = 0;
+  std::uint64_t deadline_monotonic_ns = 0;
+  std::uint64_t executor_availability_generation = 0;
+  std::array<std::uint8_t, 32> descriptor_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_ack_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+struct StatementCancelAuthorityV1 {
+  StatementCancelBindAckV1 acknowledgement;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::string canonical_statement_name;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
+struct StatementParameterBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::string statement_name;
+  bool quoted = false;
+  std::string prepared_statement_uuid;
+  std::uint64_t prepared_generation = 0;
+  std::string parameter_set_uuid;
+  std::uint64_t parameter_set_generation = 0;
+  std::array<std::uint8_t, 32> ordered_slot_table_sha256{};
+  std::string batch_uuid;
+  std::uint64_t batch_generation = 0;
+  std::string dynamic_package_uuid;
+  std::uint64_t dynamic_generation = 0;
+  std::uint32_t value_count = 0;
+  std::vector<std::uint8_t> canonical_value_vector;
+  std::array<std::uint8_t, 32> value_vector_sha256{};
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementParameterBindAuthorityV1 {
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
 // Exact engine-issued view returned at acquisition. Later Packet 7 stages may
 // project the bounded parser fields from this value, but the opaque receipt
 // remains the authority presented back to the engine.
@@ -323,6 +821,47 @@ struct StatementContextReceiptView {
   std::uint64_t psql_autonomous_frame_executor_availability_generation = 0;
   std::uint64_t transaction_reservation_release_executor_availability_generation = 0;
   std::uint64_t temporary_instance_cleanup_executor_availability_generation = 0;
+  std::uint64_t stmt_prepare_executor_availability_generation = 0;
+  std::uint64_t stmt_execute_executor_availability_generation = 0;
+  std::uint64_t stmt_execute_direct_executor_availability_generation = 0;
+  std::uint64_t stmt_free_executor_availability_generation = 0;
+  std::uint64_t stmt_cancel_executor_availability_generation = 0;
+  std::uint64_t parameter_bind_executor_availability_generation = 0;
+  std::uint64_t result_page_executor_availability_generation = 0;
+  std::string result_page_redaction_profile_uuid;
+  std::uint64_t result_page_redaction_generation = 0;
+  std::string result_page_policy_snapshot_uuid;
+  std::uint64_t result_page_policy_generation = 0;
+  std::string result_page_resource_budget_uuid;
+  std::uint64_t result_page_resource_budget_generation = 0;
+  std::uint64_t query_explain_executor_availability_generation = 0;
+  std::string query_explain_redaction_profile_uuid;
+  std::uint64_t query_explain_redaction_generation = 0;
+  std::string query_explain_policy_snapshot_uuid;
+  std::uint64_t query_explain_policy_generation = 0;
+  std::string query_explain_plan_policy_uuid;
+  std::string query_explain_resource_budget_uuid;
+  std::uint64_t query_explain_resource_budget_generation = 0;
+  // Engine-issued identity for the exact language/rendering profile selected
+  // for this statement.  The human-readable identifier profile name in
+  // EngineRequestContext is not a UUID and must never be copied into SBXD.
+  std::string query_explain_language_profile_uuid;
+  // PARSE TEXT has a distinct engine-issued language-profile identity. Its
+  // generation is the exact session language-resource epoch captured by this
+  // receipt and may not be substituted by the parser profile spelling.
+  std::string parse_text_language_profile_uuid;
+  std::uint64_t parse_text_language_profile_generation = 0;
+  std::uint64_t parse_text_executor_availability_generation = 0;
+  std::uint64_t catalog_epoch_check_executor_availability_generation = 0;
+  std::uint64_t database_attach_executor_availability_generation = 0;
+  std::string catalog_epoch_check_redaction_profile_uuid;
+  std::uint64_t catalog_epoch_check_redaction_generation = 0;
+  std::string catalog_epoch_check_policy_snapshot_uuid;
+  std::uint64_t catalog_epoch_check_policy_generation = 0;
+  std::uint64_t catalog_introspect_executor_availability_generation = 0;
+  std::uint64_t name_resolve_executor_availability_generation = 0;
+  std::uint64_t optimizer_stats_read_executor_availability_generation = 0;
+  std::uint64_t optimizer_stats_drop_executor_availability_generation = 0;
   std::uint64_t cursor_open_executor_availability_generation = 0;
   std::uint64_t cursor_fetch_executor_availability_generation = 0;
   std::uint64_t cursor_close_executor_availability_generation = 0;
@@ -550,6 +1089,15 @@ sb_engine_status_t ReadStatementQueryExecuteResultHandle(
     sb_engine_result_t result,
     StatementQueryExecuteResultHandleView* out_handle);
 
+// Copies the canonical, already-redacted row bytes produced by one exact
+// RESULT_PAGE dispatch. The bytes remain engine-owned state on the returned
+// operation result; this bridge never exposes the source cursor handle.
+sb_engine_status_t ReadStatementResultPageMaterial(
+    sb_engine_result_t result, std::vector<std::uint8_t>* out_material);
+
+sb_engine_status_t ReadStatementQueryExplainMaterial(
+    sb_engine_result_t result, std::vector<std::uint8_t>* out_material);
+
 // Private immutable dispatch receipt. The server supplies bytes that already
 // passed canonical admission plus the admission digests; the engine re-decodes
 // and re-hashes all three layers and binds them to the still-live receipt.
@@ -583,6 +1131,9 @@ struct StatementContextDispatchRequest {
   std::vector<std::uint8_t> parameter_execution_binding;
   std::vector<std::uint8_t> parameter_value_set;
   std::vector<std::uint8_t> variable_execution_binding;
+  // Retained query result selected by the server from the cursor that owns
+  // this exact receipt. It is never serialized or supplied by the parser.
+  sb_engine_result_t result_page_source_result = nullptr;
   // Database-owned durable executor state for the exact opcode-775 route.
   // The server may project this private pointer only after selecting the
   // hosted database for the authenticated receipt. It is never serialized,
@@ -652,6 +1203,172 @@ sb_engine_status_t CopyStatementBulkImportAuthorityV1(
     std::uint64_t structural_occurrence,
     std::uint32_t import_occurrence,
     StatementBulkImportAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Binds and copies the private PREPARE authority selected by authenticated
+// SBsql syntax. These functions never expose the nested SQL text or permit
+// parser-created statement/name identities.
+sb_engine_status_t BindStatementPrepareAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementPrepareBindRequestV1* request,
+    StatementPrepareBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementPrepareAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    std::uint64_t occurrence,
+    StatementPrepareAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Binds a freshly compiled canonical statement body to EXECUTE DIRECT under
+// the same live receipt. Exact request replay returns the same descriptor;
+// changed bytes at the same occurrence are stale and never execute.
+sb_engine_status_t BindStatementExecuteDirectAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementExecuteDirectBindRequestV1* request,
+    StatementExecuteDirectBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementExecuteDirectAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    std::uint64_t occurrence,
+    StatementExecuteDirectAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Attaches one compile-only canonical query body to the live receipt for
+// QUERY_EXPLAIN. The query is validated against the receipt before any public
+// SBXD is issued. Exact replay returns the original engine identities.
+sb_engine_status_t BindStatementQueryExplainAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementQueryExplainBindRequestV1* request,
+    StatementQueryExplainBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementQueryExplainAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementQueryExplainAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Binds presented RESOLVE NAME atoms to the engine-owned catalog authority
+// held by the same live statement receipt. The parser supplies syntax only;
+// object/namespace UUIDs, generations, redaction, and result identity are
+// never accepted from the caller.
+sb_engine_status_t BindStatementNameResolveAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementNameResolveBindRequestV1* request,
+    StatementNameResolveBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementNameResolveAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementNameResolveAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Binds one PARSE TEXT input and its nested canonical parser carriers to the
+// exact live receipt. The parser supplies text/profile/options only; parse,
+// binding, descriptor, language-profile, and evidence identities are issued
+// by the engine. Exact request replay returns byte-identical authority.
+sb_engine_status_t BindStatementParseTextAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementParseTextBindRequestV1* request,
+    StatementParseTextBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementParseTextAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementParseTextAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+sb_engine_status_t BindStatementCatalogEpochCheckAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementCatalogEpochCheckBindRequestV1* request,
+    StatementCatalogEpochCheckBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementCatalogEpochCheckAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementCatalogEpochCheckAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+sb_engine_status_t BindStatementDatabaseAttachAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementDatabaseAttachBindRequestV1* request,
+    StatementDatabaseAttachBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementDatabaseAttachAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementDatabaseAttachAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Issues the fixed catalog-scope OPTIMIZER_STATS_READ descriptor from the
+// engine-owned statement receipt.  The caller supplies only its occurrence;
+// all authority and the immutable result identity are engine produced.
+sb_engine_status_t BindStatementOptimizerStatsReadAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementOptimizerStatsReadAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementOptimizerStatsReadAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementOptimizerStatsReadAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Issues one database-wide OPTIMIZER_STATS_DROP descriptor after exact
+// OBS_MANAGEMENT_CONTROL authorization and durable statistics-epoch lookup.
+sb_engine_status_t BindStatementOptimizerStatsDropAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementOptimizerStatsDropAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementOptimizerStatsDropAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementOptimizerStatsDropAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Resolves one session-owned prepared name and freezes the exact execution
+// descriptor. The request carries syntax and parameter bytes only; prepared
+// statement identity, body, result identity, and availability remain engine
+// authority behind the live receipt.
+sb_engine_status_t BindStatementExecuteAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementExecuteBindRequestV1* request,
+    std::vector<std::uint8_t>* out_descriptor_bytes,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementExecuteAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementExecuteAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Resolves a PREPARE name within the exact authenticated engine session and
+// attaches the immutable SBLR_STMT_FREE descriptor to the new receipt.
+sb_engine_status_t BindStatementFreeAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementFreeBindRequestV1* request,
+    StatementFreeBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementFreeAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    std::uint64_t occurrence,
+    StatementFreeAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Resolves CANCEL STATEMENT syntax to the exact last engine-owned execution
+// record for that prepared name. The first bounded implementation publishes
+// an `already_terminal` result; active cooperative signalling remains a
+// distinct continuation of the same canonical carrier.
+sb_engine_status_t BindStatementCancelAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementCancelBindRequestV1* request,
+    StatementCancelBindAckV1* out_ack,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementCancelAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    std::uint64_t occurrence,
+    StatementCancelAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Binds one canonical SBPV vector to an already-issued prepared parameter set
+// and attaches the exact public SBKD descriptor to the current receipt.
+sb_engine_status_t BindStatementParameterBindAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementParameterBindRequestV1* request,
+    std::vector<std::uint8_t>* out_descriptor_bytes,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementParameterBindAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    StatementParameterBindAuthorityV1* out_authority,
     sb_engine_result_t* out_result);
 
 sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(

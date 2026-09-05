@@ -165,6 +165,13 @@ enum class SblrValueKind : std::uint16_t {
   context_unset_descriptor = 186,
   context_get_descriptor = 187,
   stmt_prepare_descriptor = 188,
+  stmt_execute_direct_descriptor = 189,
+  stmt_free_descriptor = 190,
+  stmt_execute_descriptor = 191,
+  stmt_cancel_descriptor = 192,
+  parameter_bind_descriptor = 193,
+  result_page_descriptor = 194,
+  query_explain_descriptor = 195,
   sort_descriptor = 71,
   limit_descriptor = 72,
   window_descriptor = 73,
@@ -218,6 +225,12 @@ enum class SblrValueKind : std::uint16_t {
   catalog_introspect_descriptor = 129,
   lifecycle_create_database_descriptor = 205,
   contextual_text_literal_profile_set = 206,
+  name_resolve_descriptor = 207,
+  optimizer_stats_read_descriptor = 208,
+  optimizer_stats_drop_descriptor = 209,
+  parse_text_descriptor = 210,
+  catalog_epoch_check_descriptor = 211,
+  database_attach_descriptor = 212,
 };
 
 struct SblrLifecycleCreateDatabaseDescriptorV1 {

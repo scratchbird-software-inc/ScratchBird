@@ -61,6 +61,78 @@ class EmbeddedEngineClient {
   ipc::ServerParameterBindingResult FinalizeParameterBinding(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_sbpf);
+  ipc::ServerVariableBindingResult BindStmtPrepare(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateStmtPrepare(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindStmtExecuteDirect(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateStmtExecuteDirect(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateStmtExecute(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindStmtFree(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateStmtFree(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindStmtCancel(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateStmtCancel(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindParameterBind(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateParameterBind(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateResultPage(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindQueryExplain(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateQueryExplain(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindNameResolve(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateNameResolve(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindParseText(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateParseText(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindCatalogEpochCheck(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateCatalogEpochCheck(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult BindDatabaseAttach(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateDatabaseAttach(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateOptimizerStatsRead(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateOptimizerStatsDrop(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
   ipc::ServerVariableBindingResult CoordinateBulkImportStream(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);

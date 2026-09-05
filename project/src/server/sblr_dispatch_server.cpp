@@ -36,6 +36,10 @@
 #include "../engine/sblr/sblr_transaction_begin_runtime.hpp"
 #include "../engine/sblr/sblr_transaction_commit_runtime.hpp"
 #include "sblr_bulk_import_stream_registry.hpp"
+#include "../engine/sblr/sblr_result_page_runtime.hpp"
+#include "../engine/sblr/sblr_query_explain_runtime.hpp"
+#include "../engine/sblr/sblr_parse_text_runtime.hpp"
+#include "../engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -7857,6 +7861,8 @@ struct PublicAbiDispatchResult {
   std::uint64_t affected_rows = 0;
   bool affected_rows_present = false;
   std::string payload;
+  std::vector<std::uint8_t> result_page_material;
+  std::vector<std::uint8_t> query_explain_material;
   std::string diagnostic_code;
   std::string diagnostic_detail;
   std::string audit_detail;
@@ -8397,6 +8403,7 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
     const std::vector<std::uint8_t>& parameter_execution_binding = {},
     const std::vector<std::uint8_t>& parameter_value_set = {},
     const std::vector<std::uint8_t>& variable_execution_binding = {},
+    sb_engine_result_t result_page_source_result = nullptr,
     engine_api::SblrBulkImportStreamRegistry*
         bulk_import_stream_registry = nullptr) {
   PublicAbiDispatchResult dispatch_result;
@@ -8440,6 +8447,7 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
   request.parameter_execution_binding = parameter_execution_binding;
   request.parameter_value_set = parameter_value_set;
   request.variable_execution_binding = variable_execution_binding;
+  request.result_page_source_result = result_page_source_result;
   request.bulk_import_stream_registry = bulk_import_stream_registry;
   request.package_admission_reservation.opaque_id =
       admission_token->package_reservation_handle;
@@ -8555,12 +8563,35 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
         SB_ENGINE_STATUS_OK) {
       dispatch_result.affected_rows = completion.affected_rows;
     }
-    if (!dispatch_result.ok || !retain_result_handle) {
+    // Cursor execution normally defers payload publication to FETCH.  EXECUTE
+    // DIRECT is the exception: its exact SBER is the terminal statement-
+    // management result and must accompany the cursor that addresses the
+    // nested rowset.  Retaining the engine result handle must not hide SBER.
+    const bool statement_execute_terminal_payload =
+        admission_token->opcode_stream &&
+        admission_token->stream.operations.size() == 3 &&
+        (admission_token->stream.operations[1].operation_id ==
+             "engine.op.stmt_execute" ||
+         admission_token->stream.operations[1].operation_id ==
+             "engine.op.stmt_execute_direct");
+    if (!dispatch_result.ok || !retain_result_handle ||
+        statement_execute_terminal_payload) {
       sb_engine_string_view_t payload{};
       if (sb_engine_result_payload(engine_result, &payload) ==
           SB_ENGINE_STATUS_OK) {
         dispatch_result.payload = StringViewToString(payload);
       }
+    }
+    std::vector<std::uint8_t> result_page_material;
+    if (engine_bridge::ReadStatementResultPageMaterial(
+            engine_result, &result_page_material) == SB_ENGINE_STATUS_OK) {
+      dispatch_result.result_page_material = std::move(result_page_material);
+    }
+    std::vector<std::uint8_t> query_explain_material;
+    if (engine_bridge::ReadStatementQueryExplainMaterial(
+            engine_result, &query_explain_material) == SB_ENGINE_STATUS_OK) {
+      dispatch_result.query_explain_material =
+          std::move(query_explain_material);
     }
     if (!dispatch_result.ok) {
       dispatch_result.diagnostic_code =
@@ -11896,6 +11927,172 @@ SessionOperationResult HandleExecuteSblrImpl(
       }
       mark_execute_phase("pre_public_abi_dispatch");
       std::shared_ptr<const HostedDatabaseRuntime> bulk_import_runtime;
+      ServerCursorRecord* result_page_cursor = nullptr;
+      sb_engine_result_t result_page_source_result = nullptr;
+      scratchbird::engine::sblr::SblrResultPageDescriptorV1
+          result_page_descriptor;
+      scratchbird::engine::sblr::SblrQueryExplainDescriptorV1
+          query_explain_descriptor;
+      bool query_explain_descriptor_present = false;
+      scratchbird::engine::sblr::SblrParseTextDescriptorV1
+          parse_text_descriptor;
+      bool parse_text_descriptor_present = false;
+      scratchbird::engine::sblr::SblrCatalogEpochCheckDescriptorV1
+          catalog_epoch_check_descriptor;
+      bool catalog_epoch_check_descriptor_present = false;
+      if (canonical_ingress &&
+          admission.operation_id == "engine.op.result_page") {
+        std::string detail;
+        if (!admission.admission_token ||
+            !admission.admission_token->opcode_stream ||
+            admission.admission_token->stream.operations.size() != 3) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "SBLR.OPERAND.INVALID",
+              "The result-page package shape is invalid.",
+              "result_page_package_invalid");
+        }
+        const auto& operation =
+            admission.admission_token->stream.operations[1];
+        if (operation.operands.size() != 1 ||
+            !scratchbird::engine::sblr::DecodeSblrResultPageDescriptorV1(
+                operation.operands.front().value_body.data(),
+                operation.operands.front().value_body.size(),
+                &result_page_descriptor, &detail)) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "SBLR.OPERAND.INVALID",
+              "The result-page descriptor is invalid.",
+              detail.empty() ? "result_page_descriptor_invalid" : detail);
+        }
+        const auto cursor = registry->cursors_by_uuid.find(
+            UuidBytesToText(result_page_descriptor.cursor_uuid));
+        if (cursor == registry->cursors_by_uuid.end() ||
+            cursor->second.closed || cursor->second.engine_result == nullptr ||
+            cursor->second.session_uuid != decoded->session_uuid ||
+            !live_statement_context ||
+            cursor->second.statement_context_statement_uuid !=
+                live_statement_context->view.statement_uuid ||
+            cursor->second.pending_result_page_descriptor !=
+                operation.operands.front().value_body) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "RESULT_SET.TARGET_HANDLE_INVALID",
+              "The result-page cursor is no longer live.",
+              "result_page_cursor_authority_stale");
+        }
+        result_page_cursor = &cursor->second;
+        result_page_source_result = cursor->second.engine_result;
+      }
+      if (canonical_ingress &&
+          admission.operation_id == "engine.op.query_explain") {
+        std::string detail;
+        if (!admission.admission_token ||
+            !admission.admission_token->opcode_stream ||
+            admission.admission_token->stream.operations.size() != 3) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "SBLR.OPERAND.INVALID",
+              "The query-explain package shape is invalid.",
+              "query_explain_package_invalid");
+        }
+        const auto& operation =
+            admission.admission_token->stream.operations[1];
+        if (operation.operands.size() != 1 ||
+            operation.operands.front().type !=
+                "query_explain_descriptor.v1" ||
+            operation.operands.front().name != "query" ||
+            operation.operands.front().value_kind !=
+                scratchbird::engine::sblr::SblrValueKind::
+                    query_explain_descriptor ||
+            !scratchbird::engine::sblr::DecodeSblrQueryExplainDescriptorV1(
+                operation.operands.front().value_body.data(),
+                operation.operands.front().value_body.size(),
+                &query_explain_descriptor, &detail)) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "SBLR.OPERAND.INVALID",
+              "The query-explain descriptor is invalid.",
+              detail.empty() ? "query_explain_descriptor_invalid" : detail);
+        }
+        query_explain_descriptor_present = true;
+      }
+      if (canonical_ingress &&
+          admission.operation_id == "engine.op.parse_text") {
+        std::string detail;
+        if (!admission.admission_token ||
+            !admission.admission_token->opcode_stream ||
+            admission.admission_token->stream.operations.size() != 3) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "SBLR.OPERAND_INVALID",
+              "The parse-text package shape is invalid.",
+              "parse_text_package_invalid");
+        }
+        const auto& operation =
+            admission.admission_token->stream.operations[1];
+        if (operation.operands.size() != 1 ||
+            operation.operands.front().type != "parse_text_descriptor" ||
+            operation.operands.front().name != "text" ||
+            operation.operands.front().value_kind !=
+                scratchbird::engine::sblr::SblrValueKind::
+                    parse_text_descriptor ||
+            !scratchbird::engine::sblr::DecodeSblrParseTextDescriptorV1(
+                operation.operands.front().value_body.data(),
+                operation.operands.front().value_body.size(),
+                &parse_text_descriptor, &detail)) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "SBLR.OPERAND_INVALID",
+              "The parse-text descriptor is invalid.",
+              detail.empty() ? "parse_text_descriptor_invalid" : detail);
+        }
+        parse_text_descriptor_present = true;
+      }
+      if (canonical_ingress &&
+          admission.operation_id == "engine.op.catalog_epoch_check") {
+        std::string detail;
+        if (!admission.admission_token ||
+            !admission.admission_token->opcode_stream ||
+            admission.admission_token->stream.operations.size() != 3) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "SBLR.OPERAND_INVALID",
+              "The catalog-epoch-check package shape is invalid.",
+              "catalog_epoch_check_package_invalid");
+        }
+        const auto& operation =
+            admission.admission_token->stream.operations[1];
+        if (operation.operands.size() != 1 ||
+            operation.operands.front().type !=
+                "catalog_epoch_check_descriptor" ||
+            operation.operands.front().name != "catalog_epoch" ||
+            operation.operands.front().value_kind !=
+                scratchbird::engine::sblr::SblrValueKind::
+                    catalog_epoch_check_descriptor ||
+            !scratchbird::engine::sblr::
+                DecodeSblrCatalogEpochCheckDescriptorV1(
+                    operation.operands.front().value_body.data(),
+                    operation.operands.front().value_body.size(),
+                    &catalog_epoch_check_descriptor, &detail)) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "SBLR.OPERAND_INVALID",
+              "The catalog-epoch-check descriptor is invalid.",
+              detail.empty() ? "catalog_epoch_check_descriptor_invalid"
+                             : detail);
+        }
+        catalog_epoch_check_descriptor_present = true;
+      }
       if (canonical_ingress &&
           admission.operation_id == "engine.op.bulk_import_stream") {
         bulk_import_runtime = FindHostedDatabaseRuntime(
@@ -11925,6 +12122,7 @@ SessionOperationResult HandleExecuteSblrImpl(
                                   decoded->parameter_execution_binding,
                                   decoded->parameter_value_set,
                                   decoded->variable_execution_binding,
+                                  result_page_source_result,
                                   bulk_import_runtime
                                       ? bulk_import_runtime
                                             ->bulk_import_stream_registry.get()
@@ -12044,6 +12242,186 @@ SessionOperationResult HandleExecuteSblrImpl(
             detail);
       }
       row_packet = public_abi.payload;
+      if (result_page_cursor != nullptr) {
+        scratchbird::engine::sblr::SblrResultPageResultV1 page_result;
+        std::string page_detail;
+        const auto material_digest =
+            scratchbird::core::hash::ComputeSha256Digest(
+                public_abi.result_page_material);
+        if (!scratchbird::engine::sblr::DecodeSblrResultPageResultV1(
+                reinterpret_cast<const std::uint8_t*>(row_packet.data()),
+                row_packet.size(), &page_result, &page_detail) ||
+            !material_digest.ok() ||
+            page_result.cursor_uuid != result_page_descriptor.cursor_uuid ||
+            page_result.cursor_generation !=
+                result_page_descriptor.cursor_generation ||
+            page_result.result_set_handle_uuid !=
+                result_page_descriptor.result_set_handle_uuid ||
+            page_result.result_set_handle_generation !=
+                result_page_descriptor.result_set_handle_generation ||
+            page_result.row_descriptor_uuid !=
+                result_page_descriptor.row_descriptor_uuid ||
+            page_result.row_descriptor_generation !=
+                result_page_descriptor.row_descriptor_generation ||
+            page_result.redaction_profile_uuid !=
+                result_page_descriptor.redaction_profile_uuid ||
+            page_result.result_material_sha256 != material_digest.digest ||
+            page_result.executor_availability_generation !=
+                result_page_descriptor.executor_availability_generation ||
+            page_result.next_row_offset !=
+                result_page_descriptor.first_row_offset +
+                    page_result.returned_row_count ||
+            (page_result.terminal_state == 0) !=
+                !sbps::IsZeroUuid(page_result.next_continuation_uuid)) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "RESULT_SET.SHAPE_INVALID",
+              "The engine returned an invalid result page.",
+              page_detail.empty() ? "result_page_result_invalid"
+                                  : page_detail);
+        }
+        result_page_cursor->last_result_page_descriptor =
+            result_page_cursor->pending_result_page_descriptor;
+        result_page_cursor->last_result_page_result.assign(
+            row_packet.begin(), row_packet.end());
+        result_page_cursor->last_result_page_material.assign(
+            public_abi.result_page_material.begin(),
+            public_abi.result_page_material.end());
+        result_page_cursor->pending_result_page_request.clear();
+        result_page_cursor->pending_result_page_descriptor.clear();
+        result_page_cursor->next_row_index = page_result.next_row_offset;
+        result_page_cursor->result_page_next_page_number =
+            result_page_descriptor.page_number + 1;
+        result_page_cursor->result_page_continuation_uuid =
+            page_result.next_continuation_uuid;
+        result_page_cursor->result_page_continuation_generation =
+            page_result.next_continuation_generation;
+        result_page_cursor->fetch_count += 1;
+        result_page_cursor->exhausted = page_result.terminal_state != 0;
+        row_count = page_result.returned_row_count;
+      }
+      if (query_explain_descriptor_present) {
+        scratchbird::engine::sblr::SblrQueryExplainResultV1 explain_result;
+        std::string explain_detail;
+        const auto material_digest =
+            scratchbird::core::hash::ComputeSha256Digest(
+                public_abi.query_explain_material);
+        if (public_abi.query_explain_material.empty() ||
+            !material_digest.ok() ||
+            !scratchbird::engine::sblr::DecodeSblrQueryExplainResultV1(
+                reinterpret_cast<const std::uint8_t*>(row_packet.data()),
+                row_packet.size(), &explain_result, &explain_detail) ||
+            explain_result.explain_uuid !=
+                query_explain_descriptor.explain_uuid ||
+            explain_result.query_snapshot_uuid !=
+                query_explain_descriptor.query_snapshot_uuid ||
+            explain_result.catalog_generation !=
+                query_explain_descriptor.catalog_generation ||
+            explain_result.policy_generation !=
+                query_explain_descriptor.policy_generation ||
+            explain_result.redaction_profile_uuid !=
+                query_explain_descriptor.redaction_profile_uuid ||
+            explain_result.plan_material_sha256 != material_digest.digest) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "PLAN.AUTHORITY_INVALID",
+              "The engine returned an invalid query-explain result.",
+              explain_detail.empty() ? "query_explain_result_invalid"
+                                     : explain_detail);
+        }
+        row_count = 0;
+      }
+      if (parse_text_descriptor_present) {
+        scratchbird::engine::sblr::SblrParseTextResultV1 parse_result;
+        std::string parse_detail;
+        if (public_abi.row_count != 0 || public_abi.affected_rows_present ||
+            !scratchbird::engine::sblr::DecodeSblrParseTextResultV1(
+                reinterpret_cast<const std::uint8_t*>(row_packet.data()),
+                row_packet.size(), &parse_result, &parse_detail) ||
+            parse_result.parse_uuid != parse_text_descriptor.parse_uuid ||
+            parse_result.statement_receipt_uuid !=
+                parse_text_descriptor.statement_receipt_uuid ||
+            parse_result.language_profile_uuid !=
+                parse_text_descriptor.language_profile_uuid ||
+            parse_result.language_profile_generation !=
+                parse_text_descriptor.language_profile_generation ||
+            parse_result.parser_package_uuid !=
+                parse_text_descriptor.parser_package_uuid ||
+            parse_result.catalog_generation !=
+                parse_text_descriptor.catalog_generation ||
+            parse_result.security_epoch !=
+                parse_text_descriptor.security_epoch ||
+            parse_result.resource_epoch !=
+                parse_text_descriptor.resource_epoch ||
+            parse_result.canonical_sblr_bytes !=
+                parse_text_descriptor.canonical_sblr_bytes ||
+            parse_result.status != 1 ||
+            parse_result.publication_barrier != 1 ||
+            parse_result.executor_availability_generation !=
+                parse_text_descriptor.executor_availability_generation) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "MGA.AUTHORITY_MISMATCH",
+              "The engine returned an invalid parse-text result.",
+              parse_detail.empty() ? "parse_text_result_invalid"
+                                   : parse_detail);
+        }
+        row_count = 0;
+      }
+      if (catalog_epoch_check_descriptor_present) {
+        scratchbird::engine::sblr::SblrCatalogEpochCheckResultV1
+            epoch_result;
+        std::string epoch_detail;
+        if (public_abi.row_count != 0 || public_abi.affected_rows_present ||
+            !scratchbird::engine::sblr::
+                DecodeSblrCatalogEpochCheckResultV1(
+                    reinterpret_cast<const std::uint8_t*>(row_packet.data()),
+                    row_packet.size(), &epoch_result, &epoch_detail) ||
+            epoch_result.object_scoped !=
+                catalog_epoch_check_descriptor.object_scoped ||
+            epoch_result.check_uuid !=
+                catalog_epoch_check_descriptor.check_uuid ||
+            epoch_result.observed_security_epoch !=
+                catalog_epoch_check_descriptor.security_epoch ||
+            epoch_result.observed_resource_epoch !=
+                catalog_epoch_check_descriptor.resource_epoch ||
+            epoch_result.executor_availability_generation !=
+                catalog_epoch_check_descriptor
+                    .executor_availability_generation ||
+            !live_statement_context ||
+            epoch_result.redaction_profile_uuid !=
+                ParseUuidTextForDispatch(
+                    live_statement_context->view
+                        .catalog_epoch_check_redaction_profile_uuid)
+                    .value_or(std::array<std::uint8_t, 16>{}) ||
+            ((epoch_result.status == 1 || epoch_result.status == 2) &&
+             (epoch_result.visibility != 1 ||
+              epoch_result.observed_catalog_epoch_uuid !=
+                  catalog_epoch_check_descriptor
+                      .requested_catalog_epoch_uuid ||
+              epoch_result.observed_catalog_generation !=
+                  catalog_epoch_check_descriptor
+                      .requested_catalog_generation ||
+              epoch_result.database_uuid !=
+                  catalog_epoch_check_descriptor.database_uuid ||
+              epoch_result.schema_tree_uuid !=
+                  catalog_epoch_check_descriptor.schema_tree_uuid ||
+              epoch_result.schema_tree_generation !=
+                  catalog_epoch_check_descriptor.schema_tree_generation)) ||
+            (epoch_result.status == 3 && epoch_result.visibility != 2)) {
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema, decoded->session_uuid,
+              "MGA.AUTHORITY_MISMATCH",
+              "The engine returned an invalid catalog-epoch result.",
+              epoch_detail.empty() ? "catalog_epoch_check_result_invalid"
+                                   : epoch_detail);
+        }
+        row_count = 0;
+      }
       // Canonical SBLR TXN_BEGIN publishes a private engine TXBH rather than
       // the legacy EngineBeginTransactionResult shape.  Adopt that exact
       // engine-issued composite identity into the owning server session
@@ -12556,6 +12934,17 @@ SessionOperationResult HandleExecuteSblrImpl(
   result.response_schema_id = response_schema;
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
   result.session_uuid = decoded->session_uuid;
+  const bool publish_execute_result_payload =
+      !cursor_requested ||
+      admission.operation_id == "engine.op.stmt_execute" ||
+      admission.operation_id == "engine.op.stmt_execute_direct";
+  WriteServerPhaseTrace(
+      "SCRATCHBIRD_SERVER_EXECUTE_PHASE_TRACE_FILE",
+      "execute_result_publication", admission.operation_id,
+      publish_execute_result_payload ? row_packet.size() : 0,
+      {{"cursor_requested", cursor_requested ? 1u : 0u},
+       {"terminal_payload_bytes",
+        publish_execute_result_payload ? row_packet.size() : 0}});
   if (v2) {
     result.transaction_state = transaction_response;
     result.payload = EncodeExecuteResultV2("accepted",
@@ -12563,7 +12952,9 @@ SessionOperationResult HandleExecuteSblrImpl(
                                           cursor_uuid,
                                           row_count,
                                           admission.operation_id,
-                                          cursor_requested ? "" : row_packet,
+                                          publish_execute_result_payload
+                                              ? row_packet
+                                              : "",
                                           {},
                                           transaction_response);
   } else {
@@ -12572,7 +12963,9 @@ SessionOperationResult HandleExecuteSblrImpl(
                                          cursor_uuid,
                                          row_count,
                                          admission.operation_id,
-                                         cursor_requested ? "" : row_packet);
+                                         publish_execute_result_payload
+                                             ? row_packet
+                                             : "");
   }
   const auto published_cursor = cursor_requested
       ? registry->cursors_by_uuid.find(UuidBytesToText(cursor_uuid))

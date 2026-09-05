@@ -702,9 +702,21 @@ def require_bulk_route_traces(route: StartedRoute) -> None:
     server_trace = route.traces["server"].read_text(
         encoding="utf-8", errors="strict"
     )
-    if server_trace.count("operation=engine.op.bulk_import_stream\t") != 2:
+    terminal_publication = (
+        "layer=execute_result_publication\t"
+        "operation=engine.op.bulk_import_stream\t"
+    )
+    terminal_completion = (
+        "layer=handle_execute_sblr_total\t"
+        "operation=engine.op.bulk_import_stream\t"
+    )
+    if (
+        server_trace.count(terminal_publication) != 2
+        or server_trace.count(terminal_completion) != 2
+    ):
         raise CopyPersistenceError(
-            "server execution trace did not observe exactly two terminal streams"
+            "server execution trace did not observe exactly two terminal "
+            "stream publications and completions"
         )
 
     worker_events = [

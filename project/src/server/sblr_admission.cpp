@@ -521,6 +521,10 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "engine.op.ddl_alter_type" ||
          operation_id == "engine.op.ddl_drop_type" ||
          operation_id == "engine.op.catalog_introspect" ||
+         operation_id == "engine.op.name_resolve" ||
+         operation_id == "engine.op.parse_text" ||
+         operation_id == "engine.op.optimizer_stats_read" ||
+         operation_id == "engine.op.optimizer_stats_drop" ||
          operation_id == "engine.op.function_call" ||
          operation_id == "engine.op.cast" ||
          operation_id == "engine.op.compare" ||
@@ -531,6 +535,7 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "engine.op.kv_structured_read" ||
          operation_id == "engine.op.kv_structured_mutate" ||
          operation_id == "engine.op.bulk_import_stream" ||
+         operation_id == "engine.op.result_page" ||
          operation_id == "engine.op.event_channel_create" ||
          operation_id == "engine.op.event_channel_listen" ||
          operation_id == "engine.op.event_channel_unlisten" ||
@@ -1208,7 +1213,11 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id == "engine.op.ddl_drop_type") {
     return "sblr.catalog.mutation.v3";
   }
-  if (operation_id == "engine.op.catalog_introspect") {
+  if (operation_id == "engine.op.catalog_introspect" ||
+      operation_id == "engine.op.name_resolve" ||
+      operation_id == "engine.op.parse_text" ||
+      operation_id == "engine.op.optimizer_stats_read" ||
+      operation_id == "engine.op.optimizer_stats_drop") {
     return "sblr.catalog.introspect.v3";
   }
   if (operation_id == "engine.op.function_call" ||
@@ -1241,6 +1250,9 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   }
   if (operation_id == "engine.op.bulk_import_stream") {
     return "sblr.bulk.import.v3";
+  }
+  if (operation_id == "engine.op.result_page") {
+    return "sblr.statement.management.v3";
   }
   if (operation_id == "engine.op.event_channel_create") {
     return "sblr.catalog.mutation.v3";

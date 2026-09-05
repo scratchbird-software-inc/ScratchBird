@@ -191,6 +191,7 @@ if(SB_BUILD_SERVER)
     sb_core_memory
     sb_server_resource_governance
     sb_server_sblr_local_gateway
+    sb_wire_statement_management_bind_codec
     sb_engine
     sb_server_engine_bridge
     sb_server_event_notifications

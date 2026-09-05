@@ -168,7 +168,7 @@ target_link_libraries(sbsql_sblr_alignment_ia01_literal_runtime PRIVATE sb_engin
 add_test(NAME sbsql_sblr_alignment_ia01_literal_runtime
   COMMAND sbsql_sblr_alignment_ia01_literal_runtime)
 set_tests_properties(sbsql_sblr_alignment_ia01_literal_runtime PROPERTIES
-  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_LITERAL;CSC-TEST-002326;malformed_operand;contract"
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;IA-05;SBLR_LITERAL;SBLR_QUERY_EXECUTE;CSC-TEST-002326;CSC-TEST-003602;malformed_operand;contract"
   TIMEOUT 60)
 
 add_executable(sbsql_sblr_alignment_contextual_text_sidecar_set_v2
@@ -217,7 +217,7 @@ add_test(NAME sbsql_sblr_alignment_contextual_text_literal_authority_v2
 set_tests_properties(
   sbsql_sblr_alignment_contextual_text_literal_authority_v2
   PROPERTIES
-    LABELS "sbsql_sblr_alignment;SBLR_QUERY_EXECUTE;contextual_text_v2;receipt_authority;joint_consume;exact_once"
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_QUERY_EXECUTE;CSC-TEST-003603;contextual_text_v2;receipt_authority;joint_consume;exact_once;missing_executor_evidence;integration"
     TIMEOUT 30)
 
 add_executable(sbsql_sblr_alignment_ia01_literal_protocol_fuzz
@@ -371,8 +371,75 @@ target_link_libraries(sbsql_sblr_alignment_ia01_package_cancellation_fault
 add_test(NAME sbsql_sblr_alignment_ia01_package_cancellation_fault
   COMMAND sbsql_sblr_alignment_ia01_package_cancellation_fault)
 set_tests_properties(sbsql_sblr_alignment_ia01_package_cancellation_fault PROPERTIES
-  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-01;SBLR_PACKAGE_BEGIN_END;CSC-TEST-002320;CSC-TEST-002324;cancellation_atomicity;fault"
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-01;IA-05;SBLR_PACKAGE_BEGIN_END;SBLR_QUERY_EXECUTE;CSC-TEST-002320;CSC-TEST-002324;CSC-TEST-003604;cancellation_atomicity;fault"
   TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia05_result_page_cancellation_fault
+  ia05_result_page_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_result_page_cancellation_fault PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_result_page_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_result_page_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia05_result_page_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia05_result_page_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_result_page_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-05;SBLR_RESULT_PAGE;CSC-TEST-003600;cancellation_atomicity;fault"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_ia05_query_explain_cancellation_fault
+  ia05_query_explain_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_query_explain_cancellation_fault PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_query_explain_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_query_explain_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia05_query_explain_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia05_query_explain_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_query_explain_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-05;SBLR_QUERY_EXPLAIN;CSC-TEST-003608;cancellation_atomicity;fault"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_ia05_statement_management_cancellation_fault
+  ia05_statement_management_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_statement_management_cancellation_fault PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_statement_management_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_statement_management_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+
+foreach(statement_management_cancellation IN ITEMS
+    "stmt_prepare;stmt-prepare;SBLR_STMT_PREPARE;CSC-TEST-003576"
+    "stmt_execute;stmt-execute;SBLR_STMT_EXECUTE;CSC-TEST-003580"
+    "stmt_execute_direct;stmt-execute-direct;SBLR_STMT_EXECUTE_DIRECT;CSC-TEST-003584"
+    "stmt_free;stmt-free;SBLR_STMT_FREE;CSC-TEST-003588"
+    "stmt_cancel;stmt-cancel;SBLR_STMT_CANCEL;CSC-TEST-003592")
+  list(GET statement_management_cancellation 0 test_suffix)
+  list(GET statement_management_cancellation 1 test_mode)
+  list(GET statement_management_cancellation 2 operation_label)
+  list(GET statement_management_cancellation 3 csc_label)
+  add_test(
+    NAME sbsql_sblr_alignment_ia05_${test_suffix}_cancellation_fault
+    COMMAND sbsql_sblr_alignment_ia05_statement_management_cancellation_fault
+            ${test_mode})
+  set_tests_properties(
+    sbsql_sblr_alignment_ia05_${test_suffix}_cancellation_fault PROPERTIES
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-05;${operation_label};${csc_label};cancellation_atomicity;fault"
+    TIMEOUT 120)
+endforeach()
 
 add_executable(sbsql_sblr_alignment_ia01_bigint_identity_migration
   ia01_bigint_identity_migration_test.cpp)
@@ -446,8 +513,95 @@ target_link_libraries(sbsql_sblr_alignment_ia01_parameter_set_registry
 add_test(NAME sbsql_sblr_alignment_ia01_parameter_set_registry
   COMMAND sbsql_sblr_alignment_ia01_parameter_set_registry)
 set_tests_properties(sbsql_sblr_alignment_ia01_parameter_set_registry PROPERTIES
-  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_recovery;IA-01;SBLR_PARAMETER"
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_recovery;IA-01;IA-05;SBLR_PARAMETER;SBLR_PARAMETER_BIND;CSC-TEST-003596;fault"
   TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia05_parameter_bind_availability
+  ia05_parameter_bind_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_parameter_bind_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_parameter_bind_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_parameter_bind_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_parameter_bind_availability
+  COMMAND sbsql_sblr_alignment_ia05_parameter_bind_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_parameter_bind_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-05;SBLR_PARAMETER_BIND;CSC-TEST-003595;integration"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia05_result_page_availability
+  ia05_result_page_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_result_page_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_result_page_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_result_page_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_result_page_availability
+  COMMAND sbsql_sblr_alignment_ia05_result_page_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_result_page_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-05;SBLR_RESULT_PAGE;CSC-TEST-003599;integration"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia05_query_explain_availability
+  ia05_query_explain_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_query_explain_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_query_explain_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_query_explain_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_query_explain_availability
+  COMMAND sbsql_sblr_alignment_ia05_query_explain_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_query_explain_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-05;SBLR_QUERY_EXPLAIN;CSC-TEST-003607;integration"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia05_statement_management_availability
+  ia05_statement_management_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_statement_management_availability PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_statement_management_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_statement_management_availability PRIVATE
+  sb_engine_internal_api)
+
+foreach(statement_management_availability IN ITEMS
+    "stmt_prepare;stmt-prepare;SBLR_STMT_PREPARE;CSC-TEST-003575"
+    "stmt_execute;stmt-execute;SBLR_STMT_EXECUTE;CSC-TEST-003579"
+    "stmt_execute_direct;stmt-execute-direct;SBLR_STMT_EXECUTE_DIRECT;CSC-TEST-003583"
+    "stmt_free;stmt-free;SBLR_STMT_FREE;CSC-TEST-003587"
+    "stmt_cancel;stmt-cancel;SBLR_STMT_CANCEL;CSC-TEST-003591")
+  list(GET statement_management_availability 0 test_suffix)
+  list(GET statement_management_availability 1 test_mode)
+  list(GET statement_management_availability 2 operation_label)
+  list(GET statement_management_availability 3 csc_label)
+  add_test(
+    NAME sbsql_sblr_alignment_ia05_${test_suffix}_availability
+    COMMAND sbsql_sblr_alignment_ia05_statement_management_availability
+            ${test_mode})
+  set_tests_properties(
+    sbsql_sblr_alignment_ia05_${test_suffix}_availability PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;${operation_label};${csc_label};integration"
+    TIMEOUT 60)
+endforeach()
 
 add_executable(sbsql_sblr_alignment_ia01_prepared_coordination_registry
   ia01_prepared_coordination_registry_test.cpp)
@@ -1049,6 +1203,7 @@ function(sbsql_sblr_alignment_register_ia07_table_truncate_process_e2e)
   add_test(NAME sbsql_sblr_alignment_ia09_context_unset_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation context-unset --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_context_unset_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_context_get_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation context-get --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_context_get_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_stmt_prepare_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation stmt-prepare --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_stmt_prepare_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia09_stmt_prepare_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_PREPARE;CSC-TEST-003573;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia09_security_alter_role_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-alter-role --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_alter_role_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_security_drop_role_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-drop-role --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_drop_role_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia09_security_create_role_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_CREATE_ROLE;CSC-TEST-002973;e2e" TIMEOUT 240)
@@ -3489,7 +3644,41 @@ add_executable(sbsql_sblr_alignment_ia01_catalog_introspect_coordinator ia01_cat
 target_include_directories(sbsql_sblr_alignment_ia01_catalog_introspect_coordinator PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia01_catalog_introspect_coordinator PRIVATE sb_engine_internal_api sb_engine_sblr)
 add_test(NAME sbsql_sblr_alignment_ia01_catalog_introspect_coordinator COMMAND sbsql_sblr_alignment_ia01_catalog_introspect_coordinator)
-set_tests_properties(sbsql_sblr_alignment_ia01_catalog_introspect_coordinator PROPERTIES LABELS "sbsql_sblr_alignment;IA-03;SBLR_CATALOG_INTROSPECT;CSC-TEST-003611;availability;CSC-TEST-003612;cancellation" TIMEOUT 30)
+set_tests_properties(sbsql_sblr_alignment_ia01_catalog_introspect_coordinator PROPERTIES LABELS "sbsql_sblr_alignment;IA-03;SBLR_CATALOG_INTROSPECT;component;descriptor_lifecycle" TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_ia05_catalog_introspect_availability
+  ia05_catalog_introspect_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_catalog_introspect_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_catalog_introspect_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_catalog_introspect_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_catalog_introspect_availability
+  COMMAND sbsql_sblr_alignment_ia05_catalog_introspect_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_catalog_introspect_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_CATALOG_INTROSPECT;CSC-TEST-003611;missing_executor_evidence;integration"
+  TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_ia05_catalog_introspect_cancellation_fault
+  ia05_catalog_introspect_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_catalog_introspect_cancellation_fault PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_catalog_introspect_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_catalog_introspect_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia05_catalog_introspect_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia05_catalog_introspect_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_catalog_introspect_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-03;SBLR_CATALOG_INTROSPECT;CSC-TEST-003612;cancellation_atomicity;fault"
+  TIMEOUT 120)
 add_test(NAME sbsql_sblr_alignment_ia01_catalog_introspect_process_e2e
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py
     --server $<TARGET_FILE:sb_server>
@@ -3497,6 +3686,308 @@ add_test(NAME sbsql_sblr_alignment_ia01_catalog_introspect_process_e2e
     --operation show-object-detail
     --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia01_catalog_introspect_e2e")
 set_tests_properties(sbsql_sblr_alignment_ia01_catalog_introspect_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-03;SBLR_CATALOG_INTROSPECT;CSC-TEST-003609;e2e" TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_ia05_name_resolve_codec
+  ia05_name_resolve_codec_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_name_resolve_codec PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_name_resolve_codec PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_name_resolve_codec PRIVATE
+  sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia05_name_resolve_codec
+  COMMAND sbsql_sblr_alignment_ia05_name_resolve_codec)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_name_resolve_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_NAME_RESOLVE;CSC-TEST-003614;contract;malformed_operand;codec"
+  TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_ia05_name_resolve_availability
+  ia05_name_resolve_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_name_resolve_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_name_resolve_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_name_resolve_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_name_resolve_availability
+  COMMAND sbsql_sblr_alignment_ia05_name_resolve_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_name_resolve_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_NAME_RESOLVE;CSC-TEST-003615;missing_executor_evidence;integration"
+  TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_ia05_name_resolve_cancellation_fault
+  ia05_name_resolve_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_name_resolve_cancellation_fault PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_name_resolve_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_name_resolve_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia05_name_resolve_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia05_name_resolve_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_name_resolve_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-03;SBLR_NAME_RESOLVE;CSC-TEST-003616;cancellation_atomicity;replay;fault"
+  TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_ia05_optimizer_stats_read_codec
+  ia05_optimizer_stats_read_codec_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_codec PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_codec PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_codec PRIVATE
+  sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia05_optimizer_stats_read_codec
+  COMMAND sbsql_sblr_alignment_ia05_optimizer_stats_read_codec)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_OPTIMIZER_STATS_READ;CSC-TEST-003618;contract;malformed_operand;codec"
+  TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_ia05_optimizer_stats_read_availability
+  ia05_optimizer_stats_read_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_optimizer_stats_read_availability
+  COMMAND sbsql_sblr_alignment_ia05_optimizer_stats_read_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_OPTIMIZER_STATS_READ;CSC-TEST-003619;missing_executor_evidence;integration"
+  TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_ia05_optimizer_stats_read_cancellation_fault
+  ia05_optimizer_stats_read_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_cancellation_fault PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia05_optimizer_stats_read_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia05_optimizer_stats_read_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_optimizer_stats_read_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-03;SBLR_OPTIMIZER_STATS_READ;CSC-TEST-003620;cancellation_atomicity;replay;fault"
+  TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_ia05_optimizer_stats_drop_codec
+  ia05_optimizer_stats_drop_codec_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_codec PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_codec PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_codec PRIVATE
+  sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia05_optimizer_stats_drop_codec
+  COMMAND sbsql_sblr_alignment_ia05_optimizer_stats_drop_codec)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_OPTIMIZER_STATS_DROP;CSC-TEST-003622;contract;malformed_operand;codec"
+  TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_ia05_optimizer_stats_drop_availability
+  ia05_optimizer_stats_drop_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_optimizer_stats_drop_availability
+  COMMAND sbsql_sblr_alignment_ia05_optimizer_stats_drop_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_OPTIMIZER_STATS_DROP;CSC-TEST-003623;missing_executor_evidence;integration"
+  TIMEOUT 60)
+add_executable(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_cancellation_fault
+  ia05_optimizer_stats_drop_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_cancellation_fault PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(
+  NAME sbsql_sblr_alignment_ia05_optimizer_stats_drop_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia05_optimizer_stats_drop_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_optimizer_stats_drop_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-03;SBLR_OPTIMIZER_STATS_DROP;CSC-TEST-003624;cancellation_atomicity;durable_replay;rollback_visibility;fault"
+  TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_ia05_parse_text_codec
+  ia05_parse_text_codec_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_parse_text_codec PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_parse_text_codec PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_parse_text_codec PRIVATE
+  sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia05_parse_text_codec
+  COMMAND sbsql_sblr_alignment_ia05_parse_text_codec)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_parse_text_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-08;SBLR_PARSE_TEXT;CSC-TEST-003626;contract;malformed_operand;private_bind;codec"
+  TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_ia05_parse_text_availability
+  ia05_parse_text_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_parse_text_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_parse_text_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_parse_text_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_parse_text_availability
+  COMMAND sbsql_sblr_alignment_ia05_parse_text_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_parse_text_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-08;SBLR_PARSE_TEXT;CSC-TEST-003627;missing_executor_evidence;statement_cohort;integration"
+  TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_ia05_parse_text_cancellation_fault
+  ia05_parse_text_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_parse_text_cancellation_fault PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_parse_text_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_parse_text_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia05_parse_text_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia05_parse_text_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_parse_text_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-08;SBLR_PARSE_TEXT;CSC-TEST-003628;cancellation_atomicity;durable_replay;publication_barrier;fault"
+  TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_ia05_catalog_epoch_check_codec
+  ia05_catalog_epoch_check_codec_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_codec PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_codec PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_codec PRIVATE
+  sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia05_catalog_epoch_check_codec
+  COMMAND sbsql_sblr_alignment_ia05_catalog_epoch_check_codec)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_CATALOG_EPOCH_CHECK;CSC-TEST-003630;contract;malformed_operand;redaction;private_bind;codec"
+  TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_ia05_catalog_epoch_check_availability
+  ia05_catalog_epoch_check_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia05_catalog_epoch_check_availability
+  COMMAND sbsql_sblr_alignment_ia05_catalog_epoch_check_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;SBLR_CATALOG_EPOCH_CHECK;CSC-TEST-003631;missing_executor_evidence;statement_cohort;integration"
+  TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_ia05_catalog_epoch_check_cancellation_fault
+  ia05_catalog_epoch_check_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_cancellation_fault PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(
+  NAME sbsql_sblr_alignment_ia05_catalog_epoch_check_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia05_catalog_epoch_check_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_catalog_epoch_check_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-03;SBLR_CATALOG_EPOCH_CHECK;CSC-TEST-003632;cancellation_atomicity;durable_replay;publication_barrier;fault"
+  TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_ia08_database_attach_codec
+  ia08_database_attach_codec_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia08_database_attach_codec PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia08_database_attach_codec PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia08_database_attach_codec PRIVATE
+  sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(NAME sbsql_sblr_alignment_ia08_database_attach_codec
+  COMMAND sbsql_sblr_alignment_ia08_database_attach_codec)
+set_tests_properties(
+  sbsql_sblr_alignment_ia08_database_attach_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-08;SBLR_DATABASE_ATTACH;CSC-TEST-003634;contract;malformed_operand;private_bind;codec"
+  TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_ia08_database_attach_availability
+  ia08_database_attach_availability_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia08_database_attach_availability PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia08_database_attach_availability PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia08_database_attach_availability PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia08_database_attach_availability
+  COMMAND sbsql_sblr_alignment_ia08_database_attach_availability)
+set_tests_properties(
+  sbsql_sblr_alignment_ia08_database_attach_availability PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-08;SBLR_DATABASE_ATTACH;CSC-TEST-003635;missing_executor_evidence;statement_cohort;integration"
+  TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_ia08_database_attach_cancellation_fault
+  ia08_database_attach_cancellation_fault_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia08_database_attach_cancellation_fault PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia08_database_attach_cancellation_fault PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia08_database_attach_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(
+  NAME sbsql_sblr_alignment_ia08_database_attach_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia08_database_attach_cancellation_fault)
+set_tests_properties(
+  sbsql_sblr_alignment_ia08_database_attach_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-08;SBLR_DATABASE_ATTACH;CSC-TEST-003636;cancellation_atomicity;durable_replay;publication_barrier;fault"
+  TIMEOUT 120)
 add_executable(sbsql_sblr_alignment_ia08_dml_async_insert_cancel_runtime ia08_dml_async_insert_cancel_runtime_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia08_dml_async_insert_cancel_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia08_dml_async_insert_cancel_runtime PRIVATE sb_engine_sblr)
@@ -4040,6 +4531,89 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
   target_include_directories(sbsql_sblr_alignment_ia08_stmt_prepare_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(sbsql_sblr_alignment_ia08_stmt_prepare_runtime PRIVATE sb_engine_sblr)
   add_test(NAME sbsql_sblr_alignment_ia08_stmt_prepare_runtime COMMAND sbsql_sblr_alignment_ia08_stmt_prepare_runtime)
+  set_tests_properties(sbsql_sblr_alignment_ia08_stmt_prepare_runtime PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_PREPARE;CSC-TEST-003574;contract;component")
+  add_executable(sbsql_sblr_alignment_ia08_stmt_execute_direct_runtime ia08_stmt_execute_direct_runtime_test.cpp)
+  target_include_directories(sbsql_sblr_alignment_ia08_stmt_execute_direct_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(sbsql_sblr_alignment_ia08_stmt_execute_direct_runtime PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_ia08_stmt_execute_direct_runtime COMMAND sbsql_sblr_alignment_ia08_stmt_execute_direct_runtime)
+  set_tests_properties(sbsql_sblr_alignment_ia08_stmt_execute_direct_runtime PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_EXECUTE_DIRECT;CSC-TEST-003582;contract;component")
+  add_executable(sbsql_sblr_alignment_ia08_stmt_execute_runtime ia08_stmt_execute_runtime_test.cpp)
+  target_include_directories(sbsql_sblr_alignment_ia08_stmt_execute_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(sbsql_sblr_alignment_ia08_stmt_execute_runtime PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_ia08_stmt_execute_runtime COMMAND sbsql_sblr_alignment_ia08_stmt_execute_runtime)
+  set_tests_properties(sbsql_sblr_alignment_ia08_stmt_execute_runtime PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_EXECUTE;CSC-TEST-003578;contract;component")
+  add_executable(sbsql_sblr_alignment_ia08_stmt_free_runtime ia08_stmt_free_runtime_test.cpp)
+  target_include_directories(sbsql_sblr_alignment_ia08_stmt_free_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(sbsql_sblr_alignment_ia08_stmt_free_runtime PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_ia08_stmt_free_runtime COMMAND sbsql_sblr_alignment_ia08_stmt_free_runtime)
+  set_tests_properties(sbsql_sblr_alignment_ia08_stmt_free_runtime PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_FREE;CSC-TEST-003586;contract;component")
+  add_executable(sbsql_sblr_alignment_ia05_stmt_cancel_runtime ia08_stmt_cancel_runtime_test.cpp)
+  target_include_directories(sbsql_sblr_alignment_ia05_stmt_cancel_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(sbsql_sblr_alignment_ia05_stmt_cancel_runtime PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_ia05_stmt_cancel_runtime COMMAND sbsql_sblr_alignment_ia05_stmt_cancel_runtime)
+  set_tests_properties(sbsql_sblr_alignment_ia05_stmt_cancel_runtime PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_CANCEL;CSC-TEST-003590;contract;component")
+
+  add_executable(sbsql_sblr_alignment_ia08_parameter_bind_runtime
+    ia08_parameter_bind_runtime_test.cpp)
+  target_include_directories(
+    sbsql_sblr_alignment_ia08_parameter_bind_runtime PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(
+    sbsql_sblr_alignment_ia08_parameter_bind_runtime PRIVATE sb_engine_sblr)
+  add_test(
+    NAME sbsql_sblr_alignment_ia08_parameter_bind_runtime
+    COMMAND sbsql_sblr_alignment_ia08_parameter_bind_runtime)
+  set_tests_properties(
+    sbsql_sblr_alignment_ia08_parameter_bind_runtime PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_PARAMETER_BIND;CSC-TEST-003594;contract;component")
+
+  add_executable(sbsql_sblr_alignment_ia08_result_page_runtime
+    ia08_result_page_runtime_test.cpp)
+  target_include_directories(
+    sbsql_sblr_alignment_ia08_result_page_runtime PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(
+    sbsql_sblr_alignment_ia08_result_page_runtime PRIVATE sb_engine_sblr)
+  add_test(
+    NAME sbsql_sblr_alignment_ia08_result_page_runtime
+    COMMAND sbsql_sblr_alignment_ia08_result_page_runtime)
+  set_tests_properties(
+    sbsql_sblr_alignment_ia08_result_page_runtime PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_RESULT_PAGE;CSC-TEST-003598;contract;component")
+
+  add_executable(sbsql_sblr_alignment_ia08_query_explain_runtime
+    ia08_query_explain_runtime_test.cpp)
+  target_include_directories(
+    sbsql_sblr_alignment_ia08_query_explain_runtime PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(
+    sbsql_sblr_alignment_ia08_query_explain_runtime PRIVATE sb_engine_sblr)
+  add_test(
+    NAME sbsql_sblr_alignment_ia08_query_explain_runtime
+    COMMAND sbsql_sblr_alignment_ia08_query_explain_runtime)
+  set_tests_properties(
+    sbsql_sblr_alignment_ia08_query_explain_runtime PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_QUERY_EXPLAIN;CSC-TEST-003606;contract;component")
+
+  add_executable(sbsql_sblr_alignment_statement_management_bind_codec
+    statement_management_bind_codec_test.cpp)
+  target_include_directories(
+    sbsql_sblr_alignment_statement_management_bind_codec PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(
+    sbsql_sblr_alignment_statement_management_bind_codec PRIVATE
+    sb_wire_statement_management_bind_codec)
+  add_test(
+    NAME sbsql_sblr_alignment_statement_management_bind_codec
+    COMMAND sbsql_sblr_alignment_statement_management_bind_codec)
+  set_tests_properties(
+    sbsql_sblr_alignment_statement_management_bind_codec PROPERTIES
+    LABELS "sbsql_sblr_alignment;statement_management;codec;component;in_progress")
   add_test(NAME sbsql_sblr_alignment_ia10_stmt_execute_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4047,7 +4621,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation stmt-execute
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia10_stmt_execute_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia10_stmt_execute_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_STMT_EXECUTE;CSC-TEST-003009;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_EXECUTE;CSC-TEST-003577;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia11_stmt_execute_direct_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4055,7 +4629,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation stmt-execute-direct
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia11_stmt_execute_direct_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia11_stmt_execute_direct_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_STMT_EXECUTE_DIRECT;CSC-TEST-003581;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_EXECUTE_DIRECT;CSC-TEST-003581;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia12_stmt_free_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4063,15 +4637,15 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation stmt-free
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia12_stmt_free_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia12_stmt_free_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_STMT_FREE;CSC-TEST-003585;e2e" TIMEOUT 240)
-  add_test(NAME sbsql_sblr_alignment_ia13_stmt_cancel_process_e2e
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_FREE;CSC-TEST-003585;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia05_stmt_cancel_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
       --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
       --operation stmt-cancel
-      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia13_stmt_cancel_e2e")
-  set_tests_properties(sbsql_sblr_alignment_ia13_stmt_cancel_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_STMT_CANCEL;CSC-TEST-003589;e2e" TIMEOUT 240)
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia05_stmt_cancel_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia05_stmt_cancel_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_CANCEL;CSC-TEST-003589;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia14_parameter_bind_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4079,7 +4653,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation parameter-bind
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia14_parameter_bind_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia14_parameter_bind_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_PARAMETER_BIND;CSC-TEST-003013;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_PARAMETER_BIND;CSC-TEST-003593;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia15_result_page_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4087,7 +4661,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation result-page
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia15_result_page_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia15_result_page_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_RESULT_PAGE;CSC-TEST-003014;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_RESULT_PAGE;CSC-TEST-003597;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia16_query_execute_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4095,7 +4669,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation query-execute
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia16_query_execute_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia16_query_execute_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_QUERY_EXECUTE;CSC-TEST-003015;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_QUERY_EXECUTE;CSC-TEST-003601;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia17_query_explain_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4103,7 +4677,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation query-explain
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia17_query_explain_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia17_query_explain_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_QUERY_EXPLAIN;CSC-TEST-003016;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_QUERY_EXPLAIN;CSC-TEST-003605;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia18_name_resolve_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4111,7 +4685,23 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation name-resolve
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia18_name_resolve_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia18_name_resolve_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_NAME_RESOLVE;CSC-TEST-003017;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-03;SBLR_NAME_RESOLVE;CSC-TEST-003613;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia18_optimizer_stats_read_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation optimizer-stats-read
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia18_optimizer_stats_read_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia18_optimizer_stats_read_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-03;SBLR_OPTIMIZER_STATS_READ;CSC-TEST-003617;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia18_optimizer_stats_drop_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation optimizer-stats-drop
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia18_optimizer_stats_drop_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia18_optimizer_stats_drop_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-03;SBLR_OPTIMIZER_STATS_DROP;CSC-TEST-003621;e2e;independent_session_post_state" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia19_parse_text_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4119,7 +4709,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation parse-text
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia19_parse_text_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia19_parse_text_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_PARSE_TEXT;CSC-TEST-003018;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-08;SBLR_PARSE_TEXT;CSC-TEST-003625;e2e;canonical_nested_sblr;durable_replay;independent_authenticated_process" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia20_catalog_epoch_check_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4127,7 +4717,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation catalog-epoch-check
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia20_catalog_epoch_check_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia20_catalog_epoch_check_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_CATALOG_EPOCH_CHECK;CSC-TEST-003019;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-03;SBLR_CATALOG_EPOCH_CHECK;CSC-TEST-003629;e2e;durable_replay;independent_authenticated_process" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia21_database_attach_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4135,7 +4725,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation database-attach
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia21_database_attach_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia21_database_attach_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-08;SBLR_DATABASE_ATTACH;CSC-TEST-003020;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-08;SBLR_DATABASE_ATTACH;CSC-TEST-003633;e2e;durable_replay;independent_authenticated_process;independent_session_post_state" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia22_database_detach_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -5133,7 +5723,7 @@ add_test(NAME sbsql_sblr_alignment_plan_import_rows_sbps_coordination
   COMMAND sbsql_sblr_alignment_plan_import_rows_sbps_coordination)
 set_tests_properties(
   sbsql_sblr_alignment_plan_import_rows_sbps_coordination PROPERTIES
-  LABELS "sbsql_sblr_alignment;SBLR_DML_PLAN_IMPORT_ROWS;IPRQ;IPEV;SBPS;message_392;schema_7405;message_393;schema_7406;receipt_lifecycle;validation_only;exact_refusal"
+  LABELS "sbsql_sblr_alignment;SBLR_DML_PLAN_IMPORT_ROWS;IPRQ;IPEV;SBPS;message_710;schema_7723;message_711;schema_7724;receipt_lifecycle;validation_only;exact_refusal"
   TIMEOUT 120)
 
 # Isolated private narrow-profile tranche A. These targets validate only the
@@ -5190,7 +5780,7 @@ add_test(NAME sbsql_sblr_alignment_sbps_private_narrow_profile_activation
   COMMAND sbsql_sblr_alignment_sbps_private_narrow_profile_activation)
 set_tests_properties(
   sbsql_sblr_alignment_sbps_private_narrow_profile_activation PROPERTIES
-  LABELS "sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-005726;SBPS;private_narrow_profile;activation;35_pairs;18_forbidden;zero_capability;evidence_gated;exact_dispatch"
+  LABELS "sbsql_sblr_alignment;IA-03;IA-07;IA-08;SBLR_BULK_IMPORT_STREAM;SBLR_PARSE_TEXT;SBLR_CATALOG_EPOCH_CHECK;SBLR_DATABASE_ATTACH;CSC-TEST-005726;SBPS;private_narrow_profile;activation;45_pairs;18_forbidden;schema_7745;schema_7746;schema_7747;schema_7748;schema_7749;schema_7750;zero_capability;evidence_gated;exact_dispatch"
   TIMEOUT 30)
 
 add_executable(sbsql_sblr_alignment_sbps_bulk_import_stream_codec

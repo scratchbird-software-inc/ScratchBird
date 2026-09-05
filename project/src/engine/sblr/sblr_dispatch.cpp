@@ -10539,6 +10539,62 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id == "transaction.set_characteristics" &&
       request.envelope.opcode == "SBLR_TRANSACTION_SET_CHARACTERISTICS" &&
       request.envelope.opcode_code == 265;
+  const bool exact_stmt_prepare =
+      request.envelope.operation_id == "engine.op.stmt_prepare" &&
+      request.envelope.opcode == "SBLR_STMT_PREPARE" &&
+      request.envelope.opcode_code == 4608;
+  const bool exact_stmt_execute =
+      request.envelope.operation_id == "engine.op.stmt_execute" &&
+      request.envelope.opcode == "SBLR_STMT_EXECUTE" &&
+      request.envelope.opcode_code == 4609;
+  const bool exact_stmt_execute_direct =
+      request.envelope.operation_id == "engine.op.stmt_execute_direct" &&
+      request.envelope.opcode == "SBLR_STMT_EXECUTE_DIRECT" &&
+      request.envelope.opcode_code == 4610;
+  const bool exact_stmt_free =
+      request.envelope.operation_id == "engine.op.stmt_free" &&
+      request.envelope.opcode == "SBLR_STMT_FREE" &&
+      request.envelope.opcode_code == 4611;
+  const bool exact_stmt_cancel =
+      request.envelope.operation_id == "engine.op.stmt_cancel" &&
+      request.envelope.opcode == "SBLR_STMT_CANCEL" &&
+      request.envelope.opcode_code == 4612;
+  const bool exact_parameter_bind =
+      request.envelope.operation_id == "engine.op.parameter_bind" &&
+      request.envelope.opcode == "SBLR_PARAMETER_BIND" &&
+      request.envelope.opcode_code == 4613;
+  const bool exact_result_page =
+      request.envelope.operation_id == "engine.op.result_page" &&
+      request.envelope.opcode == "SBLR_RESULT_PAGE" &&
+      request.envelope.opcode_code == 4614;
+  const bool exact_query_explain =
+      request.envelope.operation_id == "engine.op.query_explain" &&
+      request.envelope.opcode == "SBLR_QUERY_EXPLAIN" &&
+      request.envelope.opcode_code == 4616;
+  const bool exact_name_resolve =
+      request.envelope.operation_id == "engine.op.name_resolve" &&
+      request.envelope.opcode == "SBLR_NAME_RESOLVE" &&
+      request.envelope.opcode_code == 4865;
+  const bool exact_parse_text =
+      request.envelope.operation_id == "engine.op.parse_text" &&
+      request.envelope.opcode == "SBLR_PARSE_TEXT" &&
+      request.envelope.opcode_code == 4868;
+  const bool exact_catalog_epoch_check =
+      request.envelope.operation_id == "engine.op.catalog_epoch_check" &&
+      request.envelope.opcode == "SBLR_CATALOG_EPOCH_CHECK" &&
+      request.envelope.opcode_code == 4869;
+  const bool exact_database_attach =
+      request.envelope.operation_id == "engine.op.database_attach" &&
+      request.envelope.opcode == "SBLR_DATABASE_ATTACH" &&
+      request.envelope.opcode_code == 5120;
+  const bool exact_optimizer_stats_read =
+      request.envelope.operation_id == "engine.op.optimizer_stats_read" &&
+      request.envelope.opcode == "SBLR_OPTIMIZER_STATS_READ" &&
+      request.envelope.opcode_code == 4866;
+  const bool exact_optimizer_stats_drop =
+      request.envelope.operation_id == "engine.op.optimizer_stats_drop" &&
+      request.envelope.opcode == "SBLR_OPTIMIZER_STATS_DROP" &&
+      request.envelope.opcode_code == 4867;
   const bool exact_txn_savepoint =
       request.envelope.operation_id == "engine.op.txn_savepoint" &&
       request.envelope.opcode == "SBLR_TXN_SAVEPOINT" &&
@@ -10903,7 +10959,16 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   if (request.envelope.operation_id != "query.execute" && !exact_public_insert_rows && !exact_public_update_rows && !exact_public_native_bulk_ingest && !exact_public_ddl_create_table && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_create_user && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit && !exact_show_database &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_drop_dictionary && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_serialize_logical_snapshot && !exact_database_deserialize_logical_snapshot && !exact_security_alter_user && !exact_security_create_role && !exact_security_drop_role && !exact_security_alter_role && !exact_security_create_group_mapping && !exact_security_drop_group_mapping && !exact_security_create_policy && !exact_security_drop_policy && !exact_txn_begin && !exact_txn_commit &&
-      !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_evaluate_projection && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_publication && !exact_ddl_alter_publication && !exact_ddl_drop_publication && !exact_ddl_create_procedure && !exact_ddl_alter_procedure && !exact_ddl_drop_procedure && !exact_ddl_create_function && !exact_ddl_alter_function && !exact_ddl_drop_function && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_rename_object && !exact_ddl_create_synonym && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
+      !exact_txn_rollback && !exact_stmt_prepare && !exact_stmt_execute &&
+      !exact_stmt_execute_direct && !exact_stmt_free && !exact_stmt_cancel &&
+      !exact_parameter_bind && !exact_result_page && !exact_query_explain &&
+      !exact_name_resolve && !exact_parse_text &&
+      !exact_catalog_epoch_check &&
+      !exact_database_attach &&
+      !exact_optimizer_stats_read &&
+      !exact_optimizer_stats_drop &&
+      !exact_txn_savepoint &&
+      !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_evaluate_projection && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_publication && !exact_ddl_alter_publication && !exact_ddl_drop_publication && !exact_ddl_create_procedure && !exact_ddl_alter_procedure && !exact_ddl_drop_procedure && !exact_ddl_create_function && !exact_ddl_alter_function && !exact_ddl_drop_function && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_rename_object && !exact_ddl_create_synonym && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
       !exact_security_drop_privilege_template && !exact_show_management && !exact_show_agents_extended && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_admin_register_external_relation_resolver && !exact_admin_unregister_external_relation_resolver && !exact_ddl_create_dictionary && !exact_ddl_drop_package && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator && !ddl_type_identity_claim) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
@@ -11036,7 +11101,16 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint;
   if (exact_srs_rewrite_validate || exact_source_map || exact_error_vector ||
       exact_txn_begin ||
-      exact_txn_commit || exact_txn_rollback || exact_txn_savepoint || exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_evaluate_projection || exact_advanced_datatype_family || exact_management_envelope ||
+      exact_txn_commit || exact_txn_rollback || exact_stmt_prepare ||
+      exact_stmt_execute || exact_stmt_execute_direct || exact_stmt_free ||
+      exact_stmt_cancel || exact_parameter_bind || exact_result_page ||
+      exact_query_explain || exact_name_resolve ||
+      exact_parse_text ||
+      exact_catalog_epoch_check ||
+      exact_database_attach ||
+      exact_optimizer_stats_read || exact_optimizer_stats_drop ||
+      exact_txn_savepoint ||
+      exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_evaluate_projection || exact_advanced_datatype_family || exact_management_envelope ||
       exact_project || exact_security_create_privilege_template || exact_security_create_user || exact_security_alter_user || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_show_version || exact_show_database || exact_show_management || exact_show_agents_extended || exact_catalog_introspect || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_drop_materialized_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_alter_package || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_rename_object || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
     if (exact_srs_rewrite_validate) {
       const auto opcode_validation =

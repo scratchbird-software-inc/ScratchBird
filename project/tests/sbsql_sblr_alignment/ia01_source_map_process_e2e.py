@@ -251,23 +251,7 @@ STATIC_EXECUTOR_EVIDENCE_AUDIT_KEYS = {
     "security-create-user": "sblr.security_create_user.executor_unavailable",
 }
 
-PRE_CONTEXT_COMMAND_REFUSALS = {
-    "stmt-prepare": (
-        "CSC-TEST-003573", "STMT_PREPARE",
-        (
-            "engine.op.stmt_prepare",
-            "statement.prepare",
-            "session.prepare_statement",
-            "SBLR_STMT_PREPARE",
-            "SBLR_SESSION_PREPARE_STATEMENT",
-            "opcode_code=4608",
-            "stmt_prepare_descriptor",
-            "stmt_prepare_result",
-            "observability.show_version",
-            "SBLR_OBSERVABILITY_SHOW_VERSION",
-        ),
-    ),
-}
+PRE_CONTEXT_COMMAND_REFUSALS = {}
 
 
 def main() -> int:
@@ -283,7 +267,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-timeseries-series-cardinality-policy"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-timeseries-value-cache"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set", "session-discard", "session-snapshot-handle", "context-set", "context-unset", "context-get", "stmt-prepare", "stmt-execute", "stmt-execute-direct", "stmt-free", "stmt-cancel", "parameter-bind", "result-page", "query-execute", "query-explain", "name-resolve", "parse-text", "catalog-epoch-check", "database-attach", "database-detach", "database-checkpoint", "database-vacuum", "database-alter", "lifecycle-create-database", "lifecycle-open-database", "lifecycle-attach-database", "lifecycle-detach-database", "lifecycle-enter-maintenance", "lifecycle-exit-maintenance", "lifecycle-enter-restricted-open", "lifecycle-exit-restricted-open", "lifecycle-inspect-database", "lifecycle-verify-database", "lifecycle-repair-database", "lifecycle-shutdown-database", "lifecycle-shutdown-force", "lifecycle-shutdown-acknowledge", "lifecycle-drop-database", "repl-consumer-subscribe", "repl-consumer-resume", "repl-consumer-pause", "repl-consumer-cancel", "repl-cdc-receive", "repl-cdc-ack", "repl-2pc-prewrite", "repl-2pc-commit", "repl-2pc-cleanup", "repl-2pc-resolve-lock", "repl-2pc-pessimistic-lock", "repl-2pc-pessimistic-rollback", "repl-2pc-heartbeat", "repl-2pc-check-status", "graph-traverse", "graph-optional-match"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set", "session-discard", "session-snapshot-handle", "context-set", "context-unset", "context-get", "stmt-prepare", "stmt-execute", "stmt-execute-direct", "stmt-free", "stmt-cancel", "parameter-bind", "result-page", "query-execute", "query-explain", "name-resolve", "optimizer-stats-read", "optimizer-stats-drop", "parse-text", "catalog-epoch-check", "database-attach", "database-detach", "database-checkpoint", "database-vacuum", "database-alter", "lifecycle-create-database", "lifecycle-open-database", "lifecycle-attach-database", "lifecycle-detach-database", "lifecycle-enter-maintenance", "lifecycle-exit-maintenance", "lifecycle-enter-restricted-open", "lifecycle-exit-restricted-open", "lifecycle-inspect-database", "lifecycle-verify-database", "lifecycle-repair-database", "lifecycle-shutdown-database", "lifecycle-shutdown-force", "lifecycle-shutdown-acknowledge", "lifecycle-drop-database", "repl-consumer-subscribe", "repl-consumer-resume", "repl-consumer-pause", "repl-consumer-cancel", "repl-cdc-receive", "repl-cdc-ack", "repl-2pc-prewrite", "repl-2pc-commit", "repl-2pc-cleanup", "repl-2pc-resolve-lock", "repl-2pc-pessimistic-lock", "repl-2pc-pessimistic-rollback", "repl-2pc-heartbeat", "repl-2pc-check-status", "graph-traverse", "graph-optional-match"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-alter-role"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-create"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-merge"))
@@ -493,21 +477,6 @@ def main() -> int:
                     f"{operation_label} did not return the exact deterministic "
                     "SBSQL.IMPL.NOT_AVAILABLE refusal"
                 )
-        elif args.operation in PRE_CONTEXT_COMMAND_REFUSALS:
-            test_id, operation_label, _ = (
-                PRE_CONTEXT_COMMAND_REFUSALS[args.operation]
-            )
-            expected_refusal = (
-                f"{test_id} {operation_label} "
-                "deterministic_refusal=SBSQL.IMPL.NOT_AVAILABLE "
-                "no_statement_context=true no_canonical_execution=true "
-                "no_result_publication=true\n"
-            )
-            if first.stdout != expected_refusal or first.stderr:
-                raise ProofError(
-                    f"{operation_label} did not return the exact pre-context "
-                    "SBSQL.IMPL.NOT_AVAILABLE refusal"
-                )
         elif args.operation in (
             "ddl-alter-subscription",
             "ddl-drop-subscription",
@@ -538,6 +507,39 @@ def main() -> int:
                 raise ProofError(
                     f"{operation_label} did not return the exact static "
                     "executor-evidence refusal"
+                )
+        elif args.operation == "parse-text":
+            expected_success = (
+                "CSC-TEST-003625 PARSE_TEXT accepted "
+                "canonical_sblr=true nested_canonical_sblr=true "
+                "publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "PARSE TEXT did not return the exact canonical nested-SBLR "
+                    "success proof"
+                )
+        elif args.operation == "catalog-epoch-check":
+            expected_success = (
+                "CSC-TEST-003629 CATALOG_EPOCH_CHECK accepted "
+                "canonical_sblr=true current_epoch=true "
+                "redaction_bound=true publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "CATALOG EPOCH CHECK did not return the exact "
+                    "catalog-authority success proof"
+                )
+        elif args.operation == "database-attach":
+            expected_success = (
+                "CSC-TEST-003633 DATABASE_ATTACH accepted "
+                "canonical_sblr=true registered_storage=true "
+                "session_alias=true publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "DATABASE ATTACH REGISTERED did not return the exact "
+                    "durable session-alias success proof"
                 )
         audit_paths = (server_trace, dispatch_trace,
                        work / "sc" / "sb_server.audit.jsonl")
@@ -851,6 +853,175 @@ def main() -> int:
             expected = ()
         elif args.operation == "ddl-drop-fdw":
             expected = ()
+        elif args.operation == "stmt-prepare":
+            expected = (
+                "executor_id=engine.op.stmt_prepare",
+                "opcode=SBLR_STMT_PREPARE",
+                "opcode_code=4608",
+                "operand_descriptor_id=stmt_prepare_descriptor",
+                "result_descriptor_id=stmt_prepare_result",
+                "result_descriptor_version=1",
+                "stmt_prepare_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation == "stmt-execute":
+            expected = (
+                "executor_id=engine.op.stmt_execute",
+                "opcode=SBLR_STMT_EXECUTE",
+                "opcode_code=4609",
+                "operand_descriptor_id=stmt_execute_descriptor",
+                "result_descriptor_id=stmt_execute_result",
+                "result_descriptor_version=1",
+                "stmt_execute_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation == "stmt-execute-direct":
+            expected = (
+                "executor_id=engine.op.stmt_execute_direct",
+                "opcode=SBLR_STMT_EXECUTE_DIRECT",
+                "opcode_code=4610",
+                "operand_descriptor_id=stmt_execute_direct_descriptor",
+                "result_descriptor_id=stmt_execute_result",
+                "result_descriptor_version=1",
+                "stmt_execute_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation == "stmt-free":
+            expected = (
+                "executor_id=engine.op.stmt_free",
+                "opcode=SBLR_STMT_FREE",
+                "opcode_code=4611",
+                "operand_descriptor_id=stmt_free_descriptor",
+                "result_descriptor_id=stmt_free_result",
+                "result_descriptor_version=1",
+                "stmt_free_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation == "stmt-cancel":
+            expected = (
+                "executor_id=engine.op.stmt_cancel",
+                "opcode=SBLR_STMT_CANCEL",
+                "opcode_code=4612",
+                "operand_descriptor_id=stmt_cancel_descriptor",
+                "result_descriptor_id=stmt_cancel_result",
+                "result_descriptor_version=1",
+                "stmt_cancel_result_sha256=",
+                "executor_availability_generation=",
+                "terminal_state=already_terminal",
+            )
+        elif args.operation == "parameter-bind":
+            expected = (
+                "executor_id=engine.op.parameter_bind",
+                "opcode=SBLR_PARAMETER_BIND",
+                "opcode_code=4613",
+                "operand_descriptor_id=parameter_bind_descriptor",
+                "result_descriptor_id=parameter_bind_result",
+                "result_descriptor_version=1",
+                "parameter_bind_result_sha256=",
+                "executor_availability_generation=",
+                "publication_barrier=passed",
+                "executor_id=engine.op.stmt_execute",
+                "opcode=SBLR_STMT_EXECUTE",
+                "opcode_code=4609",
+                "operand_descriptor_id=stmt_execute_descriptor",
+                "result_descriptor_id=stmt_execute_result",
+                "stmt_execute_result_sha256=",
+            )
+        elif args.operation == "result-page":
+            expected = (
+                "executor_id=engine.op.result_page",
+                "opcode=SBLR_RESULT_PAGE",
+                "opcode_code=4614",
+                "operand_descriptor_id=result_page_descriptor.v1",
+                "result_descriptor_id=result_page_data",
+                "result_descriptor_version=1",
+                "result_page_result_sha256=",
+                "executor_availability_generation=",
+                "publication_barrier=passed",
+            )
+        elif args.operation == "query-execute":
+            expected = (
+                "preflight_observe op=query.execute "
+                "opcode=SBLR_QUERY_EXECUTE code=4615",
+                "layer=query_execute_result.handle_validated."
+                "admitted_query_row_stream_renderer",
+                "operation=query.execute",
+            )
+        elif args.operation == "name-resolve":
+            expected = (
+                "executor_id=engine.op.name_resolve",
+                "opcode=SBLR_NAME_RESOLVE",
+                "opcode_code=4865",
+                "operand_descriptor_id=name_resolve_descriptor.v1",
+                "result_descriptor_id=name_resolve_result",
+                "result_descriptor_version=1",
+                "name_resolve_result_sha256=",
+                "executor_availability_generation=",
+                "publication_barrier=passed",
+            )
+        elif args.operation == "optimizer-stats-read":
+            expected = (
+                "executor_id=engine.op.optimizer_stats_read",
+                "opcode=SBLR_OPTIMIZER_STATS_READ",
+                "opcode_code=4866",
+                "operand_descriptor_id=optimizer_stats_read_descriptor.v1",
+                "result_descriptor_id=optimizer_stats_result",
+                "result_descriptor_version=1",
+                "optimizer_stats_result_sha256=",
+                "executor_availability_generation=",
+                "statement_snapshot_fence=passed",
+                "publication_barrier=passed",
+            )
+        elif args.operation == "optimizer-stats-drop":
+            expected = (
+                "executor_id=engine.op.optimizer_stats_drop",
+                "opcode=SBLR_OPTIMIZER_STATS_DROP",
+                "opcode_code=4867",
+                "operand_descriptor_id=optimizer_stats_drop_descriptor.v1",
+                "result_descriptor_id=optimizer_stats_result",
+                "result_descriptor_version=1",
+                "optimizer_stats_result_sha256=",
+                "executor_availability_generation=",
+                "statistics_epoch=",
+                "cache_invalidation_generation=",
+                "publication_barrier=passed",
+            )
+        elif args.operation == "parse-text":
+            expected = (
+                "executor_id=engine.op.parse_text",
+                "opcode=SBLR_PARSE_TEXT",
+                "opcode_code=4868",
+                "operand_descriptor_id=parse_text_descriptor",
+                "result_descriptor_id=parse_text_result",
+                "result_descriptor_version=1",
+                "parse_text_result_sha256=",
+                "executor_availability_generation=",
+                "publication_barrier=passed",
+            )
+        elif args.operation == "catalog-epoch-check":
+            expected = (
+                "executor_id=engine.op.catalog_epoch_check",
+                "opcode=SBLR_CATALOG_EPOCH_CHECK",
+                "opcode_code=4869",
+                "operand_descriptor_id=catalog_epoch_check_descriptor",
+                "result_descriptor_id=catalog_epoch_result",
+                "result_descriptor_version=1",
+                "catalog_epoch_result_sha256=",
+                "executor_availability_generation=",
+                "publication_barrier=passed",
+            )
+        elif args.operation == "database-attach":
+            expected = (
+                "executor_id=engine.op.database_attach",
+                "opcode=SBLR_DATABASE_ATTACH",
+                "opcode_code=5120",
+                "operand_descriptor_id=database_attach_descriptor",
+                "result_descriptor_id=database_attach_result",
+                "result_descriptor_version=1",
+                "database_attach_result_sha256=",
+                "executor_availability_generation=",
+                "publication_barrier=passed",
+            )
         elif args.operation in ("ddl-create-trigger", "ddl-alter-trigger", "ddl-drop-trigger", "ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
             expected = ()
         elif args.operation == "ddl-create-schema":
@@ -890,7 +1061,11 @@ def main() -> int:
         second[-1] = f"sbsql-sblr-{args.operation}-e2e-independent"
         verified = subprocess.run(second, capture_output=True, text=True, timeout=30)
         if verified.returncode != 0 or (verified.stdout != first.stdout and args.operation != "ddl-drop-operator"):
-            raise ProofError("independent authenticated process/receipt verification failed")
+            raise ProofError(
+                "independent authenticated process/receipt verification failed: "
+                f"returncode={verified.returncode} "
+                f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
+            )
         if args.operation in PRE_CONTEXT_COMMAND_REFUSALS:
             if verified.stderr:
                 raise ProofError(

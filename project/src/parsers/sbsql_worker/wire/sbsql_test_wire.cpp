@@ -16,11 +16,21 @@
 #include "lowering/lowering.hpp"
 #include "rendering/rendering.hpp"
 #include "wire/parser_server_ipc/sbps_bulk_import_stream_codec.hpp"
+#include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
 
 
 #include "scratchbird/engine/sblr/lowering.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
 #include "engine/sblr/sblr_parameter_runtime.hpp"
+#include "engine/sblr/sblr_parameter_bind_runtime.hpp"
+#include "engine/sblr/sblr_result_page_runtime.hpp"
+#include "engine/sblr/sblr_query_explain_runtime.hpp"
+#include "engine/sblr/sblr_name_resolve_runtime.hpp"
+#include "engine/sblr/sblr_parse_text_runtime.hpp"
+#include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
+#include "engine/sblr/sblr_database_attach_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
 #include "engine/sblr/sblr_variable_runtime.hpp"
 #include "engine/sblr/sblr_source_map_runtime.hpp"
@@ -111,6 +121,10 @@
 #include "engine/sblr/sblr_context_unset_runtime.hpp"
 #include "engine/sblr/sblr_context_get_runtime.hpp"
 #include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
+#include "engine/sblr/sblr_stmt_execute_runtime.hpp"
+#include "engine/sblr/sblr_stmt_execute_direct_runtime.hpp"
+#include "engine/sblr/sblr_stmt_free_runtime.hpp"
+#include "engine/sblr/sblr_stmt_cancel_runtime.hpp"
 #include "engine/sblr/sblr_sec_alter_role_runtime.hpp"
 #include "engine/sblr/sblr_sec_create_group_mapping_runtime.hpp"
 #include "engine/sblr/sblr_sec_drop_group_mapping_runtime.hpp"
@@ -9188,6 +9202,51 @@ std::optional<std::array<std::uint8_t, 32>> CanonicalSha256(
   return digest;
 }
 
+std::string ParameterSlotUuidText(
+    const std::array<std::uint8_t, 16>& value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string text;
+  text.reserve(36);
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 4 || index == 6 || index == 8 || index == 10) {
+      text.push_back('-');
+    }
+    text.push_back(kHex[value[index] >> 4U]);
+    text.push_back(kHex[value[index] & 0x0fU]);
+  }
+  return text;
+}
+
+std::optional<std::array<std::uint8_t, 32>> ParameterSlotTableSha256(
+    const std::vector<ipc::PreparedParameterSlotReference>& slots) {
+  if (slots.empty() || slots.size() > 4096) return std::nullopt;
+  std::string material;
+  for (std::size_t index = 0; index < slots.size(); ++index) {
+    const auto& slot = slots[index];
+    if (slot.slot_ordinal != index || slot.datatype_descriptor_generation == 0 ||
+        slot.direction < 1 || slot.direction > 3 || slot.nullable > 1 ||
+        !CanonicalUuidBytes(ParameterSlotUuidText(slot.slot_uuid)) ||
+        !CanonicalUuidBytes(
+            ParameterSlotUuidText(slot.datatype_descriptor_uuid)) ||
+        !CanonicalUuidBytes(ParameterSlotUuidText(slot.datatype_type_uuid))) {
+      return std::nullopt;
+    }
+    material.append(std::to_string(slot.slot_ordinal));
+    material.push_back(',');
+    material.append(ParameterSlotUuidText(slot.slot_uuid));
+    material.push_back(',');
+    material.append(ParameterSlotUuidText(slot.datatype_descriptor_uuid));
+    material.push_back(',');
+    material.append(std::to_string(slot.datatype_descriptor_generation));
+    material.push_back(',');
+    material.append(std::to_string(static_cast<unsigned>(slot.direction)));
+    material.push_back(',');
+    material.append(std::to_string(static_cast<unsigned>(slot.nullable)));
+    material.push_back(';');
+  }
+  return CanonicalSha256(CanonicalBytes(material.begin(), material.end()));
+}
+
 std::optional<std::array<std::uint8_t, 32>> ParameterNodeTableSha256(
     const CanonicalBytes& bytes) {
   static constexpr std::string_view kDomain =
@@ -12258,6 +12317,15 @@ bool FinalizeParameterSubmission(
         finalized.canonical_payload, *sbpn_sha);
     if (!sbpt) {
       if (messages != nullptr) {
+        const auto diagnostic_schema =
+            ipc::EncodePreparedParameterSchema4015Template(
+                session, statement_context, *submission);
+        const auto diagnostic_operation =
+            CanonicalUuidBytes(coordination->operation_uuid);
+        const auto diagnostic_prepared = CanonicalUuidBytes(
+            statement_context.preliminary_prepared_statement_uuid);
+        const auto diagnostic_mga = CanonicalUuidBytes(
+            statement_context.preliminary_mga_snapshot_uuid);
         messages->diagnostics.push_back(MakeDiagnostic(
             "SBLR.OPERAND_INVALID", "ERROR",
             "The value-free prepared parameter template could not be encoded from the authenticated admission "
@@ -12269,7 +12337,32 @@ bool FinalizeParameterSubmission(
                 ", parameter_finalized=" +
                 std::to_string(submission->parameter_finalized()) +
                 ", literal_finalized=" +
-                std::to_string(submission->literal_finalized()) + ").",
+                std::to_string(submission->literal_finalized()) +
+                ", submission_complete=" +
+                std::to_string(submission->complete()) +
+                ", coordination_present=" +
+                std::to_string(coordination->present()) +
+                ", coordination_mode=" +
+                std::to_string(static_cast<unsigned>(coordination->mode)) +
+                ", schema4015_bytes=" +
+                std::to_string(diagnostic_schema.size()) +
+                ", operation_uuid_valid=" +
+                std::to_string(diagnostic_operation.has_value()) +
+                ", prepared_uuid_valid=" +
+                std::to_string(diagnostic_prepared.has_value()) +
+                ", mga_uuid_valid=" +
+                std::to_string(diagnostic_mga.has_value()) +
+                ", prepared_pair_matches=" +
+                std::to_string(
+                    diagnostic_prepared &&
+                    admission.prepared_uuid == *diagnostic_prepared &&
+                    admission.prepared_generation ==
+                        statement_context.preliminary_prepared_generation) +
+                ", execution_matches_coordination=" +
+                std::to_string(diagnostic_operation &&
+                               admission.execution_uuid ==
+                                   *diagnostic_operation) +
+                ").",
             "sbp_sbsql.wire"));
       }
       return false;
@@ -12290,6 +12383,48 @@ bool FinalizeParameterSubmission(
         }
         return false;
       }
+      const auto sealed_prepared_uuid =
+          CanonicalUuidBytes(sealed.prepared.prepared_statement_uuid);
+      std::vector<ipc::PreparedParameterSlotReference> retained_slots;
+      retained_slots.reserve(prebind.mapping.mappings.size());
+      for (const auto& mapping : prebind.mapping.mappings) {
+        ipc::PreparedParameterSlotReference slot;
+        slot.slot_ordinal = mapping.slot_ordinal;
+        slot.slot_uuid = mapping.slot_uuid;
+        slot.datatype_descriptor_uuid = mapping.datatype_descriptor_uuid;
+        slot.datatype_type_uuid = mapping.datatype_type_uuid;
+        slot.datatype_descriptor_generation =
+            mapping.datatype_descriptor_generation;
+        slot.direction = mapping.direction;
+        slot.nullable = mapping.nullable;
+        retained_slots.push_back(std::move(slot));
+      }
+      const auto slot_table_sha = ParameterSlotTableSha256(retained_slots);
+      if (!sealed_prepared_uuid ||
+          *sealed_prepared_uuid != admission.prepared_uuid ||
+          sealed.prepared.prepared_generation !=
+              admission.prepared_generation ||
+          !slot_table_sha) {
+        if (messages != nullptr) {
+          messages->diagnostics.push_back(MakeDiagnostic(
+              "SBLR.PARAMETER.STALE", "ERROR",
+              "The sealed prepared reference does not match its authenticated parameter slot authority.",
+              "sbp_sbsql.wire"));
+        }
+        return false;
+      }
+      sealed.prepared.parameter_set_uuid =
+          admission.parameter_set_descriptor_uuid;
+      sealed.prepared.parameter_set_generation =
+          admission.descriptor_generation;
+      sealed.prepared.ordered_slot_table_sha256 = *slot_table_sha;
+      sealed.prepared.batch_uuid = admission.batch_uuid;
+      sealed.prepared.batch_generation = admission.batch_generation;
+      sealed.prepared.dynamic_package_uuid = admission.dynamic_uuid;
+      sealed.prepared.dynamic_generation = admission.dynamic_generation;
+      sealed.prepared.slots = std::move(retained_slots);
+      sealed.prepared.canonical_parameter_admission =
+          finalized.canonical_payload;
       *prepared_output = std::move(sealed.prepared);
       return true;
     } else {
@@ -13300,6 +13435,25 @@ thread_local const std::vector<std::uint8_t>* g_ddl_drop_subscription_operand = 
 thread_local const std::vector<std::uint8_t>* g_ddl_create_operator_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_drop_operator_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_table_analyze_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_stmt_prepare_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_stmt_execute_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_stmt_execute_direct_operand =
+    nullptr;
+thread_local const std::vector<std::uint8_t>* g_stmt_free_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_stmt_cancel_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_parameter_bind_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_result_page_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_query_explain_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_name_resolve_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_parse_text_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_catalog_epoch_check_operand =
+    nullptr;
+thread_local const std::vector<std::uint8_t>* g_database_attach_operand =
+    nullptr;
+thread_local const std::vector<std::uint8_t>* g_optimizer_stats_read_operand =
+    nullptr;
+thread_local const std::vector<std::uint8_t>* g_optimizer_stats_drop_operand =
+    nullptr;
 
 std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     const BoundStatement& bound, const SblrEnvelope& lowered,
@@ -14252,6 +14406,320 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
   if (lowered.operation_id == "engine.op.context_set" && admitted_context_set_operand != nullptr) { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.context_set","SBLR_CONTEXT_SET","context.set.native");e.opcode_code=4362;e.requires_security_context=true;e.result_shape="session_setting_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="context_set_descriptor";o.name="context";o.value_kind=c::SblrValueKind::context_set_descriptor;o.value_body=*admitted_context_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);operation=bytes.empty()?std::nullopt:std::optional<CanonicalBytes>(CanonicalBytes(bytes.begin(),bytes.end())); }
   if (lowered.operation_id == "engine.op.context_unset" && admitted_context_unset_operand != nullptr) { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.context_unset","SBLR_CONTEXT_UNSET","context.unset.native");e.opcode_code=4363;e.requires_security_context=true;e.result_shape="session_setting_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="context_unset_descriptor";o.name="context";o.value_kind=c::SblrValueKind::context_unset_descriptor;o.value_body=*admitted_context_unset_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);operation=bytes.empty()?std::nullopt:std::optional<CanonicalBytes>(CanonicalBytes(bytes.begin(),bytes.end())); }
   if (lowered.operation_id == "engine.op.context_get" && admitted_context_get_operand != nullptr) { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.context_get","SBLR_CONTEXT_GET","context.get.native");e.opcode_code=4364;e.requires_security_context=true;e.result_shape="context_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="context_get_descriptor";o.name="context";o.value_kind=c::SblrValueKind::context_get_descriptor;o.value_body=*admitted_context_get_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);operation=bytes.empty()?std::nullopt:std::optional<CanonicalBytes>(CanonicalBytes(bytes.begin(),bytes.end())); }
+  if ((lowered.operation_id == "engine.op.stmt_prepare" &&
+       g_stmt_prepare_operand != nullptr) ||
+      (lowered.operation_id == "engine.op.stmt_execute" &&
+       g_stmt_execute_operand != nullptr) ||
+      (lowered.operation_id == "engine.op.stmt_execute_direct" &&
+       g_stmt_execute_direct_operand != nullptr) ||
+      (lowered.operation_id == "engine.op.stmt_free" &&
+       g_stmt_free_operand != nullptr) ||
+      (lowered.operation_id == "engine.op.stmt_cancel" &&
+       g_stmt_cancel_operand != nullptr) ||
+      (lowered.operation_id == "engine.op.parameter_bind" &&
+       g_parameter_bind_operand != nullptr) ||
+      (lowered.operation_id == "engine.op.result_page" &&
+       g_result_page_operand != nullptr) ||
+      (lowered.operation_id == "engine.op.query_explain" &&
+       g_query_explain_operand != nullptr)) {
+    namespace c = scratchbird::engine::sblr;
+    const bool prepare = lowered.operation_id == "engine.op.stmt_prepare";
+    const bool execute = lowered.operation_id == "engine.op.stmt_execute";
+    const bool execute_direct =
+        lowered.operation_id == "engine.op.stmt_execute_direct";
+    const bool free_statement =
+        lowered.operation_id == "engine.op.stmt_free";
+    const bool parameter_bind =
+        lowered.operation_id == "engine.op.parameter_bind";
+    const bool result_page =
+        lowered.operation_id == "engine.op.result_page";
+    const bool query_explain =
+        lowered.operation_id == "engine.op.query_explain";
+    auto envelope = c::MakeSblrEnvelope(
+        lowered.operation_id,
+        prepare ? "SBLR_STMT_PREPARE"
+                : execute ? "SBLR_STMT_EXECUTE"
+                : execute_direct ? "SBLR_STMT_EXECUTE_DIRECT"
+                : free_statement ? "SBLR_STMT_FREE"
+                : parameter_bind ? "SBLR_PARAMETER_BIND"
+                : result_page ? "SBLR_RESULT_PAGE"
+                : query_explain ? "SBLR_QUERY_EXPLAIN"
+                                 : "SBLR_STMT_CANCEL",
+        prepare ? "statement.prepare.native"
+                : execute ? "statement.execute.native"
+                : execute_direct ? "statement.execute_direct.native"
+                : free_statement ? "statement.free.native"
+                : parameter_bind ? "statement.parameter_bind.native"
+                : result_page ? "statement.result_page.native"
+                : query_explain ? "query.explain.native"
+                                 : "statement.cancel.native");
+    envelope.opcode_code =
+        prepare ? 4608 : execute ? 4609 : execute_direct ? 4610
+        : free_statement ? 4611 : parameter_bind ? 4613
+        : result_page ? 4614 : query_explain ? 4616 : 4612;
+    envelope.requires_security_context = true;
+    envelope.requires_transaction_context = result_page || query_explain;
+    envelope.result_shape =
+        prepare ? "stmt_prepare_result"
+                : (execute || execute_direct) ? "stmt_execute_result"
+                : free_statement ? "stmt_free_result"
+                : parameter_bind ? "parameter_bind_result"
+                : result_page ? "result_page_data"
+                : query_explain ? "explain_result"
+                                 : "stmt_cancel_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+    envelope.parser_package_version_major =
+        session.admitted_parser_package_version_major;
+    envelope.parser_package_version_minor =
+        session.admitted_parser_package_version_minor;
+    envelope.parser_package_version_patch =
+        session.admitted_parser_package_version_patch;
+    envelope.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+    envelope.parser_resolved_names_to_uuids = true;
+    c::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = prepare ? "stmt_prepare_descriptor"
+                           : execute ? "stmt_execute_descriptor"
+                           : execute_direct
+                                 ? "stmt_execute_direct_descriptor"
+                           : free_statement ? "stmt_free_descriptor"
+                           : parameter_bind ? "parameter_bind_descriptor"
+                           : result_page ? "result_page_descriptor.v1"
+                           : query_explain ? "query_explain_descriptor.v1"
+                                            : "stmt_cancel_descriptor";
+    operand.name = parameter_bind ? "parameters"
+                                  : result_page ? "result_page"
+                                  : query_explain ? "query"
+                                                : "statement";
+    operand.value_kind =
+        prepare ? c::SblrValueKind::stmt_prepare_descriptor
+                : execute ? c::SblrValueKind::stmt_execute_descriptor
+                : execute_direct
+                      ? c::SblrValueKind::stmt_execute_direct_descriptor
+                : free_statement ? c::SblrValueKind::stmt_free_descriptor
+                : parameter_bind
+                      ? c::SblrValueKind::parameter_bind_descriptor
+                : result_page
+                      ? c::SblrValueKind::result_page_descriptor
+                : query_explain
+                      ? c::SblrValueKind::query_explain_descriptor
+                      : c::SblrValueKind::stmt_cancel_descriptor;
+    operand.value_body =
+        prepare ? *g_stmt_prepare_operand
+                : execute ? *g_stmt_execute_operand
+                : execute_direct ? *g_stmt_execute_direct_operand
+                : free_statement ? *g_stmt_free_operand
+                : parameter_bind ? *g_parameter_bind_operand
+                : result_page ? *g_result_page_operand
+                : query_explain ? *g_query_explain_operand
+                                 : *g_stmt_cancel_operand;
+    envelope.operands.push_back(std::move(operand));
+    const auto bytes = c::EncodeSblrEnvelope(envelope);
+    operation = bytes.empty()
+                    ? std::nullopt
+                    : std::optional<CanonicalBytes>(
+                          CanonicalBytes(bytes.begin(), bytes.end()));
+  }
+  if (lowered.operation_id == "engine.op.name_resolve" &&
+      g_name_resolve_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto envelope = c::MakeSblrEnvelope(
+        "engine.op.name_resolve", "SBLR_NAME_RESOLVE",
+        "catalog.name_resolution.native");
+    envelope.opcode_code = c::kSblrNameResolveOpcodeCode;
+    envelope.requires_security_context = true;
+    envelope.requires_transaction_context = true;
+    envelope.result_shape = "name_resolve_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+    envelope.parser_package_version_major =
+        session.admitted_parser_package_version_major;
+    envelope.parser_package_version_minor =
+        session.admitted_parser_package_version_minor;
+    envelope.parser_package_version_patch =
+        session.admitted_parser_package_version_patch;
+    envelope.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+    envelope.parser_resolved_names_to_uuids = true;
+    c::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "name_resolve_descriptor.v1";
+    operand.name = "name";
+    operand.value_kind = c::SblrValueKind::name_resolve_descriptor;
+    operand.value_body = *g_name_resolve_operand;
+    envelope.operands.push_back(std::move(operand));
+    const auto bytes = c::EncodeSblrEnvelope(envelope);
+    operation = bytes.empty()
+                    ? std::nullopt
+                    : std::optional<CanonicalBytes>(
+                          CanonicalBytes(bytes.begin(), bytes.end()));
+  }
+  if (lowered.operation_id == "engine.op.parse_text" &&
+      g_parse_text_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto envelope = c::MakeSblrEnvelope(
+        "engine.op.parse_text", "SBLR_PARSE_TEXT",
+        "catalog.parse_text.native");
+    envelope.opcode_code = c::kSblrParseTextOpcodeCode;
+    envelope.requires_security_context = true;
+    envelope.requires_transaction_context = false;
+    envelope.result_shape = "parse_text_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+    envelope.parser_package_version_major =
+        session.admitted_parser_package_version_major;
+    envelope.parser_package_version_minor =
+        session.admitted_parser_package_version_minor;
+    envelope.parser_package_version_patch =
+        session.admitted_parser_package_version_patch;
+    envelope.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+    envelope.parser_resolved_names_to_uuids = true;
+    c::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "parse_text_descriptor";
+    operand.name = "text";
+    operand.value_kind = c::SblrValueKind::parse_text_descriptor;
+    operand.value_body = *g_parse_text_operand;
+    envelope.operands.push_back(std::move(operand));
+    const auto bytes = c::EncodeSblrEnvelope(envelope);
+    operation = bytes.empty()
+                    ? std::nullopt
+                    : std::optional<CanonicalBytes>(
+                          CanonicalBytes(bytes.begin(), bytes.end()));
+  }
+  if (lowered.operation_id == "engine.op.catalog_epoch_check" &&
+      g_catalog_epoch_check_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto envelope = c::MakeSblrEnvelope(
+        "engine.op.catalog_epoch_check", "SBLR_CATALOG_EPOCH_CHECK",
+        "catalog.epoch_check.native");
+    envelope.opcode_code = c::kSblrCatalogEpochCheckOpcodeCode;
+    envelope.requires_security_context = true;
+    envelope.requires_transaction_context = true;
+    envelope.result_shape = "catalog_epoch_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+    envelope.parser_package_version_major =
+        session.admitted_parser_package_version_major;
+    envelope.parser_package_version_minor =
+        session.admitted_parser_package_version_minor;
+    envelope.parser_package_version_patch =
+        session.admitted_parser_package_version_patch;
+    envelope.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+    envelope.parser_resolved_names_to_uuids = true;
+    c::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "catalog_epoch_check_descriptor";
+    operand.name = "catalog_epoch";
+    operand.value_kind =
+        c::SblrValueKind::catalog_epoch_check_descriptor;
+    operand.value_body = *g_catalog_epoch_check_operand;
+    envelope.operands.push_back(std::move(operand));
+    const auto bytes = c::EncodeSblrEnvelope(envelope);
+    operation = bytes.empty()
+                    ? std::nullopt
+                    : std::optional<CanonicalBytes>(
+                          CanonicalBytes(bytes.begin(), bytes.end()));
+  }
+  if (lowered.operation_id == "engine.op.database_attach" &&
+      g_database_attach_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto envelope = c::MakeSblrEnvelope(
+        "engine.op.database_attach", "SBLR_DATABASE_ATTACH",
+        "database.attach.registered.native");
+    envelope.opcode_code = c::kSblrDatabaseAttachOpcodeCode;
+    envelope.requires_security_context = true;
+    envelope.requires_transaction_context = true;
+    envelope.result_shape = "database_attach_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+    envelope.parser_package_version_major =
+        session.admitted_parser_package_version_major;
+    envelope.parser_package_version_minor =
+        session.admitted_parser_package_version_minor;
+    envelope.parser_package_version_patch =
+        session.admitted_parser_package_version_patch;
+    envelope.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+    envelope.parser_resolved_names_to_uuids = true;
+    c::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "database_attach_descriptor";
+    operand.name = "attachment";
+    operand.value_kind = c::SblrValueKind::database_attach_descriptor;
+    operand.value_body = *g_database_attach_operand;
+    envelope.operands.push_back(std::move(operand));
+    const auto bytes = c::EncodeSblrEnvelope(envelope);
+    operation = bytes.empty()
+                    ? std::nullopt
+                    : std::optional<CanonicalBytes>(
+                          CanonicalBytes(bytes.begin(), bytes.end()));
+  }
+  if (lowered.operation_id == "engine.op.optimizer_stats_read" &&
+      g_optimizer_stats_read_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto envelope = c::MakeSblrEnvelope(
+        "engine.op.optimizer_stats_read", "SBLR_OPTIMIZER_STATS_READ",
+        "catalog.optimizer.statistics.read.native");
+    envelope.opcode_code = c::kSblrOptimizerStatsReadOpcodeCode;
+    envelope.requires_security_context = true;
+    envelope.requires_transaction_context = true;
+    envelope.result_shape = "optimizer_stats_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+    envelope.parser_package_version_major =
+        session.admitted_parser_package_version_major;
+    envelope.parser_package_version_minor =
+        session.admitted_parser_package_version_minor;
+    envelope.parser_package_version_patch =
+        session.admitted_parser_package_version_patch;
+    envelope.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+    envelope.parser_resolved_names_to_uuids = true;
+    c::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "optimizer_stats_read_descriptor.v1";
+    operand.name = "statistics";
+    operand.value_kind = c::SblrValueKind::optimizer_stats_read_descriptor;
+    operand.value_body = *g_optimizer_stats_read_operand;
+    envelope.operands.push_back(std::move(operand));
+    const auto bytes = c::EncodeSblrEnvelope(envelope);
+    operation = bytes.empty()
+                    ? std::nullopt
+                    : std::optional<CanonicalBytes>(
+                          CanonicalBytes(bytes.begin(), bytes.end()));
+  }
+  if (lowered.operation_id == "engine.op.optimizer_stats_drop" &&
+      g_optimizer_stats_drop_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto envelope = c::MakeSblrEnvelope(
+        "engine.op.optimizer_stats_drop", "SBLR_OPTIMIZER_STATS_DROP",
+        "catalog.optimizer.statistics.drop.native");
+    envelope.opcode_code = c::kSblrOptimizerStatsDropOpcodeCode;
+    envelope.requires_security_context = true;
+    envelope.requires_transaction_context = true;
+    envelope.result_shape = "optimizer_stats_result";
+    envelope.diagnostic_shape = "diagnostic_vector";
+    envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+    envelope.parser_package_version_major =
+        session.admitted_parser_package_version_major;
+    envelope.parser_package_version_minor =
+        session.admitted_parser_package_version_minor;
+    envelope.parser_package_version_patch =
+        session.admitted_parser_package_version_patch;
+    envelope.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+    envelope.parser_resolved_names_to_uuids = true;
+    c::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "optimizer_stats_drop_descriptor.v1";
+    operand.name = "statistics";
+    operand.value_kind = c::SblrValueKind::optimizer_stats_drop_descriptor;
+    operand.value_body = *g_optimizer_stats_drop_operand;
+    envelope.operands.push_back(std::move(operand));
+    const auto bytes = c::EncodeSblrEnvelope(envelope);
+    operation = bytes.empty()
+                    ? std::nullopt
+                    : std::optional<CanonicalBytes>(
+                          CanonicalBytes(bytes.begin(), bytes.end()));
+  }
   const auto opcode_stream = operation.has_value()
       ? EncodeNativeOpcodeStreamBinary(
             *operation, statement_context, session)
@@ -14299,9 +14767,9 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
     }
   };
   anchor_u32(48, 1);
-  anchor_u64(52, 1);
-  anchor_u64(60, 1);
-  anchor_u64(68, 1);
+  anchor_u64(52, statement_context.preliminary_statement_catalog_generation);
+  anchor_u64(60, statement_context.preliminary_security_epoch);
+  anchor_u64(68, statement_context.preliminary_resource_epoch);
   std::copy(registry_uuid->begin(), registry_uuid->end(),
             container.canonical_anchor.begin() + 76);
   anchor_u64(92, 1);
@@ -14417,9 +14885,9 @@ BuildCanonicalRegistryOperationSubmission(
     }
   };
   anchor_u32(48, 1);
-  anchor_u64(52, 1);
-  anchor_u64(60, 1);
-  anchor_u64(68, 1);
+  anchor_u64(52, statement_context.preliminary_statement_catalog_generation);
+  anchor_u64(60, statement_context.preliminary_security_epoch);
+  anchor_u64(68, statement_context.preliminary_resource_epoch);
   std::copy(registry_uuid->begin(), registry_uuid->end(),
             container.canonical_anchor.begin() + 76);
   anchor_u64(92, 1);
@@ -14525,7 +14993,10 @@ bool ExecuteIssuedDescriptorRoot(
   auto u16=[&](std::size_t at,std::uint16_t v){container.canonical_anchor[at]=v;container.canonical_anchor[at+1]=v>>8;};
   auto u32=[&](std::size_t at,std::uint32_t v){for(unsigned s=0;s<32;s+=8)container.canonical_anchor[at+s/8]=v>>s;};
   auto u64=[&](std::size_t at,std::uint64_t v){for(unsigned s=0;s<64;s+=8)container.canonical_anchor[at+s/8]=v>>s;};
-  u32(48,1);u64(52,1);u64(60,1);u64(68,1);
+  u32(48,1);
+  u64(52,issue_context.preliminary_statement_catalog_generation);
+  u64(60,issue_context.preliminary_security_epoch);
+  u64(68,issue_context.preliminary_resource_epoch);
   std::copy(registry_uuid->begin(),registry_uuid->end(),container.canonical_anchor.begin()+76);
   u64(92,1);u16(100,1);
   std::copy(statement_uuid->begin(),statement_uuid->end(),container.canonical_anchor.begin()+116);
@@ -14718,7 +15189,10 @@ bool AttachIssuedSourceMap(const ParserStatementContext& context,
     for (unsigned shift = 0; shift != 64; shift += 8)
       container.canonical_anchor[at + shift / 8] = static_cast<std::uint8_t>(value >> shift);
   };
-  anchor_u32(48, 1); anchor_u64(52, 1); anchor_u64(60, 1); anchor_u64(68, 1);
+  anchor_u32(48, 1);
+  anchor_u64(52, context.preliminary_statement_catalog_generation);
+  anchor_u64(60, context.preliminary_security_epoch);
+  anchor_u64(68, context.preliminary_resource_epoch);
   std::copy(registry_uuid->begin(), registry_uuid->end(),
             container.canonical_anchor.begin() + 76);
   anchor_u64(92, 1); anchor_u16(100, 1);
@@ -16631,6 +17105,650 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
 
 bool IsIdentifierLikeForRouteExecution(const Token& token) {
   return token.kind == TokenKind::kIdentifier || token.kind == TokenKind::kKeyword;
+}
+
+enum class PreparedStatementWireCommandKind {
+  kNone,
+  kPrepare,
+  kFree,
+  kCancel,
+  kParameterBind,
+  kExecute,
+  kExecuteDirect,
+  kInvalid,
+};
+
+struct PreparedStatementWireCommand {
+  PreparedStatementWireCommandKind kind{PreparedStatementWireCommandKind::kNone};
+  std::string statement_name;
+  bool statement_name_quoted{false};
+  std::string nested_sql;
+  std::uint8_t cancel_reason{1};
+  std::uint8_t cancel_mode{1};
+  std::uint64_t cancel_deadline_monotonic_ns{0};
+  std::vector<PreparedParameterWireValue> parameter_values;
+  std::string invalid_reason;
+};
+
+PreparedStatementWireCommand ParsePreparedStatementWireCommand(
+    const CstDocument& cst) {
+  PreparedStatementWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.empty()) return result;
+  const auto first = ToUpperAscii(tokens.front()->text);
+  if (first != "PREPARE" && first != "EXECUTE" && first != "BIND" &&
+      first != "DEALLOCATE" && first != "CANCEL") {
+    return result;
+  }
+  const auto invalid = [&](std::string reason) {
+    result.kind = PreparedStatementWireCommandKind::kInvalid;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  if (std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      }) != 1 ||
+      tokens.back()->kind != TokenKind::kStatementTerminator) {
+    return invalid("prepared_statement_requires_one_terminal_semicolon");
+  }
+  const Token* terminator = tokens.back();
+  tokens.pop_back();
+  if (first == "BIND") {
+    if (tokens.size() < 7 || ToUpperAscii(tokens[1]->text) != "PARAMETERS" ||
+        !IsIdentifierLikeForRouteExecution(*tokens[2]) ||
+        ToUpperAscii(tokens[3]->text) != "USING" ||
+        tokens[4]->text != "(" || tokens.back()->text != ")") {
+      return invalid("parameter_bind_requires_name_and_using_values");
+    }
+    std::size_t index = 5;
+    while (index + 1 < tokens.size()) {
+      const auto* token = tokens[index];
+      PreparedParameterWireValue value;
+      if (token->kind == TokenKind::kNumericLiteral) {
+        value.encoding = PreparedParameterPayloadEncoding::utf8_text;
+        value.raw_bytes.assign(token->text.begin(), token->text.end());
+      } else if (token->kind == TokenKind::kNullLiteral) {
+        value.is_null = true;
+      } else {
+        return invalid("parameter_bind_value_profile_not_admitted");
+      }
+      result.parameter_values.push_back(std::move(value));
+      ++index;
+      if (index + 1 == tokens.size()) break;
+      if (tokens[index]->text != ",") {
+        return invalid("parameter_bind_value_separator_invalid");
+      }
+      ++index;
+      if (index + 1 >= tokens.size()) {
+        return invalid("parameter_bind_value_missing");
+      }
+    }
+    if (result.parameter_values.empty() || index + 1 != tokens.size()) {
+      return invalid("parameter_bind_value_list_invalid");
+    }
+    result.kind = PreparedStatementWireCommandKind::kParameterBind;
+    result.statement_name = tokens[2]->text;
+    result.statement_name_quoted = tokens[2]->quoted;
+    return result;
+  }
+  if (first == "EXECUTE") {
+    if (tokens.size() >= 2 && ToUpperAscii(tokens[1]->text) == "DIRECT") {
+      if (tokens.size() < 3) {
+        return invalid("execute_direct_body_is_empty");
+      }
+      const auto body_begin = tokens[2]->offset;
+      const auto body_end = terminator->offset;
+      if (body_begin >= body_end || body_end > cst.source.size()) {
+        return invalid("execute_direct_body_source_extent_invalid");
+      }
+      result.nested_sql = TrimAscii(
+          std::string_view(cst.source).substr(body_begin,
+                                              body_end - body_begin));
+      if (result.nested_sql.empty()) {
+        return invalid("execute_direct_body_is_empty");
+      }
+      const auto nested_upper = ToUpperAscii(result.nested_sql);
+      const auto nested_starts_with = [&](std::string_view keyword) {
+        if (!nested_upper.starts_with(keyword)) return false;
+        return nested_upper.size() == keyword.size() ||
+               std::isspace(static_cast<unsigned char>(
+                   nested_upper[keyword.size()])) != 0;
+      };
+      if (nested_starts_with("PREPARE") || nested_starts_with("BIND") ||
+          nested_starts_with("EXECUTE DIRECT") ||
+          nested_starts_with("DEALLOCATE") ||
+          nested_starts_with("CANCEL")) {
+        return invalid("execute_direct_body_cannot_be_statement_management");
+      }
+      result.kind = PreparedStatementWireCommandKind::kExecuteDirect;
+      return result;
+    }
+    if (tokens.size() != 3 ||
+        ToUpperAscii(tokens[1]->text) != "STATEMENT" ||
+        !IsIdentifierLikeForRouteExecution(*tokens[2])) {
+      return invalid("execute_requires_statement_and_one_name");
+    }
+    result.kind = PreparedStatementWireCommandKind::kExecute;
+    result.statement_name = tokens[2]->text;
+    result.statement_name_quoted = tokens[2]->quoted;
+    return result;
+  }
+  if (first == "DEALLOCATE") {
+    if (tokens.size() != 3 ||
+        (ToUpperAscii(tokens[1]->text) != "STATEMENT" &&
+         ToUpperAscii(tokens[1]->text) != "PREPARE") ||
+        !IsIdentifierLikeForRouteExecution(*tokens[2])) {
+      return invalid("deallocate_requires_statement_or_prepare_and_one_name");
+    }
+    result.kind = PreparedStatementWireCommandKind::kFree;
+    result.statement_name = tokens[2]->text;
+    result.statement_name_quoted = tokens[2]->quoted;
+    return result;
+  }
+  if (first == "CANCEL") {
+    if ((tokens.size() != 3 && tokens.size() != 5) ||
+        ToUpperAscii(tokens[1]->text) != "STATEMENT" ||
+        !IsIdentifierLikeForRouteExecution(*tokens[2])) {
+      return invalid("cancel_requires_statement_and_one_name");
+    }
+    if (tokens.size() == 5) {
+      if (ToUpperAscii(tokens[3]->text) != "REASON") {
+        return invalid("cancel_reason_clause_invalid");
+      }
+      const auto reason = ToUpperAscii(tokens[4]->text);
+      if (reason == "CLIENT") {
+        result.cancel_reason = 1;
+      } else if (reason == "TIMEOUT") {
+        result.cancel_reason = 2;
+      } else if (reason == "DISCONNECT") {
+        result.cancel_reason = 3;
+      } else if (reason == "ADMIN") {
+        result.cancel_reason = 4;
+      } else {
+        return invalid("cancel_reason_invalid");
+      }
+    }
+    result.kind = PreparedStatementWireCommandKind::kCancel;
+    result.statement_name = tokens[2]->text;
+    result.statement_name_quoted = tokens[2]->quoted;
+    return result;
+  }
+
+  if (tokens.size() < 5 || ToUpperAscii(tokens[1]->text) != "STATEMENT" ||
+      !IsIdentifierLikeForRouteExecution(*tokens[2])) {
+    return invalid("prepare_requires_statement_name_and_body");
+  }
+  std::size_t index = 3;
+  if (tokens[index]->text == "(") {
+    return invalid("prepare_declared_parameter_types_require_bound_descriptors");
+  }
+  if (ToUpperAscii(tokens[index]->text) != "AS" ||
+      index + 1 >= tokens.size()) {
+    return invalid("prepare_requires_as_and_one_complete_body");
+  }
+  const auto body_begin = tokens[index + 1]->offset;
+  const auto body_end = terminator->offset;
+  if (body_begin >= body_end || body_end > cst.source.size()) {
+    return invalid("prepare_body_source_extent_invalid");
+  }
+  result.nested_sql = TrimAscii(
+      std::string_view(cst.source).substr(body_begin, body_end - body_begin));
+  if (result.nested_sql.empty()) {
+    return invalid("prepare_body_is_empty");
+  }
+  const auto nested_upper = ToUpperAscii(result.nested_sql);
+  const auto nested_starts_with = [&](std::string_view keyword) {
+    if (!nested_upper.starts_with(keyword)) return false;
+    return nested_upper.size() == keyword.size() ||
+           std::isspace(static_cast<unsigned char>(
+               nested_upper[keyword.size()])) != 0;
+  };
+  if (nested_starts_with("PREPARE") || nested_starts_with("EXECUTE") ||
+      nested_starts_with("BIND") ||
+      nested_starts_with("DEALLOCATE") || nested_starts_with("CANCEL")) {
+    return invalid("prepare_body_cannot_be_statement_management");
+  }
+  result.kind = PreparedStatementWireCommandKind::kPrepare;
+  result.statement_name = tokens[2]->text;
+  result.statement_name_quoted = tokens[2]->quoted;
+  return result;
+}
+
+struct QueryExplainWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  bool analyze{false};
+  bool verbose{false};
+  std::uint8_t format{1};
+  std::string query_sql;
+  std::string invalid_reason;
+};
+
+QueryExplainWireCommand ParseQueryExplainWireCommand(const CstDocument& cst) {
+  QueryExplainWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "EXPLAIN") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  if (std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      }) != 1 ||
+      tokens.back()->kind != TokenKind::kStatementTerminator) {
+    return invalid("query_explain_requires_one_terminal_semicolon");
+  }
+  const auto* terminator = tokens.back();
+  tokens.pop_back();
+  bool verbose_seen = false;
+  bool format_seen = false;
+  std::size_t index = 1;
+  while (index < tokens.size()) {
+    const auto option = ToUpperAscii(tokens[index]->text);
+    if (option == "ANALYZE") {
+      result.analyze = true;
+      ++index;
+      continue;
+    }
+    if (option == "VERBOSE") {
+      if (verbose_seen) return invalid("query_explain_verbose_duplicated");
+      verbose_seen = true;
+      result.verbose = true;
+      ++index;
+      continue;
+    }
+    if (option == "FORMAT") {
+      if (format_seen || index + 1 >= tokens.size()) {
+        return invalid("query_explain_format_invalid");
+      }
+      format_seen = true;
+      const auto format = ToUpperAscii(tokens[index + 1]->text);
+      if (format == "NATIVE") {
+        result.format = 1;
+      } else if (format == "JSON") {
+        result.format = 2;
+      } else {
+        return invalid("query_explain_format_invalid");
+      }
+      index += 2;
+      continue;
+    }
+    break;
+  }
+  if (index >= tokens.size()) {
+    return invalid("query_explain_query_missing");
+  }
+  const auto query_begin = tokens[index]->offset;
+  const auto query_end = terminator->offset;
+  if (query_begin >= query_end || query_end > cst.source.size()) {
+    return invalid("query_explain_query_extent_invalid");
+  }
+  result.query_sql = TrimAscii(
+      std::string_view(cst.source).substr(query_begin,
+                                          query_end - query_begin));
+  if (result.query_sql.empty()) {
+    return invalid("query_explain_query_missing");
+  }
+  result.valid = true;
+  return result;
+}
+
+struct ParseTextWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::string language_profile_id;
+  std::string canonical_input_utf8;
+  std::uint32_t requested_maximum_bytes =
+      scratchbird::engine::sblr::kSblrParseTextMaximumInputBytes;
+  std::uint16_t requested_maximum_depth =
+      scratchbird::engine::sblr::kSblrParseTextMaximumDepth;
+  bool allow_donor_extensions{false};
+  std::string invalid_reason;
+};
+
+ParseTextWireCommand ParseParseTextWireCommand(const CstDocument& cst) {
+  ParseTextWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 5 || ToUpperAscii(tokens[0]->text) != "PARSE" ||
+      ToUpperAscii(tokens[1]->text) != "TEXT") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  if (std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      }) != 1 ||
+      tokens.back()->kind != TokenKind::kStatementTerminator) {
+    return invalid("parse_text_requires_one_terminal_semicolon");
+  }
+  tokens.pop_back();
+
+  std::size_t index = 2;
+  bool expect_atom = true;
+  while (index < tokens.size() &&
+         tokens[index]->kind != TokenKind::kStringLiteral) {
+    if (expect_atom) {
+      if (!IsIdentifierLikeForRouteExecution(*tokens[index]) ||
+          tokens[index]->quoted || tokens[index]->text.empty()) {
+        return invalid("parse_text_language_profile_invalid");
+      }
+      if (!result.language_profile_id.empty()) {
+        result.language_profile_id.push_back('.');
+      }
+      result.language_profile_id += tokens[index]->text;
+    } else if (tokens[index]->text != ".") {
+      return invalid("parse_text_language_profile_invalid");
+    }
+    expect_atom = !expect_atom;
+    ++index;
+  }
+  if (result.language_profile_id.empty() || expect_atom ||
+      index >= tokens.size() ||
+      tokens[index]->kind != TokenKind::kStringLiteral) {
+    return invalid("parse_text_language_profile_or_input_missing");
+  }
+  result.canonical_input_utf8 = tokens[index]->text;
+  ++index;
+  if (result.canonical_input_utf8.empty()) {
+    return invalid("parse_text_input_empty");
+  }
+
+  if (index < tokens.size()) {
+    if (ToUpperAscii(tokens[index]->text) != "WITH" ||
+        index + 6 >= tokens.size() ||
+        ToUpperAscii(tokens[index + 1]->text) != "MAX_BYTES" ||
+        tokens[index + 2]->kind != TokenKind::kNumericLiteral ||
+        ToUpperAscii(tokens[index + 3]->text) != "MAX_DEPTH" ||
+        tokens[index + 4]->kind != TokenKind::kNumericLiteral ||
+        ToUpperAscii(tokens[index + 5]->text) !=
+            "ALLOW_DONOR_EXTENSIONS" ||
+        tokens[index + 6]->kind != TokenKind::kBooleanLiteral ||
+        index + 7 != tokens.size()) {
+      return invalid("parse_text_options_invalid");
+    }
+    std::uint64_t maximum_bytes = 0;
+    std::uint64_t maximum_depth = 0;
+    const auto bytes_text = std::string_view(tokens[index + 2]->text);
+    const auto depth_text = std::string_view(tokens[index + 4]->text);
+    const auto [bytes_end, bytes_error] = std::from_chars(
+        bytes_text.data(), bytes_text.data() + bytes_text.size(),
+        maximum_bytes);
+    const auto [depth_end, depth_error] = std::from_chars(
+        depth_text.data(), depth_text.data() + depth_text.size(),
+        maximum_depth);
+    if (bytes_error != std::errc{} ||
+        bytes_end != bytes_text.data() + bytes_text.size() ||
+        depth_error != std::errc{} ||
+        depth_end != depth_text.data() + depth_text.size() ||
+        maximum_bytes == 0 ||
+        maximum_bytes >
+            scratchbird::engine::sblr::kSblrParseTextMaximumInputBytes ||
+        maximum_bytes < result.canonical_input_utf8.size() ||
+        maximum_depth == 0 ||
+        maximum_depth >
+            scratchbird::engine::sblr::kSblrParseTextMaximumDepth) {
+      return invalid("parse_text_limits_invalid");
+    }
+    const auto extension = ToUpperAscii(tokens[index + 6]->text);
+    if (extension != "TRUE" && extension != "FALSE") {
+      return invalid("parse_text_extension_flag_invalid");
+    }
+    result.requested_maximum_bytes =
+        static_cast<std::uint32_t>(maximum_bytes);
+    result.requested_maximum_depth =
+        static_cast<std::uint16_t>(maximum_depth);
+    result.allow_donor_extensions = extension == "TRUE";
+  }
+  result.valid = true;
+  return result;
+}
+
+struct CatalogEpochCheckWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  bool object_scoped{false};
+  std::vector<scratchbird::wire::sbps_statement_management::
+                  CatalogEpochCheckNameAtomV1>
+      target_name_atoms;
+  std::string invalid_reason;
+};
+
+CatalogEpochCheckWireCommand ParseCatalogEpochCheckWireCommand(
+    const CstDocument& cst) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  CatalogEpochCheckWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 4 || ToUpperAscii(tokens[0]->text) != "CATALOG" ||
+      ToUpperAscii(tokens[1]->text) != "EPOCH" ||
+      ToUpperAscii(tokens[2]->text) != "CHECK") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  if (std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      }) != 1 ||
+      tokens.back()->kind != TokenKind::kStatementTerminator) {
+    return invalid("catalog_epoch_check_requires_one_terminal_semicolon");
+  }
+  tokens.pop_back();
+  if (tokens.size() == 3) {
+    result.valid = true;
+    return result;
+  }
+  if (tokens.size() < 5 || ToUpperAscii(tokens[3]->text) != "FOR") {
+    return invalid("catalog_epoch_check_reference_invalid");
+  }
+  std::size_t index = 4;
+  while (index < tokens.size()) {
+    if (!IsIdentifierLikeForRouteExecution(*tokens[index]) ||
+        tokens[index]->text.empty() || result.target_name_atoms.size() == 3) {
+      return invalid("catalog_epoch_check_target_name_invalid");
+    }
+    result.target_name_atoms.push_back(
+        bind::CatalogEpochCheckNameAtomV1{tokens[index]->text,
+                                          tokens[index]->quoted});
+    ++index;
+    if (index == tokens.size()) break;
+    if (tokens[index]->text != ".") {
+      return invalid("catalog_epoch_check_target_name_invalid");
+    }
+    ++index;
+    if (index == tokens.size()) {
+      return invalid("catalog_epoch_check_target_name_invalid");
+    }
+  }
+  result.object_scoped = !result.target_name_atoms.empty();
+  if (!result.object_scoped) {
+    return invalid("catalog_epoch_check_target_name_invalid");
+  }
+  result.valid = true;
+  return result;
+}
+
+struct DatabaseAttachWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::uint8_t mode{0};
+  scratchbird::wire::sbps_statement_management::DatabaseAttachNameAtomV1
+      storage_reference;
+  scratchbird::wire::sbps_statement_management::DatabaseAttachNameAtomV1
+      database_alias;
+  std::string invalid_reason;
+};
+
+DatabaseAttachWireCommand ParseDatabaseAttachWireCommand(
+    const CstDocument& cst) {
+  DatabaseAttachWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 3 || ToUpperAscii(tokens[0]->text) != "DATABASE" ||
+      ToUpperAscii(tokens[1]->text) != "ATTACH" ||
+      ToUpperAscii(tokens[2]->text) != "REGISTERED") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  if (tokens.size() != 9 ||
+      tokens.back()->kind != TokenKind::kStatementTerminator ||
+      ToUpperAscii(tokens[4]->text) != "AS" ||
+      ToUpperAscii(tokens[6]->text) != "READ" ||
+      (ToUpperAscii(tokens[7]->text) != "ONLY" &&
+       ToUpperAscii(tokens[7]->text) != "WRITE") ||
+      !IsIdentifierLikeForRouteExecution(*tokens[3]) ||
+      !IsIdentifierLikeForRouteExecution(*tokens[5]) ||
+      tokens[3]->text.empty() || tokens[5]->text.empty()) {
+    return invalid("database_attach_registered_syntax_invalid");
+  }
+  result.storage_reference = {tokens[3]->text, tokens[3]->quoted};
+  result.database_alias = {tokens[5]->text, tokens[5]->quoted};
+  result.mode = ToUpperAscii(tokens[7]->text) == "ONLY" ? 1 : 2;
+  result.valid = true;
+  return result;
+}
+
+struct NameResolveWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::uint8_t resolution_mode{2};
+  std::uint8_t object_class{0};
+  std::vector<scratchbird::wire::sbps_statement_management::
+                  NameResolveNameAtomV1>
+      target_name_atoms;
+  std::vector<scratchbird::wire::sbps_statement_management::
+                  NameResolveNameAtomV1>
+      namespace_name_atoms;
+  std::string invalid_reason;
+};
+
+NameResolveWireCommand ParseNameResolveWireCommand(const CstDocument& cst) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  NameResolveWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 3 || ToUpperAscii(tokens[0]->text) != "RESOLVE" ||
+      ToUpperAscii(tokens[1]->text) != "NAME") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  if (std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      }) != 1 ||
+      tokens.back()->kind != TokenKind::kStatementTerminator) {
+    return invalid("name_resolve_requires_one_terminal_semicolon");
+  }
+  tokens.pop_back();
+  const auto consume_name = [&](std::size_t* index,
+                                std::vector<bind::NameResolveNameAtomV1>* out) {
+    if (index == nullptr || out == nullptr) return false;
+    out->clear();
+    while (*index < tokens.size()) {
+      if (!IsIdentifierLikeForRouteExecution(*tokens[*index]) ||
+          tokens[*index]->text.empty() || out->size() == 3) {
+        out->clear();
+        return false;
+      }
+      out->push_back({tokens[*index]->text, tokens[*index]->quoted});
+      ++*index;
+      if (*index >= tokens.size() || tokens[*index]->text != ".") break;
+      ++*index;
+      if (*index >= tokens.size()) {
+        out->clear();
+        return false;
+      }
+    }
+    return !out->empty();
+  };
+  std::size_t index = 2;
+  if (!consume_name(&index, &result.target_name_atoms)) {
+    return invalid("name_resolve_target_name_invalid");
+  }
+  if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "IN") {
+    ++index;
+    result.resolution_mode = 1;
+    if (result.target_name_atoms.size() != 1 ||
+        !consume_name(&index, &result.namespace_name_atoms)) {
+      return invalid("name_resolve_namespace_invalid");
+    }
+  }
+  if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "AS") {
+    ++index;
+    if (index >= tokens.size() ||
+        !IsIdentifierLikeForRouteExecution(*tokens[index])) {
+      return invalid("name_resolve_object_class_missing");
+    }
+    const auto object_class = ToUpperAscii(tokens[index]->text);
+    static const std::array<std::pair<std::string_view, std::uint8_t>, 16>
+        kObjectClasses{{
+            {"RELATION", 1}, {"TABLE", 2},       {"SCHEMA", 3},
+            {"VIEW", 4},     {"INDEX", 5},       {"SEQUENCE", 6},
+            {"PROCEDURE", 7},{"FUNCTION", 8},    {"TRIGGER", 9},
+            {"CONSTRAINT", 10}, {"DOMAIN", 11},  {"TYPE", 12},
+            {"PACKAGE", 13}, {"ROLE", 14},       {"POLICY", 15},
+            {"RESOURCE", 16},
+        }};
+    const auto found = std::ranges::find(kObjectClasses, object_class,
+                                         &decltype(kObjectClasses)::value_type::first);
+    if (found == kObjectClasses.end()) {
+      return invalid("name_resolve_object_class_unknown");
+    }
+    result.object_class = found->second;
+    ++index;
+  }
+  if (index != tokens.size()) {
+    return invalid("name_resolve_trailing_syntax_invalid");
+  }
+  result.valid = true;
+  return result;
 }
 
 void SkipTriviaTokens(const CstDocument& cst, std::size_t* index) {
@@ -23353,7 +24471,10 @@ ServerCloseCursorResult SbsqlTestWireSession::CloseCursorOnRoute(std::string_vie
   } else {
     result = server_client_->CloseCursor(session_, cursor_uuid);
   }
-  if (result.accepted) cursor_stream_descriptors_.erase(std::string(cursor_uuid));
+  if (result.accepted) {
+    cursor_stream_descriptors_.erase(std::string(cursor_uuid));
+    cursor_statement_contexts_.erase(std::string(cursor_uuid));
+  }
   return result;
 }
 
@@ -23364,7 +24485,10 @@ ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(std::string_vi
   } else {
     result = server_client_->CancelCursor(session_, cursor_uuid);
   }
-  if (result.accepted) cursor_stream_descriptors_.erase(std::string(cursor_uuid));
+  if (result.accepted) {
+    cursor_stream_descriptors_.erase(std::string(cursor_uuid));
+    cursor_statement_contexts_.erase(std::string(cursor_uuid));
+  }
   return result;
 }
 
@@ -23758,9 +24882,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  const scratchbird::engine::sblr::SblrVariableFrameBeginResultV1*
                                                      variable_frame,
                                                  SbsqlPipelineConformanceSummary*
-                                                     conformance_summary) {
+                                                     conformance_summary,
+                                                 SbsqlCanonicalCompileOutput*
+                                                     canonical_compile_output) {
   if (conformance_summary != nullptr) {
     *conformance_summary = {};
+  }
+  if (canonical_compile_output != nullptr) {
+    *canonical_compile_output = {};
   }
   const bool phase_trace =
       std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE") != nullptr;
@@ -23852,6 +24981,34 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
              uppercase_sql[prefix.size()] == '\n' ||
              uppercase_sql[prefix.size()] == ';';
     };
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("EXPLAIN")) {
+      return RunQueryExplainForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("RESOLVE NAME")) {
+      return RunNameResolveForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("CATALOG EPOCH CHECK")) {
+      return RunCatalogEpochCheckForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("DATABASE ATTACH REGISTERED")) {
+      return RunDatabaseAttachForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("OPTIMIZER STATS READ")) {
+      return RunOptimizerStatsReadForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("OPTIMIZER STATS DROP")) {
+      return RunOptimizerStatsDropForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("PARSE TEXT")) {
+      return RunParseTextForWire(sql, autocommit_emulation);
+    }
     if (starts_with_command("POST EVENT") ||
         starts_with_command("OPEN") ||
         starts_with_command("FETCH") ||
@@ -23876,9 +25033,102 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
     if (starts_with_command("PREPARE") ||
         starts_with_command("EXECUTE") ||
-        starts_with_command("DEALLOCATE")) {
+        starts_with_command("BIND") ||
+        starts_with_command("DEALLOCATE") ||
+        starts_with_command("CANCEL")) {
       const auto prepared_cst = BuildCst(sql);
       const auto prepared_ast = BuildAst(prepared_cst);
+      const auto prepared_command =
+          ParsePreparedStatementWireCommand(prepared_cst);
+      if (!prepared_cst.messages.has_errors() &&
+          !prepared_ast.messages.has_errors() &&
+          prepared_command.kind ==
+              PreparedStatementWireCommandKind::kParameterBind) {
+        auto result = RunNamedParameterBindForWire(
+            sql, prepared_command.statement_name,
+            prepared_command.statement_name_quoted,
+            prepared_command.parameter_values);
+        mark_phase("parameter_bind");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+      if (!prepared_cst.messages.has_errors() &&
+          !prepared_ast.messages.has_errors() &&
+          prepared_command.kind ==
+              PreparedStatementWireCommandKind::kExecuteDirect) {
+        auto result = RunNamedStmtExecuteDirectForWire(
+            sql, prepared_command.nested_sql, cursor_requested,
+            autocommit_emulation);
+        mark_phase("statement_execute_direct");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+      if (!prepared_cst.messages.has_errors() &&
+          !prepared_ast.messages.has_errors() &&
+          prepared_command.kind ==
+              PreparedStatementWireCommandKind::kExecute) {
+        auto result = RunNamedStmtExecuteForWire(
+            sql, prepared_command.statement_name,
+            prepared_command.statement_name_quoted, cursor_requested,
+            autocommit_emulation);
+        mark_phase("statement_execute");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+      if (!prepared_cst.messages.has_errors() &&
+          !prepared_ast.messages.has_errors() &&
+          prepared_command.kind ==
+              PreparedStatementWireCommandKind::kPrepare) {
+        auto result = RunNamedStmtPrepareForWire(
+            sql, prepared_command.statement_name,
+            prepared_command.statement_name_quoted,
+            prepared_command.nested_sql);
+        mark_phase("prepared_statement_execute");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+      if (!prepared_cst.messages.has_errors() &&
+          !prepared_ast.messages.has_errors() &&
+          prepared_command.kind == PreparedStatementWireCommandKind::kFree) {
+        auto result = RunNamedStmtFreeForWire(
+            sql, prepared_command.statement_name,
+            prepared_command.statement_name_quoted);
+        mark_phase("prepared_statement_free");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+      if (!prepared_cst.messages.has_errors() &&
+          !prepared_ast.messages.has_errors() &&
+          prepared_command.kind ==
+              PreparedStatementWireCommandKind::kCancel) {
+        auto result = RunNamedStmtCancelForWire(
+            sql, prepared_command.statement_name,
+            prepared_command.statement_name_quoted,
+            prepared_command.cancel_reason, prepared_command.cancel_mode,
+            prepared_command.cancel_deadline_monotonic_ns);
+        mark_phase("prepared_statement_cancel");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+      if (!prepared_cst.messages.has_errors() &&
+          prepared_command.kind ==
+              PreparedStatementWireCommandKind::kInvalid) {
+        PipelineResult result;
+        result.statement_hash = Fnv1a64(sql);
+        result.parser_executes_sql = false;
+        result.messages = prepared_ast.messages;
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            prepared_command.invalid_reason ==
+                    "prepare_declared_parameter_types_require_bound_descriptors"
+                ? "DATATYPE.DESCRIPTOR.INVALID"
+                : "SBLR.OPERAND.INVALID",
+            "ERROR", "The prepared-statement command is not canonical.",
+            "sbp_sbsql.wire.statement_management",
+            {{"detail", prepared_command.invalid_reason}}));
+        mark_phase("prepared_statement_invalid");
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
       const auto prepared_route =
           AnalyzeUnavailablePreparedStatementCommandRoute(prepared_cst);
       if (!prepared_cst.messages.has_errors() &&
@@ -26123,8 +27373,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       acquired = embedded_client_->AcquireNativeStatementContext(session_,
                                                                   selector);
     } else if (server_client_ != nullptr) {
-      acquired = server_client_->AcquireNativeStatementContext(session_,
-                                                                selector);
+      acquired = parameter_coordination == nullptr
+          ? server_client_->AcquireNativeStatementContext(session_, selector)
+          : server_client_->AcquireParameterStatementContext(
+                session_, selector, *parameter_coordination);
     }
     if (!acquired.accepted) {
       result.accepted = false;
@@ -26433,6 +27685,30 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       }
     }
     mark_phase("encode_native_canonical_submission");
+  }
+  if (canonical_compile_output != nullptr) {
+    if (!result.accepted || !native_statement_context.has_value() ||
+        !native_submission.has_value() || !native_submission->complete()) {
+      result.accepted = false;
+      if (!result.messages.has_errors()) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.OPERAND_INVALID", "ERROR",
+            "The nested statement did not produce one finalized canonical "
+            "submission under a live engine statement receipt.",
+            "sbp_sbsql.wire.compile_only"));
+      }
+    } else {
+      canonical_compile_output->captured = true;
+      canonical_compile_output->statement_context =
+          *native_statement_context;
+      canonical_compile_output->submission = *native_submission;
+      canonical_compile_output->operation_id = lowered.operation_id;
+      canonical_compile_output->operation_family = lowered.operation_family;
+      canonical_compile_output->result_shape_key = lowered.result_shape_key;
+    }
+    mark_phase("canonical_compile_only_handoff");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
   }
   if (cursor_requested) {
     if (stream_row_count != 0) {
@@ -26889,10 +28165,12 @@ SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
     return result;
   }
   ipc::PreparedParameterReference prepared;
+  SbsqlCanonicalCompileOutput compiled;
   auto pipeline = RunPipeline(sql, true, false, 0, false, {},
-                              &begun.coordination, true, &prepared);
+                              &begun.coordination, true, &prepared, {}, 0,
+                              nullptr, nullptr, nullptr, &compiled);
   if (!pipeline.accepted || pipeline.messages.has_errors() ||
-      !prepared.present()) {
+      !prepared.present() || !compiled.captured) {
     result.messages = std::move(pipeline.messages);
     if (!result.messages.has_errors()) {
       result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -26902,7 +28180,22 @@ SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
     }
     return result;
   }
+  auto named_prepare = RunNamedStmtPrepareForWire(
+      sql, prepared.prepared_statement_uuid, true, {}, &compiled,
+      &prepared.canonical_parameter_admission);
+  if (!named_prepare.accepted || named_prepare.messages.has_errors()) {
+    result.messages = std::move(named_prepare.messages);
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.PARAMETER.STALE", "ERROR",
+          "The sealed parameter template was not published as an executable "
+          "named statement.",
+          "sbp_sbsql.wire"));
+    }
+    return result;
+  }
   result.accepted = true;
+  prepared_parameter_bindings_[prepared.prepared_statement_uuid] = prepared;
   result.prepared = std::move(prepared);
   return result;
 }
@@ -28345,6 +29638,7 @@ PipelineResult SbsqlTestWireSession::RunCanonicalRouteTextEnvelopeForWire(
   if (executed.cursor_stream_descriptor.complete()) {
     cursor_stream_descriptors_[executed.cursor_uuid] =
         executed.cursor_stream_descriptor;
+    cursor_statement_contexts_[executed.cursor_uuid] = acquired.context;
   }
   result.server_row_count = executed.row_count;
   result.server_affected_rows = executed.affected_rows;
@@ -29161,13 +30455,1505 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateDictionaryForWire(){PipelineRes
 PipelineResult SbsqlTestWireSession::RunDdlDropDictionaryForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDdlDropDictionaryRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.dictionary_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropDictionary(session_,c::EncodeSblrDdlDropDictionaryRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropDictionaryDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropDictionaryDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropDictionaryDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_dictionary";g_ddl_drop_dictionary_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_drop_dictionary_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunShowObjectDetailForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrCatalogIntrospectRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=q.object_occurrence=1;auto coordinated=server_client_->CoordinateCatalogIntrospect(session_,c::EncodeSblrCatalogIntrospectRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrCatalogIntrospectDescriptorV1 d;std::string detail;if(!c::DecodeSblrCatalogIntrospectDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrCatalogIntrospectDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.catalog_introspect";g_catalog_introspect_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 
-PipelineResult SbsqlTestWireSession::RunNameResolveForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunNameResolveForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace name = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "catalog";
+  result.operation_family = "sblr.catalog.introspect.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical NAME RESOLVE operation was refused.",
+        "sbp_sbsql.wire.name_resolve", {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_name_resolve_route_required");
+  }
 
-PipelineResult SbsqlTestWireSession::RunParseTextForWire(){return RunShowObjectDetailForWire();}
+  const auto cst = BuildCst(sql);
+  const auto command = ParseNameResolveWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid ||
+      ast.family != StatementFamily::kCatalog) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "name_resolve_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
 
-PipelineResult SbsqlTestWireSession::RunCatalogEpochCheckForWire(){return RunShowObjectDetailForWire();}
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(
+                            session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    if (!result.messages.has_errors()) {
+      return refuse("MGA.TRANSACTION.STALE",
+                    "name_resolve_statement_context_unavailable");
+    }
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt.has_value() ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "name_resolve_statement_receipt_incomplete");
+  }
 
-PipelineResult SbsqlTestWireSession::RunDatabaseAttachForWire(){return RunShowObjectDetailForWire();}
+  bind::NameResolveBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.resolution_mode = command.resolution_mode;
+  bind_request.object_class = command.object_class;
+  bind_request.target_name_atoms = command.target_name_atoms;
+  bind_request.namespace_name_atoms = command.namespace_name_atoms;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeNameResolveBindRequestV1(bind_request,
+                                            &bind_request_bytes, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "name_resolve_bind_request_invalid"
+                                 : detail);
+  }
+  bind::NameResolveBindRequestV1 canonical_bind_request;
+  if (!bind::DecodeNameResolveBindRequestV1(
+          bind_request_bytes.data(), bind_request_bytes.size(),
+          &canonical_bind_request, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "name_resolve_bind_request_noncanonical"
+                                 : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindNameResolve(session_,
+                                                       bind_request_bytes)
+                   : server_client_->BindNameResolve(session_,
+                                                     bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "name_resolve_bind_outcome_unknown"
+                        : "name_resolve_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::NameResolveBindAckV1 bind_ack;
+  if (!bind::DecodeNameResolveBindAckV1(
+          bound.canonical_payload.data(), bound.canonical_payload.size(),
+          &bind_ack, &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != canonical_bind_request.occurrence ||
+      bind_ack.binding_generation == 0 ||
+      bind_ack.request_evidence_sha256 !=
+          canonical_bind_request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "name_resolve_bind_ack_invalid" : detail);
+  }
+
+  name::SblrNameResolveRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = canonical_bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      acquired.context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      acquired.context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      acquired.context.preliminary_resource_epoch;
+  const auto coordinate_request_bytes =
+      name::EncodeSblrNameResolveRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "name_resolve_coordinate_request_invalid");
+  }
+  auto coordinated = embedded
+                         ? embedded_client_->CoordinateNameResolve(
+                               session_, coordinate_request_bytes)
+                         : server_client_->CoordinateNameResolve(
+                               session_, coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "name_resolve_coordinate_outcome_unknown"
+                        : "name_resolve_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  name::SblrNameResolveDescriptorV1 descriptor;
+  const auto catalog_snapshot = CanonicalUuidBytes(
+      acquired.context.statement_metadata_snapshot_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(acquired.context.security_context_uuid);
+  const auto parser_package =
+      CanonicalUuidBytes(session_.admitted_parser_package_uuid);
+  if (!catalog_snapshot.has_value() || !security_context.has_value() ||
+      !parser_package.has_value() ||
+      !name::DecodeSblrNameResolveDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.resolution_uuid != bind_ack.resolution_uuid ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.catalog_snapshot_uuid != *catalog_snapshot ||
+      descriptor.catalog_generation != coordinate_request.catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.resolution_mode != canonical_bind_request.resolution_mode ||
+      descriptor.object_class != canonical_bind_request.object_class ||
+      descriptor.executor_availability_generation == 0 ||
+      descriptor.descriptor_sha256 != bind_ack.descriptor_sha256 ||
+      descriptor.parser_package_uuid != *parser_package ||
+      descriptor.security_epoch != coordinate_request.security_epoch ||
+      descriptor.resource_epoch != coordinate_request.resource_epoch ||
+      (descriptor.resolution_mode == 1) !=
+          std::ranges::any_of(descriptor.namespace_uuid,
+                              [](std::uint8_t byte) { return byte != 0; })) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "name_resolve_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.name_resolve";
+  g_name_resolve_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_name_resolve_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "name_resolve_canonical_submission_invalid");
+  }
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, false)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  name::SblrNameResolveResultV1 resolve_result;
+  if (executed.operation_id != "engine.op.name_resolve" ||
+      executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !name::DecodeSblrNameResolveResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &resolve_result, &detail) ||
+      resolve_result.resolution_uuid != descriptor.resolution_uuid ||
+      resolve_result.catalog_generation != descriptor.catalog_generation ||
+      resolve_result.security_epoch != descriptor.security_epoch ||
+      (descriptor.object_class != 0 &&
+       resolve_result.object_class != descriptor.object_class)) {
+    return refuse("CATALOG.SNAPSHOT_STALE",
+                  detail.empty() ? "name_resolve_result_authority_mismatch"
+                                 : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunOptimizerStatsReadForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace stats = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "catalog";
+  result.operation_family = "sblr.catalog.introspect.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical OPTIMIZER STATS READ operation was refused.",
+        "sbp_sbsql.wire.optimizer_stats_read",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_optimizer_stats_read_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  std::vector<const Token*> tokens;
+  for (const auto& token : cst.tokens) {
+    if (!IsTriviaToken(token) && token.kind != TokenKind::kEnd) {
+      tokens.push_back(&token);
+    }
+  }
+  if (cst.messages.has_errors() || tokens.size() != 4 ||
+      ToUpperAscii(tokens[0]->text) != "OPTIMIZER" ||
+      ToUpperAscii(tokens[1]->text) != "STATS" ||
+      ToUpperAscii(tokens[2]->text) != "READ" ||
+      tokens[3]->kind != TokenKind::kStatementTerminator) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "optimizer_stats_read_syntax_invalid");
+  }
+
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(
+                            session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    if (!result.messages.has_errors()) {
+      return refuse("MGA.TRANSACTION.STALE",
+                    "optimizer_stats_read_statement_context_unavailable");
+    }
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt.has_value() ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "optimizer_stats_read_statement_receipt_incomplete");
+  }
+
+  stats::SblrOptimizerStatsReadRequestV1 request;
+  request.statement_receipt_uuid = *receipt;
+  request.occurrence = 1;
+  request.catalog_generation =
+      acquired.context.preliminary_statement_catalog_generation;
+  request.security_epoch = acquired.context.preliminary_security_epoch;
+  request.resource_epoch = acquired.context.preliminary_resource_epoch;
+  const auto request_bytes =
+      stats::EncodeSblrOptimizerStatsReadRequestV1(request);
+  if (request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "optimizer_stats_read_coordinate_request_invalid");
+  }
+  auto coordinated = embedded
+                         ? embedded_client_->CoordinateOptimizerStatsRead(
+                               session_, request_bytes)
+                         : server_client_->CoordinateOptimizerStatsRead(
+                               session_, request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "optimizer_stats_read_coordinate_outcome_unknown"
+                        : "optimizer_stats_read_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  stats::SblrOptimizerStatsReadDescriptorV1 descriptor;
+  std::string detail;
+  const auto statement_uuid =
+      CanonicalUuidBytes(acquired.context.statement_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+  const auto catalog_epoch =
+      CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(acquired.context.security_context_uuid);
+  const auto transaction_uuid =
+      CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+  const auto parser_package =
+      CanonicalUuidBytes(session_.admitted_parser_package_uuid);
+  if (!statement_uuid || !statement_snapshot || !catalog_epoch ||
+      !security_context || !transaction_uuid || !parser_package ||
+      !stats::DecodeSblrOptimizerStatsReadDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.statement_uuid != *statement_uuid ||
+      descriptor.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch ||
+      descriptor.owning_transaction_uuid != *transaction_uuid ||
+      descriptor.owning_local_transaction_id !=
+          acquired.context.transaction.local_transaction_id ||
+      descriptor.parser_package_uuid != *parser_package ||
+      descriptor.flags != stats::kSblrOptimizerStatsReadCatalogFlags ||
+      descriptor.optimizer_statistics_epoch == 0 ||
+      descriptor.executor_availability_generation == 0) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "optimizer_stats_read_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.optimizer_stats_read";
+  g_optimizer_stats_read_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_optimizer_stats_read_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "optimizer_stats_read_canonical_submission_invalid");
+  }
+  auto executed = embedded
+                      ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false)
+                      : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  stats::SblrOptimizerStatsReadResultV1 stats_result;
+  if (executed.operation_id != "engine.op.optimizer_stats_read" ||
+      executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !stats::DecodeSblrOptimizerStatsReadResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &stats_result, &detail) ||
+      stats_result.statistics_snapshot_uuid !=
+          descriptor.statistics_snapshot_uuid ||
+      stats_result.statement_receipt_uuid !=
+          descriptor.statement_receipt_uuid ||
+      stats_result.statement_snapshot_uuid !=
+          descriptor.statement_snapshot_uuid ||
+      stats_result.catalog_generation != descriptor.catalog_generation ||
+      stats_result.security_epoch != descriptor.security_epoch ||
+      stats_result.resource_epoch != descriptor.resource_epoch ||
+      stats_result.inventory_generation != descriptor.inventory_generation ||
+      stats_result.optimizer_statistics_epoch !=
+          descriptor.optimizer_statistics_epoch ||
+      stats_result.executor_availability_generation !=
+          descriptor.executor_availability_generation) {
+    return refuse("CATALOG.SNAPSHOT_STALE",
+                  detail.empty()
+                      ? "optimizer_stats_read_result_authority_mismatch"
+                      : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunOptimizerStatsDropForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace stats = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "catalog";
+  result.operation_family = "sblr.catalog.introspect.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical OPTIMIZER STATS DROP operation was refused.",
+        "sbp_sbsql.wire.optimizer_stats_drop",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_optimizer_stats_drop_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  std::vector<const Token*> tokens;
+  for (const auto& token : cst.tokens) {
+    if (!IsTriviaToken(token) && token.kind != TokenKind::kEnd) {
+      tokens.push_back(&token);
+    }
+  }
+  if (cst.messages.has_errors() || tokens.size() != 4 ||
+      ToUpperAscii(tokens[0]->text) != "OPTIMIZER" ||
+      ToUpperAscii(tokens[1]->text) != "STATS" ||
+      ToUpperAscii(tokens[2]->text) != "DROP" ||
+      tokens[3]->kind != TokenKind::kStatementTerminator) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "optimizer_stats_drop_syntax_invalid");
+  }
+
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(
+                            session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    if (!result.messages.has_errors()) {
+      return refuse("MGA.TRANSACTION_INVALID",
+                    "optimizer_stats_drop_statement_context_unavailable");
+    }
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt.has_value() ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "optimizer_stats_drop_statement_receipt_incomplete");
+  }
+
+  stats::SblrOptimizerStatsDropRequestV1 request;
+  request.statement_receipt_uuid = *receipt;
+  request.occurrence = 1;
+  request.catalog_generation =
+      acquired.context.preliminary_statement_catalog_generation;
+  request.security_epoch = acquired.context.preliminary_security_epoch;
+  request.resource_epoch = acquired.context.preliminary_resource_epoch;
+  const auto request_bytes =
+      stats::EncodeSblrOptimizerStatsDropRequestV1(request);
+  if (request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "optimizer_stats_drop_coordinate_request_invalid");
+  }
+  auto coordinated = embedded
+                         ? embedded_client_->CoordinateOptimizerStatsDrop(
+                               session_, request_bytes)
+                         : server_client_->CoordinateOptimizerStatsDrop(
+                               session_, request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(
+          coordinated.outcome_unknown ? "MGA.AUTHORITY_MISMATCH"
+                                      : "SBLR.OPERAND.INVALID",
+          coordinated.outcome_unknown
+              ? "optimizer_stats_drop_coordinate_outcome_unknown"
+              : "optimizer_stats_drop_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  stats::SblrOptimizerStatsDropDescriptorV1 descriptor;
+  std::string detail;
+  const auto statement_uuid =
+      CanonicalUuidBytes(acquired.context.statement_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+  const auto catalog_epoch =
+      CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(acquired.context.security_context_uuid);
+  const auto transaction_uuid =
+      CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+  const auto parser_package =
+      CanonicalUuidBytes(session_.admitted_parser_package_uuid);
+  if (!statement_uuid || !statement_snapshot || !catalog_epoch ||
+      !security_context || !transaction_uuid || !parser_package ||
+      !stats::DecodeSblrOptimizerStatsDropDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.statement_uuid != *statement_uuid ||
+      descriptor.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor.catalog_generation != request.catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.security_epoch != request.security_epoch ||
+      descriptor.resource_epoch != request.resource_epoch ||
+      descriptor.owning_transaction_uuid != *transaction_uuid ||
+      descriptor.owning_local_transaction_id !=
+          acquired.context.transaction.local_transaction_id ||
+      descriptor.parser_package_uuid != *parser_package ||
+      descriptor.flags != stats::kSblrOptimizerStatsDropAllScopesFlag ||
+      descriptor.expected_statistics_epoch == 0 ||
+      descriptor.next_statistics_epoch !=
+          descriptor.expected_statistics_epoch + 1 ||
+      descriptor.proposed_effect_generation !=
+          descriptor.expected_journal_generation + 1 ||
+      descriptor.executor_availability_generation == 0) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "optimizer_stats_drop_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.optimizer_stats_drop";
+  g_optimizer_stats_drop_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_optimizer_stats_drop_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "optimizer_stats_drop_canonical_submission_invalid");
+  }
+  auto executed = embedded
+                      ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false)
+                      : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  stats::SblrOptimizerStatsDropResultV1 drop_result;
+  if (executed.operation_id != "engine.op.optimizer_stats_drop" ||
+      executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !stats::DecodeSblrOptimizerStatsDropResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &drop_result, &detail) ||
+      drop_result.effect_uuid != descriptor.effect_uuid ||
+      drop_result.statement_receipt_uuid !=
+          descriptor.statement_receipt_uuid ||
+      drop_result.prior_statistics_epoch !=
+          descriptor.expected_statistics_epoch ||
+      drop_result.statistics_epoch != descriptor.next_statistics_epoch ||
+      drop_result.effect_generation !=
+          descriptor.proposed_effect_generation ||
+      drop_result.catalog_generation != descriptor.catalog_generation ||
+      drop_result.security_epoch != descriptor.security_epoch ||
+      drop_result.resource_epoch != descriptor.resource_epoch ||
+      drop_result.inventory_generation != descriptor.inventory_generation ||
+      drop_result.cache_invalidation_generation !=
+          descriptor.next_statistics_epoch ||
+      drop_result.flags != stats::kSblrOptimizerStatsDropAllScopesFlag ||
+      drop_result.status != stats::kSblrOptimizerStatsDropPublishedStatus ||
+      drop_result.executor_availability_generation !=
+          descriptor.executor_availability_generation ||
+      drop_result.publication_barrier_generation !=
+          descriptor.proposed_effect_generation) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "optimizer_stats_drop_result_authority_mismatch"
+                      : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunParseTextForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace parse = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "catalog";
+  result.operation_family = "sblr.catalog.introspect.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical PARSE TEXT operation was refused.",
+        "sbp_sbsql.wire.parse_text", {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_parse_text_route_required");
+  }
+
+  const auto outer_cst = BuildCst(sql);
+  const auto command = ParseParseTextWireCommand(outer_cst);
+  result.messages = outer_cst.messages;
+  if (outer_cst.messages.has_errors() || !command.recognized ||
+      !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "parse_text_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+  if (command.language_profile_id != session_.language_profile ||
+      command.language_profile_id.empty()) {
+    return refuse("ENGINE.SESSION.LANGUAGE_INVALID",
+                  "parse_text_language_profile_mismatch");
+  }
+  const auto nested_cst = BuildCst(command.canonical_input_utf8);
+  if (ParseParseTextWireCommand(nested_cst).recognized) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "recursive_parse_text_not_admitted");
+  }
+
+  SbsqlCanonicalCompileOutput compiled;
+  auto compiled_result = RunPipeline(
+      command.canonical_input_utf8, true, false, 0, false, {}, nullptr,
+      false, nullptr, {}, 0, nullptr, nullptr, nullptr, &compiled);
+  if (!compiled_result.accepted || compiled_result.messages.has_errors() ||
+      !compiled.captured || !compiled.statement_context.complete() ||
+      !compiled.submission.complete() ||
+      compiled.operation_id == "engine.op.parse_text") {
+    compiled_result.accepted = false;
+    compiled_result.statement_family = "catalog";
+    compiled_result.operation_family = "sblr.catalog.introspect.v3";
+    compiled_result.statement_hash = result.statement_hash;
+    if (!compiled_result.messages.has_errors()) {
+      compiled_result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND.INVALID", "ERROR",
+          "PARSE TEXT input did not produce one canonical nested SBLR statement.",
+          "sbp_sbsql.wire.parse_text"));
+    }
+    return compiled_result;
+  }
+
+  const auto receipt =
+      CanonicalUuidBytes(compiled.statement_context.preliminary_receipt_uuid);
+  const auto catalog_snapshot = CanonicalUuidBytes(
+      compiled.statement_context.statement_metadata_snapshot_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(compiled.statement_context.security_context_uuid);
+  const auto parser_package =
+      CanonicalUuidBytes(session_.admitted_parser_package_uuid);
+  if (!receipt.has_value() || !catalog_snapshot.has_value() ||
+      !security_context.has_value() || !parser_package.has_value() ||
+      compiled.statement_context.preliminary_statement_catalog_generation ==
+          0 ||
+      compiled.statement_context.preliminary_security_epoch == 0 ||
+      compiled.statement_context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "parse_text_statement_receipt_incomplete");
+  }
+
+  bind::ParseTextBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.language_profile_id = command.language_profile_id;
+  bind_request.canonical_input_utf8 = command.canonical_input_utf8;
+  bind_request.requested_maximum_bytes = command.requested_maximum_bytes;
+  bind_request.requested_maximum_depth = command.requested_maximum_depth;
+  bind_request.allow_donor_extensions = command.allow_donor_extensions;
+  bind_request.canonical_container_bytes =
+      compiled.submission.canonical_container_bytes;
+  bind_request.canonical_execution_envelope_bytes =
+      compiled.submission.canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeParseTextBindRequestV1(
+          bind_request, &bind_request_bytes, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "parse_text_bind_request_invalid"
+                                 : detail);
+  }
+  bind::ParseTextBindRequestV1 canonical_bind_request;
+  if (!bind::DecodeParseTextBindRequestV1(
+          bind_request_bytes.data(), bind_request_bytes.size(),
+          &canonical_bind_request, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "parse_text_bind_request_noncanonical"
+                                 : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindParseText(session_,
+                                                     bind_request_bytes)
+                   : server_client_->BindParseText(session_,
+                                                   bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.AUTHORITY_MISMATCH"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "parse_text_bind_outcome_unknown"
+                        : "parse_text_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::ParseTextBindAckV1 bind_ack;
+  if (!bind::DecodeParseTextBindAckV1(
+          bound.canonical_payload.data(), bound.canonical_payload.size(),
+          &bind_ack, &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != canonical_bind_request.occurrence ||
+      bind_ack.binding_generation == 0 ||
+      bind_ack.canonical_input_sha256 !=
+          canonical_bind_request.canonical_input_sha256 ||
+      bind_ack.request_evidence_sha256 !=
+          canonical_bind_request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty() ? "parse_text_bind_ack_invalid" : detail);
+  }
+
+  parse::SblrParseTextRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = canonical_bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      compiled.statement_context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      compiled.statement_context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      compiled.statement_context.preliminary_resource_epoch;
+  const auto coordinate_request_bytes =
+      parse::EncodeSblrParseTextRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "parse_text_coordinate_request_invalid");
+  }
+  auto coordinated = embedded
+                         ? embedded_client_->CoordinateParseText(
+                               session_, coordinate_request_bytes)
+                         : server_client_->CoordinateParseText(
+                               session_, coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "parse_text_coordinate_outcome_unknown"
+                        : "parse_text_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  parse::SblrParseTextDescriptorV1 descriptor;
+  if (!parse::DecodeSblrParseTextDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.parse_uuid != bind_ack.parse_uuid ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.catalog_snapshot_uuid != *catalog_snapshot ||
+      descriptor.catalog_generation != coordinate_request.catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.security_epoch != coordinate_request.security_epoch ||
+      descriptor.resource_epoch != coordinate_request.resource_epoch ||
+      descriptor.parser_package_uuid != *parser_package ||
+      descriptor.parser_package_version_major !=
+          session_.admitted_parser_package_version_major ||
+      descriptor.parser_package_version_minor !=
+          session_.admitted_parser_package_version_minor ||
+      descriptor.parser_package_version_patch !=
+          session_.admitted_parser_package_version_patch ||
+      descriptor.input_byte_count !=
+          canonical_bind_request.canonical_input_utf8.size() ||
+      descriptor.canonical_input_sha256 !=
+          canonical_bind_request.canonical_input_sha256 ||
+      descriptor.requested_maximum_bytes !=
+          canonical_bind_request.requested_maximum_bytes ||
+      descriptor.requested_maximum_depth !=
+          canonical_bind_request.requested_maximum_depth ||
+      descriptor.extension_capability !=
+          (canonical_bind_request.allow_donor_extensions ? 1 : 0) ||
+      descriptor.descriptor_sha256 != bind_ack.descriptor_sha256 ||
+      descriptor.canonical_sblr_bytes !=
+          compiled.submission.canonical_container_bytes ||
+      descriptor.language_profile_generation == 0 ||
+      descriptor.executor_availability_generation == 0) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "parse_text_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.parse_text";
+  g_parse_text_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, compiled.statement_context, session_, nullptr,
+      nullptr);
+  g_parse_text_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "parse_text_canonical_submission_invalid");
+  }
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, compiled.statement_context, *submission, {}, false)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, compiled.statement_context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  parse::SblrParseTextResultV1 parse_result;
+  if (executed.operation_id != "engine.op.parse_text" ||
+      executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !parse::DecodeSblrParseTextResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &parse_result, &detail) ||
+      parse_result.parse_uuid != descriptor.parse_uuid ||
+      parse_result.statement_receipt_uuid !=
+          descriptor.statement_receipt_uuid ||
+      parse_result.language_profile_uuid != descriptor.language_profile_uuid ||
+      parse_result.language_profile_generation !=
+          descriptor.language_profile_generation ||
+      parse_result.parser_package_uuid != descriptor.parser_package_uuid ||
+      parse_result.catalog_generation != descriptor.catalog_generation ||
+      parse_result.security_epoch != descriptor.security_epoch ||
+      parse_result.resource_epoch != descriptor.resource_epoch ||
+      parse_result.canonical_sblr_bytes != descriptor.canonical_sblr_bytes ||
+      parse_result.status != 1 || parse_result.publication_barrier != 1 ||
+      parse_result.executor_availability_generation !=
+          descriptor.executor_availability_generation) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty() ? "parse_text_result_authority_mismatch"
+                                 : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(
+          submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunCatalogEpochCheckForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace epoch = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "catalog";
+  result.operation_family = "sblr.catalog.introspect.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical CATALOG EPOCH CHECK operation was refused.",
+        "sbp_sbsql.wire.catalog_epoch_check",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_catalog_epoch_check_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseCatalogEpochCheckWireCommand(cst);
+  result.messages = cst.messages;
+  if (cst.messages.has_errors() || !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND_INVALID",
+                    command.invalid_reason.empty()
+                        ? "catalog_epoch_check_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(
+                            session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    if (!result.messages.has_errors()) {
+      return refuse("MGA.TRANSACTION_INVALID",
+                    "catalog_epoch_check_statement_context_unavailable");
+    }
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto catalog_epoch =
+      CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+  const auto catalog_snapshot =
+      CanonicalUuidBytes(acquired.context.statement_metadata_snapshot_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(acquired.context.security_context_uuid);
+  if (!receipt.has_value() || !catalog_epoch.has_value() ||
+      !catalog_snapshot.has_value() || !security_context.has_value() ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "catalog_epoch_check_statement_receipt_incomplete");
+  }
+
+  bind::CatalogEpochCheckBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.object_scoped = command.object_scoped;
+  bind_request.target_name_atoms = command.target_name_atoms;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeCatalogEpochCheckBindRequestV1(
+          bind_request, &bind_request_bytes, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  detail.empty()
+                      ? "catalog_epoch_check_bind_request_invalid"
+                      : detail);
+  }
+  bind::CatalogEpochCheckBindRequestV1 canonical_bind_request;
+  if (!bind::DecodeCatalogEpochCheckBindRequestV1(
+          bind_request_bytes.data(), bind_request_bytes.size(),
+          &canonical_bind_request, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  detail.empty()
+                      ? "catalog_epoch_check_bind_request_noncanonical"
+                      : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindCatalogEpochCheck(
+                         session_, bind_request_bytes)
+                   : server_client_->BindCatalogEpochCheck(
+                         session_, bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.AUTHORITY_MISMATCH"
+                                          : "SBLR.OPERAND_INVALID",
+                    bound.outcome_unknown
+                        ? "catalog_epoch_check_bind_outcome_unknown"
+                        : "catalog_epoch_check_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::CatalogEpochCheckBindAckV1 bind_ack;
+  if (!bind::DecodeCatalogEpochCheckBindAckV1(
+          bound.canonical_payload.data(), bound.canonical_payload.size(),
+          &bind_ack, &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != canonical_bind_request.occurrence ||
+      bind_ack.binding_generation == 0 ||
+      bind_ack.schema_tree_generation == 0 ||
+      bind_ack.request_evidence_sha256 !=
+          canonical_bind_request.request_evidence_sha256 ||
+      (canonical_bind_request.object_scoped &&
+       (!std::ranges::any_of(bind_ack.object_uuid,
+                            [](std::uint8_t byte) { return byte != 0; }) ||
+        bind_ack.object_generation == 0)) ||
+      (!canonical_bind_request.object_scoped &&
+       (std::ranges::any_of(bind_ack.object_uuid,
+                           [](std::uint8_t byte) { return byte != 0; }) ||
+        bind_ack.object_generation != 0))) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty() ? "catalog_epoch_check_bind_ack_invalid"
+                                 : detail);
+  }
+
+  epoch::SblrCatalogEpochCheckRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = canonical_bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      acquired.context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      acquired.context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      acquired.context.preliminary_resource_epoch;
+  coordinate_request.object_scoped = canonical_bind_request.object_scoped;
+  const auto coordinate_request_bytes =
+      epoch::EncodeSblrCatalogEpochCheckRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  "catalog_epoch_check_coordinate_request_invalid");
+  }
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateCatalogEpochCheck(
+                session_, coordinate_request_bytes)
+          : server_client_->CoordinateCatalogEpochCheck(
+                session_, coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(
+          coordinated.outcome_unknown ? "MGA.AUTHORITY_MISMATCH"
+                                      : "SBLR.OPERAND_INVALID",
+          coordinated.outcome_unknown
+              ? "catalog_epoch_check_coordinate_outcome_unknown"
+              : "catalog_epoch_check_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  epoch::SblrCatalogEpochCheckDescriptorV1 descriptor;
+  if (!epoch::DecodeSblrCatalogEpochCheckDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.object_scoped != canonical_bind_request.object_scoped ||
+      descriptor.check_uuid != bind_ack.check_uuid ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.requested_catalog_epoch_uuid != *catalog_epoch ||
+      descriptor.requested_catalog_generation !=
+          coordinate_request.catalog_generation ||
+      !std::ranges::any_of(descriptor.database_uuid,
+                           [](std::uint8_t byte) { return byte != 0; }) ||
+      descriptor.schema_tree_uuid != bind_ack.schema_tree_uuid ||
+      descriptor.schema_tree_generation !=
+          bind_ack.schema_tree_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      !std::ranges::any_of(descriptor.policy_snapshot_uuid,
+                           [](std::uint8_t byte) { return byte != 0; }) ||
+      descriptor.policy_generation == 0 ||
+      descriptor.catalog_snapshot_uuid != *catalog_snapshot ||
+      descriptor.security_epoch != coordinate_request.security_epoch ||
+      descriptor.resource_epoch != coordinate_request.resource_epoch ||
+      descriptor.executor_availability_generation == 0 ||
+      descriptor.visibility_scope_sha256 !=
+          bind_ack.visibility_scope_sha256 ||
+      descriptor.descriptor_sha256 != bind_ack.descriptor_sha256) {
+    result.outcome_unknown = true;
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty() ? "catalog_epoch_check_descriptor_authority_mismatch"
+                       : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.catalog_epoch_check";
+  g_catalog_epoch_check_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_catalog_epoch_check_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  "catalog_epoch_check_canonical_submission_invalid");
+  }
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, false)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  epoch::SblrCatalogEpochCheckResultV1 epoch_result;
+  if (executed.operation_id != "engine.op.catalog_epoch_check" ||
+      executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !epoch::DecodeSblrCatalogEpochCheckResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &epoch_result, &detail) ||
+      epoch_result.object_scoped != descriptor.object_scoped ||
+      epoch_result.check_uuid != descriptor.check_uuid ||
+      epoch_result.observed_security_epoch != descriptor.security_epoch ||
+      epoch_result.observed_resource_epoch != descriptor.resource_epoch ||
+      epoch_result.executor_availability_generation !=
+          descriptor.executor_availability_generation ||
+      ((epoch_result.status == 1 || epoch_result.status == 2) &&
+       (epoch_result.visibility != 1 ||
+        epoch_result.observed_catalog_epoch_uuid !=
+            descriptor.requested_catalog_epoch_uuid ||
+        epoch_result.observed_catalog_generation !=
+            descriptor.requested_catalog_generation ||
+        epoch_result.database_uuid != descriptor.database_uuid ||
+        epoch_result.schema_tree_uuid != descriptor.schema_tree_uuid ||
+        epoch_result.schema_tree_generation !=
+            descriptor.schema_tree_generation)) ||
+      (epoch_result.status == 3 && epoch_result.visibility != 2)) {
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty() ? "catalog_epoch_check_result_authority_mismatch"
+                       : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(
+          submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDatabaseAttachForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace attach = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "database-management";
+  result.operation_family = "sblr.database.management.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical DATABASE ATTACH operation was refused.",
+        "sbp_sbsql.wire.database_attach",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_database_attach_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseDatabaseAttachWireCommand(cst);
+  result.messages = cst.messages;
+  if (cst.messages.has_errors() || !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND_INVALID",
+                    command.invalid_reason.empty()
+                        ? "database_attach_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(
+                            session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    if (!result.messages.has_errors()) {
+      return refuse("MGA.TRANSACTION_INVALID",
+                    "database_attach_statement_context_unavailable");
+    }
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto catalog_snapshot = CanonicalUuidBytes(
+      acquired.context.statement_metadata_snapshot_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(acquired.context.security_context_uuid);
+  const auto transaction =
+      CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+  if (!receipt.has_value() || !catalog_snapshot.has_value() ||
+      !security_context.has_value() || !transaction.has_value() ||
+      acquired.context.transaction.local_transaction_id == 0 ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "database_attach_statement_receipt_incomplete");
+  }
+
+  bind::DatabaseAttachBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.mode = command.mode;
+  bind_request.alias_scope = 1;
+  bind_request.storage_reference = command.storage_reference;
+  bind_request.database_alias = command.database_alias;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeDatabaseAttachBindRequestV1(
+          bind_request, &bind_request_bytes, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  detail.empty() ? "database_attach_bind_request_invalid"
+                                 : detail);
+  }
+  bind::DatabaseAttachBindRequestV1 canonical_bind_request;
+  if (!bind::DecodeDatabaseAttachBindRequestV1(
+          bind_request_bytes.data(), bind_request_bytes.size(),
+          &canonical_bind_request, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  detail.empty()
+                      ? "database_attach_bind_request_noncanonical"
+                      : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindDatabaseAttach(
+                         session_, bind_request_bytes)
+                   : server_client_->BindDatabaseAttach(
+                         session_, bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.AUTHORITY_MISMATCH"
+                                          : "SBLR.OPERAND_INVALID",
+                    bound.outcome_unknown
+                        ? "database_attach_bind_outcome_unknown"
+                        : "database_attach_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::DatabaseAttachBindAckV1 bind_ack;
+  if (!bind::DecodeDatabaseAttachBindAckV1(
+          bound.canonical_payload.data(), bound.canonical_payload.size(),
+          &bind_ack, &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != canonical_bind_request.occurrence ||
+      bind_ack.binding_generation == 0 ||
+      bind_ack.catalog_snapshot_uuid != *catalog_snapshot ||
+      bind_ack.catalog_generation !=
+          acquired.context.preliminary_statement_catalog_generation ||
+      bind_ack.request_evidence_sha256 !=
+          canonical_bind_request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty() ? "database_attach_bind_ack_invalid"
+                                 : detail);
+  }
+
+  attach::SblrDatabaseAttachRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = canonical_bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      acquired.context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      acquired.context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      acquired.context.preliminary_resource_epoch;
+  const auto coordinate_request_bytes =
+      attach::EncodeSblrDatabaseAttachRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  "database_attach_coordinate_request_invalid");
+  }
+  auto coordinated = embedded
+                         ? embedded_client_->CoordinateDatabaseAttach(
+                               session_, coordinate_request_bytes)
+                         : server_client_->CoordinateDatabaseAttach(
+                               session_, coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(
+          coordinated.outcome_unknown ? "MGA.AUTHORITY_MISMATCH"
+                                      : "SBLR.OPERAND_INVALID",
+          coordinated.outcome_unknown
+              ? "database_attach_coordinate_outcome_unknown"
+              : "database_attach_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  attach::SblrDatabaseAttachDescriptorV1 descriptor;
+  if (!attach::DecodeSblrDatabaseAttachDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.attach_uuid != bind_ack.attach_uuid ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.storage_uuid != bind_ack.storage_uuid ||
+      descriptor.alias_uuid != bind_ack.alias_uuid ||
+      descriptor.database_uuid != bind_ack.database_uuid ||
+      descriptor.catalog_snapshot_uuid != *catalog_snapshot ||
+      descriptor.catalog_generation != coordinate_request.catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.transaction_uuid != *transaction ||
+      descriptor.transaction_generation !=
+          acquired.context.transaction.local_transaction_id ||
+      descriptor.mode != canonical_bind_request.mode ||
+      descriptor.alias_scope != canonical_bind_request.alias_scope ||
+      descriptor.executor_availability_generation == 0 ||
+      descriptor.descriptor_sha256 != bind_ack.descriptor_sha256) {
+    result.outcome_unknown = true;
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty() ? "database_attach_descriptor_authority_mismatch"
+                       : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.database_attach";
+  g_database_attach_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_database_attach_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND_INVALID",
+                  "database_attach_canonical_submission_invalid");
+  }
+  const auto canonical_stream = attach::DecodeSblrOpcodeStream(
+      std::string_view(
+          reinterpret_cast<const char*>(
+              submission->canonical_operation_bytes.data()),
+          submission->canonical_operation_bytes.size()));
+  attach::SblrDatabaseAttachDescriptorV1 submitted_descriptor;
+  const bool exact_submitted_root =
+      canonical_stream.ok && canonical_stream.stream.operations.size() == 3 &&
+      canonical_stream.stream.operations[1].operation_id ==
+          "engine.op.database_attach" &&
+      canonical_stream.stream.operations[1].opcode ==
+          "SBLR_DATABASE_ATTACH" &&
+      canonical_stream.stream.operations[1].opcode_code ==
+          attach::kSblrDatabaseAttachOpcodeCode &&
+      canonical_stream.stream.operations[1].operands.size() == 1 &&
+      canonical_stream.stream.operations[1].operands[0].ordinal == 1 &&
+      canonical_stream.stream.operations[1].operands[0].type ==
+          "database_attach_descriptor" &&
+      canonical_stream.stream.operations[1].operands[0].name ==
+          "attachment" &&
+      canonical_stream.stream.operations[1].operands[0].value_kind ==
+          attach::SblrValueKind::database_attach_descriptor &&
+      attach::DecodeSblrDatabaseAttachDescriptorV1(
+          canonical_stream.stream.operations[1].operands[0]
+              .value_body.data(),
+          canonical_stream.stream.operations[1].operands[0]
+              .value_body.size(),
+          &submitted_descriptor, &detail) &&
+      submitted_descriptor.descriptor_sha256 == descriptor.descriptor_sha256;
+  if (!exact_submitted_root) {
+    return refuse(
+        canonical_stream.diagnostic_id.empty()
+            ? "SBLR.OPERAND_INVALID"
+            : canonical_stream.diagnostic_id,
+        detail.empty()
+            ? (canonical_stream.detail.empty()
+                   ? "database_attach_canonical_stream_invalid"
+                   : canonical_stream.detail)
+            : detail);
+  }
+  auto executed = embedded
+                      ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false)
+                      : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  attach::SblrDatabaseAttachResultV1 attach_result;
+  if (executed.operation_id != "engine.op.database_attach" ||
+      executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !attach::DecodeSblrDatabaseAttachResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &attach_result, &detail) ||
+      attach_result.attach_uuid != descriptor.attach_uuid ||
+      attach_result.database_uuid != descriptor.database_uuid ||
+      attach_result.alias_uuid != descriptor.alias_uuid ||
+      attach_result.database_generation == 0 ||
+      attach_result.catalog_generation != descriptor.catalog_generation) {
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty() ? "database_attach_result_authority_mismatch"
+                       : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(
+          submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
+  return result;
+}
 
 PipelineResult SbsqlTestWireSession::RunDatabaseDetachForWire(){return RunShowObjectDetailForWire();}
 
@@ -29684,8 +32470,1406 @@ PipelineResult SbsqlTestWireSession::RunSessionSnapshotHandleForWire(){PipelineR
 PipelineResult SbsqlTestWireSession::RunContextSetForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrContextSetRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->ContextSet(session_,c::EncodeSblrContextSetRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrContextSetDescriptorV1 desc;std::string detail;if(!c::DecodeSblrContextSetDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&desc,&detail,false))return result;auto operand=c::EncodeSblrContextSetDescriptorV1(desc,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.context_set";g_context_set_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_context_set_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunContextUnsetForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrContextUnsetRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->ContextUnset(session_,c::EncodeSblrContextUnsetRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrContextUnsetDescriptorV1 desc;std::string detail;if(!c::DecodeSblrContextUnsetDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&desc,&detail,false))return result;auto operand=c::EncodeSblrContextUnsetDescriptorV1(desc,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.context_unset";g_context_unset_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_context_unset_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunContextGetForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrContextGetRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->ContextGet(session_,c::EncodeSblrContextGetRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrContextGetDescriptorV1 desc;std::string detail;if(!c::DecodeSblrContextGetDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&desc,&detail,false))return result;auto operand=c::EncodeSblrContextGetDescriptorV1(desc,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.context_get";g_context_get_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_context_get_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
+PipelineResult SbsqlTestWireSession::RunNamedStmtPrepareForWire(
+    std::string_view original_sql, std::string_view statement_name,
+    bool statement_name_quoted, std::string_view nested_sql,
+    const SbsqlCanonicalCompileOutput* precompiled,
+    const std::vector<std::uint8_t>* declared_parameter_type_demands) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace stmt = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "general";
+  result.operation_family = "statement-management";
+  result.statement_hash = Fnv1a64(original_sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical PREPARE STATEMENT operation was refused.",
+        "sbp_sbsql.wire.statement_prepare",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_statement_management_route_required");
+  }
+
+  SbsqlCanonicalCompileOutput compiled;
+  PipelineResult compiled_result;
+  if (precompiled != nullptr) {
+    compiled = *precompiled;
+    compiled_result.accepted = true;
+  } else {
+    compiled_result = RunPipeline(
+        nested_sql, true, false, 0, false, {}, nullptr, false, nullptr, {}, 0,
+        nullptr, nullptr, nullptr, &compiled);
+  }
+  if (!compiled_result.accepted || compiled_result.messages.has_errors() ||
+      !compiled.captured || !compiled.statement_context.complete() ||
+      !compiled.submission.complete()) {
+    compiled_result.accepted = false;
+    compiled_result.statement_family = "general";
+    compiled_result.operation_family = "statement-management";
+    compiled_result.statement_hash = result.statement_hash;
+    if (!compiled_result.messages.has_errors()) {
+      compiled_result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND.INVALID", "ERROR",
+          "The PREPARE body did not produce a canonical engine-bound statement.",
+          "sbp_sbsql.wire.statement_prepare"));
+    }
+    return compiled_result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(compiled.statement_context.preliminary_receipt_uuid);
+  if (!receipt.has_value() ||
+      compiled.statement_context.preliminary_statement_catalog_generation == 0 ||
+      compiled.statement_context.preliminary_security_epoch == 0 ||
+      compiled.statement_context.preliminary_resource_epoch == 0 ||
+      compiled.statement_context
+              .preliminary_stmt_prepare_executor_availability_generation ==
+          0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "nested_statement_receipt_authority_incomplete");
+  }
+
+  bind::PrepareBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.statement_name = std::string(statement_name);
+  bind_request.quoted = statement_name_quoted;
+  if (declared_parameter_type_demands != nullptr) {
+    bind_request.declared_parameter_type_demands =
+        *declared_parameter_type_demands;
+  }
+  bind_request.canonical_container_bytes =
+      compiled.submission.canonical_container_bytes;
+  bind_request.canonical_execution_envelope_bytes =
+      compiled.submission.canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodePrepareBindRequestV1(bind_request, &bind_request_bytes,
+                                        &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "prepare_bind_request_invalid" : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindStmtPrepare(session_,
+                                                       bind_request_bytes)
+                   : server_client_->BindStmtPrepare(session_,
+                                                     bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "prepare_bind_outcome_unknown"
+                        : "prepare_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::PrepareBindAckV1 bind_ack;
+  if (!bind::DecodePrepareBindAckV1(bound.canonical_payload.data(),
+                                    bound.canonical_payload.size(), &bind_ack,
+                                    &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != bind_request.occurrence) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "prepare_bind_ack_invalid" : detail);
+  }
+
+  stmt::SblrStmtPrepareRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      compiled.statement_context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      compiled.statement_context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      compiled.statement_context.preliminary_resource_epoch;
+  const auto coordinate_request_bytes =
+      stmt::EncodeSblrStmtPrepareRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "prepare_coordinate_request_invalid");
+  }
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateStmtPrepare(session_,
+                                                    coordinate_request_bytes)
+          : server_client_->CoordinateStmtPrepare(session_,
+                                                  coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "prepare_coordinate_outcome_unknown"
+                        : "prepare_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  stmt::SblrStmtPrepareDescriptorV1 descriptor;
+  if (!stmt::DecodeSblrStmtPrepareDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.statement_uuid != bind_ack.binding_uuid ||
+      descriptor.statement_name_uuid != bind_ack.statement_name_uuid ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.descriptor_sha256 != bind_ack.descriptor_sha256 ||
+      descriptor.catalog_generation != coordinate_request.catalog_generation ||
+      descriptor.security_epoch != coordinate_request.security_epoch ||
+      descriptor.resource_epoch != coordinate_request.resource_epoch ||
+      descriptor.executor_availability_generation !=
+          compiled.statement_context
+              .preliminary_stmt_prepare_executor_availability_generation ||
+      descriptor.canonical_sblr_bytes !=
+          compiled.submission.canonical_container_bytes) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "prepare_descriptor_authority_mismatch"
+                                 : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.stmt_prepare";
+  g_stmt_prepare_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, compiled.statement_context, session_, nullptr,
+      nullptr);
+  g_stmt_prepare_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "prepare_canonical_submission_invalid");
+  }
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, compiled.statement_context, *submission, {}, false)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, compiled.statement_context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.accepted = false;
+    return result;
+  }
+  stmt::SblrStmtPrepareResultV1 prepare_result;
+  if (executed.operation_id != "engine.op.stmt_prepare" ||
+      !stmt::DecodeSblrStmtPrepareResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &prepare_result, &detail) ||
+      prepare_result.statement_uuid != descriptor.statement_uuid ||
+      prepare_result.parameter_descriptor_uuid !=
+          descriptor.parameter_descriptor_uuid ||
+      prepare_result.result_descriptor_uuid != descriptor.result_descriptor_uuid ||
+      prepare_result.catalog_generation != descriptor.catalog_generation ||
+      prepare_result.security_epoch != descriptor.security_epoch ||
+      prepare_result.resource_epoch != descriptor.resource_epoch ||
+      prepare_result.mga_snapshot_uuid != descriptor.mga_snapshot_uuid ||
+      prepare_result.executor_availability_generation !=
+          descriptor.executor_availability_generation) {
+    return refuse("SBLR.EXECUTION_FAILED",
+                  detail.empty() ? "prepare_result_authority_mismatch"
+                                 : detail);
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = executed.row_count;
+  result.server_affected_rows = executed.affected_rows;
+  result.server_affected_rows_present = executed.affected_rows_present;
+  result.server_result_payload = executed.row_packet;
+  ApplyExecutedTransactionState(executed, &session_);
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunNamedStmtExecuteDirectForWire(
+    std::string_view original_sql, std::string_view nested_sql,
+    bool cursor_requested, bool autocommit_emulation) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace stmt = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "general";
+  result.operation_family = "statement-management";
+  result.statement_hash = Fnv1a64(original_sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical EXECUTE DIRECT operation was refused.",
+        "sbp_sbsql.wire.statement_execute_direct",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_statement_management_route_required");
+  }
+
+  SbsqlCanonicalCompileOutput compiled;
+  auto compiled_result = RunPipeline(
+      nested_sql, true, false, 0, false, {}, nullptr, false, nullptr, {}, 0,
+      nullptr, nullptr, nullptr, &compiled);
+  if (!compiled_result.accepted || compiled_result.messages.has_errors() ||
+      !compiled.captured || !compiled.statement_context.complete() ||
+      !compiled.submission.complete()) {
+    compiled_result.accepted = false;
+    compiled_result.statement_family = "general";
+    compiled_result.operation_family = "statement-management";
+    compiled_result.statement_hash = result.statement_hash;
+    if (!compiled_result.messages.has_errors()) {
+      compiled_result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND.INVALID", "ERROR",
+          "The EXECUTE DIRECT body did not produce a canonical engine-bound statement.",
+          "sbp_sbsql.wire.statement_execute_direct"));
+    }
+    return compiled_result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(compiled.statement_context.preliminary_receipt_uuid);
+  const auto catalog_snapshot = CanonicalUuidBytes(
+      compiled.statement_context.statement_metadata_snapshot_uuid);
+  const auto mga_snapshot =
+      CanonicalUuidBytes(compiled.statement_context.statement_snapshot_uuid);
+  const auto parser_package =
+      CanonicalUuidBytes(session_.admitted_parser_package_uuid);
+  if (!receipt.has_value() || !catalog_snapshot.has_value() ||
+      !mga_snapshot.has_value() || !parser_package.has_value() ||
+      compiled.statement_context.preliminary_statement_catalog_generation ==
+          0 ||
+      compiled.statement_context.preliminary_security_epoch == 0 ||
+      compiled.statement_context.preliminary_resource_epoch == 0 ||
+      compiled.statement_context
+              .preliminary_stmt_execute_direct_executor_availability_generation ==
+          0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "nested_statement_receipt_authority_incomplete");
+  }
+
+  bind::ExecuteDirectBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.canonical_container_bytes =
+      compiled.submission.canonical_container_bytes;
+  bind_request.canonical_execution_envelope_bytes =
+      compiled.submission.canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeExecuteDirectBindRequestV1(
+          bind_request, &bind_request_bytes, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "execute_direct_bind_request_invalid"
+                                 : detail);
+  }
+  const auto bind_request_evidence =
+      bind::ExecuteDirectBindRequestEvidenceV1(bind_request);
+  auto bound =
+      embedded ? embedded_client_->BindStmtExecuteDirect(session_,
+                                                         bind_request_bytes)
+               : server_client_->BindStmtExecuteDirect(session_,
+                                                       bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "execute_direct_bind_outcome_unknown"
+                        : "execute_direct_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::ExecuteDirectBindAckV1 bind_ack;
+  if (!bind::DecodeExecuteDirectBindAckV1(
+          bound.canonical_payload.data(), bound.canonical_payload.size(),
+          &bind_ack, &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != bind_request.occurrence ||
+      bind_ack.request_evidence_sha256 != bind_request_evidence) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "execute_direct_bind_ack_invalid"
+                                 : detail);
+  }
+
+  stmt::SblrStmtExecuteDirectRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      compiled.statement_context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      compiled.statement_context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      compiled.statement_context.preliminary_resource_epoch;
+  const auto coordinate_request_bytes =
+      stmt::EncodeSblrStmtExecuteDirectRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "execute_direct_coordinate_request_invalid");
+  }
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateStmtExecuteDirect(
+                session_, coordinate_request_bytes)
+          : server_client_->CoordinateStmtExecuteDirect(
+                session_, coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "execute_direct_coordinate_outcome_unknown"
+                        : "execute_direct_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  stmt::SblrStmtExecuteDirectDescriptorV1 descriptor;
+  const auto descriptor_digest = scratchbird::core::hash::ComputeSha256Digest(
+      coordinated.canonical_payload);
+  const auto body_digest = scratchbird::core::hash::ComputeSha256Digest(
+      compiled.submission.canonical_container_bytes);
+  if (!descriptor_digest.ok() || !body_digest.ok() ||
+      !stmt::DecodeSblrStmtExecuteDirectDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.execution_uuid != bind_ack.binding_uuid ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.catalog_snapshot_uuid != *catalog_snapshot ||
+      descriptor.catalog_generation != coordinate_request.catalog_generation ||
+      descriptor.security_epoch != coordinate_request.security_epoch ||
+      descriptor.resource_epoch != coordinate_request.resource_epoch ||
+      descriptor.mga_snapshot_uuid != *mga_snapshot ||
+      descriptor.result_descriptor_uuid != bind_ack.result_descriptor_uuid ||
+      descriptor.canonical_sblr_sha256 != body_digest.digest ||
+      descriptor.parser_package_uuid != *parser_package ||
+      descriptor.executor_availability_generation !=
+          compiled.statement_context
+              .preliminary_stmt_execute_direct_executor_availability_generation ||
+      descriptor.canonical_sblr_bytes !=
+          compiled.submission.canonical_container_bytes ||
+      !descriptor.canonical_parameter_bytes.empty() ||
+      descriptor_digest.digest != bind_ack.descriptor_sha256 ||
+      stmt::EncodeSblrStmtExecuteDirectDescriptorV1(descriptor) !=
+          coordinated.canonical_payload) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "execute_direct_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.stmt_execute_direct";
+  g_stmt_execute_direct_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, compiled.statement_context, session_, nullptr,
+      nullptr);
+  g_stmt_execute_direct_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "execute_direct_canonical_submission_invalid");
+  }
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, compiled.statement_context, *submission, {},
+                cursor_requested)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, compiled.statement_context, *submission, {},
+                cursor_requested);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.accepted = false;
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  stmt::SblrStmtExecuteDirectResultV1 direct_result;
+  if (executed.operation_id != "engine.op.stmt_execute_direct" ||
+      !stmt::DecodeSblrStmtExecuteDirectResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &direct_result, &detail) ||
+      direct_result.execution_uuid != descriptor.execution_uuid ||
+      direct_result.statement_receipt_uuid !=
+          descriptor.statement_receipt_uuid ||
+      direct_result.result_descriptor_uuid !=
+          descriptor.result_descriptor_uuid ||
+      direct_result.mga_snapshot_uuid != descriptor.mga_snapshot_uuid ||
+      direct_result.catalog_generation != descriptor.catalog_generation ||
+      direct_result.security_epoch != descriptor.security_epoch ||
+      direct_result.resource_epoch != descriptor.resource_epoch ||
+      direct_result.executor_availability_generation !=
+          descriptor.executor_availability_generation ||
+      direct_result.status != 1 || direct_result.publication_barrier != 1) {
+    return refuse("SBLR.EXECUTION_FAILED",
+                  detail.empty() ? "execute_direct_result_authority_mismatch"
+                                 : detail);
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_cursor_uuid = executed.cursor_uuid;
+  if (executed.cursor_stream_descriptor.complete()) {
+    cursor_stream_descriptors_[executed.cursor_uuid] =
+        executed.cursor_stream_descriptor;
+    cursor_statement_contexts_[executed.cursor_uuid] =
+        compiled.statement_context;
+  }
+  result.server_row_count = executed.row_count;
+  result.server_affected_rows = executed.affected_rows;
+  result.server_affected_rows_present = executed.affected_rows_present;
+  result.server_result_payload = executed.row_packet;
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation && !cursor_requested) {
+    (void)FinalizeSuccessfulAutocommitForWire(&result);
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunNamedStmtExecuteForWire(
+    std::string_view original_sql, std::string_view statement_name,
+    bool statement_name_quoted, bool cursor_requested,
+    bool autocommit_emulation) {
+  namespace stmt = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "general";
+  result.operation_family = "statement-management";
+  result.statement_hash = Fnv1a64(original_sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical EXECUTE STATEMENT operation was refused.",
+        "sbp_sbsql.wire.statement_execute",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_statement_management_route_required");
+  }
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(
+                            session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto catalog_snapshot = CanonicalUuidBytes(
+      acquired.context.statement_metadata_snapshot_uuid);
+  const auto mga_snapshot =
+      CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+  const auto parser_package =
+      CanonicalUuidBytes(session_.admitted_parser_package_uuid);
+  if (!receipt.has_value() || !catalog_snapshot.has_value() ||
+      !mga_snapshot.has_value() || !parser_package.has_value() ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "statement_receipt_authority_incomplete");
+  }
+
+  stmt::SblrStmtExecuteRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = 1;
+  coordinate_request.catalog_generation =
+      acquired.context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      acquired.context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      acquired.context.preliminary_resource_epoch;
+  coordinate_request.statement_name = std::string(statement_name);
+  coordinate_request.quoted = statement_name_quoted;
+  const auto coordinate_request_bytes =
+      stmt::EncodeSblrStmtExecuteRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "execute_coordinate_request_invalid");
+  }
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateStmtExecute(
+                session_, coordinate_request_bytes)
+          : server_client_->CoordinateStmtExecute(
+                session_, coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "execute_coordinate_outcome_unknown"
+                        : "execute_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  stmt::SblrStmtExecuteDescriptorV1 descriptor;
+  std::string detail;
+  const ipc::PreparedParameterReference* retained_parameter_set = nullptr;
+  if (statement_name_quoted) {
+    const auto retained =
+        prepared_parameter_bindings_.find(std::string(statement_name));
+    if (retained != prepared_parameter_bindings_.end() &&
+        retained->second.present()) {
+      retained_parameter_set = &retained->second;
+    }
+  }
+  if (!stmt::DecodeSblrStmtExecuteDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.catalog_snapshot_uuid != *catalog_snapshot ||
+      descriptor.catalog_generation !=
+          coordinate_request.catalog_generation ||
+      descriptor.security_epoch != coordinate_request.security_epoch ||
+      descriptor.resource_epoch != coordinate_request.resource_epoch ||
+      descriptor.mga_snapshot_uuid != *mga_snapshot ||
+      descriptor.parser_package_uuid != *parser_package ||
+      descriptor.prepared_generation == 0 ||
+      descriptor.executor_availability_generation == 0 ||
+      stmt::EncodeSblrStmtExecuteDescriptorV1(descriptor) !=
+          coordinated.canonical_payload) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "execute_descriptor_authority_mismatch"
+                                 : detail);
+  }
+  if (retained_parameter_set == nullptr) {
+    if (std::any_of(descriptor.parameter_set_uuid.begin(),
+                    descriptor.parameter_set_uuid.end(),
+                    [](const std::uint8_t value) { return value != 0; }) ||
+        descriptor.parameter_set_generation != 0 ||
+        !descriptor.canonical_parameter_bytes.empty()) {
+      result.outcome_unknown = true;
+      return refuse("SBLR.PARAMETER.STALE",
+                    "unexpected_parameter_binding_authority");
+    }
+  } else {
+    const auto values = stmt::DecodeSblrParameterValueSetV1(
+        descriptor.canonical_parameter_bytes.data(),
+        descriptor.canonical_parameter_bytes.size());
+    if (descriptor.parameter_set_uuid !=
+            retained_parameter_set->parameter_set_uuid ||
+        descriptor.parameter_set_generation !=
+            retained_parameter_set->parameter_set_generation ||
+        !values.ok ||
+        values.canonical_bytes != descriptor.canonical_parameter_bytes ||
+        values.value.parameter_set_descriptor_uuid !=
+            retained_parameter_set->parameter_set_uuid ||
+        values.value.descriptor_generation !=
+            retained_parameter_set->parameter_set_generation ||
+        values.value.records.size() != retained_parameter_set->slots.size()) {
+      result.outcome_unknown = true;
+      return refuse("SBLR.PARAMETER.STALE",
+                    detail.empty()
+                        ? "parameterized_execute_descriptor_authority_mismatch"
+                        : detail);
+    }
+    for (std::size_t index = 0; index < values.value.records.size(); ++index) {
+      const auto& value = values.value.records[index];
+      const auto& slot = retained_parameter_set->slots[index];
+      if (value.slot_ordinal != slot.slot_ordinal ||
+          value.slot_uuid != slot.slot_uuid ||
+          value.datatype_descriptor_uuid != slot.datatype_descriptor_uuid ||
+          value.datatype_descriptor_generation !=
+              slot.datatype_descriptor_generation ||
+          static_cast<std::uint8_t>(value.direction) != slot.direction ||
+          value.state == stmt::SblrParameterValueStateV1::unbound) {
+        result.outcome_unknown = true;
+        return refuse("SBLR.PARAMETER.STALE",
+                      "parameterized_execute_slot_authority_mismatch");
+      }
+    }
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.stmt_execute";
+  g_stmt_execute_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_stmt_execute_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "execute_canonical_submission_invalid");
+  }
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, cursor_requested)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, cursor_requested);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.accepted = false;
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  stmt::SblrStmtExecuteResultV1 execute_result;
+  if (executed.operation_id != "engine.op.stmt_execute" ||
+      !stmt::DecodeSblrStmtExecuteResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &execute_result, &detail) ||
+      execute_result.execution_uuid != descriptor.execution_uuid ||
+      execute_result.statement_receipt_uuid !=
+          descriptor.statement_receipt_uuid ||
+      execute_result.result_descriptor_uuid !=
+          descriptor.result_descriptor_uuid ||
+      execute_result.mga_snapshot_uuid != descriptor.mga_snapshot_uuid ||
+      execute_result.catalog_generation != descriptor.catalog_generation ||
+      execute_result.security_epoch != descriptor.security_epoch ||
+      execute_result.resource_epoch != descriptor.resource_epoch ||
+      execute_result.executor_availability_generation !=
+          descriptor.executor_availability_generation ||
+      execute_result.status != 1 ||
+      execute_result.publication_barrier != 1) {
+    return refuse("SBLR.EXECUTION_FAILED",
+                  detail.empty() ? "execute_result_authority_mismatch"
+                                 : detail);
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_cursor_uuid = executed.cursor_uuid;
+  if (executed.cursor_stream_descriptor.complete()) {
+    cursor_stream_descriptors_[executed.cursor_uuid] =
+        executed.cursor_stream_descriptor;
+    cursor_statement_contexts_[executed.cursor_uuid] = acquired.context;
+  }
+  result.server_row_count = executed.row_count;
+  result.server_affected_rows = executed.affected_rows;
+  result.server_affected_rows_present = executed.affected_rows_present;
+  result.server_result_payload = executed.row_packet;
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation && !cursor_requested) {
+    (void)FinalizeSuccessfulAutocommitForWire(&result);
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunNamedStmtFreeForWire(
+    std::string_view original_sql, std::string_view statement_name,
+    bool statement_name_quoted) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace stmt = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "general";
+  result.operation_family = "statement-management";
+  result.statement_hash = Fnv1a64(original_sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical DEALLOCATE operation was refused.",
+        "sbp_sbsql.wire.statement_free",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_statement_management_route_required");
+  }
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(session_,
+                                                                      selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt.has_value() ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0 ||
+      acquired.context.preliminary_stmt_free_executor_availability_generation ==
+          0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "statement_free_receipt_authority_incomplete");
+  }
+
+  bind::FreeBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.statement_name = std::string(statement_name);
+  bind_request.quoted = statement_name_quoted;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeFreeBindRequestV1(bind_request, &bind_request_bytes,
+                                     &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "free_bind_request_invalid" : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindStmtFree(session_,
+                                                    bind_request_bytes)
+                   : server_client_->BindStmtFree(session_,
+                                                  bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "free_bind_outcome_unknown"
+                        : "free_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::FreeBindAckV1 bind_ack;
+  if (!bind::DecodeFreeBindAckV1(bound.canonical_payload.data(),
+                                 bound.canonical_payload.size(), &bind_ack,
+                                 &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != bind_request.occurrence) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "free_bind_ack_invalid" : detail);
+  }
+
+  stmt::SblrStmtFreeRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      acquired.context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      acquired.context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      acquired.context.preliminary_resource_epoch;
+  const auto coordinate_request_bytes =
+      stmt::EncodeSblrStmtFreeRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "free_coordinate_request_invalid");
+  }
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateStmtFree(session_,
+                                                 coordinate_request_bytes)
+          : server_client_->CoordinateStmtFree(session_,
+                                               coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "free_coordinate_outcome_unknown"
+                        : "free_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  stmt::SblrStmtFreeDescriptorV1 descriptor;
+  if (!stmt::DecodeSblrStmtFreeDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.statement_uuid != bind_ack.statement_uuid ||
+      descriptor.statement_name_uuid != bind_ack.statement_name_uuid ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.prepared_generation != bind_ack.prepared_generation ||
+      descriptor.descriptor_sha256 != bind_ack.descriptor_sha256 ||
+      descriptor.catalog_generation != coordinate_request.catalog_generation ||
+      descriptor.security_epoch != coordinate_request.security_epoch ||
+      descriptor.resource_epoch != coordinate_request.resource_epoch ||
+      descriptor.executor_availability_generation !=
+          acquired.context
+              .preliminary_stmt_free_executor_availability_generation) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "free_descriptor_authority_mismatch"
+                                 : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.stmt_free";
+  g_stmt_free_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_stmt_free_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "free_canonical_submission_invalid");
+  }
+  auto executed = embedded
+                      ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false)
+                      : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.accepted = false;
+    return result;
+  }
+  stmt::SblrStmtFreeResultV1 free_result;
+  if (executed.operation_id != "engine.op.stmt_free" ||
+      !stmt::DecodeSblrStmtFreeResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &free_result, &detail) ||
+      free_result.statement_uuid != descriptor.statement_uuid ||
+      free_result.terminal_prepared_generation !=
+          descriptor.prepared_generation ||
+      free_result.executor_availability_generation !=
+          descriptor.executor_availability_generation ||
+      free_result.catalog_generation != descriptor.catalog_generation ||
+      free_result.security_epoch != descriptor.security_epoch ||
+      free_result.resource_epoch != descriptor.resource_epoch) {
+    return refuse("SBLR.EXECUTION_FAILED",
+                  detail.empty() ? "free_result_authority_mismatch" : detail);
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = executed.row_count;
+  result.server_affected_rows = executed.affected_rows;
+  result.server_affected_rows_present = executed.affected_rows_present;
+  result.server_result_payload = executed.row_packet;
+  ApplyExecutedTransactionState(executed, &session_);
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunNamedStmtCancelForWire(
+    std::string_view original_sql, std::string_view statement_name,
+    bool statement_name_quoted, std::uint8_t reason, std::uint8_t mode,
+    std::uint64_t deadline_monotonic_ns) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace stmt = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "general";
+  result.operation_family = "statement-management";
+  result.statement_hash = Fnv1a64(original_sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical CANCEL STATEMENT operation was refused.",
+        "sbp_sbsql.wire.statement_cancel",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_statement_management_route_required");
+  }
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(session_,
+                                                                      selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt.has_value() ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "statement_cancel_receipt_authority_incomplete");
+  }
+
+  bind::CancelBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.statement_name = std::string(statement_name);
+  bind_request.quoted = statement_name_quoted;
+  bind_request.reason = reason;
+  bind_request.mode = mode;
+  bind_request.deadline_monotonic_ns = deadline_monotonic_ns;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeCancelBindRequestV1(bind_request, &bind_request_bytes,
+                                      &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "cancel_bind_request_invalid" : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindStmtCancel(session_,
+                                                      bind_request_bytes)
+                   : server_client_->BindStmtCancel(session_,
+                                                    bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "cancel_bind_outcome_unknown"
+                        : "cancel_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::CancelBindAckV1 bind_ack;
+  if (!bind::DecodeCancelBindAckV1(bound.canonical_payload.data(),
+                                   bound.canonical_payload.size(), &bind_ack,
+                                   &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != bind_request.occurrence ||
+      bind_ack.reason != reason || bind_ack.mode != mode ||
+      bind_ack.deadline_monotonic_ns != deadline_monotonic_ns ||
+      bind_ack.executor_availability_generation == 0) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "cancel_bind_ack_invalid" : detail);
+  }
+
+  stmt::SblrStmtCancelRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      acquired.context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      acquired.context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      acquired.context.preliminary_resource_epoch;
+  const auto coordinate_request_bytes =
+      stmt::EncodeSblrStmtCancelRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "cancel_coordinate_request_invalid");
+  }
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateStmtCancel(session_,
+                                                   coordinate_request_bytes)
+          : server_client_->CoordinateStmtCancel(session_,
+                                                 coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "cancel_coordinate_outcome_unknown"
+                        : "cancel_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  stmt::SblrStmtCancelDescriptorV1 descriptor;
+  if (!stmt::DecodeSblrStmtCancelDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.target_execution_uuid != bind_ack.target_execution_uuid ||
+      descriptor.target_statement_uuid != bind_ack.target_statement_uuid ||
+      descriptor.target_statement_receipt_uuid !=
+          bind_ack.target_statement_receipt_uuid ||
+      descriptor.cancel_operation_uuid != bind_ack.cancel_operation_uuid ||
+      descriptor.target_transaction_uuid != bind_ack.target_transaction_uuid ||
+      descriptor.target_execution_generation !=
+          bind_ack.target_execution_generation ||
+      descriptor.reason != bind_ack.reason || descriptor.mode != bind_ack.mode ||
+      descriptor.deadline_monotonic_ns != bind_ack.deadline_monotonic_ns ||
+      descriptor.executor_availability_generation !=
+          bind_ack.executor_availability_generation ||
+      descriptor.descriptor_sha256 != bind_ack.descriptor_sha256) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "cancel_descriptor_authority_mismatch"
+                                 : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.stmt_cancel";
+  g_stmt_cancel_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_stmt_cancel_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "cancel_canonical_submission_invalid");
+  }
+  auto executed = embedded
+                      ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false)
+                      : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.accepted = false;
+    return result;
+  }
+  stmt::SblrStmtCancelResultV1 cancel_result;
+  if (executed.operation_id != "engine.op.stmt_cancel" ||
+      !stmt::DecodeSblrStmtCancelResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &cancel_result, &detail) ||
+      cancel_result.target_execution_uuid != descriptor.target_execution_uuid ||
+      cancel_result.cancel_operation_uuid != descriptor.cancel_operation_uuid ||
+      cancel_result.state != 3 || cancel_result.finality > 1 ||
+      cancel_result.publication_barrier != 1 ||
+      cancel_result.target_execution_generation !=
+          descriptor.target_execution_generation ||
+      cancel_result.executor_availability_generation !=
+          descriptor.executor_availability_generation) {
+    return refuse("SBLR.EXECUTION_FAILED",
+                  detail.empty() ? "cancel_result_authority_mismatch" : detail);
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = executed.row_count;
+  result.server_affected_rows = executed.affected_rows;
+  result.server_affected_rows_present = executed.affected_rows_present;
+  result.server_result_payload = executed.row_packet;
+  ApplyExecutedTransactionState(executed, &session_);
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunNamedParameterBindForWire(
+    std::string_view original_sql, std::string_view statement_name,
+    bool statement_name_quoted,
+    const std::vector<PreparedParameterWireValue>& parameter_values) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace stmt = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "general";
+  result.operation_family = "statement-management";
+  result.statement_hash = Fnv1a64(original_sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical BIND PARAMETERS operation was refused.",
+        "sbp_sbsql.wire.parameter_bind",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_statement_management_route_required");
+  }
+  if (!statement_name_quoted) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "prepared_parameter_identity_requires_exact_quoted_name");
+  }
+  const auto retained = prepared_parameter_bindings_.find(
+      std::string(statement_name));
+  if (retained == prepared_parameter_bindings_.end() ||
+      !retained->second.present()) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "prepared_parameter_identity_hidden");
+  }
+  const auto& prepared = retained->second;
+  if (parameter_values.size() != prepared.slots.size() ||
+      parameter_values.empty() || parameter_values.size() > 4096) {
+    return refuse("SBLR.PARAMETER.UNBOUND",
+                  "parameter_bind_value_cardinality_mismatch");
+  }
+  const auto prepared_uuid =
+      CanonicalUuidBytes(prepared.prepared_statement_uuid);
+  const auto retained_slot_hash = ParameterSlotTableSha256(prepared.slots);
+  if (!prepared_uuid || !retained_slot_hash ||
+      *retained_slot_hash != prepared.ordered_slot_table_sha256) {
+    return refuse("SBLR.PARAMETER.STALE",
+                  "prepared_parameter_slot_authority_invalid");
+  }
+
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(session_,
+                                                                      selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto execution = CanonicalUuidBytes(acquired.context.statement_uuid);
+  const auto catalog_snapshot =
+      CanonicalUuidBytes(acquired.context.literal_catalog_snapshot_uuid);
+  const auto mga_snapshot =
+      CanonicalUuidBytes(acquired.context.literal_mga_snapshot_uuid);
+  if (!receipt || !execution || !catalog_snapshot || !mga_snapshot ||
+      acquired.context.literal_catalog_generation == 0 ||
+      acquired.context.literal_security_epoch == 0 ||
+      acquired.context.literal_resource_epoch == 0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "parameter_bind_receipt_authority_incomplete");
+  }
+
+  stmt::SblrParameterValueSetV1 value_set;
+  value_set.parameter_set_descriptor_uuid = prepared.parameter_set_uuid;
+  value_set.descriptor_generation = prepared.parameter_set_generation;
+  value_set.execution_uuid = *execution;
+  value_set.statement_receipt_uuid = *receipt;
+  value_set.records.reserve(prepared.slots.size());
+  for (std::size_t index = 0; index < prepared.slots.size(); ++index) {
+    const auto& slot = prepared.slots[index];
+    if (slot.slot_ordinal != index || slot.direction < 1 ||
+        slot.direction > 3 || slot.direction == 2 || slot.nullable > 1 ||
+        slot.datatype_descriptor_generation == 0) {
+      return refuse("SBLR.PARAMETER.STALE",
+                    "prepared_parameter_slot_shape_invalid");
+    }
+    const auto canonical = CanonicalizePreparedParameterWireValue(
+        parameter_values[index],
+        ParameterSlotUuidText(slot.datatype_descriptor_uuid),
+        ParameterSlotUuidText(slot.datatype_type_uuid), slot.nullable != 0);
+    if (!canonical.accepted) {
+      return refuse(canonical.diagnostic_code.empty()
+                        ? "DATATYPE.CONVERSION_FAILED"
+                        : canonical.diagnostic_code,
+                    "parameter_bind_value_codec_refused");
+    }
+    stmt::SblrParameterValueRecordV1 record;
+    record.slot_ordinal = slot.slot_ordinal;
+    record.slot_uuid = slot.slot_uuid;
+    record.datatype_descriptor_uuid = slot.datatype_descriptor_uuid;
+    record.datatype_descriptor_generation =
+        slot.datatype_descriptor_generation;
+    record.direction =
+        static_cast<stmt::SblrParameterDirectionV1>(slot.direction);
+    record.state = canonical.is_null
+                       ? stmt::SblrParameterValueStateV1::null_value
+                       : stmt::SblrParameterValueStateV1::value;
+    record.canonical_value_bytes = canonical.canonical_bytes;
+    value_set.records.push_back(std::move(record));
+  }
+  const auto value_vector = stmt::EncodeSblrParameterValueSetV1(value_set);
+  const auto value_vector_sha = CanonicalSha256(value_vector);
+  if (value_vector.empty() || value_vector.size() > 33554432 ||
+      !value_vector_sha) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "parameter_bind_value_vector_invalid");
+  }
+
+  bind::ParameterBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.statement_name = std::string(statement_name);
+  bind_request.quoted = true;
+  bind_request.prepared_statement_uuid = *prepared_uuid;
+  bind_request.prepared_generation = prepared.prepared_generation;
+  bind_request.parameter_set_uuid = prepared.parameter_set_uuid;
+  bind_request.parameter_set_generation = prepared.parameter_set_generation;
+  bind_request.ordered_slot_table_sha256 =
+      prepared.ordered_slot_table_sha256;
+  bind_request.batch_uuid = prepared.batch_uuid;
+  bind_request.batch_generation = prepared.batch_generation;
+  bind_request.dynamic_package_uuid = prepared.dynamic_package_uuid;
+  bind_request.dynamic_generation = prepared.dynamic_generation;
+  bind_request.value_count =
+      static_cast<std::uint32_t>(value_set.records.size());
+  bind_request.canonical_value_vector = value_vector;
+  bind_request.value_vector_sha256 = *value_vector_sha;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeParameterBindRequestV1(bind_request,
+                                          &bind_request_bytes, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "parameter_bind_private_request_invalid"
+                                 : detail);
+  }
+  bind::ParameterBindRequestV1 canonical_bind_request;
+  if (!bind::DecodeParameterBindRequestV1(
+          bind_request_bytes.data(), bind_request_bytes.size(),
+          &canonical_bind_request, &detail) ||
+      canonical_bind_request.value_vector_sha256 != *value_vector_sha) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "parameter_bind_private_request_noncanonical"
+                                 : detail);
+  }
+
+  auto bound = embedded
+                   ? embedded_client_->BindParameterBind(session_,
+                                                         bind_request_bytes)
+                   : server_client_->BindParameterBind(session_,
+                                                       bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "parameter_bind_private_outcome_unknown"
+                        : "parameter_bind_private_refused_without_diagnostic");
+    }
+    return result;
+  }
+  stmt::SblrParameterBindDescriptorV1 descriptor;
+  if (!stmt::DecodeSblrParameterBindDescriptorV1(
+          bound.canonical_payload.data(), bound.canonical_payload.size(),
+          &descriptor, &detail) ||
+      descriptor.execution_uuid != *execution ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.prepared_statement_uuid != *prepared_uuid ||
+      descriptor.prepared_generation != prepared.prepared_generation ||
+      descriptor.parameter_set_uuid != prepared.parameter_set_uuid ||
+      descriptor.parameter_set_generation !=
+          prepared.parameter_set_generation ||
+      descriptor.ordered_slot_table_sha256 !=
+          prepared.ordered_slot_table_sha256 ||
+      descriptor.batch_uuid != prepared.batch_uuid ||
+      descriptor.batch_generation != prepared.batch_generation ||
+      descriptor.dynamic_package_uuid != prepared.dynamic_package_uuid ||
+      descriptor.dynamic_generation != prepared.dynamic_generation ||
+      descriptor.catalog_snapshot_uuid != *catalog_snapshot ||
+      descriptor.catalog_generation !=
+          acquired.context.literal_catalog_generation ||
+      descriptor.security_epoch != acquired.context.literal_security_epoch ||
+      descriptor.resource_epoch != acquired.context.literal_resource_epoch ||
+      descriptor.mga_snapshot_uuid != *mga_snapshot ||
+      descriptor.executor_availability_generation == 0 ||
+      descriptor.canonical_value_vector != value_vector ||
+      stmt::EncodeSblrParameterBindDescriptorV1(descriptor) !=
+          bound.canonical_payload) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "parameter_bind_descriptor_authority_mismatch"
+                                 : detail);
+  }
+
+  stmt::SblrParameterBindRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      acquired.context.literal_catalog_generation;
+  coordinate_request.security_epoch = acquired.context.literal_security_epoch;
+  coordinate_request.resource_epoch = acquired.context.literal_resource_epoch;
+  const auto coordinate_request_bytes =
+      stmt::EncodeSblrParameterBindRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "parameter_bind_coordinate_request_invalid");
+  }
+  auto coordinated = embedded
+      ? embedded_client_->CoordinateParameterBind(session_,
+                                                  coordinate_request_bytes)
+      : server_client_->CoordinateParameterBind(session_,
+                                                coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "parameter_bind_coordinate_outcome_unknown"
+                        : "parameter_bind_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  stmt::SblrParameterBindDescriptorV1 coordinated_descriptor;
+  if (coordinated.canonical_payload != bound.canonical_payload ||
+      !stmt::DecodeSblrParameterBindDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &coordinated_descriptor,
+          &detail) ||
+      stmt::EncodeSblrParameterBindDescriptorV1(coordinated_descriptor) !=
+          coordinated.canonical_payload) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "parameter_bind_coordinate_descriptor_mismatch"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.parameter_bind";
+  g_parameter_bind_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_parameter_bind_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "parameter_bind_canonical_submission_invalid");
+  }
+  auto executed = embedded
+                      ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false)
+                      : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.accepted = false;
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  stmt::SblrParameterBindResultV1 bind_result;
+  if (executed.operation_id != "engine.op.parameter_bind" ||
+      !stmt::DecodeSblrParameterBindResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &bind_result, &detail) ||
+      bind_result.execution_uuid != descriptor.execution_uuid ||
+      bind_result.prepared_statement_uuid !=
+          descriptor.prepared_statement_uuid ||
+      bind_result.prepared_generation != descriptor.prepared_generation ||
+      bind_result.parameter_set_uuid != descriptor.parameter_set_uuid ||
+      bind_result.parameter_set_generation !=
+          descriptor.parameter_set_generation ||
+      bind_result.ordered_slot_table_sha256 !=
+          descriptor.ordered_slot_table_sha256 ||
+      bind_result.batch_uuid != descriptor.batch_uuid ||
+      bind_result.batch_generation != descriptor.batch_generation ||
+      bind_result.status != 1 || bind_result.publication_barrier != 1) {
+    return refuse("SBLR.EXECUTION_FAILED",
+                  detail.empty() ? "parameter_bind_result_authority_mismatch"
+                                 : detail);
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = executed.row_count;
+  result.server_affected_rows = executed.affected_rows;
+  result.server_affected_rows_present = executed.affected_rows_present;
+  result.server_result_payload = executed.row_packet;
+  ApplyExecutedTransactionState(executed, &session_);
+  return result;
+}
+
 PipelineResult SbsqlTestWireSession::RunStmtPrepareForWire() {
-  return RunPipeline("PREPARE prep_one AS SELECT 7 AS value;", true);
+  return RunPipeline(
+      "PREPARE STATEMENT prep_one AS SELECT 1;", true);
 }
 
 PipelineResult SbsqlTestWireSession::RunStmtPrepareCanonicalForWire() {
@@ -29694,54 +33878,469 @@ PipelineResult SbsqlTestWireSession::RunStmtPrepareCanonicalForWire() {
 
 PipelineResult SbsqlTestWireSession::RunStmtExecuteForWire(
     bool cursor_requested) {
-  PipelineResult result;
-  if (!server_client_ || !session_.authenticated) return result;
-  ParserTransactionSelector selector{session_.local_transaction_id,
-                                     session_.transaction_uuid};
-  auto acquired =
-      server_client_->AcquireNativeStatementContext(session_, selector);
-  if (!acquired.accepted) {
-    result.messages = std::move(acquired.messages);
+  auto prepared = RunPipeline(
+      "PREPARE STATEMENT prep_execute AS SELECT 1;", true);
+  if (!prepared.accepted || prepared.messages.has_errors()) return prepared;
+  return RunPipeline("EXECUTE STATEMENT prep_execute;", true,
+                     cursor_requested);
+}
+
+PipelineResult SbsqlTestWireSession::RunStmtExecuteDirectForWire(
+    bool cursor_requested) {
+  return RunPipeline("EXECUTE DIRECT SELECT 1;", true, cursor_requested);
+}
+
+PipelineResult SbsqlTestWireSession::RunStmtFreeForWire() {
+  auto prepared = RunPipeline(
+      "PREPARE STATEMENT prep_free AS SELECT 1;", true);
+  if (!prepared.accepted || prepared.messages.has_errors()) return prepared;
+  return RunPipeline("DEALLOCATE STATEMENT prep_free;", true);
+}
+
+PipelineResult SbsqlTestWireSession::RunStmtCancelForWire() {
+  auto prepared = RunPipeline(
+      "PREPARE STATEMENT prep_cancel AS SELECT 1;", true);
+  if (!prepared.accepted || prepared.messages.has_errors()) return prepared;
+  auto executed = RunPipeline("EXECUTE STATEMENT prep_cancel;", true, false);
+  if (!executed.accepted || executed.messages.has_errors()) return executed;
+  return RunPipeline(
+      "CANCEL STATEMENT prep_cancel REASON CLIENT;", true);
+}
+
+PipelineResult SbsqlTestWireSession::RunParameterBindForWire() {
+  auto prepared = PrepareParameterizedForWire("SELECT ?");
+  if (!prepared.accepted || prepared.messages.has_errors() ||
+      !prepared.prepared.present()) {
+    PipelineResult result;
+    result.messages = std::move(prepared.messages);
     return result;
   }
-  BoundStatement bound;
-  SblrEnvelope lowered;
-  lowered.operation_id = "observability.show_version";
-  auto submission = BuildCanonicalNativeSubmission(
-      bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr,
-      nullptr, nullptr, nullptr);
-  if (!submission) return result;
-  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
-      session_, acquired.context, *submission, {}, cursor_requested);
-  result.accepted = executed.accepted;
-  result.messages = std::move(executed.messages);
-  if (executed.accepted) {
-    result.server_operation_id = executed.operation_id;
-    result.server_cursor_uuid = executed.cursor_uuid;
-    if (executed.cursor_stream_descriptor.complete()) {
-      cursor_stream_descriptors_[executed.cursor_uuid] =
-          executed.cursor_stream_descriptor;
-    }
-    result.server_result_payload = executed.row_packet;
-    result.server_row_count = executed.row_count;
-    result.server_affected_rows = executed.affected_rows;
-    result.server_affected_rows_present = executed.affected_rows_present;
-    ApplyExecutedTransactionState(executed, &session_);
+  auto bound = RunPipeline(
+      "BIND PARAMETERS \"" + prepared.prepared.prepared_statement_uuid +
+          "\" USING (7);",
+      true);
+  if (!bound.accepted || bound.messages.has_errors()) {
+    return bound;
   }
+  return RunPipeline(
+      "EXECUTE STATEMENT \"" +
+          prepared.prepared.prepared_statement_uuid + "\";",
+      true, true);
+}
+
+PipelineResult SbsqlTestWireSession::RunResultPageForWire() {
+  namespace page = scratchbird::engine::sblr;
+  auto opened = RunStmtExecuteForWire(true);
+  if (!opened.accepted || opened.messages.has_errors() ||
+      opened.server_cursor_uuid.empty()) {
+    return opened;
+  }
+  PipelineResult result;
+  result.statement_family = "general";
+  result.operation_family = "statement-management";
+  result.statement_hash = Fnv1a64("FETCH RESULT prep_execute");
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical RESULT PAGE operation was refused.",
+        "sbp_sbsql.wire.result_page", {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const auto context_it =
+      cursor_statement_contexts_.find(opened.server_cursor_uuid);
+  const auto stream_it =
+      cursor_stream_descriptors_.find(opened.server_cursor_uuid);
+  if (context_it == cursor_statement_contexts_.end() ||
+      stream_it == cursor_stream_descriptors_.end() ||
+      !stream_it->second.complete()) {
+    return refuse("RESULT_SET.TARGET_HANDLE_INVALID",
+                  "result_page_cursor_authority_missing");
+  }
+  const auto& context = context_it->second;
+  const auto receipt = CanonicalUuidBytes(context.preliminary_receipt_uuid);
+  if (!receipt.has_value() || context.literal_catalog_generation == 0 ||
+      context.literal_security_epoch == 0 ||
+      context.literal_resource_epoch == 0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "result_page_receipt_authority_incomplete");
+  }
+  page::SblrResultPageRequestV1 request;
+  request.statement_receipt_uuid = *receipt;
+  request.occurrence = 1;
+  request.catalog_generation = context.literal_catalog_generation;
+  request.security_epoch = context.literal_security_epoch;
+  request.resource_epoch = context.literal_resource_epoch;
+  const auto request_bytes = page::EncodeSblrResultPageRequestV1(request);
+  if (request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "result_page_request_encoding_failed");
+  }
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  auto coordinated = embedded
+                         ? embedded_client_->CoordinateResultPage(
+                               session_, request_bytes)
+                         : server_client_->CoordinateResultPage(
+                               session_, request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "result_page_coordinate_outcome_unknown"
+                        : "result_page_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  page::SblrResultPageDescriptorV1 descriptor;
+  std::string detail;
+  const auto stream_cursor =
+      CanonicalUuidBytes(stream_it->second.cursor_uuid);
+  const auto stream_result_set =
+      CanonicalUuidBytes(stream_it->second.result_set_uuid);
+  const auto stream_row_descriptor =
+      CanonicalUuidBytes(stream_it->second.row_descriptor_uuid);
+  const auto stream_snapshot =
+      CanonicalUuidBytes(stream_it->second.snapshot_uuid);
+  if (!stream_cursor.has_value() || !stream_result_set.has_value() ||
+      !stream_row_descriptor.has_value() || !stream_snapshot.has_value() ||
+      !page::DecodeSblrResultPageDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.cursor_uuid != *stream_cursor ||
+      descriptor.result_set_handle_uuid != *stream_result_set ||
+      descriptor.row_descriptor_uuid != *stream_row_descriptor ||
+      descriptor.snapshot_uuid != *stream_snapshot ||
+      descriptor.page_number != 0 || descriptor.first_row_offset != 0) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "result_page_descriptor_authority_mismatch"
+                                 : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.result_page";
+  g_result_page_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, context, session_, nullptr, nullptr);
+  g_result_page_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "result_page_canonical_submission_invalid");
+  }
+  auto executed = embedded
+                      ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, context, *submission, {}, false)
+                      : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                            session_, context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  page::SblrResultPageResultV1 page_result;
+  if (executed.operation_id != "engine.op.result_page" ||
+      !page::DecodeSblrResultPageResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &page_result, &detail) ||
+      page_result.cursor_uuid != descriptor.cursor_uuid ||
+      page_result.cursor_generation != descriptor.cursor_generation ||
+      page_result.result_set_handle_uuid !=
+          descriptor.result_set_handle_uuid ||
+      page_result.result_set_handle_generation !=
+          descriptor.result_set_handle_generation ||
+      page_result.row_descriptor_uuid != descriptor.row_descriptor_uuid ||
+      page_result.row_descriptor_generation !=
+          descriptor.row_descriptor_generation ||
+      page_result.redaction_profile_uuid !=
+          descriptor.redaction_profile_uuid ||
+      page_result.executor_availability_generation !=
+          descriptor.executor_availability_generation ||
+      page_result.returned_row_count != executed.row_count ||
+      page_result.next_row_offset != page_result.returned_row_count) {
+    return refuse("RESULT_SET.SHAPE_INVALID",
+                  detail.empty() ? "result_page_result_authority_mismatch"
+                                 : detail);
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_cursor_uuid = opened.server_cursor_uuid;
+  result.server_row_count = executed.row_count;
+  result.server_result_payload = executed.row_packet;
+  ApplyExecutedTransactionState(executed, &session_);
   return result;
 }
 
-PipelineResult SbsqlTestWireSession::RunStmtExecuteDirectForWire(){return RunStmtExecuteForWire();}
+PipelineResult SbsqlTestWireSession::RunQueryExecuteForWire() {
+  return RunPipeline(
+      "SELECT key_a,COUNT(*),SUM(amount) FROM (VALUES (1,5), (1,7)) "
+      "AS input(key_a,amount) GROUP BY key_a;",
+      true, true);
+}
 
-PipelineResult SbsqlTestWireSession::RunStmtFreeForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="observability.show_version";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);if(!submission)return result;auto prepared=server_client_->PrepareStmtCanonical(session_,*submission);if(!prepared.accepted){result.messages=std::move(prepared.messages);return result;}auto freed=server_client_->ClosePreparedSblr(session_,prepared.prepared_statement_uuid);result.accepted=freed.accepted;result.messages=std::move(freed.messages);return result;}
+PipelineResult SbsqlTestWireSession::RunQueryExplainForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace explain = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "observability";
+  result.operation_family = "statement-management";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical EXPLAIN QUERY operation was refused.",
+        "sbp_sbsql.wire.query_explain",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_query_explain_route_required");
+  }
 
-PipelineResult SbsqlTestWireSession::RunStmtCancelForWire(){return RunStmtFreeForWire();}
+  const auto outer_cst = BuildCst(sql);
+  const auto command = ParseQueryExplainWireCommand(outer_cst);
+  const auto outer_ast = BuildAst(outer_cst);
+  result.messages = outer_ast.messages;
+  if (outer_cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid ||
+      outer_ast.family != StatementFamily::kObservability) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "query_explain_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+  if (command.analyze) {
+    return refuse("PLAN.DESCRIPTOR_INVALID",
+                  "query_explain_analyze_not_admitted_in_v1");
+  }
 
-PipelineResult SbsqlTestWireSession::RunParameterBindForWire(){return RunStmtExecuteForWire();}
+  SbsqlCanonicalCompileOutput compiled;
+  auto compiled_result = RunPipeline(
+      command.query_sql, true, false, 0, false, {}, nullptr, false, nullptr,
+      {}, 0, nullptr, nullptr, nullptr, &compiled);
+  if (!compiled_result.accepted || compiled_result.messages.has_errors() ||
+      !compiled.captured || !compiled.statement_context.complete() ||
+      !compiled.submission.complete() ||
+      compiled.operation_id != "query.execute" ||
+      compiled.result_shape_key != "query_execute_result") {
+    compiled_result.accepted = false;
+    compiled_result.statement_family = "observability";
+    compiled_result.operation_family = "statement-management";
+    compiled_result.statement_hash = result.statement_hash;
+    if (!compiled_result.messages.has_errors()) {
+      compiled_result.messages.diagnostics.push_back(MakeDiagnostic(
+          "PLAN.DESCRIPTOR_INVALID", "ERROR",
+          "The EXPLAIN body did not produce one canonical engine-bound query.",
+          "sbp_sbsql.wire.query_explain"));
+    }
+    return compiled_result;
+  }
 
-PipelineResult SbsqlTestWireSession::RunResultPageForWire(){return RunStmtExecuteForWire();}
+  const auto receipt = CanonicalUuidBytes(
+      compiled.statement_context.preliminary_receipt_uuid);
+  if (!receipt.has_value() ||
+      compiled.statement_context.preliminary_statement_catalog_generation ==
+          0 ||
+      compiled.statement_context.preliminary_security_epoch == 0 ||
+      compiled.statement_context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "query_explain_statement_receipt_incomplete");
+  }
 
-PipelineResult SbsqlTestWireSession::RunQueryExecuteForWire(){return RunStmtExecuteForWire();}
+  bind::QueryExplainBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.verbose = command.verbose;
+  bind_request.format = command.format;
+  bind_request.canonical_container_bytes =
+      compiled.submission.canonical_container_bytes;
+  bind_request.canonical_execution_envelope_bytes =
+      compiled.submission.canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeQueryExplainBindRequestV1(
+          bind_request, &bind_request_bytes, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "query_explain_bind_request_invalid"
+                                 : detail);
+  }
+  bind::QueryExplainBindRequestV1 canonical_bind_request;
+  if (!bind::DecodeQueryExplainBindRequestV1(
+          bind_request_bytes.data(), bind_request_bytes.size(),
+          &canonical_bind_request, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "query_explain_bind_request_noncanonical"
+                                 : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindQueryExplain(session_,
+                                                        bind_request_bytes)
+                   : server_client_->BindQueryExplain(session_,
+                                                      bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "query_explain_bind_outcome_unknown"
+                        : "query_explain_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::QueryExplainBindAckV1 bind_ack;
+  if (!bind::DecodeQueryExplainBindAckV1(
+          bound.canonical_payload.data(), bound.canonical_payload.size(),
+          &bind_ack, &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != canonical_bind_request.occurrence ||
+      bind_ack.canonical_query_sblr_sha256 !=
+          canonical_bind_request.canonical_container_sha256 ||
+      bind_ack.request_evidence_sha256 !=
+          canonical_bind_request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "query_explain_bind_ack_invalid" : detail);
+  }
 
-PipelineResult SbsqlTestWireSession::RunQueryExplainForWire(){return RunStmtExecuteForWire();}
+  explain::SblrQueryExplainRequestV1 coordinate_request;
+  coordinate_request.statement_receipt_uuid = *receipt;
+  coordinate_request.occurrence = canonical_bind_request.occurrence;
+  coordinate_request.catalog_generation =
+      compiled.statement_context.preliminary_statement_catalog_generation;
+  coordinate_request.security_epoch =
+      compiled.statement_context.preliminary_security_epoch;
+  coordinate_request.resource_epoch =
+      compiled.statement_context.preliminary_resource_epoch;
+  const auto coordinate_request_bytes =
+      explain::EncodeSblrQueryExplainRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "query_explain_coordinate_request_invalid");
+  }
+  auto coordinated = embedded
+                         ? embedded_client_->CoordinateQueryExplain(
+                               session_, coordinate_request_bytes)
+                         : server_client_->CoordinateQueryExplain(
+                               session_, coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "query_explain_coordinate_outcome_unknown"
+                        : "query_explain_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  explain::SblrQueryExplainDescriptorV1 descriptor;
+  const auto statement_snapshot = CanonicalUuidBytes(
+      compiled.statement_context.statement_snapshot_uuid);
+  const auto metadata_snapshot = CanonicalUuidBytes(
+      compiled.statement_context.statement_metadata_snapshot_uuid);
+  const auto security_context = CanonicalUuidBytes(
+      compiled.statement_context.security_context_uuid);
+  const auto parser_package =
+      CanonicalUuidBytes(session_.admitted_parser_package_uuid);
+  if (!statement_snapshot.has_value() || !metadata_snapshot.has_value() ||
+      !security_context.has_value() || !parser_package.has_value() ||
+      !explain::DecodeSblrQueryExplainDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail) ||
+      descriptor.explain_uuid != bind_ack.explain_uuid ||
+      descriptor.statement_receipt_uuid != *receipt ||
+      descriptor.query_snapshot_uuid != *statement_snapshot ||
+      descriptor.catalog_snapshot_uuid != *metadata_snapshot ||
+      descriptor.catalog_generation != coordinate_request.catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.verbose != command.verbose ||
+      descriptor.format != command.format ||
+      descriptor.canonical_query_sblr_bytes !=
+          compiled.submission.canonical_container_bytes ||
+      descriptor.canonical_query_sblr_sha256 !=
+          bind_ack.canonical_query_sblr_sha256 ||
+      descriptor.executor_availability_generation == 0 ||
+      descriptor.parser_package_uuid != *parser_package) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty()
+                      ? "query_explain_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.query_explain";
+  g_query_explain_operand = &coordinated.canonical_payload;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, compiled.statement_context, session_, nullptr,
+      nullptr);
+  g_query_explain_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "query_explain_canonical_submission_invalid");
+  }
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, compiled.statement_context, *submission, {}, false)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, compiled.statement_context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  explain::SblrQueryExplainResultV1 explain_result;
+  if (executed.operation_id != "engine.op.query_explain" ||
+      executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !explain::DecodeSblrQueryExplainResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &explain_result, &detail) ||
+      explain_result.explain_uuid != descriptor.explain_uuid ||
+      explain_result.query_snapshot_uuid != descriptor.query_snapshot_uuid ||
+      explain_result.catalog_generation != descriptor.catalog_generation ||
+      explain_result.policy_generation != descriptor.policy_generation ||
+      explain_result.redaction_profile_uuid !=
+          descriptor.redaction_profile_uuid) {
+    return refuse("PLAN.AUTHORITY_INVALID",
+                  detail.empty() ? "query_explain_result_authority_mismatch"
+                                 : detail);
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(
+          submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
+  return result;
+}
 } // namespace scratchbird::parser::sbsql

@@ -89,8 +89,62 @@ std::string ComputeStorePath(const EngineRequestContext& context,
       ? ".transaction_reservation_release" : autonomous_suffix;
   const auto temporary_cleanup_suffix = identity.executor_id == kSblrTemporaryInstanceCleanupExecutorId
       ? ".temporary_instance_cleanup" : reservation_release_suffix;
+  const auto stmt_prepare_suffix = identity.executor_id == kSblrStmtPrepareExecutorId
+      ? ".stmt_prepare" : temporary_cleanup_suffix;
+  const auto stmt_execute_suffix = identity.executor_id == kSblrStmtExecuteExecutorId
+      ? ".stmt_execute" : stmt_prepare_suffix;
+  const auto stmt_execute_direct_suffix =
+      identity.executor_id == kSblrStmtExecuteDirectExecutorId
+          ? ".stmt_execute_direct"
+          : stmt_execute_suffix;
+  const auto stmt_free_suffix = identity.executor_id == kSblrStmtFreeExecutorId
+      ? ".stmt_free" : stmt_execute_direct_suffix;
+  const auto stmt_cancel_suffix =
+      identity.executor_id == kSblrStmtCancelExecutorId
+          ? ".stmt_cancel"
+          : stmt_free_suffix;
+  const auto parameter_bind_suffix =
+      identity.executor_id == kSblrParameterBindExecutorId
+          ? ".parameter_bind"
+          : stmt_cancel_suffix;
+  const auto result_page_suffix =
+      identity.executor_id == kSblrResultPageExecutorId
+          ? ".result_page"
+          : parameter_bind_suffix;
+  const auto query_explain_suffix =
+      identity.executor_id == kSblrQueryExplainExecutorId
+          ? ".query_explain"
+          : result_page_suffix;
+  const auto catalog_introspect_suffix =
+      identity.executor_id == kSblrCatalogIntrospectExecutorId
+          ? ".catalog_introspect"
+          : query_explain_suffix;
+  const auto name_resolve_suffix =
+      identity.executor_id == kSblrNameResolveExecutorId
+          ? ".name_resolve"
+          : catalog_introspect_suffix;
+  const auto parse_text_suffix =
+      identity.executor_id == kSblrParseTextExecutorId
+          ? ".parse_text"
+          : name_resolve_suffix;
+  const auto catalog_epoch_check_suffix =
+      identity.executor_id == kSblrCatalogEpochCheckExecutorId
+          ? ".catalog_epoch_check"
+          : parse_text_suffix;
+  const auto database_attach_suffix =
+      identity.executor_id == kSblrDatabaseAttachExecutorId
+          ? ".database_attach"
+          : catalog_epoch_check_suffix;
+  const auto optimizer_stats_read_suffix =
+      identity.executor_id == kSblrOptimizerStatsReadExecutorId
+          ? ".optimizer_stats_read"
+          : database_attach_suffix;
+  const auto optimizer_stats_drop_suffix =
+      identity.executor_id == kSblrOptimizerStatsDropExecutorId
+          ? ".optimizer_stats_drop"
+          : optimizer_stats_read_suffix;
   const auto cursor_open_suffix = identity.executor_id == kSblrCursorOpenExecutorId
-      ? ".cursor_open" : temporary_cleanup_suffix;
+      ? ".cursor_open" : optimizer_stats_drop_suffix;
   const auto cursor_fetch_suffix = identity.executor_id == kSblrCursorFetchExecutorId
       ? ".cursor_fetch" : cursor_open_suffix;
   const auto cursor_close_suffix = identity.executor_id == kSblrCursorCloseExecutorId
@@ -470,6 +524,162 @@ bool ExactDmlCounterAddIdentity(const SblrExecutorAvailabilityRowIdentity&r){ret
 bool ExactDdlTimeseriesSeriesCardinalityPolicyIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyExecutorId&&r.opcode_code==1649&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyOperandDescriptorId&&r.result_descriptor_id==kSblrDdlTimeseriesSeriesCardinalityPolicyResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlCreateTimeseriesValueCacheIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateTimeseriesValueCacheExecutorId&&r.opcode_code==1650&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateTimeseriesValueCacheOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateTimeseriesValueCacheResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactDdlDropViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropViewExecutorId&&r.opcode_code==1550&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropViewResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactStmtPrepareIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrStmtPrepareExecutorId &&
+         row.opcode_code == kSblrStmtPrepareOpcodeCode &&
+         row.opcode_version == kSblrStmtPrepareOpcodeVersion &&
+         row.operand_descriptor_id == kSblrStmtPrepareOperandDescriptorId &&
+         row.result_descriptor_id == kSblrStmtPrepareResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrStmtPrepareResultDescriptorVersion;
+}
+bool ExactStmtExecuteIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrStmtExecuteExecutorId &&
+         row.opcode_code == kSblrStmtExecuteOpcodeCode &&
+         row.opcode_version == kSblrStmtExecuteOpcodeVersion &&
+         row.operand_descriptor_id == kSblrStmtExecuteOperandDescriptorId &&
+         row.result_descriptor_id == kSblrStmtExecuteResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrStmtExecuteResultDescriptorVersion;
+}
+bool ExactStmtExecuteDirectIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrStmtExecuteDirectExecutorId &&
+         row.opcode_code == kSblrStmtExecuteDirectOpcodeCode &&
+         row.opcode_version == kSblrStmtExecuteDirectOpcodeVersion &&
+         row.operand_descriptor_id ==
+             kSblrStmtExecuteDirectOperandDescriptorId &&
+         row.result_descriptor_id ==
+             kSblrStmtExecuteDirectResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrStmtExecuteDirectResultDescriptorVersion;
+}
+bool ExactStmtFreeIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrStmtFreeExecutorId &&
+         row.opcode_code == kSblrStmtFreeOpcodeCode &&
+         row.opcode_version == kSblrStmtFreeOpcodeVersion &&
+         row.operand_descriptor_id == kSblrStmtFreeOperandDescriptorId &&
+         row.result_descriptor_id == kSblrStmtFreeResultDescriptorId &&
+         row.result_descriptor_version == kSblrStmtFreeResultDescriptorVersion;
+}
+bool ExactStmtCancelIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrStmtCancelExecutorId &&
+         row.opcode_code == kSblrStmtCancelOpcodeCode &&
+         row.opcode_version == kSblrStmtCancelOpcodeVersion &&
+         row.operand_descriptor_id == kSblrStmtCancelOperandDescriptorId &&
+         row.result_descriptor_id == kSblrStmtCancelResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrStmtCancelResultDescriptorVersion;
+}
+bool ExactParameterBindIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrParameterBindExecutorId &&
+         row.opcode_code == kSblrParameterBindOpcodeCode &&
+         row.opcode_version == kSblrParameterBindOpcodeVersion &&
+         row.operand_descriptor_id == kSblrParameterBindOperandDescriptorId &&
+         row.result_descriptor_id == kSblrParameterBindResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrParameterBindResultDescriptorVersion;
+}
+bool ExactResultPageIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrResultPageExecutorId &&
+         row.opcode_code == kSblrResultPageOpcodeCode &&
+         row.opcode_version == kSblrResultPageOpcodeVersion &&
+         row.operand_descriptor_id == kSblrResultPageOperandDescriptorId &&
+         row.result_descriptor_id == kSblrResultPageResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrResultPageResultDescriptorVersion;
+}
+bool ExactQueryExplainIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrQueryExplainExecutorId &&
+         row.opcode_code == kSblrQueryExplainOpcodeCode &&
+         row.opcode_version == kSblrQueryExplainOpcodeVersion &&
+         row.operand_descriptor_id == kSblrQueryExplainOperandDescriptorId &&
+         row.result_descriptor_id == kSblrQueryExplainResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrQueryExplainResultDescriptorVersion;
+}
+bool ExactCatalogIntrospectIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrCatalogIntrospectExecutorId &&
+         row.opcode_code == kSblrCatalogIntrospectOpcodeCode &&
+         row.opcode_version == kSblrCatalogIntrospectOpcodeVersion &&
+         row.operand_descriptor_id ==
+             kSblrCatalogIntrospectOperandDescriptorId &&
+         row.result_descriptor_id == kSblrCatalogIntrospectResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrCatalogIntrospectResultDescriptorVersion;
+}
+bool ExactNameResolveIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrNameResolveExecutorId &&
+         row.opcode_code == kSblrNameResolveOpcodeCode &&
+         row.opcode_version == kSblrNameResolveOpcodeVersion &&
+         row.operand_descriptor_id == kSblrNameResolveOperandDescriptorId &&
+         row.result_descriptor_id == kSblrNameResolveResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrNameResolveResultDescriptorVersion;
+}
+bool ExactOptimizerStatsReadIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrOptimizerStatsReadExecutorId &&
+         row.opcode_code == kSblrOptimizerStatsReadOpcodeCode &&
+         row.opcode_version == kSblrOptimizerStatsReadOpcodeVersion &&
+         row.operand_descriptor_id ==
+             kSblrOptimizerStatsReadOperandDescriptorId &&
+         row.result_descriptor_id ==
+             kSblrOptimizerStatsReadResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrOptimizerStatsReadResultDescriptorVersion;
+}
+bool ExactOptimizerStatsDropIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrOptimizerStatsDropExecutorId &&
+         row.opcode_code == kSblrOptimizerStatsDropOpcodeCode &&
+         row.opcode_version == kSblrOptimizerStatsDropOpcodeVersion &&
+         row.operand_descriptor_id ==
+             kSblrOptimizerStatsDropOperandDescriptorId &&
+         row.result_descriptor_id ==
+             kSblrOptimizerStatsDropResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrOptimizerStatsDropResultDescriptorVersion;
+}
+bool ExactParseTextIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrParseTextExecutorId &&
+         row.opcode_code == kSblrParseTextOpcodeCode &&
+         row.opcode_version == kSblrParseTextOpcodeVersion &&
+         row.operand_descriptor_id == kSblrParseTextOperandDescriptorId &&
+         row.result_descriptor_id == kSblrParseTextResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrParseTextResultDescriptorVersion;
+}
+bool ExactCatalogEpochCheckIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrCatalogEpochCheckExecutorId &&
+         row.opcode_code == kSblrCatalogEpochCheckOpcodeCode &&
+         row.opcode_version == kSblrCatalogEpochCheckOpcodeVersion &&
+         row.operand_descriptor_id ==
+             kSblrCatalogEpochCheckOperandDescriptorId &&
+         row.result_descriptor_id ==
+             kSblrCatalogEpochCheckResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrCatalogEpochCheckResultDescriptorVersion;
+}
+bool ExactDatabaseAttachIdentity(
+    const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrDatabaseAttachExecutorId &&
+         row.opcode_code == kSblrDatabaseAttachOpcodeCode &&
+         row.opcode_version == kSblrDatabaseAttachOpcodeVersion &&
+         row.operand_descriptor_id ==
+             kSblrDatabaseAttachOperandDescriptorId &&
+         row.result_descriptor_id ==
+             kSblrDatabaseAttachResultDescriptorId &&
+         row.result_descriptor_version ==
+             kSblrDatabaseAttachResultDescriptorVersion;
+}
 bool ExactAdmittedIdentityLinear(
     const SblrExecutorAvailabilityRowIdentity& row) {
   if (ExactDatabaseSerializeLogicalSnapshotIdentity(row)) return true;
@@ -503,6 +713,21 @@ bool ExactAdmittedIdentityLinear(
   if (ExactDdlCreateRuleIdentity(row)) return true;
   if (ExactDdlDropRuleIdentity(row)) return true;
   if (ExactDdlCreatePublicationIdentity(row)) return true;
+  if (ExactStmtPrepareIdentity(row)) return true;
+  if (ExactStmtExecuteIdentity(row)) return true;
+  if (ExactStmtExecuteDirectIdentity(row)) return true;
+  if (ExactStmtFreeIdentity(row)) return true;
+  if (ExactStmtCancelIdentity(row)) return true;
+  if (ExactParameterBindIdentity(row)) return true;
+  if (ExactResultPageIdentity(row)) return true;
+  if (ExactQueryExplainIdentity(row)) return true;
+  if (ExactCatalogIntrospectIdentity(row)) return true;
+  if (ExactNameResolveIdentity(row)) return true;
+  if (ExactOptimizerStatsReadIdentity(row)) return true;
+  if (ExactOptimizerStatsDropIdentity(row)) return true;
+  if (ExactParseTextIdentity(row)) return true;
+  if (ExactCatalogEpochCheckIdentity(row)) return true;
+  if (ExactDatabaseAttachIdentity(row)) return true;
   return ExactLiteralIdentity(row) ||
          ExactContextualTextLiteralIdentity(row) ||
          ExactParameterIdentity(row) ||
@@ -761,7 +986,21 @@ SblrExecutorAvailabilityLoadResult BootstrapLocked(
       ComputeSblrExecutorAvailabilityRowIdentitySha256(identity);
   pair.snapshot.installed = true;
   pair.snapshot.availability_state = SblrExecutorAvailabilityState::installed;
-  pair.reason_code = ExactDdlCreateIndexIdentity(identity)
+  pair.reason_code = ExactDatabaseAttachIdentity(identity)
+                         ? "bootstrap.admitted_database_attach.v1"
+                     : ExactCatalogEpochCheckIdentity(identity)
+                         ? "bootstrap.admitted_catalog_epoch_check.v1"
+                     : ExactParseTextIdentity(identity)
+                         ? "bootstrap.admitted_parse_text.v1"
+                     : ExactOptimizerStatsDropIdentity(identity)
+                         ? "bootstrap.admitted_optimizer_stats_drop.v1"
+                     : ExactOptimizerStatsReadIdentity(identity)
+                         ? "bootstrap.admitted_optimizer_stats_read.v1"
+                     : ExactNameResolveIdentity(identity)
+                         ? "bootstrap.admitted_name_resolve.v1"
+                     : ExactCatalogIntrospectIdentity(identity)
+                         ? "bootstrap.admitted_catalog_introspect.v1"
+                     : ExactDdlCreateIndexIdentity(identity)
                          ? "bootstrap.runtime_installed_ddl_create_index.v1"
                      : ExactDmlPlanImportRowsIdentity(identity)
                          ? "bootstrap.admitted_dml_plan_import_rows.v1"
@@ -1166,7 +1405,10 @@ EngineApiDiagnostic RevalidateSblrExecutorAvailability(
     const SblrExecutorAvailabilityRowIdentity& exact_row_identity,
     const SblrExecutorAvailabilitySnapshot& admitted_snapshot,
     SblrExecutorAvailabilitySnapshot* current_snapshot) {
-  const auto loaded = LoadSblrExecutorAvailabilitySnapshot(
+  // The statement cohort is immutable admission evidence.  Execution-time
+  // revalidation must cross the durable current-state fence so a revocation
+  // published after admission cannot be hidden by the pinned cohort.
+  const auto loaded = LoadCurrentSblrExecutorAvailabilitySnapshot(
       context, exact_row_identity);
   if (!loaded.ok) return loaded.diagnostic;
   if (current_snapshot != nullptr) *current_snapshot = loaded.snapshot;

@@ -60,6 +60,9 @@ constexpr std::array<PairV1, kRequiredPairCountV1> kRequiredPairs{{
     {699, 7712},
     {702, 7715}, {703, 7716}, {704, 7717}, {705, 7718},
     {706, 7719}, {707, 7720},
+    {728, 7741}, {729, 7742}, {730, 7743}, {731, 7744},
+    {732, 7745}, {733, 7746}, {734, 7747}, {735, 7748},
+    {736, 7749}, {737, 7750},
 }};
 
 constexpr std::array<PairV1, kForbiddenPairCountV1> kForbiddenPairs{{
@@ -73,7 +76,8 @@ constexpr std::array<PairV1, kSuccessOnlyPairCountV1> kSuccessOnlyPairs{{
     {43, 1043}, {45, 1045}, {47, 1047}, {51, 1051}, {61, 1061},
     {71, 1071}, {73, 1073}, {695, 7708}, {697, 7710}, {699, 7712},
     {703, 7716}, {705, 7718},
-    {707, 7720},
+    {707, 7720}, {729, 7742}, {731, 7744},
+    {733, 7746}, {735, 7748}, {737, 7750},
 }};
 
 constexpr std::array<std::string_view, 3> kRequiredRoles{{
@@ -219,6 +223,18 @@ std::pair<std::string_view, std::string_view> AuthorityFor(PairV1 pair) {
   if (pair.payload_schema_id == 7719 || pair.payload_schema_id == 7720) {
     return {"SBPS-BULK-IMPORT-STREAM-PAYLOAD-LAYOUT-V1",
             "SBLR-BULK-IMPORT-STREAM-TRANSPORT-CONFORMANCE-V1"};
+  }
+  if (pair.payload_schema_id >= 7741 && pair.payload_schema_id <= 7744) {
+    return {"SBLR-OPTIMIZER-STATS-COORDINATION-V1", kNarrowCorpus};
+  }
+  if (pair.payload_schema_id == 7745 || pair.payload_schema_id == 7746) {
+    return {"SBLR-PARSE-TEXT-COORDINATION-V1", kNarrowCorpus};
+  }
+  if (pair.payload_schema_id == 7747 || pair.payload_schema_id == 7748) {
+    return {"SBLR-CATALOG-EPOCH-CHECK-COORDINATION-V1", kNarrowCorpus};
+  }
+  if (pair.payload_schema_id == 7749 || pair.payload_schema_id == 7750) {
+    return {"SBLR-DATABASE-ATTACH-COORDINATION-V1", kNarrowCorpus};
   }
   if ((pair.payload_schema_id >= 1042 && pair.payload_schema_id <= 1074) &&
       pair.payload_schema_id != 2001) {

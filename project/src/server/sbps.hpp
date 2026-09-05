@@ -489,15 +489,68 @@ constexpr std::uint32_t kSchemaContextGetRequestV1 = 7399;
 constexpr std::uint32_t kSchemaContextGetResultV1 = 7400;
 constexpr std::uint32_t kSchemaStmtPrepareRequestV1 = 7401;
 constexpr std::uint32_t kSchemaStmtPrepareResultV1 = 7402;
-constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindRequestV1 = 7403;
-constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindResultV1 = 7404;
+constexpr std::uint32_t kSchemaStmtExecuteDirectRequestV1 = 7403;
+constexpr std::uint32_t kSchemaStmtExecuteDirectResultV1 = 7404;
+constexpr std::uint32_t kSchemaStmtFreeRequestV1 = 7405;
+constexpr std::uint32_t kSchemaStmtFreeResultV1 = 7406;
+constexpr std::uint32_t kSchemaStmtCancelRequestV1 = 7407;
+constexpr std::uint32_t kSchemaStmtCancelResultV1 = 7408;
+constexpr std::uint32_t kSchemaParameterBindRequestV1 = 7409;
+constexpr std::uint32_t kSchemaParameterBindResultV1 = 7410;
+constexpr std::uint32_t kSchemaResultPageRequestV1 = 7411;
+constexpr std::uint32_t kSchemaResultPageResultV1 = 7412;
+constexpr std::uint32_t kSchemaQueryExplainRequestV1 = 7415;
+constexpr std::uint32_t kSchemaQueryExplainResultV1 = 7416;
+constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindRequestV1 = 7721;
+constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindResultV1 = 7722;
 // Private authenticated IPRQ carrier: a fixed 120-byte semantic header plus
 // zero or more 24-byte generation-free mapping demands. The success result is
 // exactly one engine-issued 24-byte import_rows_plan_descriptor reference.
 constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindRequestV1 =
-    7405;
+    7723;
 constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindResultV1 =
-    7406;
+    7724;
+// Private authenticated statement-management binding.  These messages bind
+// syntax-only statement names and an already canonical nested body to the
+// live engine receipt before the manifest-listed SBPQ/SBPD or SBFQ/SBFD
+// coordination pairs are used.
+constexpr std::uint32_t kSchemaStmtPrepareBindRequestV1 = 7725;
+constexpr std::uint32_t kSchemaStmtPrepareBindResultV1 = 7726;
+constexpr std::uint32_t kSchemaStmtFreeBindRequestV1 = 7727;
+constexpr std::uint32_t kSchemaStmtFreeBindResultV1 = 7728;
+constexpr std::uint32_t kSchemaStmtExecuteDirectBindRequestV1 = 7729;
+constexpr std::uint32_t kSchemaStmtExecuteDirectBindResultV1 = 7730;
+// Authenticated named prepared-statement execution. The request contains only
+// the live receipt, exact statement name, and canonical parameter bytes; the
+// success result is one engine-issued SBXD operand.
+constexpr std::uint32_t kSchemaStmtExecuteRequestV1 = 7731;
+constexpr std::uint32_t kSchemaStmtExecuteResultV1 = 7732;
+constexpr std::uint32_t kSchemaStmtCancelBindRequestV1 = 7733;
+constexpr std::uint32_t kSchemaStmtCancelBindResultV1 = 7734;
+constexpr std::uint32_t kSchemaParameterBindPrivateRequestV1 = 7735;
+constexpr std::uint32_t kSchemaParameterBindPrivateResultV1 = 7736;
+constexpr std::uint32_t kSchemaQueryExplainBindRequestV1 = 7737;
+constexpr std::uint32_t kSchemaQueryExplainBindResultV1 = 7738;
+constexpr std::uint32_t kSchemaNameResolveBindRequestV1 = 7739;
+constexpr std::uint32_t kSchemaNameResolveBindResultV1 = 7740;
+constexpr std::uint32_t kSchemaOptimizerStatsReadRequestV1 = 7741;
+constexpr std::uint32_t kSchemaOptimizerStatsReadResultV1 = 7742;
+constexpr std::uint32_t kSchemaOptimizerStatsDropRequestV1 = 7743;
+constexpr std::uint32_t kSchemaOptimizerStatsDropResultV1 = 7744;
+constexpr std::uint32_t kSchemaNameResolveRequestV1 = 7417;
+constexpr std::uint32_t kSchemaNameResolveResultV1 = 7418;
+constexpr std::uint32_t kSchemaParseTextRequestV1 = 7419;
+constexpr std::uint32_t kSchemaParseTextResultV1 = 7420;
+constexpr std::uint32_t kSchemaCatalogEpochCheckRequestV1 = 7421;
+constexpr std::uint32_t kSchemaCatalogEpochCheckResultV1 = 7422;
+constexpr std::uint32_t kSchemaParseTextBindRequestV1 = 7745;
+constexpr std::uint32_t kSchemaParseTextBindResultV1 = 7746;
+constexpr std::uint32_t kSchemaCatalogEpochCheckBindRequestV1 = 7747;
+constexpr std::uint32_t kSchemaCatalogEpochCheckBindResultV1 = 7748;
+constexpr std::uint32_t kSchemaDatabaseAttachRequestV1 = 7423;
+constexpr std::uint32_t kSchemaDatabaseAttachResultV1 = 7424;
+constexpr std::uint32_t kSchemaDatabaseAttachBindRequestV1 = 7749;
+constexpr std::uint32_t kSchemaDatabaseAttachBindResultV1 = 7750;
 // Private raw-carrier narrow-query binding coordination.  These schemas are
 // deliberately not TLV envelopes: 7707 is exactly one canonical SBQNDR01 and
 // 7708 is success-only exactly one engine-issued SBQNPB01.
@@ -973,10 +1026,26 @@ enum class MessageType : std::uint16_t {
   kContextGetResult = 387,
   kStmtPrepareRequest = 388,
   kStmtPrepareResult = 389,
-  kCoordinateDmlUpdateRowsBindRequest = 390,
-  kCoordinateDmlUpdateRowsBindResult = 391,
-  kCoordinateDmlPlanImportRowsBindRequest = 392,
-  kCoordinateDmlPlanImportRowsBindResult = 393,
+  kStmtExecuteDirectRequest = 390,
+  kStmtExecuteDirectResult = 391,
+  kStmtFreeRequest = 392,
+  kStmtFreeResult = 393,
+  kStmtCancelRequest = 394,
+  kStmtCancelResult = 395,
+  kParameterBindRequest = 396,
+  kParameterBindResult = 397,
+  kResultPageRequest = 398,
+  kResultPageResult = 399,
+  kQueryExplainRequest = 402,
+  kQueryExplainResult = 403,
+  kNameResolveRequest = 404,
+  kNameResolveResult = 405,
+  kParseTextRequest = 406,
+  kParseTextResult = 407,
+  kCatalogEpochCheckRequest = 408,
+  kCatalogEpochCheckResult = 409,
+  kDatabaseAttachRequest = 410,
+  kDatabaseAttachResult = 411,
   kQueryNarrowBindingIssueRequest = 694,
   kQueryNarrowBindingIssueResult = 695,
   kContextualTextLiteralProfileIssueRequest = 698,
@@ -987,6 +1056,36 @@ enum class MessageType : std::uint16_t {
   kBulkImportStreamSealAck = 705,
   kBulkImportStreamBind = 706,
   kBulkImportStreamBindAck = 707,
+  kCoordinateDmlUpdateRowsBindRequest = 708,
+  kCoordinateDmlUpdateRowsBindResult = 709,
+  kCoordinateDmlPlanImportRowsBindRequest = 710,
+  kCoordinateDmlPlanImportRowsBindResult = 711,
+  kStmtPrepareBindRequest = 712,
+  kStmtPrepareBindResult = 713,
+  kStmtFreeBindRequest = 714,
+  kStmtFreeBindResult = 715,
+  kStmtExecuteDirectBindRequest = 716,
+  kStmtExecuteDirectBindResult = 717,
+  kStmtExecuteRequest = 718,
+  kStmtExecuteResult = 719,
+  kStmtCancelBindRequest = 720,
+  kStmtCancelBindResult = 721,
+  kParameterBindPrivateRequest = 722,
+  kParameterBindPrivateResult = 723,
+  kQueryExplainBindRequest = 724,
+  kQueryExplainBindResult = 725,
+  kNameResolveBindRequest = 726,
+  kNameResolveBindResult = 727,
+  kOptimizerStatsReadRequest = 728,
+  kOptimizerStatsReadResult = 729,
+  kOptimizerStatsDropRequest = 730,
+  kOptimizerStatsDropResult = 731,
+  kParseTextBindRequest = 732,
+  kParseTextBindResult = 733,
+  kCatalogEpochCheckBindRequest = 734,
+  kCatalogEpochCheckBindResult = 735,
+  kDatabaseAttachBindRequest = 736,
+  kDatabaseAttachBindResult = 737,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,
   kCoordinateLimitRequest = 156,

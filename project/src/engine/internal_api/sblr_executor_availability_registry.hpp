@@ -58,6 +58,146 @@ inline constexpr const char* kSblrErrorVectorOpcodeVersion = "1.0";
 inline constexpr const char* kSblrErrorVectorOperandDescriptorId = "diagnostic_vector";
 inline constexpr const char* kSblrErrorVectorResultDescriptorId = "void";
 inline constexpr std::uint16_t kSblrErrorVectorResultDescriptorVersion = 1;
+inline constexpr const char* kSblrStmtPrepareExecutorId =
+    "engine.op.stmt_prepare";
+inline constexpr std::uint16_t kSblrStmtPrepareOpcodeCode = 4608;
+inline constexpr const char* kSblrStmtPrepareOpcodeVersion = "1.0";
+inline constexpr const char* kSblrStmtPrepareOperandDescriptorId =
+    "stmt_prepare_descriptor";
+inline constexpr const char* kSblrStmtPrepareResultDescriptorId =
+    "stmt_prepare_result";
+inline constexpr std::uint16_t kSblrStmtPrepareResultDescriptorVersion = 1;
+inline constexpr const char* kSblrStmtExecuteExecutorId =
+    "engine.op.stmt_execute";
+inline constexpr std::uint16_t kSblrStmtExecuteOpcodeCode = 4609;
+inline constexpr const char* kSblrStmtExecuteOpcodeVersion = "1.0";
+inline constexpr const char* kSblrStmtExecuteOperandDescriptorId =
+    "stmt_execute_descriptor";
+inline constexpr const char* kSblrStmtExecuteResultDescriptorId =
+    "stmt_execute_result";
+inline constexpr std::uint16_t kSblrStmtExecuteResultDescriptorVersion = 1;
+inline constexpr const char* kSblrStmtExecuteDirectExecutorId =
+    "engine.op.stmt_execute_direct";
+inline constexpr std::uint16_t kSblrStmtExecuteDirectOpcodeCode = 4610;
+inline constexpr const char* kSblrStmtExecuteDirectOpcodeVersion = "1.0";
+inline constexpr const char* kSblrStmtExecuteDirectOperandDescriptorId =
+    "stmt_execute_direct_descriptor";
+inline constexpr const char* kSblrStmtExecuteDirectResultDescriptorId =
+    "stmt_execute_result";
+inline constexpr std::uint16_t
+    kSblrStmtExecuteDirectResultDescriptorVersion = 1;
+inline constexpr const char* kSblrStmtFreeExecutorId = "engine.op.stmt_free";
+inline constexpr std::uint16_t kSblrStmtFreeOpcodeCode = 4611;
+inline constexpr const char* kSblrStmtFreeOpcodeVersion = "1.0";
+inline constexpr const char* kSblrStmtFreeOperandDescriptorId =
+    "stmt_free_descriptor";
+inline constexpr const char* kSblrStmtFreeResultDescriptorId =
+    "stmt_free_result";
+inline constexpr std::uint16_t kSblrStmtFreeResultDescriptorVersion = 1;
+inline constexpr const char* kSblrStmtCancelExecutorId =
+    "engine.op.stmt_cancel";
+inline constexpr std::uint16_t kSblrStmtCancelOpcodeCode = 4612;
+inline constexpr const char* kSblrStmtCancelOpcodeVersion = "1.0";
+inline constexpr const char* kSblrStmtCancelOperandDescriptorId =
+    "stmt_cancel_descriptor";
+inline constexpr const char* kSblrStmtCancelResultDescriptorId =
+    "stmt_cancel_result";
+inline constexpr std::uint16_t kSblrStmtCancelResultDescriptorVersion = 1;
+inline constexpr const char* kSblrParameterBindExecutorId =
+    "engine.op.parameter_bind";
+inline constexpr std::uint16_t kSblrParameterBindOpcodeCode = 4613;
+inline constexpr const char* kSblrParameterBindOpcodeVersion = "1.0";
+inline constexpr const char* kSblrParameterBindOperandDescriptorId =
+    "parameter_bind_descriptor";
+inline constexpr const char* kSblrParameterBindResultDescriptorId =
+    "parameter_bind_result";
+inline constexpr std::uint16_t kSblrParameterBindResultDescriptorVersion = 1;
+inline constexpr const char* kSblrResultPageExecutorId =
+    "engine.op.result_page";
+inline constexpr std::uint16_t kSblrResultPageOpcodeCode = 4614;
+inline constexpr const char* kSblrResultPageOpcodeVersion = "1.0";
+inline constexpr const char* kSblrResultPageOperandDescriptorId =
+    "result_page_descriptor.v1";
+inline constexpr const char* kSblrResultPageResultDescriptorId =
+    "result_page_data";
+inline constexpr std::uint16_t kSblrResultPageResultDescriptorVersion = 1;
+inline constexpr const char* kSblrQueryExplainExecutorId =
+    "engine.op.query_explain";
+inline constexpr std::uint16_t kSblrQueryExplainOpcodeCode = 4616;
+inline constexpr const char* kSblrQueryExplainOpcodeVersion = "1.0";
+inline constexpr const char* kSblrQueryExplainOperandDescriptorId =
+    "query_explain_descriptor.v1";
+inline constexpr const char* kSblrQueryExplainResultDescriptorId =
+    "explain_result";
+inline constexpr std::uint16_t kSblrQueryExplainResultDescriptorVersion = 1;
+inline constexpr const char* kSblrCatalogIntrospectExecutorId =
+    "engine.op.catalog_introspect";
+inline constexpr std::uint16_t kSblrCatalogIntrospectOpcodeCode = 4864;
+inline constexpr const char* kSblrCatalogIntrospectOpcodeVersion = "1.0";
+inline constexpr const char* kSblrCatalogIntrospectOperandDescriptorId =
+    "catalog_introspect_descriptor";
+inline constexpr const char* kSblrCatalogIntrospectResultDescriptorId =
+    "catalog_introspect_result";
+inline constexpr std::uint16_t
+    kSblrCatalogIntrospectResultDescriptorVersion = 1;
+inline constexpr const char* kSblrNameResolveExecutorId =
+    "engine.op.name_resolve";
+inline constexpr std::uint16_t kSblrNameResolveOpcodeCode = 4865;
+inline constexpr const char* kSblrNameResolveOpcodeVersion = "1.0";
+inline constexpr const char* kSblrNameResolveOperandDescriptorId =
+    "name_resolve_descriptor.v1";
+inline constexpr const char* kSblrNameResolveResultDescriptorId =
+    "name_resolve_result";
+inline constexpr std::uint16_t kSblrNameResolveResultDescriptorVersion = 1;
+inline constexpr const char* kSblrOptimizerStatsReadExecutorId =
+    "engine.op.optimizer_stats_read";
+inline constexpr std::uint16_t kSblrOptimizerStatsReadOpcodeCode = 4866;
+inline constexpr const char* kSblrOptimizerStatsReadOpcodeVersion = "1.0";
+inline constexpr const char* kSblrOptimizerStatsReadOperandDescriptorId =
+    "optimizer_stats_read_descriptor.v1";
+inline constexpr const char* kSblrOptimizerStatsReadResultDescriptorId =
+    "optimizer_stats_result";
+inline constexpr std::uint16_t
+    kSblrOptimizerStatsReadResultDescriptorVersion = 1;
+inline constexpr const char* kSblrOptimizerStatsDropExecutorId =
+    "engine.op.optimizer_stats_drop";
+inline constexpr std::uint16_t kSblrOptimizerStatsDropOpcodeCode = 4867;
+inline constexpr const char* kSblrOptimizerStatsDropOpcodeVersion = "1.0";
+inline constexpr const char* kSblrOptimizerStatsDropOperandDescriptorId =
+    "optimizer_stats_drop_descriptor.v1";
+inline constexpr const char* kSblrOptimizerStatsDropResultDescriptorId =
+    "optimizer_stats_result";
+inline constexpr std::uint16_t
+    kSblrOptimizerStatsDropResultDescriptorVersion = 1;
+inline constexpr const char* kSblrParseTextExecutorId =
+    "engine.op.parse_text";
+inline constexpr std::uint16_t kSblrParseTextOpcodeCode = 4868;
+inline constexpr const char* kSblrParseTextOpcodeVersion = "1.0";
+inline constexpr const char* kSblrParseTextOperandDescriptorId =
+    "parse_text_descriptor";
+inline constexpr const char* kSblrParseTextResultDescriptorId =
+    "parse_text_result";
+inline constexpr std::uint16_t kSblrParseTextResultDescriptorVersion = 1;
+inline constexpr const char* kSblrCatalogEpochCheckExecutorId =
+    "engine.op.catalog_epoch_check";
+inline constexpr std::uint16_t kSblrCatalogEpochCheckOpcodeCode = 4869;
+inline constexpr const char* kSblrCatalogEpochCheckOpcodeVersion = "1.0";
+inline constexpr const char* kSblrCatalogEpochCheckOperandDescriptorId =
+    "catalog_epoch_check_descriptor";
+inline constexpr const char* kSblrCatalogEpochCheckResultDescriptorId =
+    "catalog_epoch_result";
+inline constexpr std::uint16_t
+    kSblrCatalogEpochCheckResultDescriptorVersion = 1;
+inline constexpr const char* kSblrDatabaseAttachExecutorId =
+    "engine.op.database_attach";
+inline constexpr std::uint16_t kSblrDatabaseAttachOpcodeCode = 5120;
+inline constexpr const char* kSblrDatabaseAttachOpcodeVersion = "1.0";
+inline constexpr const char* kSblrDatabaseAttachOperandDescriptorId =
+    "database_attach_descriptor";
+inline constexpr const char* kSblrDatabaseAttachResultDescriptorId =
+    "database_attach_result";
+inline constexpr std::uint16_t
+    kSblrDatabaseAttachResultDescriptorVersion = 1;
 inline constexpr const char* kSblrTxnBeginExecutorId = "engine.op.txn_begin";
 inline constexpr std::uint16_t kSblrTxnBeginOpcodeCode = 256;
 inline constexpr const char* kSblrTxnBeginOpcodeVersion = "1.0";

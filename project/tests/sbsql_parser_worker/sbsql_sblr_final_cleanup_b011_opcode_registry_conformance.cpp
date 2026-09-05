@@ -68,7 +68,7 @@ constexpr std::array<OpcodeRow, 49> kRows{{
     {"engine.op.session_role_switch", "SBLR_SESSION_ROLE_SWITCH", "session-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
     {"engine.op.session_discard", "SBLR_SESSION_DISCARD", "session-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
     {"engine.op.session_snapshot_handle", "SBLR_SESSION_SNAPSHOT_HANDLE", "session-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::authenticated, true, false},
-    {"statement.prepare", "SBLR_STMT_PREPARE", "statement-management", sblr::SblrOpcodeCategory::query, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
+    {"engine.op.stmt_prepare", "SBLR_STMT_PREPARE", "statement-management", sblr::SblrOpcodeCategory::query, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
     {"engine.op.stmt_execute", "SBLR_STMT_EXECUTE", "statement-management", sblr::SblrOpcodeCategory::query, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
     {"engine.op.stmt_execute_direct", "SBLR_STMT_EXECUTE_DIRECT", "statement-management", sblr::SblrOpcodeCategory::query, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::local_or_cluster_write, sblr::SblrOpcodeSecurityClass::object_authorized, true, false},
     {"engine.op.stmt_free", "SBLR_STMT_FREE", "statement-management", sblr::SblrOpcodeCategory::query, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::none, sblr::SblrOpcodeSecurityClass::authenticated, false, false},
@@ -144,7 +144,6 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
 
 std::string_view ExpectedExecutorId(const OpcodeRow& row) {
   if (row.operation_id == "connection.open") return "engine.op.conn_open";
-  if (row.operation_id == "statement.prepare") return "engine.op.stmt_prepare";
   if (row.operation_id == "query.execute") return "engine.op.query_execute";
   return row.operation_id;
 }

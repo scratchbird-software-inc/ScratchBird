@@ -11,6 +11,20 @@
 #include "engine/sblr/sblr_opcode_registry.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_plan_import_rows_codec.hpp"
+#include "engine/sblr/sblr_stmt_execute_runtime.hpp"
+#include "engine/sblr/sblr_stmt_execute_direct_runtime.hpp"
+#include "engine/sblr/sblr_stmt_free_runtime.hpp"
+#include "engine/sblr/sblr_stmt_cancel_runtime.hpp"
+#include "engine/sblr/sblr_parameter_bind_runtime.hpp"
+#include "engine/sblr/sblr_result_page_runtime.hpp"
+#include "engine/sblr/sblr_query_explain_runtime.hpp"
+#include "engine/sblr/sblr_name_resolve_runtime.hpp"
+#include "engine/sblr/sblr_parse_text_runtime.hpp"
+#include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
+#include "engine/sblr/sblr_database_attach_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
+#include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
+#include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
 #include "engine/sblr/sblr_transaction_begin_runtime.hpp"
 #include "engine/sblr/sblr_transaction_commit_runtime.hpp"
 #include "engine/sblr/sblr_transaction_rollback_runtime.hpp"
@@ -953,6 +967,200 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
   }
   if (exact_catalog_introspect && !exact_local_catalog_introspect)
     return Refuse(request, "SBLR.OPERAND.INVALID");
+  const bool exact_name_resolve = request.root_opcode_code == 0x1301 &&
+      request.root_opcode == "SBLR_NAME_RESOLVE" &&
+      request.root_operation_id == "engine.op.name_resolve";
+  bool exact_local_name_resolve = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_name_resolve && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "name_resolve_descriptor.v1" &&
+        member.operands.front().name == "name" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                name_resolve_descriptor) {
+      scratchbird::engine::sblr::SblrNameResolveDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_name_resolve = scratchbird::engine::sblr::
+          DecodeSblrNameResolveDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor,
+              &detail);
+    }
+  }
+  if (exact_name_resolve && !exact_local_name_resolve) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND.INVALID");
+  }
+  const bool exact_parse_text = request.root_opcode_code == 0x1304 &&
+      request.root_opcode == "SBLR_PARSE_TEXT" &&
+      request.root_operation_id == "engine.op.parse_text";
+  bool exact_local_parse_text = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_parse_text && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "parse_text_descriptor" &&
+        member.operands.front().name == "text" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                parse_text_descriptor) {
+      scratchbird::engine::sblr::SblrParseTextDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_parse_text = scratchbird::engine::sblr::
+          DecodeSblrParseTextDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor,
+              &detail);
+    }
+  }
+  if (exact_parse_text && !exact_local_parse_text) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND.INVALID");
+  }
+  const bool exact_catalog_epoch_check =
+      request.root_opcode_code == 0x1305 &&
+      request.root_opcode == "SBLR_CATALOG_EPOCH_CHECK" &&
+      request.root_operation_id == "engine.op.catalog_epoch_check";
+  bool exact_local_catalog_epoch_check = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_catalog_epoch_check && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "catalog_epoch_check_descriptor" &&
+        member.operands.front().name == "catalog_epoch" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                catalog_epoch_check_descriptor) {
+      scratchbird::engine::sblr::SblrCatalogEpochCheckDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_catalog_epoch_check = scratchbird::engine::sblr::
+          DecodeSblrCatalogEpochCheckDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor,
+              &detail);
+    }
+  }
+  if (exact_catalog_epoch_check && !exact_local_catalog_epoch_check) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND_INVALID");
+  }
+  const bool exact_optimizer_stats_read =
+      request.root_opcode_code == 0x1302 &&
+      request.root_opcode == "SBLR_OPTIMIZER_STATS_READ" &&
+      request.root_operation_id == "engine.op.optimizer_stats_read";
+  bool exact_local_optimizer_stats_read = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_optimizer_stats_read && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type ==
+            "optimizer_stats_read_descriptor.v1" &&
+        member.operands.front().name == "statistics" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                optimizer_stats_read_descriptor) {
+      scratchbird::engine::sblr::SblrOptimizerStatsReadDescriptorV1
+          descriptor;
+      std::string detail;
+      exact_local_optimizer_stats_read = scratchbird::engine::sblr::
+          DecodeSblrOptimizerStatsReadDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor,
+              &detail);
+    }
+  }
+  if (exact_optimizer_stats_read && !exact_local_optimizer_stats_read) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND.INVALID");
+  }
+  const bool exact_database_attach =
+      request.root_opcode_code == 0x1400 &&
+      request.root_opcode == "SBLR_DATABASE_ATTACH" &&
+      request.root_operation_id == "engine.op.database_attach";
+  bool exact_local_database_attach = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_database_attach && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "database_attach_descriptor" &&
+        member.operands.front().name == "attachment" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                database_attach_descriptor) {
+      scratchbird::engine::sblr::SblrDatabaseAttachDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_database_attach = scratchbird::engine::sblr::
+          DecodeSblrDatabaseAttachDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor,
+              &detail);
+    }
+  }
+  if (exact_database_attach && !exact_local_database_attach) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND.INVALID");
+  }
+  const bool exact_optimizer_stats_drop =
+      request.root_opcode_code == 0x1303 &&
+      request.root_opcode == "SBLR_OPTIMIZER_STATS_DROP" &&
+      request.root_operation_id == "engine.op.optimizer_stats_drop";
+  bool exact_local_optimizer_stats_drop = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_optimizer_stats_drop && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type ==
+            "optimizer_stats_drop_descriptor.v1" &&
+        member.operands.front().name == "statistics" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                optimizer_stats_drop_descriptor) {
+      scratchbird::engine::sblr::SblrOptimizerStatsDropDescriptorV1
+          descriptor;
+      std::string detail;
+      exact_local_optimizer_stats_drop = scratchbird::engine::sblr::
+          DecodeSblrOptimizerStatsDropDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor,
+              &detail);
+    }
+  }
+  if (exact_optimizer_stats_drop && !exact_local_optimizer_stats_drop) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND.INVALID");
+  }
   bool exact_local_window = false;
   if (stream.ok && stream.stream.operations.size() == 3 && exact_window && !request.cluster_context_active && !request.cluster_transaction_active && !request.route_fence_present) {
     const auto& member = stream.stream.operations[1];
@@ -985,6 +1193,193 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
        !request.cluster_context_active || request.cluster_transaction_active ||
        !stream.stream.operations[1].operands.empty())) {
     return Refuse(request, "CLUSTER.GATEWAY.CLUSTER_CONTEXT_REQUIRED");
+  }
+  const bool exact_stmt_prepare = request.root_opcode_code == 4608 &&
+      request.root_opcode == "SBLR_STMT_PREPARE" &&
+      request.root_operation_id == "engine.op.stmt_prepare";
+  bool exact_local_stmt_prepare = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_stmt_prepare && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "stmt_prepare_descriptor" &&
+        member.operands.front().name == "statement" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::stmt_prepare_descriptor) {
+      scratchbird::engine::sblr::SblrStmtPrepareDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_stmt_prepare = scratchbird::engine::sblr::
+          DecodeSblrStmtPrepareDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor, &detail);
+    }
+  }
+  const bool exact_stmt_execute = request.root_opcode_code == 4609 &&
+      request.root_opcode == "SBLR_STMT_EXECUTE" &&
+      request.root_operation_id == "engine.op.stmt_execute";
+  bool exact_local_stmt_execute = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_stmt_execute && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "stmt_execute_descriptor" &&
+        member.operands.front().name == "statement" &&
+        member.operands.front().value_kind == scratchbird::engine::sblr::
+            SblrValueKind::stmt_execute_descriptor) {
+      scratchbird::engine::sblr::SblrStmtExecuteDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_stmt_execute = scratchbird::engine::sblr::
+          DecodeSblrStmtExecuteDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor, &detail);
+    }
+  }
+  const bool exact_stmt_execute_direct = request.root_opcode_code == 4610 &&
+      request.root_opcode == "SBLR_STMT_EXECUTE_DIRECT" &&
+      request.root_operation_id == "engine.op.stmt_execute_direct";
+  bool exact_local_stmt_execute_direct = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_stmt_execute_direct && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "stmt_execute_direct_descriptor" &&
+        member.operands.front().name == "statement" &&
+        member.operands.front().value_kind == scratchbird::engine::sblr::
+            SblrValueKind::stmt_execute_direct_descriptor) {
+      scratchbird::engine::sblr::SblrStmtExecuteDirectDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_stmt_execute_direct = scratchbird::engine::sblr::
+          DecodeSblrStmtExecuteDirectDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor, &detail);
+    }
+  }
+  const bool exact_stmt_free = request.root_opcode_code == 4611 &&
+      request.root_opcode == "SBLR_STMT_FREE" &&
+      request.root_operation_id == "engine.op.stmt_free";
+  bool exact_local_stmt_free = false;
+  if (stream.ok && stream.stream.operations.size() == 3 && exact_stmt_free &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "stmt_free_descriptor" &&
+        member.operands.front().name == "statement" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::stmt_free_descriptor) {
+      scratchbird::engine::sblr::SblrStmtFreeDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_stmt_free = scratchbird::engine::sblr::
+          DecodeSblrStmtFreeDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor, &detail);
+    }
+  }
+  const bool exact_stmt_cancel = request.root_opcode_code == 4612 &&
+      request.root_opcode == "SBLR_STMT_CANCEL" &&
+      request.root_operation_id == "engine.op.stmt_cancel";
+  bool exact_local_stmt_cancel = false;
+  if (stream.ok && stream.stream.operations.size() == 3 && exact_stmt_cancel &&
+      !request.cluster_context_active && !request.cluster_transaction_active &&
+      !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "stmt_cancel_descriptor" &&
+        member.operands.front().name == "statement" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                stmt_cancel_descriptor) {
+      scratchbird::engine::sblr::SblrStmtCancelDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_stmt_cancel = scratchbird::engine::sblr::
+          DecodeSblrStmtCancelDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor, &detail);
+    }
+  }
+  const bool exact_parameter_bind = request.root_opcode_code == 4613 &&
+      request.root_opcode == "SBLR_PARAMETER_BIND" &&
+      request.root_operation_id == "engine.op.parameter_bind";
+  bool exact_local_parameter_bind = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_parameter_bind && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "parameter_bind_descriptor" &&
+        member.operands.front().name == "parameters" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                parameter_bind_descriptor) {
+      scratchbird::engine::sblr::SblrParameterBindDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_parameter_bind = scratchbird::engine::sblr::
+          DecodeSblrParameterBindDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor, &detail);
+    }
+  }
+  const bool exact_result_page = request.root_opcode_code == 4614 &&
+      request.root_opcode == "SBLR_RESULT_PAGE" &&
+      request.root_operation_id == "engine.op.result_page";
+  bool exact_local_result_page = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_result_page && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "result_page_descriptor.v1" &&
+        member.operands.front().name == "result_page" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::result_page_descriptor) {
+      scratchbird::engine::sblr::SblrResultPageDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_result_page = scratchbird::engine::sblr::
+          DecodeSblrResultPageDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor, &detail);
+    }
+  }
+  const bool exact_query_explain = request.root_opcode_code == 4616 &&
+      request.root_opcode == "SBLR_QUERY_EXPLAIN" &&
+      request.root_operation_id == "engine.op.query_explain";
+  bool exact_local_query_explain = false;
+  if (stream.ok && stream.stream.operations.size() == 3 &&
+      exact_query_explain && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present) {
+    const auto& member = stream.stream.operations[1];
+    if (member.operands.size() == 1 &&
+        member.operands.front().type == "query_explain_descriptor.v1" &&
+        member.operands.front().name == "query" &&
+        member.operands.front().value_kind ==
+            scratchbird::engine::sblr::SblrValueKind::
+                query_explain_descriptor) {
+      scratchbird::engine::sblr::SblrQueryExplainDescriptorV1 descriptor;
+      std::string detail;
+      exact_local_query_explain = scratchbird::engine::sblr::
+          DecodeSblrQueryExplainDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor,
+              &detail);
+    }
+  }
+  if ((exact_stmt_prepare && !exact_local_stmt_prepare) ||
+      (exact_stmt_execute && !exact_local_stmt_execute) ||
+      (exact_stmt_execute_direct && !exact_local_stmt_execute_direct) ||
+      (exact_stmt_free && !exact_local_stmt_free) ||
+      (exact_stmt_cancel && !exact_local_stmt_cancel) ||
+      (exact_parameter_bind && !exact_local_parameter_bind) ||
+      (exact_result_page && !exact_local_result_page) ||
+      (exact_query_explain && !exact_local_query_explain)) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND.INVALID");
   }
   const bool exact_txn_begin = request.root_opcode_code == 256 &&
       request.root_opcode == "SBLR_TXN_BEGIN" &&
@@ -1712,9 +2107,17 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_local_ddl_create_operator || exact_local_ddl_drop_operator) exact_local_ddl_drop_srs = true;
   if (!stream.ok || stream.stream.operations.size() != 3 ||
       (!exact_query && !exact_source_map && !exact_error_vector &&
-       !exact_local_show_version && !exact_local_show_database && !exact_local_show_catalog && !exact_local_show_sessions && !exact_local_show_transactions && !exact_local_show_locks && !exact_local_show_statements && !exact_local_show_jobs && !exact_local_show_management && !exact_local_show_diagnostics && !exact_local_show_diagnostics_extended && !exact_local_show_archive_replication && !exact_local_show_agents_extended && !exact_local_show_filespace_extended && !exact_local_show_decision_service && !exact_local_show_metrics && !exact_local_show_acceleration && !exact_local_show_acceleration_extended && !exact_local_explain_operation && !exact_local_lifecycle_create_database && !exact_local_lifecycle_open_database && !exact_local_lifecycle_attach_database && !exact_local_lifecycle_detach_database && !exact_local_lifecycle_enter_maintenance && !exact_local_lifecycle_exit_maintenance && !exact_local_metrics_read && !exact_local_catalog_introspect && !exact_cluster_root &&
+       !exact_local_show_version && !exact_local_show_database && !exact_local_show_catalog && !exact_local_show_sessions && !exact_local_show_transactions && !exact_local_show_locks && !exact_local_show_statements && !exact_local_show_jobs && !exact_local_show_management && !exact_local_show_diagnostics && !exact_local_show_diagnostics_extended && !exact_local_show_archive_replication && !exact_local_show_agents_extended && !exact_local_show_filespace_extended && !exact_local_show_decision_service && !exact_local_show_metrics && !exact_local_show_acceleration && !exact_local_show_acceleration_extended && !exact_local_explain_operation && !exact_local_lifecycle_create_database && !exact_local_lifecycle_open_database && !exact_local_lifecycle_attach_database && !exact_local_lifecycle_detach_database && !exact_local_lifecycle_enter_maintenance && !exact_local_lifecycle_exit_maintenance && !exact_local_metrics_read && !exact_local_catalog_introspect && !exact_local_name_resolve && !exact_local_parse_text && !exact_local_catalog_epoch_check && !exact_local_optimizer_stats_read && !exact_local_optimizer_stats_drop && !exact_cluster_root &&
        !exact_local_security_authenticate && !exact_local_security_deauthenticate && !exact_local_session_role_switch && !exact_local_session_setting_set && !exact_local_session_setting_reset && !exact_local_session_setting_get && !exact_local_session_default_qualifier_set && !exact_local_session_discard && !exact_local_session_snapshot_handle && !exact_local_context_set && !exact_local_context_unset && !exact_local_context_get && !exact_local_txn_begin && !exact_local_txn_commit &&
-       !exact_local_txn_rollback && !exact_local_txn_set_characteristics && !exact_local_txn_savepoint &&
+       !exact_local_txn_rollback && !exact_local_txn_set_characteristics &&
+       !exact_local_stmt_prepare && !exact_local_stmt_execute &&
+       !exact_local_stmt_execute_direct &&
+       !exact_local_stmt_free && !exact_local_stmt_cancel &&
+       !exact_local_parameter_bind &&
+       !exact_local_result_page &&
+       !exact_local_query_explain &&
+       !exact_local_database_attach &&
+       !exact_local_txn_savepoint &&
        !exact_local_txn_release_savepoint && !exact_local_txn_rollback_to_savepoint &&
        !exact_local_psql_autonomous_frame && !exact_local_reservation_release && !exact_local_temporary_cleanup && !exact_local_cursor_open && !exact_local_cursor_fetch && !exact_local_cursor_close && !exact_local_read_by_key && !exact_local_read_range && !exact_local_read_stream && !exact_local_result_set_pass && !exact_local_access_cursor_open && !exact_local_access_cursor_fetch && !exact_local_access_cursor_close && !exact_local_insert && !exact_local_public_insert_rows && !exact_local_public_update_rows && !exact_local_public_native_bulk_ingest && !exact_local_plan_import_rows && !exact_local_update && !exact_local_delete && !exact_local_merge && !exact_local_table_truncate && !exact_local_table_analyze && !exact_local_bulk_import_stream && !exact_local_bulk_export_stream && !exact_local_statement_batch && !exact_local_atomic_cas && !exact_local_atomic_rmw && !exact_local_advisory_lock && !exact_local_advisory_lock_release && !exact_local_function_call && !exact_local_operator_call && !exact_local_cast && !exact_local_compare && !exact_local_domain_operation && !exact_local_udr && !exact_local_procedure && !exact_local_function_invoke && !exact_local_aggregate_invoke && !exact_local_sequence_nextval && !exact_local_sequence_currval && !exact_local_sequence_setval && !exact_local_query_numeric && !exact_local_evaluate_projection && !exact_local_advanced_datatype_family && !exact_local_project && !exact_local_aggregate && !exact_local_group && !exact_local_sort && !exact_local_limit && !exact_local_return_result_set && !exact_local_kv_structured_read && !exact_local_kv_structured_mutate && !exact_local_kv_structured_scan && !exact_local_kv_structured_stream_read && !exact_local_kv_structured_stream_append && !exact_local_kv_structured_timeseries && !exact_local_dml_conditional_mutate && !exact_local_ddl_alter_timeseries_value_cache && !exact_local_system_config_set && !exact_local_ddl_create_domain && !exact_local_ddl_alter_domain && !exact_local_ddl_create_view && !exact_local_ddl_alter_view && !exact_local_ddl_drop_view && !exact_local_ddl_create_schema && !exact_local_ddl_create_table && !exact_local_public_ddl_create_table && !exact_local_ddl_create_index && !exact_local_ddl_drop_index && !exact_local_ddl_create_procedure && !exact_local_ddl_alter_procedure && !exact_local_ddl_drop_procedure && !exact_local_ddl_create_function && !exact_local_ddl_alter_function && !exact_local_ddl_drop_function && !exact_local_ddl_drop_temporary_table && !exact_local_ddl_rename_object_vector && !exact_local_ddl_create_or_replace_srs && !exact_local_ddl_drop_srs) ||
       stream.stream.operations[1].opcode_code != request.root_opcode_code ||

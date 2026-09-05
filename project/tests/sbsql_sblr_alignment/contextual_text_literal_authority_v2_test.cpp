@@ -1453,7 +1453,13 @@ int main() {
   revoke.requested_state = api::SblrExecutorAvailabilityState::revoked;
   revoke.reason_code = "contextual.test.revoke";
   assert(api::SetSblrExecutorAvailability(stale_context, revoke).ok);
-  assert(!Transfer(stale_context, &stale_issued.authority, stale_sbxn, 2).ok);
+  const auto revoked_transfer =
+      Transfer(stale_context, &stale_issued.authority, stale_sbxn, 2);
+  assert(!revoked_transfer.ok &&
+         revoked_transfer.diagnostic.code ==
+             "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING" &&
+         revoked_transfer.diagnostic.message_key ==
+             "sblr.opcode.executor_evidence_missing");
 
   (void)api::RevokeContextualTextLiteralAuthorityV2(
       &stale_issued.authority, "test_cleanup");

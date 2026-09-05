@@ -13,10 +13,10 @@ namespace {
 namespace profile = scratchbird::server::sbps::private_narrow;
 using scratchbird::core::platform::byte;
 
-static_assert(profile::kPairUniverseCountV1 == 53);
-static_assert(profile::kRequiredPairCountV1 == 35);
+static_assert(profile::kPairUniverseCountV1 == 63);
+static_assert(profile::kRequiredPairCountV1 == 45);
 static_assert(profile::kForbiddenPairCountV1 == 18);
-static_assert(profile::kSuccessOnlyPairCountV1 == 13);
+static_assert(profile::kSuccessOnlyPairCountV1 == 18);
 
 void Require(bool condition, const std::string& detail) {
   if (!condition) throw std::runtime_error(detail);
@@ -79,10 +79,10 @@ void CoreRecordAndPendingEvidenceStayInactive() {
   const auto core = profile::CorePrivateNarrowProfileRecordV1();
   Require(profile::ValidateCorePrivateNarrowProfileRecordV1(core).ok(),
           "compiled Core private profile record failed validation");
-  Require(core.pair_universe.size() == 53 &&
-              core.required_pairs.size() == 35 &&
+  Require(core.pair_universe.size() == 63 &&
+              core.required_pairs.size() == 45 &&
               core.forbidden_pairs.size() == 18 &&
-              core.candidate_activation_records.size() == 35 &&
+              core.candidate_activation_records.size() == 45 &&
               core.actual_active_pairs.empty(),
           "compiled Core pair projection drifted");
   const auto contains = [](const auto& pairs, std::uint16_t message,
@@ -113,6 +113,62 @@ void CoreRecordAndPendingEvidenceStayInactive() {
     Require(contains(core.success_only_pairs, ack_message, ack_schema),
             "a server-to-parser bulk-import ACK lacks success-only role");
   }
+  for (const auto [message, schema] : {
+           profile::PairV1{728, 7741}, profile::PairV1{729, 7742},
+           profile::PairV1{730, 7743}, profile::PairV1{731, 7744}}) {
+    Require(contains(core.pair_universe, message, schema) &&
+                contains(core.required_pairs, message, schema) &&
+                !contains(core.forbidden_pairs, message, schema),
+            "one exact optimizer-statistics message/schema pair is not in "
+            "the compiled SFPS1 required universe");
+  }
+  for (const auto [request_message, request_schema] : {
+           profile::PairV1{728, 7741}, profile::PairV1{730, 7743}}) {
+    Require(!contains(core.success_only_pairs, request_message,
+                      request_schema),
+            "an optimizer-statistics request was marked success-only");
+  }
+  for (const auto [result_message, result_schema] : {
+           profile::PairV1{729, 7742}, profile::PairV1{731, 7744}}) {
+    Require(contains(core.success_only_pairs, result_message, result_schema),
+            "an optimizer-statistics result lacks success-only role");
+  }
+  for (const auto [message, schema] : {
+           profile::PairV1{732, 7745}, profile::PairV1{733, 7746}}) {
+    Require(contains(core.pair_universe, message, schema) &&
+                contains(core.required_pairs, message, schema) &&
+                !contains(core.forbidden_pairs, message, schema),
+            "one exact PARSE TEXT bind message/schema pair is not in the "
+            "compiled SFPS1 required universe");
+  }
+  Require(!contains(core.success_only_pairs, 732, 7745),
+          "the PARSE TEXT bind request was marked success-only");
+  Require(contains(core.success_only_pairs, 733, 7746),
+          "the PARSE TEXT bind result lacks success-only role");
+  for (const auto [message, schema] : {
+           profile::PairV1{734, 7747}, profile::PairV1{735, 7748}}) {
+    Require(contains(core.pair_universe, message, schema) &&
+                contains(core.required_pairs, message, schema) &&
+                !contains(core.forbidden_pairs, message, schema),
+            "one exact CATALOG EPOCH CHECK bind pair is not in the "
+            "compiled SFPS1 required universe");
+  }
+  Require(!contains(core.success_only_pairs, 734, 7747),
+          "the CATALOG EPOCH CHECK bind request was marked success-only");
+  Require(contains(core.success_only_pairs, 735, 7748),
+          "the CATALOG EPOCH CHECK bind result lacks success-only role");
+  for (const auto [message, schema] : {
+           profile::PairV1{736, 7749}, profile::PairV1{737, 7750}}) {
+    Require(contains(core.pair_universe, message, schema) &&
+                contains(core.required_pairs, message, schema) &&
+                !contains(core.forbidden_pairs, message, schema),
+            "one exact DATABASE ATTACH bind pair is not in the compiled "
+            "SFPS1 required universe");
+  }
+  Require(!contains(core.success_only_pairs, 736, 7749),
+          "the DATABASE ATTACH bind request was marked success-only");
+  Require(contains(core.success_only_pairs, 737, 7750),
+          "the DATABASE ATTACH bind result lacks success-only role");
   for (const auto& record : core.candidate_activation_records) {
     Require(!record.exact_nul_serialization.empty() &&
                 record.exact_nul_serialization.back() == 0 &&
@@ -144,7 +200,7 @@ void CoreAndEvidenceNegativeDrift() {
   auto complement = core;
   complement.forbidden_pairs.pop_back();
   Require(!profile::ValidateCorePrivateNarrowProfileRecordV1(complement).ok(),
-          "29/18 complement drift was admitted");
+          "45/18 complement drift was admitted");
 
   auto nul_drift = core;
   nul_drift.candidate_activation_records.front()
@@ -227,6 +283,24 @@ void SyntheticUsableFixtureProvesExactDispatchOnly() {
       core, activation.state, key(707, 7720));
   Require(bind_ack.admitted && bind_ack.success_only,
           "707/7720 bind ACK dispatch failed");
+  const auto epoch_bind = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(734, 7747));
+  Require(epoch_bind.admitted && !epoch_bind.success_only,
+          "734/7747 catalog-epoch bind dispatch failed");
+  const auto epoch_bind_result = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(735, 7748));
+  Require(epoch_bind_result.admitted && epoch_bind_result.success_only,
+          "735/7748 catalog-epoch bind result dispatch failed");
+  const auto database_attach_bind = profile::AdmitPrivateNarrowDispatchV1(
+      core, activation.state, key(736, 7749));
+  Require(database_attach_bind.admitted && !database_attach_bind.success_only,
+          "736/7749 database-attach bind dispatch failed");
+  const auto database_attach_bind_result =
+      profile::AdmitPrivateNarrowDispatchV1(
+          core, activation.state, key(737, 7750));
+  Require(database_attach_bind_result.admitted &&
+              database_attach_bind_result.success_only,
+          "737/7750 database-attach bind result dispatch failed");
 
   const auto mixed_pair = profile::AdmitPrivateNarrowDispatchV1(
       core, activation.state, key(42, 1043));

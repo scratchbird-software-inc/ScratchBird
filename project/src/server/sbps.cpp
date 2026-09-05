@@ -317,6 +317,22 @@ bool IsKnownMessageType(std::uint16_t message_type) {
     case 391:
     case 392:
     case 393:
+    case 394:
+    case 395:
+    case 396:
+    case 397:
+    case 398:
+    case 399:
+    case 402:
+    case 403:
+    case 404:
+    case 405:
+    case 406:
+    case 407:
+    case 408:
+    case 409:
+    case 410:
+    case 411:
     case 694:
     case 695:
     case 698:
@@ -327,6 +343,36 @@ bool IsKnownMessageType(std::uint16_t message_type) {
     case 705:
     case 706:
     case 707:
+    case 708:
+    case 709:
+    case 710:
+    case 711:
+    case 712:
+    case 713:
+    case 728:
+    case 729:
+    case 730:
+    case 731:
+    case 732:
+    case 733:
+    case 734:
+    case 735:
+    case 736:
+    case 737:
+    case 714:
+    case 715:
+    case 716:
+    case 717:
+    case 718:
+    case 719:
+    case 720:
+    case 721:
+    case 722:
+    case 723:
+    case 724:
+    case 725:
+    case 726:
+    case 727:
     case 0:
     case 1:
     case 2:

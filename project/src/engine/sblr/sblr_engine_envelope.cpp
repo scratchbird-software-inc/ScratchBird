@@ -35,6 +35,14 @@
 #include "sblr_context_unset_runtime.hpp"
 #include "sblr_context_get_runtime.hpp"
 #include "sblr_stmt_prepare_runtime.hpp"
+#include "sblr_stmt_execute_direct_runtime.hpp"
+#include "sblr_stmt_execute_runtime.hpp"
+#include "sblr_stmt_free_runtime.hpp"
+#include "sblr_stmt_cancel_runtime.hpp"
+#include "sblr_parameter_bind_runtime.hpp"
+#include "sblr_result_page_runtime.hpp"
+#include "sblr_query_explain_runtime.hpp"
+#include "sblr_database_attach_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "contextual_text_literal_v2_codec.hpp"
@@ -150,6 +158,11 @@
 #include "sblr_advanced_datatype_family_runtime.hpp"
 #include "sblr_project_runtime.hpp"
 #include "sblr_catalog_introspect_runtime.hpp"
+#include "sblr_name_resolve_runtime.hpp"
+#include "sblr_parse_text_runtime.hpp"
+#include "sblr_catalog_epoch_check_runtime.hpp"
+#include "sblr_optimizer_stats_read_runtime.hpp"
+#include "sblr_optimizer_stats_drop_runtime.hpp"
 #include "sblr_aggregate_runtime.hpp"
 #include "sblr_group_runtime.hpp"
 #include "sblr_sort_runtime.hpp"
@@ -790,6 +803,13 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::context_unset_descriptor: { SblrContextUnsetDescriptorV1 operand; std::string detail; return DecodeSblrContextUnsetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::context_get_descriptor: { SblrContextGetDescriptorV1 operand; std::string detail; return DecodeSblrContextGetDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::stmt_prepare_descriptor: { SblrStmtPrepareDescriptorV1 operand; std::string detail; return DecodeSblrStmtPrepareDescriptorV1(data,size,&operand,&detail); }
+    case SblrValueKind::stmt_execute_direct_descriptor: { SblrStmtExecuteDirectDescriptorV1 operand; std::string detail; return DecodeSblrStmtExecuteDirectDescriptorV1(data,size,&operand,&detail); }
+    case SblrValueKind::stmt_free_descriptor: { SblrStmtFreeDescriptorV1 operand; std::string detail; return DecodeSblrStmtFreeDescriptorV1(data,size,&operand,&detail); }
+    case SblrValueKind::stmt_execute_descriptor: { SblrStmtExecuteDescriptorV1 operand; std::string detail; return DecodeSblrStmtExecuteDescriptorV1(data,size,&operand,&detail); }
+    case SblrValueKind::stmt_cancel_descriptor: { SblrStmtCancelDescriptorV1 operand; std::string detail; return DecodeSblrStmtCancelDescriptorV1(data,size,&operand,&detail); }
+    case SblrValueKind::parameter_bind_descriptor: { SblrParameterBindDescriptorV1 operand; std::string detail; return DecodeSblrParameterBindDescriptorV1(data,size,&operand,&detail); }
+    case SblrValueKind::result_page_descriptor: { SblrResultPageDescriptorV1 operand; std::string detail; return DecodeSblrResultPageDescriptorV1(data,size,&operand,&detail); }
+    case SblrValueKind::query_explain_descriptor: { SblrQueryExplainDescriptorV1 operand; std::string detail; return DecodeSblrQueryExplainDescriptorV1(data,size,&operand,&detail); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::window_descriptor: { SblrWindowDescriptorV1 operand; std::string detail; return DecodeSblrWindowDescriptorV1(data,size,&operand,&detail,true); }
@@ -806,6 +826,40 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::catalog_introspect_descriptor: {
       SblrCatalogIntrospectDescriptorV1 operand; std::string detail;
       return DecodeSblrCatalogIntrospectDescriptorV1(data, size, &operand, &detail, true);
+    }
+    case SblrValueKind::name_resolve_descriptor: {
+      SblrNameResolveDescriptorV1 operand;
+      std::string detail;
+      return DecodeSblrNameResolveDescriptorV1(data, size, &operand, &detail);
+    }
+    case SblrValueKind::parse_text_descriptor: {
+      SblrParseTextDescriptorV1 operand;
+      std::string detail;
+      return DecodeSblrParseTextDescriptorV1(data, size, &operand, &detail);
+    }
+    case SblrValueKind::catalog_epoch_check_descriptor: {
+      SblrCatalogEpochCheckDescriptorV1 operand;
+      std::string detail;
+      return DecodeSblrCatalogEpochCheckDescriptorV1(
+          data, size, &operand, &detail);
+    }
+    case SblrValueKind::database_attach_descriptor: {
+      SblrDatabaseAttachDescriptorV1 operand;
+      std::string detail;
+      return DecodeSblrDatabaseAttachDescriptorV1(
+          data, size, &operand, &detail);
+    }
+    case SblrValueKind::optimizer_stats_read_descriptor: {
+      SblrOptimizerStatsReadDescriptorV1 operand;
+      std::string detail;
+      return DecodeSblrOptimizerStatsReadDescriptorV1(
+          data, size, &operand, &detail);
+    }
+    case SblrValueKind::optimizer_stats_drop_descriptor: {
+      SblrOptimizerStatsDropDescriptorV1 operand;
+      std::string detail;
+      return DecodeSblrOptimizerStatsDropDescriptorV1(
+          data, size, &operand, &detail);
     }
     case SblrValueKind::lifecycle_create_database_descriptor: {
       SblrLifecycleCreateDatabaseDescriptorV1 operand;
@@ -1313,6 +1367,30 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       envelope.operation_id == "engine.op.bulk_import_stream" &&
       envelope.opcode == "SBLR_BULK_IMPORT_STREAM" &&
       envelope.opcode_code == 775;
+  const bool exact_name_resolve =
+      envelope.operation_id == "engine.op.name_resolve" &&
+      envelope.opcode == "SBLR_NAME_RESOLVE" &&
+      envelope.opcode_code == kSblrNameResolveOpcodeCode;
+  const bool exact_parse_text =
+      envelope.operation_id == "engine.op.parse_text" &&
+      envelope.opcode == "SBLR_PARSE_TEXT" &&
+      envelope.opcode_code == kSblrParseTextOpcodeCode;
+  const bool exact_catalog_epoch_check =
+      envelope.operation_id == "engine.op.catalog_epoch_check" &&
+      envelope.opcode == "SBLR_CATALOG_EPOCH_CHECK" &&
+      envelope.opcode_code == kSblrCatalogEpochCheckOpcodeCode;
+  const bool exact_database_attach =
+      envelope.operation_id == "engine.op.database_attach" &&
+      envelope.opcode == "SBLR_DATABASE_ATTACH" &&
+      envelope.opcode_code == kSblrDatabaseAttachOpcodeCode;
+  const bool exact_optimizer_stats_read =
+      envelope.operation_id == "engine.op.optimizer_stats_read" &&
+      envelope.opcode == "SBLR_OPTIMIZER_STATS_READ" &&
+      envelope.opcode_code == kSblrOptimizerStatsReadOpcodeCode;
+  const bool exact_optimizer_stats_drop =
+      envelope.operation_id == "engine.op.optimizer_stats_drop" &&
+      envelope.opcode == "SBLR_OPTIMIZER_STATS_DROP" &&
+      envelope.opcode_code == kSblrOptimizerStatsDropOpcodeCode;
   const bool exact_ddl_create_synonym =
       envelope.operation_id == "engine.op.ddl_create_synonym" &&
       envelope.opcode == "SBLR_DDL_CREATE_SYNONYM" &&
@@ -1973,6 +2051,163 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       fail("SBLR.OPERAND_INVALID",
            "canonical BULK IMPORT STREAM result, diagnostic, or BIRO "
            "descriptor binding is invalid");
+    }
+  }
+  if (exact_name_resolve && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "name_resolve_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrNameResolveDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          operand.ordinal == 1 &&
+          operand.type == "name_resolve_descriptor.v1" &&
+          operand.name == "name" &&
+          operand.value_kind == SblrValueKind::name_resolve_descriptor &&
+          DecodeSblrNameResolveDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical NAME_RESOLVE requires its exact result, diagnostic, "
+           "and one engine-bound name_resolve_descriptor.v1 operand");
+    }
+  }
+  if (exact_parse_text && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "parse_text_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrParseTextDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          operand.ordinal == 1 &&
+          operand.type == "parse_text_descriptor" &&
+          operand.name == "text" &&
+          operand.value_kind == SblrValueKind::parse_text_descriptor &&
+          DecodeSblrParseTextDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND.INVALID",
+           "canonical PARSE_TEXT requires its exact result, diagnostic, "
+           "and one engine-bound parse_text_descriptor operand");
+    }
+  }
+  if (exact_catalog_epoch_check && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "catalog_epoch_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrCatalogEpochCheckDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          operand.ordinal == 1 &&
+          operand.type == "catalog_epoch_check_descriptor" &&
+          operand.name == "catalog_epoch" &&
+          operand.value_kind ==
+              SblrValueKind::catalog_epoch_check_descriptor &&
+          DecodeSblrCatalogEpochCheckDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "canonical CATALOG_EPOCH_CHECK requires its exact result, "
+           "diagnostic, and one engine-bound "
+           "catalog_epoch_check_descriptor operand");
+    }
+  }
+  if (exact_database_attach && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "database_attach_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrDatabaseAttachDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          operand.ordinal == 1 &&
+          operand.type == "database_attach_descriptor" &&
+          operand.name == "attachment" &&
+          operand.value_kind == SblrValueKind::database_attach_descriptor &&
+          DecodeSblrDatabaseAttachDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND.INVALID",
+           "canonical DATABASE_ATTACH requires its exact result, "
+           "diagnostic, and one engine-bound database_attach_descriptor "
+           "operand");
+    }
+  }
+  if (exact_optimizer_stats_read && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "optimizer_stats_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrOptimizerStatsReadDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          operand.ordinal == 1 &&
+          operand.type == "optimizer_stats_read_descriptor.v1" &&
+          operand.name == "statistics" &&
+          operand.value_kind ==
+              SblrValueKind::optimizer_stats_read_descriptor &&
+          DecodeSblrOptimizerStatsReadDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND.INVALID",
+           "canonical OPTIMIZER_STATS_READ requires its exact result, "
+           "diagnostic, and one engine-bound "
+           "optimizer_stats_read_descriptor.v1 operand");
+    }
+  }
+  if (exact_optimizer_stats_drop && result.ok) {
+    bool canonical_descriptor = false;
+    if (envelope.result_shape == "optimizer_stats_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector" &&
+        !envelope.contains_sql_text &&
+        envelope.parser_resolved_names_to_uuids &&
+        envelope.operands.size() == 1) {
+      const auto& operand = envelope.operands.front();
+      SblrOptimizerStatsDropDescriptorV1 descriptor;
+      std::string detail;
+      canonical_descriptor =
+          operand.ordinal == 1 &&
+          operand.type == "optimizer_stats_drop_descriptor.v1" &&
+          operand.name == "statistics" &&
+          operand.value_kind ==
+              SblrValueKind::optimizer_stats_drop_descriptor &&
+          DecodeSblrOptimizerStatsDropDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail);
+    }
+    if (!canonical_descriptor) {
+      fail("SBLR.OPERAND.INVALID",
+           "canonical OPTIMIZER_STATS_DROP requires its exact result, "
+           "diagnostic, and one engine-bound "
+           "optimizer_stats_drop_descriptor.v1 operand");
     }
   }
   if ((exact_ddl_create_synonym || exact_ddl_drop_synonym) && result.ok) {

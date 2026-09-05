@@ -147,8 +147,8 @@ void RequireRefusal(const server::SessionOperationResult& result,
                     std::string_view code,
                     std::string_view detail) {
   Require(!result.accepted && result.payload.empty() &&
-              result.response_message_type == 393 &&
-              result.response_schema_id == 7406 &&
+              result.response_message_type == 711 &&
+              result.response_schema_id == 7724 &&
               result.frame_flags == (sbps::kFlagResponse |
                                      sbps::kFlagError |
                                      sbps::kFlagFinal) &&
@@ -429,8 +429,8 @@ std::vector<std::uint8_t> Demand(
 sbps::Frame RequestFrame(const server::ServerSessionRecord& session,
                          std::vector<std::uint8_t> payload) {
   sbps::Frame frame;
-  frame.header.message_type = 392;
-  frame.header.payload_schema_id = 7405;
+  frame.header.message_type = 710;
+  frame.header.payload_schema_id = 7723;
   frame.header.stream_id = 19;
   frame.header.sequence_number = 1;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
@@ -741,15 +741,15 @@ std::string HexLower(const std::vector<std::uint8_t>& bytes) {
 }
 
 void TestCoordination() {
-  Require(sbps::IsKnownMessageType(392) && sbps::IsKnownMessageType(393) &&
+  Require(sbps::IsKnownMessageType(710) && sbps::IsKnownMessageType(711) &&
               static_cast<std::uint16_t>(
                   sbps::MessageType::kCoordinateDmlPlanImportRowsBindRequest) ==
-                  392 &&
+                  710 &&
               static_cast<std::uint16_t>(
                   sbps::MessageType::kCoordinateDmlPlanImportRowsBindResult) ==
-                  393 &&
-              sbps::kSchemaCoordinateDmlPlanImportRowsBindRequestV1 == 7405 &&
-              sbps::kSchemaCoordinateDmlPlanImportRowsBindResultV1 == 7406,
+                  711 &&
+              sbps::kSchemaCoordinateDmlPlanImportRowsBindRequestV1 == 7723 &&
+              sbps::kSchemaCoordinateDmlPlanImportRowsBindResultV1 == 7724,
           "dedicated message/schema constants are not registered exactly");
 
   auto fixture = MakeFixture();
@@ -863,12 +863,12 @@ void TestCoordination() {
   const auto success = server::HandleCoordinateDmlPlanImportRowsBind(
       &registry, engine_state, success_request);
   Require(success.accepted && success.diagnostics.empty() &&
-              success.response_message_type == 393 &&
-              success.response_schema_id == 7406 &&
+              success.response_message_type == 711 &&
+              success.response_schema_id == 7724 &&
               success.frame_flags ==
                   (sbps::kFlagResponse | sbps::kFlagFinal) &&
               success.payload.size() == 24,
-          "successful bind was not exact 393/7406 24-byte result");
+          "successful bind was not exact 711/7724 24-byte result");
 
   sbps::FrameHeader success_header;
   success_header.message_type = success.response_message_type;
@@ -884,8 +884,8 @@ void TestCoordination() {
   const auto decoded_success =
       sbps::DecodeFrameBytes(encoded_success, sbps::kHeaderBytes + 24);
   Require(decoded_success.ok() &&
-              decoded_success.frame->header.message_type == 393 &&
-              decoded_success.frame->header.payload_schema_id == 7406 &&
+              decoded_success.frame->header.message_type == 711 &&
+              decoded_success.frame->header.payload_schema_id == 7724 &&
               decoded_success.frame->header.stream_id ==
                   success_request.header.stream_id &&
               decoded_success.frame->header.request_uuid ==

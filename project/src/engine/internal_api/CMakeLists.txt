@@ -522,6 +522,11 @@ add_library(sb_engine_internal_api
   sblr_executor_availability_registry.cpp
   sblr_parameter_set_registry.cpp
   sblr_prepared_coordination_registry.cpp
+  sblr_name_resolve_journal.cpp
+  sblr_parse_text_journal.cpp
+  sblr_catalog_epoch_check_journal.cpp
+  sblr_database_attach_journal.cpp
+  sblr_optimizer_stats_drop_journal.cpp
   sblr_variable_descriptor_registry.cpp
   sblr_variable_frame_coordinator.cpp
   sblr_source_map_descriptor_registry.cpp

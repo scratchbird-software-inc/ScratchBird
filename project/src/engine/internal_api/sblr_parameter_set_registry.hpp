@@ -79,11 +79,83 @@ struct SblrParameterSetMutationResult {
   std::vector<EngineEvidenceReference> evidence;
 };
 
+// Durable publication owned by SBLR_PARAMETER_BIND.  The canonical value
+// vector remains engine-private and is never copied into diagnostics or the
+// public result.  Every identity here is an exact projection from an
+// authenticated statement receipt or an already-issued parameter-set row.
+struct SblrParameterBindPublicationRequest {
+  std::string statement_receipt_uuid;
+  std::string execution_uuid;
+  std::string prepared_statement_uuid;
+  std::uint64_t prepared_generation{0};
+  std::string parameter_set_descriptor_uuid;
+  std::uint64_t parameter_set_generation{0};
+  std::string ordered_slot_table_sha256;
+  std::string batch_uuid;
+  std::uint64_t batch_generation{0};
+  std::string dynamic_package_uuid;
+  std::uint64_t dynamic_generation{0};
+  std::string catalog_snapshot_uuid;
+  std::uint64_t catalog_generation{0};
+  std::uint64_t security_epoch{0};
+  std::uint64_t resource_epoch{0};
+  std::string mga_snapshot_uuid;
+  std::uint64_t executor_availability_generation{0};
+  std::vector<std::uint8_t> canonical_value_vector;
+  std::string value_vector_sha256;
+};
+
+struct SblrParameterBindPublicationSnapshot {
+  std::string database_uuid;
+  std::string session_uuid;
+  std::string statement_receipt_uuid;
+  std::string execution_uuid;
+  std::string prepared_statement_uuid;
+  std::uint64_t prepared_generation{0};
+  std::string parameter_set_descriptor_uuid;
+  std::uint64_t parameter_set_generation{0};
+  std::string ordered_slot_table_sha256;
+  std::string batch_uuid;
+  std::uint64_t batch_generation{0};
+  std::string dynamic_package_uuid;
+  std::uint64_t dynamic_generation{0};
+  std::string catalog_snapshot_uuid;
+  std::uint64_t catalog_generation{0};
+  std::uint64_t security_epoch{0};
+  std::uint64_t resource_epoch{0};
+  std::string mga_snapshot_uuid;
+  std::uint64_t executor_availability_generation{0};
+  std::string value_vector_sha256;
+  std::string bind_evidence_uuid;
+  std::string publication_evidence_sha256;
+  std::vector<std::uint8_t> canonical_value_vector;
+};
+
+struct SblrParameterBindPublicationResult {
+  bool ok{false};
+  bool replayed{false};
+  EngineApiDiagnostic diagnostic;
+  SblrParameterBindPublicationSnapshot snapshot;
+  std::vector<EngineEvidenceReference> evidence;
+};
+
 SblrParameterSetMutationResult IssueSblrParameterSet(
     const EngineRequestContext& context,
     const SblrParameterSetIssueRequest& request);
 
 SblrParameterSetLoadResult LoadSblrParameterSet(
+    const EngineRequestContext& context,
+    const std::string& parameter_set_descriptor_uuid);
+
+// Atomically publishes the canonical value vector for one active parameter
+// set.  Exact replay returns the original durable evidence; any drift is a
+// stale conflict and can never replace the first publication.
+SblrParameterBindPublicationResult PublishSblrParameterBinding(
+    const EngineRequestContext& context,
+    const SblrParameterSetSnapshot& admitted_parameter_set,
+    const SblrParameterBindPublicationRequest& request);
+
+SblrParameterBindPublicationResult LoadSblrParameterBinding(
     const EngineRequestContext& context,
     const std::string& parameter_set_descriptor_uuid);
 
