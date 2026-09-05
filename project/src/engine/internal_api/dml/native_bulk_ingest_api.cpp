@@ -12,6 +12,7 @@
 #include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/insert_physical_integration.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "hash_digest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "observability/dml_summary_counters.hpp"
@@ -587,7 +588,8 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
                             dml::DirectPhysicalBulkAppendResult* direct_result,
                             std::string* exception_reason) {
     try {
-      *direct_result = dml::ExecuteDirectPhysicalBulkAppend(direct_request);
+      *direct_result = TransactionalRelationStore(direct_request.context)
+                           .ExecuteDirectPhysicalBulkAppend(direct_request);
       return true;
     } catch (const std::bad_alloc&) {
       *exception_reason = "direct_physical_allocation_failure";

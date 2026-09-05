@@ -8,6 +8,7 @@
 
 #include "database_lifecycle.hpp"
 #include "dml/insert_api.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -63,6 +64,36 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
     }
   }
   return false;
+}
+
+const api::TransactionalRelationStoreAuthorityRecord* FindAuthority(
+    std::string_view artifact) {
+  for (const auto& record : api::TransactionalRelationStoreAuthorityMap()) {
+    if (record.artifact == artifact) {
+      return &record;
+    }
+  }
+  return nullptr;
+}
+
+void VerifyCanonicalStoreAuthorityMap() {
+  const auto* rows = FindAuthority("row_versions");
+  Require(rows != nullptr && rows->classification == "canonical_durable",
+          "canonical row-version authority is not explicit");
+  const auto* finality = FindAuthority("transaction_finality");
+  Require(finality != nullptr &&
+              finality->authority == "durable_transaction_inventory" &&
+              finality->classification == "canonical_durable",
+          "durable transaction inventory finality authority is not explicit");
+  const auto* cache = FindAuthority("relation_caches");
+  Require(cache != nullptr &&
+              cache->classification == "derived_non_authoritative",
+          "relation cache was not classified as derived");
+  const auto* compatibility = FindAuthority("crud_compatibility_state");
+  Require(compatibility != nullptr &&
+              compatibility->classification ==
+                  "transitional_non_authoritative_projection",
+          "CrudState compatibility projection was not classified as transitional");
 }
 
 std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evidence,
@@ -322,7 +353,8 @@ void VerifyRelationStateLoadRoutes() {
   Commit(seed);
 
   auto verify = Begin(fixture, "ipar-relation-state-verify");
-  const auto diagnostic_full_load = api::LoadMgaRelationStoreState(verify);
+  api::TransactionalRelationStore relation_store(verify);
+  const auto diagnostic_full_load = relation_store.LoadDiagnosticFullState();
   Require(diagnostic_full_load.ok,
           "IPAR relation-state diagnostic full loader failed");
   Require(diagnostic_full_load.full_state_load,
@@ -331,6 +363,10 @@ void VerifyRelationStateLoadRoutes() {
           "IPAR relation-state diagnostic loader incorrectly marked scoped load");
   Require(diagnostic_full_load.row_versions_retained == 4,
           "IPAR relation-state diagnostic full loader did not retain all rows");
+  Require(HasEvidence(diagnostic_full_load.evidence,
+                      "transactional_relation_store_route",
+                      "normal_dml.diagnostic_full_state.v1"),
+          "diagnostic full load did not traverse the canonical store facade");
 
   const auto refused = InsertInto(
       fixture,
@@ -364,6 +400,22 @@ void VerifyRelationStateLoadRoutes() {
                       "relation_state_load_reason",
                       "target_table_insert_scope"),
           "IPAR relation-state scoped reason evidence missing");
+  Require(HasEvidence(normal.evidence,
+                      "transactional_relation_store",
+                      "canonical_normal_dml_v1"),
+          "IPAR relation-state insert did not identify the canonical store");
+  Require(HasEvidence(normal.evidence,
+                      "transactional_relation_store_route",
+                      "normal_dml.insert_target.v1"),
+          "IPAR relation-state insert did not identify its runtime route");
+  Require(HasEvidence(normal.evidence,
+                      "transactional_relation_store_finality_authority",
+                      "durable_transaction_inventory"),
+          "IPAR relation-state insert did not identify MGA finality authority");
+  Require(HasEvidence(normal.evidence,
+                      "transactional_relation_store_compatibility_projection",
+                      "transitional_non_authoritative_projection"),
+          "IPAR relation-state insert promoted the compatibility projection");
   Require(EvidenceValue(normal.evidence,
                         "mga_relation_state_row_versions_retained") == "2",
           "IPAR relation-state scoped loader did not retain only target and child row state");
@@ -445,6 +497,7 @@ void VerifyRelationStateLoadRoutes() {
 }  // namespace
 
 int main() {
+  VerifyCanonicalStoreAuthorityMap();
   VerifyRelationStateLoadRoutes();
   return EXIT_SUCCESS;
 }

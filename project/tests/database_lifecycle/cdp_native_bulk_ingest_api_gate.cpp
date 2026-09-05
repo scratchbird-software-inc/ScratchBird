@@ -1524,6 +1524,10 @@ void TestNullAndCharacterRowPageStorage() {
   RequireOk(result, "CDP-040 null/character native bulk ingest failed");
   Require(result.accepted_rows == 1 && result.inserted_rows == 1,
           "CDP-040 null/character row counts drifted");
+  Require(HasEvidence(result.evidence,
+                      "transactional_relation_store_route",
+                      "normal_dml.direct_physical_bulk_append.v1"),
+          "CDP-040 native ingest bypassed the canonical relation store");
   Require(EvidenceU64(result.evidence,
                       "direct_physical_bulk_row_page_null_cells") == 1,
           "CDP-040 null cell was not stored as typed null");

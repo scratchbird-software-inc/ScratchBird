@@ -9,6 +9,7 @@
 #include "dml/constraint_enforcement.hpp"
 
 #include "api_diagnostics.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_sequence_runtime.hpp"
 
@@ -864,10 +865,11 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
                                   "sealed_foreign_key_descriptor_incomplete",
                                   column_name);
     }
-    const auto child_storage = LoadMgaRelationStorageDescriptor(
-        context, table.table_uuid);
-    const auto parent_storage = LoadMgaRelationStorageDescriptor(
-        context, parent->table_uuid);
+    TransactionalRelationStore relation_store(context);
+    const auto child_storage =
+        relation_store.LoadRelationDescriptor(table.table_uuid);
+    const auto parent_storage =
+        relation_store.LoadRelationDescriptor(parent->table_uuid);
     if (!child_storage.ok || !parent_storage.ok) {
       return ConstraintDiagnostic("CLI.CONSTRAINT_DESCRIPTOR_INVALID",
                                   "constraint.descriptor.invalid",
@@ -1657,9 +1659,10 @@ EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestCo
   if (!metadata_work.ok) { return metadata_work.diagnostic; }
   if (!metadata_work.has_work) { return OkDiagnostic(); }
 
-  const auto loaded = LoadMgaRelationStoreState(context);
+  TransactionalRelationStore relation_store(context);
+  auto loaded = relation_store.LoadDeferredConstraintValidationFullState();
   if (!loaded.ok) { return loaded.diagnostic; }
-  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
   for (const auto& source_table : state.tables) {
     if (!CrudCreatorVisible(state,
                             source_table.creator_tx,

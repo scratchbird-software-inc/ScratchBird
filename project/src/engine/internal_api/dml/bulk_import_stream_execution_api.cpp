@@ -13,6 +13,7 @@
 #include "datatype_operations.hpp"
 #include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_executor_availability_registry.hpp"
 
@@ -536,7 +537,8 @@ bool LoadTargetAuthority(const EngineRequestContext& context,
                          EngineApiDiagnostic* diagnostic) {
   if (output == nullptr || diagnostic == nullptr) return false;
   const std::string relation_uuid = UuidText(allocation.target_relation_uuid);
-  const auto loaded = LoadMgaRelationStorageDescriptor(context, relation_uuid);
+  const auto loaded =
+      TransactionalRelationStore(context).LoadRelationDescriptor(relation_uuid);
   if (!loaded.ok) {
     *diagnostic = loaded.diagnostic.error
                       ? loaded.diagnostic

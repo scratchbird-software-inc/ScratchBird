@@ -25,6 +25,7 @@
 #include "crud_support/crud_store.hpp"
 #include "dml/import_reject_model.hpp"
 #include "dml/insert_physical_integration.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "dml/write_result_policy.hpp"
 #include "ipar_fault_injection.hpp"
 #include "observability/dml_summary_counters.hpp"
@@ -903,11 +904,12 @@ EngineExecuteImportRowsResult ExecuteImportRowsDirectPhysical(
             std::max<EngineApiU64>(1, effective_batch_rows)));
     ++row_window_count;
     ++batch_count;
-    const auto direct = dml::ExecuteDirectPhysicalBulkAppend(
-        MakeDirectPhysicalRequestForRows(
-            request,
-            BorrowRows(request.canonical_rows, row_index, row_count),
-            static_cast<EngineApiU64>(row_index)));
+    const auto direct_request = MakeDirectPhysicalRequestForRows(
+        request,
+        BorrowRows(request.canonical_rows, row_index, row_count),
+        static_cast<EngineApiU64>(row_index));
+    const auto direct = TransactionalRelationStore(direct_request.context)
+                            .ExecuteDirectPhysicalBulkAppend(direct_request);
     if (!direct.ok) {
       return ImportExecutionFailureFromDirectPhysical(direct, std::move(evidence));
     }

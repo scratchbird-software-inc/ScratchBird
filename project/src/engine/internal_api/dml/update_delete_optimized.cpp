@@ -23,6 +23,7 @@
 #include "dml/update_immutable_authority_provider.hpp"
 #include "dml/update_policy_catalog_authority_provider.hpp"
 #include "dml/update_statement_mga_authority_provider.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "dml/write_result_policy.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "domain_support/domain_store.hpp"
@@ -2817,7 +2818,8 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
     if (append_context != nullptr) {
       return append_context->AppendExactIndexEntryBatches(locality_plan.batches);
     }
-    MgaRelationHotAppendContext local_append_context(context);
+    TransactionalRelationStore relation_store(context);
+    auto local_append_context = relation_store.OpenHotAppendContext();
     const auto appended =
         local_append_context.AppendExactIndexEntryBatches(locality_plan.batches);
     if (appended.error) { return appended; }
@@ -5186,8 +5188,8 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
     return refuse("PROCESS.CANCELLED",
                   "sblr.dml_update_rows.binding_cancelled");
   }
-  const auto loaded = LoadMgaRelationStorageDescriptor(
-      context, demand.target_relation_uuid_hint);
+  const auto loaded = TransactionalRelationStore(context).LoadRelationDescriptor(
+      demand.target_relation_uuid_hint);
   if (!loaded.ok) {
     result.diagnostic = loaded.diagnostic;
     return result;
@@ -5794,7 +5796,8 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
     return result;
   }
   const auto loaded =
-      LoadMgaRelationStorageDescriptor(context, record.relation_uuid);
+      TransactionalRelationStore(context).LoadRelationDescriptor(
+          record.relation_uuid);
   if (!loaded.ok ||
       loaded.descriptor.relation_generation != record.relation_generation ||
       loaded.descriptor.descriptor_uuid.canonical !=
@@ -6490,13 +6493,12 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   const bool needs_source_scope =
       effective_request.update_predicate.predicate_kind == "column_in_projection" &&
       !source_uuid.empty();
+  TransactionalRelationStore relation_store(effective_request.context);
   auto loaded = needs_source_scope
-      ? LoadMgaRelationStoreRowsOnlyForMutationTargets(
-            effective_request.context,
+      ? relation_store.LoadMutationTargetRows(
             std::vector<std::string>{effective_request.target_table.uuid.canonical,
                                      source_uuid})
-      : LoadMgaRelationStoreRowsOnlyForMutationTarget(
-            effective_request.context,
+      : relation_store.LoadMutationTargetRows(
             effective_request.target_table.uuid.canonical);
   mark_update_phase("load_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", loaded.diagnostic); }
@@ -6505,7 +6507,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     return cancellation_failure(
         "sblr.dml_update_rows.cancelled_after_target_enumeration");
   }
-  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
   auto table = FindVisibleCrudTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   mark_update_phase("build_state_and_find_table");
   if (!table) {
@@ -6595,12 +6597,10 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       UpdateCandidateStreamNeedsIndexEntries(effective_request, visible_indexes);
   if (update_needs_index_entries && state.index_entries.empty()) {
     auto reloaded = needs_source_scope
-        ? LoadMgaRelationStoreStateForMutationTargets(
-              request.context,
+        ? relation_store.LoadMutationTargets(
               std::vector<std::string>{request.target_table.uuid.canonical,
                                        source_uuid})
-        : LoadMgaRelationStoreStateForMutationTarget(
-              request.context,
+        : relation_store.LoadMutationTarget(
               request.target_table.uuid.canonical);
     if (!reloaded.ok) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
@@ -6611,7 +6611,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     loaded.evidence.insert(loaded.evidence.end(),
                            reloaded.evidence.begin(),
                            reloaded.evidence.end());
-    state = BuildCrudCompatibilityStateFromMga(std::move(reloaded.state));
+    state = relation_store.BuildCompatibilityProjection(&reloaded);
     table = FindVisibleCrudTable(state,
                                  request.target_table.uuid.canonical,
                                  request.context.local_transaction_id);
@@ -7088,7 +7088,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     }
     mark_update_phase("persist_large_values");
 
-    MgaRelationHotAppendContext hot_append_context(request.context);
+    auto hot_append_context = relation_store.OpenHotAppendContext();
     std::vector<std::uint64_t> written_event_sequences;
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
         effective_request.context,
@@ -7144,8 +7144,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                            std::make_move_iterator(row_delta_entries.begin()),
                            std::make_move_iterator(row_delta_entries.end()));
     }
-    const auto delta_appended = AppendMgaSecondaryIndexDeltaLedgerEntries(
-        request.context,
+    const auto delta_appended =
+        relation_store.AppendSecondaryIndexDeltaLedgerEntries(
         delta_entries,
         compact_update_row_evidence ? nullptr : &result.evidence);
     if (delta_appended.error) {
@@ -7380,11 +7380,11 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
       WriteResultPolicySuppressesPayloadRows(write_result_policy);
   EngineDeleteRowsRequest effective_request = request;
   NormalizeDeletePredicateFromLoweredOptions(&effective_request);
-  auto loaded = LoadMgaRelationStoreStateForMutationTarget(
-      effective_request.context,
+  TransactionalRelationStore relation_store(effective_request.context);
+  auto loaded = relation_store.LoadMutationTarget(
       effective_request.target_table.uuid.canonical);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
   const auto table = FindVisibleCrudTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   if (!table) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
@@ -7613,7 +7613,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     result.evidence.insert(result.evidence.end(),
                            serializable_recorded.evidence.begin(),
                            serializable_recorded.evidence.end());
-    MgaRelationHotAppendContext hot_append_context(effective_request.context);
+    auto hot_append_context = relation_store.OpenHotAppendContext();
     const auto appended = hot_append_context.AppendRowVersions(&row_records, &written_event_sequences);
     if (appended.error) {
       return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows", appended);
@@ -7639,8 +7639,8 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
                            std::make_move_iterator(row_delta_entries.begin()),
                            std::make_move_iterator(row_delta_entries.end()));
     }
-    const auto delta_appended = AppendMgaSecondaryIndexDeltaLedgerEntries(
-        effective_request.context,
+    const auto delta_appended =
+        relation_store.AppendSecondaryIndexDeltaLedgerEntries(
         delta_entries,
         &result.evidence);
     if (delta_appended.error) {

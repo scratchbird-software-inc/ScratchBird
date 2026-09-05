@@ -16,6 +16,7 @@
 #include "dml/dml_row_locator_stream.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
 #include "dml/serializable_mutation_guard.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "dml/write_result_policy.hpp"
 #include "domain_support/domain_store.hpp"
 #include "ipar_fault_injection.hpp"
@@ -2096,7 +2097,9 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
   auto direct_request = MakeDirectPhysicalInsertRequest(request, input_rows);
   direct_request.estimated_row_count = effective_row_count;
   mark_phase("make_direct_request");
-  auto direct_result = dml::ExecuteDirectPhysicalBulkAppend(std::move(direct_request));
+  TransactionalRelationStore relation_store(request.context);
+  auto direct_result =
+      relation_store.ExecuteDirectPhysicalBulkAppend(direct_request);
   mark_phase("execute_direct_physical_bulk_append");
   attempt.result = ConvertDirectPhysicalInsertResult(
       request,
@@ -3368,15 +3371,14 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                       generated_source_uuids.begin(),
                                       generated_source_uuids.end());
   mark_insert_phase("plan_relation_state_scope");
+  TransactionalRelationStore relation_store(request.context);
   auto loaded = full_relation_state_required
-                    ? LoadMgaRelationStoreState(request.context)
+                    ? relation_store.LoadInsertDependencyFullState()
                     : (!generated_source_uuids.empty() &&
                                !generated_source_capacity.usable
-                           ? LoadMgaRelationStoreStateForMutationTargets(
-                                 request.context,
+                           ? relation_store.LoadMutationTargets(
                                  generated_insert_scope_uuids)
-                           : LoadMgaRelationStoreStateForInsertTarget(
-                                 request.context,
+                           : relation_store.LoadInsertTarget(
                                  request.target_table.uuid.canonical));
   mark_insert_phase("load_relation_state");
   (void)scratchbird::core::metrics::RecordInsertRelationStateLoad(
@@ -3398,7 +3400,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                         ? "insert_target_child_reference_scoped"
                         : "insert_target_scoped")));
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
   const auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
   mark_insert_phase("build_state_and_find_table");
   if (!table) {
@@ -4047,7 +4049,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         row_record.deleted = false;
         row_record.values = storage_values;
         std::uint64_t written_event_sequence = 0;
-        const auto appended = AppendMgaRowVersion(request.context, row_record, &written_event_sequence);
+        const auto appended =
+            relation_store.AppendRowVersion(row_record, &written_event_sequence);
         if (appended.error) {
           return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context,
                                                                   "dml.insert_rows",
@@ -4056,8 +4059,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         ++result.dml_summary.append_calls;
         ++result.dml_summary.file_opens;
         ++result.dml_summary.flushes;
-        const auto delta_appended = AppendMgaSecondaryIndexDeltaLedgerEntries(
-            request.context,
+        const auto delta_appended =
+            relation_store.AppendSecondaryIndexDeltaLedgerEntries(
             ConflictUpdateDeltaEntries(batch_context, conflict_row, version_uuid, update_values),
             &result.evidence);
         if (delta_appended.error) {
@@ -4071,8 +4074,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           ++result.dml_summary.file_opens;
           ++result.dml_summary.flushes;
         }
-        const auto index_appended = AppendMgaIndexEntriesForRowsWithIndexes(
-            request.context,
+        const auto index_appended =
+            relation_store.AppendIndexEntriesForRowsWithIndexes(
             synchronous_indexes,
             request.target_table.uuid.canonical,
             std::vector<MgaIndexEntryRowInput>{{conflict_row.row_uuid, version_uuid, update_values}});
@@ -4324,7 +4327,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           "insert.conflict_free_direct_append=true");
       direct_request.option_envelopes.push_back(
           "insert.conflict_free_direct_append_source=post_conflict_probe");
-      auto direct_result = dml::ExecuteDirectPhysicalBulkAppend(direct_request);
+      auto direct_result =
+          relation_store.ExecuteDirectPhysicalBulkAppend(direct_request);
       auto converted = ConvertDirectPhysicalInsertResult(
           request,
           std::move(direct_result),
@@ -4507,7 +4511,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       }
 
       std::vector<std::uint64_t> written_event_sequences;
-      MgaRelationHotAppendContext hot_append(request.context);
+      auto hot_append = relation_store.OpenHotAppendContext();
       if (IparFaultPointRequested(request.option_envelopes, "row_append")) {
         std::vector<EngineEvidenceReference> evidence = result.evidence;
         AppendIparFaultEvidence(&evidence,
@@ -4557,8 +4561,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                              std::make_move_iterator(row_delta_entries.begin()),
                              std::make_move_iterator(row_delta_entries.end()));
       }
-      const auto delta_appended = AppendMgaSecondaryIndexDeltaLedgerEntries(
-          request.context,
+      const auto delta_appended =
+          relation_store.AppendSecondaryIndexDeltaLedgerEntries(
           delta_entries,
           &result.evidence);
       if (delta_appended.error) {

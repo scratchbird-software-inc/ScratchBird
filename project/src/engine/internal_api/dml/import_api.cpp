@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "api_diagnostics.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "sblr_executor_availability_registry.hpp"
@@ -351,8 +352,8 @@ LiveAuthorityResolutionV1 ResolveLiveImportRowsAuthority(
     return result;
   }
 
-  const auto relation = LoadMgaRelationStorageDescriptor(
-      context, std::string(target_table_uuid));
+  const auto relation = TransactionalRelationStore(context).LoadRelationDescriptor(
+      std::string(target_table_uuid));
   if (!relation.ok ||
       ValidateMgaRelationStorageDescriptor(relation.descriptor).error ||
       !UuidTextEquals(relation.descriptor.relation_uuid.canonical,

@@ -17,6 +17,7 @@
 #include "dml/index_apply_locality_bridge.hpp"
 #include "dml/insert_batch.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "dml/write_result_policy.hpp"
 #include "bulk_placement_order.hpp"
 #include "datatype_operations.hpp"
@@ -8945,10 +8946,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       bulk_context_cache_hit = false;
     }
   }
+  TransactionalRelationStore relation_store(request.context);
   MgaRelationStoreResult loaded;
   if (bulk_context_cache_hit) {
     const auto relation_load_start = DirectSteadyClock::now();
     loaded.ok = true;
+    TransactionalRelationStore::AppendRouteEvidence(
+        TransactionalRelationStoreRoute::insert_target,
+        &loaded.evidence);
     loaded.evidence.push_back({"direct_physical_bulk_append_context_cache", "hit"});
     if (!append_index_cache_context_note.empty()) {
       loaded.evidence.push_back({"direct_physical_append_index_cache",
@@ -8964,14 +8969,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     loaded =
         index_entries_authoritative
             ? (append_index_cache_hit
-                   ? LoadMgaRelationStoreMetadataOnlyForInsertTarget(
-                         request.context,
+                   ? relation_store.LoadInsertTargetMetadata(
                          request.target_table.uuid.canonical)
-                   : LoadMgaRelationStoreIndexesOnlyForInsertTarget(
-                         request.context,
+                   : relation_store.LoadInsertTargetIndexes(
                          request.target_table.uuid.canonical))
-            : LoadMgaRelationStoreStateForInsertTarget(
-                  request.context,
+            : relation_store.LoadInsertTarget(
                   request.target_table.uuid.canonical);
     mark_descriptor_step("relation_state_load",
                          relation_load_start,
@@ -8992,7 +8994,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          DirectSteadyClock::now());
   } else {
     const auto state_build_start = DirectSteadyClock::now();
-    state_storage = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+    state_storage = relation_store.BuildCompatibilityProjection(&loaded);
     state = &state_storage;
     mark_descriptor_step("state_build",
                          state_build_start,
@@ -9036,8 +9038,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           request.context.local_transaction_id);
   if (index_entries_authoritative &&
       relation_state_requires_live_rows) {
-    auto reloaded = LoadMgaRelationStoreStateForInsertTarget(
-        request.context,
+    auto reloaded = relation_store.LoadInsertTarget(
         request.target_table.uuid.canonical);
     if (!reloaded.ok) {
       return DirectBulkFailure(request,
@@ -9045,7 +9046,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                "mga_relation_store_load_failed");
     }
     loaded = std::move(reloaded);
-    state_storage = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+    state_storage = relation_store.BuildCompatibilityProjection(&loaded);
     state = &state_storage;
     table = FindVisibleCrudTable(*state,
                                  request.target_table.uuid.canonical,
@@ -11414,7 +11415,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 		              !large_value_persistence_required
 		          ? &logical_value_batch
 		          : nullptr;
-  MgaRelationHotAppendContext hot_append(request.context);
+  auto hot_append = relation_store.OpenHotAppendContext();
   const std::uint64_t decoded_cache_autowarm_max_rows =
       DirectOptionU64(request, "mga.row_cache.autowarm_max_rows", 4096);
   const bool decoded_cache_autowarm_enabled =
@@ -11792,8 +11793,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     batch_context.trace_event_compacted_count += omitted;
   }
 
-  const auto delta_appended = AppendMgaSecondaryIndexDeltaLedgerEntries(
-      request.context,
+  const auto delta_appended =
+      relation_store.AppendSecondaryIndexDeltaLedgerEntries(
       delta_entries,
       &result.evidence);
   if (delta_appended.error) {

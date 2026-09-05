@@ -2875,6 +2875,10 @@ api::EngineApiResult InsertBulkRowsIntoTable(const std::filesystem::path& databa
                       "insert_direct_physical_bulk_route",
                       "selected"),
           "bulk insert did not select direct physical route");
+  Require(HasEvidence(inserted.api_result,
+                      "transactional_relation_store_route",
+                      "normal_dml.direct_physical_bulk_append.v1"),
+          "bulk insert bypassed the canonical transactional relation store");
   Require(HasEvidence(inserted.api_result, "direct_physical_bulk_row_count", "2"),
           "bulk insert direct physical row count evidence missing");
   Require(HasEvidence(inserted.api_result, "direct_mga_append", "row_version_batch"),
@@ -3003,6 +3007,10 @@ api::EngineApiResult SelectById(const std::filesystem::path& database_path,
   request.select_projection.canonical_projection_envelopes.push_back("note");
   const auto selected = api::EngineSelectRows(request);
   Require(selected.ok, "select failed");
+  Require(HasEvidence(selected,
+                      "transactional_relation_store_route",
+                      "normal_dml.mutation_target.v1"),
+          "select did not traverse the canonical transactional relation store");
   return selected;
 }
 
@@ -3057,6 +3065,10 @@ api::EngineApiResult UpdateByRowUuid(const std::filesystem::path& database_path,
   Require(updated.api_result.result_shape.rows.size() == 1, "update did not return one row");
   Require(HasEvidence(updated.api_result, "mga_row_version", "row_update"),
           "update MGA version evidence missing");
+  Require(HasEvidence(updated.api_result,
+                      "transactional_relation_store_route",
+                      "normal_dml.mutation_target_rows.v1"),
+          "update did not traverse the canonical transactional relation store");
   return updated.api_result;
 }
 
@@ -3084,6 +3096,10 @@ api::EngineApiResult MergeRow(const std::filesystem::path& database_path,
   Require(merged.api_result.result_shape.rows.size() == 1, "merge did not return one row");
   Require(HasEvidence(merged.api_result, "merge_surface", "matched_update_or_not_matched_insert"),
           "merge surface evidence missing");
+  Require(HasEvidence(merged.api_result,
+                      "transactional_relation_store_route",
+                      "normal_dml.mutation_target.v1"),
+          "merge did not traverse the canonical transactional relation store");
   return merged.api_result;
 }
 
@@ -3106,6 +3122,10 @@ api::EngineApiResult DeleteByRowUuid(const std::filesystem::path& database_path,
   Require(deleted.api_result.result_shape.rows.size() == 1, "delete did not return one row");
   Require(HasEvidence(deleted.api_result, "mga_row_version", "row_delete_tombstone"),
           "delete tombstone evidence missing");
+  Require(HasEvidence(deleted.api_result,
+                      "transactional_relation_store_route",
+                      "normal_dml.mutation_target.v1"),
+          "delete did not traverse the canonical transactional relation store");
   return deleted.api_result;
 }
 

@@ -14,6 +14,7 @@
 #include "dml/dml_row_locator_stream.hpp"
 #include "dml/dml_target_access_plan.hpp"
 #include "dml/update_api.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include "metric_producer.hpp"
@@ -790,15 +791,12 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       source_table_uuid != target.uuid.canonical) {
     relation_scope_targets.push_back(source_table_uuid);
   }
+  TransactionalRelationStore relation_store(request.context);
   auto loaded = relation_scope_targets.size() == 1
-                    ? LoadMgaRelationStoreStateForMutationTarget(
-                          request.context,
-                          target.uuid.canonical)
-                    : LoadMgaRelationStoreStateForMutationTargets(
-                          request.context,
-                          relation_scope_targets);
+                    ? relation_store.LoadMutationTarget(target.uuid.canonical)
+                    : relation_store.LoadMutationTargets(relation_scope_targets);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
   if (source_rows.empty() && !source_table_uuid.empty()) {
     const auto source_table =
         FindVisibleCrudTable(state,

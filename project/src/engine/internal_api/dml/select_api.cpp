@@ -16,6 +16,7 @@
 #include "domain_support/domain_store.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/transactional_relation_store.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -276,12 +277,13 @@ std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
     if (error_detail != nullptr) *error_detail = "selectable_procedure_dependency_required";
     return {};
   }
-  const auto loaded = LoadMgaRelationStoreState(request.context);
+  TransactionalRelationStore relation_store(request.context);
+  auto loaded = relation_store.LoadSelectableProcedureDependencyFullState();
   if (!loaded.ok) {
     if (error_detail != nullptr) *error_detail = loaded.diagnostic.detail;
     return {};
   }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
   const auto table = FindVisibleCrudTable(state,
                                           dependency_uuid,
                                           request.context.local_transaction_id);
@@ -330,12 +332,13 @@ std::vector<CrudRowVersionRecord> MaterializeFirebirdFirstProductProcedure(
     if (error_detail != nullptr) *error_detail = "selectable_procedure_dependency_required";
     return {};
   }
-  const auto loaded = LoadMgaRelationStoreState(request.context);
+  TransactionalRelationStore relation_store(request.context);
+  auto loaded = relation_store.LoadSelectableProcedureDependencyFullState();
   if (!loaded.ok) {
     if (error_detail != nullptr) *error_detail = loaded.diagnostic.detail;
     return {};
   }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
   const auto table = FindVisibleCrudTable(state,
                                           dependency_uuid,
                                           request.context.local_transaction_id);
@@ -916,11 +919,12 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   if (table_uuid.empty()) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_uuid_required"));
   }
+  TransactionalRelationStore relation_store(request.context);
   EngineRelationProjectionBindingResult relation_projection_binding;
   MgaRelationStorageDescriptor relation_projection_relation_descriptor;
   if (relation_projection) {
     const auto descriptor =
-        LoadMgaRelationStorageDescriptor(request.context, table_uuid);
+        relation_store.LoadRelationDescriptor(table_uuid);
     mark_select_phase("load_relation_projection_relation_descriptor");
     if (!descriptor.ok) {
       return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
@@ -941,7 +945,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   MgaRelationStorageDescriptor global_aggregate_relation_descriptor;
   if (global_aggregate_projection) {
     const auto descriptor =
-        LoadMgaRelationStorageDescriptor(request.context, table_uuid);
+        relation_store.LoadRelationDescriptor(table_uuid);
     mark_select_phase("load_global_aggregate_relation_descriptor");
     if (!descriptor.ok) {
       return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
@@ -966,13 +970,12 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
        requested_predicate.predicate_kind == "column_not_in_projection") &&
       !subquery_source_uuid.empty();
   auto loaded = needs_subquery_source_scope
-      ? LoadMgaRelationStoreStateForMutationTargets(
-            request.context,
+      ? relation_store.LoadMutationTargets(
             std::vector<std::string>{table_uuid, subquery_source_uuid})
-      : LoadMgaRelationStoreStateForMutationTarget(request.context, table_uuid);
+      : relation_store.LoadMutationTarget(table_uuid);
   mark_select_phase("load_target_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
   const auto table = FindVisibleCrudTable(state, table_uuid, request.context.local_transaction_id);
   mark_select_phase("build_state_and_find_table");
   if (!table) {
@@ -1187,6 +1190,9 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   const EngineProjectionEnvelope& projection =
       !request.select_projection.canonical_projection_envelopes.empty() ? request.select_projection : request.projection;
   auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(request.context, "dml.select_rows");
+  result.evidence.insert(result.evidence.end(),
+                         loaded.evidence.begin(),
+                         loaded.evidence.end());
   result.visible_count = rows.size();
   const std::string result_projection = OptionValue(request, "result_projection:");
   if (relation_projection) {

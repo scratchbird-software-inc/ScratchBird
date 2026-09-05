@@ -13,6 +13,7 @@
 #include "metric_contracts.hpp"
 #include "metric_producer.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "query_memory_arena.hpp"
 
 #include <algorithm>
@@ -1715,7 +1716,8 @@ EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestCo
         "engine.dml.insert.secondary_index_delta:" + context.statement_uuid;
     entries.push_back(std::move(input));
   }
-  return AppendMgaSecondaryIndexDeltaLedgerEntries(request_context, entries, nullptr);
+  return TransactionalRelationStore(request_context)
+      .AppendSecondaryIndexDeltaLedgerEntries(entries, nullptr);
 }
 
 void AddInsertTrace(InsertBatchContext* context, std::string event_name, std::string phase, std::string detail) {

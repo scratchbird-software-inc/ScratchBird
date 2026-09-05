@@ -419,6 +419,7 @@ add_library(sb_engine_internal_api
   dml/select_api.cpp
   dml/serializable_mutation_guard.cpp
   dml/temporal_bitemporal_api.cpp
+  dml/transactional_relation_store.cpp
   dml/update_batch.cpp
   dml/update_datatype_operator_authority_provider.cpp
   dml/update_delete_optimized.cpp
